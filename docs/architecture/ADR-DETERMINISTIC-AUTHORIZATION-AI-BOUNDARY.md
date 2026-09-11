@@ -50,7 +50,7 @@ No AI output may:
 1. **be a decision.** `KernelDecisionStatus` is produced by `AocKernel` from
    typed records and a clock. Nothing else, ever.
 2. **be a fact policy reads.** A model-produced value is not a `ContextFact` of
-   any trust class. There is no path by which an inference becomes
+   any trust level. There is no path by which an inference becomes
    `authoritative`, `attested` or `derived`. It is not `asserted` either — it is
    simply not context.
 3. **discharge an obligation.** A model cannot mark `require-mfa`,
@@ -102,15 +102,42 @@ one.
 ### 5. Policy drafting is the interesting case, and it is allowed
 
 A model may draft a policy pack. That draft is an `Advisory` of kind
-`policy_draft`. It becomes policy only when a human with authority reviews it
-and promotes it through the existing, unchanged `PolicyPackValidator` and
-versioning path — at which point what is running is a validated, versioned,
-human-authorized pack whose evaluation is as deterministic as any other.
+`policy_draft`. It becomes policy only when a human with authority promotes it.
+
+**The existing activation path does not establish that, and saying it did was
+wrong.** `PolicyPackRuntime.activatePolicyPackVersion(policyPackVersionId:
+string)` takes an id and nothing else — no actor, no authority context, no
+promoter identity — and delegates straight to the registry.
+`PolicyPackValidator` validates content and lifecycle, never authorization, and
+the activation event records no promoter and no advisory provenance. An
+automated integration holding a runtime handle could register its own draft and
+activate it through that same API while satisfying every stated requirement.
+"Promoted through the existing, unchanged path" therefore guaranteed nothing.
+
+Closing it needs a new operation, not a restatement of the old one:
+
+```
+promotePolicyPackVersion(
+  operatorContext,        // an authorized human, resolved like every other
+                          // trusted-operator surface in this repository
+  policyPackVersionId,
+  { originatingAdvisoryId? }   // recorded when the draft came from an advisory
+)
+```
+
+1. It requires a privileged operator context, in the same posture
+   `KernelAuthorityProvisioningService` already uses for trusted-operator
+   writes.
+2. It records the promoting actor and, when present, the originating advisory id
+   on the pack version and in the activation event.
+3. **An advisory-originated draft may only reach `active` through this
+   operation.** The bare `activatePolicyPackVersion` remains for versions with
+   no advisory provenance, preserving today's behaviour for every existing
+   caller, and refuses any version carrying an `originatingAdvisoryId`.
 
 The boundary is not "AI may not touch policy". It is **"AI may not be the
-authority that puts policy into force."** The provenance of the draft is
-recorded on the pack version, so an auditor can see that version 7 originated
-from an advisory and was promoted by a named human at a named time.
+authority that puts policy into force"** — and that has to be a mechanism, not a
+description of one that does not exist.
 
 ### 6. Explanation is allowed, and is not the decision
 
@@ -145,9 +172,10 @@ digests that bind a decision.
 1. `AocKernel` is the only producer of a decision. Unchanged.
 2. No advisory type carries a decisional field.
 3. No import path exists from advisory modules into the decision path.
-4. No model output is ever a `ContextFact`, at any trust class.
-5. A policy pack reaches force only through human promotion and existing
-   validation.
+4. No model output is ever a `ContextFact`, at any trust level.
+5. An advisory-originated policy pack version reaches `active` only through an
+   authority-gated promotion that records the promoting human and the
+   originating advisory.
 6. `reasonCodes`, `summary` and `trace` are deterministic and reproducible.
 7. Removing every advisory producer changes no decision, anywhere. This is the
    test that settles any future argument about whether something belongs in G.
@@ -175,8 +203,9 @@ wants an anomaly to gate an action must write a rule, which is slower. Invariant
 | --- | --- |
 | AI decides, with a human review queue for low-confidence cases | the high-confidence cases are then decided by a model, and reproducibility is gone for exactly the decisions nobody looks at |
 | AI proposes a decision that policy may override | a proposal that policy usually accepts is a decision; and the override rule would itself have to be deterministic, at which point the proposal is redundant |
-| AI-produced facts admitted at a low trust class | trust class is about *who says so*; an inference has no source of record. Admitting it would make `derived` inheritance meaningless |
+| AI-produced facts admitted at a low trust level | trust level is about *who says so*; an inference has no source of record, so it has no level, not a low one. Admitting it would also corrupt the minimum-of-operands rule for derived facts |
 | A model-scored risk level feeding `PolicyRiskLevel` | risk level feeds effects; a non-reproducible input to a reproducible chain makes the whole chain non-reproducible |
 | Let a model author `summary` only | `summary` sits inside the aggregate digest and every evidence bundle; a non-reproducible field there voids the verification guarantee |
 | Prose prohibitions in READMEs, as today | measured as insufficient: twelve modules each restating it, no guidance for the thirteenth, and no mechanism at all |
+| Rely on the existing `activatePolicyPackVersion` as the human gate | it accepts an id and nothing else, records no promoter, and would let an integration activate its own draft; the guarantee would be prose over an unguarded API |
 | A runtime feature flag to allow AI decisions | a flag that can be turned on is a capability that exists; the guarantee has to be structural to be worth stating |

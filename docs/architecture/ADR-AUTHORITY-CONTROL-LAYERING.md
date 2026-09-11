@@ -68,8 +68,8 @@ public surface fingerprint, and buy nothing a classification plus a test does no
 ```
 G reads A B C D E F      G writes advisories only
 F reads A B C D E        F writes records only
-E reads A B D            E writes grants and revocations
-D reads B                D writes discharge records
+E reads A B C D          E writes grants and revocations
+D reads A B C            D writes discharge records
 B reads A C              B writes nothing
 C reads external systems C writes nothing
 A reads identity/lineage A writes nothing
@@ -78,6 +78,25 @@ A reads identity/lineage A writes nothing
 C never imports B. B never imports E. F never imports G. These become structural
 tests in the same family as the existing `structural-boundaries.test.ts`, run by
 `npm test`, not review conventions.
+
+**Why D reads A and C, and how it reaches E without an edge.** Obligation
+discharge is verified against independent evidence, and that evidence lives in
+three places: an Approval Runtime proof (A), an attested context fact (C), and a
+provider acknowledgement (E). The first two are ordinary downward reads. The
+third cannot be, because E already reads D and an edge back would make the graph
+cyclic.
+
+So E does not get read by D; it *reports into* D. D declares a
+`DischargeVerificationPort`, and the adapter that talks to the provider
+implements it, delivering the acknowledgement as an inbound fact. Dependency
+inversion, so the import edge points D ◀── E, matching the diagram, while the
+information still flows. This is the same shape the Kernel's own optional ports
+already use: the Kernel declares `RecognitionProvider` and the engine implements
+it, rather than the Kernel importing the engine.
+
+Without this, the diagram as first drafted (`D reads B` only) would have made the
+obligation runtime structurally unable to perform its own core responsibility —
+a boundary that forbids the thing it exists to enable.
 
 ### 3. Facts-only layers are structurally incapable of deciding
 

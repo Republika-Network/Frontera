@@ -9,6 +9,9 @@
   `ADR-AUTHORITY-CONTROL-LAYERING.md`, `ADR-CONTEXT-PROVENANCE-AND-TRUST.md`,
   `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md`,
   `ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY.md`
+- Revision: GAP-11…GAP-14 and the §2.1 fail-closed correction were added after
+  the first review round; all four were verified against source before being
+  recorded
 
 ## 0. One correction to the framing, recorded before anything else
 
@@ -22,11 +25,15 @@ case-insensitive search across every `.ts`, `.md`, `.json` and `.mjs` outside
 What exists instead, and what the rest of this document treats as the real
 starting point:
 
-- The **Sovereign Access lifecycle** is implemented as a chain of eight
-  provider-neutral contract packages (`resource-envelope` → `scoped-access` →
-  `access-decision` → `access-obligation` → `access-grant` →
-  `grant-revocation` → `usage-event` → `evidence-correlation`), orchestrated by
-  `src/enterprise/access-governance/`.
+- The **Sovereign Access lifecycle** is *declared* as eight provider-neutral
+  contract packages (`resource-envelope`, `scoped-access`, `access-decision`,
+  `access-obligation`, `access-grant`, `grant-revocation`, `usage-event`,
+  `evidence-correlation`). They are a conceptual sequence of independent data
+  contracts, **not an implemented chain**: `src/enterprise/access-governance/`
+  imports exactly two of them (`access-grant`, `grant-revocation`) plus the
+  provider adapter packages, and consumes no resource envelope, scoped-access
+  request, access decision, access obligation, usage event or evidence
+  correlation. See GAP-13.
 - The one **ledger-adjacent provider adapter** is Pinata/IPFS
   (`@aoc-enterprise/pinata-adapter`, `src/enterprise/content-protection/`),
   reached through the generic `@aoc-enterprise/provider-adapter` contract.
@@ -127,10 +134,17 @@ that assert the absence of network/LLM/OCR/`Math.random()`/argless `new Date()`.
    outcome; none can widen one. This is stated in `AocKernel`'s own doc
    comments and pinned by `assertKernelInvariants` and the characterization
    suite under `src/kernel/__tests__/characterization/`.
-2. **Fail-closed everywhere it matters.** A throwing policy-pack integration, a
-   malformed integration result, an unclassifiable constraint, an undeclared
-   action profile, a failed recognition provider — each resolves to denial or
-   `indeterminate`, never to "no constraint applies".
+2. **Fail-closed at the integration seam.** A throwing policy-pack integration,
+   a malformed integration result, an `invalid_input` decision, an
+   unclassifiable constraint, an undeclared action profile, a failed recognition
+   provider — each resolves to denial or `indeterminate`, never to "no
+   constraint applies".
+   **Not inside rule evaluation, and the distinction matters.** A predicate over
+   a missing field or a mismatched type returns `matched: false`
+   (`PolicyConditionEvaluator.compareNumeric`, and its `default` arm), and when
+   no rule matches, `PolicyPackEvaluationService` yields `not_applicable`, which
+   is a member of `NON_BLOCKING_DECISION_TYPES`. So an unevaluable *restrictive*
+   rule lets processing continue. See GAP-11.
 3. **Deterministic policy evaluation.** `PolicyConditionEvaluator` uses a closed
    operator set over a closed field set. No `eval`, no `new Function`, no regex,
    no model call.
@@ -179,6 +193,13 @@ Every one of these is pure data with validation, identity equality, structural
 equality and deterministic serialization. None performs evaluation, persistence,
 execution or provider I/O. That discipline is the reason this layer generalizes
 cheaply.
+
+**They are not wired together.** Measured by import: `access-governance` reaches
+only `@aoc-enterprise/access-grant`, `@aoc-enterprise/grant-revocation`,
+`@aoc-enterprise/pinata-adapter`, `@aoc-enterprise/provider-adapter` and
+`@aoc-enterprise/provider-translation`. The other six contracts have no
+production consumer. Reading the eight as a working end-to-end lifecycle
+understates the integration work the target plan requires — see GAP-13.
 
 ### 3.2 Runtime engines (`src/features/`)
 
@@ -339,6 +360,71 @@ what it may never produce, and how its output is prevented from reaching the
 decision path. Absent that statement, the first `intelligence` module added is
 an unbounded risk.
 
+### GAP-11 — A requester can escape a restrictive policy pack by claiming a jurisdiction
+
+Pack selection runs before rule evaluation, and
+`PolicyPackApplicabilityService.findScopeMismatch` filters candidate packs on
+`trustDomainId`, `jurisdiction`, `country`, `industry`, `customerId`, `domain`,
+`action`, `capability`, `resourceScope`, `actorType` and `dataDomains`. Six of
+those come straight from the caller's own `ActionDescriptor`.
+
+A pack scoped `jurisdictions: ['CR']` is therefore filtered out — `applicable:
+false`, `SCOPE_MISMATCH` — for a request that simply claims `jurisdiction:
+'XX'`. Its rules never run, so none of its requirements are consulted. With no
+other pack matching, the evaluation returns `NO_APPLICABLE_POLICY_PACK` →
+`not_applicable`, which is non-blocking.
+
+This is GAP-1 at its sharpest: not merely deciding on an asserted fact, but
+using an asserted fact to remove the decision-maker. It is also the one place
+where a per-rule context requirement — the obvious fix for GAP-1 — would not
+have helped, because the rule never executes.
+
+Compounding it, an unevaluable predicate does not deny (see §2.1 point 2), so
+even a pack that *is* selected can fall through on a missing fact.
+
+Severity: **highest, jointly with GAP-1.**
+
+### GAP-12 — A provider credential can outlive the grant that authorized it
+
+`AccessGrantService.requestProviderCredential` calls `assertActive(grant.status)`
+— a status check, not an expiry check — then forwards
+`input.requestedDurationSeconds` to Pinata verbatim and records whatever
+`expiresAt` the provider returns. It never compares that expiry against
+`grant.expiresAt`.
+
+A signed URL requested shortly before a grant expires therefore remains usable
+after the grant has expired, and because using it involves no further Frontera
+read, no read-time expiry check can ever observe it. Revocation is enforced
+against Pinata; ordinary expiry is not.
+
+Severity: **high**, and independent of any architecture change — this is a
+defect in shipped code.
+
+### GAP-13 — The eight-package lifecycle is declared, not connected
+
+Measured by import, `src/enterprise/access-governance/` consumes
+`@aoc-enterprise/access-grant` and `@aoc-enterprise/grant-revocation` and
+nothing else from the eight. `resource-envelope`, `scoped-access`,
+`access-decision`, `access-obligation`, `usage-event` and `evidence-correlation`
+have no production consumer at all — they are well-formed, well-tested contracts
+awaiting a caller.
+
+This does not diminish them; the contract discipline is exactly why they
+generalize cheaply. It does mean the target plan must budget for *connecting*
+stages that today only describe themselves, rather than assuming an end-to-end
+lifecycle exists to be extended.
+
+### GAP-14 — Policy pack activation has no authority gate
+
+`PolicyPackRuntime.activatePolicyPackVersion(policyPackVersionId: string)`
+accepts an id and nothing else — no actor, no authority context — and delegates
+to the registry. `PolicyPackValidator` checks content and lifecycle, never
+authorization, and the activation event records no promoter identity.
+
+Any in-process holder of a runtime handle can therefore put a policy version
+into force anonymously. Today that is a trusted-composition concern; it becomes
+a boundary concern the moment anything that is not a human can author a pack.
+
 ### GAP-10 — No operator surface for the new layers
 
 The control plane is read-only view models over recognition/authority/approval/
@@ -375,7 +461,8 @@ advisory output have no surface, and `apps/agent-gateway`, `apps/audit-console`,
 
 **Introduce — genuinely new.**
 
-- the Context layer (sources, resolvers, provenance, trust classes, freshness)
+- the Context layer (sources, resolvers, subject binding, provenance, trust
+  levels, freshness, and applicability-level requirements)
 - the Obligation lifecycle
 - the Intelligence layer, and the hard boundary around it
 
@@ -394,3 +481,12 @@ Every claim above was read from source at the commit under measurement. The
 baseline suite was run before and after this document was written, with
 identical results: 5666 tests, 1038 suites, 0 failures, exit 0. No source file
 was modified to produce this document.
+
+GAP-11 through GAP-14 were added after review, each verified the same way —
+`PolicyPackApplicabilityService.findScopeMismatch` and
+`NON_BLOCKING_DECISION_TYPES` for GAP-11, `requestProviderCredential` for
+GAP-12, the import graph of `src/enterprise/access-governance/` for GAP-13, and
+`PolicyPackRuntime.activatePolicyPackVersion` for GAP-14. GAP-11 and GAP-12
+describe exploitable properties of shipped code and are worth fixing
+independently of this architecture; see phases 5a and 5b of the target's
+implementation sequence.

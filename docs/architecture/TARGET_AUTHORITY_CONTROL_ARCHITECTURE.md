@@ -70,17 +70,44 @@ aggregate and arithmetic clauses become expressible.
 **May not:** resolve its own context (it receives it), decide authority, mutate
 state, call a model, use `eval`/`new Function`/dynamic code.
 
-**Fail mode:** a rule that cannot be evaluated denies. Already true and
-preserved.
+**Fail mode:** a rule that cannot be evaluated must not silently not-match.
+**This is not already true**, and an earlier draft claimed it was. Today a
+predicate over a missing field or a mismatched type simply returns `matched:
+false` (`PolicyConditionEvaluator.compareNumeric` and its `default` arm), and
+when no rule matches, `PolicyPackEvaluationService` yields `not_applicable`,
+which is in `NON_BLOCKING_DECISION_TYPES`. So an unevaluable *restrictive* rule
+today lets processing continue.
+
+What *is* already fail-closed is one level up: a throwing policy-pack
+integration, a malformed integration result, and `invalid_input` all map to
+`policy_denied`. That is a different guarantee, and conflating the two
+overstated the current posture.
+
+The target adds a third predicate result alongside matched/not-matched —
+`unevaluable`, carrying why (missing fact, unresolved fact, type mismatch,
+below-required-trust). A rule with any `unevaluable` predicate does not silently
+fall through; it resolves per the handling the rule itself declares, and a rule
+that declares none fails closed. This is what makes an unresolved fact a thing
+policy reacts to rather than a thing that disappears, and it is what reconciles
+this layer with the context ADR's position that policy — not the platform —
+decides what an unresolved fact means.
 
 ### C — Context
 
 **Question:** what is true right now about the vendor, the invoice, the spend,
 the risk — and **who says so, when, and how sure are we?**
 
-**Owns:** context sources, resolvers, resolved facts, and the provenance and
-trust classification of each fact. This is the new layer that makes the product
-thesis true.
+**Owns:** context sources, resolvers, resolved facts, and the provenance, subject
+binding and trust classification of each fact — for both rule evaluation **and
+policy-pack applicability**. This is the new layer that makes the product thesis
+true.
+
+Applicability matters as much as evaluation and is easy to miss: pack selection
+runs *before* any rule, and today it filters on requester-asserted
+`jurisdiction`, `country`, `industry`, `customerId`, `domain` and `dataDomains`,
+so a caller can make a restrictive pack inapplicable and never have its rules
+consulted. Per-rule requirements cannot reach that. See
+`ADR-CONTEXT-PROVENANCE-AND-TRUST.md` §4a.
 
 **May not:** decide anything. A context resolver returns facts and a resolution
 status; it has no allow, no deny, no narrow. (This is exactly the contract
@@ -156,8 +183,8 @@ structurally incapable of reaching the Kernel. See
 G (Intelligence)  ──reads──▶  A B C D E F           ──writes──▶ advisories only
                               ▲
 F (Evidence)      ──reads──▶  A B C D E             ──writes──▶ records only
-E (Grants)        ──reads──▶  A B D                 ──writes──▶ grants, revocations
-D (Obligations)   ──reads──▶  B                     ──writes──▶ discharge records
+E (Grants)        ──reads──▶  A B C D               ──writes──▶ grants, revocations
+D (Obligations)   ──reads──▶  A B C                 ──writes──▶ discharge records
 B (Policy)        ──reads──▶  A C                   ──writes──▶ nothing
 C (Context)       ──reads──▶  external systems      ──writes──▶ nothing
 A (Authority)     ──reads──▶  identity, lineage     ──writes──▶ nothing
@@ -166,7 +193,10 @@ A (Authority)     ──reads──▶  identity, lineage     ──writes──
 Six invariants, each intended to become a test:
 
 1. **No upward dependency.** C never imports B. B never imports E. F never
-   imports G.
+   imports G. D reads A, B and C directly; the provider acknowledgement it needs
+   from E arrives through a `DischargeVerificationPort` D declares and the
+   adapter implements, so the import edge points D ◀── E and the graph stays
+   acyclic (see `ADR-AUTHORITY-CONTROL-LAYERING.md` §2).
 2. **Only the Kernel decides.** A, B, C, D contribute; the Kernel concludes.
    Unchanged from today.
 3. **Facts-only layers cannot decide.** C and G have no allow/deny in their
@@ -189,37 +219,55 @@ Four concepts, deliberately small:
 A source is *configured by the deployment operator*, never named by the
 requester.
 
-**`ContextFact`** — one resolved value with its origin:
+**`ContextFact`** — a discriminated union on `resolution`, so a shape with no
+value cannot pretend to have one:
 
 ```
-{
-  key            'vendor.status'
-  value          'approved'
-  sourceId       'ctx.src.erp.sap-prod'
-  observedAt     ISO-8601
-  freshness      { maxAgeSeconds, staleAt }
-  trustClass     'attested' | 'authoritative' | 'derived' | 'asserted'
-  attestationRef opaque id, when trustClass === 'attested'
-  resolution     'resolved' | 'unresolved' | 'stale' | 'conflicted'
-}
+{ key, subject, requirementId, resolution: 'resolved' | 'stale',
+  value, sourceId, observedAt, freshness, trust }
+{ key, subject, requirementId, resolution: 'unresolved',
+  attemptedSourceIds, attemptedAt, failureCode }
+{ key, subject, requirementId, resolution: 'conflicted',
+  candidates: [ { value, sourceId, observedAt, trust }, … ] }
 ```
 
-**`ContextTrustClass`** — the load-bearing concept:
+**`subject`** — `{ type, id, derivedFrom }`, bound to the evaluated request or
+resource. Provenance proves where a value came from; only the subject proves it
+describes the entity the action concerns. A fact about vendor B cannot decide an
+action about vendor A.
 
-| class | meaning | may a policy decide on it? |
+**`trust`** — two orthogonal fields, because level and derivation are different
+questions:
+
+```
+trust.level       attested (3) > authoritative (2) > asserted (1) > none (0)
+trust.derivation  { kind: 'direct' }
+                | { kind: 'derived', operandFactIds, operator }
+```
+
+| level | meaning | may a policy decide on it? |
 | --- | --- | --- |
 | `attested` | signed by an issuer the deployment trusts, verified here | yes |
 | `authoritative` | read directly by Frontera from a configured system of record | yes |
-| `derived` | computed by Frontera from other facts of equal or higher class | yes, inherits the lowest class it derives from |
 | `asserted` | supplied by the requester | **only when the policy pack explicitly declares that this key may be asserted** |
+| `none` | no trustworthy origin established | no |
+
+A derived fact's `level` is the **minimum** of its operands' levels — it cannot
+launder trust — while `derivation` retains every operand id, so the provenance
+survives the downgrade. The ordering is total, so `minimumTrust` is a plain `>=`
+with no undefined cases. See `ADR-CONTEXT-PROVENANCE-AND-TRUST.md` §2 for why
+`derived` is not a fourth level.
 
 The default for any key not declared is `asserted`, and the default for
 `asserted` is that no rule may turn on it. That inverts today's posture, which
 is why it must arrive behind a per-deployment switch (§7).
 
-**`ContextRequirement`** — a policy pack declares, per rule, which keys it needs
-and at what minimum trust class. The Kernel resolves exactly the declared keys
-before evaluation and never speculatively.
+**`ContextRequirement`** — declared in two places, because two things select
+what governs an action. A **rule** declares which keys it needs, about which
+subject, at what minimum trust level. A **pack scope** declares the same for the
+keys its own applicability turns on, so pack selection stops matching against
+requester-asserted `ActionDescriptor` fields. The Kernel resolves exactly the
+declared keys, scope keys first, and never speculatively.
 
 Why this shape: it is `GovernedConstraintProvider` generalized. Same position in
 the pipeline (resolved before the synchronous engine), same facts-only contract,
@@ -232,24 +280,56 @@ wants to do. It may never state a fact that decides whether it may. The
 `organizationId` reservation in `request-adapter.ts` becomes the general case
 rather than a two-key special case.
 
-### 5.2 Policy: derived values
+### 5.2 Policy: value expressions as predicate operands
 
-To express `monthlyVendorSpend + amount < 50000`, `PolicyCondition` gains a
-third node type alongside `group` and `predicate`:
+`PolicyCondition` is a boolean tree. A third sibling node type producing a
+*number* would not fit it: nothing would say how that number becomes true or
+false, and no predicate could reference it. Arithmetic belongs one level down,
+inside a predicate, as an operand.
+
+So `PolicyPredicateCondition` gains a typed operand union on both sides of its
+comparison:
 
 ```
-{ type: 'derived', id, expression: <closed, total, typed>, operands: [...] }
+ValueExpression =
+  { kind: 'literal',     value }
+| { kind: 'field',       field: PolicyPredicateField }    // unchanged, closed
+| { kind: 'contextKey',  key, subject }                   // a resolved fact
+| { kind: 'arithmetic',  operator, operands: ValueExpression[] }
+
+PolicyPredicateCondition = { type: 'predicate', left: ValueExpression,
+                             operator: PolicyPredicateOperator,
+                             right: ValueExpression }
 ```
 
-with a closed operator set (`sum`, `difference`, `product`, `quotient`, `min`,
-`max`, `count`) over operands that are themselves context facts or literals.
-`monthlyVendorSpend` is then a *context fact resolved by an aggregate resolver*
-(class `authoritative`, read from the spend ledger), not something the policy
-engine computes by querying a database — B never reads a store.
+`monthlyVendorSpend + amount < 50000` is then one predicate:
 
-No expression language, no parser, no `eval`. A closed algebra, total over its
-operand types, with division by zero and type mismatch resolving to
-`unresolved`, which policy then treats as it declared.
+```
+left:  { kind: 'arithmetic', operator: 'sum', operands: [
+           { kind: 'contextKey', key: 'vendor.monthlySpend', subject: vendorRef },
+           { kind: 'contextKey', key: 'payment.amount',      subject: paymentRef } ] }
+operator: 'less_than'
+right: { kind: 'literal', value: 50000 }
+```
+
+The arithmetic operator set is closed (`sum`, `difference`, `product`,
+`quotient`, `min`, `max`, `count`) and total over its operand types. No
+expression language, no parser, no `eval`, no free-floating node whose result
+nothing consumes.
+
+`monthlyVendorSpend` is a *context fact resolved by an aggregate resolver*
+(`authoritative`, read from the spend ledger), not something the policy engine
+computes by querying a database — B never reads a store.
+
+Division by zero, type mismatch, and an operand fact that is `unresolved`,
+`conflicted` or below the rule's required trust level all make the expression
+`unevaluable`, which is the third predicate result introduced under layer B
+above — not a silent `false`.
+
+**Backward compatibility:** today's `{ field, operator, value }` predicate is
+exactly `{ left: {kind:'field'}, operator, right: {kind:'literal'} }`, so every
+existing pack maps over mechanically and `PolicyPredicateField` stays closed for
+the fields it already has.
 
 `PolicyPredicateField` stops being the only way in: a predicate may name either
 a known field (unchanged) or a `contextKey`. The closed union stays for the
@@ -315,11 +395,14 @@ not existing". That pattern is the migration strategy.
 2. **No existing field changes meaning.** `ActionDescriptor.amount` continues to
    be exactly what it is today. Resolved facts arrive *alongside* it under a
    namespaced key, and a policy pack chooses which to read.
-3. **The trust-class default flips per deployment, not globally.** A new
-   configuration posture — `context.assertedFactPolicy: 'permit' | 'require-declaration'`
-   — defaults to `permit` (today's behaviour) and is flipped by a deployment
-   when it is ready. The stricter posture is opt-in, then default in a later
-   major, then the only option.
+3. **The trust-level default flips per deployment, not globally.** A new
+   configuration posture — `context.assertedFactPolicy: 'permit' | 'report' |
+   'require-declaration'` — defaults to `permit` (today's behaviour). `report`
+   is the load-bearing middle step, not an optional nicety: asserted facts still
+   decide, and every rule that turned on one is named in the decision trace and
+   in evidence, so an operator gets a list of what would break before anything
+   breaks. R2's mitigation depends on it existing. The stricter posture is
+   opt-in, then default in a later major, then the only option.
 4. **No store schema is rewritten.** New stores are new. Existing schema
    identifiers are untouched, so every durability and portability drill passes
    unchanged.
@@ -343,7 +426,9 @@ Each phase is independently shippable and independently reversible.
 | 3 | Context Resolution Runtime | registry, resolvers, freshness, conflict, trust classification | determinism + fail-closed suites |
 | 4 | `ContextProvider` Kernel port | optional, facts-only, mirrors the constraint adapter | characterization: unconfigured ≡ today |
 | 5 | Reserved-key generalization | requester-asserted keys cannot occupy resolved namespaces | measured self-assertion attack suite |
-| 6 | Policy derived values + `contextKey` | the brief's two examples become expressible end-to-end | both examples as executable scenario tests |
+| 5a | **Applicability context requirements** | pack scope selection matches resolved facts, not asserted fields; an unresolvable declared scope key makes a pack applicable | attack suite: a forged `jurisdiction` no longer escapes a restrictive pack |
+| 5b | **Provider credential capping** | a credential's lifetime is capped at its grant's, refused when none remains | reproduces the current over-long credential first, then shows it bounded |
+| 6 | Value expressions + `unevaluable` predicates | the brief's two examples become expressible end-to-end, and an unevaluable restrictive rule no longer silently not-matches | both examples as executable scenario tests; fail-closed suite |
 | 7 | Obligation lifecycle | states, discharge, verification, proofs | lifecycle + fail-closed suites |
 | 8 | Decision-bound grants | `issueGrant` derives bounds from a verified decision | attenuation suite; legacy path preserved behind the optional binding |
 | 9 | Evidence extension | context/obligation/revocation as bundle subjects | disclosure + integrity suites |
@@ -352,6 +437,12 @@ Each phase is independently shippable and independently reversible.
 | 12 | Operator surfaces | `apps/policy-engine`, `apps/audit-console` | UI is read/author only; never a decision path |
 
 Phases 1–6 deliver the product thesis. Phases 7–12 complete the lifecycle.
+
+**Phases 5a and 5b are separable and should not wait.** Both describe defects in
+code that ships today — an applicability escape via an asserted `jurisdiction`,
+and a provider credential that can outlive its grant — rather than gaps in a
+proposed design. Neither depends on the context layer landing first, and both
+are worth fixing whether or not the rest of this architecture is adopted.
 
 ## 9. Architectural risks
 
@@ -368,6 +459,11 @@ Phases 1–6 deliver the product thesis. Phases 7–12 complete the lifecycle.
 | R9 | Context facts leak sensitive business data into evidence bundles | medium | facts enter the existing disclosure-policy machinery; default disclosure for a context fact is its key and provenance, never its value |
 | R10 | Scope drift — the platform starts reimplementing IAM | medium | the §1 thesis tests; any feature that authenticates a user or stores a target system's permissions is rejected at review |
 | R11 | The four authority engines diverge once a fifth record cites them | low | `AuthorityResolution` is a projection, not a source of truth; it is derived per evaluation, never persisted as an authority |
+| R12 | Context is resolved for rules but not for pack applicability, leaving the escape open in the one place nobody looks | **high** | phase 5a; applicability requirements are declared on the pack scope and an unresolvable declared key makes a pack applicable, never inapplicable |
+| R13 | A resolver answers about the wrong subject and provenance cannot tell | **high** | every fact carries a `subject` bound to the evaluated request or resource; an unbound subject does not resolve |
+| R14 | A provider credential outlives the grant that authorized it | **high** | cap at `min(requested, grant.expiresAt − now)`, reject a provider expiry beyond the grant, refuse when no positive lifetime remains |
+| R15 | A `continuing` or `post_action` obligation is treated as a pre-grant blocker and deadlocks the grant | medium | `timing` is a required closed field; only `precondition` obligations gate issuance |
+| R16 | The two stores drift and a grant cites a decision state that no longer holds | medium | governance records are append-only and immutable, and the grant pins the decision's digests at issue |
 
 ## 10. What this architecture deliberately does not do
 
