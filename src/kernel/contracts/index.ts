@@ -15,10 +15,16 @@ export type {
   ContextEvaluation,
   ContextFactEvaluation,
   ContextRequirementEvaluation,
+  DisregardedObligationObservationEvaluation,
+  ObligationDischargeEvaluation,
+  ObligationEvaluation,
+  ObligationInstanceEvaluation,
+  ObligationTransitionEvaluation,
+  ObligationVerificationEvaluation,
   KernelEvaluationResult,
 } from './kernel-result.js';
 export type { KernelTrace, KernelTraceStep, KernelTraceStepStatus } from './kernel-trace.js';
-export type { KernelExecutionStatus, KernelExecutionOutcome, KernelEnforcementResult } from './kernel-enforcement-result.js';
+export type { KernelExecutionStatus, KernelExecutionOutcome, KernelExecutionWithholdingLayer, KernelEnforcementResult } from './kernel-enforcement-result.js';
 export type {
   RecognitionProvider,
   RecognitionVerificationInput,
@@ -28,6 +34,7 @@ export type {
   GovernedConstraintProvider,
   GovernedRepresentationProvider,
   ContextProvider,
+  ObligationDischargeProvider,
   KernelClock,
   KernelIdGenerator,
 } from './ports.js';
