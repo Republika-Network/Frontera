@@ -446,3 +446,61 @@ describe('Authority-control layering: the Obligation layer (D)', () => {
     assert.deepEqual(overlap, [], 'an exercise condition must never be expressible as an authorization reason, or the distinction is a typo away');
   });
 });
+
+describe('Structural boundaries: Grant Runtime (layer E)', () => {
+  const GRANT_RUNTIME = walkTsFiles('src/features/grant-runtime').filter((file) => !file.includes('/tests/'));
+  const KERNEL = walkTsFiles('src/kernel').filter((file) => !file.includes('/__tests__/'));
+
+  it('the grant runtime has production sources to measure', () => {
+    assert.ok(GRANT_RUNTIME.length >= 10, `expected grant runtime sources, found ${GRANT_RUNTIME.length}`);
+  });
+
+  it('the grant layer never imports the Kernel — E is read by the Kernel adapter, never the reverse', () => {
+    assert.deepEqual(importsMatching(GRANT_RUNTIME, /from '[^']*\/kernel\//), []);
+  });
+
+  it('the grant layer never imports the Enterprise Host, the Governance Store or the legacy runtime', () => {
+    assert.deepEqual(importsMatching(GRANT_RUNTIME, /from '[^']*\/enterprise\//), []);
+    assert.deepEqual(importsMatching(GRANT_RUNTIME, /from '[^']*governance-store/), []);
+    assert.deepEqual(importsMatching(GRANT_RUNTIME, /from '[^']*\/runtime\//), []);
+  });
+
+  it('the grant layer never imports layer C or layer D — it reads a projected decision, not the facts and discharges behind it', () => {
+    assert.deepEqual(importsMatching(GRANT_RUNTIME, /from '[^']*context-resolution-runtime/), []);
+    assert.deepEqual(importsMatching(GRANT_RUNTIME, /from '[^']*obligation-runtime/), []);
+  });
+
+  it('no circular dependency exists between the grant layer and the layers it reads', () => {
+    const contextAndObligation = [...walkTsFiles('src/features/context-resolution-runtime'), ...walkTsFiles('src/features/obligation-runtime')].filter(
+      (file) => !file.includes('/tests/'),
+    );
+    assert.deepEqual(importsMatching(contextAndObligation, /from '[^']*grant-runtime/), [], 'C and D must never reach forward into E');
+  });
+
+  it('the grant layer never reaches a ledger, a signer or a wallet — a bounded grant is provider-neutral', () => {
+    for (const pattern of [/\bxrpl\b/i, /\bxrp-ledger\b/i, /\bsignTransaction\b/, /\bwallet\b/i, /\bledgerIndex\b/i, /\bsequenceNumber\b/i]) {
+      assert.deepEqual(importsMatching(GRANT_RUNTIME, pattern), [], `grant sources must not mention ${String(pattern)}`);
+    }
+  });
+
+  it('the Kernel issues no grant — only eligibility crosses into evaluate(), and issuance lives in the feature', () => {
+    // Measured on imports rather than on any mention of the name: the adapter's
+    // own doc comments point a reader at `createGrantIssuanceService`, which is
+    // the documentation working, not a dependency.
+    const importedNames = /import\s*\{[^}]*\b(createGrantIssuanceService|createInMemoryBoundedGrantStore|BoundedGrantStorePort|GrantIssuanceService)\b[^}]*\}/;
+    assert.deepEqual(importsMatching(KERNEL, importedNames), [], 'no production Kernel source may import the issuance path or the grant store');
+  });
+
+  it('the Kernel result carries no grant artifact type — evaluate() reports eligibility, never an issued grant', () => {
+    const contracts = readFileSync('src/kernel/contracts/kernel-result.ts', 'utf8');
+    assert.equal(/\bBoundedGrant\b/.test(contracts), false, 'a grant artifact must not travel on an evaluation result');
+  });
+
+  it('the grant step reads no decision field — it adds a field and changes nothing', () => {
+    const adapter = readFileSync('src/kernel/orchestration/grant-adapter.ts', 'utf8');
+    const applyStep = adapter.slice(adapter.indexOf('export function applyGrantStep'));
+    for (const forbidden of ['result.status', 'result.reasonCodes', 'result.summary', 'result.policies']) {
+      assert.equal(applyStep.includes(forbidden), false, `applyGrantStep must not read ${forbidden}`);
+    }
+  });
+});

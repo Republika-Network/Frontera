@@ -17,6 +17,8 @@ export type {
   ContextRequirementEvaluation,
   DisregardedObligationObservationEvaluation,
   ObligationDischargeEvaluation,
+  GrantBoundEvaluation,
+  GrantEvaluation,
   ObligationEvaluation,
   ObligationInstanceEvaluation,
   ObligationTransitionEvaluation,

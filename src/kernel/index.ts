@@ -25,6 +25,8 @@ export type {
   ContextFactEvaluation,
   ContextRequirementEvaluation,
   DisregardedObligationObservationEvaluation,
+  GrantBoundEvaluation,
+  GrantEvaluation,
   ObligationDischargeEvaluation,
   ObligationEvaluation,
   ObligationInstanceEvaluation,
@@ -76,6 +78,22 @@ export type { KernelContextResolutionOptions } from './orchestration/context-ada
  */
 export type { KernelObligationOptions } from './orchestration/obligation-adapter.js';
 export type { AocKernelExerciseReasonCode } from './reason-codes/exercise-reason-codes.js';
+
+/**
+ * The bounded-grant capability's configuration shape. Type-only, as every other
+ * kernel contract export is, and for the reason stated above:
+ * `dist/src/kernel/index.js` is a checksummed release artifact, and a type
+ * export leaves it byte for byte unchanged.
+ *
+ * The grant reason-code *constants* are deliberately not re-exported here, for
+ * the reason the obligation ones are not: every grant field on
+ * `KernelEvaluationResult` is typed `string`, so an integrator programs against
+ * the documented literals without the frozen entrypoint growing a runtime
+ * export. A consumer that wants the constants — or the issuance service, the
+ * store port, or the bound algebra — imports them from
+ * `src/features/grant-runtime`, which is not a frozen artifact.
+ */
+export type { KernelGrantOptions } from './orchestration/grant-adapter.js';
 
 export { AOC_KERNEL_REASON_CODES } from './reason-codes/reason-codes.js';
 export type { AocKernelReasonCode } from './reason-codes/reason-codes.js';
