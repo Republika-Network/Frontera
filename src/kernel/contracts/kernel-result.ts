@@ -142,6 +142,72 @@ export interface ApprovalEvaluation {
   readonly proofId?: string;
 }
 
+/**
+ * One resolved context fact, reduced to its provenance.
+ *
+ * **There is no `value` field, and its absence is deliberate.**
+ * `ADR-CONTEXT-PROVENANCE-AND-TRUST.md` §8 sets the default disclosure for a
+ * fact's value to hidden: "an auditor needs to know the decision turned on an
+ * authoritative ERP read of `vendor.status` at 14:02, not necessarily what the
+ * status was." This result travels into the Governance Record and is
+ * canonicalized and digested there, so withholding the value at the type level
+ * is what keeps business data out of the evidence graph without needing a
+ * disclosure policy to remember to strip it. Values reach *policy*, which needs
+ * them to decide; they do not reach the record.
+ */
+export interface ContextFactEvaluation {
+  readonly key: string;
+  readonly sourceId: string;
+  readonly sourceKind: string;
+  /** The declared class, including `derived`. */
+  readonly trustClass: string;
+  /** The class the fact was actually compared at — for a derived fact, the minimum of its operands'. */
+  readonly effectiveTrustClass: string;
+  readonly resolution: string;
+  readonly observedAt: string;
+  readonly staleAt?: string;
+  /** Present only for a conflicted fact: the other sources that answered this key differently. */
+  readonly conflictingSourceIds?: readonly string[];
+}
+
+/**
+ * What the context layer resolved for this evaluation.
+ *
+ * Present only when a `ContextProvider` is configured *and* the deployment
+ * declared at least one requirement. Absent means the kernel resolved no
+ * context — never that context was resolved and found empty, which is what
+ * `resolved: false` says.
+ */
+export interface ContextEvaluation {
+  readonly performed: boolean;
+  /** `false` means the resolver was consulted and could not answer. Never "there are none". */
+  readonly resolved: boolean;
+  readonly declaredKeys: readonly string[];
+  readonly facts: readonly ContextFactEvaluation[];
+  readonly unresolved: readonly string[];
+  readonly stale: readonly string[];
+  readonly conflicted: readonly string[];
+  readonly assertedFactPolicy: string;
+  /**
+   * Under the `report` migration posture, the declared keys that were satisfied
+   * by a fact the requester supplied.
+   *
+   * This is the list ADR §7 exists to produce: what would stop matching under
+   * `require-declaration`, surfaced before anything stops matching. Absent under
+   * every other posture.
+   */
+  readonly assertedFactReads?: readonly string[];
+  /** Declared-required keys whose requirement was not met, with the read status that explains why. Empty on a pass. */
+  readonly unsatisfiedRequirements?: readonly ContextRequirementEvaluation[];
+}
+
+/** One declared-required key that was not satisfied, and the facts-level reason. */
+export interface ContextRequirementEvaluation {
+  readonly key: string;
+  readonly status: string;
+  readonly minimumTrustClass: string;
+}
+
 /** One entry per `evidence_required`-policy result the wrapped engine's own chain recorded. */
 export interface EvidenceEvaluation {
   readonly policyId: string;
@@ -161,6 +227,8 @@ export interface KernelEvaluationResult {
   readonly policies: readonly PolicyEvaluation[];
   readonly approval: ApprovalEvaluation;
   readonly evidence: readonly EvidenceEvaluation[];
+  /** Present only when a `ContextProvider` is configured and the deployment declared at least one context requirement. Absent means no context was resolved, not that none was found. */
+  readonly context?: ContextEvaluation;
   readonly trace: KernelTrace;
   readonly evaluatedAt: string;
   readonly kernelVersion: string;

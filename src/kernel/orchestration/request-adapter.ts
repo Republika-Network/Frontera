@@ -3,6 +3,11 @@ import {
   type GovernedConstraintPolicyContext,
 } from '@aoc-enterprise/governed-authority';
 
+import {
+  CONTEXT_RESOLUTION_POLICY_METADATA_KEY,
+  isReservedContextKey,
+  type ContextResolution,
+} from '../../features/context-resolution-runtime/index.js';
 import type { GuardActionRequestInput } from '../../features/action-enforcement/sdk/aoc-guard.js';
 import type { EnforcementPolicyEvaluationInput } from '../../features/action-enforcement/domain/enforcement-request.js';
 import type { EnforcementTargetType } from '../../features/action-enforcement/domain/enforcement-target.js';
@@ -64,10 +69,12 @@ export function validateKernelEvaluationRequest(request: KernelEvaluationRequest
 function buildPolicyEvaluationInput(
   request: KernelEvaluationRequest,
   constraintContext: GovernedConstraintPolicyContext | undefined,
+  contextResolution: ContextResolution | undefined,
 ): EnforcementPolicyEvaluationInput | undefined {
   const { action } = request;
   const hasPolicyPackFields =
     constraintContext !== undefined ||
+    contextResolution !== undefined ||
     action.domain !== undefined ||
     action.jurisdiction !== undefined ||
     action.country !== undefined ||
@@ -83,6 +90,8 @@ function buildPolicyEvaluationInput(
     return undefined;
   }
 
+  const metadata = buildPolicyMetadata(constraintContext, contextResolution);
+
   return {
     ...(action.domain !== undefined ? { domain: action.domain } : {}),
     ...(action.jurisdiction !== undefined ? { jurisdiction: action.jurisdiction } : {}),
@@ -94,7 +103,28 @@ function buildPolicyEvaluationInput(
     ...(action.counterpartyId !== undefined ? { counterpartyId: action.counterpartyId } : {}),
     ...(action.dataDomains !== undefined ? { dataDomains: action.dataDomains } : {}),
     ...(action.evidenceIds !== undefined ? { evidenceIds: action.evidenceIds } : {}),
-    ...(constraintContext !== undefined ? { metadata: { [GOVERNED_CONSTRAINT_POLICY_METADATA_KEY]: constraintContext } } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+  };
+}
+
+/**
+ * The reserved metadata bag policy reads facts out of.
+ *
+ * Assembled here, from resolved values only, and never from anything the caller
+ * sent. `EnforcementPolicyEvaluationInput.metadata` has no other producer:
+ * every other field of the policy input is copied from a typed
+ * `ActionDescriptor` field, so there is no route by which a request body
+ * contributes a key to this object. That is what makes the namespace
+ * unforgeable rather than merely reserved.
+ */
+function buildPolicyMetadata(
+  constraintContext: GovernedConstraintPolicyContext | undefined,
+  contextResolution: ContextResolution | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  if (constraintContext === undefined && contextResolution === undefined) return undefined;
+  return {
+    ...(constraintContext !== undefined ? { [GOVERNED_CONSTRAINT_POLICY_METADATA_KEY]: constraintContext } : {}),
+    ...(contextResolution !== undefined ? { [CONTEXT_RESOLUTION_POLICY_METADATA_KEY]: contextResolution } : {}),
   };
 }
 
@@ -109,9 +139,10 @@ export function toGuardActionRequestInput(
   request: KernelEvaluationRequest,
   options: KernelEvaluationOptions | undefined,
   constraintContext?: GovernedConstraintPolicyContext,
+  contextResolution?: ContextResolution,
 ): GuardActionRequestInput {
   const { actor, action, target } = request;
-  const policyEvaluationInput = buildPolicyEvaluationInput(request, constraintContext);
+  const policyEvaluationInput = buildPolicyEvaluationInput(request, constraintContext, contextResolution);
   const targetType = toEnforcementTargetType(target?.type);
   const context: Record<string, unknown> = { ...(request.context ?? {}) };
 
@@ -128,6 +159,25 @@ export function toGuardActionRequestInput(
   // request put in the bag".
   delete context.organizationId;
   delete context.organizationName;
+
+  // The same defence, generalized from two names to a namespace, per
+  // `ADR-CONTEXT-PROVENANCE-AND-TRUST.md` sec. 6: "requester-supplied context is
+  // stripped of any key in that namespace before it travels, the same `delete`
+  // `request-adapter.ts` already performs for `organizationId`."
+  //
+  // The reserved namespace is where *resolved* facts live -- values a
+  // configured source produced and a trust class was assigned to. A caller that
+  // submits one is submitting a forgery of exactly the thing the boundary
+  // exists to protect, so it is dropped here, unconditionally and whether or
+  // not a context capability is configured. Dropping rather than rejecting is
+  // deliberate: the two existing reserved names behave the same way, and a
+  // request that merely carries a stray key is not malformed.
+  //
+  // This can break no existing deployment: the namespace did not exist before
+  // the context capability did, so nothing can have been passing one through.
+  for (const key of Object.keys(context)) {
+    if (isReservedContextKey(key)) delete context[key];
+  }
   if (request.organization !== undefined) {
     context.organizationId = request.organization.id;
     if (request.organization.name !== undefined) {

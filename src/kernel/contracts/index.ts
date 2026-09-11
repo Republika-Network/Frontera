@@ -12,6 +12,9 @@ export type {
   ApprovalEvaluation,
   ApprovalStatus,
   EvidenceEvaluation,
+  ContextEvaluation,
+  ContextFactEvaluation,
+  ContextRequirementEvaluation,
   KernelEvaluationResult,
 } from './kernel-result.js';
 export type { KernelTrace, KernelTraceStep, KernelTraceStepStatus } from './kernel-trace.js';
@@ -24,6 +27,7 @@ export type {
   GovernedAuthorityProvider,
   GovernedConstraintProvider,
   GovernedRepresentationProvider,
+  ContextProvider,
   KernelClock,
   KernelIdGenerator,
 } from './ports.js';

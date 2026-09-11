@@ -10,6 +10,7 @@ import type {
   RecognitionVerificationResult,
 } from '../../features/action-enforcement/domain/enforcement-context.js';
 import type { EnforcementPolicyPackIntegration } from '../../features/action-enforcement/domain/policy-pack-enforcement.js';
+import type { ContextResolverPort } from '../../features/context-resolution-runtime/index.js';
 import type {
   EnforcementRuntimeClock,
   EnforcementRuntimeIdGenerator,
@@ -113,3 +114,36 @@ export type GovernedRepresentationProvider = GovernedRepresentationProviderPort;
  * never widen what the authority layer allows.
  */
 export type GovernedConstraintProvider = GovernedConstraintProviderPort;
+
+/**
+ * Optional trusted-context fact provider: answers "what is true right now
+ * about the keys this deployment declared, and which configured source says
+ * so?" and nothing else.
+ *
+ * A *fourth* narrow port rather than a widening of any sibling, for the reason
+ * the other three are separate from each other: it answers a different
+ * question and fails for disjoint reasons. Its result is pure data from
+ * `src/features/context-resolution-runtime`, so no store, connector, HTTP
+ * client or credential concept crosses into the kernel's contracts.
+ * `createInMemoryContextResolver` satisfies it structurally, and so does any
+ * deployment-supplied resolver over a real system of record.
+ *
+ * Like `GovernedConstraintProvider`, and unlike the two authority ports, this
+ * one produces **no verdict at all**. Its return type carries observations and
+ * nothing else — no allow, no deny, no narrow, no recommendation — which is
+ * layer C's law in `ADR-AUTHORITY-CONTROL-LAYERING.md` expressed as a type
+ * rather than as a comment: "the moment a context source can recommend, an ERP
+ * outage becomes an authorization outcome decided by an ERP."
+ *
+ * What it *is* for is the defect `CURRENT_STATE_AUTHORITY_CONTROL.md` records
+ * as GAP-1: today a rule reading `amount <= 10000` decides on a number the
+ * caller put in the request body. Resolved facts arrive alongside that number,
+ * under a namespace the caller cannot write to, so a deployment's rule can turn
+ * on what a system of record says rather than on what the requester claims.
+ *
+ * Omitted — or configured with no declared requirements — kernel behaviour is
+ * byte-identical to this layer not existing, and a characterization suite
+ * (`src/kernel/__tests__/characterization/context-capability-absent.test.ts`)
+ * pins that.
+ */
+export type ContextProvider = ContextResolverPort;
