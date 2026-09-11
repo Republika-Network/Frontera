@@ -208,6 +208,126 @@ export interface ContextRequirementEvaluation {
   readonly minimumTrustClass: string;
 }
 
+/**
+ * One step of an obligation's closed lifecycle, as it was taken.
+ *
+ * Carried so the state an obligation is in is *reconstructible* rather than
+ * merely asserted: a reviewer reading a withheld execution sees `required →
+ * pending → discharged`, who reported each step and when, instead of a single
+ * word with no history behind it.
+ */
+export interface ObligationTransitionEvaluation {
+  readonly from: string;
+  readonly to: string;
+  readonly at: string;
+  readonly reason: string;
+}
+
+/**
+ * The discharge an obligation came to rest on, reduced to its provenance.
+ *
+ * **There is no payload field, and its absence is deliberate**, for the reason
+ * `ContextFactEvaluation` has no `value`: this result travels into the
+ * Governance Record and is canonicalized and digested there. What an auditor
+ * needs is that the obligation was discharged by an independent approval source
+ * at 14:02 under reference `AP-771` — not the approval note's contents.
+ *
+ * `verificationClass` is present because the configured source registry
+ * supplied it, never because an observation reported one. An observation has no
+ * field for it at all.
+ */
+export interface ObligationDischargeEvaluation {
+  readonly sourceId: string;
+  readonly sourceKind: string;
+  /** `independent` or `self_reported`, decided entirely by operator configuration. */
+  readonly verificationClass: string;
+  readonly outcome: string;
+  readonly observedAt: string;
+  readonly subjectId?: string;
+  /** The source's own opaque handle on the act — an approval id, a proof id. Never dereferenced by the Kernel. */
+  readonly reference?: string;
+}
+
+/**
+ * One declared obligation and where its lifecycle has reached.
+ *
+ * **There is no authorization field on this shape.** No allow, no deny, no
+ * decision status, no policy effect. An obligation cannot carry an
+ * authorization outcome, so nothing downstream can read one off it — which is
+ * the core invariant of the obligation phase expressed as a type rather than as
+ * a convention.
+ */
+export interface ObligationInstanceEvaluation {
+  /** Deterministic, derived from the request correlation and the obligation type. Stable across evaluations of the same request. */
+  readonly id: string;
+  readonly obligationType: string;
+  readonly blocking: boolean;
+  /** One of the closed lifecycle states: `required`, `pending`, `discharged`, `verified`, `rejected`, `waived`, `expired`. */
+  readonly state: string;
+  /** Whether the condition is met. A `discharged` obligation is *not* satisfied: self-reported is not confirmed. */
+  readonly satisfied: boolean;
+  readonly terminal: boolean;
+  /** Whether this obligation is currently withholding exercise. Always `false` for a non-blocking one, whatever its state. */
+  readonly withholdsExercise: boolean;
+  /** Present only when two admissible sources reported contradicting outcomes. Never resolved to one side. */
+  readonly conflicted?: boolean;
+  readonly transitions: readonly ObligationTransitionEvaluation[];
+  readonly discharge?: ObligationDischargeEvaluation;
+  readonly dischargeExpiresAt?: string;
+}
+
+/** One discharge observation that arrived and did not count, with the reason it did not. Reported so "why is this still blocked" is answerable from the record. */
+export interface DisregardedObligationObservationEvaluation {
+  readonly obligationType: string;
+  readonly sourceId: string;
+  readonly outcome: string;
+  readonly observedAt: string;
+  readonly reason: string;
+}
+
+/**
+ * What the obligation layer found for this evaluation — and, emphatically, not
+ * what it decided.
+ *
+ * Present only when an `ObligationDischargeProvider` is configured *and* the
+ * deployment declared at least one obligation. Absent means the Kernel asked no
+ * obligation question — never that obligations were checked and found met.
+ *
+ * ## Why this is a separate field from `status`
+ *
+ * `KernelEvaluationResult.status` is the authorization decision and stays
+ * exactly what the authority and policy layers concluded. This field says
+ * whether the action that decision authorized may proceed right now. The two
+ * are reported side by side and never folded, because
+ * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §3 makes the distinction the
+ * audit-critical one: "the evidence shows a decision that concluded X and a
+ * grant that was withheld because obligation Y was not discharged."
+ *
+ * A result can therefore read `status: 'allowed'` with
+ * `obligations.exerciseEligibility: 'blocked'`, and that combination is the
+ * normal, intended one — not a contradiction to be tidied away.
+ */
+export interface ObligationEvaluation {
+  readonly performed: boolean;
+  /** `false` means the discharge provider was consulted and could not answer. Never "there are none" — every blocking obligation then stays unsatisfied. */
+  readonly resolved: boolean;
+  readonly declaredTypes: readonly string[];
+  readonly obligations: readonly ObligationInstanceEvaluation[];
+  /** `eligible` or `blocked`. Deliberately not an allow/deny vocabulary: this is not an authorization outcome and must never be readable as one. */
+  readonly exerciseEligibility: string;
+  /** The aggregate ADR §3 turns on: whether every *blocking* obligation this decision declared is satisfied. Non-blocking obligations never affect it. */
+  readonly allBlockingObligationsSatisfied: boolean;
+  /**
+   * Why exercise is withheld, from `AOC_KERNEL_EXERCISE_REASON_CODES` — a
+   * vocabulary structurally separate from the authorization reason codes in
+   * `reasonCodes`. Absent when eligibility is `eligible`.
+   */
+  readonly exerciseReasonCodes?: readonly string[];
+  readonly summary?: string;
+  /** Observations that arrived and did not count. Absent when every observation was admissible. */
+  readonly disregarded?: readonly DisregardedObligationObservationEvaluation[];
+}
+
 /** One entry per `evidence_required`-policy result the wrapped engine's own chain recorded. */
 export interface EvidenceEvaluation {
   readonly policyId: string;
@@ -229,6 +349,15 @@ export interface KernelEvaluationResult {
   readonly evidence: readonly EvidenceEvaluation[];
   /** Present only when a `ContextProvider` is configured and the deployment declared at least one context requirement. Absent means no context was resolved, not that none was found. */
   readonly context?: ContextEvaluation;
+  /**
+   * Present only when an `ObligationDischargeProvider` is configured and the
+   * deployment declared at least one obligation. Absent means the Kernel asked
+   * no obligation question, not that every obligation passed.
+   *
+   * Reading this never changes how `status` should be read. `status` is the
+   * decision; this is whether the decision may be exercised yet.
+   */
+  readonly obligations?: ObligationEvaluation;
   readonly trace: KernelTrace;
   readonly evaluatedAt: string;
   readonly kernelVersion: string;

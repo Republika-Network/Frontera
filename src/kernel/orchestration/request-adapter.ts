@@ -8,6 +8,7 @@ import {
   isReservedContextKey,
   type ContextResolution,
 } from '../../features/context-resolution-runtime/index.js';
+import { isReservedObligationKey } from '../../features/obligation-runtime/index.js';
 import type { GuardActionRequestInput } from '../../features/action-enforcement/sdk/aoc-guard.js';
 import type { EnforcementPolicyEvaluationInput } from '../../features/action-enforcement/domain/enforcement-request.js';
 import type { EnforcementTargetType } from '../../features/action-enforcement/domain/enforcement-target.js';
@@ -175,8 +176,17 @@ export function toGuardActionRequestInput(
   //
   // This can break no existing deployment: the namespace did not exist before
   // the context capability did, so nothing can have been passing one through.
+  //
+  // `aoc.obligations` is reserved by the same rule and in the same pass. Note
+  // what that reservation is *not* doing: obligation state is never read out of
+  // this bag under any name — its sole producer is the configured discharge
+  // provider, and `ObligationDischargeQuery` carries no requester bag at all —
+  // so a forged `aoc.obligations` would have had nowhere to be read from even
+  // if it survived. It is dropped anyway, for the reason `organizationId` is: a
+  // key that means something internally must not be writable from outside,
+  // whether or not a reader exists today.
   for (const key of Object.keys(context)) {
-    if (isReservedContextKey(key)) delete context[key];
+    if (isReservedContextKey(key) || isReservedObligationKey(key)) delete context[key];
   }
   if (request.organization !== undefined) {
     context.organizationId = request.organization.id;

@@ -11,6 +11,7 @@ import type {
 } from '../../features/action-enforcement/domain/enforcement-context.js';
 import type { EnforcementPolicyPackIntegration } from '../../features/action-enforcement/domain/policy-pack-enforcement.js';
 import type { ContextResolverPort } from '../../features/context-resolution-runtime/index.js';
+import type { ObligationDischargeProviderPort } from '../../features/obligation-runtime/index.js';
 import type {
   EnforcementRuntimeClock,
   EnforcementRuntimeIdGenerator,
@@ -147,3 +148,44 @@ export type GovernedConstraintProvider = GovernedConstraintProviderPort;
  * pins that.
  */
 export type ContextProvider = ContextResolverPort;
+
+/**
+ * Optional obligation-discharge provider: answers "what has been reported about
+ * the obligations this deployment declared for this action?" and nothing else.
+ *
+ * A *fifth* narrow port rather than a widening of any sibling, for the reason
+ * the other four are separate from each other: it answers a different question
+ * and fails for disjoint reasons. Its result is pure data from
+ * `src/features/obligation-runtime`, so no store, approval system, connector,
+ * HTTP client or credential concept crosses into the kernel's contracts.
+ * `createInMemoryObligationDischargeProvider` satisfies it structurally, and so
+ * does any deployment-supplied provider over a real approval system.
+ *
+ * Like `ContextProvider` and `GovernedConstraintProvider`, this port produces
+ * **no verdict at all** — and unlike any of them, it cannot even report a
+ * lifecycle state. Its return type carries observations: what happened, which
+ * configured source saw it, and when. The state that follows is derived by the
+ * closed transition table from the observation plus the *registry's*
+ * classification of the source, which is layer D's version of the rule layer C
+ * already holds: the observer says what happened and where it came from; trusted
+ * configuration decides how that source is treated.
+ *
+ * What it is *for* is the defect
+ * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` records as hole 1:
+ * `require-approval` and `require-mfa` are, today, "statements that the platform
+ * makes and never checks". A declared obligation now has a lifecycle, and an
+ * action a deployment authorized conditionally does not execute until the
+ * condition is met.
+ *
+ * What it is emphatically **not** for is obtaining an approval. Nothing here
+ * asks, routes, notifies, reminds, escalates or schedules — the ADR spends a
+ * section on why Frontera would be wrong to own that, and this port reads.
+ *
+ * Omitted — or configured with no declared obligations — kernel behaviour is
+ * byte-identical to this layer not existing, and a characterization suite
+ * (`src/kernel/__tests__/characterization/obligation-capability-absent.test.ts`)
+ * pins that. Present, it can never widen anything: it cannot change `status`,
+ * cannot add to `reasonCodes`, and cannot turn a denial into an execution. The
+ * only thing it can do is withhold an execution the decision authorized.
+ */
+export type ObligationDischargeProvider = ObligationDischargeProviderPort;

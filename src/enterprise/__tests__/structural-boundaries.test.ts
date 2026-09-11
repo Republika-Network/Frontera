@@ -340,3 +340,109 @@ describe('Authority-control layering: the Context layer (C)', () => {
     assert.deepEqual(definitions.map((file) => file.replace(/\\/g, '/')), [`${CONTEXT_ROOT}/domain/context-resolution.ts`]);
   });
 });
+
+/**
+ * Layer D's classification, asserted over the whole tree rather than over the
+ * obligation runtime alone.
+ *
+ * The tests inside the obligation runtime assert what that module may not
+ * reach; these assert what may not reach *into* it, that the one component
+ * allowed to bridge D and the decision is the Kernel, and that the dependency
+ * direction the future Grants layer will need is already the one in place.
+ */
+describe('Authority-control layering: the Obligation layer (D)', () => {
+  const OBLIGATION_ROOT = 'src/features/obligation-runtime';
+
+  it('the obligation runtime exists and is a real module', () => {
+    assert.ok(existsSync(OBLIGATION_ROOT), 'the Obligation layer must exist as a module');
+    assert.ok(existsSync(`${OBLIGATION_ROOT}/index.ts`), 'it must have a public entrypoint');
+    assert.ok(existsSync(`${OBLIGATION_ROOT}/README.md`), 'a layer boundary that is not written down is a convention, not a boundary');
+  });
+
+  it('the policy runtime never reaches into the obligation runtime — B decides, D reads the result', () => {
+    const policyFiles = walkTsFiles('src/features/domain-policy-pack-runtime').filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(policyFiles, /obligation-runtime/);
+    assert.deepEqual(leaks, [], 'a policy rule must never be able to turn on whether an obligation was discharged');
+  });
+
+  it('the enforcement engine never reaches into the obligation runtime either', () => {
+    const enforcementFiles = walkTsFiles('src/features/action-enforcement').filter((file) => !file.includes('/__tests__/') && !file.includes('/tests/'));
+    const leaks = importsMatching(enforcementFiles, /obligation-runtime/);
+    assert.deepEqual(leaks, [], 'the engine produces a decision; the obligation layer reads one');
+  });
+
+  it('the context runtime never reaches into the obligation runtime — C and D are independent boundaries', () => {
+    const contextFiles = walkTsFiles('src/features/context-resolution-runtime').filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(contextFiles, /obligation-runtime/);
+    assert.deepEqual(leaks, [], 'a context fact must never depend on an obligation, or the two security boundaries collapse into one');
+  });
+
+  it('the Kernel is the only component that composes the obligation port', () => {
+    const kernelImporters = walkTsFiles('src/kernel')
+      .filter((file) => !file.includes('/__tests__/'))
+      .filter((file) => /obligation-runtime/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(
+      kernelImporters.map((file) => file.replace(/\\/g, '/')).sort(),
+      [
+        'src/kernel/contracts/ports.ts',
+        // Names the module in a doc comment only, to say where the reason-code
+        // constants live for a consumer that wants them. It re-exports types
+        // from `obligation-adapter.ts` and imports nothing from layer D.
+        'src/kernel/index.ts',
+        'src/kernel/orchestration/obligation-adapter.ts',
+        'src/kernel/orchestration/request-adapter.ts',
+      ],
+      'the obligation port is composed at exactly the kernel boundary, and nowhere else',
+    );
+  });
+
+  it('the obligation runtime imports no layer above it, and no layer below it either', () => {
+    const obligationFiles = walkTsFiles(OBLIGATION_ROOT).filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(obligationFiles, /from ['"][^'"]*(domain-policy-pack-runtime|action-enforcement|\/kernel\/|\/enterprise\/|context-resolution-runtime)/);
+    assert.deepEqual(leaks, [], 'D never imports B, never imports C, and never imports the decision producer');
+  });
+
+  it('the obligation runtime never imports the Grants layer — D → future E, never the reverse', () => {
+    const obligationFiles = walkTsFiles(OBLIGATION_ROOT).filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(obligationFiles, /access-grant|grant-revocation|scoped-access|capability-tokens|evidence-correlation/);
+    assert.deepEqual(leaks, [], 'a future Grants layer consumes a typed obligation result; the obligation layer must not know it exists');
+  });
+
+  it('the obligation runtime never instantiates or invokes the Kernel — no recursive evaluation', () => {
+    const obligationFiles = walkTsFiles(OBLIGATION_ROOT).filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(obligationFiles, /AocKernel|createAocKernel|kernel\.evaluate|\.enforce\(/);
+    assert.deepEqual(leaks, [], 'an obligation reads the decision it is attached to; it never asks for another one');
+  });
+
+  it('the obligation runtime never sees an HTTP request type or a transport concept', () => {
+    const obligationFiles = walkTsFiles(OBLIGATION_ROOT).filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(obligationFiles, /IncomingMessage|ServerResponse|node:http|from ['"]express|GovernanceEvaluateRequestBody/);
+    assert.deepEqual(leaks, [], 'the capability is composed, never submitted');
+  });
+
+  it('the reserved obligation namespace is defined once, in the layer that owns it', () => {
+    const definitions = walkTsFiles('src').filter((file) => /OBLIGATION_RESERVED_REQUEST_KEY_PREFIX\s*=/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(definitions.map((file) => file.replace(/\\/g, '/')), [`${OBLIGATION_ROOT}/domain/obligation-resolution.ts`]);
+  });
+
+  it('the obligation adapter never writes an authorization field — it adds one and reads none', () => {
+    const adapter = readFileSync('src/kernel/orchestration/obligation-adapter.ts', 'utf8');
+    const start = adapter.indexOf('export function applyObligationStep');
+    // The function body alone: the file's other exports legitimately *read* a
+    // decision status to decide how to report a withheld execution, which is
+    // the read-only orchestration boundary this layer is allowed.
+    const applyStep = adapter.slice(start, adapter.indexOf('\n}', start));
+    for (const forbidden of ['status:', 'reasonCodes:', 'summary:']) {
+      assert.equal(applyStep.includes(forbidden), false, `applyObligationStep must not write '${forbidden}' — the decision is not its to change`);
+    }
+  });
+
+  it('the exercise reason codes are a separate vocabulary from the authorization reason codes', async () => {
+    const authorization = (await import('../../kernel/reason-codes/reason-codes.js')).AOC_KERNEL_REASON_CODES;
+    const exercise = (await import('../../kernel/reason-codes/exercise-reason-codes.js')).AOC_KERNEL_EXERCISE_REASON_CODES;
+
+    const authorizationCodes = new Set<string>(Object.values(authorization));
+    const overlap = Object.values(exercise).filter((code) => authorizationCodes.has(code));
+    assert.deepEqual(overlap, [], 'an exercise condition must never be expressible as an authorization reason, or the distinction is a typo away');
+  });
+});

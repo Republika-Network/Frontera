@@ -34,6 +34,15 @@ import {
   type KernelContextFacts,
   type KernelContextResolutionOptions,
 } from './orchestration/context-adapter.js';
+import {
+  KernelObligationCapability,
+  applyObligationStep,
+  isExecutableStatus,
+  resolveKernelObligationFacts,
+  resolveKernelObligations,
+  type KernelObligationFacts,
+  type KernelObligationOptions,
+} from './orchestration/obligation-adapter.js';
 import { applyGovernedAuthorityStep, resolveGovernedAuthorityFacts, type GovernedAuthorityFacts } from './orchestration/governed-authority-adapter.js';
 import { assertKernelInvariants, cloneKernelEvaluationRequest } from './orchestration/kernel-invariants.js';
 import { toGuardActionRequestInput, validateKernelEvaluationRequest } from './orchestration/request-adapter.js';
@@ -113,6 +122,39 @@ export interface AocKernelOptions {
    * react to, never an authorization outcome an ERP chose.
    */
   readonly contextResolution?: KernelContextResolutionOptions;
+  /**
+   * Optional obligation capability: a discharge provider, the sources it may
+   * cite, and the obligations this deployment declares stand over an action.
+   *
+   * Configuring it is how a deployment stops `require-approval` being, in the
+   * ADR's words, "a statement the platform makes and never keeps". A declared
+   * obligation gains a closed seven-node lifecycle, a discharge gains
+   * provenance, and an action this Kernel authorized *conditionally* does not
+   * execute until the condition is met.
+   *
+   * **It cannot change an authorization.** This is the one thing to know about
+   * the capability. `status`, `reasonCodes` and `summary` are produced by the
+   * authority and policy layers and are never read or written by the obligation
+   * step: an undischarged blocking obligation on an allowed action leaves
+   * `status: 'allowed'` exactly as it was and withholds the *executor*, so the
+   * record shows a decision that authorized the action and an execution that
+   * was withheld because a condition was unmet. Rewriting that into a denial
+   * would erase the distinction an auditor most needs —
+   * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §3.
+   *
+   * Nor can it authorize. There is no discharge state, and no configuration of
+   * one, that makes a denied action proceed.
+   *
+   * Omitted — or configured with no declared obligations — kernel behaviour is
+   * byte-identical to this layer not existing: no resolution is attempted, no
+   * field is added to the result, and the Governance Record is unchanged.
+   *
+   * It is not an approval workflow. Frontera records that a valid trusted
+   * approval has or has not been discharged; obtaining one is the deployment's
+   * business, and there is nothing here that asks, routes, notifies, reminds,
+   * escalates or schedules.
+   */
+  readonly obligations?: KernelObligationOptions;
   /** Defaults to a real-time clock. Tests should supply a deterministic one (see `AOC_KERNEL_INTEGRATION_GUIDE.md`). */
   readonly clock?: KernelClock;
   /** Defaults to `crypto.randomUUID()`-backed ids. Tests should supply a deterministic sequential generator. */
@@ -157,6 +199,7 @@ export class AocKernel {
   private readonly governedRepresentationProvider: GovernedRepresentationProvider | undefined;
   private readonly governedConstraintProvider: GovernedConstraintProvider | undefined;
   private readonly contextCapability: KernelContextCapability | undefined;
+  private readonly obligationCapability: KernelObligationCapability | undefined;
 
   constructor(options: AocKernelOptions) {
     if (options.recognitionProvider === undefined) {
@@ -184,6 +227,11 @@ export class AocKernel {
     // requirement is a wiring-time failure instead of one discovered in the
     // middle of an evaluation.
     this.contextCapability = options.contextResolution === undefined ? undefined : new KernelContextCapability(options.contextResolution);
+    // Composed here for the same reason, and with the same consequence: a
+    // deployment that registers its own request bag as an independent discharge
+    // source is rejected when it wires the Kernel, not when a payment is
+    // evaluated.
+    this.obligationCapability = options.obligations === undefined ? undefined : new KernelObligationCapability(options.obligations);
 
     for (const adapter of options.adapters ?? []) {
       this.runtime.registerAdapter(adapter);
@@ -244,6 +292,15 @@ export class AocKernel {
     // could not be read".
     const contextResolution = await resolveKernelContext(this.contextCapability, request, this.ctx.clock.now());
 
+    // Resolved before the wrapped engine runs so that `evaluate()` and
+    // `enforce()` observe the same world in the same order, and so an
+    // asynchronous read of an approval system happens at a point one can
+    // occur. Nothing it returns reaches the policy input: obligations are read
+    // *from* the decision's layers, never *into* them, which is the one-way
+    // dependency rule (`D reads B`) that keeps a discharge from becoming an
+    // input a policy rule could turn on.
+    const obligationResolution = await resolveKernelObligations(this.obligationCapability, request, this.ctx.clock.now());
+
     let decision: EnforcementDecision;
     try {
       decision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution));
@@ -269,7 +326,16 @@ export class AocKernel {
     // denied is annotated with what context was resolved and is otherwise left
     // exactly as it was: a denial has one reason, and re-labelling it with a
     // second would misreport why the request actually stopped.
-    const result = applyContextStep(this.contextCapability, contextResolution, authorityResult);
+    const contextResult = applyContextStep(this.contextCapability, contextResolution, authorityResult);
+
+    // Last of all, and the only step in this pipeline that cannot change the
+    // outcome it is handed. `applyObligationStep` adds a field and reads
+    // nothing: `status`, `reasonCodes` and `summary` arrive from the authority
+    // and policy layers and leave untouched, whatever any obligation's state
+    // is. `evaluate()` therefore *reports* that exercise is withheld and never
+    // enacts it — enacting is `enforce()`'s business, because only `enforce()`
+    // has an executor to withhold.
+    const result = applyObligationStep(obligationResolution, contextResult);
 
     assertKernelInvariants(request, requestSnapshot, result);
     return result;
@@ -367,6 +433,71 @@ export class AocKernel {
       }
     }
 
+    // Resolved *before* the executor can run, for the reason governed authority
+    // and context are: `guard.enforce()` preflights and invokes in one
+    // synchronous call, and an obligation checked afterwards would be a check
+    // of a side effect that has already happened.
+    const obligationResolution = await resolveKernelObligations(this.obligationCapability, request, this.ctx.clock.now());
+    const obligationFacts: KernelObligationFacts | undefined = obligationResolution === undefined ? undefined : resolveKernelObligationFacts(obligationResolution);
+
+    if (obligationFacts !== undefined && !obligationFacts.eligible) {
+      // The authorization is produced exactly as it always is, and the executor
+      // is never reached.
+      //
+      // `preflight()` rather than `enforce()`, because `enforce()` is the one
+      // operation that can invoke the executor and there is no point inside it
+      // at which an already-known obligation state could stop it. The decision
+      // this produces is the *real* decision — the same chain, the same
+      // policies, the same reason codes — so what the caller receives is an
+      // authorization that stands, alongside an execution that was withheld.
+      //
+      // It consumes the request's idempotency key exactly as the existing
+      // non-executing paths through `enforce()` already do: `guard.enforce()`
+      // preflights first on every path, so a denied or approval-required
+      // enforcement claims the key today. This branch is therefore not a new
+      // idempotency characteristic, and a caller re-submitting after the
+      // obligation is discharged uses a fresh key for the same reason it
+      // already must after an `approval_required`.
+      let withheldDecision: EnforcementDecision;
+      try {
+        withheldDecision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution));
+      } catch (error) {
+        const indeterminate = this.buildIndeterminateResult(request, new KernelDependencyError('recognitionProvider failed during enforcement', error));
+        return { ...indeterminate, execution: { status: 'not_executed', executed: false } };
+      }
+
+      const evaluated = toKernelEvaluationResult(request.requestId, withheldDecision, options, request.correlationId);
+      const withheldWithAuthority =
+        governedAuthorityFacts === undefined
+          ? evaluated
+          : {
+              ...evaluated,
+              authority: {
+                ...evaluated.authority,
+                governedAuthority: governedAuthorityFacts.governedAuthority,
+                ...(governedAuthorityFacts.representation !== undefined ? { representation: governedAuthorityFacts.representation } : {}),
+              },
+            };
+      const withheldWithContext = contextFacts === undefined ? withheldWithAuthority : { ...withheldWithAuthority, context: contextFacts.evaluation };
+      // The obligation evaluation is *added*. `status`, `reasonCodes` and
+      // `summary` are carried through byte for byte from what the authority and
+      // policy layers concluded — an unmet obligation withholds the action, it
+      // does not reinterpret the authorization.
+      const withheldResult = { ...withheldWithContext, obligations: obligationFacts.evaluation };
+      assertKernelInvariants(request, requestSnapshot, withheldResult);
+      return {
+        ...withheldResult,
+        execution: {
+          status: 'not_executed' as const,
+          executed: false,
+          // Named only when the decision itself would have permitted execution.
+          // On a denial the denial is the reason, and labelling it "withheld by
+          // obligation" would give one outcome two causes.
+          ...(isExecutableStatus(withheldResult.status) ? { withheldBy: 'obligation' as const } : {}),
+        },
+      };
+    }
+
     let outcome;
     try {
       outcome = await this.guard.enforce(toGuardActionRequestInput(request, options, constraintContext, contextResolution), executor);
@@ -404,7 +535,14 @@ export class AocKernel {
     // facts are: the context was read before the executor ran, and reporting a
     // second read taken afterwards would describe a world the decision was not
     // made in.
-    const result = contextFacts === undefined ? withAuthority : { ...withAuthority, context: contextFacts.evaluation };
+    const withContext = contextFacts === undefined ? withAuthority : { ...withAuthority, context: contextFacts.evaluation };
+    // Re-attached rather than re-resolved, for the same reason: the obligations
+    // were read before the executor ran, and a second read taken afterwards
+    // would describe a world the execution was not permitted in. Nothing here
+    // consumes or mutates a discharge — obligation state is derived, never
+    // held — so a repeated `enforce()` over the same world produces the same
+    // instances and cannot double-discharge anything.
+    const result = obligationFacts === undefined ? withContext : { ...withContext, obligations: obligationFacts.evaluation };
     assertKernelInvariants(request, requestSnapshot, result);
     return result;
   }
