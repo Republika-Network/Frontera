@@ -249,6 +249,25 @@ export interface ObligationDischargeEvaluation {
 }
 
 /**
+ * A verification attempt against a supplied discharge that did not succeed.
+ *
+ * ADR §2 gives a failed verification no lifecycle state of its own: the
+ * obligation stays `discharged`, and this records why somebody could not
+ * confirm it. `verified` is literally `false` — there is no shape here that can
+ * report a successful verification, because a successful one is expressed by
+ * the obligation's *state* being `verified`.
+ */
+export interface ObligationVerificationEvaluation {
+  readonly verified: false;
+  readonly sourceId: string;
+  readonly sourceKind: string;
+  readonly verificationClass: string;
+  readonly observedAt: string;
+  readonly subjectId?: string;
+  readonly reference?: string;
+}
+
+/**
  * One declared obligation and where its lifecycle has reached.
  *
  * **There is no authorization field on this shape.** No allow, no deny, no
@@ -262,18 +281,19 @@ export interface ObligationInstanceEvaluation {
   readonly id: string;
   readonly obligationType: string;
   readonly blocking: boolean;
-  /** One of the closed lifecycle states: `required`, `pending`, `discharged`, `verified`, `rejected`, `waived`, `expired`. */
+  /** One of the six closed lifecycle states: `required`, `pending`, `discharged`, `verified`, `waived`, `expired`. */
   readonly state: string;
   /** Whether the condition is met. A `discharged` obligation is *not* satisfied: self-reported is not confirmed. */
   readonly satisfied: boolean;
   readonly terminal: boolean;
   /** Whether this obligation is currently withholding exercise. Always `false` for a non-blocking one, whatever its state. */
   readonly withholdsExercise: boolean;
-  /** Present only when two admissible sources reported contradicting outcomes. Never resolved to one side. */
-  readonly conflicted?: boolean;
   readonly transitions: readonly ObligationTransitionEvaluation[];
   readonly discharge?: ObligationDischargeEvaluation;
-  readonly dischargeExpiresAt?: string;
+  /** Present only when a verification attempt was made and did not succeed. Never changes `state` or `satisfied`. */
+  readonly verification?: ObligationVerificationEvaluation;
+  /** The deadline this obligation was declared with, when it was declared with one. Operator-configured; never requester-supplied. */
+  readonly expiresAt?: string;
 }
 
 /** One discharge observation that arrived and did not count, with the reason it did not. Reported so "why is this still blocked" is answerable from the record. */

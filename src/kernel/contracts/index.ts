@@ -20,6 +20,7 @@ export type {
   ObligationEvaluation,
   ObligationInstanceEvaluation,
   ObligationTransitionEvaluation,
+  ObligationVerificationEvaluation,
   KernelEvaluationResult,
 } from './kernel-result.js';
 export type { KernelTrace, KernelTraceStep, KernelTraceStepStatus } from './kernel-trace.js';

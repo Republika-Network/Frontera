@@ -129,11 +129,11 @@ export async function resolveKernelObligations(
   return capability.service.resolve(observations, correlation, at);
 }
 
+/** One code per unsatisfying state, and the three unsatisfying states are all of them. `verified` and `waived` never appear here because they never withhold. */
 const STATE_TO_EXERCISE_REASON_CODE: Readonly<Record<string, AocKernelExerciseReasonCode>> = {
   required: AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_PENDING,
   pending: AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_PENDING,
   discharged: AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_UNVERIFIED,
-  rejected: AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_REJECTED,
   expired: AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_EXPIRED,
 };
 
@@ -172,10 +172,7 @@ export function resolveKernelObligationFacts(resolution: ObligationResolution): 
 
   const exerciseReasonCodes: AocKernelExerciseReasonCode[] = [];
   for (const obligation of withholding) {
-    const code =
-      obligation.conflicted === true
-        ? AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_CONFLICTED
-        : (STATE_TO_EXERCISE_REASON_CODE[obligation.state] ?? AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_PENDING);
+    const code = STATE_TO_EXERCISE_REASON_CODE[obligation.state] ?? AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_PENDING;
     if (!exerciseReasonCodes.includes(code)) exerciseReasonCodes.push(code);
   }
 
@@ -252,7 +249,6 @@ function toObligationInstanceEvaluation(instance: ObligationInstance): Obligatio
     satisfied: obligationIsSatisfied(instance),
     terminal: obligationIsTerminal(instance),
     withholdsExercise: obligationWithholdsExercise(instance),
-    ...(instance.conflicted === true ? { conflicted: true } : {}),
     transitions: instance.transitions.map((transition) => ({ from: transition.from, to: transition.to, at: transition.at, reason: transition.reason })),
     ...(instance.discharge !== undefined
       ? {
@@ -267,6 +263,19 @@ function toObligationInstanceEvaluation(instance: ObligationInstance): Obligatio
           },
         }
       : {}),
-    ...(instance.dischargeExpiresAt !== undefined ? { dischargeExpiresAt: instance.dischargeExpiresAt } : {}),
+    ...(instance.verification !== undefined
+      ? {
+          verification: {
+            verified: false as const,
+            sourceId: instance.verification.sourceId,
+            sourceKind: instance.verification.sourceKind,
+            verificationClass: instance.verification.verificationClass,
+            observedAt: instance.verification.observedAt,
+            ...(instance.verification.subjectId !== undefined ? { subjectId: instance.verification.subjectId } : {}),
+            ...(instance.verification.reference !== undefined ? { reference: instance.verification.reference } : {}),
+          },
+        }
+      : {}),
+    ...(instance.expiresAt !== undefined ? { expiresAt: instance.expiresAt } : {}),
   };
 }

@@ -38,7 +38,9 @@ const REQUESTER: ObligationDischargeSource = { id: 'obl.src.request', kind: 'req
 const SOURCES = [APPROVAL, TREASURY, HOST, REQUESTER];
 
 const BLOCKING: ObligationDeclaration = { requirements: [{ obligationType: 'finance.approval', blocking: true }] };
-const BLOCKING_WITH_WINDOW: ObligationDeclaration = { requirements: [{ obligationType: 'finance.approval', blocking: true, maxDischargeAgeSeconds: 3_600 }] };
+/** A deadline already in the past at `NOW`, so an obligation declared with it is `expired` the moment it is read. */
+const DEADLINE = '2025-12-31T00:00:00.000Z';
+const BLOCKING_WITH_DEADLINE: ObligationDeclaration = { requirements: [{ obligationType: 'finance.approval', blocking: true, expiresAt: DEADLINE }] };
 const NON_BLOCKING: ObligationDeclaration = { requirements: [{ obligationType: 'finance.approval', blocking: false }] };
 
 function request(overrides: Partial<KernelEvaluationRequest> = {}): KernelEvaluationRequest {
@@ -121,28 +123,40 @@ describe('evaluate() — an allowed decision stays allowed while a blocking obli
     assert.deepEqual(result.obligations?.exerciseReasonCodes, [AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_UNVERIFIED]);
   });
 
-  it('a stale discharge reports ALLOW, state `expired`, and exercise blocked', async () => {
-    const base = request({ requestId: 'obl-req-stale' });
-    const result = await buildKernel({ declaration: BLOCKING_WITH_WINDOW, observations: [discharge(base, { observedAt: '2025-12-31T00:00:00.000Z' })] }).evaluate(base);
+  it('an obligation past its declared deadline reports ALLOW, state `expired`, and exercise blocked', async () => {
+    const base = request({ requestId: 'obl-req-expired' });
+    const result = await buildKernel({ declaration: BLOCKING_WITH_DEADLINE }).evaluate(base);
 
     assert.equal(result.status, 'allowed');
     assert.equal(result.obligations?.obligations[0]?.state, 'expired');
+    assert.equal(result.obligations?.obligations[0]?.expiresAt, DEADLINE);
     assert.deepEqual(result.obligations?.exerciseReasonCodes, [AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_EXPIRED]);
   });
 
-  it('a refuted discharge reports ALLOW, state `rejected`, and exercise blocked', async () => {
-    const base = request({ requestId: 'obl-req-rejected' });
-    const result = await buildKernel({
-      observations: [discharge(base, { sourceId: HOST.id, observedAt: '2026-01-01T00:00:00.000Z' }), discharge(base, { outcome: 'refused', observedAt: '2026-01-01T00:00:01.000Z' })],
-    }).evaluate(base);
+  it('an obligation with no declared deadline never expires, however old the discharge is', async () => {
+    const base = request({ requestId: 'obl-req-no-deadline' });
+    const result = await buildKernel({ observations: [discharge(base, { observedAt: '2020-01-01T00:00:00.000Z' })] }).evaluate(base);
 
-    assert.equal(result.status, 'allowed', 'an approver saying no is not the policy saying no, and the record must keep them apart');
-    assert.equal(result.obligations?.obligations[0]?.state, 'rejected');
-    assert.deepEqual(result.obligations?.exerciseReasonCodes, [AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_REJECTED]);
+    assert.equal(result.obligations?.obligations[0]?.state, 'verified', 'proof freshness is a verification question, never a lifecycle deadline');
+    assert.equal(result.obligations?.exerciseEligibility, 'eligible');
   });
 
-  it('two independent sources contradicting each other reports ALLOW, conflicted, and exercise blocked', async () => {
-    const base = request({ requestId: 'obl-req-conflicted' });
+  it('a verification that did not succeed reports ALLOW, state `discharged`, and records why', async () => {
+    const base = request({ requestId: 'obl-req-unverified' });
+    const result = await buildKernel({
+      observations: [discharge(base, { sourceId: HOST.id, observedAt: '2026-01-01T00:00:00.000Z' }), discharge(base, { outcome: 'refused', observedAt: '2026-01-01T00:00:01.000Z', reference: 'AP-DECLINED-3' })],
+    }).evaluate(base);
+
+    assert.equal(result.status, 'allowed', 'an approver declining is not the policy denying, and the record must keep them apart');
+    assert.equal(result.obligations?.obligations[0]?.state, 'discharged', 'ADR §2: a failed verification has no state of its own');
+    assert.equal(result.obligations?.obligations[0]?.verification?.verified, false);
+    assert.equal(result.obligations?.obligations[0]?.verification?.reference, 'AP-DECLINED-3');
+    assert.deepEqual(result.obligations?.exerciseReasonCodes, [AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_UNVERIFIED]);
+    assert.equal(result.obligations?.exerciseEligibility, 'blocked');
+  });
+
+  it('a confirmation from a second independent source after a failed attempt still verifies', async () => {
+    const base = request({ requestId: 'obl-req-reverified' });
     const result = await buildKernel({
       observations: [
         discharge(base, { sourceId: HOST.id, observedAt: '2026-01-01T00:00:00.000Z' }),
@@ -152,9 +166,8 @@ describe('evaluate() — an allowed decision stays allowed while a blocking obli
     }).evaluate(base);
 
     assert.equal(result.status, 'allowed');
-    assert.equal(result.obligations?.obligations[0]?.conflicted, true);
-    assert.deepEqual(result.obligations?.exerciseReasonCodes, [AOC_KERNEL_EXERCISE_REASON_CODES.OBLIGATION_DISCHARGE_CONFLICTED]);
-    assert.equal(result.obligations?.exerciseEligibility, 'blocked');
+    assert.equal(result.obligations?.obligations[0]?.state, 'verified');
+    assert.equal(result.obligations?.exerciseEligibility, 'eligible');
   });
 
   it('an unreadable discharge provider reports ALLOW, `resolved: false`, and exercise blocked', async () => {
@@ -467,7 +480,7 @@ describe('enforce() — a denial is a denial under every obligation state there 
   it('DENY with an expired obligation stays DENY', async () => {
     const base = { ...toKernelRequest(buildUnknownAgentReadGuardInput()), requestId: 'obl-enf-deny-expired' };
     let ran = 0;
-    const result = await buildKernel({ declaration: BLOCKING_WITH_WINDOW, observations: [discharge(base, { observedAt: '2025-12-31T00:00:00.000Z' })] }).enforce(base, () => {
+    const result = await buildKernel({ declaration: BLOCKING_WITH_DEADLINE }).enforce(base, () => {
       ran += 1;
       return 'executed';
     });

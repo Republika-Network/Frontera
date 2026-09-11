@@ -29,6 +29,7 @@ export type {
   ObligationEvaluation,
   ObligationInstanceEvaluation,
   ObligationTransitionEvaluation,
+  ObligationVerificationEvaluation,
   KernelEvaluationResult,
   KernelTrace,
   KernelTraceStep,

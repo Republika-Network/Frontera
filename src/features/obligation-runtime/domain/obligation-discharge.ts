@@ -7,9 +7,15 @@ import type { ObligationDischargeSourceKind, ObligationDischargeVerificationClas
  * ```
  * pending     the obligation has been raised and is outstanding
  * discharged  the condition was carried out
- * refused     the condition was put and answered negatively
+ * refused     a verification attempt against a supplied discharge did not succeed
  * waived      the deployment excused the obligation
  * ```
+ *
+ * `refused` is a *verification* outcome, not a lifecycle one. ADR §2: "a failed
+ * or unverifiable verification attempt leaves the lifecycle state as
+ * `discharged`." It records why the discharge did not verify and moves nothing.
+ * An earlier revision of this module transitioned on it, into a seventh state
+ * the architecture never defined.
  *
  * Frontera does not *perform* any of these. ADR: "no automatic discharge of any
  * obligation type by Frontera itself — if the platform could discharge
@@ -86,16 +92,16 @@ export type ObligationObservationDisregardReason =
   | 'unregistered_source'
   | 'undeclared_obligation'
   | 'correlation_mismatch'
-  | 'stale_observation'
   | 'waiver_not_independent'
+  | 'verification_not_applicable'
   | 'illegal_transition';
 
 export const OBLIGATION_OBSERVATION_DISREGARD_REASONS: readonly ObligationObservationDisregardReason[] = [
   'unregistered_source',
   'undeclared_obligation',
   'correlation_mismatch',
-  'stale_observation',
   'waiver_not_independent',
+  'verification_not_applicable',
   'illegal_transition',
 ];
 
@@ -130,17 +136,20 @@ export function validateObligationDischargeObservation(observation: ObligationDi
   return violations;
 }
 
-/** Whether an observation is still within a declared discharge window at `at`. Total: an unparseable timestamp is not fresh, which is the safe direction. */
-export function isDischargeFreshAt(observedAt: string, maxAgeSeconds: number, at: string): boolean {
-  const observed = Date.parse(observedAt);
-  const now = Date.parse(at);
-  if (Number.isNaN(observed) || Number.isNaN(now)) return false;
-  return now - observed < maxAgeSeconds * 1000;
-}
-
-/** `observedAt + maxAgeSeconds`, as an ISO-8601 instant. Returns `undefined` for an unparseable `observedAt` rather than inventing one. */
-export function dischargeExpiresAt(observedAt: string, maxAgeSeconds: number): string | undefined {
-  const observed = Date.parse(observedAt);
-  if (Number.isNaN(observed)) return undefined;
-  return new Date(observed + maxAgeSeconds * 1000).toISOString();
+/**
+ * A verification attempt against a supplied discharge that did not succeed.
+ *
+ * The audit half of ADR §2: the lifecycle does not move, and this is what
+ * records why it did not. It is deliberately not a state, not a reason code and
+ * not a severity — it is provenance about an attempt, attached to an obligation
+ * that remains `discharged` and therefore remains unsatisfied.
+ */
+export interface ObligationVerificationRecord {
+  readonly verified: false;
+  readonly sourceId: string;
+  readonly sourceKind: ObligationDischargeSourceKind;
+  readonly verificationClass: ObligationDischargeVerificationClass;
+  readonly observedAt: string;
+  readonly subjectId?: string;
+  readonly reference?: string;
 }

@@ -1,21 +1,19 @@
 import type { ObligationCorrelation } from '../domain/obligation-correlation.js';
 import { obligationCorrelationMatches } from '../domain/obligation-correlation.js';
-import {
-  dischargeExpiresAt,
-  isDischargeFreshAt,
-  type DisregardedObligationObservation,
-  type ObligationDischargeObservation,
-  type ObligationDischargeOutcome,
-  type ObligationDischargeRecord,
-  type ObligationObservationDisregardReason,
+import type {
+  DisregardedObligationObservation,
+  ObligationDischargeObservation,
+  ObligationDischargeOutcome,
+  ObligationDischargeRecord,
+  ObligationObservationDisregardReason,
+  ObligationVerificationRecord,
 } from '../domain/obligation-discharge.js';
-import { declareObligation, obligationWithholdsExercise, type ObligationInstance } from '../domain/obligation-instance.js';
+import { declareObligation, obligationWithholdsExercise, type ObligationInstance, type ObligationTransitionReason } from '../domain/obligation-instance.js';
 import { validateObligationDeclaration, type ObligationDeclaration, type ObligationRequirement, type ObligationType } from '../domain/obligation-requirement.js';
 import type { ObligationResolution } from '../domain/obligation-resolution.js';
 import type { ObligationDischargeSource } from '../domain/obligation-source.js';
-import { isLegalObligationTransition, type ObligationState } from '../domain/obligation-state.js';
+import { isLegalObligationTransition, isObligationExpiredAt, type ObligationState } from '../domain/obligation-state.js';
 import { transitionObligation } from '../domain/obligation-transition.js';
-import type { ObligationTransitionReason } from '../domain/obligation-instance.js';
 import { ObligationConfigurationError } from './obligation-configuration-errors.js';
 import { ObligationDischargeSourceRegistry } from './obligation-source-registry.js';
 
@@ -31,6 +29,11 @@ interface AdmissibleObservation {
   readonly requirement: ObligationRequirement;
 }
 
+interface ObligationStep {
+  readonly state: ObligationState;
+  readonly reason: ObligationTransitionReason;
+}
+
 /**
  * Turns a provider's raw observations into a classified, stably-ordered
  * `ObligationResolution`.
@@ -40,7 +43,7 @@ interface AdmissibleObservation {
  * instant, it produces the same resolution byte for byte. It reads no clock
  * (the instant is passed in), no store, no network and no randomness, and it
  * contains no `eval`, no `new Function` and no expression parser — the only
- * computation it performs is a walk over a seven-node transition table.
+ * computation it performs is a walk over a six-node transition table.
  *
  * It produces no authorization outcome. Every output is a statement about
  * obligations; what any of it means for a decision was already decided by the
@@ -52,9 +55,9 @@ interface AdmissibleObservation {
  * from (declaration + observations + instant), which buys three properties the
  * phase needs and would otherwise have to defend with tests:
  *
- * - **expiry is a state, not a job.** ADR §6: "derived from the clock at read
- *   time; no job is load-bearing." A stale discharge is stale the moment it is
- *   read, without a sweeper having run.
+ * - **expiry is a state, not a job.** ADR §6: an obligation at or past its
+ *   declared deadline is `expired` the moment it is read, without a sweeper
+ *   having run.
  * - **repeated evaluation cannot double-discharge.** Two `enforce()` calls over
  *   the same world produce identical instances, because neither consumed
  *   anything.
@@ -94,16 +97,25 @@ export class ObligationLifecycleService {
     return this.registry.list();
   }
 
-  /** The declared obligations as Layer B hands them over: every one in `required`, before anything has been observed. */
+  /**
+   * The declared obligations as layer D materializes them: every one in
+   * `required`, before anything has been observed.
+   *
+   * Layer B declared that these obligations are required; this is layer D
+   * turning that declaration into instances it owns and manages — ADR §1,
+   * "`required` is a Layer D state, not a Layer B declaration".
+   */
   declare(correlation: ObligationCorrelation, at: string): readonly ObligationInstance[] {
-    return this.declared.map((obligationType) =>
-      declareObligation({
+    return this.declared.map((obligationType) => {
+      const requirement = this.requirementsByType.get(obligationType);
+      return declareObligation({
         obligationType,
-        blocking: this.requirementsByType.get(obligationType)?.blocking === true,
+        blocking: requirement?.blocking === true,
         correlation,
         declaredAt: at,
-      }),
-    );
+        ...(requirement?.expiresAt !== undefined ? { expiresAt: requirement.expiresAt } : {}),
+      });
+    });
   }
 
   /**
@@ -120,7 +132,6 @@ export class ObligationLifecycleService {
 
     const disregarded: DisregardedObligationObservation[] = [];
     const admissible: AdmissibleObservation[] = [];
-    const staleTypes = new Set<string>();
 
     for (const observation of sortObservations(observations)) {
       const requirement = this.requirementsByType.get(observation.obligationType);
@@ -137,14 +148,6 @@ export class ObligationLifecycleService {
         disregarded.push(disregard(observation, 'unregistered_source'));
         continue;
       }
-      if (requirement.maxDischargeAgeSeconds !== undefined && !isDischargeFreshAt(observation.observedAt, requirement.maxDischargeAgeSeconds, at)) {
-        // Recorded as stale rather than applied, and remembered so the
-        // obligation can be moved to `expired` below — but only if nothing
-        // fresh satisfied it, so an old approval can never poison a current one.
-        disregarded.push(disregard(observation, 'stale_observation'));
-        staleTypes.add(observation.obligationType);
-        continue;
-      }
       if (observation.outcome === 'waived' && source.verificationClass !== 'independent') {
         // A waiver is the deployment excusing an obligation. A self-reporting
         // source excusing it is the beneficiary excusing itself, which is the
@@ -158,51 +161,66 @@ export class ObligationLifecycleService {
     for (const entry of admissible) {
       const current = instances.get(entry.observation.obligationType);
       if (current === undefined) continue;
+
+      // A refused verification is not a lifecycle event. ADR §2: "a failed or
+      // unverifiable verification attempt leaves the lifecycle state as
+      // `discharged`." It attaches provenance about the attempt and moves
+      // nothing — and it is only meaningful against a discharge that exists.
+      if (entry.observation.outcome === 'refused') {
+        if (current.state !== 'discharged') {
+          disregarded.push(disregard(entry.observation, 'verification_not_applicable'));
+          continue;
+        }
+        instances.set(entry.observation.obligationType, { ...current, verification: verificationRecordFor(entry) });
+        continue;
+      }
+
       const record = dischargeRecordFor(entry);
-      const expiresAt =
-        record === undefined || entry.requirement.maxDischargeAgeSeconds === undefined
-          ? undefined
-          : dischargeExpiresAt(entry.observation.observedAt, entry.requirement.maxDischargeAgeSeconds);
 
       // Every step of the sequence is applied in order and each is legal on its
       // own terms, so the history records the lifecycle that was actually
-      // walked. The record and the window are attached on the final step only —
-      // the one the obligation comes to rest on.
+      // walked. The record is attached on the final step only — the one the
+      // obligation comes to rest on.
       const steps = stepsFor(entry.observation.outcome, entry.source.verificationClass);
       let instance = current;
-      let refused = false;
+      let refusedAdmission = false;
       for (let index = 0; index < steps.length; index += 1) {
         const step = steps[index] as ObligationStep;
         const last = index === steps.length - 1;
-        const outcome = transitionObligation(instance, step.state, at, step.reason, last ? record : undefined, last ? expiresAt : undefined);
+        const outcome = transitionObligation(instance, step.state, at, step.reason, last ? record : undefined);
         if (outcome.result === 'illegal') {
           disregarded.push(disregard(entry.observation, 'illegal_transition'));
-          refused = true;
+          refusedAdmission = true;
           break;
         }
         instance = outcome.instance;
       }
-      if (refused) continue;
+      if (refusedAdmission) continue;
       instances.set(entry.observation.obligationType, instance);
     }
 
-    // Expiry last, and conditional: an obligation only expires when nothing
-    // fresh satisfied it. `isLegalObligationTransition` is consulted rather
-    // than assumed, so an obligation already resting in a terminal state is
-    // left exactly as it is instead of being quietly reopened into `expired`.
-    for (const obligationType of staleTypes) {
+    // Expiry last, and evaluated against the state the observations left behind
+    // — ADR §6, verbatim:
+    //
+    //     if currentTime >= obligation.expiresAt
+    //        and state ∈ { required, pending, discharged }
+    //     then state → expired
+    //
+    // An obligation that declares no deadline never expires. `verified` and
+    // `waived` are never disturbed: a satisfied obligation stays satisfied, and
+    // a deadline passing afterwards is not a reason to withdraw a condition
+    // that was met. `isLegalObligationTransition` is what enforces that, rather
+    // than a second copy of the state list.
+    for (const obligationType of this.declared) {
       const current = instances.get(obligationType);
-      if (current === undefined) continue;
+      if (current === undefined || current.expiresAt === undefined) continue;
+      if (!isObligationExpiredAt(current.expiresAt, at)) continue;
       if (!isLegalObligationTransition(current.state, 'expired')) continue;
-      const outcome = transitionObligation(current, 'expired', at, 'discharge_window_closed');
+      const outcome = transitionObligation(current, 'expired', at, 'deadline_passed');
       if (outcome.result === 'applied') instances.set(obligationType, outcome.instance);
     }
 
-    const conflictedTypes = conflictedObligationTypes(admissible);
-    const resolvedInstances = this.declared.map((obligationType) => {
-      const instance = instances.get(obligationType) as ObligationInstance;
-      return conflictedTypes.has(obligationType) ? { ...instance, conflicted: true } : instance;
-    });
+    const resolvedInstances = this.declared.map((obligationType) => instances.get(obligationType) as ObligationInstance);
 
     return {
       resolved: true,
@@ -215,11 +233,6 @@ export class ObligationLifecycleService {
   }
 }
 
-interface ObligationStep {
-  readonly state: ObligationState;
-  readonly reason: ObligationTransitionReason;
-}
-
 /**
  * The one mapping from "what was reported" plus "how the reporter is
  * classified" to "which steps the obligation takes".
@@ -229,37 +242,30 @@ interface ObligationStep {
  * one stops at `discharged`. Nothing a provider sends changes which branch is
  * taken — only the registry entry does, and only an operator writes those.
  *
- * `refused` is a single step to `rejected`, and deliberately does not walk up
- * to `discharged` first. `rejected` is reachable only from `discharged`, so a
- * refusal of an obligation nobody reported discharging is refused admission
- * rather than being made to fit: ADR §1 gives no edge for it, and inventing one
- * would mean recording a discharge that never happened in order to refute it.
- * The obligation stays where it is and, if it blocks, keeps blocking — the safe
- * direction either way.
+ * `refused` does not appear, because it takes no step at all. It is handled
+ * before this function is reached.
  */
-function stepsFor(outcome: ObligationDischargeOutcome, verificationClass: ObligationDischargeSource['verificationClass']): readonly ObligationStep[] {
+function stepsFor(outcome: Exclude<ObligationDischargeOutcome, 'refused'>, verificationClass: ObligationDischargeSource['verificationClass']): readonly ObligationStep[] {
   switch (outcome) {
     case 'pending':
-      return [{ state: 'pending', reason: 'discharge_reported' }];
+      return [{ state: 'pending', reason: 'activated' }];
     case 'discharged':
       return verificationClass === 'independent'
         ? [
-            { state: 'pending', reason: 'discharge_reported' },
+            { state: 'pending', reason: 'activated' },
             { state: 'discharged', reason: 'discharge_reported' },
             { state: 'verified', reason: 'discharge_confirmed' },
           ]
         : [
-            { state: 'pending', reason: 'discharge_reported' },
+            { state: 'pending', reason: 'activated' },
             { state: 'discharged', reason: 'discharge_reported' },
           ];
-    case 'refused':
-      return [{ state: 'rejected', reason: 'discharge_refused' }];
     case 'waived':
       return [{ state: 'waived', reason: 'waiver_recorded' }];
   }
 }
 
-/** A discharge record is written for the three outcomes that put an obligation to rest. `pending` reports progress, not a discharge, and writing one for it would attest to an act nobody performed. */
+/** A discharge record is written for the two outcomes that put an obligation to rest. `pending` reports activation, not a discharge, and writing one for it would attest to an act nobody performed — ADR §1, "What a transition carries". */
 function dischargeRecordFor(entry: AdmissibleObservation): ObligationDischargeRecord | undefined {
   if (entry.observation.outcome === 'pending') return undefined;
   return {
@@ -273,36 +279,17 @@ function dischargeRecordFor(entry: AdmissibleObservation): ObligationDischargeRe
   };
 }
 
-/**
- * Obligations two *independent* sources disagreed about.
- *
- * Only independent outcomes are compared, and the restriction is the whole
- * substance of the rule. An independent source refusing what a self-reporting
- * one claimed is not a disagreement — it is the verification mechanism working
- * exactly as ADR §2 designs it, and it has a state of its own (`rejected`).
- * What has no answer is two *independently* trustworthy sources contradicting
- * each other: one approval system confirming and another refusing.
- *
- * This layer does not pick a winner there. The obligation is marked conflicted
- * and, if it blocks, keeps blocking whatever state the transitions left it in.
- * That is the rule `ContextResolution.conflicted` already sets for two systems
- * of record answering one key differently — "a fact about the world, not a tie
- * to be broken silently" — and the safe direction besides.
- */
-function conflictedObligationTypes(admissible: readonly AdmissibleObservation[]): ReadonlySet<string> {
-  const outcomesByType = new Map<string, Set<ObligationDischargeOutcome>>();
-  for (const entry of admissible) {
-    if (entry.source.verificationClass !== 'independent') continue;
-    const bucket = outcomesByType.get(entry.observation.obligationType) ?? new Set<ObligationDischargeOutcome>();
-    bucket.add(entry.observation.outcome);
-    outcomesByType.set(entry.observation.obligationType, bucket);
-  }
-
-  const conflicted = new Set<string>();
-  for (const [obligationType, outcomes] of outcomesByType) {
-    if (outcomes.has('refused') && (outcomes.has('discharged') || outcomes.has('waived'))) conflicted.add(obligationType);
-  }
-  return conflicted;
+/** The provenance of a verification attempt that did not succeed. Records who looked and what they cited; changes no state. */
+function verificationRecordFor(entry: AdmissibleObservation): ObligationVerificationRecord {
+  return {
+    verified: false,
+    sourceId: entry.source.id,
+    sourceKind: entry.source.kind,
+    verificationClass: entry.source.verificationClass,
+    observedAt: entry.observation.observedAt,
+    ...(entry.observation.subjectId !== undefined ? { subjectId: entry.observation.subjectId } : {}),
+    ...(entry.observation.reference !== undefined ? { reference: entry.observation.reference } : {}),
+  };
 }
 
 function disregard(observation: ObligationDischargeObservation, reason: ObligationObservationDisregardReason): DisregardedObligationObservation {

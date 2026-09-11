@@ -21,21 +21,24 @@
  * at all, and `kernel-obligation-lifecycle.test.ts` asserts that no code from
  * this file ever appears there.
  *
- * Five codes, and they send an operator to five different places: obtain the
- * approval, get it confirmed by someone independent, find out why it was
- * refused, obtain a fresh one, or reconcile two systems that disagree.
+ * Three codes, one per unsatisfying lifecycle state, and they send an operator
+ * to three different places: obtain the discharge, get the one you have
+ * confirmed by someone independent, or accept that the deadline has passed.
+ *
+ * There is deliberately no code for a refused verification. ADR §2 gives a
+ * refused verification no state of its own — the obligation stays `discharged`
+ * — so it reports as `OBLIGATION_DISCHARGE_UNVERIFIED`, which is exactly what
+ * it is. An earlier revision carried `OBLIGATION_DISCHARGE_REJECTED` and
+ * `OBLIGATION_DISCHARGE_CONFLICTED` for lifecycle states the architecture never
+ * defined; both are gone with the states that produced them.
  */
 export const AOC_KERNEL_EXERCISE_REASON_CODES = {
   /** A blocking obligation stands and nothing has been reported about it, or it has only been reported outstanding. Never means the action was denied. */
   OBLIGATION_PENDING: 'OBLIGATION_PENDING',
-  /** A discharge was reported by a source this deployment classifies as self-reporting, and nothing independent has confirmed it. ADR hard invariant 5: "a discharge that cannot be verified is not `verified`." */
+  /** A discharge was supplied and has not been successfully verified — reported by a self-reporting source, or verified against and not confirmed. ADR hard invariant 5: "a discharge that cannot be verified is not `verified`; the obligation remains `discharged`." */
   OBLIGATION_DISCHARGE_UNVERIFIED: 'OBLIGATION_DISCHARGE_UNVERIFIED',
-  /** An independent source refuted a reported discharge. Materially different from "nobody confirmed it", and kept apart from it for that reason. */
-  OBLIGATION_DISCHARGE_REJECTED: 'OBLIGATION_DISCHARGE_REJECTED',
-  /** The discharge window the deployment declared closed without a valid discharge inside it. Derived from the clock at read time; no sweeper is load-bearing. */
+  /** The obligation's declared deadline passed before it reached a satisfying terminal state. Derived from the clock at read time; no sweeper is load-bearing. */
   OBLIGATION_EXPIRED: 'OBLIGATION_EXPIRED',
-  /** Two admissible sources reported contradicting outcomes for one obligation. Never silently resolved to one side. */
-  OBLIGATION_DISCHARGE_CONFLICTED: 'OBLIGATION_DISCHARGE_CONFLICTED',
 } as const;
 
 export type AocKernelExerciseReasonCode = (typeof AOC_KERNEL_EXERCISE_REASON_CODES)[keyof typeof AOC_KERNEL_EXERCISE_REASON_CODES];

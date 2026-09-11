@@ -35,7 +35,7 @@ describe('transitionObligation — a pure function that never repairs state', ()
   it('a caller that wants several steps says so several times, and the history records each', () => {
     let instance = blocking();
     for (const [state, reason] of [
-      ['pending', 'discharge_reported'],
+      ['pending', 'activated'],
       ['discharged', 'discharge_reported'],
       ['verified', 'discharge_confirmed'],
     ] as const) {
@@ -58,17 +58,17 @@ describe('transitionObligation — a pure function that never repairs state', ()
   });
 
   it('is idempotent: asking for the state it is already in changes nothing and records nothing', () => {
-    const first = transitionObligation(blocking(), 'pending', AT, 'discharge_reported');
+    const first = transitionObligation(blocking(), 'pending', AT, 'activated');
     assert.equal(first.result, 'applied');
-    const second = transitionObligation(first.instance, 'pending', '2026-01-02T00:00:00.000Z', 'discharge_reported');
+    const second = transitionObligation(first.instance, 'pending', '2026-01-02T00:00:00.000Z', 'activated');
     assert.equal(second.result, 'unchanged');
     assert.equal(second.instance, first.instance, 'an unchanged transition returns the identical object');
     assert.equal(second.instance.transitions.length, 1, 'no duplicate history entry');
   });
 
   it('a step backwards along the progress chain is already-taken, not illegal — which is what makes a re-delivered discharge idempotent', () => {
-    const discharged = transitionObligation(transitionObligation(blocking(), 'pending', AT, 'discharge_reported').instance, 'discharged', AT, 'discharge_reported');
-    const backwards = transitionObligation(discharged.instance, 'pending', AT, 'discharge_reported');
+    const discharged = transitionObligation(transitionObligation(blocking(), 'pending', AT, 'activated').instance, 'discharged', AT, 'discharge_reported');
+    const backwards = transitionObligation(discharged.instance, 'pending', AT, 'activated');
 
     assert.equal(backwards.result, 'unchanged');
     assert.equal(backwards.instance.state, 'discharged');
@@ -77,7 +77,7 @@ describe('transitionObligation — a pure function that never repairs state', ()
   it('refuses an illegal transition and returns the obligation exactly as it was', () => {
     const waived = transitionObligation(blocking(), 'waived', AT, 'waiver_recorded');
     assert.equal(waived.result, 'applied');
-    const reopened = transitionObligation(waived.instance, 'pending', AT, 'discharge_reported');
+    const reopened = transitionObligation(waived.instance, 'pending', AT, 'activated');
     assert.equal(reopened.result, 'illegal');
     assert.equal(reopened.instance, waived.instance);
     assert.equal(reopened.instance.state, 'waived');
@@ -87,14 +87,24 @@ describe('transitionObligation — a pure function that never repairs state', ()
     }
   });
 
-  it('refuses to refuse a discharge that was never reported', () => {
-    const outcome = transitionObligation(blocking(), 'rejected', AT, 'discharge_refused');
-    assert.equal(outcome.result, 'illegal', 'the ADR draws `rejected` only from `discharged`; nothing invents a discharge to refute');
-    assert.equal(outcome.instance.state, 'required');
+  it('a satisfied obligation can never be expired — the transition table refuses it', () => {
+    const verified = transitionObligation(
+      transitionObligation(transitionObligation(blocking(), 'pending', AT, 'activated').instance, 'discharged', AT, 'discharge_reported').instance,
+      'verified',
+      AT,
+      'discharge_confirmed',
+    );
+    const expiryAttempt = transitionObligation(verified.instance, 'expired', AT, 'deadline_passed');
+
+    assert.equal(expiryAttempt.result, 'illegal', 'a deadline passing is not a reason to withdraw a condition that was met');
+    assert.equal(expiryAttempt.instance.state, 'verified');
+
+    const waived = transitionObligation(blocking(), 'waived', AT, 'waiver_recorded');
+    assert.equal(transitionObligation(waived.instance, 'expired', AT, 'deadline_passed').result, 'illegal');
   });
 
   it('an expired obligation is not rescued, and its state survives the attempt untouched', () => {
-    const expired = transitionObligation(blocking(), 'expired', AT, 'discharge_window_closed');
+    const expired = transitionObligation(blocking(), 'expired', AT, 'deadline_passed');
     assert.equal(expired.result, 'applied');
     const rescue = transitionObligation(expired.instance, 'discharged', AT, 'discharge_reported');
     assert.equal(rescue.result, 'illegal');
@@ -103,8 +113,8 @@ describe('transitionObligation — a pure function that never repairs state', ()
   });
 
   it('attaches the discharge record only when one is supplied, and never invents one', () => {
-    const withoutRecord = transitionObligation(blocking(), 'pending', AT, 'discharge_reported');
-    assert.equal(withoutRecord.instance.discharge, undefined);
+    const withoutRecord = transitionObligation(blocking(), 'pending', AT, 'activated');
+    assert.equal(withoutRecord.instance.discharge, undefined, 'an activation discharged nothing, so it carries no discharge record');
 
     const withRecord = transitionObligation(withoutRecord.instance, 'discharged', AT, 'discharge_reported', {
       sourceId: 'obl.src.approval.finance',
@@ -122,7 +132,7 @@ describe('transitionObligation — a pure function that never repairs state', ()
 describe('Obligation satisfaction and withholding', () => {
   it('a blocking obligation withholds exercise until it is verified or waived', () => {
     assert.equal(obligationWithholdsExercise(blocking()), true);
-    const pending = transitionObligation(blocking(), 'pending', AT, 'discharge_reported').instance;
+    const pending = transitionObligation(blocking(), 'pending', AT, 'activated').instance;
     assert.equal(obligationWithholdsExercise(pending), true);
     const discharged = transitionObligation(pending, 'discharged', AT, 'discharge_reported').instance;
     assert.equal(obligationWithholdsExercise(discharged), true, 'self-reported is not confirmed');
@@ -135,16 +145,21 @@ describe('Obligation satisfaction and withholding', () => {
   it('a non-blocking obligation never withholds exercise, whatever state it reaches', () => {
     const nonBlocking = declareObligation({ obligationType: 'second.signer', blocking: false, correlation: CORRELATION, declaredAt: AT });
     assert.equal(obligationWithholdsExercise(nonBlocking), false);
-    const expired = transitionObligation(nonBlocking, 'expired', AT, 'discharge_window_closed');
+    const expired = transitionObligation(nonBlocking, 'expired', AT, 'deadline_passed');
     assert.equal(obligationWithholdsExercise(expired.instance), false);
     assert.equal(obligationIsSatisfied(expired.instance), false, 'its state is still reported honestly');
   });
 
-  it('a conflicted obligation is never satisfied, whatever state the transitions left it in', () => {
-    const waived = transitionObligation(blocking(), 'waived', AT, 'waiver_recorded');
-    const conflicted: ObligationInstance = { ...waived.instance, conflicted: true };
-    assert.equal(obligationIsSatisfied(conflicted), false);
-    assert.equal(obligationWithholdsExercise(conflicted), true, 'two sources disagreeing withholds; it is not a tie to be broken');
+  it('a recorded failed verification never changes satisfaction — the obligation is `discharged`, which is unsatisfied either way', () => {
+    const discharged = transitionObligation(transitionObligation(blocking(), 'pending', AT, 'activated').instance, 'discharged', AT, 'discharge_reported').instance;
+    const withFailedVerification: ObligationInstance = {
+      ...discharged,
+      verification: { verified: false, sourceId: 'obl.src.approval.finance', sourceKind: 'approval_runtime', verificationClass: 'independent', observedAt: AT },
+    };
+
+    assert.equal(withFailedVerification.state, 'discharged', 'ADR §2: a failed verification attempt moves nothing');
+    assert.equal(obligationIsSatisfied(withFailedVerification), obligationIsSatisfied(discharged));
+    assert.equal(obligationWithholdsExercise(withFailedVerification), true);
   });
 });
 

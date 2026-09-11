@@ -41,6 +41,7 @@ export type {
   ObligationTransitionOutcome,
   ObligationTransitionReason,
   ObligationType,
+  ObligationVerificationRecord,
 } from './domain/index.js';
 export {
   OBLIGATION_DISCHARGE_OUTCOMES,
@@ -55,9 +56,8 @@ export {
   SATISFYING_OBLIGATION_STATES,
   TERMINAL_OBLIGATION_STATES,
   declareObligation,
-  dischargeExpiresAt,
-  isDischargeFreshAt,
   isLegalObligationTransition,
+  isObligationExpiredAt,
   isObligationType,
   isReservedObligationKey,
   isTerminalObligationState,

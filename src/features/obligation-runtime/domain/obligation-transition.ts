@@ -33,12 +33,11 @@ export type ObligationTransitionOutcome =
  *
  * **It takes exactly one step, and never invents the states between two.** An
  * earlier draft searched the transition graph for a path, which would have let
- * `required → rejected` resolve as `required → pending → discharged →
- * rejected` — writing a *discharge* into the history of an obligation nobody
- * ever reported discharging. A caller that wants an obligation to advance
- * several steps says so several times, each with its own reason, and each step
- * is legal on its own terms. See `ObligationLifecycleService`, which composes
- * exactly those sequences.
+ * a caller ask for a distant state and have the intermediate ones written into
+ * the history as though they had been observed. A caller that wants an
+ * obligation to advance several steps says so several times, each with its own
+ * reason, and each step is legal on its own terms. See
+ * `ObligationLifecycleService`, which composes exactly those sequences.
  */
 export function transitionObligation(
   instance: ObligationInstance,
@@ -46,7 +45,6 @@ export function transitionObligation(
   at: string,
   reason: ObligationTransitionReason,
   discharge?: ObligationDischargeRecord,
-  dischargeExpiresAt?: string,
 ): ObligationTransitionOutcome {
   if (instance.state === to) return { result: 'unchanged', instance };
 
@@ -69,7 +67,6 @@ export function transitionObligation(
       state: to,
       transitions,
       ...(discharge !== undefined ? { discharge } : {}),
-      ...(dischargeExpiresAt !== undefined ? { dischargeExpiresAt } : {}),
     },
   };
 }

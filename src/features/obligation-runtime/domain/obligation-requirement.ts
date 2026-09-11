@@ -54,16 +54,29 @@ export interface ObligationRequirement {
    */
   readonly blocking: boolean;
   /**
-   * How long a discharge of this obligation stays good, in seconds from the
-   * instant it was observed.
+   * The instant by which this obligation must reach a satisfying terminal
+   * state, as an ISO-8601 timestamp. Optional.
    *
-   * Absent means this deployment imposes no window. Present, a discharge older
-   * than the window does not satisfy the obligation and drives it to `expired`
-   * — ADR §6's "expiry is a state, not a background job … derived from the
-   * clock at read time", applied to the obligation rather than to the grant.
-   * Nothing sweeps; nothing has to have run.
+   * ADR §6. Absent, the obligation **never** expires — this deployment declared
+   * no deadline, and Frontera invents none. Present, an obligation at or past
+   * it in `required`, `pending` or `discharged` becomes `expired` when read,
+   * against the instant the Kernel passes in. Nothing sweeps; nothing has to
+   * have run.
+   *
+   * It lives on the *requirement*, which is operator-provisioned configuration,
+   * and it reaches this layer through no other route. A requester able to set,
+   * extend or remove the deadline on its own obligation would have been handed
+   * the obligation — ADR hard invariant 8, and the reason
+   * `ObligationDischargeQuery` carries no requester bag.
+   *
+   * This is a deadline on the *obligation*, not a freshness bound on a
+   * discharge. Whether a particular piece of evidence is recent enough to be
+   * believed is a verification question, and ADR §2 gives its answer: evidence
+   * too old to accept fails verification and the obligation stays `discharged`.
+   * An earlier revision of this file conflated the two, which let an obligation
+   * that declared no deadline expire.
    */
-  readonly maxDischargeAgeSeconds?: number;
+  readonly expiresAt?: string;
 }
 
 /**
@@ -97,8 +110,8 @@ export function validateObligationDeclaration(declaration: ObligationDeclaration
     if (typeof requirement.blocking !== 'boolean') {
       violations.push(`ObligationRequirement '${requirement.obligationType}': blocking must be declared explicitly — "not stated" must never be read as "not blocking".`);
     }
-    if (requirement.maxDischargeAgeSeconds !== undefined && (!Number.isFinite(requirement.maxDischargeAgeSeconds) || requirement.maxDischargeAgeSeconds <= 0)) {
-      violations.push(`ObligationRequirement '${requirement.obligationType}': maxDischargeAgeSeconds must be a positive, finite number of seconds.`);
+    if (requirement.expiresAt !== undefined && (typeof requirement.expiresAt !== 'string' || Number.isNaN(Date.parse(requirement.expiresAt)))) {
+      violations.push(`ObligationRequirement '${requirement.obligationType}': expiresAt must be a valid ISO-8601 timestamp when present.`);
     }
   }
 

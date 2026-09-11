@@ -7,6 +7,7 @@ export {
   TERMINAL_OBLIGATION_STATES,
   isLegalObligationTransition,
   isTerminalObligationState,
+  isObligationExpiredAt,
   obligationProgressRank,
   obligationStateSatisfies,
 } from './obligation-state.js';
@@ -27,14 +28,9 @@ export type {
   ObligationDischargeOutcome,
   ObligationDischargeRecord,
   ObligationObservationDisregardReason,
+  ObligationVerificationRecord,
 } from './obligation-discharge.js';
-export {
-  OBLIGATION_DISCHARGE_OUTCOMES,
-  OBLIGATION_OBSERVATION_DISREGARD_REASONS,
-  dischargeExpiresAt,
-  isDischargeFreshAt,
-  validateObligationDischargeObservation,
-} from './obligation-discharge.js';
+export { OBLIGATION_DISCHARGE_OUTCOMES, OBLIGATION_OBSERVATION_DISREGARD_REASONS, validateObligationDischargeObservation } from './obligation-discharge.js';
 
 export type { ObligationDeclaration, ObligationRequirement, ObligationType } from './obligation-requirement.js';
 export { OBLIGATION_TYPES, isObligationType, validateObligationDeclaration } from './obligation-requirement.js';

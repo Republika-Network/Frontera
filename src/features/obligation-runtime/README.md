@@ -28,8 +28,8 @@ blocking obligation     = not yet discharged
 exercise eligibility    = BLOCKED
 ```
 
-A pending, failed, stale, expired, rejected, conflicted or otherwise
-undischargeable blocking obligation is **never** rewritten into `DENY`. The
+A `required`, `pending`, `discharged` or `expired` blocking obligation — every
+state in which one is unsatisfied — is **never** rewritten into `DENY`. The
 distinction is what an auditor needs and what
 `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §3 exists to protect: "policy
 said no" and "policy said yes, conditionally, and the condition was not met" are
@@ -65,96 +65,122 @@ treatment of an obligation. There is no state, no discharge, no record of who
 discharged one, no proof, and nothing that consults discharge before anything
 proceeds. This module is the missing lifecycle.
 
-## The ADR lifecycle, mapped
+## The lifecycle
 
-`ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §1 draws:
+Normative source: `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §1, which
+states the state set and the transition graph as two tables. This module is
+those tables.
 
-```
-required ──▶ pending ──▶ discharged ──▶ verified
-   │            │             │
-   ├──────────▶ waived        └──▶ rejected
-   └──────────▶ expired
-```
+**Six states, one closed set.**
 
-and calls it, in the same paragraph, "six states, one closed set".
-`TARGET_AUTHORITY_CONTROL_ARCHITECTURE.md` §D names six by hand — "`required →
-pending → discharged → verified`, plus `waived` and `expired`" — omitting
-`rejected`, which the ADR's own diagram draws.
-
-**All seven nodes are implemented and none is collapsed.** `rejected` is not a
-synonym for anything: ADR §2 rules that "a discharge that cannot be verified
-stays `discharged`", which leaves no state for a discharge an independent party
-actively *refuted*. Merging them would erase the difference between "nobody
-could confirm it" and "the approver said no".
-
-The two counts are reconciled rather than one being ignored: `required` is the
-**declared** state, what Layer B hands to Layer D the moment a policy declares an
-obligation and before this layer has observed anything. The six states this layer
-itself *manages* are `pending`, `discharged`, `verified`, `rejected`, `waived`
-and `expired`. Both documents are then true of the same closed set.
-
-| ADR state | runtime state | terminal | satisfies a blocking obligation | reached by |
-| --- | --- | --- | --- | --- |
-| `required` | `'required'` | no | **no** | declaration; the initial state |
-| `pending` | `'pending'` | no | **no** | a registered source reporting `pending` |
-| `discharged` | `'discharged'` | no | **no** | a *self-reporting* source reporting `discharged` |
-| `verified` | `'verified'` | yes | yes | an *independent* source reporting `discharged` |
-| `rejected` | `'rejected'` | yes | **no** | any registered source reporting `refused`, on a discharged obligation |
-| `waived` | `'waived'` | yes | yes | an *independent* source reporting `waived` |
-| `expired` | `'expired'` | yes | **no** | the declared discharge window closing with nothing valid inside it |
-
-`discharged` not satisfying is ADR hard invariants 4 and 5, and it is the whole
-point of the phase: "the requester says it obtained finance approval" is not
-"finance says so".
-
-### Legal transitions
-
-| from | to | reason | drawn in the ADR |
+| state | meaning | terminal | satisfies a blocking obligation |
 | --- | --- | --- | --- |
-| `required` | `pending` | `discharge_reported` | yes |
-| `required` | `waived` | `waiver_recorded` | yes |
-| `required` | `expired` | `discharge_window_closed` | yes |
-| `pending` | `discharged` | `discharge_reported` | yes |
-| `pending` | `waived` | `waiver_recorded` | yes |
-| `pending` | `expired` | `discharge_window_closed` | **no — see below** |
-| `discharged` | `verified` | `discharge_confirmed` | yes |
-| `discharged` | `rejected` | `discharge_refused` | yes |
+| `required` | declared as a consequence or condition of an authorization | no | **no** |
+| `pending` | active, awaiting valid discharge | no | **no** |
+| `discharged` | a discharge was supplied and has not been successfully verified | no | **no** |
+| `verified` | the discharge was validly verified | yes | yes |
+| `waived` | an authorized waiver validly removed the requirement | yes | yes |
+| `expired` | the declared deadline passed before a satisfying terminal state | yes | **no** |
 
-Every pair not in this table is illegal, and illegality is **reported, never
-repaired**. A terminal obligation is not reopened, a refusal does not invent a
-discharge to refute, and an out-of-order observation does not rewrite history —
-the observation is recorded on `ObligationResolution.disregarded` with reason
-`illegal_transition` and the obligation is returned exactly as it was.
+Terminality and satisfaction are different properties: `expired` is terminal
+*and* unsatisfying, which is the combination a deployment has to be able to see.
+`discharged` not satisfying is ADR §2 and the whole point of the layer.
 
-`transitionObligation` takes **one** step. An earlier draft searched the graph
-for a path, which would have let `required → rejected` resolve as `required →
-pending → discharged → rejected` — writing a discharge into the history of an
-obligation nobody ever reported discharging. The service composes the sequences
-explicitly instead, so every step is legal on its own terms and the history is
-the lifecycle that was actually walked.
+**Eight legal transitions, and nothing else.**
 
-A step *backwards* along the progress chain (`required → pending → discharged →
-verified`) is `unchanged`, not `illegal`: that is what makes a re-delivered
-discharge idempotent.
+| from | to | reason |
+| --- | --- | --- |
+| `required` | `pending` | `activated` |
+| `required` | `waived` | `waiver_recorded` |
+| `required` | `expired` | `deadline_passed` |
+| `pending` | `discharged` | `discharge_reported` |
+| `pending` | `waived` | `waiver_recorded` |
+| `pending` | `expired` | `deadline_passed` |
+| `discharged` | `verified` | `discharge_confirmed` |
+| `discharged` | `expired` | `deadline_passed` |
 
-### Divergence from the ADR
+`verified`, `waived` and `expired` have no outgoing transition. Illegal
+transitions are **reported, never repaired**: the observation is recorded on
+`ObligationResolution.disregarded` with reason `illegal_transition` and the
+obligation is returned exactly as it was. A waiver arriving after a discharge
+has been supplied is one such case — a waiver removes the requirement *to
+discharge*, and once a discharge exists the question is whether it verifies —
+so `discharged → waived` is not an edge and this layer refuses rather than
+inventing one.
 
-One, and it is the only one.
+`transitionObligation` takes **one** step; the service composes the sequences
+explicitly, so every step is legal on its own terms and the history is the
+lifecycle that was actually walked. A step backwards along the progress chain
+(`required → pending → discharged → verified`) is `unchanged`, not `illegal`:
+that is what makes a re-delivered discharge idempotent.
 
-**`pending → expired` is not drawn in the ADR diagram.** It is implemented
-because ADR §6 rules that "expiry is a state, not a background job … derived
-from the clock at read time", and an obligation cannot be made exempt from its
-own discharge window merely by having been reported outstanding first. The edge
-moves an obligation into a terminal *blocking* state, so it can only ever
-withhold exercise, never permit it. Nothing else departs from the ADR.
+### `required` belongs to this layer
 
-One consequence of *not* departing further is worth recording: because the ADR
-draws `rejected` only from `discharged`, a refusal of an obligation that nobody
-ever reported discharging has no edge to travel. It is refused admission, the
-obligation stays where it is, and — if it blocks — it keeps blocking. Expressing
-"finance was asked and said no, and nobody had claimed otherwise" as its own
-state would need an ADR edge that does not exist, so it is deferred rather than
-invented.
+`required` is a real state of this lifecycle and the state every instance begins
+in. Layer B **declares** that an obligation is required — which is what
+`PolicyObligation` and `EnterpriseAccessObligation` already record, immutably
+and without state. Layer D **materializes** the instance in `required` and
+manages it from there.
+
+An earlier revision of this module claimed the opposite — that `required` was
+"the declared state Layer B hands over", with only the remaining states counted
+as layer D's — in order to reconcile a seven-node ADR diagram with six-state ADR
+prose. That reconciliation is void, and ADR §1 now says so explicitly.
+
+### There is no state for a failed verification
+
+A verification attempt that does not succeed leaves the obligation `discharged`
+and records why, on `ObligationInstance.verification`. ADR §2. The record never
+changes the state and never changes satisfaction: an obligation carrying one is
+`discharged`, which is unsatisfied, exactly as it would be with no attempt
+recorded at all. What it adds is the answer to "somebody looked at this — what
+did they find?".
+
+An earlier revision of this module carried a seventh state, `rejected`, for an
+actively refuted discharge, and a `conflicted` flag for two independent sources
+disagreeing. Both are gone. The seventh state existed only in an ADR diagram
+that no prose defined, and the distinction it encoded — "nobody could confirm
+it" versus "the confirming party said no" — changes no outcome: both leave the
+obligation unsatisfied and both withhold exercise. A state whose consequence
+duplicates an existing state's is a field on a record, not a state.
+
+### Expiry is a deadline, not discharge staleness
+
+An obligation may declare an optional `expiresAt` on its **requirement** —
+operator-provisioned configuration, and the only route by which a deadline
+reaches this layer. ADR hard invariant 8: it must never come from
+caller-controlled request data, and `ObligationDischargeQuery` carries no
+requester bag, so there is none.
+
+Against the instant the Kernel passes in, evaluated when the obligation is read:
+
+```
+if currentTime >= obligation.expiresAt
+   and state ∈ { required, pending, discharged }
+then state → expired
+```
+
+An obligation that declares no `expiresAt` **never** expires. Expiry never
+disturbs `verified` or `waived`: a satisfied obligation stays satisfied, and a
+deadline passing afterwards is not a reason to withdraw a condition that was
+met. Nothing sweeps; nothing has to have run.
+
+An earlier revision carried `maxDischargeAgeSeconds` — a per-obligation
+discharge-freshness window whose expiry drove the lifecycle — standing in for a
+trigger the ADR never stated. It is removed. Whether a piece of evidence is
+recent enough to be believed is a *verification* question, and ADR §2 gives its
+answer: evidence too old to accept fails verification and the obligation stays
+`discharged`. Reinterpreting proof freshness as a lifecycle deadline let an
+obligation that declared no deadline expire.
+
+### What a transition carries
+
+Every transition is deterministic, inspectable and auditable. Transitions caused
+by a discharge or its verification carry the discharge record; activation,
+waiver and expiry carry their own transition provenance and **no**
+`DischargeRecord` — ADR §1, "What a transition carries". An earlier ADR revision
+said "every transition carries a `DischargeRecord`", which read literally would
+mean fabricating one for an activation that discharged nothing.
 
 ## Declaration
 
@@ -165,7 +191,7 @@ frozen. There is no `REQUIRE` keyword, no expression string and no parser.
 ```ts
 declaration: {
   requirements: [
-    { obligationType: 'finance.approval', blocking: true, maxDischargeAgeSeconds: 86_400 },
+    { obligationType: 'finance.approval', blocking: true, expiresAt: '2026-01-02T12:00:00.000Z' },
   ],
 }
 ```
@@ -233,29 +259,22 @@ Two rules are enforced at wiring time, not review time:
 | the discharge source | `sourceId`, resolved against the registry; unregistered is discarded |
 | the actor | `subjectId`, when the source can say |
 | when | `observedAt` |
-| whether it is fresh | `observedAt` against the requirement's `maxDischargeAgeSeconds`, at the passed-in instant |
+| when, relative to the deadline | the obligation's declared `expiresAt`, if it declared one, against the passed-in instant |
 | provenance | `reference` — an approval id, a proof id; opaque here and never dereferenced |
 | whether it satisfies | the registry's verification class, through the closed transition table |
 
 An observation failing any of these is reported on
 `ObligationResolution.disregarded` with one of six reasons —
 `unregistered_source`, `undeclared_obligation`, `correlation_mismatch`,
-`stale_observation`, `waiver_not_independent`, `illegal_transition` — so "why is
-this still blocked" is answerable from the record rather than by re-running
-anything.
+`waiver_not_independent`, `verification_not_applicable`, `illegal_transition` —
+so "why is this still blocked" is answerable from the record rather than by
+re-running anything.
 
-### Conflicts
-
-Two *independent* sources contradicting each other — one confirming, one
-refusing — marks the obligation `conflicted`, and a conflicted blocking
-obligation is never satisfied whatever state the transitions left it in. This
-layer does not pick a winner, for the reason `ContextResolution.conflicted`
-does not: two sources of the same standing disagreeing is a fact about the
-world, not a tie to be broken silently.
-
-An independent source refusing what a *self-reporting* one claimed is not a
-conflict. That is the verification mechanism working exactly as ADR §2 designs
-it, and it has a state of its own.
+`verification_not_applicable` is the one worth naming: a `refused` observation
+is a verification outcome, and verification applies to a discharge. Against an
+obligation with none supplied — or one already `verified` — there is nothing to
+verify, so the attempt is recorded as inapplicable and the lifecycle does not
+move.
 
 ## Kernel integration
 
@@ -287,8 +306,9 @@ Reports, when the capability is configured:
 ```ts
 result.status                                       // the authorization decision, untouched
 result.reasonCodes                                  // the authorization reasons, untouched
-result.obligations.obligations[]                    // id, type, blocking, state, satisfied,
-                                                    // terminal, withholdsExercise, transitions, discharge
+result.obligations.obligations[]                    // id, type, blocking, state, satisfied, terminal,
+                                                    // withholdsExercise, transitions, discharge,
+                                                    // verification, expiresAt
 result.obligations.allBlockingObligationsSatisfied  // the aggregate ADR §3 turns on
 result.obligations.exerciseEligibility              // 'eligible' | 'blocked'
 result.obligations.exerciseReasonCodes              // OBLIGATION_* — a separate vocabulary
@@ -333,11 +353,13 @@ with a separate type** from `AOC_KERNEL_REASON_CODES`:
 
 ```
 OBLIGATION_PENDING                a blocking obligation stands, unreported or merely outstanding
-OBLIGATION_DISCHARGE_UNVERIFIED   reported by a self-reporting source; nothing independent confirmed it
-OBLIGATION_DISCHARGE_REJECTED     an independent source refuted a reported discharge
-OBLIGATION_EXPIRED                the discharge window closed with nothing valid inside it
-OBLIGATION_DISCHARGE_CONFLICTED   two independent sources reported contradicting outcomes
+OBLIGATION_DISCHARGE_UNVERIFIED   a discharge was supplied and has not been successfully verified
+OBLIGATION_EXPIRED                the obligation's declared deadline passed
 ```
+
+Three codes, one per unsatisfying state, and the three unsatisfying states are
+all of them. A refused verification reports as
+`OBLIGATION_DISCHARGE_UNVERIFIED`, which is exactly what it is.
 
 They never appear in `result.reasonCodes`, and a structural test asserts the two
 vocabularies do not overlap. Keeping them in one union would have made the
@@ -457,8 +479,10 @@ grant's evidence must cite.
   nothing verifies is the defect this phase closes, restated.
 - **The wider obligation catalogue.** `require-mfa`, `record-usage`,
   `watermark-content`, `require-acceptance` and the rest.
-- **Representing a refusal of an obligation nobody reported discharging.**
-  See "Divergence from the ADR" — it needs an ADR edge that does not exist.
+- **A lifecycle distinction between an unverifiable discharge and a refuted
+  one.** Settled: there is none, and neither is a state. Should a deployment
+  ever need the two to differ in *consequence*, that is a new decision and a new
+  ADR, not a seventh member of a set the ADR calls closed.
 - **Policy-authored obligations.** `contextKey` predicates, derived-value nodes
   and per-rule declarations are phase 6; obligations move onto a pack with them.
 - **A workspace package.** The ADR proposes `packages/obligation-lifecycle`. The

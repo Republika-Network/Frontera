@@ -21,7 +21,7 @@ const REQUESTER: ObligationDischargeSource = { id: 'obl.src.request', kind: 'req
 const CORRELATION: ObligationCorrelation = { requestId: 'req-1', action: 'payment.execute', resourceScope: 'finance:payments' };
 const NOW = '2026-01-01T12:00:00.000Z';
 
-function service(options: { readonly maxDischargeAgeSeconds?: number; readonly blocking?: boolean } = {}): ObligationLifecycleService {
+function service(options: { readonly expiresAt?: string; readonly blocking?: boolean } = {}): ObligationLifecycleService {
   return new ObligationLifecycleService({
     sources: [APPROVAL, SECOND_APPROVAL, HOST, REQUESTER],
     declaration: {
@@ -29,7 +29,7 @@ function service(options: { readonly maxDischargeAgeSeconds?: number; readonly b
         {
           obligationType: 'finance.approval',
           blocking: options.blocking ?? true,
-          ...(options.maxDischargeAgeSeconds !== undefined ? { maxDischargeAgeSeconds: options.maxDischargeAgeSeconds } : {}),
+          ...(options.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
         },
       ],
     },
@@ -79,13 +79,13 @@ describe('Obligation declaration — the configuration is validated where it is 
     );
   });
 
-  it('rejects a duplicate obligation and a non-positive discharge window', () => {
+  it('rejects a duplicate obligation and a malformed deadline', () => {
     assert.throws(
       () => new ObligationLifecycleService({ sources: [APPROVAL], declaration: { requirements: [{ obligationType: 'finance.approval', blocking: true }, { obligationType: 'finance.approval', blocking: false }] } }),
       ObligationConfigurationError,
     );
     assert.throws(
-      () => new ObligationLifecycleService({ sources: [APPROVAL], declaration: { requirements: [{ obligationType: 'finance.approval', blocking: true, maxDischargeAgeSeconds: 0 }] } }),
+      () => new ObligationLifecycleService({ sources: [APPROVAL], declaration: { requirements: [{ obligationType: 'finance.approval', blocking: true, expiresAt: 'whenever' }] } }),
       ObligationConfigurationError,
     );
   });
@@ -158,17 +158,45 @@ describe('Obligation resolution — discharge and verification', () => {
     assert.equal(resolution.exerciseEligibility, 'blocked');
   });
 
-  it('a refusal after a self-reported discharge reaches `rejected`, and stays blocking', () => {
+  it('a failed verification of a supplied discharge leaves the state `discharged`, and records why', () => {
     const resolution = service().resolve(
-      [observation({ sourceId: HOST.id, observedAt: '2026-01-01T10:00:00.000Z' }), observation({ outcome: 'refused', observedAt: '2026-01-01T11:00:00.000Z' })],
+      [observation({ sourceId: HOST.id, observedAt: '2026-01-01T10:00:00.000Z' }), observation({ outcome: 'refused', observedAt: '2026-01-01T11:00:00.000Z', reference: 'AP-DECLINED-9' })],
       CORRELATION,
       NOW,
     );
     const obligation = only(resolution.obligations);
 
-    assert.equal(obligation.state, 'rejected');
-    assert.equal(obligation.discharge?.outcome, 'refused');
+    assert.equal(obligation.state, 'discharged', 'ADR §2: a failed verification attempt moves the lifecycle nowhere');
+    assert.equal(obligation.verification?.verified, false);
+    assert.equal(obligation.verification?.sourceId, APPROVAL.id);
+    assert.equal(obligation.verification?.reference, 'AP-DECLINED-9');
+    assert.equal(obligation.discharge?.outcome, 'discharged', 'the supplied discharge is still the discharge on record');
     assert.equal(resolution.exerciseEligibility, 'blocked');
+    assert.equal(
+      obligation.transitions.some((transition) => transition.to === 'verified'),
+      false,
+      'nothing was verified, so nothing transitioned',
+    );
+  });
+
+  it('a verification attempt against an obligation with no supplied discharge is not applicable, and is recorded as such', () => {
+    const resolution = service().resolve([observation({ outcome: 'refused' })], CORRELATION, NOW);
+
+    assert.equal(only(resolution.obligations).state, 'required');
+    assert.equal(only(resolution.obligations).verification, undefined);
+    assert.deepEqual(resolution.disregarded.map((entry) => entry.reason), ['verification_not_applicable']);
+  });
+
+  it('a failed verification never satisfies, and never un-satisfies something already verified', () => {
+    const alreadyVerified = service().resolve(
+      [observation({ observedAt: '2026-01-01T10:00:00.000Z' }), observation({ outcome: 'refused', sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:00:00.000Z' })],
+      CORRELATION,
+      NOW,
+    );
+
+    assert.equal(only(alreadyVerified.obligations).state, 'verified', 'a terminal, satisfied obligation is not reopened by a later attempt');
+    assert.equal(alreadyVerified.exerciseEligibility, 'eligible');
+    assert.deepEqual(alreadyVerified.disregarded.map((entry) => entry.reason), ['verification_not_applicable']);
   });
 
   it('a waiver from an independent source reaches `waived` and releases exercise', () => {
@@ -217,46 +245,18 @@ describe('Obligation resolution — observations that do not count', () => {
     }
   });
 
-  it('discards a discharge observed outside the declared window, and expires the obligation', () => {
-    const resolution = service({ maxDischargeAgeSeconds: 3_600 }).resolve([observation({ observedAt: '2026-01-01T09:00:00.000Z' })], CORRELATION, NOW);
-    const obligation = only(resolution.obligations);
+  it('an obligation that declares no deadline never expires, however old anything is', () => {
+    const resolution = service().resolve([observation({ observedAt: '2020-01-01T00:00:00.000Z' })], CORRELATION, NOW);
 
-    assert.equal(obligation.state, 'expired');
-    assert.equal(obligation.discharge, undefined, 'a stale approval never became this obligation’s discharge');
-    assert.equal(resolution.exerciseEligibility, 'blocked');
-    assert.deepEqual(resolution.disregarded.map((entry) => entry.reason), ['stale_observation']);
-  });
-
-  it('a stale discharge alongside a fresh one does not poison the fresh one', () => {
-    const resolution = service({ maxDischargeAgeSeconds: 3_600 }).resolve(
-      [observation({ observedAt: '2026-01-01T09:00:00.000Z' }), observation({ observedAt: '2026-01-01T11:45:00.000Z' })],
-      CORRELATION,
-      NOW,
-    );
-
-    assert.equal(only(resolution.obligations).state, 'verified');
+    assert.equal(only(resolution.obligations).state, 'verified', 'a discharge’s age is a verification question, never a lifecycle deadline');
     assert.equal(resolution.exerciseEligibility, 'eligible');
   });
 
-  it('a discharge inside the window records when it stops being good', () => {
-    const resolution = service({ maxDischargeAgeSeconds: 3_600 }).resolve([observation({ observedAt: '2026-01-01T11:45:00.000Z' })], CORRELATION, NOW);
-    assert.equal(only(resolution.obligations).dischargeExpiresAt, '2026-01-01T12:45:00.000Z');
-  });
+  it('an old discharge still verifies when the obligation declares no deadline — proof freshness is not obligation expiry', () => {
+    const resolution = service().resolve([observation({ observedAt: '2026-01-01T09:00:00.000Z' })], CORRELATION, NOW);
 
-  it('the identical discharge is stale at a later instant, with no sweeper having run', () => {
-    const fresh = service({ maxDischargeAgeSeconds: 3_600 }).resolve([observation({ observedAt: '2026-01-01T11:45:00.000Z' })], CORRELATION, NOW);
-    const later = service({ maxDischargeAgeSeconds: 3_600 }).resolve([observation({ observedAt: '2026-01-01T11:45:00.000Z' })], CORRELATION, '2026-01-01T13:00:00.000Z');
-
-    assert.equal(only(fresh.obligations).state, 'verified');
-    assert.equal(only(later.obligations).state, 'expired', 'ADR §6: expiry is derived from the clock at read time');
-  });
-
-  it('refuses a refusal of a discharge nobody reported — the ADR draws `rejected` only from `discharged`', () => {
-    const resolution = service().resolve([observation({ outcome: 'refused' })], CORRELATION, NOW);
-
-    assert.equal(only(resolution.obligations).state, 'required', 'no discharge is invented in order to refute it');
-    assert.equal(resolution.exerciseEligibility, 'blocked');
-    assert.deepEqual(resolution.disregarded.map((entry) => entry.reason), ['illegal_transition']);
+    assert.equal(only(resolution.obligations).state, 'verified');
+    assert.deepEqual(resolution.disregarded, [], 'nothing is discarded for age');
   });
 
   it('records an illegal transition rather than applying it, when a later observation would reopen a terminal obligation', () => {
@@ -282,7 +282,7 @@ describe('Obligation resolution — observations that do not count', () => {
   });
 });
 
-describe('Obligation resolution — duplicates and conflicts', () => {
+describe('Obligation resolution — duplicates and repeated verification', () => {
   it('a duplicate discharge is idempotent: same state, same history, no second record', () => {
     const once = service().resolve([observation()], CORRELATION, NOW);
     const twice = service().resolve([observation(), observation()], CORRELATION, NOW);
@@ -292,14 +292,19 @@ describe('Obligation resolution — duplicates and conflicts', () => {
     assert.deepEqual(twice.disregarded, [], 'a repeat of the same discharge is not a violation');
   });
 
-  it('two independent sources reporting the same discharge is agreement, not conflict', () => {
+  it('two independent sources reporting the same discharge is agreement, and it verifies once', () => {
     const resolution = service().resolve([observation(), observation({ sourceId: SECOND_APPROVAL.id })], CORRELATION, NOW);
+
     assert.equal(only(resolution.obligations).state, 'verified');
-    assert.equal(only(resolution.obligations).conflicted, undefined);
     assert.equal(resolution.exerciseEligibility, 'eligible');
+    assert.equal(
+      only(resolution.obligations).transitions.filter((transition) => transition.to === 'verified').length,
+      1,
+      'the second confirmation is idempotent, not a second verification',
+    );
   });
 
-  it('an independent source refuting a self-report is the verification mechanism, not a conflict', () => {
+  it('an independent source declining to confirm a self-report leaves the obligation `discharged`', () => {
     const resolution = service().resolve(
       [observation({ sourceId: HOST.id, observedAt: '2026-01-01T10:00:00.000Z' }), observation({ outcome: 'refused', sourceId: APPROVAL.id, observedAt: '2026-01-01T10:30:00.000Z' })],
       CORRELATION,
@@ -307,32 +312,123 @@ describe('Obligation resolution — duplicates and conflicts', () => {
     );
     const obligation = only(resolution.obligations);
 
-    assert.equal(obligation.conflicted, undefined, 'ADR §2 designs exactly this: the claimant claims, the independent party rules');
-    assert.equal(obligation.state, 'rejected');
+    assert.equal(obligation.state, 'discharged', 'ADR §2 gives a failed verification no state of its own');
+    assert.equal(obligation.verification?.verified, false);
     assert.equal(resolution.exerciseEligibility, 'blocked');
   });
 
-  it('two independent sources contradicting each other is a conflict, and withholds exercise', () => {
+  it('a later confirmation after a failed attempt still verifies — the failure was provenance, not a terminal state', () => {
     const resolution = service().resolve(
-      [observation({ sourceId: HOST.id, observedAt: '2026-01-01T10:00:00.000Z' }), observation({ outcome: 'refused', sourceId: APPROVAL.id, observedAt: '2026-01-01T10:30:00.000Z' }), observation({ sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:00:00.000Z' })],
+      [
+        observation({ sourceId: HOST.id, observedAt: '2026-01-01T10:00:00.000Z' }),
+        observation({ outcome: 'refused', sourceId: APPROVAL.id, observedAt: '2026-01-01T10:30:00.000Z' }),
+        observation({ sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:00:00.000Z' }),
+      ],
       CORRELATION,
       NOW,
     );
+
+    assert.equal(only(resolution.obligations).state, 'verified');
+    assert.equal(resolution.exerciseEligibility, 'eligible');
+  });
+
+  it('a waiver arriving after a discharge was supplied is refused — the ADR reaches `waived` only from `required` or `pending`', () => {
+    const resolution = service().resolve(
+      [
+        observation({ sourceId: HOST.id, observedAt: '2026-01-01T09:00:00.000Z' }),
+        observation({ outcome: 'refused', observedAt: '2026-01-01T10:00:00.000Z' }),
+        observation({ outcome: 'waived', sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:00:00.000Z' }),
+      ],
+      CORRELATION,
+      NOW,
+    );
+
+    // A waiver removes the requirement *to discharge*. Once a discharge has
+    // been supplied there is nothing left to excuse — the question is whether
+    // it verifies — so the transition table gives `discharged` no edge to
+    // `waived`, and this layer refuses rather than inventing one.
+    assert.equal(only(resolution.obligations).state, 'discharged');
+    assert.equal(only(resolution.obligations).verification?.verified, false);
+    assert.equal(resolution.exerciseEligibility, 'blocked', 'fail-closed: an illegal transition never satisfies');
+    assert.deepEqual(resolution.disregarded.map((entry) => entry.reason), ['illegal_transition']);
+  });
+
+  it('the same waiver on the same obligation before any discharge is supplied is accepted', () => {
+    const resolution = service().resolve([observation({ outcome: 'waived', sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:00:00.000Z' })], CORRELATION, NOW);
+
+    assert.equal(only(resolution.obligations).state, 'waived');
+    assert.equal(resolution.exerciseEligibility, 'eligible', 'the difference is only when it arrived, which is what the transition table encodes');
+  });
+});
+
+describe('Obligation expiry — a declared deadline, not discharge staleness', () => {
+  const DEADLINE = '2026-01-01T12:00:00.000Z';
+  const BEFORE = '2026-01-01T11:59:59.000Z';
+  const AFTER = '2026-01-01T12:00:01.000Z';
+
+  it('expires from `required` once the deadline passes with nothing observed', () => {
+    const resolution = service({ expiresAt: DEADLINE }).resolve([], CORRELATION, AFTER);
     const obligation = only(resolution.obligations);
 
-    assert.equal(obligation.conflicted, true);
-    assert.equal(resolution.exerciseEligibility, 'blocked', 'two sources of the same standing disagreeing is a fact about the world, never a tie to be broken silently');
+    assert.equal(obligation.state, 'expired');
+    assert.equal(obligation.expiresAt, DEADLINE);
+    assert.deepEqual(
+      obligation.transitions.map((transition) => `${transition.from}->${transition.to}:${transition.reason}`),
+      ['required->expired:deadline_passed'],
+    );
+    assert.equal(resolution.exerciseEligibility, 'blocked');
   });
 
-  it('an independent waiver contradicted by an independent refusal is likewise conflicted rather than resolved in the waiver’s favour', () => {
-    const resolution = service().resolve(
-      [observation({ sourceId: HOST.id, observedAt: '2026-01-01T09:00:00.000Z' }), observation({ outcome: 'refused', observedAt: '2026-01-01T10:00:00.000Z' }), observation({ outcome: 'waived', sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:00:00.000Z' })],
-      CORRELATION,
-      NOW,
-    );
+  it('expires from `pending`', () => {
+    const resolution = service({ expiresAt: DEADLINE }).resolve([observation({ outcome: 'pending', observedAt: BEFORE })], CORRELATION, AFTER);
 
-    assert.equal(only(resolution.obligations).conflicted, true);
+    assert.equal(only(resolution.obligations).state, 'expired');
+    assert.equal(
+      only(resolution.obligations).transitions.some((transition) => `${transition.from}->${transition.to}` === 'pending->expired'),
+      true,
+    );
+  });
+
+  it('expires from `discharged` — a supplied but unverified discharge does not stop the clock', () => {
+    const resolution = service({ expiresAt: DEADLINE }).resolve([observation({ sourceId: HOST.id, observedAt: BEFORE })], CORRELATION, AFTER);
+
+    assert.equal(only(resolution.obligations).state, 'expired');
+    assert.equal(
+      only(resolution.obligations).transitions.some((transition) => `${transition.from}->${transition.to}` === 'discharged->expired'),
+      true,
+    );
     assert.equal(resolution.exerciseEligibility, 'blocked');
+  });
+
+  it('does NOT expire a `verified` obligation — a deadline passing never withdraws a condition that was met', () => {
+    const resolution = service({ expiresAt: DEADLINE }).resolve([observation({ observedAt: BEFORE })], CORRELATION, AFTER);
+
+    assert.equal(only(resolution.obligations).state, 'verified');
+    assert.equal(resolution.exerciseEligibility, 'eligible');
+  });
+
+  it('does NOT expire a `waived` obligation either', () => {
+    const resolution = service({ expiresAt: DEADLINE }).resolve([observation({ outcome: 'waived', observedAt: BEFORE })], CORRELATION, AFTER);
+
+    assert.equal(only(resolution.obligations).state, 'waived');
+    assert.equal(resolution.exerciseEligibility, 'eligible');
+  });
+
+  it('does not expire before the deadline, and expires exactly at it', () => {
+    assert.equal(only(service({ expiresAt: DEADLINE }).resolve([], CORRELATION, BEFORE).obligations).state, 'required');
+    assert.equal(only(service({ expiresAt: DEADLINE }).resolve([], CORRELATION, DEADLINE).obligations).state, 'expired', 'the ADR rule is `currentTime >= expiresAt`');
+  });
+
+  it('is derived from the passed-in instant, with no sweeper having run', () => {
+    const declaration = service({ expiresAt: DEADLINE });
+
+    assert.equal(only(declaration.resolve([], CORRELATION, BEFORE).obligations).state, 'required');
+    assert.equal(only(declaration.resolve([], CORRELATION, AFTER).obligations).state, 'expired');
+    assert.equal(only(declaration.resolve([], CORRELATION, BEFORE).obligations).state, 'required', 'nothing was mutated by the read that found it expired');
+  });
+
+  it('an obligation declaring no deadline never expires, at any instant', () => {
+    assert.equal(only(service().resolve([], CORRELATION, '2099-01-01T00:00:00.000Z').obligations).state, 'required');
   });
 });
 
@@ -375,68 +471,40 @@ describe('Every legal transition is reachable through the real service', () => {
   /**
    * The transition table asserted as *behaviour* rather than as data.
    *
-   * `obligation-state.test.ts` proves the table contains exactly the ADR's
-   * edges plus the one documented extension. That is a statement about a
-   * constant. This proves each of those eight edges is actually taken by a
-   * real resolution of real observations — so an edge that exists in the table
-   * but that nothing can ever reach would fail here.
+   * `obligation-state.test.ts` proves the table is exactly the ADR's, which is
+   * a statement about a constant. This proves each of its eight edges is
+   * actually taken by a real resolution of real observations — so an edge that
+   * exists in the table but that nothing can ever reach would fail here.
    */
-  const FRESH = '2026-01-01T11:30:00.000Z';
-  const OLD = '2026-01-01T09:00:00.000Z';
+  const DEADLINE = '2026-01-01T12:00:00.000Z';
+  const BEFORE = '2026-01-01T11:00:00.000Z';
+  const AFTER = '2026-01-01T13:00:00.000Z';
 
   const edges: readonly {
     readonly edge: string;
     readonly observations: readonly ObligationDischargeObservation[];
-    readonly windowSeconds?: number;
+    readonly expiresAt?: string;
+    readonly at: string;
     readonly finalState: string;
   }[] = [
-    {
-      edge: 'required->pending',
-      observations: [observation({ outcome: 'pending', observedAt: FRESH })],
-      finalState: 'pending',
-    },
-    {
-      edge: 'required->waived',
-      observations: [observation({ outcome: 'waived', observedAt: FRESH })],
-      finalState: 'waived',
-    },
-    {
-      edge: 'required->expired',
-      observations: [observation({ observedAt: OLD })],
-      windowSeconds: 3_600,
-      finalState: 'expired',
-    },
-    {
-      edge: 'pending->discharged',
-      observations: [observation({ sourceId: HOST.id, observedAt: FRESH })],
-      finalState: 'discharged',
-    },
+    { edge: 'required->pending', observations: [observation({ outcome: 'pending', observedAt: BEFORE })], at: NOW, finalState: 'pending' },
+    { edge: 'required->waived', observations: [observation({ outcome: 'waived', observedAt: BEFORE })], at: NOW, finalState: 'waived' },
+    { edge: 'required->expired', observations: [], expiresAt: DEADLINE, at: AFTER, finalState: 'expired' },
+    { edge: 'pending->discharged', observations: [observation({ sourceId: HOST.id, observedAt: BEFORE })], at: NOW, finalState: 'discharged' },
     {
       edge: 'pending->waived',
-      observations: [observation({ outcome: 'pending', observedAt: '2026-01-01T11:00:00.000Z' }), observation({ outcome: 'waived', sourceId: SECOND_APPROVAL.id, observedAt: FRESH })],
+      observations: [observation({ outcome: 'pending', observedAt: BEFORE }), observation({ outcome: 'waived', sourceId: SECOND_APPROVAL.id, observedAt: '2026-01-01T11:30:00.000Z' })],
+      at: NOW,
       finalState: 'waived',
     },
-    {
-      edge: 'pending->expired',
-      observations: [observation({ outcome: 'pending', observedAt: FRESH }), observation({ observedAt: OLD })],
-      windowSeconds: 3_600,
-      finalState: 'expired',
-    },
-    {
-      edge: 'discharged->verified',
-      observations: [observation({ observedAt: FRESH })],
-      finalState: 'verified',
-    },
-    {
-      edge: 'discharged->rejected',
-      observations: [observation({ sourceId: HOST.id, observedAt: '2026-01-01T11:00:00.000Z' }), observation({ outcome: 'refused', observedAt: FRESH })],
-      finalState: 'rejected',
-    },
+    { edge: 'pending->expired', observations: [observation({ outcome: 'pending', observedAt: BEFORE })], expiresAt: DEADLINE, at: AFTER, finalState: 'expired' },
+    { edge: 'discharged->verified', observations: [observation({ observedAt: BEFORE })], at: NOW, finalState: 'verified' },
+    { edge: 'discharged->expired', observations: [observation({ sourceId: HOST.id, observedAt: BEFORE })], expiresAt: DEADLINE, at: AFTER, finalState: 'expired' },
   ];
 
-  for (const { edge, observations, windowSeconds, finalState } of edges) {
+  for (const { edge, observations, expiresAt, at, finalState } of edges) {
     it(`takes ${edge}, and records it in the history`, () => {
-      const resolution = service(windowSeconds === undefined ? {} : { maxDischargeAgeSeconds: windowSeconds }).resolve(observations, CORRELATION, NOW);
+      const resolution = service(expiresAt === undefined ? {} : { expiresAt }).resolve(observations, CORRELATION, at);
       const obligation = only(resolution.obligations);
 
       assert.equal(obligation.state, finalState, `${edge} must leave the obligation in ${finalState}`);
@@ -450,8 +518,8 @@ describe('Every legal transition is reachable through the real service', () => {
 
   it('covers all eight legal edges between them, so none of the table is unreachable', () => {
     const covered = new Set<string>();
-    for (const { observations, windowSeconds } of edges) {
-      const resolution = service(windowSeconds === undefined ? {} : { maxDischargeAgeSeconds: windowSeconds }).resolve(observations, CORRELATION, NOW);
+    for (const { observations, expiresAt, at } of edges) {
+      const resolution = service(expiresAt === undefined ? {} : { expiresAt }).resolve(observations, CORRELATION, at);
       for (const transition of only(resolution.obligations).transitions) covered.add(`${transition.from}->${transition.to}`);
     }
 
@@ -465,16 +533,24 @@ describe('Every legal transition is reachable through the real service', () => {
 
   it('every transition carries a reason from the closed vocabulary, never a blank one', () => {
     const reasons = new Set<string>();
-    for (const { observations, windowSeconds } of edges) {
-      const resolution = service(windowSeconds === undefined ? {} : { maxDischargeAgeSeconds: windowSeconds }).resolve(observations, CORRELATION, NOW);
+    for (const { observations, expiresAt, at } of edges) {
+      const resolution = service(expiresAt === undefined ? {} : { expiresAt }).resolve(observations, CORRELATION, at);
       for (const transition of only(resolution.obligations).transitions) {
-        assert.equal(transition.at, NOW, 'a transition instant is passed in, never read from a clock');
+        assert.equal(transition.at, at, 'a transition instant is passed in, never read from a clock');
         reasons.add(transition.reason);
       }
     }
 
     for (const reason of reasons) {
-      assert.equal(['declared', 'discharge_reported', 'discharge_confirmed', 'discharge_refused', 'waiver_recorded', 'discharge_window_closed'].includes(reason), true, `'${reason}' is not a declared transition reason`);
+      assert.equal(['activated', 'discharge_reported', 'discharge_confirmed', 'waiver_recorded', 'deadline_passed'].includes(reason), true, `'${reason}' is not a declared transition reason`);
     }
+  });
+
+  it('an activation and an expiry carry no DischargeRecord — ADR §1, "What a transition carries"', () => {
+    const activated = service().resolve([observation({ outcome: 'pending', observedAt: BEFORE })], CORRELATION, NOW);
+    assert.equal(only(activated.obligations).discharge, undefined, 'an activation discharged nothing');
+
+    const expired = service({ expiresAt: DEADLINE }).resolve([], CORRELATION, AFTER);
+    assert.equal(only(expired.obligations).discharge, undefined, 'an expiry is the absence of a discharge, not one');
   });
 });

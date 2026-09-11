@@ -1,14 +1,23 @@
 import type { ObligationCorrelation } from './obligation-correlation.js';
 import { obligationInstanceId } from './obligation-correlation.js';
-import type { ObligationDischargeRecord } from './obligation-discharge.js';
+import type { ObligationDischargeRecord, ObligationVerificationRecord } from './obligation-discharge.js';
 import type { ObligationType } from './obligation-requirement.js';
 import { isTerminalObligationState, obligationStateSatisfies, type ObligationState } from './obligation-state.js';
 
 /**
  * Why the lifecycle moved. A closed vocabulary, so the history a reviewer reads
  * is a record of causes rather than a list of state names.
+ *
+ * One reason per legal transition, and every one of the five is emitted:
+ * `activated` for `required → pending`, `discharge_reported` for
+ * `pending → discharged`, `discharge_confirmed` for `discharged → verified`,
+ * `waiver_recorded` for either edge into `waived`, and `deadline_passed` for
+ * any edge into `expired`.
+ *
+ * There is no reason for a refused verification, because a refused
+ * verification causes no transition — ADR §2.
  */
-export type ObligationTransitionReason = 'declared' | 'discharge_reported' | 'discharge_confirmed' | 'discharge_refused' | 'waiver_recorded' | 'discharge_window_closed';
+export type ObligationTransitionReason = 'activated' | 'discharge_reported' | 'discharge_confirmed' | 'waiver_recorded' | 'deadline_passed';
 
 /** One step of the closed lifecycle, written as it is taken. `from === to` never appears: an idempotent re-application records nothing. */
 export interface ObligationTransition {
@@ -43,19 +52,18 @@ export interface ObligationInstance {
   readonly transitions: readonly ObligationTransition[];
   /** The discharge the obligation came to rest on, when one applied. Absent for an obligation still in `required`. */
   readonly discharge?: ObligationDischargeRecord;
-  /** When the discharge stops being good, for a requirement that declared a window and an obligation that has a discharge. */
-  readonly dischargeExpiresAt?: string;
   /**
-   * Whether admissible observations contradicted one another.
+   * The most recent verification attempt that did not succeed, when one was
+   * made.
    *
-   * Two registered sources reporting a discharge and a refusal of the same
-   * obligation is a fact about the world, not a tie to be broken silently — the
-   * rule `ContextResolution.conflicted` already establishes for two systems of
-   * record disagreeing. A conflicted blocking obligation is never satisfied,
-   * whatever state the transitions left it in, so the disagreement withholds
-   * exercise rather than being resolved in someone's favour.
+   * The audit half of ADR §2. Its presence never changes the state and never
+   * changes satisfaction: an obligation carrying one is `discharged`, which is
+   * unsatisfied, exactly as it would be with no attempt recorded at all. What
+   * it adds is the answer to "somebody looked at this — what did they find?".
    */
-  readonly conflicted?: boolean;
+  readonly verification?: ObligationVerificationRecord;
+  /** The deadline this obligation was declared with, when it was declared with one. Copied from the requirement; never requester-supplied. */
+  readonly expiresAt?: string;
 }
 
 /** The declared, untouched starting point: what Layer B hands to Layer D before anything has been observed. */
@@ -64,6 +72,7 @@ export function declareObligation(input: {
   readonly blocking: boolean;
   readonly correlation: ObligationCorrelation;
   readonly declaredAt: string;
+  readonly expiresAt?: string;
 }): ObligationInstance {
   return {
     id: obligationInstanceId(input.correlation, input.obligationType),
@@ -73,6 +82,7 @@ export function declareObligation(input: {
     state: 'required',
     declaredAt: input.declaredAt,
     transitions: [],
+    ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
   };
 }
 
@@ -85,13 +95,12 @@ export function declareObligation(input: {
  */
 export function obligationWithholdsExercise(instance: ObligationInstance): boolean {
   if (!instance.blocking) return false;
-  if (instance.conflicted === true) return true;
   return !obligationStateSatisfies(instance.state);
 }
 
 /** Whether this obligation's condition is met, independent of whether it blocks. Reported so a non-blocking obligation's state is still legible. */
 export function obligationIsSatisfied(instance: ObligationInstance): boolean {
-  return instance.conflicted !== true && obligationStateSatisfies(instance.state);
+  return obligationStateSatisfies(instance.state);
 }
 
 export function obligationIsTerminal(instance: ObligationInstance): boolean {

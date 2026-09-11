@@ -21,7 +21,7 @@ function service(): ObligationLifecycleService {
     sources: [APPROVAL, HOST],
     declaration: {
       requirements: [
-        { obligationType: 'finance.approval', blocking: true, maxDischargeAgeSeconds: 3_600 },
+        { obligationType: 'finance.approval', blocking: true, expiresAt: '2026-01-01T18:00:00.000Z' },
         { obligationType: 'second.signer', blocking: false },
       ],
     },

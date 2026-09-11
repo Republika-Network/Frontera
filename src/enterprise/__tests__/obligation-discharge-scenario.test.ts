@@ -64,7 +64,9 @@ const FINANCE_APPROVALS: ObligationDischargeSource = { id: 'obl.src.approval.fin
 /** Registered so the scenario can show a deployment that *does* admit the requester — and show that admitting it still does not let it discharge its own obligation. */
 const REQUEST_SOURCE: ObligationDischargeSource = { id: 'obl.src.request', kind: 'request', name: 'The requester', verificationClass: 'self_reported' };
 
-const OBLIGATION_DECLARATION: ObligationDeclaration = { requirements: [{ obligationType: 'finance.approval', blocking: true, maxDischargeAgeSeconds: 86_400 }] };
+/** The deadline this deployment gives finance to approve. Operator configuration, and the only route by which a deadline reaches the layer. */
+const OBLIGATION_DEADLINE = '2026-01-02T12:00:00.000Z';
+const OBLIGATION_DECLARATION: ObligationDeclaration = { requirements: [{ obligationType: 'finance.approval', blocking: true, expiresAt: OBLIGATION_DEADLINE }] };
 
 /**
  * The deployment's own rule, unchanged from the context phase's scenario.
@@ -259,7 +261,7 @@ describe('Acceptance scenario — C: a trusted finance discharge releases the pa
     assert.equal(discharge?.verificationClass, 'independent');
     assert.equal(discharge?.subjectId, 'cfo@example.test');
     assert.equal(discharge?.reference, 'AP-771');
-    assert.equal(result.obligations?.obligations[0]?.dischargeExpiresAt, '2026-01-02T11:30:00.000Z');
+    assert.equal(result.obligations?.obligations[0]?.expiresAt, OBLIGATION_DEADLINE, 'the deadline came from the declaration, not from the discharge');
   });
 
   it('a caller forging approval alongside the real one changes nothing — the real discharge is why it proceeds', async () => {
@@ -305,11 +307,12 @@ describe('Acceptance scenario — D: a mismatched or untrusted discharge does no
       reason: 'unregistered_source',
     },
     {
-      name: 'a discharge older than the declared window',
+      name: 'a verification attempt that did not succeed',
       build: (correlation: ReturnType<typeof correlationFor>) => [
-        { obligationType: 'finance.approval', correlation, sourceId: FINANCE_APPROVALS.id, outcome: 'discharged' as const, observedAt: '2025-12-01T00:00:00.000Z' },
+        { obligationType: 'finance.approval', correlation, sourceId: REQUEST_SOURCE.id, outcome: 'discharged' as const, observedAt: NOW },
+        { obligationType: 'finance.approval', correlation, sourceId: FINANCE_APPROVALS.id, outcome: 'refused' as const, observedAt: '2026-01-01T12:00:01.000Z' },
       ],
-      reason: 'stale_observation',
+      reason: undefined,
     },
   ];
 
