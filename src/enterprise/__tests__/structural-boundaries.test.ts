@@ -285,3 +285,58 @@ describe('Structural boundaries: Provider credential exposure (R004.B)', () => {
     assert.match(text, /getInternalEnterpriseConfiguration\(enterprise\)/, 'authentication must go through the internal accessor');
   });
 });
+
+/**
+ * Layer C's classification, asserted over the whole tree rather than over the
+ * context runtime alone.
+ *
+ * `ADR-AUTHORITY-CONTROL-LAYERING.md` §2 makes the dependency rule a structural
+ * test "in the same family as the existing `structural-boundaries.test.ts`, run
+ * by `npm test`, not review conventions." The tests inside the context runtime
+ * assert what that module may not reach; these assert what may not reach *into*
+ * it, and that the one component allowed to bridge C and the decision is the
+ * Kernel.
+ */
+describe('Authority-control layering: the Context layer (C)', () => {
+  const CONTEXT_ROOT = 'src/features/context-resolution-runtime';
+
+  it('the context runtime exists and is a real module', () => {
+    assert.ok(existsSync(CONTEXT_ROOT), 'the Context layer must exist as a module');
+    assert.ok(existsSync(`${CONTEXT_ROOT}/index.ts`), 'it must have a public entrypoint');
+    assert.ok(existsSync(`${CONTEXT_ROOT}/README.md`), 'a layer boundary that is not written down is a convention, not a boundary');
+  });
+
+  it('the policy runtime never reaches into the context runtime — B receives its context, it does not resolve it', () => {
+    const policyFiles = walkTsFiles('src/features/domain-policy-pack-runtime').filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(policyFiles, /context-resolution-runtime/);
+    assert.deepEqual(leaks, [], 'Domain Policy Pack Runtime must not resolve its own context');
+  });
+
+  it('the enforcement engine never reaches into the context runtime either', () => {
+    const enforcementFiles = walkTsFiles('src/features/action-enforcement').filter((file) => !file.includes('/__tests__/') && !file.includes('/tests/'));
+    const leaks = importsMatching(enforcementFiles, /context-resolution-runtime/);
+    assert.deepEqual(leaks, [], 'Action Enforcement receives a policy input; it does not resolve facts');
+  });
+
+  it('the Kernel is the only component that composes the context port', () => {
+    const kernelImporters = walkTsFiles('src/kernel')
+      .filter((file) => !file.includes('/__tests__/'))
+      .filter((file) => /context-resolution-runtime/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(
+      kernelImporters.map((file) => file.replace(/\\/g, '/')).sort(),
+      ['src/kernel/contracts/ports.ts', 'src/kernel/orchestration/context-adapter.ts', 'src/kernel/orchestration/request-adapter.ts'],
+      'the context port is composed at exactly the kernel boundary, and nowhere else',
+    );
+  });
+
+  it('the context runtime imports no layer above it', () => {
+    const contextFiles = walkTsFiles(CONTEXT_ROOT).filter((file) => !file.includes('/tests/'));
+    const leaks = importsMatching(contextFiles, /from ['"][^'"]*(domain-policy-pack-runtime|action-enforcement|\/kernel\/|\/enterprise\/)/);
+    assert.deepEqual(leaks, [], 'C never imports B, and never imports the decision producer');
+  });
+
+  it('the reserved context namespace is defined once, in the layer that owns it', () => {
+    const definitions = walkTsFiles('src').filter((file) => /CONTEXT_RESOLUTION_POLICY_METADATA_KEY\s*=/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(definitions.map((file) => file.replace(/\\/g, '/')), [`${CONTEXT_ROOT}/domain/context-resolution.ts`]);
+  });
+});

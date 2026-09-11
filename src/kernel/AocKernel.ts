@@ -26,6 +26,14 @@ import type { KernelEvaluationRequest } from './contracts/kernel-request.js';
 import type { KernelEvaluationResult } from './contracts/kernel-result.js';
 import { KernelConfigurationError, KernelDependencyError, KernelExecutionError } from './errors/kernel-errors.js';
 import { resolveGovernedConstraintContext } from './orchestration/governed-constraint-adapter.js';
+import {
+  KernelContextCapability,
+  applyContextStep,
+  resolveKernelContext,
+  resolveKernelContextFacts,
+  type KernelContextFacts,
+  type KernelContextResolutionOptions,
+} from './orchestration/context-adapter.js';
 import { applyGovernedAuthorityStep, resolveGovernedAuthorityFacts, type GovernedAuthorityFacts } from './orchestration/governed-authority-adapter.js';
 import { assertKernelInvariants, cloneKernelEvaluationRequest } from './orchestration/kernel-invariants.js';
 import { toGuardActionRequestInput, validateKernelEvaluationRequest } from './orchestration/request-adapter.js';
@@ -81,6 +89,30 @@ export interface AocKernelOptions {
    * permissive policy can commit authority a constraint already accounts for.
    */
   readonly governedConstraintProvider?: GovernedConstraintProvider;
+  /**
+   * Optional trusted-context capability: a resolver, the sources it may cite,
+   * and the keys this deployment declares it needs.
+   *
+   * Configuring it is how a deployment stops letting the requester supply the
+   * facts its own rules decide on. Resolved facts reach the Domain Policy Pack
+   * preflight under `aoc.context`, a namespace no request body can write to,
+   * *alongside* the caller-supplied `ActionDescriptor` fields rather than
+   * instead of them: `action.amount` keeps exactly the meaning it has today,
+   * and a pack chooses which of the two it reads.
+   *
+   * Omitted — or configured with an empty declaration — kernel behaviour is
+   * byte-identical to this layer not existing: no resolution is attempted, no
+   * metadata key appears, no field is added to the result, and the Governance
+   * Record is unchanged. Present, it can only ever narrow: a requirement the
+   * deployment marked `required: true` and that did not resolve turns a viable
+   * outcome into a denial, and nothing here can make anything allowed that was
+   * not already allowed.
+   *
+   * It cannot decide. The resolver's return type carries observations and no
+   * verdict, so an unreadable ERP produces `resolved: false` for a policy to
+   * react to, never an authorization outcome an ERP chose.
+   */
+  readonly contextResolution?: KernelContextResolutionOptions;
   /** Defaults to a real-time clock. Tests should supply a deterministic one (see `AOC_KERNEL_INTEGRATION_GUIDE.md`). */
   readonly clock?: KernelClock;
   /** Defaults to `crypto.randomUUID()`-backed ids. Tests should supply a deterministic sequential generator. */
@@ -124,6 +156,7 @@ export class AocKernel {
   private readonly governedAuthorityProvider: GovernedAuthorityProvider | undefined;
   private readonly governedRepresentationProvider: GovernedRepresentationProvider | undefined;
   private readonly governedConstraintProvider: GovernedConstraintProvider | undefined;
+  private readonly contextCapability: KernelContextCapability | undefined;
 
   constructor(options: AocKernelOptions) {
     if (options.recognitionProvider === undefined) {
@@ -147,6 +180,10 @@ export class AocKernel {
     this.governedAuthorityProvider = options.governedAuthorityProvider;
     this.governedRepresentationProvider = options.governedRepresentationProvider;
     this.governedConstraintProvider = options.governedConstraintProvider;
+    // Composed here rather than per request, so a mis-declared source or
+    // requirement is a wiring-time failure instead of one discovered in the
+    // middle of an evaluation.
+    this.contextCapability = options.contextResolution === undefined ? undefined : new KernelContextCapability(options.contextResolution);
 
     for (const adapter of options.adapters ?? []) {
       this.runtime.registerAdapter(adapter);
@@ -198,9 +235,18 @@ export class AocKernel {
     // were read".
     const constraintContext = await resolveGovernedConstraintContext(this.governedConstraintProvider, request, this.ctx.clock.now());
 
+    // Resolved in the same window and for the same reason: the policy pack
+    // preflight runs synchronously inside the wrapped engine, so an
+    // asynchronous read of a system of record has no point to occur at once it
+    // has started. Facts only -- nothing here denies, and a resolver that
+    // fails reports `resolved: false` rather than an empty fact set, so a
+    // deployment's rule can tell "the vendor has no status" from "the ERP
+    // could not be read".
+    const contextResolution = await resolveKernelContext(this.contextCapability, request, this.ctx.clock.now());
+
     let decision: EnforcementDecision;
     try {
-      decision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext));
+      decision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution));
     } catch (error) {
       return this.buildIndeterminateResult(request, new KernelDependencyError('recognitionProvider failed during evaluation', error));
     }
@@ -213,10 +259,17 @@ export class AocKernel {
     // engine's 13 policies stay exactly as they were, and this step reads the
     // engine's *outcome* rather than participating in it, so it cannot make
     // anything allowed that was not already allowed.
-    const result =
+    const authorityResult =
       this.governedAuthorityProvider === undefined
         ? engineResult
         : await applyGovernedAuthorityStep(this.governedAuthorityProvider, this.governedRepresentationProvider, request, engineResult);
+
+    // Last, and after the authority step, so the two narrowing steps compose in
+    // one direction only. A result the chain or the authority step already
+    // denied is annotated with what context was resolved and is otherwise left
+    // exactly as it was: a denial has one reason, and re-labelling it with a
+    // second would misreport why the request actually stopped.
+    const result = applyContextStep(this.contextCapability, contextResolution, authorityResult);
 
     assertKernelInvariants(request, requestSnapshot, result);
     return result;
@@ -282,9 +335,41 @@ export class AocKernel {
 
     const constraintContext = await resolveGovernedConstraintContext(this.governedConstraintProvider, request, this.ctx.clock.now());
 
+    // Resolved *before* the executor can run, for the same reason governed
+    // authority is: `guard.enforce()` preflights and invokes in one
+    // synchronous call, and a context requirement checked afterwards would be
+    // a check of a side effect that has already happened.
+    const contextResolution = await resolveKernelContext(this.contextCapability, request, this.ctx.clock.now());
+    let contextFacts: KernelContextFacts | undefined;
+    if (this.contextCapability !== undefined && contextResolution !== undefined) {
+      contextFacts = resolveKernelContextFacts(this.contextCapability, contextResolution);
+      if (contextFacts.reasonCodes.length > 0) {
+        const decisionId = this.ctx.ids.nextId('kernel-context-denied');
+        const denied: KernelEvaluationResult = {
+          requestId: request.requestId,
+          decisionId,
+          status: 'denied',
+          reasonCodes: [...contextFacts.reasonCodes],
+          summary: contextFacts.summary,
+          recognition: { performed: false },
+          authority: { performed: false },
+          policies: [],
+          approval: { performed: false, status: 'not_applicable' },
+          evidence: [],
+          context: contextFacts.evaluation,
+          trace: { steps: [], decisionId, kernelVersion: AOC_KERNEL_VERSION },
+          evaluatedAt: this.ctx.clock.now(),
+          kernelVersion: AOC_KERNEL_VERSION,
+          ...(request.correlationId !== undefined ? { correlationId: request.correlationId } : {}),
+        };
+        assertKernelInvariants(request, requestSnapshot, denied);
+        return { ...denied, execution: { status: 'not_executed', executed: false } };
+      }
+    }
+
     let outcome;
     try {
-      outcome = await this.guard.enforce(toGuardActionRequestInput(request, options, constraintContext), executor);
+      outcome = await this.guard.enforce(toGuardActionRequestInput(request, options, constraintContext, contextResolution), executor);
     } catch (error) {
       if (error instanceof PostExecutionRecordMissingError) {
         throw new KernelExecutionError(
@@ -304,7 +389,7 @@ export class AocKernel {
     // authority state was read before the executor ran, and reporting a second
     // read taken afterwards would describe a world the decision was not made
     // in.
-    const result =
+    const withAuthority =
       governedAuthorityFacts === undefined
         ? enforced
         : {
@@ -315,6 +400,11 @@ export class AocKernel {
               ...(governedAuthorityFacts.representation !== undefined ? { representation: governedAuthorityFacts.representation } : {}),
             },
           };
+    // Re-attached rather than re-resolved, for the same reason the authority
+    // facts are: the context was read before the executor ran, and reporting a
+    // second read taken afterwards would describe a world the decision was not
+    // made in.
+    const result = contextFacts === undefined ? withAuthority : { ...withAuthority, context: contextFacts.evaluation };
     assertKernelInvariants(request, requestSnapshot, result);
     return result;
   }

@@ -73,6 +73,27 @@ export const AOC_KERNEL_REASON_CODES = {
   AUTHORITY_REPRESENTATION_SCOPE_EXCEEDED: 'AUTHORITY_REPRESENTATION_SCOPE_EXCEEDED',
   /** A representation exists but is not exercisable at the instant evaluated: it has ended, has not begun, was withdrawn, or the delegation it rests on is no longer live. */
   AUTHORITY_REPRESENTATION_EXPIRED: 'AUTHORITY_REPRESENTATION_EXPIRED',
+
+  // Trusted-context codes. Four, and they exist only for requirements a
+  // deployment explicitly declared `required: true`. Frontera ships no rule
+  // about what an unresolved fact means -- ADR-CONTEXT-PROVENANCE-AND-TRUST.md
+  // §5 -- so none of these can fire for a deployment that declared nothing, and
+  // none of them fires for an optional requirement at any time. When one does
+  // fire it is the Kernel acting on the deployment's own declaration, which is
+  // hard invariant 6: a required fact denies "because the rule said required,
+  // not because the resolver decided".
+  //
+  // Four rather than one because they send an operator to four different
+  // places: fix the source, shorten the refresh, reconcile two systems of
+  // record, or re-examine which source is allowed to answer a key.
+  /** A declared-required key was not answered -- nothing resolved it, or context resolution itself could not complete. Never means the key has no value. */
+  CONTEXT_REQUIRED_FACT_UNRESOLVED: 'CONTEXT_REQUIRED_FACT_UNRESOLVED',
+  /** A declared-required key was answered, but the reading is older than the freshness the deployment declared it would accept. */
+  CONTEXT_REQUIRED_FACT_STALE: 'CONTEXT_REQUIRED_FACT_STALE',
+  /** Two or more configured sources answered a declared-required key differently. Never silently resolved to one side. */
+  CONTEXT_REQUIRED_FACT_CONFLICTED: 'CONTEXT_REQUIRED_FACT_CONFLICTED',
+  /** A declared-required key was answered at a trust class below the declared minimum -- including a requester-asserted value for a key this deployment has not declared assertable. */
+  CONTEXT_REQUIRED_FACT_UNTRUSTED: 'CONTEXT_REQUIRED_FACT_UNTRUSTED',
 } as const;
 
 export type AocKernelReasonCode = (typeof AOC_KERNEL_REASON_CODES)[keyof typeof AOC_KERNEL_REASON_CODES];
