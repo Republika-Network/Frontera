@@ -343,3 +343,215 @@ describe('enforce() — the executor gate', () => {
     assert.equal(ran, 0);
   });
 });
+
+describe('enforce() — the same authorization, before and after the discharge arrives', () => {
+  /**
+   * The transition the phase exists to make expressible, measured on one
+   * request rather than inferred from two.
+   *
+   * Two kernels over the same recognition world, the same request and the same
+   * policy, differing in exactly one thing: whether a trusted finance discharge
+   * exists. The authorization each produces must be identical — same status,
+   * same reason codes, same summary, same policy chain, same approval and
+   * recognition evaluations. The *only* things allowed to differ are whether
+   * the action is currently eligible to be exercised and whether the executor
+   * ran.
+   */
+  const authorizationOf = (result: Awaited<ReturnType<AocKernel['enforce']>>) =>
+    JSON.stringify({
+      status: result.status,
+      reasonCodes: result.reasonCodes,
+      summary: result.summary,
+      policies: result.policies,
+      approval: result.approval,
+      recognition: result.recognition,
+      authority: result.authority,
+      evidence: result.evidence,
+    });
+
+  async function enforceWith(observations: readonly ObligationDischargeObservation[], requestId: string) {
+    const base = request({ requestId });
+    let ran = 0;
+    const result = await buildKernel({ observations: observations.map((observation) => ({ ...observation, correlation: correlationFor(base) })) }).enforce(base, () => {
+      ran += 1;
+      return 'executed';
+    });
+    return { result, ran };
+  }
+
+  it('the authorization is byte-identical before and after the discharge; only eligibility and the executor change', async () => {
+    const base = request({ requestId: 'obl-enf-transition' });
+    const blocked = await enforceWith([], 'obl-enf-transition');
+    const eligible = await enforceWith([discharge(base)], 'obl-enf-transition');
+
+    assert.equal(authorizationOf(blocked.result), authorizationOf(eligible.result), 'discharging an obligation must not alter one field of the authorization');
+
+    assert.equal(blocked.result.status, 'allowed');
+    assert.equal(eligible.result.status, 'allowed');
+
+    assert.equal(blocked.result.obligations?.exerciseEligibility, 'blocked');
+    assert.equal(eligible.result.obligations?.exerciseEligibility, 'eligible');
+
+    assert.equal(blocked.ran, 0);
+    assert.equal(eligible.ran, 1);
+
+    assert.equal(blocked.result.execution.withheldBy, 'obligation');
+    assert.equal(eligible.result.execution.withheldBy, undefined);
+    assert.equal(eligible.result.execution.value, 'executed');
+  });
+
+  it('the obligation, not the decision, is what moved: `required` to `verified` across the same authorization', async () => {
+    const base = request({ requestId: 'obl-enf-transition-state' });
+    const blocked = await enforceWith([], 'obl-enf-transition-state');
+    const eligible = await enforceWith([discharge(base)], 'obl-enf-transition-state');
+
+    assert.equal(blocked.result.obligations?.obligations[0]?.state, 'required');
+    assert.equal(eligible.result.obligations?.obligations[0]?.state, 'verified');
+    assert.equal(blocked.result.obligations?.obligations[0]?.id, eligible.result.obligations?.obligations[0]?.id, 'the same obligation, deterministically identified, at two points in its life');
+  });
+
+  it('obligation state is never represented as a policy failure — the policy chain is untouched and names no obligation', async () => {
+    const fixture = buildDatasysEnforcementFixture();
+    let ranWithout = 0;
+    const withoutCapability = await new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+    }).enforce(request({ requestId: 'obl-enf-policy-chain' }), () => {
+      ranWithout += 1;
+      return 'executed';
+    });
+    const blocked = await enforceWith([], 'obl-enf-policy-chain');
+
+    assert.equal(ranWithout, 1, 'the comparison kernel really did execute');
+    assert.equal(blocked.ran, 0, 'the measured kernel really did not');
+
+    assert.deepEqual(blocked.result.policies, withoutCapability.policies, 'no synthetic policy result is injected to represent an unmet obligation');
+    for (const policy of blocked.result.policies) {
+      assert.equal(/obligation/i.test(`${policy.policyId} ${policy.reasonCode} ${policy.reason}`), false, `policy '${policy.policyId}' must not carry obligation state`);
+      assert.equal(policy.passed, true, 'a withheld execution is not a failed policy');
+    }
+  });
+
+  it('a caller reading only `status` sees an authorization; a caller reading `execution` sees why nothing happened', async () => {
+    const blocked = await enforceWith([], 'obl-enf-two-readings');
+
+    assert.equal(blocked.result.status, 'allowed');
+    assert.equal(blocked.result.reasonCodes.includes('POLICY_ACTION_PROHIBITED'), false);
+    assert.equal(blocked.result.reasonCodes.includes('POLICY_CONDITION_UNSATISFIED'), false);
+    assert.equal(blocked.result.execution.status, 'not_executed');
+    assert.equal(blocked.result.execution.executed, false);
+    assert.equal(blocked.result.execution.withheldBy, 'obligation');
+  });
+});
+
+describe('enforce() — a denial is a denial under every obligation state there is', () => {
+  const outcomes = ['pending', 'discharged', 'refused', 'waived'] as const;
+
+  for (const outcome of outcomes) {
+    it(`DENY with a '${outcome}' observation stays DENY, and the executor never runs`, async () => {
+      const base = { ...toKernelRequest(buildUnknownAgentReadGuardInput()), requestId: `obl-enf-deny-${outcome}` };
+      let ran = 0;
+      const result = await buildKernel({ observations: [discharge(base, { outcome })] }).enforce(base, () => {
+        ran += 1;
+        return 'executed';
+      });
+
+      assert.equal(result.status, 'denied');
+      assert.equal(ran, 0);
+      assert.equal(result.execution.executed, false);
+      assert.equal(result.execution.withheldBy, undefined, 'the denial is the reason, and it is the only one');
+    });
+  }
+
+  it('DENY with an expired obligation stays DENY', async () => {
+    const base = { ...toKernelRequest(buildUnknownAgentReadGuardInput()), requestId: 'obl-enf-deny-expired' };
+    let ran = 0;
+    const result = await buildKernel({ declaration: BLOCKING_WITH_WINDOW, observations: [discharge(base, { observedAt: '2025-12-31T00:00:00.000Z' })] }).enforce(base, () => {
+      ran += 1;
+      return 'executed';
+    });
+
+    assert.equal(result.status, 'denied');
+    assert.equal(result.obligations?.obligations[0]?.state, 'expired');
+    assert.equal(ran, 0);
+  });
+
+  it('DENY with an unreadable discharge provider stays DENY, and is not reported as an obligation problem', async () => {
+    const base = { ...toKernelRequest(buildUnknownAgentReadGuardInput()), requestId: 'obl-enf-deny-unreadable' };
+    let ran = 0;
+    const result = await buildKernel({ failing: true }).enforce(base, () => {
+      ran += 1;
+      return 'executed';
+    });
+
+    assert.equal(result.status, 'denied');
+    assert.equal(ran, 0);
+    assert.equal(result.execution.withheldBy, undefined);
+  });
+});
+
+describe('A discharge of an obligation this decision never declared cannot open the gate', () => {
+  /**
+   * The in-memory provider filters to the declared obligations, which is what a
+   * well-behaved one does. This exercises a *misbehaving* one that volunteers an
+   * obligation nobody declared, so the layer's own discard is what is measured
+   * rather than the fixture's filter.
+   */
+  function buildKernelWithVolunteeringProvider(observations: readonly ObligationDischargeObservation[]): AocKernel {
+    const fixture = buildDatasysEnforcementFixture();
+    return new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+      obligations: {
+        provider: { resolveObligationDischarges: () => Promise.resolve({ observations }) },
+        sources: SOURCES,
+        declaration: BLOCKING,
+      },
+    });
+  }
+
+  it('a provider volunteering an undeclared obligation has it discarded, and the declared one still blocks', async () => {
+    const base = request({ requestId: 'obl-enf-undeclared' });
+    let ran = 0;
+    const result = await buildKernelWithVolunteeringProvider([discharge(base, { obligationType: 'second.signer' })]).enforce(base, () => {
+      ran += 1;
+      return 'executed';
+    });
+
+    assert.equal(result.status, 'allowed');
+    assert.equal(result.obligations?.declaredTypes, result.obligations?.declaredTypes);
+    assert.deepEqual(result.obligations?.obligations.map((obligation) => obligation.obligationType), ['finance.approval'], 'a provider cannot widen the obligation set beyond the declaration');
+    assert.equal(result.obligations?.obligations[0]?.state, 'required');
+    assert.deepEqual(result.obligations?.disregarded?.map((entry) => entry.reason), ['undeclared_obligation']);
+    assert.equal(ran, 0);
+  });
+
+  it('a provider returning something malformed fails closed rather than reading as an empty, satisfied world', async () => {
+    const fixture = buildDatasysEnforcementFixture();
+    const kernel = new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+      obligations: {
+        // A provider that answers with the wrong shape entirely — the case a
+        // throwing one does not cover.
+        provider: { resolveObligationDischarges: () => Promise.resolve({ observations: undefined as unknown as readonly ObligationDischargeObservation[] }) },
+        sources: SOURCES,
+        declaration: BLOCKING,
+      },
+    });
+
+    let ran = 0;
+    const result = await kernel.enforce(request({ requestId: 'obl-enf-malformed' }), () => {
+      ran += 1;
+      return 'executed';
+    });
+
+    assert.equal(result.status, 'allowed');
+    assert.equal(result.obligations?.resolved, false);
+    assert.equal(result.obligations?.exerciseEligibility, 'blocked');
+    assert.equal(ran, 0);
+  });
+});

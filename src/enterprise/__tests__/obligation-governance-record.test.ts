@@ -10,6 +10,7 @@ import {
 import { createAocKernel, type KernelEvaluationRequest, type KernelEvaluationResult } from '../../kernel/index.js';
 import { toKernelEvaluationOptions, toKernelEvaluationRequest } from '../api/governance-evaluate-contract.js';
 import { projectResultPayload } from '../governance-store/projection.js';
+import { canonicalSerialize } from '../governance-store/canonical-json.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { createInMemoryGovernanceStore } from '../persistence/in-memory-governance-store.js';
 import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js';
@@ -142,5 +143,76 @@ describe('Governance record — state and provenance without payload when the ca
     assert.equal('payload' in (storedObligations.obligations[0] ?? {}), false, 'an obligation carries provenance, never an approval body');
 
     await store.close();
+  });
+});
+
+describe('Governance record — the obligation block canonicalizes stably', () => {
+  /**
+   * Canonicalization asserted against the Store's *own* serializer rather than
+   * against `JSON.stringify`, because that is what actually reaches a digest.
+   * Two properties matter and they are different: the same world must produce
+   * the same bytes, and a world that differs only in the order observations
+   * arrived must too — otherwise a replay of one payment would carry a
+   * different digest from the original.
+   */
+  const APPROVAL_B: ObligationDischargeSource = { id: 'obl.src.approval.treasury', kind: 'approval_runtime', name: 'Treasury approvals', verificationClass: 'independent' };
+
+  async function evaluateWith(requestId: string, order: 'forward' | 'reversed'): Promise<KernelEvaluationResult> {
+    const providers = buildTestKernelProviders();
+    const body = buildAllowedRequestBody({ requestId });
+    const request = toKernelEvaluationRequest(body, providers.clock, providers.idGenerator);
+    const correlation = { requestId: request.requestId, action: request.action.capability ?? request.action.type, resourceScope: request.action.resourceScope };
+
+    const observations: readonly ObligationDischargeObservation[] = [
+      { obligationType: 'finance.approval', correlation, sourceId: APPROVAL.id, outcome: 'discharged', observedAt: '2026-01-01T00:00:00.000Z', subjectId: 'cfo@example.test', reference: 'AP-1' },
+      { obligationType: 'finance.approval', correlation, sourceId: APPROVAL_B.id, outcome: 'discharged', observedAt: '2026-01-01T00:00:01.000Z', subjectId: 'treasurer@example.test', reference: 'AP-2' },
+    ];
+
+    const kernel = createAocKernel({
+      recognitionProvider: providers.recognitionProvider,
+      clock: providers.clock,
+      idGenerator: providers.idGenerator,
+      obligations: {
+        provider: createInMemoryObligationDischargeProvider(order === 'forward' ? observations : [...observations].reverse()),
+        sources: [APPROVAL, APPROVAL_B],
+        declaration: DECLARATION,
+      },
+    });
+
+    return kernel.evaluate(request, toKernelEvaluationOptions(body, 'full'));
+  }
+
+  const obligationBlockOf = (result: KernelEvaluationResult) => canonicalSerialize(projectResultPayload(result)['obligations']);
+
+  it('the same world serializes to identical canonical bytes', async () => {
+    const first = await evaluateWith('obl-canon-same', 'forward');
+    const second = await evaluateWith('obl-canon-same', 'forward');
+
+    assert.equal(obligationBlockOf(first), obligationBlockOf(second));
+  });
+
+  it('the order observations arrived in does not change one byte', async () => {
+    const forward = await evaluateWith('obl-canon-order', 'forward');
+    const reversed = await evaluateWith('obl-canon-order', 'reversed');
+
+    assert.equal(obligationBlockOf(forward), obligationBlockOf(reversed), 'a replay must digest identically to the original');
+    assert.equal(computeDigest(projectResultPayload(forward)), computeDigest(projectResultPayload(reversed)));
+  });
+
+  it('the canonical form carries the lifecycle and its provenance, and no free-form bag', async () => {
+    const serialized = obligationBlockOf(await evaluateWith('obl-canon-shape', 'forward'));
+
+    assert.match(serialized, /"state":"verified"/);
+    assert.match(serialized, /"verificationClass":"independent"/);
+    assert.match(serialized, /"exerciseEligibility":"eligible"/);
+    assert.equal(/"metadata"|"parameters"|"payload"|"body"/.test(serialized), false, 'an obligation carries provenance, never an arbitrary bag a digest would have to chase');
+  });
+
+  it('the obligation block never carries an authorization primitive', async () => {
+    const serialized = obligationBlockOf(await evaluateWith('obl-canon-nodecision', 'forward'));
+
+    for (const forbidden of ['"allowed"', '"denied"', '"approval_required"', '"indeterminate"', '"POLICY_ACTION_PROHIBITED"']) {
+      assert.equal(serialized.includes(forbidden), false, `the obligation block must not contain ${forbidden}`);
+    }
   });
 });

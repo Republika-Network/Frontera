@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  OBLIGATION_STATES,
+  OBLIGATION_STATE_TRANSITIONS,
   ObligationConfigurationError,
   ObligationLifecycleService,
   obligationIsSatisfied,
@@ -366,5 +368,113 @@ describe('Obligation resolution — two obligations on one decision', () => {
     const left = twoObligations.resolve([observation(), observation({ obligationType: 'second.signer' })], CORRELATION, NOW);
     const right = twoObligations.resolve([observation({ obligationType: 'second.signer' }), observation()], CORRELATION, NOW);
     assert.equal(JSON.stringify(left), JSON.stringify(right));
+  });
+});
+
+describe('Every legal transition is reachable through the real service', () => {
+  /**
+   * The transition table asserted as *behaviour* rather than as data.
+   *
+   * `obligation-state.test.ts` proves the table contains exactly the ADR's
+   * edges plus the one documented extension. That is a statement about a
+   * constant. This proves each of those eight edges is actually taken by a
+   * real resolution of real observations — so an edge that exists in the table
+   * but that nothing can ever reach would fail here.
+   */
+  const FRESH = '2026-01-01T11:30:00.000Z';
+  const OLD = '2026-01-01T09:00:00.000Z';
+
+  const edges: readonly {
+    readonly edge: string;
+    readonly observations: readonly ObligationDischargeObservation[];
+    readonly windowSeconds?: number;
+    readonly finalState: string;
+  }[] = [
+    {
+      edge: 'required->pending',
+      observations: [observation({ outcome: 'pending', observedAt: FRESH })],
+      finalState: 'pending',
+    },
+    {
+      edge: 'required->waived',
+      observations: [observation({ outcome: 'waived', observedAt: FRESH })],
+      finalState: 'waived',
+    },
+    {
+      edge: 'required->expired',
+      observations: [observation({ observedAt: OLD })],
+      windowSeconds: 3_600,
+      finalState: 'expired',
+    },
+    {
+      edge: 'pending->discharged',
+      observations: [observation({ sourceId: HOST.id, observedAt: FRESH })],
+      finalState: 'discharged',
+    },
+    {
+      edge: 'pending->waived',
+      observations: [observation({ outcome: 'pending', observedAt: '2026-01-01T11:00:00.000Z' }), observation({ outcome: 'waived', sourceId: SECOND_APPROVAL.id, observedAt: FRESH })],
+      finalState: 'waived',
+    },
+    {
+      edge: 'pending->expired',
+      observations: [observation({ outcome: 'pending', observedAt: FRESH }), observation({ observedAt: OLD })],
+      windowSeconds: 3_600,
+      finalState: 'expired',
+    },
+    {
+      edge: 'discharged->verified',
+      observations: [observation({ observedAt: FRESH })],
+      finalState: 'verified',
+    },
+    {
+      edge: 'discharged->rejected',
+      observations: [observation({ sourceId: HOST.id, observedAt: '2026-01-01T11:00:00.000Z' }), observation({ outcome: 'refused', observedAt: FRESH })],
+      finalState: 'rejected',
+    },
+  ];
+
+  for (const { edge, observations, windowSeconds, finalState } of edges) {
+    it(`takes ${edge}, and records it in the history`, () => {
+      const resolution = service(windowSeconds === undefined ? {} : { maxDischargeAgeSeconds: windowSeconds }).resolve(observations, CORRELATION, NOW);
+      const obligation = only(resolution.obligations);
+
+      assert.equal(obligation.state, finalState, `${edge} must leave the obligation in ${finalState}`);
+      assert.equal(
+        obligation.transitions.some((transition) => `${transition.from}->${transition.to}` === edge),
+        true,
+        `expected ${edge} in [${obligation.transitions.map((transition) => `${transition.from}->${transition.to}`).join(', ')}]`,
+      );
+    });
+  }
+
+  it('covers all eight legal edges between them, so none of the table is unreachable', () => {
+    const covered = new Set<string>();
+    for (const { observations, windowSeconds } of edges) {
+      const resolution = service(windowSeconds === undefined ? {} : { maxDischargeAgeSeconds: windowSeconds }).resolve(observations, CORRELATION, NOW);
+      for (const transition of only(resolution.obligations).transitions) covered.add(`${transition.from}->${transition.to}`);
+    }
+
+    const declared: string[] = [];
+    for (const from of OBLIGATION_STATES) {
+      for (const to of OBLIGATION_STATE_TRANSITIONS[from]) declared.push(`${from}->${to}`);
+    }
+
+    assert.deepEqual([...covered].sort(), declared.sort(), 'every declared transition must be reachable, and nothing beyond them taken');
+  });
+
+  it('every transition carries a reason from the closed vocabulary, never a blank one', () => {
+    const reasons = new Set<string>();
+    for (const { observations, windowSeconds } of edges) {
+      const resolution = service(windowSeconds === undefined ? {} : { maxDischargeAgeSeconds: windowSeconds }).resolve(observations, CORRELATION, NOW);
+      for (const transition of only(resolution.obligations).transitions) {
+        assert.equal(transition.at, NOW, 'a transition instant is passed in, never read from a clock');
+        reasons.add(transition.reason);
+      }
+    }
+
+    for (const reason of reasons) {
+      assert.equal(['declared', 'discharge_reported', 'discharge_confirmed', 'discharge_refused', 'waiver_recorded', 'discharge_window_closed'].includes(reason), true, `'${reason}' is not a declared transition reason`);
+    }
   });
 });
