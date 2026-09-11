@@ -95,14 +95,48 @@ policy said so**, not because C decided.
 
 **Question:** what must happen before, during or after the action, and did it?
 
-**Owns:** the obligation lifecycle — `required → pending → discharged →
-verified`, plus `waived` and `expired` — with a discharge record and a proof.
+**Owns:** the obligation lifecycle, in six states and eight transitions, with
+discharge and transition provenance. The normative definition is
+`ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §1; this is its summary.
 
-**May not:** grant anything, or narrow policy's conclusion. An undischarged
+```
+required   ──▶ pending       required   ──▶ waived       required   ──▶ expired
+pending    ──▶ discharged    pending    ──▶ waived       pending    ──▶ expired
+discharged ──▶ verified                                  discharged ──▶ expired
+
+verified · waived · expired  ──▶  no outgoing transition (terminal)
+```
+
+| state | meaning | terminal | satisfies a blocking obligation |
+| --- | --- | --- | --- |
+| `required` | declared as a consequence or condition of an authorization | no | **no** |
+| `pending` | active, awaiting valid discharge | no | **no** |
+| `discharged` | a discharge was supplied and has not been successfully verified | no | **no** |
+| `verified` | the discharge was validly verified | **yes** | yes |
+| `waived` | an authorized waiver validly removed the requirement | **yes** | yes |
+| `expired` | the declared deadline passed before a satisfying terminal state | **yes** | **no** |
+
+There is no state for a failed verification: a verification attempt that does
+not succeed leaves the obligation `discharged` and records why.
+
+**Owns `required`.** B *declares* that an obligation is required; D materializes
+the obligation instance in state `required` and manages it from there. `required`
+is a layer D lifecycle state, not a layer B declaration sitting outside the
+lifecycle.
+
+**Expiry.** An obligation may declare an optional `expiresAt`, which comes from
+trusted policy or operator configuration and never from caller-controlled request
+data. Against an injected clock, at read time, an obligation at or past that
+deadline in `required`, `pending` or `discharged` becomes `expired`. One that
+declares no deadline never expires, and expiry never disturbs `verified` or
+`waived`. Obligation expiry is not discharge staleness — evidence too old to be
+believed fails *verification* and the obligation stays `discharged`.
+
+**May not:** grant anything, or narrow policy's conclusion. An unsatisfied
 blocking obligation prevents grant issuance; it does not rewrite the decision.
 
 **Fail mode:** an obligation whose discharge cannot be verified is not
-discharged. Closed.
+`verified` — it remains `discharged`, and therefore unsatisfied. Closed.
 
 ### E — Grants
 
@@ -157,7 +191,8 @@ G (Intelligence)  ──reads──▶  A B C D E F           ──writes──
                               ▲
 F (Evidence)      ──reads──▶  A B C D E             ──writes──▶ records only
 E (Grants)        ──reads──▶  A B D                 ──writes──▶ grants, revocations
-D (Obligations)   ──reads──▶  B                     ──writes──▶ discharge records
+D (Obligations)   ──reads──▶  B                     ──writes──▶ obligation lifecycle state,
+                                                                  discharge and transition records
 B (Policy)        ──reads──▶  A C                   ──writes──▶ nothing
 C (Context)       ──reads──▶  external systems      ──writes──▶ nothing
 A (Authority)     ──reads──▶  identity, lineage     ──writes──▶ nothing
