@@ -34,6 +34,7 @@ import {
   type KernelContextFacts,
   type KernelContextResolutionOptions,
 } from './orchestration/context-adapter.js';
+import { KernelGrantCapability, applyGrantStep, type KernelGrantOptions } from './orchestration/grant-adapter.js';
 import {
   KernelObligationCapability,
   applyObligationStep,
@@ -128,7 +129,7 @@ export interface AocKernelOptions {
    *
    * Configuring it is how a deployment stops `require-approval` being, in the
    * ADR's words, "a statement the platform makes and never keeps". A declared
-   * obligation gains a closed seven-node lifecycle, a discharge gains
+   * obligation gains a closed six-state lifecycle, a discharge gains
    * provenance, and an action this Kernel authorized *conditionally* does not
    * execute until the condition is met.
    *
@@ -155,6 +156,37 @@ export interface AocKernelOptions {
    * escalates or schedules.
    */
   readonly obligations?: KernelObligationOptions;
+  /**
+   * Optional bounded-grant capability: the operator-declared horizon within
+   * which a grant derived from an authorization this Kernel produced may live.
+   *
+   * Configuring it makes `evaluate()` report, alongside the decision, whether
+   * that decision is one a bounded grant could be derived from and what such a
+   * grant would be bounded by. It does **not** issue one: issuance is stateful
+   * and transactional, so it is a separate operation through
+   * `createGrantIssuanceService`, and `evaluate()` stays pure. See
+   * `src/features/grant-runtime/README.md`, "Evaluation is not issuance".
+   *
+   * **It cannot change an authorization, and it cannot produce one.**
+   * `status`, `reasonCodes` and `summary` are produced by the authority and
+   * policy layers and are never read or written by the grant step. An
+   * authorization that permits exercise with a blocking obligation still
+   * outstanding reports `status: 'allowed'` with
+   * `grants.eligibility: 'ineligible'` — the decision stands, and no grant may
+   * be derived from it yet. A denied authorization reports `status: 'denied'`
+   * with `grants.eligibility: 'ineligible'`, and no grant state of any kind
+   * makes it proceed.
+   *
+   * Nor can it broaden anything. A grant is equal to or narrower than the
+   * authority it derives from on every axis, proven by
+   * `grantScopeIsWithin` of the artifact rather than of the process that made
+   * it, and refused otherwise.
+   *
+   * Omitted, kernel behaviour is byte-identical to this layer not existing: no
+   * eligibility is assessed, no field is added to the result, and the
+   * Governance Record is unchanged.
+   */
+  readonly grants?: KernelGrantOptions;
   /** Defaults to a real-time clock. Tests should supply a deterministic one (see `AOC_KERNEL_INTEGRATION_GUIDE.md`). */
   readonly clock?: KernelClock;
   /** Defaults to `crypto.randomUUID()`-backed ids. Tests should supply a deterministic sequential generator. */
@@ -200,6 +232,7 @@ export class AocKernel {
   private readonly governedConstraintProvider: GovernedConstraintProvider | undefined;
   private readonly contextCapability: KernelContextCapability | undefined;
   private readonly obligationCapability: KernelObligationCapability | undefined;
+  private readonly grantCapability: KernelGrantCapability | undefined;
 
   constructor(options: AocKernelOptions) {
     if (options.recognitionProvider === undefined) {
@@ -232,6 +265,10 @@ export class AocKernel {
     // source is rejected when it wires the Kernel, not when a payment is
     // evaluated.
     this.obligationCapability = options.obligations === undefined ? undefined : new KernelObligationCapability(options.obligations);
+    // Composed here for the same reason, and with the same consequence: a
+    // deployment that declares a grant horizon of zero seconds is rejected when
+    // it wires the Kernel, not when a payment is evaluated.
+    this.grantCapability = options.grants === undefined ? undefined : new KernelGrantCapability(options.grants);
 
     for (const adapter of options.adapters ?? []) {
       this.runtime.registerAdapter(adapter);
@@ -335,7 +372,18 @@ export class AocKernel {
     // is. `evaluate()` therefore *reports* that exercise is withheld and never
     // enacts it — enacting is `enforce()`'s business, because only `enforce()`
     // has an executor to withhold.
-    const result = applyObligationStep(obligationResolution, contextResult);
+    const obligationResult = applyObligationStep(obligationResolution, contextResult);
+
+    // Last of all, and after the obligation step, because grant eligibility is
+    // a function of what the decision concluded *and* of whether every blocking
+    // obligation on it is satisfied — the aggregate ADR §3 makes issuance turn
+    // on. Like `applyObligationStep` and unlike the two narrowing steps before
+    // it, this one cannot change the outcome it is handed: it adds a field and
+    // reads no `status`, no `reasonCodes` and no `summary`.
+    //
+    // It issues nothing. `evaluate()` touches no store and creates no artifact,
+    // so two evaluations of the same world still produce the same result.
+    const result = applyGrantStep(this.grantCapability, request, obligationResult);
 
     assertKernelInvariants(request, requestSnapshot, result);
     return result;
@@ -483,7 +531,12 @@ export class AocKernel {
       // `summary` are carried through byte for byte from what the authority and
       // policy layers concluded — an unmet obligation withholds the action, it
       // does not reinterpret the authorization.
-      const withheldResult = { ...withheldWithContext, obligations: obligationFacts.evaluation };
+      const withheldWithObligations = { ...withheldWithContext, obligations: obligationFacts.evaluation };
+      // Reported on the withheld path too, and reporting exactly what is true
+      // there: the authorization stands, the obligation is outstanding, and no
+      // grant may be derived from it yet. Omitting it here would have made the
+      // one case the ADR spends §3 on the one case the field is absent for.
+      const withheldResult = applyGrantStep(this.grantCapability, request, withheldWithObligations);
       assertKernelInvariants(request, requestSnapshot, withheldResult);
       return {
         ...withheldResult,
@@ -542,7 +595,12 @@ export class AocKernel {
     // consumes or mutates a discharge — obligation state is derived, never
     // held — so a repeated `enforce()` over the same world produces the same
     // instances and cannot double-discharge anything.
-    const result = obligationFacts === undefined ? withContext : { ...withContext, obligations: obligationFacts.evaluation };
+    const withObligations = obligationFacts === undefined ? withContext : { ...withContext, obligations: obligationFacts.evaluation };
+    // Derived from the same result the caller receives, after the executor has
+    // run. It records what bounded permission this authorization would produce;
+    // it does not gate the executor, and nothing here has issued a grant — see
+    // the README's "Why `enforce()` is unchanged".
+    const result = applyGrantStep(this.grantCapability, request, withObligations);
     assertKernelInvariants(request, requestSnapshot, result);
     return result;
   }

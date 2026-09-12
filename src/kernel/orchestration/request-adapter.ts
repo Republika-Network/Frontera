@@ -8,6 +8,7 @@ import {
   isReservedContextKey,
   type ContextResolution,
 } from '../../features/context-resolution-runtime/index.js';
+import { isReservedGrantKey } from '../../features/grant-runtime/index.js';
 import { isReservedObligationKey } from '../../features/obligation-runtime/index.js';
 import type { GuardActionRequestInput } from '../../features/action-enforcement/sdk/aoc-guard.js';
 import type { EnforcementPolicyEvaluationInput } from '../../features/action-enforcement/domain/enforcement-request.js';
@@ -185,8 +186,19 @@ export function toGuardActionRequestInput(
   // if it survived. It is dropped anyway, for the reason `organizationId` is: a
   // key that means something internally must not be writable from outside,
   // whether or not a reader exists today.
+  //
+  // `aoc.grant` is the third application of the same rule, and the same caveat
+  // applies with even more force: grant data has no reader on this path at all.
+  // A `GrantSourceAuthorization` is projected by `grant-adapter.ts` from the
+  // typed request and the Kernel's own decision, the narrowing a grant is
+  // issued under is host input that never crosses the wire, and
+  // `KernelEvaluationRequest` carries no grant field. A caller sending
+  // `{"aoc.grant": {"action": "*"}}`, `{"grant": {"maxAmount": 1000000}}` or
+  // `{"grantEligible": true}` is writing into a bag nothing grant-related ever
+  // reads — and it is dropped here regardless, so the property is enforced
+  // rather than merely true today.
   for (const key of Object.keys(context)) {
-    if (isReservedContextKey(key) || isReservedObligationKey(key)) delete context[key];
+    if (isReservedContextKey(key) || isReservedObligationKey(key) || isReservedGrantKey(key)) delete context[key];
   }
   if (request.organization !== undefined) {
     context.organizationId = request.organization.id;

@@ -348,6 +348,105 @@ export interface ObligationEvaluation {
   readonly disregarded?: readonly DisregardedObligationObservationEvaluation[];
 }
 
+/**
+ * One bound the source authorization stood under, reported so a caller can see
+ * what a grant derived from this decision would be narrowed *from*.
+ *
+ * A projection of the closed bound algebra in
+ * `src/features/grant-runtime/domain/grant-bound.ts`, widened to `string` on
+ * `key`/`kind` for the reason every context and obligation field on this result
+ * is widened: `KernelEvaluationResult` is a stable public contract, and pinning
+ * a feature's closed union into it would make adding an axis a breaking change
+ * to the frozen surface.
+ */
+export interface GrantBoundEvaluation {
+  readonly key: string;
+  readonly kind: string;
+  /** Present for an `identity` bound. */
+  readonly value?: string;
+  /** Present for a `set` bound, sorted and de-duplicated. */
+  readonly values?: readonly string[];
+  /** Present for a `ceiling` bound. */
+  readonly limit?: number;
+  /** Present for a `ceiling` bound. */
+  readonly unit?: string;
+  /** Present for a `window` bound. */
+  readonly notAfter?: string;
+}
+
+/** One upstream bound a grant derived from this authorization may not outlive. `source` is widened to `string` for the reason every other feature-owned union on this contract is: the frozen result must not pin a feature's closed union. */
+export interface GrantValidityCeilingEvaluation {
+  readonly source: string;
+  readonly notAfter: string;
+}
+
+/**
+ * Whether this authorization is one a bounded grant could be derived from — and,
+ * emphatically, not a grant, and not a second authorization outcome.
+ *
+ * Present only when a grant capability is configured. Absent means the Kernel
+ * asked no grant question, never that a grant exists or that one would be
+ * issuable.
+ *
+ * ## Why this is a separate field from `status`, and from `obligations`
+ *
+ * `status` is the authorization decision and stays exactly what the authority
+ * and policy layers concluded. `obligations` says whether the action that
+ * decision authorized may proceed right now. This says what *bounded permission*
+ * that decision would produce. All three are reported side by side and never
+ * folded, because `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §3 makes the
+ * distinctions the audit-critical ones.
+ *
+ * A result reading `status: 'allowed'` with `grants.eligibility: 'ineligible'`
+ * is the normal, intended combination — the policy authorized the action and
+ * something the grant layer requires is not in place yet. It is never tidied
+ * into a denial, and `GRANT_*` codes never appear in `reasonCodes`.
+ *
+ * ## No grant travels on this field
+ *
+ * There is no `grant` here, and no grant id, because `evaluate()` issues
+ * nothing. Issuance is stateful and transactional and happens through the
+ * trusted issuance service, which `evaluate()` does not have and is not given.
+ */
+export interface GrantEvaluation {
+  readonly performed: boolean;
+  /** `eligible` or `ineligible`. Deliberately not an allow/deny vocabulary: this is not an authorization outcome and must never be readable as one. */
+  readonly eligibility: string;
+  /** What a grant derived from this evaluation would be bound to. Derived from the typed request and the Kernel's own decision id; never from a requester-supplied bag. */
+  readonly correlation: {
+    readonly requestId: string;
+    readonly decisionId: string;
+    readonly action: string;
+    readonly resourceScope: string;
+  };
+  /** The only party a grant derived from this authorization may be held by. There is no delegation at this layer. */
+  readonly subject: string;
+  /** The ceiling every bound of such a grant would have to sit at or below, in canonical key order. */
+  readonly sourceBounds: readonly GrantBoundEvaluation[];
+  /**
+   * The upstream temporal ceilings a grant derived from this authorization may
+   * not outlive, each naming what imposed it (`decision`, `authority`,
+   * `deployment`).
+   *
+   * **Empty is the ordinary answer on this path, and it does not mean
+   * unbounded.** No decision record in this repository carries a validity
+   * window, so there is frequently nothing to contain against; the grant's
+   * finite `expiresAt` is proposed by the trusted issuer at issuance time and
+   * never appears here, because `evaluate()` issues nothing. See
+   * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4, "Where a grant's
+   * validity comes from".
+   */
+  readonly validityCeilings: readonly GrantValidityCeilingEvaluation[];
+  /**
+   * Why no grant may be derived, from `GRANT_REASON_CODES` — a vocabulary
+   * structurally separate from both the authorization reason codes in
+   * `reasonCodes` and the exercise reason codes in
+   * `obligations.exerciseReasonCodes`. Absent when eligibility is `eligible`.
+   */
+  readonly ineligibilityReasonCodes?: readonly string[];
+  readonly summary?: string;
+}
+
 /** One entry per `evidence_required`-policy result the wrapped engine's own chain recorded. */
 export interface EvidenceEvaluation {
   readonly policyId: string;
@@ -378,6 +477,16 @@ export interface KernelEvaluationResult {
    * decision; this is whether the decision may be exercised yet.
    */
   readonly obligations?: ObligationEvaluation;
+  /**
+   * Present only when a grant capability is configured. Absent means the Kernel
+   * asked no grant question, not that a grant exists or that one would be
+   * issuable.
+   *
+   * Reading this never changes how `status` should be read. `status` is the
+   * decision; `obligations` is whether it may be exercised yet; this is what
+   * bounded permission it would produce.
+   */
+  readonly grants?: GrantEvaluation;
   readonly trace: KernelTrace;
   readonly evaluatedAt: string;
   readonly kernelVersion: string;
