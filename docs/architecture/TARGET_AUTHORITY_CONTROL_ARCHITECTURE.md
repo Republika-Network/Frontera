@@ -148,11 +148,31 @@ lifecycle, expiry and revocation, and provider enforcement through the existing
 adapter contract.
 
 **May not:** issue a grant broader than the decision that authorized it, or
-outlive the decision's bound. This is attenuation-only, the same rule Authority
-Graph already enforces for delegation.
+outlive any validity ceiling that authorized it. This is attenuation-only, the
+same rule Authority Graph already enforces for delegation.
+
+**Validity.** A grant's `expiresAt` is finite, strictly after `issuedAt`, and
+**proposed by the trusted issuer at issuance time** — never derived from
+deployment configuration, never defaulted, and never read from caller-controlled
+request data. It is then contained by every applicable upstream ceiling **that
+exists**: the decision's validity bound if the decision carries one, and the
+mandate or representative authority's `expiresAt` where one governs the action.
+No decision record in this repository carries a validity window today, so on the
+generic Kernel path there is frequently nothing to contain against — and none is
+invented. A deployment may configure a maximum grant lifetime as an **optional**
+safety cap on its own issuers; its absence is not a reason to withhold a grant.
+The normative statement is `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4,
+"Where a grant's validity comes from".
+
+**Scope.** "The evaluated scope" a grant attenuates is the scope of the
+evaluated request and the decision taken on it, never the envelope of whichever
+policy rule matched: a 7500 payment allowed by a rule reading `amount <= 10000`
+yields a source ceiling of **7500**. A reusable authority envelope with a
+ceiling and a window is a **mandate**, not a grant — see the same ADR §4,
+"Mandate and grant are different artifacts".
 
 **Fail mode:** a grant that cannot be bound to a verified decision is not
-issued. Closed.
+issued, and neither is one whose lifetime cannot be established. Closed.
 
 ### F — Evidence
 
@@ -208,7 +228,9 @@ Six invariants, each intended to become a test:
    return types. Structurally, not by convention.
 4. **Narrowing only.** No optional port may widen an outcome. Already enforced
    for the governed-authority step; extended to every new port.
-5. **Attenuation only.** A grant ⊆ its decision. A delegation ⊆ its source.
+5. **Attenuation only.** A grant ⊆ its decision, in scope and in lifetime. A
+   delegation ⊆ its source. A grant never outlives the authority justifying it,
+   exactly as a reservation never outlives its mandate.
 6. **Fail closed.** Every unresolvable state has exactly one documented
    direction, and it is denial or `indeterminate`.
 
@@ -380,7 +402,7 @@ Each phase is independently shippable and independently reversible.
 | 5 | Reserved-key generalization | requester-asserted keys cannot occupy resolved namespaces | measured self-assertion attack suite |
 | 6 | Policy derived values + `contextKey` | the brief's two examples become expressible end-to-end | both examples as executable scenario tests |
 | 7 | Obligation lifecycle | states, discharge, verification, proofs | lifecycle + fail-closed suites |
-| 8 | Decision-bound grants | `issueGrant` derives bounds from a verified decision | attenuation suite; legacy path preserved behind the optional binding |
+| 8 | Decision-bound grants | `issueGrant` derives bounds from a verified decision; grant validity proposed by the trusted issuer and contained by the ceilings that exist | attenuation suite; legacy path preserved behind the optional binding |
 | 9 | Evidence extension | context/obligation/revocation as bundle subjects | disclosure + integrity suites |
 | 10 | Authority resolution record | one record the four engines contribute to | no behaviour change; new record only |
 | 11 | Intelligence layer | advisory contracts + producers, structurally non-decisional | boundary test: no import path from advisory into kernel |

@@ -162,7 +162,7 @@ describe('Type boundary — the obligation evaluation on the result cannot be a 
 });
 
 describe('Type boundary — the transition function cannot be talked into an authorization state', () => {
-  it('only the seven lifecycle states are acceptable targets', () => {
+  it('only the six lifecycle states are acceptable targets', () => {
     const instance = declareObligation({ obligationType: 'finance.approval', blocking: true, correlation: CORRELATION, declaredAt: AT });
 
     // @ts-expect-error 'allowed' is not a lifecycle state, and the closed union is what refuses it

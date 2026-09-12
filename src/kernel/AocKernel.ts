@@ -129,7 +129,7 @@ export interface AocKernelOptions {
    *
    * Configuring it is how a deployment stops `require-approval` being, in the
    * ADR's words, "a statement the platform makes and never keeps". A declared
-   * obligation gains a closed seven-node lifecycle, a discharge gains
+   * obligation gains a closed six-state lifecycle, a discharge gains
    * provenance, and an action this Kernel authorized *conditionally* does not
    * execute until the condition is met.
    *
