@@ -1,0 +1,115 @@
+import type { GrantExerciseAmount } from './grant-exercise-request.js';
+
+/**
+ * The provider-neutral execution boundary.
+ *
+ * `TARGET_AUTHORITY_CONTROL_ARCHITECTURE.md` §2 puts `action — execution,
+ * through an adapter` immediately after the bounded grant, and
+ * `ADR-PROVIDER-ADAPTER-CONTRACT.md` draws the line this port sits on:
+ * everything above it is Enterprise authority control; everything below it is
+ * "Execution · Temporary URLs · Signed URLs · Credentials · Network · Storage ·
+ * SDK". That ADR's own crossing is for the Sovereign Access resource-grant
+ * path and reads `EnterpriseAccessGrant`; this is the equivalent crossing for
+ * the authority-control pipeline, and it reads a **validated action** rather
+ * than a grant.
+ *
+ * ## What an adapter may not do
+ *
+ * It may not authorize, evaluate policy, resolve context, discharge an
+ * obligation, issue or widen a grant, interpret an AI recommendation, or infer
+ * missing authority. It has nothing to do any of those *with*: the type it
+ * receives carries no decision, no status, no policy result, no obligation
+ * state, no context fact, no grant scope, no source authorization and no
+ * digest. `tests/execution-layer-boundaries.test.ts` asserts the absence of
+ * each field, and asserts that no adapter type in this module can reach the
+ * Kernel, the policy runtime, layers C or D, or an intelligence dependency.
+ *
+ * An adapter that could re-decide would be a second decision producer, which
+ * `ADR-AUTHORITY-CONTROL-LAYERING.md` §4 forbids outright. Handing it a
+ * validated action and nothing else gives it nothing to do but translate and
+ * execute.
+ *
+ * ## What it is not
+ *
+ * Not a ledger client, not a signer, not a wallet, not a transaction builder.
+ * A chain adapter is a later implementation *of* this port, and nothing here
+ * anticipates one: there is no sequence number, no nonce, no fee, no address,
+ * no key handle and no chain identifier, and a structural test refuses the
+ * vocabulary.
+ */
+export interface ValidatedExecutionAction {
+  /** The grant that was proven to cover this action. An identity for correlation; the adapter has no way to read the grant it names, and no reason to. */
+  readonly boundedGrantId: string;
+  /** The party the grant is held by, as the trusted store recorded it — never as the caller described it. */
+  readonly subject: string;
+  /** The action, proven equal to the action the grant bounds. */
+  readonly action: string;
+  /** The resource, proven to be a member of the grant's bounded resource set. */
+  readonly resource: string;
+  /** The counterparty, proven equal to the grant's bound where the grant states one. */
+  readonly counterparty?: string;
+  /** The tenant, proven equal to the grant's bound where the grant states one. */
+  readonly organization?: string;
+  /** The quantity, proven at or below the grant's ceiling in the grant's own unit. */
+  readonly amount?: GrantExerciseAmount;
+  /**
+   * The instant the covering grant stops, copied from the trusted grant.
+   *
+   * The one temporal value an adapter is given, and it is given because a
+   * provider credential a translation mints must not outlive the authority it
+   * was minted under — the property `ADR-PROVIDER-ADAPTER-CONTRACT.md` already
+   * expects of `EnterpriseAccessGrant.expiresAt` at its own crossing. It is a
+   * bound to respect, never a bound to extend.
+   */
+  readonly notAfter: string;
+  /** Request, decision and this attempt, so a provider result can be tied back to the authorization without the adapter reconstructing anything. */
+  readonly correlation: ValidatedExecutionCorrelation;
+  /** Whatever the provider needs in order to act, opaque here. Never interpreted, never compared against a bound, never a source of authority. */
+  readonly payloadRef?: string;
+}
+
+export interface ValidatedExecutionCorrelation {
+  readonly requestId: string;
+  readonly decisionId: string;
+  readonly executionId: string;
+}
+
+/**
+ * Why a provider could not complete an action it was asked to perform.
+ *
+ * Closed, provider-neutral, and deliberately small. It describes the
+ * *provider's* failure and never the platform's judgement: none of these means
+ * "not authorized", because an unauthorized action never reaches an adapter.
+ */
+export const EXECUTION_FAILURE_REASONS = {
+  /** The provider refused the request — its own permissions, its own rules. Not a Frontera authorization outcome. */
+  PROVIDER_REJECTED: 'PROVIDER_REJECTED',
+  /** The provider could not be reached, or did not answer in time. */
+  PROVIDER_UNAVAILABLE: 'PROVIDER_UNAVAILABLE',
+  /** The provider answered with something this adapter could not interpret. */
+  PROVIDER_RESPONSE_INVALID: 'PROVIDER_RESPONSE_INVALID',
+  /** The adapter raised. Recorded as a failure rather than propagated, so one provider defect never becomes an authorization outcome. */
+  ADAPTER_ERROR: 'ADAPTER_ERROR',
+} as const;
+
+export type ExecutionFailureReason = (typeof EXECUTION_FAILURE_REASONS)[keyof typeof EXECUTION_FAILURE_REASONS];
+
+export const EXECUTION_FAILURE_REASON_VALUES: readonly ExecutionFailureReason[] = Object.values(EXECUTION_FAILURE_REASONS);
+
+/**
+ * What an adapter reports back.
+ *
+ * Provider-neutral: an opaque `providerRef` the provider chose, and nothing
+ * with a decision shape. An adapter cannot report "denied", because reporting a
+ * decision is not something it is allowed to do and there is no field for it.
+ */
+export type ExecutionAdapterResult =
+  | { readonly outcome: 'completed'; readonly providerRef?: string }
+  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string };
+
+export interface ExecutionAdapter {
+  /** Names the provider integration, for correlation and operator diagnostics. Mirrors `EnterpriseProviderCapabilityDeclaration.providerSystem`. */
+  readonly adapterId: string;
+  /** Translate and execute an already-authorized, grant-valid action. Called only after a usable exercise assessment, and never otherwise. */
+  execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult>;
+}

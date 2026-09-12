@@ -667,9 +667,14 @@ been destroyed.
 
 ## Explicitly deferred
 
-- **Execution and exercise.** Presenting a grant to an adapter, and gating an
-  external action on one. `assessExercise` is the primitive; wiring it into an
-  execution path is the execution-adapter phase's work.
+- ~~**Execution and exercise.**~~ **Done**, in the phase after this one.
+  `assessExercise` remains the primitive this layer owns; the composed check —
+  the three read-time facts *plus* whether the attempted action is inside the
+  granted bounds — and the provider-neutral adapter that runs afterwards live in
+  `src/features/execution-runtime/` and `src/enterprise/execution-governance/`.
+  See `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`. Nothing in this
+  layer changed to make that possible, which was the point of keeping the
+  primitive here and the composition out.
 - **Cryptographic signing of a grant**, and any external token format. Deferred
   to signer integration; the attachment point is documented above.
 - **The Evidence extension.** Grant issuance, expiry and revocation as
