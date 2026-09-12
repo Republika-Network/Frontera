@@ -149,6 +149,33 @@ function withAuthorityCeilings(source: GrantSourceAuthorization, binding: GrantA
   return grantValidityCeilingsFor(binding).reduce(withGrantValidityCeiling, source);
 }
 
+/**
+ * Whether two bindings describe the same authority state, exactly.
+ *
+ * Every field, on both arms -- a different `authorityRef` with an identical
+ * horizon is a *different authority*, and a shortened horizon under the same
+ * ref is a *changed* one. Neither may be committed under provenance recorded
+ * for the other, so the comparison is equality and not containment.
+ */
+function grantAuthorityBindingsMatch(left: GrantAuthorityBinding, right: GrantAuthorityBinding): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'bounded-authority' && right.kind === 'bounded-authority') {
+    return left.authorityKind === right.authorityKind && left.authorityRef === right.authorityRef && left.expiresAt === right.expiresAt;
+  }
+  if (left.kind === 'no-temporal-authority-bound' && right.kind === 'no-temporal-authority-bound') {
+    return left.sourceKind === right.sourceKind && left.justification === right.justification;
+  }
+  return false;
+}
+
+/** A deterministic form for comparing two ceiling lists. Sorted, so assembly order never reads as a mismatch. */
+function serializeValidityCeilings(ceilings: readonly { readonly source: string; readonly notAfter: string }[]): string {
+  return [...ceilings]
+    .map((ceiling) => `${ceiling.source}@${ceiling.notAfter}`)
+    .sort()
+    .join('|');
+}
+
 export function createAuthorityControlledExecution(options: AuthorityControlledExecutionOptions): AuthorityControlledExecutionService {
   const { kernel, grantCapability, grantStore, executionAdapter, now, resolveAuthorityBinding, revalidateSource } = options;
 
@@ -164,7 +191,7 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
    * commit boundary exists to prevent. The service is a plain object over the
    * same store; constructing one per call costs nothing and owns nothing.
    */
-  function issuanceFor(request: KernelEvaluationRequest, measured: GrantSourceAuthorization) {
+  function issuanceFor(request: KernelEvaluationRequest, measured: GrantSourceAuthorization, measuredBinding: GrantAuthorityBinding) {
     return createGrantIssuanceService({
       store: grantStore,
       revalidateSource: (correlation: GrantCorrelation): GrantSourceAuthorization | undefined => {
@@ -180,6 +207,29 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
         // issuance service reads as "the authoritative source could no longer
         // be read", and it refuses -- the closed direction.
         if (binding === undefined || !isWellFormedGrantAuthorityBinding(binding)) return undefined;
+        // **Any** change to the binding refuses, not only one that would break
+        // containment.
+        //
+        // The grant about to be committed already carries `sourceDigest` over
+        // the *measured* source, and the outcome about to be returned reports
+        // the *measured* binding and ceiling. A commit-time binding that
+        // differs but still permits -- a mandate shortened from T+30m to T+15m
+        // while the grant ends at T+10m, or a different `authorityRef` with a
+        // sufficient horizon -- would commit an artifact whose recorded
+        // provenance names an authority state that no longer held at the moment
+        // it was written. That is the same defect `BoundedGrantStorePort`'s
+        // "correlation integrity" guarantee exists to prevent, one field over,
+        // and Evidence would later read the stale value as fact.
+        //
+        // Rebuilding the artifact from the commit-time binding is not the
+        // alternative: grant identity and digest are derived before the
+        // critical section, so rebuilding inside it would mint a different
+        // grant than the one the guard was asked about. Refusing is the
+        // deterministic direction, and re-issuing against the current authority
+        // is one more call.
+        if (!grantAuthorityBindingsMatch(measuredBinding, binding)) {
+          return undefined;
+        }
         return withAuthorityCeilings(base, binding);
       },
     });
@@ -202,6 +252,28 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
       // data, and never mutated here.
       const measured = deriveGrantSourceAuthorization(grantCapability, input.request, decision);
 
+      // The Kernel evaluated under *its* grant declaration and reported the
+      // ceilings that declaration produced; the projection above recomputed
+      // them from the declaration this composition was handed. A host using the
+      // documented custom `kernel` option can supply two different ones, and
+      // then a Kernel configured with a five-minute maximum lifetime would
+      // report that ceiling on the decision while issuance -- reading a
+      // capability with no limit -- omitted it and minted a longer-lived grant.
+      //
+      // So they are compared, and a difference is a wiring defect rather than a
+      // governance outcome: it fails where the deployment is composed, loudly,
+      // instead of silently widening one grant at a time. This is the error
+      // `EXECUTION_GRANT_DECLARATION_MISMATCH` was declared for.
+      const reported = serializeValidityCeilings(decision.grants.validityCeilings);
+      const derived = serializeValidityCeilings(measured.validityCeilings);
+      if (reported !== derived) {
+        throw new ExecutionGovernanceError(
+          'EXECUTION_GRANT_DECLARATION_MISMATCH',
+          'The grant declaration this composition was given differs from the one its Kernel evaluates under, so the decision and the issuance would be contained by different deployment ceilings.',
+          { decisionId: decision.decisionId, reportedByKernel: reported, derivedFromCapability: derived },
+        );
+      }
+
       const binding = resolveAuthorityBinding({ request: input.request, correlation: measured.correlation, evaluatedAt: measured.evaluatedAt, phase: 'issuance' });
       if (binding === undefined) {
         return { outcome: 'authority-binding-unresolved', decision, reasonCodes: [AUTHORITY_BINDING_REASON_CODES.AUTHORITY_BINDING_UNRESOLVED] };
@@ -211,7 +283,7 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
       }
 
       const source = withAuthorityCeilings(measured, binding);
-      const issued = await issuanceFor(input.request, measured).issueGrant({
+      const issued = await issuanceFor(input.request, measured, binding).issueGrant({
         source,
         ...(input.requestedBounds !== undefined ? { requestedBounds: input.requestedBounds } : {}),
         // The holder is the subject the authorization was evaluated for. There

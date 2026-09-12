@@ -253,7 +253,13 @@ bounded permission.
 
 ### Expiry
 
-Derived at read time from the **injected** clock. No `Date.now()` anywhere in
+Derived at read time from the **injected** clock, sampled **after** the
+authoritative store read rather than before it. A durable store's read takes
+real time, and an instant sampled before it is not the instant the grant is
+being judged at: a read beginning one millisecond before `expiresAt` and
+completing at `expiresAt` would otherwise report an expired grant as usable and
+reach the provider. The same instant is what the outcome's `exercisedAt`
+carries, so the assessment and the evidence record never disagree. No `Date.now()` anywhere in
 domain logic, no sweeper, no timer, no cron, no background job — a structural
 test fails the build if one appears. At `currentTime >= grant.expiresAt` the
 grant is unusable; one millisecond earlier it is not. A malformed instant on
@@ -326,6 +332,31 @@ could `await` would reintroduce the interleaving the boundary exists to prevent.
 A deployment whose authority store cannot answer synchronously pre-loads the
 answer first, as `acquireReservation`'s callers already do.
 
+**Any** change to the binding refuses, not only one that would break
+containment. A mandate shortened from T+30m to T+15m while the grant ends at
+T+10m would still permit — but the artifact about to be written already carries
+`sourceDigest` over the measured source, and the outcome would report the
+measured T+30m ceiling, so committing it would record an authority state that no
+longer held at the moment of the write. A different `authorityRef` with a
+sufficient horizon is refused for the same reason: it is a different authority,
+not a looser one. Rebuilding the artifact from the commit-time binding is not
+the alternative — grant identity and digest are derived before the critical
+section, so rebuilding inside it would mint a different grant than the guard was
+asked about. Re-issuing against the current authority is one more call.
+
+### The Kernel and the composition must agree on the declaration
+
+The Kernel evaluates under *its* `GrantDeclaration` and reports the ceilings that
+declaration produces; the composition recomputes them from the declaration it was
+handed. A host using the custom `kernel` option can supply two different ones —
+and then a Kernel configured with a five-minute maximum lifetime would report
+that ceiling on the decision while issuance, reading a capability with no limit,
+omitted it and minted a longer-lived grant. The two are therefore compared on
+every authorization, and a difference throws
+`EXECUTION_GRANT_DECLARATION_MISMATCH`: a wiring defect fails where the
+deployment is composed, loudly, rather than silently widening one grant at a
+time.
+
 ## 10. The provider adapter contract
 
 ```ts
@@ -338,7 +369,16 @@ interface ExecutionAdapter {
 The adapter receives a **validated action** and nothing else: the bounded grant
 id, the subject and horizon **read from the trusted store**, the action,
 resource, counterparty, tenant and amount each already proven inside a bound,
-the request/decision/execution correlation, and an opaque `payloadRef`.
+and the request/decision/execution correlation.
+
+There is deliberately **no free-form payload, blob or opaque reference** on that
+type. An adapter that dereferenced one to load the provider command would
+execute data no bound covered and no assessment saw — a grant for 7500 to V123
+submitting a payload for 100000 to V999, with every check passing. Resolving the
+payload before assessment would make this layer read provider-specific data,
+which the adapter boundary exists to prevent; integrity-binding the reference
+would mean choosing a binding scheme no accepted ADR defines. The action *is*
+the payload, and a structural test keeps any such channel out.
 
 It does not receive a grant, a scope, a digest, a source authorization, a
 decision, a status, reason codes, policy results, obligation state or context

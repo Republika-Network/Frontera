@@ -1,4 +1,4 @@
-import type { BoundedGrantStorePort } from '../../grant-runtime/index.js';
+import type { BoundedGrantStorePort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
   GRANT_EXERCISE_REASON_CODES,
@@ -82,13 +82,23 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
   const { store, adapter, now } = options;
 
   async function assess(request: GrantExerciseRequest): Promise<BoundedGrantExerciseAssessment> {
-    const at = now();
     const identity = { boundedGrantId: request.boundedGrantId, correlation: request.correlation, executionId: request.executionId };
 
     // The authoritative read. A store that cannot answer throws, and a throw is
     // turned into "no grant" by the caller below — the closed direction the
     // port's contract asks the layer above to take.
     const read = await store.read(request.boundedGrantId);
+
+    // The clock is sampled **after** the awaited lookup, never before it.
+    //
+    // A durable store's read takes real time, and an instant sampled before it
+    // is not the instant the grant is being judged at: a read that begins one
+    // millisecond before `expiresAt` and completes at `expiresAt` would
+    // otherwise be assessed against the pre-read instant and report an expired
+    // grant as usable. Expiry is "derived at read time" only if the time is the
+    // one the read finished at.
+    const at = now();
+
     if (read.grant === undefined) {
       return { usable: false, reasonCodes: [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND], ...identity };
     }
@@ -120,44 +130,47 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
     },
 
     async exercise(request: GrantExerciseRequest): Promise<ExecutionOutcome> {
-      const exercisedAt = now();
       const correlation: ValidatedExecutionCorrelation = {
         requestId: request.correlation.requestId,
         decisionId: request.correlation.decisionId,
         executionId: request.executionId,
       };
 
+      const notFound = (): BoundedGrantExerciseAssessment => ({
+        usable: false,
+        reasonCodes: [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND],
+        boundedGrantId: request.boundedGrantId,
+        correlation: request.correlation,
+        executionId: request.executionId,
+      });
+
+      // The awaited lookup happens first; the clock is read afterwards, and the
+      // one instant it yields is what both the assessment and the outcome
+      // carry. Sampling before the read would judge the grant at a moment that
+      // had already passed by the time the record arrived — on a slow durable
+      // store, long enough to let an expired grant reach the adapter.
+      let read: ReadBoundedGrantResult | undefined;
+      try {
+        read = await store.read(request.boundedGrantId);
+      } catch {
+        read = undefined;
+      }
+      const exercisedAt = now();
+
       let assessment: BoundedGrantExerciseAssessment;
       let grantExpiresAt: string | undefined;
       let grantSubject: string | undefined;
-      try {
-        const read = await store.read(request.boundedGrantId);
-        if (read.grant === undefined) {
-          assessment = {
-            usable: false,
-            reasonCodes: [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND],
-            boundedGrantId: request.boundedGrantId,
-            correlation: request.correlation,
-            executionId: request.executionId,
-          };
-        } else {
-          grantExpiresAt = read.grant.expiresAt;
-          grantSubject = read.grant.subject;
-          assessment = assessBoundedGrantExercise({
-            grant: read.grant,
-            ...(read.revocation !== undefined ? { revocation: read.revocation } : {}),
-            request,
-            at: exercisedAt,
-          });
-        }
-      } catch {
-        assessment = {
-          usable: false,
-          reasonCodes: [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND],
-          boundedGrantId: request.boundedGrantId,
-          correlation: request.correlation,
-          executionId: request.executionId,
-        };
+      if (read?.grant === undefined) {
+        assessment = notFound();
+      } else {
+        grantExpiresAt = read.grant.expiresAt;
+        grantSubject = read.grant.subject;
+        assessment = assessBoundedGrantExercise({
+          grant: read.grant,
+          ...(read.revocation !== undefined ? { revocation: read.revocation } : {}),
+          request,
+          at: exercisedAt,
+        });
       }
 
       if (!assessment.usable || grantExpiresAt === undefined || grantSubject === undefined) {
@@ -178,7 +191,6 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         ...(request.amount !== undefined ? { amount: request.amount } : {}),
         notAfter: grantExpiresAt,
         correlation,
-        ...(request.payloadRef !== undefined ? { payloadRef: request.payloadRef } : {}),
       };
 
       let result;

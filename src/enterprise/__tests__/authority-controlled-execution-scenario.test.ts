@@ -32,6 +32,7 @@ import { toKernelEvaluationRequest, validateGovernanceEvaluateRequestBody } from
 import {
   AUTHORITY_BINDING_REASON_CODES,
   createAuthorityControlledExecution,
+  isExecutionGovernanceError,
   type AuthorityControlledAuthorizationOutcome,
   type AuthorityControlledExecutionService,
   type GrantAuthorityBinding,
@@ -398,7 +399,61 @@ describe('Production composition — TOCTOU at the issuance commit boundary', ()
     assert.equal(phase, 'commit', 'the binding really was re-resolved at the commit boundary');
     assert.equal(outcome.outcome, 'grant-withheld');
     assert.ok(outcome.outcome === 'grant-withheld');
-    assert.ok(outcome.reasonCodes.includes(GRANT_REASON_CODES.GRANT_SCOPE_BROADENING));
+    assert.ok(outcome.reasonCodes.length > 0, 'the commit-boundary refusal names a cause rather than failing silently');
+  });
+
+  it('a binding that changed but would still have permitted is refused too — provenance is not committed stale', async () => {
+    // The subtler half of the same hazard. The mandate shortens from T+30m to
+    // T+15m while the grant ends at T+10m, so containment would still pass —
+    // but the artifact about to be written carries `sourceDigest` over the
+    // measured source, and the outcome would report the measured T+30m ceiling.
+    // Committing that would record an authority state that no longer held at
+    // the moment of the write.
+    const world = compose({
+      requestId: 'toctou-permissive-change',
+      resolveAuthorityBinding: (query) => ({
+        kind: 'bounded-authority',
+        authorityKind: 'mandate',
+        authorityRef: MANDATE_REF,
+        expiresAt: query.phase === 'commit' ? '2026-01-01T12:15:00.000Z' : MANDATE_EXPIRES,
+      }),
+    });
+
+    const outcome = await world.service.authorize({ request: buildRequest({ requestId: 'toctou-permissive-change' }), grantExpiresAt: GRANT_HORIZON });
+
+    assert.equal(outcome.outcome, 'grant-withheld', 'a still-permissive change is still a change');
+    assert.ok(outcome.outcome === 'grant-withheld');
+    assert.ok(outcome.reasonCodes.length > 0);
+  });
+
+  it('a different authority with a sufficient horizon is refused — a changed ref is a different authority', async () => {
+    const world = compose({
+      requestId: 'toctou-different-ref',
+      resolveAuthorityBinding: (query) => ({
+        kind: 'bounded-authority',
+        authorityKind: 'mandate',
+        authorityRef: query.phase === 'commit' ? 'mandate-transfer-0002' : MANDATE_REF,
+        expiresAt: MANDATE_EXPIRES,
+      }),
+    });
+
+    const outcome = await world.service.authorize({ request: buildRequest({ requestId: 'toctou-different-ref' }), grantExpiresAt: GRANT_HORIZON });
+    assert.equal(outcome.outcome, 'grant-withheld');
+  });
+
+  it('an unchanged binding commits normally, so the refusals above are not vacuous', async () => {
+    let commitResolutions = 0;
+    const world = compose({
+      requestId: 'toctou-unchanged',
+      resolveAuthorityBinding: (query) => {
+        if (query.phase === 'commit') commitResolutions += 1;
+        return MANDATE_BINDING;
+      },
+    });
+
+    const outcome = await world.service.authorize({ request: buildRequest({ requestId: 'toctou-unchanged' }), grantExpiresAt: GRANT_HORIZON });
+    assert.equal(outcome.outcome, 'grant-issued');
+    assert.equal(commitResolutions, 1, 'the binding is re-resolved exactly once, inside the commit boundary');
   });
 
   it('a mandate revoked between measurement and commit refuses the issuance', async () => {
@@ -573,5 +628,68 @@ describe('Production composition — repeated issuance is idempotent on grant id
     const b = grantOf(second.outcome);
     assert.equal(b.id, a.id, 'grant identity is deterministic, so the same grant collides rather than duplicating');
     assert.equal(second.outcome.outcome === 'grant-issued' ? second.outcome.issuance : undefined, 'already-issued');
+  });
+});
+
+describe('Production composition — the Kernel and the composition must agree on the grant declaration', () => {
+  it('throws EXECUTION_GRANT_DECLARATION_MISMATCH rather than minting a grant under the wrong ceiling', async () => {
+    // A host using the documented custom `kernel` option can supply a Kernel
+    // configured with one declaration and a capability carrying another. The
+    // Kernel would then report a deployment ceiling on the decision that
+    // issuance — reading the other declaration — would omit, and the grant
+    // could outlive the cap the deployment actually configured.
+    const fixture = buildDatasysEnforcementFixture();
+    const cappedKernel = new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+      policyPackProvider: VENDOR_PAYMENT_POLICY,
+      contextResolution: { provider: createInMemoryContextResolver(RESOLVER_SAYS_APPROVED), sources: [ERP], declaration: CONTEXT_DECLARATION },
+      obligations: {
+        provider: createInMemoryObligationDischargeProvider(FINANCE_APPROVED({ requestId: 'declaration-mismatch', action: EVALUATED_ACTION, resourceScope: EVALUATED_RESOURCE })),
+        sources: [FINANCE_APPROVALS],
+        declaration: OBLIGATION_DECLARATION,
+      },
+      // Five minutes, where the composition below is handed no limit at all.
+      grants: { declaration: { maximumGrantLifetimeSeconds: 300 } },
+    });
+
+    const service = createAuthorityControlledExecution({
+      kernel: cappedKernel,
+      grantCapability: GRANT_CAPABILITY,
+      grantStore: createInMemoryBoundedGrantStore(),
+      executionAdapter: createRecordingExecutionAdapter(),
+      now: () => NOW,
+      resolveAuthorityBinding: () => MANDATE_BINDING,
+    });
+
+    await assert.rejects(
+      () => service.authorize({ request: buildRequest({ requestId: 'declaration-mismatch' }), grantExpiresAt: GRANT_HORIZON }),
+      (error: unknown) => isExecutionGovernanceError(error) && error.code === 'EXECUTION_GRANT_DECLARATION_MISMATCH',
+    );
+  });
+
+  it('a Kernel composed without grants at all is a wiring defect, not a silent no-grant', async () => {
+    const fixture = buildDatasysEnforcementFixture();
+    const plainKernel = new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+      policyPackProvider: VENDOR_PAYMENT_POLICY,
+    });
+
+    const service = createAuthorityControlledExecution({
+      kernel: plainKernel,
+      grantCapability: GRANT_CAPABILITY,
+      grantStore: createInMemoryBoundedGrantStore(),
+      executionAdapter: createRecordingExecutionAdapter(),
+      now: () => NOW,
+      resolveAuthorityBinding: () => MANDATE_BINDING,
+    });
+
+    await assert.rejects(
+      () => service.authorize({ request: buildRequest({ requestId: 'kernel-not-grant-aware' }), grantExpiresAt: GRANT_HORIZON }),
+      (error: unknown) => isExecutionGovernanceError(error) && error.code === 'EXECUTION_KERNEL_NOT_GRANT_AWARE',
+    );
   });
 });

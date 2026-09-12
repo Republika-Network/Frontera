@@ -100,7 +100,6 @@ export interface ExerciseRequestOverrides {
   readonly amount?: { readonly value: number; readonly unit: string };
   readonly correlation?: GrantCorrelation;
   readonly executionId?: string;
-  readonly payloadRef?: string;
   readonly omitCounterparty?: boolean;
   readonly omitOrganization?: boolean;
   readonly omitAmount?: boolean;
@@ -120,6 +119,5 @@ export function buildExerciseRequest(grant: BoundedGrant, overrides: ExerciseReq
     ...(overrides.omitAmount === true ? {} : { amount }),
     correlation: overrides.correlation ?? TEST_CORRELATION,
     executionId: overrides.executionId ?? 'exec-1',
-    ...(overrides.payloadRef !== undefined ? { payloadRef: overrides.payloadRef } : {}),
   };
 }

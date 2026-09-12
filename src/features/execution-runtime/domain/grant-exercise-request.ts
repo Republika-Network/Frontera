@@ -56,9 +56,37 @@ export interface GrantExerciseRequest {
   readonly correlation: GrantCorrelation;
   /** This attempt's own identity, preserved into the outcome for later correlation. */
   readonly executionId: string;
-  /** An opaque handle to whatever the provider needs in order to act. Never interpreted here, never compared against a bound, and never a source of authority. */
-  readonly payloadRef?: string;
 }
+
+/**
+ * ## Why there is no free-form provider payload on this type
+ *
+ * An earlier revision carried an opaque `payloadRef` — "whatever the provider
+ * needs in order to act, never interpreted here". It is gone, because an
+ * adapter that dereferences such a handle to load the provider command would
+ * execute data that **no bound covered and no assessment saw**.
+ *
+ * The hole was concrete. A caller holding a grant for 7500 to V123 passes the
+ * assessment with `amount = 7500`, `counterparty = 'V123'` — and a `payloadRef`
+ * naming a stored payload for 100000 to V999. Every check passes, because none
+ * of them can reach inside an opaque handle, and the adapter submits the
+ * payload. The module's one invariant would have held in the letter and failed
+ * in the substance.
+ *
+ * The two ways to keep such a field are both refused here. Resolving the
+ * payload before assessment and comparing its actionable fields would make this
+ * layer read and interpret provider-specific data, which is exactly what the
+ * adapter boundary exists to keep out. Integrity-binding the reference to the
+ * authorized action would mean choosing a binding scheme — a decision no
+ * accepted ADR makes, and the sort of thing this phase must not invent.
+ *
+ * So the action *is* the payload: `ValidatedExecutionAction` carries the
+ * subject, action, resource, counterparty, organization and amount, each proven
+ * inside a bound, and an adapter translates those into a provider call. A later
+ * ADR that genuinely needs an out-of-band payload can add one together with the
+ * integrity binding that makes it safe; until then the closed direction is to
+ * have no unassessed channel across the execution boundary at all.
+ */
 
 export interface GrantExerciseAmount {
   readonly value: number;

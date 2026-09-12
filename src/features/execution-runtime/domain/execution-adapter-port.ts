@@ -36,6 +36,17 @@ import type { GrantExerciseAmount } from './grant-exercise-request.js';
  * anticipates one: there is no sequence number, no nonce, no fee, no address,
  * no key handle and no chain identifier, and a structural test refuses the
  * vocabulary.
+ *
+ * ## Every field crossing this boundary was assessed
+ *
+ * There is deliberately **no free-form payload, blob or opaque reference** on
+ * this type. An adapter that could dereference one would execute data no bound
+ * covered and no assessment saw — a grant for 7500 to V123 submitting a payload
+ * for 100000 to V999, with every check passing on the way. The action carried
+ * here *is* the payload: subject, action, resource, counterparty, organization
+ * and amount, each already proven inside a bound. See
+ * `grant-exercise-request.ts` for the full reasoning and for what a later ADR
+ * would have to decide before such a field could exist.
  */
 export interface ValidatedExecutionAction {
   /** The grant that was proven to cover this action. An identity for correlation; the adapter has no way to read the grant it names, and no reason to. */
@@ -64,8 +75,6 @@ export interface ValidatedExecutionAction {
   readonly notAfter: string;
   /** Request, decision and this attempt, so a provider result can be tied back to the authorization without the adapter reconstructing anything. */
   readonly correlation: ValidatedExecutionCorrelation;
-  /** Whatever the provider needs in order to act, opaque here. Never interpreted, never compared against a bound, never a source of authority. */
-  readonly payloadRef?: string;
 }
 
 export interface ValidatedExecutionCorrelation {

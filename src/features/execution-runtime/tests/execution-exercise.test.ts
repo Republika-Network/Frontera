@@ -301,6 +301,82 @@ describe('Exercise — a provider failure is a provider failure', () => {
   });
 });
 
+describe('Exercise — the clock is sampled after the authoritative read', () => {
+  /**
+   * A store whose read takes real time, as a durable one does.
+   *
+   * The clock advances while the read is in flight, so an instant sampled
+   * *before* the lookup is not the instant the grant is being judged at. The
+   * window here is the one the review named: a read that begins one millisecond
+   * before `expiresAt` and completes at `expiresAt`.
+   */
+  function slowStore(grant: BoundedGrant, startsAt: string, completesAt: string): { readonly store: BoundedGrantStorePort; readonly now: () => string } {
+    // The clock advances *because the read took time*, not because of how many
+    // times it was called. That is what makes this a real reproduction: a
+    // service that samples before the lookup sees `startsAt` however it is
+    // written, and one that samples after sees `completesAt`.
+    let instant = startsAt;
+    return {
+      store: {
+        async issue() {
+          throw new Error('not used');
+        },
+        async read() {
+          await Promise.resolve();
+          instant = completesAt;
+          return { grant };
+        },
+        async revoke() {
+          throw new Error('not used');
+        },
+      },
+      now: () => instant,
+    };
+  }
+
+  it('a read that spans the expiry boundary withholds the adapter', async () => {
+    const grant = buildTestGrant();
+    const { store, now } = slowStore(grant, '2026-01-01T12:09:59.999Z', TEST_EXPIRES_AT);
+    const adapter = createRecordingExecutionAdapter();
+    const service = createGrantExecutionService({ store, adapter, now });
+
+    const outcome = await service.exercise(buildExerciseRequest(grant));
+
+    assert.equal(outcome.status, 'withheld', 'the grant expired while the store was answering; it is judged at the instant the record arrived');
+    assert.ok(withheldCodes(outcome).includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_EXPIRED));
+    assert.equal(adapter.callCount, 0);
+  });
+
+  it('the reported exercisedAt is the post-read instant, so the outcome and the assessment agree', async () => {
+    const grant = buildTestGrant();
+    const { store, now } = slowStore(grant, '2026-01-01T12:09:59.999Z', TEST_EXPIRES_AT);
+    const service = createGrantExecutionService({ store, adapter: createRecordingExecutionAdapter(), now });
+
+    const outcome = await service.exercise(buildExerciseRequest(grant));
+    assert.equal(outcome.exercisedAt, TEST_EXPIRES_AT, 'an outcome timestamped before the read would misdate the evidence chain too');
+  });
+
+  it('assess() samples it after the read as well', async () => {
+    const grant = buildTestGrant();
+    const { store, now } = slowStore(grant, '2026-01-01T12:09:59.999Z', TEST_EXPIRES_AT);
+    const service = createGrantExecutionService({ store, adapter: createRecordingExecutionAdapter(), now });
+
+    const assessment = await service.assess(buildExerciseRequest(grant));
+    assert.equal(assessment.usable, false);
+    assert.ok(assessment.reasonCodes.includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_EXPIRED));
+  });
+
+  it('a read that completes before expiry is still usable — the fix does not over-refuse', async () => {
+    const grant = buildTestGrant();
+    const { store, now } = slowStore(grant, '2026-01-01T12:04:00.000Z', '2026-01-01T12:05:00.000Z');
+    const adapter = createRecordingExecutionAdapter();
+    const service = createGrantExecutionService({ store, adapter, now });
+
+    assert.equal((await service.exercise(buildExerciseRequest(grant))).status, 'executed');
+    assert.equal(adapter.callCount, 1);
+  });
+});
+
 describe('Exercise — assess() runs nothing', () => {
   it('a usable assessment still contacts no provider', async () => {
     const store = await seed(buildTestGrant());

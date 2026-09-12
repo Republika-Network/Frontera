@@ -349,6 +349,53 @@ describe('Execution layer boundaries — the four reason-code vocabularies are d
   });
 });
 
+describe('Execution layer boundaries — nothing unassessed crosses the boundary', () => {
+  it('neither the exercise request nor the validated action carries a free-form provider payload', () => {
+    // An opaque handle an adapter could dereference would carry the substance
+    // of the action past every bound and every assessment: a grant for 7500 to
+    // V123 could submit a payload for 100000 to V999 with all twelve checks
+    // passing. The field is gone; this keeps it gone.
+    const forbidden = [/\bpayloadRef\b/, /\bpayload\b/i, /\bblob\b/i, /\brawBody\b/i, /\bopaqueRef\b/i, /\bcommandRef\b/i];
+    for (const file of PRODUCTION_SOURCES) {
+      const text = codeOf(file);
+      for (const pattern of forbidden) {
+        assert.equal(
+          pattern.test(text),
+          false,
+          `${file} must not carry an unassessed channel across the execution boundary (${String(pattern)}) — the validated action is the payload`,
+        );
+      }
+    }
+  });
+
+  it('the adapter port states exactly the fields an assessment proved, and no more', () => {
+    const text = readFileSync('src/features/execution-runtime/domain/execution-adapter-port.ts', 'utf8');
+    const declared = [...text.matchAll(/^\s*readonly (\w+)\??:/gm)].map((match) => match[1]);
+    const permitted = new Set([
+      'boundedGrantId',
+      'subject',
+      'action',
+      'resource',
+      'counterparty',
+      'organization',
+      'amount',
+      'notAfter',
+      'correlation',
+      'requestId',
+      'decisionId',
+      'executionId',
+      'adapterId',
+      'outcome',
+      'providerRef',
+      'reason',
+      'detail',
+    ]);
+    for (const field of declared) {
+      assert.equal(permitted.has(field ?? ''), true, `'${String(field)}' crosses the execution boundary but is not something an assessment proved`);
+    }
+  });
+});
+
 describe('Execution layer boundaries — no caller-facing surface was added', () => {
   it('exports no HTTP handler, route, controller or request-body validator', () => {
     const orchestration = Object.keys(executionRuntime).filter((name) => /handler|route|controller|endpoint|validate.*RequestBody|httpz?/i.test(name));

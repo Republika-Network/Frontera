@@ -170,11 +170,22 @@ interface ExecutionAdapter {
 
 `ValidatedExecutionAction` carries the grant id, the subject and horizon **read
 from the trusted store**, the action/resource/counterparty/organization/amount
-each already proven inside a bound, the request/decision/execution correlation,
-and an opaque `payloadRef`. It carries no grant, scope, digest, source
-authorization, decision, status, reason code, policy result, obligation state or
-context fact — a test asserts the absence of each, because an adapter that could
-re-decide would be a second decision producer.
+each already proven inside a bound, and the request/decision/execution
+correlation. It carries no grant, scope, digest, source authorization, decision,
+status, reason code, policy result, obligation state or context fact — a test
+asserts the absence of each, because an adapter that could re-decide would be a
+second decision producer.
+
+It also carries **no free-form payload, blob or opaque reference**, and a
+structural test keeps it that way. An earlier revision had one, and it was a
+hole: an adapter that dereferenced such a handle to load the provider command
+would execute data no bound covered and no assessment saw — a grant for 7500 to
+V123 submitting a payload for 100000 to V999, with all twelve checks passing on
+the way. Resolving the payload here would make this layer read provider-specific
+data, which is what the adapter boundary exists to prevent; integrity-binding
+the reference would mean choosing a binding scheme no accepted ADR defines. So
+the action *is* the payload, and a later ADR that genuinely needs an
+out-of-band one must arrive with the binding that makes it safe.
 
 An adapter that throws becomes `ADAPTER_ERROR` rather than escaping, and a
 provider that refuses becomes `PROVIDER_REJECTED`. Neither is an authorization
