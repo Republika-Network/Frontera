@@ -374,6 +374,12 @@ export interface GrantBoundEvaluation {
   readonly notAfter?: string;
 }
 
+/** One upstream bound a grant derived from this authorization may not outlive. `source` is widened to `string` for the reason every other feature-owned union on this contract is: the frozen result must not pin a feature's closed union. */
+export interface GrantValidityCeilingEvaluation {
+  readonly source: string;
+  readonly notAfter: string;
+}
+
 /**
  * Whether this authorization is one a bounded grant could be derived from — and,
  * emphatically, not a grant, and not a second authorization outcome.
@@ -417,6 +423,20 @@ export interface GrantEvaluation {
   readonly subject: string;
   /** The ceiling every bound of such a grant would have to sit at or below, in canonical key order. */
   readonly sourceBounds: readonly GrantBoundEvaluation[];
+  /**
+   * The upstream temporal ceilings a grant derived from this authorization may
+   * not outlive, each naming what imposed it (`decision`, `authority`,
+   * `deployment`).
+   *
+   * **Empty is the ordinary answer on this path, and it does not mean
+   * unbounded.** No decision record in this repository carries a validity
+   * window, so there is frequently nothing to contain against; the grant's
+   * finite `expiresAt` is proposed by the trusted issuer at issuance time and
+   * never appears here, because `evaluate()` issues nothing. See
+   * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4, "Where a grant's
+   * validity comes from".
+   */
+  readonly validityCeilings: readonly GrantValidityCeilingEvaluation[];
   /**
    * Why no grant may be derived, from `GRANT_REASON_CODES` — a vocabulary
    * structurally separate from both the authorization reason codes in

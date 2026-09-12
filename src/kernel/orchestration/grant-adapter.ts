@@ -2,7 +2,7 @@ import {
   GRANT_REASON_CODES,
   assessGrantEligibility,
   assertValidGrantDeclaration,
-  grantValidityHorizon,
+  deploymentGrantValidityCeiling,
   statedGrantBoundKeys,
   type GrantBound,
   type GrantBoundKey,
@@ -11,6 +11,7 @@ import {
   type GrantEligibilityAssessment,
   type GrantScope,
   type GrantSourceAuthorization,
+  type GrantValidityCeiling,
 } from '../../features/grant-runtime/index.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type { GrantBoundEvaluation, GrantEvaluation, KernelEvaluationResult } from '../contracts/kernel-result.js';
@@ -31,6 +32,11 @@ import type { GrantBoundEvaluation, GrantEvaluation, KernelEvaluationResult } fr
  * separation is deliberate — see the README's "Evaluation is not issuance".
  */
 export interface KernelGrantOptions {
+  /**
+   * Operator configuration. Every field on it is optional and an empty
+   * declaration is valid: a deployment adopts grants by composing the
+   * capability, not by configuring a limit.
+   */
   readonly declaration: GrantDeclaration;
 }
 
@@ -98,8 +104,7 @@ function authorizationPermitsExercise(status: KernelEvaluationResult['status']):
  * is the different question of what the decision covered, and the answer to
  * that is, by construction, the input the decision was given.
  */
-function sourceScopeFor(request: KernelEvaluationRequest, declaration: GrantDeclaration, evaluatedAt: string): GrantScope {
-  const horizon = grantValidityHorizon(declaration, evaluatedAt);
+function sourceScopeFor(request: KernelEvaluationRequest): GrantScope {
   const action = request.action.capability ?? request.action.type;
   const amountBound: GrantBound | undefined =
     typeof request.action.amount === 'number' && Number.isFinite(request.action.amount) && request.action.amount >= 0 && request.action.currency !== undefined
@@ -112,8 +117,33 @@ function sourceScopeFor(request: KernelEvaluationRequest, declaration: GrantDecl
     ...(request.action.counterpartyId !== undefined ? { counterparty: { kind: 'identity' as const, value: request.action.counterpartyId } } : {}),
     ...(request.organization?.id !== undefined ? { organization: { kind: 'identity' as const, value: request.organization.id } } : {}),
     ...(request.action.resourceScope.length > 0 ? { resources: { kind: 'set' as const, values: [request.action.resourceScope] } } : {}),
-    ...(horizon !== undefined ? { validity: { kind: 'window' as const, notAfter: horizon } } : {}),
   };
+}
+
+/**
+ * The upstream temporal ceilings the Kernel can see, and only those.
+ *
+ * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4, rule 4, measured rather
+ * than assumed: **no decision record in this repository carries a validity
+ * window.** `EnterpriseAccessDecision`, `GovernanceEvaluationRecord` and
+ * `KernelEvaluationResult` each carry `evaluatedAt` and no horizon, so there is
+ * no `decision` ceiling to emit and none is invented. If a decision ever gains
+ * one, this is where it joins the list.
+ *
+ * The Kernel cannot see a mandate or a representative authority either — those
+ * live behind the Enterprise authority stores, which layer E may not reach — so
+ * an `authority` ceiling is added by the composition root that knows of one,
+ * through `withGrantValidityCeiling` or
+ * `GrantIssuanceRequest.additionalValidityCeilings`.
+ *
+ * What is left is the deployment's own optional safety cap, when configured.
+ * When it is not, this returns an empty list, and an empty list is an ordinary
+ * answer: the issuer's finite `expiresAt` is what bounds the grant, and
+ * `resolveGrantValidity` still requires one.
+ */
+function validityCeilingsFor(declaration: GrantDeclaration, evaluatedAt: string): readonly GrantValidityCeiling[] {
+  const deployment = deploymentGrantValidityCeiling(declaration, evaluatedAt);
+  return deployment === undefined ? [] : [deployment];
 }
 
 /**
@@ -137,10 +167,11 @@ export function deriveGrantSourceAuthorization(
   return {
     correlation: grantCorrelationFor(request, result.decisionId),
     subject: request.actor.id,
-    scope: sourceScopeFor(request, capability.declaration, result.evaluatedAt),
+    scope: sourceScopeFor(request),
     authorizationPermitsExercise: authorizationPermitsExercise(result.status),
     allBlockingObligationsSatisfied: result.obligations === undefined ? true : result.obligations.allBlockingObligationsSatisfied,
     evaluatedAt: result.evaluatedAt,
+    validityCeilings: validityCeilingsFor(capability.declaration, result.evaluatedAt),
   };
 }
 
@@ -195,6 +226,11 @@ export function resolveKernelGrantFacts(
     correlation: source.correlation,
     subject: source.subject,
     sourceBounds: toBoundEvaluations(source.scope),
+    // Reported whether or not any exist. An empty list is the measured answer
+    // on the generic Kernel path — no decision record carries a validity window
+    // — and reporting it is how "was anything capping this?" stays answerable
+    // without re-deriving it.
+    validityCeilings: source.validityCeilings.map((ceiling) => ({ source: ceiling.source, notAfter: ceiling.notAfter })),
     ...(assessment.reasonCodes.length > 0 ? { ineligibilityReasonCodes: assessment.reasonCodes } : {}),
     ...(eligible
       ? {}

@@ -9,6 +9,7 @@ import {
   grantSourceDigest,
   grantSourceMatchesCorrelation,
   isWellFormedGrantCorrelation,
+  resolveGrantValidity,
   type BoundedGrant,
   type BoundedGrantStorePort,
   type GrantAttenuationViolation,
@@ -20,6 +21,7 @@ import {
   type GrantRevocation,
   type GrantRevocationReason,
   type GrantSourceAuthorization,
+  type GrantValidityCeiling,
   type RequestedGrantBounds,
 } from '../domain/index.js';
 
@@ -34,7 +36,10 @@ import {
  * grant-issuance rights can mint a grant citing a decision that denied, or a
  * decision for a different resource, or no decision at all" — is closed by the
  * eight checks below, six of which run before the store is touched and two of
- * which run inside its transaction.
+ * which run inside its transaction. The temporal half of check 4 is stated
+ * separately in `grant-validity.ts`: the issuer proposes an expiry, every
+ * applicable upstream ceiling contains it, and nothing invents a ceiling where
+ * none exists.
  *
  * ## Issuance is not evaluation
  *
@@ -72,12 +77,48 @@ export interface GrantIssuanceRequest {
   /** The correlation the caller believes it is issuing against. Checked against the source's own, so a grant can never cite one authorization while deriving from another. */
   readonly correlation: GrantCorrelation;
   readonly issuedAt: string;
+  /**
+   * The expiry the trusted issuer proposes for this grant.
+   *
+   * Required, finite, and strictly after `issuedAt` — ADR §4, "Where a grant's
+   * validity comes from", rules 1 and 2, and hard invariant 9. There is no
+   * default and no fallback: an issuance supplying none is refused with
+   * `GRANT_VALIDITY_INVALID`.
+   *
+   * This is **host input**, like `requestedBounds`. Nothing on
+   * `KernelEvaluationRequest` reaches it, and a requester cannot influence it —
+   * a requester able to set, extend or remove the expiry on its own grant has
+   * been handed the grant. The adversarial suites prove the wire cannot reach
+   * this field at all.
+   *
+   * It is contained, never clamped: a proposal above the effective ceiling is
+   * refused with `GRANT_SCOPE_BROADENING`, and a proposal within every bound is
+   * accepted exactly as supplied.
+   */
+  readonly expiresAt: string;
+  /**
+   * Upstream ceilings the *caller of this service* knows about and the Kernel
+   * adapter could not, added to whatever the source authorization already
+   * carries.
+   *
+   * The mandate case: a host issuing under a governed mandate supplies that
+   * mandate's own `expiresAt` here (or via `withGrantValidityCeiling`), which is
+   * how ADR hard invariant 10 — "a grant never outlives the authority
+   * justifying it" — becomes enforceable on a path the Kernel cannot see.
+   */
+  readonly additionalValidityCeilings?: readonly GrantValidityCeiling[];
 }
 
 export type GrantIssuanceOutcome =
-  | { readonly outcome: 'issued'; readonly grant: BoundedGrant; readonly bounds: readonly GrantBoundAttenuation[] }
-  | { readonly outcome: 'already-issued'; readonly grant: BoundedGrant; readonly bounds: readonly GrantBoundAttenuation[] }
-  | { readonly outcome: 'refused'; readonly reasonCodes: readonly GrantReasonCode[]; readonly violations: readonly GrantAttenuationViolation[] };
+  | { readonly outcome: 'issued'; readonly grant: BoundedGrant; readonly bounds: readonly GrantBoundAttenuation[]; readonly effectiveValidityCeiling?: GrantValidityCeiling }
+  | { readonly outcome: 'already-issued'; readonly grant: BoundedGrant; readonly bounds: readonly GrantBoundAttenuation[]; readonly effectiveValidityCeiling?: GrantValidityCeiling }
+  | {
+      readonly outcome: 'refused';
+      readonly reasonCodes: readonly GrantReasonCode[];
+      readonly violations: readonly GrantAttenuationViolation[];
+      /** The ceiling that capped the request, when one did. Absent when the refusal had another cause, or when no ceiling existed. */
+      readonly effectiveValidityCeiling?: GrantValidityCeiling;
+    };
 
 export interface GrantIssuanceServiceOptions {
   readonly store: BoundedGrantStorePort;
@@ -152,21 +193,22 @@ export function createGrantIssuanceService(options: GrantIssuanceServiceOptions)
         return refusal([GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
       }
 
-      // 4. The validity window is valid, and is the grant's expiry.
-      const validity = attenuation.scope.validity;
-      if (validity === undefined || validity.kind !== 'window') return refusal([GRANT_REASON_CODES.GRANT_VALIDITY_INVALID], []);
-      const expiresAt = validity.notAfter;
-      const issuedAtInstant = Date.parse(request.issuedAt);
-      const expiresAtInstant = Date.parse(expiresAt);
-      if (Number.isNaN(issuedAtInstant) || Number.isNaN(expiresAtInstant) || expiresAtInstant <= issuedAtInstant) {
-        // `expiresAt` strictly after `issuedAt`, the one temporal consistency
-        // rule `validateEnterpriseAccessGrant` already enforces on the frozen
-        // contract. A grant that expires at or before the instant it is issued
-        // is refused rather than stored as a permanently unusable artifact.
-        return refusal([GRANT_REASON_CODES.GRANT_VALIDITY_INVALID], []);
+      // 4. The validity window: proposed by the issuer, contained by every
+      //    applicable upstream ceiling that exists, and never clamped.
+      //    ADR §4, "Where a grant's validity comes from".
+      const ceilings = [...source.validityCeilings, ...(request.additionalValidityCeilings ?? [])];
+      const validity = resolveGrantValidity({ issuedAt: request.issuedAt, requestedExpiresAt: request.expiresAt, ceilings });
+      if (validity.outcome === 'refused' || validity.expiresAt === undefined) {
+        return {
+          outcome: 'refused',
+          reasonCodes: validity.reasonCodes.length > 0 ? validity.reasonCodes : [GRANT_REASON_CODES.GRANT_VALIDITY_INVALID],
+          violations: [],
+          ...(validity.effectiveCeiling !== undefined ? { effectiveValidityCeiling: validity.effectiveCeiling } : {}),
+        };
       }
+      const expiresAt = validity.expiresAt;
 
-      const id = boundedGrantId({ correlation: request.correlation, subject: request.subject, scope: attenuation.scope });
+      const id = boundedGrantId({ correlation: request.correlation, subject: request.subject, scope: attenuation.scope, expiresAt });
       const withoutDigest = {
         id,
         correlation: request.correlation,
@@ -196,12 +238,29 @@ export function createGrantIssuanceService(options: GrantIssuanceServiceOptions)
         if (!grantScopeIsWithin(current.scope, grant.scope)) {
           return { permitted: false, reasonCodes: [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING] };
         }
+        // The temporal ceilings are re-proven too, against the authority as it
+        // stands now. A mandate whose window has been shortened since the
+        // caller measured it refuses the issuance rather than committing a
+        // grant that would outlive it.
+        const currentValidity = resolveGrantValidity({
+          issuedAt: request.issuedAt,
+          requestedExpiresAt: grant.expiresAt,
+          ceilings: [...current.validityCeilings, ...(request.additionalValidityCeilings ?? [])],
+        });
+        if (currentValidity.outcome !== 'accepted') {
+          return { permitted: false, reasonCodes: currentValidity.reasonCodes };
+        }
         return { permitted: true, reasonCodes: [] };
       };
 
       const stored = await store.issue({ grant, commitGuard });
       if (stored.outcome === 'refused') return refusal(stored.reasonCodes, []);
-      return { outcome: stored.outcome, grant: stored.grant, bounds: attenuation.bounds };
+      return {
+        outcome: stored.outcome,
+        grant: stored.grant,
+        bounds: attenuation.bounds,
+        ...(validity.effectiveCeiling !== undefined ? { effectiveValidityCeiling: validity.effectiveCeiling } : {}),
+      };
     },
 
     async assessExercise(grantId: string, at: string): Promise<GrantExerciseAssessment> {

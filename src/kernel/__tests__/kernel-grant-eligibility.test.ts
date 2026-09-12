@@ -75,7 +75,7 @@ describe('evaluate() reports grant eligibility and never a grant', () => {
     const result = await buildKernel().evaluate(paymentRequest('grant-eligibility-2'));
 
     const bounds = result.grants?.sourceBounds ?? [];
-    assert.deepEqual(bounds.map((bound) => bound.key), ['action', 'amount', 'counterparty', 'resources', 'validity']);
+    assert.deepEqual(bounds.map((bound) => bound.key), ['action', 'amount', 'counterparty', 'resources']);
     assert.deepEqual(
       bounds.find((bound) => bound.key === 'amount'),
       { key: 'amount', kind: 'ceiling', limit: 7_500, unit: 'USD' },
@@ -84,7 +84,31 @@ describe('evaluate() reports grant eligibility and never a grant', () => {
       bounds.find((bound) => bound.key === 'counterparty'),
       { key: 'counterparty', kind: 'identity', value: 'V123' },
     );
-    assert.equal(bounds.find((bound) => bound.key === 'validity')?.notAfter, '2026-01-01T00:10:00.000Z', 'the horizon is evaluatedAt + the declared lifetime');
+  });
+
+  it('reports the upstream validity ceilings, and the deployment cap is one of them', async () => {
+    const result = await buildKernel().evaluate(paymentRequest('grant-eligibility-2b'));
+
+    assert.deepEqual(result.grants?.validityCeilings, [{ source: 'deployment', notAfter: '2026-01-01T00:10:00.000Z' }]);
+    assert.equal(
+      result.grants?.sourceBounds.some((bound) => bound.key === 'validity'),
+      false,
+      'a validity window is not a scope axis — a scope says what a grant may act over, a window says when',
+    );
+  });
+
+  it('reports no ceiling at all when the deployment declares no cap — no decision record carries a validity window', async () => {
+    const fixture = buildDatasysEnforcementFixture();
+    const kernel = new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+      grants: { declaration: {} },
+    });
+
+    const result = await kernel.evaluate(paymentRequest('grant-eligibility-2c'));
+    assert.deepEqual(result.grants?.validityCeilings, []);
+    assert.equal(result.grants?.eligibility, 'eligible', 'an empty ceiling list is not a reason to withhold eligibility');
   });
 
   it('carries no grant, no grant id and no artifact — evaluate() issues nothing', async () => {

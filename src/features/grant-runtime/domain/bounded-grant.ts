@@ -60,7 +60,15 @@ export interface BoundedGrant {
   /** The bounds, after attenuation. Equal to or narrower than the source scope on every axis, and proven so by `grantScopeIsWithin` at issuance. */
   readonly scope: GrantScope;
   readonly issuedAt: string;
-  /** The instant it stops being exercisable, derived from `scope.validity`. Never later than the source's own horizon. */
+  /**
+   * The instant it stops being exercisable.
+   *
+   * Proposed by the trusted issuer and accepted only after containment against
+   * every applicable upstream ceiling — ADR §4, "Where a grant's validity comes
+   * from". Top-level rather than part of `scope`, exactly as
+   * `EnterpriseAccessGrant.expiresAt` is, because a scope says what a grant may
+   * act over and this says when.
+   */
   readonly expiresAt: string;
   /** A fingerprint of the authority this was narrowed from, so "narrowed from what?" is answerable from the grant alone. */
   readonly sourceDigest: string;
@@ -81,8 +89,20 @@ export interface BoundedGrant {
  * The hash is over a canonical string, so key order, set order and `-0` can
  * never make two identical grants take different identities.
  */
-export function boundedGrantId(input: { readonly correlation: GrantCorrelation; readonly subject: string; readonly scope: GrantScope }): string {
-  const canonical = `{${serializeGrantCorrelation(input.correlation)},"scope":${serializeGrantScope(input.scope)},"subject":${JSON.stringify(input.subject)}}`;
+export function boundedGrantId(input: {
+  readonly correlation: GrantCorrelation;
+  readonly subject: string;
+  readonly scope: GrantScope;
+  /**
+   * Part of the identity, because a grant valid until 14:45 and one valid until
+   * 14:00 over the same authority and the same bounds are different grants.
+   * Before validity moved out of `GrantScope` this was covered implicitly by
+   * the scope; leaving it out now would collide the two into one artifact and
+   * report the second as `already-issued`.
+   */
+  readonly expiresAt: string;
+}): string {
+  const canonical = `{${serializeGrantCorrelation(input.correlation)},"expiresAt":${JSON.stringify(input.expiresAt)},"scope":${serializeGrantScope(input.scope)},"subject":${JSON.stringify(input.subject)}}`;
   return `aoc.grant:${createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;
 }
 

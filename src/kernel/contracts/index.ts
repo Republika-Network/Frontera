@@ -19,6 +19,7 @@ export type {
   ObligationDischargeEvaluation,
   GrantBoundEvaluation,
   GrantEvaluation,
+  GrantValidityCeilingEvaluation,
   ObligationEvaluation,
   ObligationInstanceEvaluation,
   ObligationTransitionEvaluation,

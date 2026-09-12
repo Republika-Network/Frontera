@@ -13,20 +13,31 @@ import { canonicalGrantBound, isWellFormedGrantBound, type GrantBound, type Gran
  * | `counterparty` | `identity` | the counterparty the authorization evaluated |
  * | `organization` | `identity` | the tenant the authorization was scoped to |
  * | `amount` | `ceiling` | the quantity the authorization evaluated, with its currency |
- * | `validity` | `window` | the horizon operator configuration allows a grant off this authorization |
  *
- * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4 names three of these
- * explicitly — resource identity (§4.3), evaluated scope (§4.4) and the
- * validity bound (§4.5). The other three follow from the same section's
- * settling rule, "a grant ⊆ its decision", applied to the remaining fields the
- * decision actually evaluated. None of them is a new *fact*: every source value
- * is read out of an authorization that already happened.
+ * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4 names two of these
+ * explicitly — resource identity (§4.3) and the evaluated scope (§4.4). The
+ * other three follow from the same section's settling rule, "a grant ⊆ its
+ * decision", applied to the remaining fields the decision actually evaluated.
+ * None of them is a new *fact*: every source value is read out of an
+ * authorization that already happened.
  *
- * Subject is deliberately **not** an axis here. It is a top-level field on the
- * grant, checked by its own rule, exactly as `EnterpriseAccessGrant.principalId`
- * is a top-level field rather than part of a scope — see `bounded-grant.ts`.
+ * Two things are deliberately **not** axes here.
+ *
+ * **Subject** is a top-level field on the grant, checked by its own rule,
+ * exactly as `EnterpriseAccessGrant.principalId` is a top-level field rather
+ * than part of a scope — see `bounded-grant.ts`.
+ *
+ * **Validity** is likewise top-level, and for the same reason plus one more: a
+ * scope says *what* a grant may act over, a validity window says *when*, and
+ * `ADR-ACCESS-GRANT.md` models expiry as `issuedAt`/`expiresAt` on the grant
+ * itself rather than as part of any scope. An earlier revision of this module
+ * carried `validity` as a scope axis, which forced a grant to state both an
+ * inherited ceiling and its own expiry — two temporal values on one artifact,
+ * the "second, independently-settable source of truth" that same ADR refuses.
+ * Temporal bounds now live in `grant-validity.ts`, where the issuer proposes
+ * and the ceilings contain.
  */
-export type GrantBoundKey = 'action' | 'amount' | 'counterparty' | 'organization' | 'resources' | 'validity';
+export type GrantBoundKey = 'action' | 'amount' | 'counterparty' | 'organization' | 'resources';
 
 /**
  * Every key, in canonical order.
@@ -36,7 +47,7 @@ export type GrantBoundKey = 'action' | 'amount' | 'counterparty' | 'organization
  * built. Iterating this constant — never `Object.keys` — is what keeps
  * `serializeGrantScope` deterministic across runtimes.
  */
-export const GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'amount', 'counterparty', 'organization', 'resources', 'validity'];
+export const GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'amount', 'counterparty', 'organization', 'resources'];
 
 /**
  * Which bound shape each axis is expressed in. Total over the closed key set.
@@ -51,7 +62,6 @@ export const GRANT_BOUND_KINDS_BY_KEY: Readonly<Record<GrantBoundKey, GrantBound
   counterparty: 'identity',
   organization: 'identity',
   resources: 'set',
-  validity: 'window',
 };
 
 /**
@@ -69,7 +79,6 @@ export interface GrantScope {
   readonly counterparty?: GrantBound;
   readonly organization?: GrantBound;
   readonly resources?: GrantBound;
-  readonly validity?: GrantBound;
 }
 
 export function grantScopeBound(scope: GrantScope, key: GrantBoundKey): GrantBound | undefined {

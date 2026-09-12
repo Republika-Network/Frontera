@@ -38,7 +38,6 @@ const BASE_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
   amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
   resources: { kind: 'set', values: ['record:contract'] },
-  validity: { kind: 'window', notAfter: HORIZON },
 };
 
 function baseSource(): GrantSourceAuthorization {
@@ -49,6 +48,7 @@ function baseSource(): GrantSourceAuthorization {
     authorizationPermitsExercise: true,
     allBlockingObligationsSatisfied: true,
     evaluatedAt: NOW,
+    validityCeilings: [],
   };
 }
 
@@ -73,7 +73,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
     // The world moves.
     authoritative.set({ ...baseSource(), allBlockingObligationsSatisfied: false });
 
-    const outcome = await service.issueGrant({ source: measured, subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+    const outcome = await service.issueGrant({ source: measured, subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
     assert.deepEqual(outcome.reasonCodes, [GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED]);
@@ -85,7 +85,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
     const measured = baseSource();
     authoritative.set({ ...baseSource(), authorizationPermitsExercise: false });
 
-    const outcome = await service.issueGrant({ source: measured, subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+    const outcome = await service.issueGrant({ source: measured, subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
     assert.deepEqual(outcome.reasonCodes, [GRANT_REASON_CODES.GRANT_AUTHORIZATION_NOT_PERMITTED]);
@@ -103,7 +103,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
       requestedBounds: { amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' } },
       subject: 'actor-a',
       correlation: CORRELATION,
-      issuedAt: NOW,
+      issuedAt: NOW, expiresAt: HORIZON,
     });
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
@@ -120,7 +120,44 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
       requestedBounds: { amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' } },
       subject: 'actor-a',
       correlation: CORRELATION,
+      issuedAt: NOW, expiresAt: HORIZON,
+    });
+    assert.equal(outcome.outcome, 'issued');
+  });
+
+  it('an authority window that shortens between evaluation and commit refuses a grant that would outlive it', async () => {
+    const authoritative = world();
+    const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore(), revalidateSource: () => authoritative.read() });
+
+    // The caller measured a source whose governing mandate ran to T+10m.
+    const measured: GrantSourceAuthorization = { ...baseSource(), validityCeilings: [{ source: 'authority', notAfter: HORIZON }] };
+    // The mandate is shortened to T+2m before the issuance commits.
+    authoritative.set({ ...baseSource(), validityCeilings: [{ source: 'authority', notAfter: '2026-01-01T12:02:00.000Z' }] });
+
+    const outcome = await service.issueGrant({
+      source: measured,
+      subject: 'actor-a',
+      correlation: CORRELATION,
       issuedAt: NOW,
+      expiresAt: '2026-01-01T12:08:00.000Z',
+    });
+
+    assert.equal(outcome.outcome, 'refused');
+    if (outcome.outcome !== 'refused') return;
+    assert.deepEqual(outcome.reasonCodes, [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING], 'a grant never outlives the authority justifying it, measured at the commit boundary');
+  });
+
+  it('an authority window that shortens but still covers the grant commits it', async () => {
+    const authoritative = world();
+    const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore(), revalidateSource: () => authoritative.read() });
+    authoritative.set({ ...baseSource(), validityCeilings: [{ source: 'authority', notAfter: '2026-01-01T12:05:00.000Z' }] });
+
+    const outcome = await service.issueGrant({
+      source: { ...baseSource(), validityCeilings: [{ source: 'authority', notAfter: HORIZON }] },
+      subject: 'actor-a',
+      correlation: CORRELATION,
+      issuedAt: NOW,
+      expiresAt: '2026-01-01T12:04:00.000Z',
     });
     assert.equal(outcome.outcome, 'issued');
   });
@@ -130,7 +167,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
     const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore(), revalidateSource: () => authoritative.read() });
     authoritative.set(undefined);
 
-    const outcome = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+    const outcome = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
     assert.deepEqual(outcome.reasonCodes, [GRANT_REASON_CODES.GRANT_CORRELATION_INVALID]);
@@ -139,7 +176,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
   it('a revocation landing against the identity before commit precludes issuance', async () => {
     const store = createInMemoryBoundedGrantStore();
     const service = createGrantIssuanceService({ store });
-    const first = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+    const first = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
     if (first.outcome === 'refused') throw new Error('expected the first issuance to succeed');
     await service.revokeGrant({ grantId: first.grant.id, reason: 'security-incident', revokedAt: '2026-01-01T12:01:00.000Z', issuerRef: 'ops' });
 
@@ -147,7 +184,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
       source: baseSource(),
       subject: 'actor-a',
       correlation: CORRELATION,
-      issuedAt: NOW,
+      issuedAt: NOW, expiresAt: HORIZON,
     });
     assert.equal(second.outcome, 'refused');
     if (second.outcome !== 'refused') return;
@@ -157,8 +194,12 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
   it('duplicate issuance of the same identity produces one grant, not two', async () => {
     const store = createInMemoryBoundedGrantStore();
     const service = createGrantIssuanceService({ store });
-    const first = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
-    const second = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: '2026-01-01T12:03:00.000Z' });
+    const first = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
+    // Same identity inputs — correlation, subject, bounds and expiry — issued a
+    // second time at a later instant. Identity is derived from what the grant
+    // *is*, not from when the issuance was attempted, so the second lands on
+    // the existing artifact.
+    const second = await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: '2026-01-01T12:03:00.000Z', expiresAt: HORIZON });
 
     if (first.outcome === 'refused' || second.outcome === 'refused') throw new Error('expected both issuances to resolve');
     assert.equal(first.outcome, 'issued');
@@ -169,7 +210,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
   it('concurrent-equivalent issuance of one identity resolves to one grant and one already-issued', async () => {
     const store = createInMemoryBoundedGrantStore();
     const service = createGrantIssuanceService({ store });
-    const request = { source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW } as const;
+    const request = { source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON } as const;
     const [a, b] = await Promise.all([service.issueGrant({ ...request }), service.issueGrant({ ...request })]);
 
     const outcomes = [a.outcome, b.outcome].sort();
@@ -196,7 +237,7 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
       },
     });
 
-    await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+    await service.issueGrant({ source: baseSource(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
     assert.deepEqual(calls.slice(0, 3), ['store.issue', 'revalidate', 'guard:true'], 'the re-read happens inside the store call, never before it');
   });
 });

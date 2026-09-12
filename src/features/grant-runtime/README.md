@@ -124,12 +124,13 @@ Six axes, each justified by something the current architecture already carries.
 | `counterparty` | `identity` | the counterparty it evaluated |
 | `organization` | `identity` | the tenant it was scoped to |
 | `amount` | `ceiling` | the quantity it evaluated, with its currency |
-| `validity` | `window` | the horizon operator configuration allows off it |
 
-`action`, `resources` and `validity` are mandatory: a source that does not state
-all three cannot be attenuated from.
+`action` and `resources` are mandatory: a source that does not state both cannot
+be attenuated from. Validity is deliberately not an axis here — see "Where a
+grant's validity comes from".
 
-Four bound shapes and no fifth. There is deliberately **no** expression shape,
+Four bound shapes and no fifth — the `window` shape is used for validity
+ceilings rather than for a scope axis. There is deliberately **no** expression shape,
 no predicate shape, no wildcard shape and no negation, and nothing here parses,
 compiles or executes anything — no `eval`, no `new Function`, no dynamic import,
 no user-supplied predicate. A requested `'*'` against a source `'payment'` is
@@ -187,30 +188,99 @@ deliberately so: there, a malformed deadline leaves a *blocking* obligation
 blocking; here, a malformed horizon on a *permission* must not read as no
 horizon at all. Both are the closed direction for what they govern.
 
-### An underdetermination in the accepted ADR, and how it is resolved
+## Where a grant's validity comes from
 
-ADR §4.5 requires that a grant's `expiresAt` "must not exceed any bound the
-decision set", and hard invariant 2 restates it. Both are conditional on the
-decision having set one — and **no decision record in this repository carries a
-validity bound.** `EnterpriseAccessDecision` has `evaluatedAt` and no horizon;
-`GovernanceEvaluationRecord` has `evaluatedAt`/`persistedAt` and no horizon;
-`KernelEvaluationResult` has `evaluatedAt` and no horizon. Read literally, §4.5
-is vacuous for time, and a grant could be issued with any expiry, or none.
+ADR §4, "Where a grant's validity comes from", and hard invariants 9 and 10.
+Four rules, and this module is those rules.
 
-That is an *underdetermination*, not a contradiction — §4.5 is well defined
-whenever a bound exists, and simply says nothing when one does not. It is
-resolved in the one direction `TARGET_AUTHORITY_CONTROL_ARCHITECTURE.md` §4
-invariant 6 gives every unresolvable state: **closed**. The horizon is
-operator-declared (`GrantDeclaration.maximumGrantLifetimeSeconds`), the source
-validity bound is `evaluatedAt + maximumGrantLifetimeSeconds`, and a deployment
-that declares no horizon gets no grants rather than unbounded ones. There is no
-value meaning "unlimited" and no way to express one.
+**1. Every bounded grant is finite.** `issuedAt` and `expiresAt` are both
+required, and `expiresAt` is strictly after `issuedAt` — what
+`ADR-ACCESS-GRANT.md` already requires of `EnterpriseAccessGrant`. There is no
+unlimited grant and no value meaning "no expiry".
 
-The deadline reaches this layer by the same route an obligation deadline does —
-trusted operator configuration, never caller-controlled request data — which is
-ADR hard invariant 8 applied one layer over. A zero, negative or non-finite
-horizon is rejected when the Kernel is **wired**, not when a payment is
-evaluated.
+**2. `expiresAt` is proposed by the trusted issuer**, through
+`GrantIssuanceRequest.expiresAt`. Not derived from deployment configuration, not
+defaulted, and never read from caller-controlled request data — that last is
+hard invariant 8 one layer over: a requester able to set, extend or remove the
+expiry on its own grant has been handed the grant. An issuance supplying none is
+refused with `GRANT_VALIDITY_INVALID`.
+
+**3. The proposal is contained by every applicable upstream ceiling that
+exists.**
+
+```
+effective ceiling = min(
+  the decision's validity bound,            if present
+  the governing authority's validity bound,  if applicable
+  the deployment maximum lifetime,           if configured
+)
+```
+
+A request above that minimum is **refused, never silently clamped** — one rule,
+no special case by which ceiling was strictest. An issuer asking for more time
+than it may have has a defect, and an issuance that quietly succeeds with a
+value the issuer did not ask for hides it. When the request is within every
+bound, the accepted expiry **is** the issuer's requested value, byte for byte.
+Refusal names the ceiling that capped it, so "what stopped this?" is answerable
+from the outcome.
+
+**4. No upstream bound is invented where none exists.** Measured, not assumed:
+**no decision record in this repository carries a validity window.**
+`EnterpriseAccessDecision` carries `evaluatedAt`; `GovernanceEvaluationRecord`
+carries `evaluatedAt`/`persistedAt`; `KernelEvaluationResult` carries
+`evaluatedAt`. So `GrantEvaluation.validityCeilings` is frequently **empty**, and
+an empty list is an ordinary answer rather than a defect — and it never means
+unbounded, because rule 2 still requires a finite expiry.
+
+### The deployment ceiling is optional
+
+`GrantDeclaration.maximumGrantLifetimeSeconds` is a **safety cap on a
+deployment's own issuers**. It is optional, it is **not** the source of a
+grant's validity, and **its absence is not a reason to withhold a grant**. A
+deployment that configures none still issues grants, on the strength of the
+issuer's finite expiry and whatever upstream ceilings apply. `{ declaration: {} }`
+is a valid configuration. A *present* value that is zero, negative or non-finite
+is rejected when the Kernel is wired, not when a payment is evaluated.
+
+It is also not *authority* — it is an operator limiting what its own trusted
+issuers may ask for, which is a different kind of thing from a bound a mandate
+imposes. It is reported as its own ceiling `source`, so a refusal says which of
+the two capped the request.
+
+### Where an authority ceiling comes from
+
+The Kernel cannot see a mandate or a representative authority — those live
+behind the Enterprise authority stores, which layer E may not reach — so
+`deriveGrantSourceAuthorization` emits only what it can, and the composition
+root adds what it knows through `withGrantValidityCeiling` or
+`GrantIssuanceRequest.additionalValidityCeilings`. That is the route by which
+hard invariant 10 — **a grant never outlives the authority justifying it** —
+becomes enforceable, and it follows the settled precedent exactly: a
+reservation's `expiresAt` "is set from the mandate's own expiry", and a
+redelegated representation is containment-checked on "both ends of the validity
+window".
+
+The ceilings are re-proven **inside the store transaction**: a mandate whose
+window is shortened between the caller's measurement and the commit refuses the
+issuance rather than committing a grant that would outlive it.
+
+### The correction this replaced
+
+An earlier revision of this module had the direction backwards. The horizon was
+*derived* as `evaluatedAt + maximumGrantLifetimeSeconds`, the issuer could only
+narrow below it, and a deployment configuring no maximum could issue **no grants
+at all**. That made a configuration value into what a grant's lifetime *is*
+rather than a limit on it, inverted the direction the ADR states, and diverged
+from `IssueAccessGrantRequest.expiresAt` — the one issuance input that already
+exists. It is gone, and ADR §4 now states the origin normatively so it cannot be
+re-derived by inference.
+
+Validity is also no longer a **scope axis**. A scope says what a grant may act
+over; a validity window says when. Carrying `validity` inside `GrantScope`
+forced a grant to state both an inherited ceiling and its own expiry — two
+temporal values on one artifact, the "second, independently-settable source of
+truth" `ADR-ACCESS-GRANT.md` refuses. `expiresAt` is top-level, exactly as it is
+on `EnterpriseAccessGrant`.
 
 ## Revocation
 
@@ -260,8 +330,8 @@ why `BoundedGrantStorePort.issue` already carries a commit guard.
 
 ## Deterministic identity
 
-`boundedGrantId` is derived from the correlation, the subject and the canonical
-bounds, and from nothing else — no UUID, no counter, no clock, no ambient
+`boundedGrantId` is derived from the correlation, the subject, the canonical
+bounds and the accepted `expiresAt`, and from nothing else — no UUID, no counter, no clock, no ambient
 randomness. A structural test fails the build if `randomUUID`, `Math.random`,
 `randomBytes` or a `nextId` call appears.
 
@@ -430,6 +500,7 @@ result.grants.ineligibilityReasonCodes // GRANT_* — a separate vocabulary
 result.grants.correlation              // requestId, decisionId, action, resourceScope
 result.grants.subject                  // the only party a grant may be held by
 result.grants.sourceBounds[]           // what such a grant would be narrowed from
+result.grants.validityCeilings[]       // upstream bounds a grant may not outlive; often empty
 ```
 
 It carries no grant, no grant id and no token, and a test asserts the absence of
@@ -608,6 +679,13 @@ been destroyed.
   no delegation.
 - **A durable grant store.** The port's production guarantees are stated; a
   SQLite or Postgres adapter is not built.
+- **A decision-carried validity bound.** No decision record carries one today,
+  so rule 3's first clause is presently unsatisfiable on the generic Kernel
+  path. Adding one is a decision-contract change, not a layer E change, and
+  `validityCeilingsFor` is where it would join the list.
+- **Mandate-backed issuance.** The hook exists (`withGrantValidityCeiling`,
+  `additionalValidityCeilings`) and is tested, but no composition root wires a
+  real mandate through it yet.
 - **Extending `packages/access-grant`.** `TARGET_AUTHORITY_CONTROL_ARCHITECTURE.md`
   §6 anticipates optional decision-binding fields on `EnterpriseAccessGrant`.
   They are not added: the frozen contract has no consumer for them in this

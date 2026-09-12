@@ -29,7 +29,6 @@ const SOURCE_SCOPE: GrantScope = {
   amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
   counterparty: { kind: 'identity', value: 'V123' },
   resources: { kind: 'set', values: ['record:contract'] },
-  validity: { kind: 'window', notAfter: HORIZON },
 };
 
 function source(overrides: Partial<GrantSourceAuthorization> = {}): GrantSourceAuthorization {
@@ -40,6 +39,7 @@ function source(overrides: Partial<GrantSourceAuthorization> = {}): GrantSourceA
     authorizationPermitsExercise: true,
     allBlockingObligationsSatisfied: true,
     evaluatedAt: NOW,
+    validityCeilings: [{ source: 'deployment', notAfter: HORIZON }],
     ...overrides,
   };
 }
@@ -49,6 +49,7 @@ async function issue(input: {
   readonly requestedBounds?: RequestedGrantBounds;
   readonly subject?: string;
   readonly correlation?: GrantCorrelation;
+  readonly expiresAt?: string;
   readonly revalidateSource?: (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined;
 }): Promise<GrantIssuanceOutcome> {
   const service = createGrantIssuanceService({
@@ -62,6 +63,7 @@ async function issue(input: {
     subject: input.subject ?? src.subject,
     correlation: input.correlation ?? src.correlation,
     issuedAt: NOW,
+    expiresAt: input.expiresAt ?? HORIZON,
   });
 }
 
@@ -95,9 +97,9 @@ describe('Grant eligibility — ALLOW does not mean a grant exists', () => {
     assert.deepEqual(assessment.reasonCodes, [GRANT_REASON_CODES.GRANT_AUTHORIZATION_NOT_PERMITTED, GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED]);
   });
 
-  it('a source missing a mandatory bound is ineligible — an unbounded grant is never the fallback', () => {
-    const noHorizon = source({ scope: { action: { kind: 'identity', value: 'payment.send' }, resources: { kind: 'set', values: ['record:contract'] } } });
-    assert.deepEqual(assessGrantEligibility(noHorizon).reasonCodes, [GRANT_REASON_CODES.GRANT_SOURCE_BOUNDS_INCOMPLETE]);
+  it('a source missing a mandatory scope bound is ineligible — there is nothing to attenuate from', () => {
+    const noScope = source({ scope: { amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' } } });
+    assert.deepEqual(assessGrantEligibility(noScope).reasonCodes, [GRANT_REASON_CODES.GRANT_SOURCE_BOUNDS_INCOMPLETE]);
   });
 });
 
@@ -115,8 +117,9 @@ describe('Issuance — the eight checks ahead of a grant', () => {
     const outcome = await issue({
       requestedBounds: {
         amount: { kind: 'ceiling', limit: 5_000, unit: 'USD' },
-        validity: { kind: 'window', notAfter: '2026-01-01T12:02:00.000Z' },
+        resources: { kind: 'set', values: ['record:contract'] },
       },
+      expiresAt: '2026-01-01T12:02:00.000Z',
     });
     assert.equal(outcome.outcome, 'issued');
     if (outcome.outcome !== 'issued') return;
@@ -137,8 +140,8 @@ describe('Issuance — the eight checks ahead of a grant', () => {
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_BOUND_INCOMPARABLE]);
   });
 
-  it('refuses a validity expansion', async () => {
-    const outcome = await issue({ requestedBounds: { validity: { kind: 'window', notAfter: '2026-01-01T12:30:00.000Z' } } });
+  it('refuses a validity expansion beyond the effective ceiling', async () => {
+    const outcome = await issue({ expiresAt: '2026-01-01T12:30:00.000Z' });
     assert.equal(outcome.outcome, 'refused');
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
   });
@@ -182,8 +185,7 @@ describe('Issuance — the eight checks ahead of a grant', () => {
   });
 
   it('refuses a grant whose horizon is at or before the instant it would be issued', async () => {
-    const outcome = await issue({ source: source({ scope: { ...SOURCE_SCOPE, validity: { kind: 'window', notAfter: NOW } } }) });
-    assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_VALIDITY_INVALID]);
+    assert.deepEqual(refusalCodes(await issue({ expiresAt: NOW })), [GRANT_REASON_CODES.GRANT_VALIDITY_INVALID]);
   });
 
   it('never partially issues — a refusal writes nothing the store will return', async () => {
@@ -195,9 +197,10 @@ describe('Issuance — the eight checks ahead of a grant', () => {
       subject: 'actor-a',
       correlation: CORRELATION,
       issuedAt: NOW,
+      expiresAt: HORIZON,
     });
     assert.equal(refused.outcome, 'refused');
-    const issued = await service.issueGrant({ source: source(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+    const issued = await service.issueGrant({ source: source(), subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
     assert.equal(issued.outcome, 'issued', 'the refused attempt left no artifact and no reservation behind');
   });
 });

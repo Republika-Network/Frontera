@@ -27,6 +27,7 @@ export type {
   DisregardedObligationObservationEvaluation,
   GrantBoundEvaluation,
   GrantEvaluation,
+  GrantValidityCeilingEvaluation,
   ObligationDischargeEvaluation,
   ObligationEvaluation,
   ObligationInstanceEvaluation,

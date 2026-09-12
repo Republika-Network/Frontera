@@ -36,12 +36,16 @@ export type { GrantCorrelation } from './grant-correlation.js';
 
 export {
   MANDATORY_GRANT_BOUND_KEYS,
+  withGrantValidityCeiling,
   grantSourceMatchesCorrelation,
   isDerivableGrantSource,
   missingMandatoryGrantBounds,
   serializeGrantSourceAuthorization,
 } from './grant-source-authorization.js';
 export type { GrantSourceAuthorization } from './grant-source-authorization.js';
+
+export { GRANT_VALIDITY_CEILING_SOURCES, effectiveGrantValidityCeiling, resolveGrantValidity } from './grant-validity.js';
+export type { GrantValidityCeiling, GrantValidityCeilingSource, GrantValidityResolution } from './grant-validity.js';
 
 export { assessGrantEligibility, unstatedMandatoryBounds } from './grant-eligibility.js';
 export type { GrantEligibility, GrantEligibilityAssessment } from './grant-eligibility.js';

@@ -166,6 +166,20 @@ describe('Characterization: configuring grants changes nothing about the authori
     assert.equal(result.grants?.eligibility, 'eligible');
   });
 
+  it('an empty declaration is valid — a deployment adopts grants by composing the capability, not by configuring a limit', async () => {
+    const fixture = buildDatasysEnforcementFixture();
+    const kernel = new AocKernel({
+      recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+      clock: createManualEnforcementClock(NOW),
+      idGenerator: createSequentialEnforcementIdGenerator(),
+      grants: { declaration: {} },
+    });
+
+    const result = await kernel.evaluate(toKernelRequest(buildDraftClosureEmailGuardInput()));
+    assert.equal(result.grants?.eligibility, 'eligible', 'no deployment cap is not a reason to withhold eligibility');
+    assert.deepEqual(result.grants?.validityCeilings, [], 'and it imposes no ceiling, which is an ordinary answer rather than an unbounded one');
+  });
+
   it('a wiring-time misconfiguration is rejected when the Kernel is built, not when a payment is evaluated', () => {
     const fixture = buildDatasysEnforcementFixture();
     for (const maximumGrantLifetimeSeconds of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {

@@ -153,10 +153,14 @@ describe('A caller cannot broaden a grant', () => {
     assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: 7_500, unit: 'USD' }, 'the ceiling is the amount the decision was made on, not the amount the caller wrote beside it');
   });
 
-  it('a forged expiry does not extend the horizon', async () => {
+  it('a forged expiry does not extend the deployment ceiling', async () => {
     const result = await buildKernel().evaluate(paymentRequest('grant-forgery-6', FORGED));
-    const validity = result.grants?.sourceBounds.find((bound) => bound.key === 'validity');
-    assert.equal(validity?.notAfter, '2026-01-01T00:10:00.000Z', 'the horizon is operator configuration measured from the evaluation instant');
+    assert.deepEqual(result.grants?.validityCeilings, [{ source: 'deployment', notAfter: '2026-01-01T00:10:00.000Z' }]);
+    assert.equal(
+      result.grants?.sourceBounds.some((bound) => bound.key === 'validity'),
+      false,
+      'a validity window is not a scope axis, so there is no validity bound for a caller to aim at',
+    );
   });
 
   it('a forged subject does not change who the grant would be held by', async () => {
@@ -203,17 +207,38 @@ describe('A forged grant artifact is never authoritative', () => {
         amount: { kind: 'ceiling', limit: 1_000_000, unit: 'USD' },
         action: { kind: 'identity', value: '*' },
         counterparty: { kind: 'identity', value: 'V999' },
-        validity: { kind: 'window', notAfter: '2099-01-01T00:00:00.000Z' },
       },
       subject: source.subject,
       correlation: source.correlation,
       issuedAt: NOW,
+      expiresAt: '2099-01-01T00:00:00.000Z',
     });
 
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
     assert.deepEqual([...outcome.reasonCodes].sort(), ['GRANT_BOUND_INCOMPARABLE', 'GRANT_SCOPE_BROADENING']);
-    assert.deepEqual(outcome.violations.map((violation) => violation.key), ['action', 'amount', 'counterparty', 'validity']);
+    assert.deepEqual(outcome.violations.map((violation) => violation.key), ['action', 'amount', 'counterparty']);
+  });
+
+  it('the forged expiry is refused even from the trusted side — the deployment cap contains it', async () => {
+    const capability = new KernelGrantCapability({ declaration: { maximumGrantLifetimeSeconds: LIFETIME } });
+    const request = paymentRequest('grant-forgery-11b', FORGED);
+    const result = await buildKernel().evaluate(request);
+    const source = deriveGrantSourceAuthorization(capability, request, result);
+
+    const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore() });
+    const outcome = await service.issueGrant({
+      source,
+      subject: source.subject,
+      correlation: source.correlation,
+      issuedAt: NOW,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    assert.equal(outcome.outcome, 'refused');
+    if (outcome.outcome !== 'refused') return;
+    assert.deepEqual(outcome.reasonCodes, ['GRANT_SCOPE_BROADENING']);
+    assert.deepEqual(outcome.effectiveValidityCeiling, { source: 'deployment', notAfter: '2026-01-01T00:10:00.000Z' });
   });
 
   it('a grant issued for the honest bounds is exactly the honest bounds, whatever the caller sent', async () => {
@@ -223,11 +248,17 @@ describe('A forged grant artifact is never authoritative', () => {
     const source = deriveGrantSourceAuthorization(capability, request, result);
 
     const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore() });
-    const outcome = await service.issueGrant({ source, subject: source.subject, correlation: source.correlation, issuedAt: NOW });
+    const outcome = await service.issueGrant({
+      source,
+      subject: source.subject,
+      correlation: source.correlation,
+      issuedAt: NOW,
+      expiresAt: '2026-01-01T00:05:00.000Z',
+    });
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
     assert.equal(outcome.grant.subject, request.actor.id);
     assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: 7_500, unit: 'USD' });
-    assert.equal(outcome.grant.expiresAt, '2026-01-01T00:10:00.000Z');
+    assert.equal(outcome.grant.expiresAt, '2026-01-01T00:05:00.000Z', 'the issuer proposed it; the forged 2099 expiry reached nothing');
   });
 });

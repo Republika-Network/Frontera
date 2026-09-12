@@ -27,7 +27,6 @@ const SOURCE_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
   amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
   resources: { kind: 'set', values: ['record:contract'] },
-  validity: { kind: 'window', notAfter: HORIZON },
 };
 
 const SOURCE: GrantSourceAuthorization = {
@@ -37,12 +36,13 @@ const SOURCE: GrantSourceAuthorization = {
   authorizationPermitsExercise: true,
   allBlockingObligationsSatisfied: true,
   evaluatedAt: NOW,
+  validityCeilings: [],
 };
 
 async function issued(): Promise<{ readonly service: GrantIssuanceService; readonly store: BoundedGrantStorePort; readonly grant: BoundedGrant }> {
   const store = createInMemoryBoundedGrantStore();
   const service = createGrantIssuanceService({ store });
-  const outcome = await service.issueGrant({ source: SOURCE, subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW });
+  const outcome = await service.issueGrant({ source: SOURCE, subject: 'actor-a', correlation: CORRELATION, issuedAt: NOW, expiresAt: HORIZON });
   if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
   return { service, store, grant: outcome.grant };
 }

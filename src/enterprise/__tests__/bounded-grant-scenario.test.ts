@@ -22,6 +22,7 @@ import {
   GRANT_REASON_CODES,
   createGrantIssuanceService,
   createInMemoryBoundedGrantStore,
+  withGrantValidityCeiling,
   type BoundedGrantStorePort,
   type GrantIssuanceOutcome,
   type GrantIssuanceService,
@@ -40,7 +41,8 @@ import { toKernelEvaluationRequest, validateGovernanceEvaluateRequestBody } from
  * TRUSTED CONTEXT           vendor.status = approved
  * POLICY                    ALLOW only when amount <= 10000 AND trusted vendor.status == approved
  * OBLIGATION                finance.approval, blocking
- * SOURCE AUTHORIZATION      action = payment, vendor = V123, maxAmount = 7500, validUntil = T+10m
+ * SOURCE AUTHORIZATION      action = payment, vendor = V123, maxAmount = 7500
+ * ISSUER-PROPOSED VALIDITY  expiresAt, contained by the deployment cap at T+10m
  * ```
  *
  * Eleven cases, A through K. The first three carry the phase:
@@ -189,6 +191,8 @@ interface IssuedWorld {
 async function issueFor(options: {
   readonly requestId: string;
   readonly requestedBounds?: RequestedGrantBounds;
+  /** The trusted issuer's proposed expiry. Defaults to the deployment horizon so a case that is not about validity need not restate it. */
+  readonly expiresAt?: string;
   readonly subject?: string;
   readonly contextObservations?: readonly ContextFactObservation[];
   readonly discharges?: (correlation: ReturnType<typeof correlationFor>) => readonly ObligationDischargeObservation[];
@@ -210,6 +214,7 @@ async function issueFor(options: {
     subject: options.subject ?? source.subject,
     correlation: source.correlation,
     issuedAt: NOW,
+    expiresAt: options.expiresAt ?? HORIZON,
   });
 
   return { evaluated, service, store, outcome };
@@ -256,10 +261,8 @@ describe('Acceptance B — obligation verified: ALLOW, ELIGIBLE, GRANT ISSUED', 
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-b-issue',
       discharges: FINANCE_APPROVED,
-      requestedBounds: {
-        amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' },
-        validity: { kind: 'window', notAfter: '2026-01-01T12:05:00.000Z' },
-      },
+      requestedBounds: { amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' } },
+      expiresAt: '2026-01-01T12:05:00.000Z',
     });
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
@@ -312,6 +315,70 @@ describe('Acceptance C — amount expansion: NO GRANT, decision remains ALLOW', 
   });
 });
 
+describe('Model A amount semantics — the grant is authority over the evaluated action', () => {
+  /**
+   * ```
+   * request amount   = 7500
+   * policy threshold = ALLOW when amount <= 10000
+   * source ceiling   = 7500      NOT 10000
+   * ```
+   *
+   * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4, "What 'the evaluated
+   * scope' means". The decision proves that *this* action, at *this* amount,
+   * under *this* context, with *these* obligations, was authorized. It proves
+   * nothing about a 9000 action nobody evaluated, so the grant cannot infer
+   * reusable authority up to the rule's threshold.
+   */
+  const CASES: readonly { readonly limit: number; readonly expected: 'issued' | 'refused'; readonly why: string }[] = [
+    { limit: 7_500, expected: 'issued', why: 'equal to the evaluated amount' },
+    { limit: 5_000, expected: 'issued', why: 'a narrowing of it' },
+    { limit: 1, expected: 'issued', why: 'a much smaller narrowing' },
+    { limit: 7_501, expected: 'refused', why: 'one unit above what was evaluated' },
+    { limit: 9_000, expected: 'refused', why: 'below the policy threshold but above the evaluated amount' },
+    { limit: 10_000, expected: 'refused', why: 'exactly the policy threshold, which is not a bound the decision recorded' },
+    { limit: 15_000, expected: 'refused', why: 'above both' },
+  ];
+
+  for (const testCase of CASES) {
+    it(`a requested ceiling of ${testCase.limit} is ${testCase.expected} — ${testCase.why}`, async () => {
+      const { outcome } = await issueFor({
+        requestId: `grant-scenario-model-a-${testCase.limit}`,
+        discharges: FINANCE_APPROVED,
+        requestedBounds: { amount: { kind: 'ceiling', limit: testCase.limit, unit: 'USD' } },
+      });
+
+      assert.equal(outcome.outcome, testCase.expected);
+      if (testCase.expected === 'refused') {
+        assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
+      }
+    });
+  }
+
+  it('the policy threshold never reaches the grant derivation path at all', async () => {
+    const { evaluated } = await issueFor({ requestId: 'grant-scenario-model-a-threshold', discharges: FINANCE_APPROVED });
+
+    const amount = evaluated.result.grants?.sourceBounds.find((bound) => bound.key === 'amount');
+    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: 7_500, unit: 'USD' });
+    assert.equal(
+      JSON.stringify(evaluated.result.grants).includes('10000'),
+      false,
+      "nothing carries a rule's threshold out of policy evaluation, so the grant layer never sees one",
+    );
+  });
+
+  it('a second, larger action is a new authorization — not something this grant can be stretched to cover', async () => {
+    // The same actor, the same vendor, a different amount. It gets its own
+    // request, its own decision and its own grant; the 7500 grant is not an
+    // envelope it can be drawn against.
+    const { outcome } = await issueFor({
+      requestId: 'grant-scenario-model-a-second-action',
+      discharges: FINANCE_APPROVED,
+      requestedBounds: { amount: { kind: 'ceiling', limit: 9_000, unit: 'USD' } },
+    });
+    assert.equal(outcome.outcome, 'refused');
+  });
+});
+
 describe('Acceptance D — resource expansion: NO GRANT', () => {
   it('a grant naming vendor V999 against a decision about V123 is refused', async () => {
     const { outcome } = await issueFor({
@@ -337,7 +404,7 @@ describe('Acceptance E — validity expansion: NO GRANT', () => {
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-e',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { validity: { kind: 'window', notAfter: '2026-01-01T12:30:00.000Z' } },
+      expiresAt: '2026-01-01T12:30:00.000Z',
     });
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
   });
@@ -346,9 +413,9 @@ describe('Acceptance E — validity expansion: NO GRANT', () => {
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-e-malformed',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { validity: { kind: 'window', notAfter: 'whenever' } },
+      expiresAt: 'whenever',
     });
-    assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_BOUND_INCOMPARABLE]);
+    assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_VALIDITY_INVALID]);
   });
 });
 
@@ -362,8 +429,8 @@ describe('Acceptance F — equal bounds: VALID', () => {
         amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' },
         counterparty: { kind: 'identity', value: 'V123' },
         resources: { kind: 'set', values: [buildDraftClosureEmailGuardInput().resourceScope] },
-        validity: { kind: 'window', notAfter: HORIZON },
       },
+      expiresAt: HORIZON,
     });
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
@@ -379,6 +446,7 @@ describe('Acceptance F — equal bounds: VALID', () => {
     assert.equal(outcome.grant.scope.amount?.kind, 'ceiling');
     assert.equal(sourceBounds.find((bound) => bound.key === 'amount')?.limit, 7_500);
     assert.equal(outcome.grant.expiresAt, HORIZON);
+    assert.deepEqual(evaluated.result.grants?.validityCeilings, [{ source: 'deployment', notAfter: HORIZON }]);
   });
 });
 
@@ -387,10 +455,8 @@ describe('Acceptance G — narrower bounds: VALID', () => {
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-g',
       discharges: FINANCE_APPROVED,
-      requestedBounds: {
-        amount: { kind: 'ceiling', limit: 5_000, unit: 'USD' },
-        validity: { kind: 'window', notAfter: '2026-01-01T12:02:00.000Z' },
-      },
+      requestedBounds: { amount: { kind: 'ceiling', limit: 5_000, unit: 'USD' } },
+      expiresAt: '2026-01-01T12:02:00.000Z',
     });
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
@@ -398,7 +464,7 @@ describe('Acceptance G — narrower bounds: VALID', () => {
     assert.equal(outcome.grant.expiresAt, '2026-01-01T12:02:00.000Z');
     assert.deepEqual(
       outcome.bounds.filter((bound) => bound.narrowingRequested).map((bound) => [bound.key, bound.comparison]),
-      [['amount', 'narrower'], ['validity', 'narrower']],
+      [['amount', 'narrower']],
     );
   });
 });
@@ -472,6 +538,61 @@ describe('Acceptance J — revoked grant: unusable, and the history is untouched
 
     assert.equal(second.outcome, 'already-revoked');
     assert.deepEqual(second.revocation, first.revocation);
+  });
+});
+
+describe('Validity source, end to end', () => {
+  it('the issuer proposes the expiry and it is accepted exactly, within the deployment cap', async () => {
+    const { outcome } = await issueFor({ requestId: 'grant-scenario-validity-issuer', discharges: FINANCE_APPROVED, expiresAt: '2026-01-01T12:03:00.000Z' });
+    if (outcome.outcome !== 'issued') throw new Error('expected an issued grant');
+    assert.equal(outcome.grant.expiresAt, '2026-01-01T12:03:00.000Z');
+    assert.deepEqual(outcome.effectiveValidityCeiling, { source: 'deployment', notAfter: HORIZON });
+  });
+
+  it('a governing authority window caps the grant below the deployment cap', async () => {
+    const evaluated = await evaluatePayment({ requestId: 'grant-scenario-validity-authority', discharges: FINANCE_APPROVED });
+    const source = withGrantValidityCeiling(deriveGrantSourceAuthorization(GRANT_CAPABILITY, evaluated.request, evaluated.result), {
+      source: 'authority',
+      notAfter: '2026-01-01T12:04:00.000Z',
+    });
+    const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore() });
+
+    const beyond = await service.issueGrant({ source, subject: source.subject, correlation: source.correlation, issuedAt: NOW, expiresAt: '2026-01-01T12:08:00.000Z' });
+    assert.equal(beyond.outcome, 'refused', 'a grant never outlives the authority justifying it');
+
+    const within = await service.issueGrant({ source, subject: source.subject, correlation: source.correlation, issuedAt: NOW, expiresAt: '2026-01-01T12:03:00.000Z' });
+    assert.equal(within.outcome, 'issued');
+  });
+
+  it('a deployment that configures no cap still issues grants on the issuer’s own finite expiry', async () => {
+    const evaluated = await evaluatePayment({ requestId: 'grant-scenario-validity-no-cap', discharges: FINANCE_APPROVED });
+    const uncapped = new KernelGrantCapability({ declaration: {} });
+    const source = deriveGrantSourceAuthorization(uncapped, evaluated.request, evaluated.result);
+    assert.deepEqual(source.validityCeilings, [], 'no decision record carries a validity window, and no cap is configured');
+
+    const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore() });
+    const outcome = await service.issueGrant({ source, subject: source.subject, correlation: source.correlation, issuedAt: NOW, expiresAt: '2026-01-01T12:06:00.000Z' });
+
+    if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
+    assert.equal(outcome.grant.expiresAt, '2026-01-01T12:06:00.000Z');
+    assert.equal(outcome.effectiveValidityCeiling, undefined);
+  });
+
+  it('and still refuses one with no finite expiry — an absent ceiling never means unbounded', async () => {
+    const evaluated = await evaluatePayment({ requestId: 'grant-scenario-validity-no-expiry', discharges: FINANCE_APPROVED });
+    const source = deriveGrantSourceAuthorization(new KernelGrantCapability({ declaration: {} }), evaluated.request, evaluated.result);
+    const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore() });
+
+    const outcome = await service.issueGrant({
+      source,
+      subject: source.subject,
+      correlation: source.correlation,
+      issuedAt: NOW,
+      expiresAt: undefined as unknown as string,
+    });
+    assert.equal(outcome.outcome, 'refused');
+    if (outcome.outcome !== 'refused') return;
+    assert.deepEqual(outcome.reasonCodes, [GRANT_REASON_CODES.GRANT_VALIDITY_INVALID]);
   });
 });
 

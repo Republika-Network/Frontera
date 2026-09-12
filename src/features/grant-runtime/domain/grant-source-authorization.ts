@@ -1,5 +1,6 @@
 import { grantCorrelationMatches, isWellFormedGrantCorrelation, type GrantCorrelation } from './grant-correlation.js';
 import { isWellFormedGrantScope, serializeGrantScope, statedGrantBoundKeys, type GrantBoundKey, type GrantScope } from './grant-scope.js';
+import type { GrantValidityCeiling } from './grant-validity.js';
 
 /**
  * The authority a grant may be derived from, projected into the only shape
@@ -69,19 +70,38 @@ export interface GrantSourceAuthorization {
    * import path by which it could.
    */
   readonly allBlockingObligationsSatisfied: boolean;
-  /** When the authorization was evaluated. The anchor the validity horizon is measured from. */
+  /** When the authorization was evaluated. */
   readonly evaluatedAt: string;
+  /**
+   * Every upstream bound a grant derived from this authorization may not
+   * outlive — ADR §4, "Where a grant's validity comes from", rule 3.
+   *
+   * **Empty is a first-class, ordinary answer**, and rule 4 is why: no decision
+   * record in this repository carries a validity window, so on the generic
+   * Kernel path there is frequently nothing to contain against. An empty list
+   * means exactly that, and never "unbounded" — the grant's finite expiry still
+   * comes from the issuer, and `resolveGrantValidity` still requires one.
+   *
+   * A host that knows the action is governed by a mandate or a representative
+   * authority adds that artifact's own `expiresAt` here, through
+   * `withGrantValidityCeiling`, before issuing. That is the route by which ADR
+   * hard invariant 10 — "a grant never outlives the authority justifying it" —
+   * becomes enforceable, and it mirrors how a reservation's expiry "is set from
+   * the mandate's own expiry".
+   */
+  readonly validityCeilings: readonly GrantValidityCeiling[];
 }
 
 /**
- * The bounds a deployment will not issue a grant without.
+ * The scope bounds a source authorization must state before anything may be
+ * attenuated from it.
  *
- * `validity` is always required and is not configurable away:
- * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §6 makes a grant's expiry a
- * state derived from the clock at read time, which presupposes there is an
- * expiry. A grant with no horizon is not a bounded grant.
+ * Validity is deliberately absent from this list. It is not a scope axis (see
+ * `grant-scope.ts`) and its presence is not a precondition for issuance: a
+ * grant's finite expiry comes from the issuer, and an authorization with no
+ * upstream temporal ceiling is an ordinary authorization, not a defective one.
  */
-export const MANDATORY_GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'resources', 'validity'];
+export const MANDATORY_GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'resources'];
 
 /** Which mandatory bounds this source authorization fails to state, in canonical order. Empty means it states them all. */
 export function missingMandatoryGrantBounds(source: GrantSourceAuthorization): readonly GrantBoundKey[] {
@@ -131,8 +151,28 @@ export function serializeGrantSourceAuthorization(source: GrantSourceAuthorizati
     ].join(',')}}`,
     `"evaluatedAt":${JSON.stringify(source.evaluatedAt)}`,
     `"scope":${serializeGrantScope(source.scope)}`,
+    `"validityCeilings":[${orderedValidityCeilings(source.validityCeilings)
+      .map((ceiling) => `{"notAfter":${JSON.stringify(ceiling.notAfter)},"source":${JSON.stringify(ceiling.source)}}`)
+      .join(',')}]`,
     `"subject":${JSON.stringify(source.subject)}`,
   ].join(',');
+}
+
+/** Canonical ceiling order — by source name, then instant — so a source authorization serializes and digests identically however its ceilings were assembled. */
+function orderedValidityCeilings(ceilings: readonly GrantValidityCeiling[]): readonly GrantValidityCeiling[] {
+  return [...ceilings].sort((left, right) => (left.source === right.source ? left.notAfter.localeCompare(right.notAfter) : left.source.localeCompare(right.source)));
+}
+
+/**
+ * Adds an upstream ceiling to a source authorization.
+ *
+ * The route a host takes when it knows the action is governed by a mandate or a
+ * representative authority: the Kernel adapter cannot know about either, so it
+ * projects what it can and the composition root adds what it knows. Returns a
+ * new value; the source handed in is never mutated.
+ */
+export function withGrantValidityCeiling(source: GrantSourceAuthorization, ceiling: GrantValidityCeiling): GrantSourceAuthorization {
+  return { ...source, validityCeilings: [...source.validityCeilings, ceiling] };
 }
 
 /** Whether a correlation names the same authorization this source describes. */

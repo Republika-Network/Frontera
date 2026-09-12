@@ -34,10 +34,18 @@ interface BoundCase {
 }
 
 interface BoundTable {
-  readonly key: GrantBoundKey;
   readonly shape: string;
   readonly source: GrantBound;
   readonly cases: readonly BoundCase[];
+  /**
+   * The scope axis this shape is expressed on, when it is one.
+   *
+   * `window` has no axis: a validity window is not a scope bound — a scope says
+   * what a grant may act over, a window says when — so it is exercised through
+   * `compareGrantBound` here and end to end in `grant-validity.test.ts`, where
+   * the issuer proposes and the ceilings contain.
+   */
+  readonly key?: GrantBoundKey;
 }
 
 const TABLES: readonly BoundTable[] = [
@@ -86,7 +94,6 @@ const TABLES: readonly BoundTable[] = [
     ],
   },
   {
-    key: 'validity',
     shape: 'window',
     source: { kind: 'window', notAfter: '2026-01-01T15:00:00.000Z' },
     cases: [
@@ -104,16 +111,18 @@ const TABLES: readonly BoundTable[] = [
 describe('Attenuation matrix — LESS THAN and EQUAL permit, GREATER THAN and INCOMPARABLE refuse', () => {
   for (const table of TABLES) {
     for (const boundCase of table.cases) {
-      it(`${table.shape} bound on '${table.key}': ${boundCase.name} compares ${boundCase.expected}`, () => {
+      it(`${table.shape} bound: ${boundCase.name} compares ${boundCase.expected}`, () => {
         assert.equal(compareGrantBound(table.source, boundCase.requested), boundCase.expected);
       });
 
-      it(`${table.shape} bound on '${table.key}': ${boundCase.name} is ${boundCase.expected === 'equal' || boundCase.expected === 'narrower' ? 'issued' : 'refused'}`, () => {
-        const outcome = attenuateGrantScope({ [table.key]: table.source } as GrantScope, { [table.key]: boundCase.requested });
+      if (table.key === undefined) continue;
+      const key = table.key;
+      it(`${table.shape} bound on '${key}': ${boundCase.name} is ${boundCase.expected === 'equal' || boundCase.expected === 'narrower' ? 'issued' : 'refused'}`, () => {
+        const outcome = attenuateGrantScope({ [key]: table.source } as GrantScope, { [key]: boundCase.requested });
         if (boundCase.expected === 'equal' || boundCase.expected === 'narrower') {
           assert.equal(outcome.outcome, 'attenuated');
           if (outcome.outcome !== 'attenuated') return;
-          assert.equal(grantScopeIsWithin({ [table.key]: table.source } as GrantScope, outcome.scope), true, 'an issued scope is always inside its source');
+          assert.equal(grantScopeIsWithin({ [key]: table.source } as GrantScope, outcome.scope), true, 'an issued scope is always inside its source');
         } else {
           assert.equal(outcome.outcome, 'refused');
           if (outcome.outcome !== 'refused') return;
@@ -130,6 +139,15 @@ describe('Attenuation matrix — LESS THAN and EQUAL permit, GREATER THAN and IN
   it('every bound shape in the algebra is covered by a table', () => {
     assert.deepEqual([...new Set(TABLES.map((table) => table.shape))].sort(), ['ceiling', 'identity', 'set', 'window']);
   });
+
+  it('every scope axis is covered by a table, and only `window` sits outside the scope', () => {
+    const covered = TABLES.flatMap((table) => (table.key === undefined ? [] : [table.key])).sort();
+    assert.deepEqual(covered, [...GRANT_BOUND_KEYS].filter((key) => covered.includes(key)).sort());
+    assert.deepEqual(
+      TABLES.filter((table) => table.key === undefined).map((table) => table.shape),
+      ['window'],
+    );
+  });
 });
 
 const SOURCE: GrantScope = {
@@ -138,7 +156,6 @@ const SOURCE: GrantScope = {
   counterparty: { kind: 'identity', value: 'V123' },
   organization: { kind: 'identity', value: 'org-1' },
   resources: { kind: 'set', values: ['record:contract'] },
-  validity: { kind: 'window', notAfter: '2026-01-01T12:10:00.000Z' },
 };
 
 describe('Attenuation across a whole scope', () => {
@@ -156,13 +173,13 @@ describe('Attenuation across a whole scope', () => {
     if (outcome.outcome !== 'attenuated') return;
     assert.deepEqual(outcome.scope.amount, { kind: 'ceiling', limit: 5_000, unit: 'USD' });
     assert.deepEqual(outcome.scope.action, SOURCE.action);
-    assert.deepEqual(outcome.scope.validity, SOURCE.validity);
+    assert.deepEqual(outcome.scope.resources, SOURCE.resources);
   });
 
   it('one broadened axis refuses the whole grant, even when every other axis narrows', () => {
     const outcome = attenuateGrantScope(SOURCE, {
       amount: { kind: 'ceiling', limit: 1, unit: 'USD' },
-      validity: { kind: 'window', notAfter: '2026-01-01T12:01:00.000Z' },
+      resources: { kind: 'set', values: ['record:contract'] },
       counterparty: { kind: 'identity', value: 'V999' },
     });
     assert.equal(outcome.outcome, 'refused');
@@ -174,11 +191,11 @@ describe('Attenuation across a whole scope', () => {
     const outcome = attenuateGrantScope(SOURCE, {
       amount: { kind: 'ceiling', limit: 99_999, unit: 'USD' },
       counterparty: { kind: 'identity', value: 'V999' },
-      validity: { kind: 'window', notAfter: '2026-01-01T23:00:00.000Z' },
+      resources: { kind: 'set', values: ['record:contract', 'record:somebody-elses'] },
     });
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
-    assert.deepEqual(outcome.violations.map((violation) => violation.key), ['amount', 'counterparty', 'validity']);
+    assert.deepEqual(outcome.violations.map((violation) => violation.key), ['amount', 'counterparty', 'resources']);
   });
 
   it('a bound on an axis the source never stated is refused, never treated as unbounded', () => {
@@ -190,9 +207,9 @@ describe('Attenuation across a whole scope', () => {
   });
 
   it('a malformed source bound refuses rather than being compared into permission', () => {
-    const broken: GrantScope = { validity: { kind: 'window', notAfter: 'never' } };
+    const broken: GrantScope = { amount: { kind: 'ceiling', limit: Number.NaN, unit: 'USD' } };
     assert.equal(attenuateGrantScope(broken).outcome, 'refused');
-    assert.equal(attenuateGrantScope(broken, { validity: { kind: 'window', notAfter: '2020-01-01T00:00:00.000Z' } }).outcome, 'refused');
+    assert.equal(attenuateGrantScope(broken, { amount: { kind: 'ceiling', limit: 1, unit: 'USD' } }).outcome, 'refused');
   });
 
   it('a bound carrying the wrong shape for its axis is refused before comparison', () => {
@@ -213,11 +230,13 @@ describe('Attenuation across a whole scope', () => {
 describe('grantScopeIsWithin — the invariant proven of the artifact, not the process', () => {
   it('holds for every scope attenuation produces, across the full enumerated table', () => {
     for (const table of TABLES) {
+      const key = table.key;
+      if (key === undefined) continue;
       for (const boundCase of table.cases) {
-        const source = { [table.key]: table.source } as GrantScope;
-        const outcome = attenuateGrantScope(source, { [table.key]: boundCase.requested });
+        const source = { [key]: table.source } as GrantScope;
+        const outcome = attenuateGrantScope(source, { [key]: boundCase.requested });
         if (outcome.outcome === 'attenuated') {
-          assert.equal(grantScopeIsWithin(source, outcome.scope), true, `${table.key}/${boundCase.name} produced a scope outside its source`);
+          assert.equal(grantScopeIsWithin(source, outcome.scope), true, `${key}/${boundCase.name} produced a scope outside its source`);
         }
       }
     }
