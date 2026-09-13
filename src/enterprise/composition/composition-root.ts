@@ -48,6 +48,9 @@ import { createSqliteAssuranceStore } from '../assurance/sqlite-assurance-store.
 import type { AssuranceStore } from '../assurance/assurance-store.js';
 import { createAssuranceService, type AssuranceService } from '../assurance/service.js';
 import type { AssuranceFramework } from '../assurance/contracts.js';
+import { createAuthorityControlledExecution, type AuthorityControlledExecutionOptions, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
+import { createAuthorityControlledExecutionModule } from '../modules/authority-controlled-execution-module.js';
+import { createInMemoryBoundedGrantStore } from '../../features/grant-runtime/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -105,6 +108,60 @@ export interface CreateEnterpriseOptions {
   readonly telemetry?: EnterpriseTelemetry;
   readonly logger?: EnterpriseLogger;
   readonly modules?: readonly EnterpriseModule[];
+  /**
+   * Opt-in grant-aware execution -- the first production composition of layer
+   * E onto a provider-neutral execution boundary.
+   *
+   * **Omitting it changes nothing.** No grant is issued on any path, no
+   * bounded-grant store exists, `evaluate()` and the frozen v1 HTTP surface
+   * behave byte-identically to this capability not existing, and no module is
+   * registered. This is the same posture every optional Kernel port in this
+   * repository already takes.
+   *
+   * Supplying it composes `createAuthorityControlledExecution()` and exposes it
+   * as `AocEnterprise.authorityControlledExecution`. It adds no route: a caller
+   * must never be able to issue, extend, revoke or exercise its own grant, so
+   * the composition is reachable from trusted in-process host code only. See
+   * `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
+   */
+  readonly authorityControlledExecution?: EnterpriseAuthorityControlledExecutionOptions;
+}
+
+/**
+ * What a host must state to adopt grant-aware execution.
+ *
+ * `kernel` and `now` are supplied by the composition root; everything else is
+ * the deployment's own decision, and `resolveAuthorityBinding` is deliberately
+ * **required** -- a mandate-backed flow whose authority ceiling is missing must
+ * fail closed rather than issue under an empty ceiling list, and the only way
+ * to guarantee that is to make the host unable to compose without answering the
+ * question.
+ */
+export interface EnterpriseAuthorityControlledExecutionOptions extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore'> {
+  /**
+   * The grant-aware Kernel this composition evaluates through.
+   *
+   * Omitted, the composition root builds a **separate** `AocKernel` instance
+   * over the same providers and policy pack, configured with
+   * `grants: { declaration }`. It is a separate instance on purpose: the Kernel
+   * the frozen `POST /api/governance/evaluate` path uses stays composed exactly
+   * as it was, so its `KernelEvaluationResult` gains no `grants` block and the
+   * Governance Record it commits is byte-identical to a deployment that never
+   * adopted layer E. Both instances read the same authority world; only the
+   * capability set differs.
+   */
+  readonly kernel?: AocKernel;
+  /**
+   * The authoritative home of issued grants.
+   *
+   * Omitted, an in-memory store is composed. **In-memory grants do not survive
+   * a process restart**, and a grant that is gone reads as
+   * `GRANT_EXERCISE_NOT_FOUND` at the next exercise -- no execution, which is
+   * the closed direction. A deployment whose grants must outlive a restart
+   * supplies a durable implementation of the same port. See the persistence
+   * section of `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
+   */
+  readonly grantStore?: AuthorityControlledExecutionOptions['grantStore'];
 }
 
 /**
@@ -172,6 +229,19 @@ export interface AocEnterprise {
    * object. See `docs/enterprise/AOC_DURABLE_KERNEL_AUTHORITY.md`.
    */
   readonly kernelAuthorityProvisioning?: KernelAuthorityProvisioningService;
+  /**
+   * Grant-aware execution, present only when this deployment composed it.
+   *
+   * `undefined` means this Host issues no bounded grants and runs nothing
+   * through a grant-gated execution boundary -- never that execution is
+   * ungoverned, because without this composition there is no grant-aware
+   * execution path at all.
+   *
+   * It is emphatically not part of `evaluate()`: the frozen v1 evaluation
+   * surface never touches it, and an application handed an `AocEnterprise`
+   * should be handed the evaluation surface rather than this object.
+   */
+  readonly authorityControlledExecution?: AuthorityControlledExecutionService;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -381,6 +451,35 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       ...(options.policyPackProvider !== undefined ? { policyPackProvider: options.policyPackProvider } : {}),
     });
 
+  // Opt-in, and narrow on purpose. `contextResolution`, `obligations` and
+  // `grants` are NOT enabled on the Kernel above merely because the runtimes
+  // exist: the Kernel the frozen evaluation path uses is composed exactly as it
+  // was. A deployment adopting layer E gets a second, grant-aware instance over
+  // the same providers, so the record `POST /api/governance/evaluate` commits
+  // is unchanged whether or not this capability is composed.
+  const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
+    options.authorityControlledExecution === undefined
+      ? undefined
+      : createAuthorityControlledExecution({
+          kernel:
+            options.authorityControlledExecution.kernel ??
+            createAocKernel({
+              recognitionProvider: kernelProviders.recognitionProvider,
+              clock: kernelProviders.clock,
+              idGenerator: kernelProviders.idGenerator,
+              ...(options.policyPackProvider !== undefined ? { policyPackProvider: options.policyPackProvider } : {}),
+              grants: { declaration: options.authorityControlledExecution.grantCapability.declaration },
+            }),
+          grantCapability: options.authorityControlledExecution.grantCapability,
+          grantStore: options.authorityControlledExecution.grantStore ?? createInMemoryBoundedGrantStore(),
+          executionAdapter: options.authorityControlledExecution.executionAdapter,
+          resolveAuthorityBinding: options.authorityControlledExecution.resolveAuthorityBinding,
+          ...(options.authorityControlledExecution.revalidateSource !== undefined
+            ? { revalidateSource: options.authorityControlledExecution.revalidateSource }
+            : {}),
+          now: kernelProviders.clock.now,
+        });
+
   const bootId = eventIdGenerator.nextId('boot');
   await persistence.recordEnterpriseVersion({
     bootId,
@@ -421,6 +520,15 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   registry.register(createGovernanceStoreModule(persistence, kernelProviders.clock.now));
   registry.register(createProvidersModule(kernelProviders, kernelProviders.clock.now, options.policyPackProvider !== undefined));
   registry.register(createKernelModule(kernel, kernelProviders.clock.now));
+  if (authorityControlledExecution !== undefined && options.authorityControlledExecution !== undefined) {
+    registry.register(
+      createAuthorityControlledExecutionModule(
+        authorityControlledExecution,
+        options.authorityControlledExecution.executionAdapter.adapterId,
+        kernelProviders.clock.now,
+      ),
+    );
+  }
   registry.register(createAgentPassportModule(passportStore, kernelProviders.clock.now, configuration.passport.required));
   registry.register(createAssuranceModule(assuranceStore, assuranceFrameworkRegistry, kernelProviders.clock.now, configuration.assurance.required));
   if (kernelAuthorityStore !== undefined) {
@@ -515,6 +623,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     assuranceFrameworks: assuranceFrameworkRegistry,
     ...(kernelAuthorityStore !== undefined ? { kernelAuthorityStore } : {}),
     ...(kernelAuthorityProvisioning !== undefined ? { kernelAuthorityProvisioning } : {}),
+    ...(authorityControlledExecution !== undefined ? { authorityControlledExecution } : {}),
     eventPublisher,
     telemetry,
     logger,

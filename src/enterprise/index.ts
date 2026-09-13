@@ -503,6 +503,37 @@ export type { EvaluateGovernanceRequestInput, EvaluateGovernanceRequestDependenc
 
 export { createEnterprise, createDefaultEnterprise } from './composition/composition-root.js';
 export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseRequestContext } from './composition/composition-root.js';
+export type { EnterpriseAuthorityControlledExecutionOptions } from './composition/composition-root.js';
+
+/**
+ * Authority-Controlled Execution -- the opt-in composition that gates external
+ * execution on a bounded grant. Type-only, deliberately.
+ *
+ * The *values* (`createAuthorityControlledExecution`, the reason-code
+ * constants, the error class) are not re-exported here, for the reason the
+ * grant and obligation constants are not re-exported from the Kernel's
+ * entrypoint: `dist/src/enterprise/index.js` is a checksummed release
+ * artifact, and a deployment adopts this capability by composing it through
+ * `createEnterprise({ authorityControlledExecution })` rather than by importing
+ * a factory. A host that needs the values imports them from
+ * `src/enterprise/execution-governance`, which is not a frozen artifact.
+ */
+export type {
+  AuthorityBindingReasonCode,
+  AuthorityControlledAuthorizationInput,
+  AuthorityControlledAuthorizationOutcome,
+  AuthorityControlledExecutionOptions,
+  AuthorityControlledExecutionService,
+  ExecutionGovernanceErrorCode,
+  ExecutionKernelPort,
+  GrantAuthorityBinding,
+  GrantAuthorityBindingQuery,
+  GrantAuthorityBindingResolver,
+  GrantBoundedAuthorityKind,
+  GrantUnboundedAuthoritySourceKind,
+  RevokeBoundedGrantRequest,
+  RevokeBoundedGrantResult,
+} from './execution-governance/index.js';
 
 export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js';
 
