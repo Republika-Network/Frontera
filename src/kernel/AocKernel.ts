@@ -394,6 +394,26 @@ export class AocKernel {
    * `executor` exactly once, and only when the evaluation allows it --
    * identical semantics to `AocGuard.enforce()`, which this wraps directly.
    *
+   * ## What this guarantees, and what it does not
+   *
+   * This is **decision-time** authorization of a **declared action**. The
+   * guarantee is that the `ActionDescriptor` on the request passed recognition,
+   * authority, policy, context and every blocking obligation *before* `executor`
+   * ran, and that a non-allow outcome never reaches `executor` at all.
+   *
+   * It is **not** effect-time authorization. `executor` is an opaque closure:
+   * nothing here inspects it, and nothing binds what it actually does to what
+   * was declared and authorized. A Governance Record produced through this
+   * method attests the declaration, not the effect.
+   *
+   * Effect-time authorization is a different mechanism -- bounded-grant
+   * exercise, where the trusted grant is re-read and an adapter receives only
+   * fields an assessment proved (`src/features/execution-runtime/`). Grants
+   * deliberately do not gate this method; see
+   * `src/enterprise/execution-governance/service.ts` for that reconciliation,
+   * and `docs/security/SECURITY_INVARIANTS.md` SEC-INV-009/SEC-INV-010 for the
+   * guarantee and the limit stated as numbered invariants.
+   *
    * `guard.enforce()` can throw from exactly two places (see
    * `AOC_KERNEL_CURRENT_EXECUTION_MODEL.md` sec. 14): an uncaught
    * `recognitionProvider` failure during preflight (before `executor` ever

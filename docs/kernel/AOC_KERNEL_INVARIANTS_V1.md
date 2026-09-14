@@ -1,5 +1,11 @@
 # Soberanía Kernel Invariants v1
 
+> **Scope.** This document is **Kernel-scoped**: it states what the decision engine guarantees, and nothing about
+> execution paths, stores, provider adapters or containment. The canonical cross-cutting artifact — every security
+> invariant with its scope, enforcement mechanism, evidence and boundary — is
+> `docs/security/SECURITY_INVARIANTS.md`. These ten invariants appear there as SEC-INV-001 through SEC-INV-007 and
+> their neighbours; neither document supersedes the other.
+
 These invariants are documented only where the current implementation (as reconstructed in
 `AOC_KERNEL_CURRENT_EXECUTION_MODEL.md`) actually enforces them. Where the runtime is ambiguous or only partially
 enforces a candidate invariant, that is stated explicitly rather than silently redefining behavior. The kernel
