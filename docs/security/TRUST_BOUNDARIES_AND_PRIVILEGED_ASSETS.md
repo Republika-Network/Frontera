@@ -244,6 +244,8 @@ The one asymmetry worth naming: `AOC_ISSUER_PUBLIC_KEY_PEM` is stored as an issu
 
 `apps/agent-passport-web` is production-shaped and was outside every existing security artifact (SC-006). This section establishes the surface inventory the dedicated audit needs. **It is not that audit.**
 
+> **Superseded in part by Prompt 2.5.** The dedicated threat model is now `docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md`. It corrects two facts stated here and in the Prompt 2 result: this application exposes **no passport lifecycle transition routes** (only issuance; `updatePassportStatus`/`revokePassport` have zero production callers), and it contains **no assurance surface at all**. Both belong to `src/enterprise`. The endpoint count is 31 route files / **35 method+path endpoints**. TB-001, TB-002 and TB-008 are confirmed there as APW-002 and APW-006.
+
 ### 10.1 Externally reachable routes (31)
 
 | Group | Routes | Authentication | Notes |
