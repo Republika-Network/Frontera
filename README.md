@@ -39,6 +39,7 @@ Storage / Identity / Blockchain / AI Systems
 |---|---|
 | Frozen HTTP API surface & versioning policy | `docs/enterprise/API_STABILITY_V1.md` |
 | Security invariants (canonical: scope, enforcement, boundary) | `docs/security/SECURITY_INVARIANTS.md` |
+| Trust boundaries & privileged assets (canonical) | `docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` |
 | Threat model | `docs/security/THREAT_MODEL_V1.md` |
 | Security hardening report | `docs/security/SECURITY_HARDENING_V1.md` |
 | Deployment guide | `docs/operations/DEPLOYMENT_GUIDE_V1.md` |
