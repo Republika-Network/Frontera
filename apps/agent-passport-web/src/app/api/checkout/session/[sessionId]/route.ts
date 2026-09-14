@@ -1,15 +1,43 @@
 /**
  * GET /api/checkout/session/[sessionId]
  *
- * Verifies a Stripe session and returns the associated purchase status.
- * For organization_agent_registry tier, also returns registry summary.
+ * Reads the status of a purchase, and for the organization_agent_registry tier
+ * a non-secret registry summary.
+ *
+ * ## This route is UNAUTHENTICATED and therefore READ-ONLY
+ *
+ * A Stripe checkout session id is a bearer value: it travels in the success
+ * URL, so it reaches browser history, shared links and proxy logs. Possession
+ * of one is not proof of anything, so this route must never create privileged
+ * state and must never disclose a credential.
+ *
+ * Concretely, and enforced by `__tests__/apw-001-checkout-disclosure.test.ts`:
+ *
+ *   - it does NOT create a registry;
+ *   - it does NOT generate an admin access token or a recovery code;
+ *   - it does NOT return either of them, under any key or any tier;
+ *   - it performs no privileged state transition of any kind.
+ *
+ * Registry creation belongs to the Stripe webhook, which authenticates the
+ * event by signature (`app/api/stripe/webhook/route.ts`). If the webhook has
+ * not run, this route reports `registryPending` and stops. It does not
+ * compensate by issuing credentials: an unavailable or misconfigured webhook
+ * must fail closed, not fall back to unauthenticated issuance.
+ *
+ * The buyer's route to administrative access after payment is
+ * `POST /api/organization-registry/recover` with `mode: 'checkout_session'`,
+ * which requires the session id **and** the buyer contact email, and confirms
+ * `payment_status === 'paid'` with Stripe directly before rotating.
+ *
+ * History: this route previously called `ensureOrganizationRegistry` and
+ * returned `adminAccessToken` and `recoveryCode` in cleartext on first
+ * creation. That was APW-001 in
+ * `docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md`.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getPurchaseByStripeSessionId } from '@/lib/purchase-repository';
 import { getRegistryByPurchaseId, getEntitlementByRegistryId } from '@/lib/organization-registry-repository';
-import type { OrganizationProfile } from '@/lib/organization-registry-types';
-import { ensureOrganizationRegistry } from '@/lib/organization-registry-service';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,46 +77,9 @@ export async function GET(
   };
 
   if (purchase.tier === 'organization_agent_registry') {
-    let registry = getRegistryByPurchaseId(purchase.id);
-
-    // If registry not yet created (webhook may be delayed), try to create it now
-    if (!registry && purchase.status === 'completed') {
-      const orgProfile = purchase.metadata?.organization_profile as OrganizationProfile | undefined;
-      const result = ensureOrganizationRegistry({
-        purchaseId: purchase.id,
-        tier: purchase.tier,
-        buyerEmail: purchase.buyerEmail ?? undefined,
-        organizationProfile: orgProfile ?? null,
-      });
-      if (result) {
-        registry = result.registry;
-        // Expose recovery code and token only on first creation
-        if (result.wasCreated && result.adminAccessToken && result.recoveryCode) {
-          const entitlement = getEntitlementByRegistryId(registry.registryId);
-          const baseUrl = process.env.NEXT_PUBLIC_AGENT_PASSPORT_BASE_URL || 'http://localhost:3000';
-          const adminUrl = `/registry/admin?registry_id=${encodeURIComponent(registry.registryId)}&access_token=${encodeURIComponent(result.adminAccessToken)}`;
-          return NextResponse.json({
-            ...base,
-            canEnroll: false,
-            registry: {
-              registryId: registry.registryId,
-              organizationName: registry.organizationName,
-              registryStatus: registry.registryStatus,
-              maxPassports: registry.maxPassports,
-              issuedPassports: registry.issuedPassports,
-              remainingPassports: registry.remainingPassports,
-              entitlementStatus: entitlement?.status ?? null,
-              adminAccessToken: result.adminAccessToken,
-              recoveryCode: result.recoveryCode,
-              adminUrl,
-              baseUrl,
-              profileCompleted: Boolean(registry.profileCompletedAt),
-              message: 'Registry created. Save your admin URL and recovery code securely.',
-            },
-          });
-        }
-      }
-    }
+    // Read only. The registry is created by the signature-verified Stripe
+    // webhook; this route observes that result and never produces it.
+    const registry = getRegistryByPurchaseId(purchase.id);
 
     if (registry) {
       const entitlement = getEntitlementByRegistryId(registry.registryId);
@@ -110,12 +101,15 @@ export async function GET(
       });
     }
 
+    // Fail closed: no registry yet means the webhook has not run. Reporting
+    // that is the whole of this route's job — it does not create one.
     return NextResponse.json({
       ...base,
       canEnroll: false,
       registry: null,
       registryPending: true,
-      message: 'Registry is being prepared. If this persists, contact support.',
+      message:
+        'Registry is being prepared. If this persists, recover administrative access at /registry/recover using your checkout session id and buyer contact email, or contact support.',
     });
   }
 

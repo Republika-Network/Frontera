@@ -3,7 +3,7 @@
 - Status: canonical. This is the single authoritative statement of what Frontera guarantees, where each guarantee stops, and what is not yet implemented.
 - Established by: Security & Containment Architecture track, Prompt 1.
 - Baseline evidence: `SECURITY_CONTAINMENT_BASELINE_AUDIT.md` (Prompt 0).
-- Companion documents: `docs/security/THREAT_MODEL_V1.md`, `docs/security/SECURITY_HARDENING_V1.md`, `docs/kernel/AOC_KERNEL_INVARIANTS_V1.md` (Kernel-scoped), `docs/architecture/ADR-AUTHORITY-CONTROL-LAYERING.md`.
+- Companion documents: `docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` (canonical: trust domains, TCB, privileged assets, authority-write and effect maps, chokepoints, bypass primitives), `docs/security/THREAT_MODEL_V1.md`, `docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md` (the SaaS surface), `docs/security/SECURITY_HARDENING_V1.md`, `docs/kernel/AOC_KERNEL_INVARIANTS_V1.md` (Kernel-scoped), `docs/architecture/ADR-AUTHORITY-CONTROL-LAYERING.md`.
 
 ---
 
@@ -240,10 +240,11 @@ Every claim above must carry its scope when repeated. "No adapter call without a
 5. **KMS/HSM-protected signing.** Every production key is a process-resident symmetric secret from an environment variable (SEC-INV-U02).
 6. **Durable global kill switch.** Process-local, non-durable, and invisible to the exercise path (SEC-INV-U05).
 7. **Behavioral abuse detection.** No rate limiting, velocity or aggregate analysis — and the authorization layers are structurally banned from containing any (SEC-INV-U06).
-8. **Full SaaS threat-model coverage.** `apps/agent-passport-web` — 31 API routes, live Stripe keys, two independent HMAC issuer secrets — is explicitly out of scope of `THREAT_MODEL_V1.md` §9.
-9. **Durable authorization state by default.** Bounded grants and recognition state are in-memory unless a durable store is composed (SEC-TRUST-003).
-10. **Third-party-verifiable Agent Passports.** They are HMAC-signed; the registered "public key" is symmetric-scheme metadata and cannot verify them.
-11. **Repository-wide capability restriction.** Proven for five modules; absent for `packages/`, `apps/` and most of `src/enterprise` (SEC-INV-U08).
+8. **A hardened SaaS surface.** One blocker (APW-001, unauthenticated credential disclosure at checkout) is remediated and regression-tested, but APW-002, APW-003, APW-006 and APW-007 remain open in `AGENT_PASSPORT_WEB_THREAT_MODEL.md`.
+9. **Complete repository threat-model coverage.** `src/enterprise` and `apps/agent-passport-web` are now modelled, but `packages/*` libraries remain outside every threat model (`THREAT_MODEL_V1.md` §9), and no independent penetration test has been performed against any surface.
+10. **Durable authorization state by default.** Bounded grants and recognition state are in-memory unless a durable store is composed (SEC-TRUST-003).
+11. **Third-party-verifiable Agent Passports.** They are HMAC-signed; the registered "public key" is symmetric-scheme metadata and cannot verify them.
+12. **Repository-wide capability restriction.** Proven for five modules; absent for `packages/`, `apps/` and most of `src/enterprise` (SEC-INV-U08).
 
 ---
 

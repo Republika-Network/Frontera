@@ -1,3 +1,33 @@
+/**
+ * # This module performs NO cryptographic verification.
+ *
+ * It lives under a `crypto/` path and exports a `verify*` name, and neither is
+ * a claim about what it does. What it actually checks is:
+ *
+ *   - token **shape** (`tokenId`, `expiresAt`, `proof` field presence);
+ *   - **expiry**, against a caller-supplied instant;
+ *   - **revocation-list membership**, against a caller-supplied `Set`;
+ *   - proof **shape** — that `proofType` is a known string.
+ *
+ * It verifies no signature, and it cannot: the `@aoc/protocol` `CapabilityToken`
+ * carries `ProofMetadata` (`proofType`/`proofRef`/`issuedAt`) with no signature
+ * bytes and no verification key. `ctx.trustDomain` is accepted and deliberately
+ * unused for the same reason — see the comment on that field.
+ *
+ * It also has **no production caller**. Do not mistake it for the same-named
+ * `verifyCapabilityToken` in
+ * `src/features/recognition-runtime/services/capability-token-service.ts`,
+ * which takes a token *id*, resolves it against the recognition runtime's own
+ * store, and *is* on the authorization path.
+ *
+ * Recorded as TB-003 in `docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md`.
+ * The name is retained rather than corrected because this symbol is exported
+ * from `src/index.ts`, whose emitted artifact is checksum-pinned in
+ * `release/RELEASE_MANIFEST.json`; renaming is a consumer-breaking change with
+ * no behavioural gain. `src/runtime/__tests__/naming-boundaries.test.ts` pins
+ * the "no cryptographic primitive" property so this notice cannot go stale.
+ */
+
 import type { CapabilityToken } from '@aoc/protocol';
 
 export interface CapabilityVerificationContext {
