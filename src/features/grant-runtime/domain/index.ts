@@ -65,6 +65,7 @@ export type { GrantReasonCode } from './grant-reason-codes.js';
 export { GRANT_RESERVED_REQUEST_KEY_PREFIX, isReservedGrantKey } from './grant-reserved-keys.js';
 
 export type {
+  BoundedGrantReaderPort,
   BoundedGrantStorePort,
   GrantCommitPrecondition,
   IssueBoundedGrantInput,

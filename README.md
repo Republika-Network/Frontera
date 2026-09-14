@@ -41,6 +41,7 @@ Storage / Identity / Blockchain / AI Systems
 | Security invariants (canonical: scope, enforcement, boundary) | `docs/security/SECURITY_INVARIANTS.md` |
 | No-bypass execution (canonical: effect-path inventory, what authorizes each effect) | `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` |
 | Trust boundaries & privileged assets (canonical) | `docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` |
+| Authoritative grant store (canonical: bounded-grant persistence, durability, integrity) | `docs/security/AUTHORITATIVE_GRANT_STORE.md` |
 | Threat model | `docs/security/THREAT_MODEL_V1.md` |
 | Agent Passport Web threat model | `docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md` |
 | Security hardening report | `docs/security/SECURITY_HARDENING_V1.md` |

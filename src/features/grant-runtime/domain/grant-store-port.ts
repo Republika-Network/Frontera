@@ -106,8 +106,35 @@ export type RevokeBoundedGrantOutcome =
   | { readonly outcome: 'already-revoked'; readonly revocation: GrantRevocation }
   | { readonly outcome: 'refused'; readonly reasonCodes: readonly GrantReasonCode[] };
 
-export interface BoundedGrantStorePort {
-  issue(input: IssueBoundedGrantInput): Promise<IssueBoundedGrantOutcome>;
+/**
+ * The authoritative read, and nothing else.
+ *
+ * The exercise path needs exactly one capability from the store: resolve a
+ * grant id to the current grant and the current revocation state. It has never
+ * needed `issue` or `revoke`, and
+ * `execution-runtime/tests/execution-layer-boundaries.test.ts` already fails
+ * the build if either appears there. This interface makes that a *type* rule
+ * rather than only a textual one: a service that depends on this cannot call a
+ * mutation it was never handed.
+ *
+ * `BoundedGrantStorePort` extends it, so every existing caller that injects the
+ * full port satisfies this unchanged — the narrowing is on the consuming side,
+ * where the capability is used, not on the producing side, where it is built.
+ */
+export interface BoundedGrantReaderPort {
+  /**
+   * The current authoritative state for one grant id.
+   *
+   * A durable implementation verifies integrity here, before returning: an
+   * authoritative read whose record fails validation must **throw** rather than
+   * return a usable grant, and must never repair, skip or normalize the record
+   * into a usable one. The layer above turns a throw into "no grant", which is
+   * the closed direction.
+   */
   read(grantId: string): Promise<ReadBoundedGrantResult>;
+}
+
+export interface BoundedGrantStorePort extends BoundedGrantReaderPort {
+  issue(input: IssueBoundedGrantInput): Promise<IssueBoundedGrantOutcome>;
   revoke(input: RevokeBoundedGrantInput): Promise<RevokeBoundedGrantOutcome>;
 }

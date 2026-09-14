@@ -535,6 +535,27 @@ export type {
   RevokeBoundedGrantResult,
 } from './execution-governance/index.js';
 
+/**
+ * The durable authoritative bounded-grant store -- type-only, for the same
+ * reason the composition above is.
+ *
+ * A deployment adopts it by configuration
+ * (`AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite`, with
+ * `AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH`), not by importing a factory: the
+ * composition root selects it exactly as it selects every other store. A host
+ * that wants to construct one itself imports `createSqliteBoundedGrantStore`
+ * from `src/enterprise/bounded-grant-store`, which is not a frozen artifact.
+ *
+ * See `docs/security/AUTHORITATIVE_GRANT_STORE.md`. Its digests are storage
+ * integrity, never cryptographic authenticity.
+ */
+export type {
+  BoundedGrantStoreErrorCode,
+  BoundedGrantStoreHealth,
+  CreateSqliteBoundedGrantStoreOptions,
+  DurableBoundedGrantStore,
+} from './bounded-grant-store/index.js';
+
 export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js';
 
 export { createEnterpriseServer } from './host/enterprise-server.js';

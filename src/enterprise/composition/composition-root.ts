@@ -50,7 +50,8 @@ import { createAssuranceService, type AssuranceService } from '../assurance/serv
 import type { AssuranceFramework } from '../assurance/contracts.js';
 import { createAuthorityControlledExecution, type AuthorityControlledExecutionOptions, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
 import { createAuthorityControlledExecutionModule } from '../modules/authority-controlled-execution-module.js';
-import { createInMemoryBoundedGrantStore } from '../../features/grant-runtime/index.js';
+import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
+import { createSqliteBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -154,12 +155,19 @@ export interface EnterpriseAuthorityControlledExecutionOptions extends Omit<Auth
   /**
    * The authoritative home of issued grants.
    *
-   * Omitted, an in-memory store is composed. **In-memory grants do not survive
-   * a process restart**, and a grant that is gone reads as
-   * `GRANT_EXERCISE_NOT_FOUND` at the next exercise -- no execution, which is
-   * the closed direction. A deployment whose grants must outlive a restart
-   * supplies a durable implementation of the same port. See the persistence
-   * section of `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
+   * Omitted, the composition root selects one exactly as it selects every other
+   * store: the **durable** bounded-grant store when
+   * `persistence.provider === 'sqlite'`, on `boundedGrant.sqlitePath`; the
+   * in-memory store otherwise. A store supplied here overrides both, and the
+   * host that supplied it is the one that closes it.
+   *
+   * **In-memory grants do not survive a process restart**, and a grant that is
+   * gone reads as `GRANT_EXERCISE_NOT_FOUND` at the next exercise -- no
+   * execution, which is the closed direction. With the durable store, grants
+   * and revocations both survive, and an acknowledged revocation can never be
+   * the half that is lost. See
+   * `docs/security/AUTHORITATIVE_GRANT_STORE.md` and the persistence section of
+   * `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
    */
   readonly grantStore?: AuthorityControlledExecutionOptions['grantStore'];
 }
@@ -314,6 +322,35 @@ async function buildKernelAuthorityStore(configuration: EnterpriseConfiguration,
   return createInMemoryKernelAuthorityStore({ now, nextId });
 }
 
+/**
+ * The authoritative home of bounded grants, when the host did not supply one.
+ *
+ * Mirrors every other store's selection exactly: a deployment that configured
+ * `persistence.provider = 'sqlite'` gets the durable store, on its own file;
+ * one that did not keeps the in-memory store it has always had. That is a
+ * deliberate choice rather than a default: the alternative — durable always —
+ * would put an on-disk database under deployments that never asked for
+ * persistence anywhere, including every test that composes this capability.
+ *
+ * It is also the one place where the security claim becomes conditional.
+ * Grants and revocations survive a restart **when the durable store is
+ * configured**, and `docs/security/AUTHORITATIVE_GRANT_STORE.md` §14 states the
+ * exact configuration required. A deployment on the in-memory store loses both
+ * together on restart, which fails closed — the same posture it has today.
+ *
+ * Fails closed like `buildKernelAuthorityStore`: a configured SQLite store that
+ * cannot be opened raises rather than being quietly replaced by an empty
+ * in-memory one. That substitution would drop every committed revocation while
+ * the Host reported itself healthy, which is the fail-open shape this whole
+ * store exists to remove.
+ */
+async function buildBoundedGrantStore(configuration: EnterpriseConfiguration): Promise<BoundedGrantStorePort> {
+  if (configuration.persistence.provider === 'sqlite') {
+    return createSqliteBoundedGrantStore(configuration.boundedGrant.sqlitePath, { busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+  }
+  return createInMemoryBoundedGrantStore();
+}
+
 /** A dedicated id source for Enterprise-internal bookkeeping (event ids, boot id) -- independent of the Kernel's own `idGenerator`, so Enterprise bookkeeping never perturbs the Kernel's internal id sequence. */
 function createEnterpriseIdGenerator(): KernelIdGenerator {
   return { nextId: (prefix: string) => `${prefix}-${randomUUID()}` };
@@ -457,8 +494,18 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   // was. A deployment adopting layer E gets a second, grant-aware instance over
   // the same providers, so the record `POST /api/governance/evaluate` commits
   // is unchanged whether or not this capability is composed.
-  const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
+  // Resolved here rather than inside the expression below, so the composition
+  // root holds a reference to the store it will hand over and knows whether it
+  // was the one that opened it. A host-supplied store is never closed from
+  // here: the host closes what the host opened.
+  const grantStore: BoundedGrantStorePort | undefined =
     options.authorityControlledExecution === undefined
+      ? undefined
+      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration)));
+  const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
+
+  const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
+    options.authorityControlledExecution === undefined || grantStore === undefined
       ? undefined
       : createAuthorityControlledExecution({
           kernel:
@@ -471,7 +518,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
               grants: { declaration: options.authorityControlledExecution.grantCapability.declaration },
             }),
           grantCapability: options.authorityControlledExecution.grantCapability,
-          grantStore: options.authorityControlledExecution.grantStore ?? createInMemoryBoundedGrantStore(),
+          grantStore,
           executionAdapter: options.authorityControlledExecution.executionAdapter,
           resolveAuthorityBinding: options.authorityControlledExecution.resolveAuthorityBinding,
           ...(options.authorityControlledExecution.revalidateSource !== undefined
@@ -493,6 +540,20 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   // standalone event record (linked by correlation, never by foreign key).
   // Best-effort by design — operational history must never block or fail
   // startup/shutdown, and events raced past `close()` are dropped silently.
+  /**
+   * Closes the bounded-grant store **only** when this composition root opened
+   * it. A host-supplied store outlives this Host by design: it may be shared,
+   * and closing someone else's authoritative store on shutdown would make a
+   * second Host's grants unreadable.
+   *
+   * A store with no `close` is the in-memory one, which owns no handle.
+   */
+  async function closeComposedGrantStore(): Promise<void> {
+    if (!grantStoreOpenedHere || grantStore === undefined) return;
+    const closable = grantStore as Partial<{ close: () => Promise<void> }>;
+    if (typeof closable.close === 'function') await closable.close();
+  }
+
   const unsubscribeLifecyclePersistence = eventPublisher.subscribe((event) => {
     if ('lifecycleCorrelationId' in event) {
       void persistence.appendLifecycleEvent(event).catch(() => {});
@@ -670,11 +731,13 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await lifecycle.shutdown();
       unsubscribeLifecyclePersistence();
       await evidenceStore.close();
+      await closeComposedGrantStore();
     },
     stop: async () => {
       await lifecycle.shutdown();
       unsubscribeLifecyclePersistence();
       await evidenceStore.close();
+      await closeComposedGrantStore();
     },
   };
 
