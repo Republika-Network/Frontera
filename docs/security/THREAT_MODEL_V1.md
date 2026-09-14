@@ -142,6 +142,27 @@ For each threat: **mitigations in place**, and residual assessment.
 - Backup integrity is verifiable offline: `PRAGMA integrity_check` + running verification endpoints against a throwaway host (see `BACKUP_RECOVERY_V1.md`).
 - **Residual:** raw `JSON.parse` in a few passport/assurance row mappers throws an unwrapped exception on a corrupted column (fails closed at request level via the adapter's error envelope, but as 500 rather than a corruption-specific code). Tracked as post-v1 polish.
 
+### 7.16a Bounded-grant authority durability (added by Prompt 4)
+
+Scoped to the authoritative bounded-grant store (`src/enterprise/bounded-grant-store/`). Canonical detail and the full 29-row threat table: `AUTHORITATIVE_GRANT_STORE.md` §5. Recorded here so the restart and revocation threats are visible from the threat model rather than only from the store's own document.
+
+The asymmetry that governs the whole design: **losing a grant fails closed; losing its revocation fails open.** In-memory, both are lost together on restart, which is closed. A naively durable store that kept grants but lost revocations would be strictly worse than no persistence at all.
+
+| Threat | Status | Mitigation |
+|---|---|---|
+| Crash or restart loses an **acknowledged revocation** while keeping its grant | **BLOCKED** | One database file, one `db.transaction` writing the revocation record and the grant's reference to it, `synchronous = FULL`. There is no window between them to crash in |
+| Crash during issuance leaves a partially usable grant | **BLOCKED** | Transaction rollback; a refused or thrown commit guard writes nothing |
+| Restart increases authority | **BLOCKED** | Every recovery path either preserves authority exactly or removes it |
+| Corrupt grant or revocation record yields a usable grant | **BLOCKED** | Record digest, artifact digest, canonical round-trip, identity and schema version verified on every authoritative read; failure throws and the exercise path reads a throw as "no grant". Never repaired, skipped or normalized |
+| **Partial** deletion — the revocation row removed, or the grant's reference to it cleared | **BLOCKED** | The two records cross-reference each other; any disagreement refuses the read, because the only direction a disagreement could be resolved in is "usable" |
+| A writer rewrites a record **and** recomputes its unkeyed digest | **NOT ADDRESSED** | Same class as accepted risk §8.3 and §8.2. GS-001, **Prompt 5** |
+| **Restoring an older snapshot restores revoked authority** | **NOT ADDRESSED** | No anti-rollback, and none claimed. Every integrity check passes on a legitimately-older store. GS-002; see §7.17's "Rollback / downgrade to stale state" row, which is the same risk one layer up |
+| Store unavailable, locked, or closed | **BLOCKED (fails closed)** | Exercise withholds and the adapter is not called. No cache, no last-known-good, no caller copy to fall back on |
+| Foreign schema version, at database or row level | **BLOCKED** | The store refuses to open a foreign database *before* creating its own tables; a row with an unrecognized version is refused on read. Unknown authority state is never reinterpreted |
+| A grant minted under a tampered policy pack is persisted durably | **OUT OF SCOPE HERE** | Grant-store integrity does not imply authority-policy integrity. NB-008, **Prompt 14** |
+
+**Conditional on configuration.** All of the above describes the durable store, selected when `persistence.provider === 'sqlite'`. The default provider is `memory`, where the in-memory store's fail-closed restart behaviour is unchanged.
+
 ### 7.17 Automated backup/restore tooling (`backup:v1`/`restore:v1`)
 
 Extends §7.16 to cover the automated tooling added for the v1.0.0
@@ -171,7 +192,7 @@ portability validation
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.
 2. **No signatures / non-repudiation** — digests provide integrity, not authorship proof; constitutional constraint (no external signing infra) — revisit post-v1.
-3. **Filesystem-level attacker with full re-seal capability** — out of software scope; mitigated by backups, exported artifacts, and independent verification.
+3. **Filesystem-level attacker with full re-seal capability** — out of software scope; mitigated by backups, exported artifacts, and independent verification. *Extended by Prompt 4:* this now explicitly includes the bounded-grant authority store — a writer who can rewrite a grant or revocation record and recompute its unkeyed digest defeats every check there (GS-001), and restoring an older snapshot of it restores revoked authority (GS-002). Neither is claimed to be prevented.
 4. **No in-process rate limiting / no per-field length caps / lenient Content-Type / unbounded collection reads** — bounded by the 1 MiB cap and reverse-proxy guidance; additive fixes possible in v1.x without breaking the API.
 5. **Reads don't re-verify digests** — verification is explicit; scheduled verification is an operational control.
 6. **No Unicode normalization in canonical JSON** — deterministic as-is; normalizing now would break every existing digest.

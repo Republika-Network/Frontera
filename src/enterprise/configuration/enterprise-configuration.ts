@@ -96,6 +96,20 @@ export interface EnterpriseConfiguration {
     /** When `true` (the default), an authority-source outage makes the Enterprise Host not-ready rather than letting it answer out of a world it can no longer verify. */
     readonly required: boolean;
   };
+  /**
+   * The authoritative bounded-grant store's durable location.
+   *
+   * Read only when a host composes `authorityControlledExecution` **and**
+   * supplies no `grantStore` of its own. Independent of every other store's
+   * path, for the reason the Kernel Authority Store states: an authority
+   * source-of-truth is never kept inside an evaluation-history database, and a
+   * deployment must be able to back it up, restore it and rotate it on its own
+   * terms. See `docs/security/AUTHORITATIVE_GRANT_STORE.md`.
+   */
+  readonly boundedGrant: {
+    /** SQLite path for the bounded-grant store when `persistence.provider === 'sqlite'`. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -194,6 +208,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
       // source that is silently absent is not a degraded feature, it is a Host
       // answering out of a world it cannot verify.
       required: parseBoolean(env.AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED, true),
+    },
+    boundedGrant: {
+      sqlitePath: env.AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH ?? '.data/bounded-grants.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

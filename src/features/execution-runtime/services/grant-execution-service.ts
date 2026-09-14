@@ -1,4 +1,4 @@
-import type { BoundedGrantStorePort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
+import type { BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
   GRANT_EXERCISE_REASON_CODES,
@@ -37,7 +37,7 @@ import {
  * ## The grant is read, never received
  *
  * `GrantExerciseRequest` carries an id and nothing else about the grant, and
- * this service resolves it through `BoundedGrantStorePort.read` on every
+ * this service resolves it through `BoundedGrantReaderPort.read` on every
  * attempt. There is no cached grant, no caller-supplied grant and no
  * fast path that skips the read, so a revocation committed a millisecond ago is
  * visible to the very next exercise — the store contract's guarantee 4,
@@ -57,8 +57,18 @@ import {
  * be turned into one.
  */
 export interface GrantExecutionServiceOptions {
-  /** The authoritative home of issued grants. Read on every exercise; never written by this service. */
-  readonly store: BoundedGrantStorePort;
+  /**
+   * The authoritative home of issued grants. Read on every exercise; never
+   * written by this service.
+   *
+   * Typed as the **read-only** port rather than the full store, so "this
+   * service never writes a grant" is enforced by the compiler as well as by
+   * `tests/execution-layer-boundaries.test.ts`. A host still injects its whole
+   * store — `BoundedGrantStorePort` extends `BoundedGrantReaderPort`, so
+   * nothing about composition changes; what changes is that `issue` and
+   * `revoke` are not reachable from here even by accident.
+   */
+  readonly store: BoundedGrantReaderPort;
   /** The provider-neutral execution boundary. Invoked only after a usable assessment. */
   readonly adapter: ExecutionAdapter;
   /** The injected clock. Expiry is derived from what this returns, never from `Date.now()` — a structural test fails the build if an ambient clock appears in this module. */

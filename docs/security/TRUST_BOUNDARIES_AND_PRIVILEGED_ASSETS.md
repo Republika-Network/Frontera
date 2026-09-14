@@ -3,6 +3,7 @@
 - Status: canonical. Produced by Prompt 2 of the Security & Containment Architecture track.
 - Base: `main` @ `c1d24e2`, with Prompt 0 (`SECURITY_CONTAINMENT_BASELINE_AUDIT.md`) and Prompt 1 (`docs/security/SECURITY_INVARIANTS.md`) present.
 - Method: repository-backed. Every row cites code, a test, or a configuration file. Nothing is inferred from a module name.
+- **Superseded in part by Prompt 4.** `docs/security/AUTHORITATIVE_GRANT_STORE.md` is now canonical for D-06, D-06a and A-01 — how bounded grants and revocations are persisted, what that guarantees, and where it stops. The rows below are updated in place and point there.
 - **Superseded in part by Prompt 3.** `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` is now canonical for the effect-path inventory and for what authorizes each effect. It corrects two statements here — §8 Path D named one separate provider authority model where there are two (NB-003), and §11 classified store-layer tenant scoping as a hard chokepoint where it is a deployment one (NB-005) — and both corrections are applied in place below. §17 is consumed; its resolution is recorded at §17.7.
 
 ---
@@ -63,7 +64,8 @@ Every distinct trust domain found in the repository. "Conceptual" marks a domain
 | D-03 | Kernel (decision producer) | TRUSTED APPLICATION COMPONENT | `src/kernel/**` | Imports only `crypto`; no I/O (`security-invariants.test.ts`) |
 | D-04 | Governance / evaluation pipeline | TRUSTED | `src/features/action-enforcement/**`, recognition, approval, handshake, policy-pack runtimes | Reached transitively via the `RecognitionProvider` |
 | D-05 | Bounded-grant runtime | TRUSTED | `src/features/grant-runtime/**`, `src/features/execution-runtime/**` | Layer E + the exercise gate |
-| D-06 | Authoritative grant store | PRIVILEGED | `BoundedGrantStorePort`; only impl is in-memory | Not durable (SEC-TRUST-003) |
+| D-06 | Authoritative grant store | PRIVILEGED | `BoundedGrantStorePort`; two implementations — `createSqliteBoundedGrantStore` (`src/enterprise/bounded-grant-store/`) and `createInMemoryBoundedGrantStore` | **Updated by Prompt 4.** Durable when `persistence.provider === 'sqlite'`, in-memory otherwise (SEC-TRUST-003). Integrity verified fail-closed on every authoritative read, with **unkeyed** digests (GS-001) |
+| D-06a | Bounded-grant database file + its backups | PRIVILEGED — **outside application control** | `boundedGrant.sqlitePath`, default `.data/bounded-grants.sqlite` | **New in Prompt 4.** Anyone with filesystem write access can replace records or roll the store back; no application check prevents it (D-GS1, R-GS-03). Restoring a snapshot taken before a revocation restores revoked authority, with every integrity check passing (GS-002) |
 | D-07 | Governed-authority store | PRIVILEGED | `src/enterprise/authority-governance/sqlite-authority-store.ts` | Digest verified fail-closed on read |
 | D-08 | Governance record store | PRIVILEGED | `src/enterprise/governance-store/**` | Append-only interface, hash-chained |
 | D-09 | Recognition state | PRIVILEGED | `src/features/recognition-runtime/services/capability-token-service.ts:47` | In-process `Map`; **not durable** |
@@ -127,7 +129,7 @@ Cloud infrastructure is **not** assumed hardened. `infrastructure/terraform`, `i
 
 | Asset | Location | Holder | Writer | Reader | Impact if compromised |
 |---|---|---|---|---|---|
-| **A-01** Bounded grants + revocations | in-memory store | D-06 | `GrantIssuanceService`, `revokeGrant` | exercise gate | Forge execution authority |
+| **A-01** Bounded grants + revocations | SQLite when configured, otherwise in-memory | D-06 (file: D-06a) | `GrantIssuanceService`, `revokeGrant` | exercise gate | Forge execution authority. **Updated by Prompt 4:** revocations are now first-class, integrity-protected authority state rather than an undigested `Map` entry, and a revocation cannot be the half lost to a crash or restart (SEC-INV-035/036/037). Snapshot rollback remains unaddressed (GS-002) |
 | **A-02** Governed authority / reservations / encumbrances | SQLite | D-07 | authority-store transitions | Kernel authority step | Fabricate the authority an action draws on |
 | **A-03** Governance records + hash chain | SQLite | D-08 | evaluate commit | read service, evidence | Destroy verifiable-governance claim |
 | **A-04** Recognition capability tokens | in-process `Map` | D-09 | `revokeCapabilityToken`, `suspendCapabilityToken` | recognition verifier | Revocation not durable; restart may resurrect authority |
@@ -164,8 +166,8 @@ Every production path that creates, changes, narrows, revokes or extends authori
 
 | Writer | Mutates | Caller authn/authz | Externally reachable? | Durable? | Audit | If compromised |
 |---|---|---|---|---|---|---|
-| `GrantIssuanceService.issueGrant` | A-01 | In-process host only; commit guard re-proves eligibility inside the store transaction (SEC-INV-016) | **No route** (SEC-INV-027) | No (in-memory) | Grant carries `sourceDigest`, correlation | Mint arbitrary bounded grants |
-| `AuthorityControlledExecutionService.revokeGrant` | A-01 | In-process host only | **No route** | No | Revocation record | Suppress revocation |
+| `GrantIssuanceService.issueGrant` | A-01 | In-process host only; commit guard re-proves eligibility inside the store transaction (SEC-INV-016) | **No route** (SEC-INV-027) | **Yes when the durable store is configured**, otherwise no | Grant carries `sourceDigest`, correlation; the persisted record carries its own envelope digest | Mint arbitrary bounded grants |
+| `AuthorityControlledExecutionService.revokeGrant` | A-01 | In-process host only | **No route** | **Yes when the durable store is configured**, at durability equal to the grant's by construction (SEC-INV-035) | Integrity-protected revocation record, cross-referenced from the grant row | Suppress revocation — now requires rewriting **both** records consistently (SEC-INV-037), which an unkeyed digest still permits (GS-001) |
 | Governed-authority transitions | A-02 | In-process; capacity conservation + digest re-seal inside the store transaction | **No route** | Yes | Chained `transition_digest` | Fabricate authority positions |
 | `KernelAuthorityProvisioningService` | A-02 (durable) | Requires `context.system === true` **and** an operator context (`provisioning-service.ts:51-60`) | **No route** — operator surface | Yes | Append-only event chain, terminal revocation | Enrol arbitrary actors |
 | `PolicyPackRegistry.savePack` / `saveVersion` / `activatePolicyPackVersion` | A-05 | **None. No caller identity parameter exists** (`policy-pack-registry.ts:81,121,129`) | **No route** — protected only by not being exposed | In-process | Activation event | Rewrite decision rules |
