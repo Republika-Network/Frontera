@@ -181,6 +181,6 @@ portability validation
 
 - Distributed consensus, replication, HA (single-writer SQLite by design).
 - TLS termination, network ACLs, WAF (reverse-proxy layer).
-- The `apps/agent-passport-web` SaaS app and `packages/*` libraries (separate surfaces).
+- Threat *analysis* of the `apps/agent-passport-web` SaaS app and `packages/*` libraries (separate surfaces). Their trust boundaries and privileged assets are no longer unmapped: see `TRUST_BOUNDARIES.md` (TZ-2, TB-011..TB-015, PA-017..PA-021), which inventories them and records two findings (SC-018, SC-019). Per-route review, abuse cases and attack analysis remain out of scope here.
 - Insider threat beyond attributability (the system records *who*, it cannot stop a fully credentialed actor from acting within their authority).
 - Supply-chain hardening beyond dependency minimization (one runtime dependency) and lockfile pinning.

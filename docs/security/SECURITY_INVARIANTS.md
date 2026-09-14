@@ -3,7 +3,7 @@
 - Status: canonical. This is the single authoritative statement of what Frontera guarantees, where each guarantee stops, and what is not yet implemented.
 - Established by: Security & Containment Architecture track, Prompt 1.
 - Baseline evidence: `SECURITY_CONTAINMENT_BASELINE_AUDIT.md` (Prompt 0).
-- Companion documents: `docs/security/THREAT_MODEL_V1.md`, `docs/security/SECURITY_HARDENING_V1.md`, `docs/kernel/AOC_KERNEL_INVARIANTS_V1.md` (Kernel-scoped), `docs/architecture/ADR-AUTHORITY-CONTROL-LAYERING.md`.
+- Companion documents: `docs/security/TRUST_BOUNDARIES.md` (canonical: trust zones, boundary register, privileged-asset register), `docs/security/THREAT_MODEL_V1.md`, `docs/security/SECURITY_HARDENING_V1.md`, `docs/kernel/AOC_KERNEL_INVARIANTS_V1.md` (Kernel-scoped), `docs/architecture/ADR-AUTHORITY-CONTROL-LAYERING.md`.
 
 ---
 
