@@ -77,7 +77,9 @@ export default function CheckoutSuccessPage({ searchParams }: Props) {
           )}
           {isOrgTier && !adminHref && hasSession && (
             <div style={{ marginBottom: 16, fontSize: 13, color: 'var(--text-muted)' }}>
-              Your registry is being prepared. This may take a moment if the webhook is still processing.
+              Your registry is being prepared. This may take a moment while your payment is confirmed.
+              When it is ready, open administrative access from the recovery page using the session ID
+              below and the email address you paid with.
             </div>
           )}
           <div className="hero-actions" style={{ justifyContent: 'center' }}>
@@ -88,9 +90,21 @@ export default function CheckoutSuccessPage({ searchParams }: Props) {
                 </Link>
               ) : (
                 hasSession ? (
-                  <Link href={`/api/checkout/session/${session_id}`} className="btn btn-secondary">
-                    Check Registry Status
-                  </Link>
+                  <>
+                    {/*
+                      Administrative access is obtained from the recovery flow, which
+                      requires the session ID *and* the buyer contact email and confirms
+                      payment with Stripe before rotating. The status endpoint below is
+                      unauthenticated and read-only: it reports readiness and never
+                      returns a credential (APW-001).
+                    */}
+                    <Link href="/registry/recover" className="btn btn-primary">
+                      Open Registry Access →
+                    </Link>
+                    <Link href={`/api/checkout/session/${session_id}`} className="btn btn-secondary">
+                      Check Registry Status
+                    </Link>
+                  </>
                 ) : (
                   <Link href="/pricing" className="btn btn-primary">View Pricing</Link>
                 )

@@ -416,7 +416,8 @@ flowchart TD
 ## 19. Findings
 
 ### APW-001 — Unauthenticated endpoint creates a registry and discloses its admin credential and recovery code
-- **Severity:** HIGH
+- **Status: REMEDIATED** (Prompt 2.6). Original severity HIGH. The finding is retained in full below for audit history; the remediation follows it.
+- **Severity:** HIGH (as originally assessed)
 - **Affected surface:** `GET /api/checkout/session/[sessionId]`
 - **Evidence:** the handler takes no session, no token and no signature (`checkout/session/[sessionId]/route.ts:16-20`). Given a `sessionId` with a completed purchase and no existing registry, it calls `ensureOrganizationRegistry` (`:57`) — a **state mutation on an unauthenticated GET** — and when `result.wasCreated` is true it returns `adminAccessToken` and `recoveryCode` **in cleartext in the response body** (`:81-82`), together with the constructed `adminUrl` (`:69`). The `sessionId` itself is URL-borne: `checkout/session/route.ts:84` sets `successUrl` to `/checkout/success?session_id={CHECKOUT_SESSION_ID}&purchase_id=…`.
 - **Threat:** anyone who obtains the Stripe session id — from browser history, a shared link, a proxy or CDN log, or a `Referer` — can call this endpoint. If the registry has not yet been created, they receive permanent owner-equivalent control of it **and** the recovery factor that would let the legitimate buyer take it back.
@@ -424,6 +425,35 @@ flowchart TD
 - **Existing mitigation:** credentials are returned only on first creation (`wasCreated`); the purchase must be `completed`; Stripe session ids are high-entropy and not guessable; in the normal flow the **webhook creates the registry first**, so this branch does not fire.
 - **Residual risk:** the mitigation is a race, and it is coupled to webhook health. If `STRIPE_WEBHOOK_SECRET` is unset the webhook returns 503 (`webhook/route.ts:51-55`) and never creates registries — making this unauthenticated endpoint the **only** creation path, and credential disclosure the **normal** path rather than a fallback.
 - **Recommended future owner:** APPLICATION. Pre-production required.
+
+#### APW-001 remediation (Prompt 2.6)
+
+**Previous exploit condition.** An unauthenticated `GET` with a Stripe checkout session id, for a `completed` organization-tier purchase whose registry did not yet exist, caused registry creation and returned `adminAccessToken` and `recoveryCode` in cleartext in the same response. Because the session id travels in the success URL, possession of that URL was sufficient for permanent registry takeover including the recovery factor.
+
+**What changed.** `GET /api/checkout/session/[sessionId]` is now read-only. It no longer imports or calls `ensureOrganizationRegistry`, mints no credential, and names none in its response. When no registry exists it reports `registryPending` and stops. Registry creation now originates solely from the signature-verified Stripe webhook.
+
+**New invariants**, each covered by a test in `apps/agent-passport-web/__tests__/apw-001-checkout-disclosure.test.ts`:
+
+| Id | Invariant |
+|---|---|
+| APW-FIX-001 | A checkout session id alone cannot authorize disclosure of registry administrative credentials. |
+| APW-FIX-002 | `GET /api/checkout/session/[sessionId]` cannot create a registry. |
+| APW-FIX-003 | Registry creation originates from the signature-verified webhook path. |
+| APW-FIX-004 | The unauthenticated checkout status route is read-only. |
+| APW-FIX-005 | Before creation completes, the route returns a non-secret pending state. |
+| APW-FIX-006 | `adminAccessToken` and `recoveryCode` never appear in an unauthenticated response. |
+| APW-FIX-007 | Absent or failing webhook processing fails closed — no fallback issuance. |
+| APW-FIX-008 | Webhook-driven onboarding continues to work, idempotently. |
+
+**Legitimate onboarding after the fix.** Administrative access is obtained through the pre-existing `POST /api/organization-registry/recover` with `mode: 'checkout_session'`, which requires the session id **and** the buyer contact email, confirms `payment_status === 'paid'` with Stripe directly, refuses when the registry does not exist, rotates the credential, revokes prior admin sessions, and records an audit event. That path is strictly stronger than what was removed — two factors and a live payment check, versus a single URL-borne identifier. It already has a UI at `/registry/recover`; the checkout success page now links to it.
+
+**Test evidence.** 14 assertions. The suite was verified against the pre-fix route: restoring the vulnerable handler fails five independent assertions (creation-primitive import, credential naming, the first-creation branch, the unauthenticated-route sweep, and the no-fallback check), and passes only with the remediation in place.
+
+**Residual risk — explicitly not closed by this fix:**
+
+- **APW-002 is untouched.** The admin credential remains permanent, URL-borne once obtained, and owner-equivalent. The recovery flow still returns an `adminUrl` containing the token. This fix removes the *unauthenticated* disclosure path only.
+- **Availability is now coupled to webhook health.** Failing closed is deliberate (APW-FIX-007), but a broken or unconfigured Stripe webhook now blocks organization onboarding entirely rather than silently degrading to unauthenticated issuance. That is the correct trade, and it makes webhook configuration an operational prerequisite — see §23, Prompt 17.
+- **The recovery path inherits APW-008**: its email second factor is caller-optional in the `recovery_code` mode. The `checkout_session` mode used for onboarding requires the email.
 
 ### APW-002 — Registry admin credential is permanent, URL-borne, and owner-equivalent
 - **Severity:** HIGH · Confirms and refines **TB-001** and **TB-002**
@@ -535,7 +565,7 @@ Recorded so they are not re-opened: **password storage** (scrypt, sound paramete
 
 | Finding | Classification | Reason |
 |---|---|---|
-| **APW-001** | **BLOCKER** | An unauthenticated endpoint can disclose a permanent full-admin credential together with its recovery factor. Its mitigation is a race coupled to webhook health, and misconfiguration makes disclosure the normal path. |
+| **APW-001** | **BLOCKER — REMEDIATED in Prompt 2.6** | Was: an unauthenticated endpoint could disclose a permanent full-admin credential together with its recovery factor. The route is now read-only and creation is webhook-only. No longer blocking. |
 | **APW-002** | **PRE-PRODUCTION REQUIRED** | A permanent, possession-sufficient, URL-borne owner credential is not safe for multi-tenant production. A safer cookie-session path already exists. |
 | **APW-006** | **PRE-PRODUCTION REQUIRED** | For multi-tenant production, undetectable modification of ownership, roles and entitlements is not acceptable. Single-tenant or pilot use is a different risk decision. |
 | **APW-007** | **PRE-PRODUCTION REQUIRED** | The role model must describe the real authorization surface before customers are given roles. |
@@ -545,7 +575,9 @@ Recorded so they are not re-opened: **password storage** (scrypt, sound paramete
 | APW-008, APW-009, APW-010, APW-012 | DEFENSE-IN-DEPTH | Real but bounded, each with a mitigating control. |
 | APW-011 | DEPLOYMENT | Proxy-owned, but the deployment guide must actually cover this application. |
 
-**Net:** one BLOCKER, four PRE-PRODUCTION REQUIRED, one CLAIMING-ONLY, four DEFENSE-IN-DEPTH, one DEPLOYMENT.
+**Net as originally assessed:** one BLOCKER, four PRE-PRODUCTION REQUIRED, one CLAIMING-ONLY, four DEFENSE-IN-DEPTH, one DEPLOYMENT.
+
+**Net after Prompt 2.6:** **zero BLOCKERs**, four PRE-PRODUCTION REQUIRED (APW-002, APW-003, APW-006, APW-007), one CLAIMING-ONLY, four DEFENSE-IN-DEPTH, one DEPLOYMENT. Only APW-001 changed status. Every other finding is **UNCHANGED** — none was resolved, reduced or collapsed by this remediation, and APW-002 in particular remains fully open.
 
 ## 21. Shared Responsibility
 
