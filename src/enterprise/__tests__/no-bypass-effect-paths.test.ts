@@ -1,0 +1,477 @@
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+/**
+ * Drift protection for `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`.
+ *
+ * That document's central claim is **resource-centric**: for each protected
+ * resource, every way to reach it is enumerated. A claim of that shape decays
+ * the moment a new way to reach one of those resources appears, and nothing in
+ * this repository failed the build when that happened.
+ *
+ * These assertions pin the reachability facts the document's claims are built
+ * on, and nothing else. Specifically:
+ *
+ * 1. **The bounded-grant gate is the only Frontera route to an execution
+ *    adapter — repository-wide.** `security-invariants.test.ts` already asserts
+ *    a single call site, but it walks only `src/features/execution-runtime`.
+ *    `src/enterprise/execution-governance/service.ts` holds the *same*
+ *    `ExecutionAdapter` reference and lies outside that scan, so a call added
+ *    there would have voided SEC-INV-011 with every existing test still green
+ *    (NB-001). This widens the scan to `src/`, `packages/` and `apps/`.
+ *
+ * 2. **The egress inventory stays complete.** The document claims the entire
+ *    outbound network surface is two provider SDKs at five construction sites.
+ *    A sixth appearing silently would falsify §14 and §18.1 claim 10 without
+ *    any test noticing, so each discovered site must also be named in the
+ *    document.
+ *
+ * 3. **The grant is read, never received.** The exercise path's strength comes
+ *    from the caller supplying an identifier and a description of the attempt,
+ *    and from `subject`/`notAfter` crossing to the adapter having been read
+ *    from the trusted store rather than from the request.
+ *
+ * 4. **The two separate provider authority models stay off the published
+ *    surface.** NB-010 records that a published-package consumer cannot reach
+ *    Pinata through Frontera. That property is incidental — one barrel export
+ *    would lose it — so it is pinned here.
+ *
+ * 5. **The Agent Passport Web effect surface stays enumerated.** Its threat
+ *    model counted `app/api/**\/route.ts` files. A Next.js Server Action is
+ *    HTTP-invocable and is not a route file, which is how EP-037 went
+ *    unmodelled (NB-004).
+ *
+ * Every assertion below asserts a property that is **already true** at the
+ * commit that introduced this file. None changes production behaviour, and
+ * none is a containment feature. §25 of the Prompt 3 result records the
+ * non-vacuity validation: each rule was checked to fail when the property it
+ * protects is deliberately violated.
+ */
+
+const NO_BYPASS_DOC = 'docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md';
+
+const SOURCE_ROOTS = ['src', 'packages', 'apps'] as const;
+
+const CODE_EXTENSIONS = ['.ts', '.tsx'] as const;
+
+/** Directory names that never hold production source. */
+const NON_PRODUCTION_DIRECTORIES = new Set(['__tests__', 'tests', 'node_modules', 'dist', 'dist-test', '.next']);
+
+/** Files that are test scaffolding despite living outside a test directory. */
+function isProductionSource(file: string): boolean {
+  if (file.includes('.test.')) return false;
+  if (file.endsWith('.fixture.ts')) return false;
+  if (file.includes('/fixtures/')) return false;
+  return true;
+}
+
+function walkSources(dir: string): readonly string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) {
+      if (NON_PRODUCTION_DIRECTORIES.has(name)) continue;
+      out.push(...walkSources(full));
+    } else if (CODE_EXTENSIONS.some((extension) => full.endsWith(extension)) && isProductionSource(full)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * A source file with block and line comments removed.
+ *
+ * The same technique `security-invariants.test.ts` and
+ * `execution-layer-boundaries.test.ts` use, and for the same reason: what is
+ * forbidden is a *call* or an *import*, not a word. The doc comments in this
+ * repository legitimately discuss `adapter.execute(`, `new PinataSDK` and
+ * `require('stripe')` in order to explain the boundaries around them, and a
+ * rule that punished the explanation would push the explanation out of the
+ * file.
+ */
+function codeOf(file: string): string {
+  const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  return text
+    .split('\n')
+    .map((line) => {
+      let quote: string | undefined;
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+        const previous = index > 0 ? line[index - 1] : '';
+        if (quote !== undefined) {
+          if (char === quote && previous !== '\\') quote = undefined;
+          continue;
+        }
+        if (char === "'" || char === '"' || char === '`') {
+          quote = char;
+          continue;
+        }
+        if (char === '/' && line[index + 1] === '/') return line.slice(0, index);
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+const PRODUCTION_SOURCES = SOURCE_ROOTS.flatMap((root) => walkSources(root));
+
+const DOC = existsSync(NO_BYPASS_DOC) ? readFileSync(NO_BYPASS_DOC, 'utf8') : '';
+
+describe('NB — the canonical no-bypass document exists and is measurable', () => {
+  it('has real production sources to measure, across all three roots', () => {
+    assert.ok(PRODUCTION_SOURCES.length >= 500, `expected the repository to have production sources, found ${PRODUCTION_SOURCES.length}`);
+    for (const root of SOURCE_ROOTS) {
+      assert.ok(
+        PRODUCTION_SOURCES.some((file) => file.startsWith(`${root}/`)),
+        `${root}/ contributed no production sources — the scan below would be vacuous for it`,
+      );
+    }
+  });
+
+  it('the comment stripper keeps code and drops prose, so the rules below are not vacuous', () => {
+    const service = codeOf('src/features/execution-runtime/services/grant-execution-service.ts');
+    assert.equal(service.includes('await adapter.execute(action)'), true, 'real code must survive stripping');
+    assert.equal(service.includes('adapter NOT called'), false, 'doc-comment prose must be stripped');
+  });
+
+  it('exists and is the canonical artifact', () => {
+    assert.ok(DOC.length > 0, `${NO_BYPASS_DOC} is the canonical no-bypass artifact and must exist`);
+  });
+});
+
+describe('NB-001 — repository-wide, exactly one production source invokes an execution adapter', () => {
+  /**
+   * Matches an invocation through any identifier or member expression whose
+   * name ends in `adapter` (case-insensitive) — `adapter.execute(`,
+   * `executionAdapter.execute(`, `this.adapter.execute(`,
+   * `options.executionAdapter.execute(`. That is every spelling the two
+   * modules holding an `ExecutionAdapter` actually use, and every spelling a
+   * new holder would plausibly use.
+   */
+  const ADAPTER_INVOCATION = /\b[\w$]*[Aa]dapter\s*\.\s*execute\s*\(/;
+
+  it('the invocation pattern matches the real call site and not its prose', () => {
+    assert.equal(ADAPTER_INVOCATION.test('result = await adapter.execute(action);'), true);
+    assert.equal(ADAPTER_INVOCATION.test('await options.executionAdapter.execute(action);'), true);
+    assert.equal(ADAPTER_INVOCATION.test('the adapter is invoked only after a usable assessment'), false);
+  });
+
+  it('is invoked from exactly one production source in the whole repository', () => {
+    const callSites = PRODUCTION_SOURCES.filter((file) => ADAPTER_INVOCATION.test(codeOf(file)));
+    assert.deepEqual(
+      callSites,
+      ['src/features/execution-runtime/services/grant-execution-service.ts'],
+      'SEC-INV-011 holds only because there is exactly one place an ExecutionAdapter can be invoked. ' +
+        'A second call site — in src/enterprise/execution-governance, in an app, or anywhere else — voids the ' +
+        'PROVEN classification of EP-011 in NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §17. ' +
+        'If a new call site is legitimate, it is a new effect path and needs its own EP id.',
+    );
+  });
+
+  it('every production holder of the ExecutionAdapter port is accounted for', () => {
+    const holders = PRODUCTION_SOURCES.filter((file) => /\bExecutionAdapter\b/.test(codeOf(file)));
+    assert.deepEqual(
+      holders.slice().sort(),
+      [
+        'src/enterprise/execution-governance/service.ts',
+        'src/features/execution-runtime/domain/execution-adapter-port.ts',
+        'src/features/execution-runtime/domain/index.ts',
+        'src/features/execution-runtime/services/grant-execution-service.ts',
+      ],
+      'NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §7.1 enumerates every ExecutionAdapter reference. ' +
+        'A new holder is a new potential call site and must be added there before it ships.',
+    );
+  });
+
+  it('the single invocation is still preceded, in the same function, by the store read and the usable-assessment gate', () => {
+    const service = codeOf('src/features/execution-runtime/services/grant-execution-service.ts');
+    const read = service.lastIndexOf('await store.read(');
+    const gate = service.indexOf('if (!assessment.usable');
+    const call = service.search(/\badapter\s*\.\s*execute\s*\(/);
+    assert.notEqual(read, -1, 'the authoritative store must still be re-read inside the exercising function');
+    assert.notEqual(gate, -1, 'the usable-assessment gate must still exist');
+    assert.notEqual(call, -1, 'the adapter invocation must still exist');
+    assert.ok(read < gate, 'the grant must be read before it is assessed');
+    assert.ok(gate < call, 'the adapter may only be invoked after the usable-assessment gate has returned');
+  });
+});
+
+describe('NB — the grant is read, never received (SEC-INV-012)', () => {
+  const REQUEST_SOURCE = 'src/features/execution-runtime/domain/grant-exercise-request.ts';
+
+  it('the exercise request declares no grant-content field', () => {
+    const declaration = /export interface GrantExerciseRequest \{([\s\S]*?)\n\}/.exec(codeOf(REQUEST_SOURCE));
+    assert.ok(declaration?.[1] !== undefined, 'GrantExerciseRequest must remain a declared interface');
+    const body = declaration[1];
+    for (const field of ['scope', 'expiresAt', 'issuedAt', 'notAfter', 'digest', 'sourceDigest', 'revocation', 'grant:', 'payload']) {
+      assert.equal(
+        body.includes(field),
+        false,
+        `GrantExerciseRequest must not carry '${field}'. A caller supplies a grant identifier and a description of ` +
+          'the attempt; anything about the grant itself is read from the trusted store (SEC-INV-012).',
+      );
+    }
+  });
+
+  it('the values crossing the adapter boundary come from the store, not from the request', () => {
+    const service = codeOf('src/features/execution-runtime/services/grant-execution-service.ts');
+    const action = /const action: ValidatedExecutionAction = \{([\s\S]*?)\n\s*\};/.exec(service);
+    assert.ok(action?.[1] !== undefined, 'the validated action must still be assembled in one place');
+    const body = action[1];
+    assert.ok(/subject:\s*grantSubject/.test(body), 'subject crossing the boundary must be the grant subject read from the store, never request.subject');
+    assert.ok(/notAfter:\s*grantExpiresAt/.test(body), 'notAfter crossing the boundary must be the grant horizon read from the store, never a caller value');
+    assert.equal(/subject:\s*request\./.test(body), false, 'the caller may not describe the holder that reaches the adapter');
+    assert.equal(/notAfter:\s*request\./.test(body), false, 'the caller may not describe the horizon that reaches the adapter');
+  });
+
+  it('both store-read values are sourced from the grant the read returned', () => {
+    const service = codeOf('src/features/execution-runtime/services/grant-execution-service.ts');
+    assert.ok(/grantExpiresAt\s*=\s*read\.grant\.expiresAt/.test(service), 'grantExpiresAt must be read from the store result');
+    assert.ok(/grantSubject\s*=\s*read\.grant\.subject/.test(service), 'grantSubject must be read from the store result');
+  });
+});
+
+describe('NB — the provider egress inventory stays complete', () => {
+  const PINATA_SDK = /(?:from|import|require)\s*\(?\s*['"]pinata['"]/;
+  const STRIPE_SDK = /(?:from|import|require)\s*\(?\s*['"]stripe['"]|new\s+Stripe\s*\(/;
+
+  const EXPECTED_PINATA_SITES = ['packages/pinata-adapter/src/pinata-provider-client.ts'];
+
+  const EXPECTED_STRIPE_SITES = [
+    'apps/agent-passport-web/src/app/api/checkout/session/route.ts',
+    'apps/agent-passport-web/src/app/api/organization-registry/recover/route.ts',
+    'apps/agent-passport-web/src/app/api/stripe/webhook/route.ts',
+    'apps/agent-passport-web/src/lib/stripe-billing-service.ts',
+  ];
+
+  /**
+   * The sample specifiers below are assembled at runtime rather than written
+   * out. This repository already runs its own provider-SDK import-boundary
+   * scanners — `packages/pinata-adapter/scripts/check-pinata-boundary.mjs` and
+   * the two `compute-*-pinata-boundary-evidence.mjs` scripts — over every `.ts`
+   * file including this one, matching the provider specifier textually. A literal
+   * sample import here is indistinguishable from a real one to those scanners
+   * and would fail the provider-conformance suites. Splitting the specifier
+   * keeps this self-check honest without tripping a sibling boundary check.
+   */
+  const PINATA_SPECIFIER = ['pin', 'ata'].join('');
+  const STRIPE_SPECIFIER = ['str', 'ipe'].join('');
+
+  it('the detection patterns match a real import and not a mention of one', () => {
+    assert.equal(PINATA_SDK.test(`import { PinataSDK } from '${PINATA_SPECIFIER}';`), true);
+    assert.equal(PINATA_SDK.test(`const sdk = require('${PINATA_SPECIFIER}');`), true);
+    assert.equal(PINATA_SDK.test('this module never imports the raw provider SDK'), false);
+    assert.equal(STRIPE_SDK.test(`const Stripe = (await import('${STRIPE_SPECIFIER}')).default;`), true);
+    assert.equal(STRIPE_SDK.test(`const Stripe = require('${STRIPE_SPECIFIER}');`), true);
+    assert.equal(STRIPE_SDK.test('the billing boundary is documented separately'), false);
+  });
+
+  it('the Pinata SDK is constructed in exactly one production source', () => {
+    const sites = PRODUCTION_SOURCES.filter((file) => PINATA_SDK.test(codeOf(file)));
+    assert.deepEqual(
+      sites.slice().sort(),
+      EXPECTED_PINATA_SITES,
+      'NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §7.5 and §14.1 enumerate every route to the Pinata account. ' +
+        'A new SDK import is a new route and must be added to the effect-path inventory with its own EP id.',
+    );
+  });
+
+  it('the Stripe SDK is constructed only in the four enumerated Agent Passport Web sources', () => {
+    const sites = PRODUCTION_SOURCES.filter((file) => STRIPE_SDK.test(codeOf(file)));
+    assert.deepEqual(
+      sites.slice().sort(),
+      EXPECTED_STRIPE_SITES,
+      'NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §11.1 and §14.3 enumerate every route to the Stripe merchant account.',
+    );
+  });
+
+  it('no module under src/ or packages/ reaches Stripe, and none outside the Pinata adapter reaches Pinata', () => {
+    for (const file of PRODUCTION_SOURCES) {
+      const code = codeOf(file);
+      if (file.startsWith('src/') || file.startsWith('packages/')) {
+        assert.equal(STRIPE_SDK.test(code), false, `${file} must not reach Stripe — billing is the Agent Passport Web application's own effect domain`);
+      }
+      if (!file.startsWith('packages/pinata-adapter/')) {
+        assert.equal(
+          PINATA_SDK.test(code),
+          false,
+          `${file} must not import the raw Pinata SDK — every consumer talks to the provider-neutral PinataProviderClient seam`,
+        );
+      }
+    }
+  });
+
+  it('every egress site is named in the canonical no-bypass document', () => {
+    for (const site of [...EXPECTED_PINATA_SITES, ...EXPECTED_STRIPE_SITES]) {
+      const basename = site.slice(site.lastIndexOf('/') + 1);
+      assert.ok(
+        DOC.includes(site) || DOC.includes(basename),
+        `${site} produces an external effect and must appear in ${NO_BYPASS_DOC}. ` +
+          'An egress site absent from the inventory is covered by no claim in §18.',
+      );
+    }
+  });
+});
+
+describe('NB-010 — the separate provider authority models stay off the published surface', () => {
+  it('src/enterprise/index.ts barrels neither Sovereign Access nor Content Protection', () => {
+    const barrel = codeOf('src/enterprise/index.ts');
+    for (const symbol of ['createAccessGrantService', 'createContentProtectionService', 'createPinataContentStorageAdapter']) {
+      assert.equal(
+        barrel.includes(symbol),
+        false,
+        `${symbol} must not be re-exported from the Enterprise barrel. NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md ` +
+          '§3.1 and NB-010 claim a published-package consumer cannot reach Pinata through Frontera; a barrel export loses that.',
+      );
+    }
+  });
+
+  it('the package exports map resolves to no subpath under either module', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { readonly exports?: Record<string, unknown> };
+    const exportsMap = pkg.exports ?? {};
+    const targets = JSON.stringify(exportsMap);
+    assert.equal(targets.includes('access-governance'), false, 'no exports subpath may resolve into access-governance');
+    assert.equal(targets.includes('content-protection'), false, 'no exports subpath may resolve into content-protection');
+    assert.equal(Object.keys(exportsMap).includes('./*'), false, 'a wildcard subpath would expose every internal module and void NB-010');
+  });
+
+  it('the Pinata adapter is neither a declared dependency nor a bundled one of the published artifact', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      readonly dependencies?: Record<string, string>;
+      readonly bundleDependencies?: readonly string[];
+    };
+    assert.equal(
+      Object.keys(pkg.dependencies ?? {}).includes('@aoc-enterprise/pinata-adapter'),
+      false,
+      'declaring the Pinata adapter as a runtime dependency would make the provider reachable from a published consumer (NB-010)',
+    );
+    assert.equal(
+      (pkg.bundleDependencies ?? []).includes('@aoc-enterprise/pinata-adapter'),
+      false,
+      'bundling the Pinata adapter would make the provider reachable from a published consumer (NB-010)',
+    );
+  });
+});
+
+describe('NB-004 — the Agent Passport Web effect surface stays enumerated', () => {
+  const APP_ROOT = 'apps/agent-passport-web/src/app';
+
+  function routeFiles(dir: string): readonly string[] {
+    if (!existsSync(dir)) return [];
+    const out: string[] = [];
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) out.push(...routeFiles(full));
+      else if (name === 'route.ts') out.push(full);
+    }
+    return out;
+  }
+
+  it('the route-file count still matches the inventoried surface', () => {
+    const routes = routeFiles(APP_ROOT);
+    assert.equal(
+      routes.length,
+      31,
+      'AGENT_PASSPORT_WEB_THREAT_MODEL.md §5 and NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §5.10 inventory 31 route files. ' +
+        `Found ${routes.length}. A new route is a new effect path and needs an EP id before it ships.`,
+    );
+  });
+
+  it('every Next.js Server Action file is named in the effect-path inventory', () => {
+    const actionFiles = walkSources(APP_ROOT).filter((file) => /^\s*['"]use server['"]/m.test(readFileSync(file, 'utf8')));
+    assert.ok(actionFiles.length >= 1, 'the detection must find the known Server Action, or it is vacuous');
+    for (const file of actionFiles) {
+      assert.ok(
+        DOC.includes(file) || DOC.includes(file.replace('apps/agent-passport-web/src/', '')),
+        `${file} is a Server Action: HTTP-invocable, and not a route file. It must appear in ${NO_BYPASS_DOC}. ` +
+          'This is exactly how EP-037 went unmodelled (NB-004).',
+      );
+    }
+  });
+
+  it('no Agent Passport Web source reaches the Core bounded-grant execution path', () => {
+    for (const file of walkSources('apps/agent-passport-web/src')) {
+      const code = codeOf(file);
+      for (const symbol of ['AocKernel', 'BoundedGrant', 'GrantExecutionService', 'AuthorityControlledExecution']) {
+        assert.equal(
+          code.includes(symbol),
+          false,
+          `${file} must not reach ${symbol}. §10 excepts this application from the Core proof precisely because it does not.`,
+        );
+      }
+    }
+  });
+});
+
+describe('NB — the canonical document keeps its shape', () => {
+  const CLASSIFICATIONS = [
+    'PROVEN — PATH LOCAL',
+    'EXCEPTED — SEPARATE AUTHORITY MODEL',
+    'PARTIALLY BOUND',
+    'DEPLOYMENT-GATED',
+    'NON-EFFECTING',
+    'DEAD / UNREACHABLE',
+  ] as const;
+
+  it('defines every classification it uses', () => {
+    for (const classification of CLASSIFICATIONS) {
+      assert.ok(DOC.includes(classification), `the classification vocabulary must define ${classification}`);
+    }
+  });
+
+  it('assigns a contiguous EP id to every effect path, with none skipped', () => {
+    const ids = new Set([...DOC.matchAll(/\bEP-(\d{3})\b/g)].map((match) => Number(match[1])));
+    assert.ok(ids.size >= 40, `expected the effect-path inventory to be populated, found ${ids.size} ids`);
+    const highest = Math.max(...ids);
+    for (let id = 1; id <= highest; id += 1) {
+      assert.ok(ids.has(id), `EP-${String(id).padStart(3, '0')} is missing — effect-path ids must be contiguous so none is silently dropped`);
+    }
+  });
+
+  it('assigns a contiguous NB id to every finding', () => {
+    const ids = new Set([...DOC.matchAll(/\bNB-(\d{3})\b/g)].map((match) => Number(match[1])));
+    assert.ok(ids.size >= 8, `expected findings to be recorded, found ${ids.size}`);
+    const highest = Math.max(...ids);
+    for (let id = 1; id <= highest; id += 1) {
+      assert.ok(ids.has(id), `NB-${String(id).padStart(3, '0')} is missing — finding ids must be contiguous`);
+    }
+  });
+
+  it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
+    assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
+    assert.ok(
+      DOC.includes('Three of forty-six effect paths are under bounded-grant control.'),
+      'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with',
+    );
+  });
+
+  it('keeps the enforce() effect-binding limit stated without overstatement', () => {
+    assert.ok(DOC.includes('PARTIALLY BOUND'), 'enforce() must remain classified, not described in prose alone');
+    assert.ok(
+      /Frontera proves that the executor performed only the declared action/.test(DOC),
+      'the illegitimate formulation must stay recorded in §19 so it cannot be re-derived',
+    );
+  });
+
+  it('keeps both separate provider authority models named', () => {
+    assert.ok(/Sovereign Access/.test(DOC), 'the Sovereign Access exception must stay named');
+    assert.ok(/Content Protection/.test(DOC), 'the second provider authority model must stay named (NB-003)');
+  });
+
+  it('keeps an explicit disposition for SC-002 and SC-003', () => {
+    for (const id of ['SC-002', 'SC-003']) {
+      assert.ok(DOC.includes(id), `${id} must carry an explicit disposition, not be left implied`);
+    }
+    assert.ok(/STILL OPEN/.test(DOC), 'neither SC item may be silently marked closed');
+  });
+
+  it('states the deployment assumptions every claim is conditional on', () => {
+    for (const id of ['D-A1', 'D-A3', 'D-A4', 'D-A8']) {
+      assert.ok(DOC.includes(id), `${id} must stay recorded — §18's claims are conditional on it`);
+    }
+  });
+});

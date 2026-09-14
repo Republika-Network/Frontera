@@ -39,6 +39,7 @@ Storage / Identity / Blockchain / AI Systems
 |---|---|
 | Frozen HTTP API surface & versioning policy | `docs/enterprise/API_STABILITY_V1.md` |
 | Security invariants (canonical: scope, enforcement, boundary) | `docs/security/SECURITY_INVARIANTS.md` |
+| No-bypass execution (canonical: effect-path inventory, what authorizes each effect) | `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` |
 | Trust boundaries & privileged assets (canonical) | `docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` |
 | Threat model | `docs/security/THREAT_MODEL_V1.md` |
 | Agent Passport Web threat model | `docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md` |
