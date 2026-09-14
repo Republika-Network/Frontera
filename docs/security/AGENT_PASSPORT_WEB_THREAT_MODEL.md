@@ -106,6 +106,8 @@ Note the absent row: **there is no global/system administrator principal.** Ever
 
 **Five endpoints are fully unauthenticated**: two passport reads, checkout session create, checkout session read, and (credential-gated but unauthenticated) the invitation read and recover routes.
 
+> **Correction from Prompt 3 (NB-004).** This table enumerates `app/api/**/route.ts` files and is complete for those. It is **not** complete for HTTP-reachable effects: `src/app/enroll-agent/actions.ts` carries `'use server'` and exports `enrollAgentAction`, a Next.js Server Action — HTTP-invocable, not a route file — which triggers **issuer signing**, writes a passport record and decrements registry entitlement capacity under the same two possession-only credentials as `POST /api/agent-passports`. It is additionally weaker than that route: it does not wrap `addPassportToRegistry` in a `try/catch`, so a capacity-exhaustion race throws after the key has already signed. Recorded as EP-037 in `NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`, and pinned by a structural test that now requires every `'use server'` file to appear in that inventory.
+
 ---
 
 ## 6. Authentication Model
@@ -601,6 +603,8 @@ Recorded so they are not re-opened: **password storage** (scrypt, sound paramete
 | Passport id confidentiality | **CUSTOMER / TENANT** — ids are public by design |
 
 ## 22. Inputs to Prompt 3
+
+> **Consumed.** Prompt 3 produced `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`. All five inputs below were used and all five conclusions held on re-verification, with one addition: point 1's enumeration was route-file-based and missed one Server Action (NB-004, §5). Every effect path in this application now carries an `EP-` id there and is classified **EXCEPTED — SEPARATE AUTHORITY MODEL**, except `GET /api/checkout/session/[sessionId]`, which is **NON-EFFECTING** after the Prompt 2.6 remediation (EP-045).
 
 Only what bears on system-wide no-bypass analysis:
 

@@ -3,6 +3,7 @@
 - Status: canonical. Produced by Prompt 2 of the Security & Containment Architecture track.
 - Base: `main` @ `c1d24e2`, with Prompt 0 (`SECURITY_CONTAINMENT_BASELINE_AUDIT.md`) and Prompt 1 (`docs/security/SECURITY_INVARIANTS.md`) present.
 - Method: repository-backed. Every row cites code, a test, or a configuration file. Nothing is inferred from a module name.
+- **Superseded in part by Prompt 3.** `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` is now canonical for the effect-path inventory and for what authorizes each effect. It corrects two statements here — §8 Path D named one separate provider authority model where there are two (NB-003), and §11 classified store-layer tenant scoping as a hard chokepoint where it is a deployment one (NB-005) — and both corrections are applied in place below. §17 is consumed; its resolution is recorded at §17.7.
 
 ---
 
@@ -201,6 +202,10 @@ Classification: **AUTHORITY-GATED.** The strongest path (SEC-INV-011…015).
 `In-process host → access-governance service → EnterpriseAccessGrant store read + assertActive → Pinata adapter → Pinata API`
 Classification: **PARTIALLY AUTHORITY-GATED** — real, but a *different* model; not the Kernel, not a bounded grant (SEC-INV-019).
 
+**Path D2 — Content Protection provider** *(added by Prompt 3; missing from this map as first written)*
+`In-process host → ContentProtectionService.protectResource → requireContentProtectionAccessToOrganization (caller-asserted tenant scope) → ContentStoragePort → Pinata adapter → Pinata API`
+Classification: **PARTIALLY AUTHORITY-GATED** — a **second**, independent provider authority model reaching the same resource as Path D, with **no grant of any kind**. See `NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` EP-018 and NB-003.
+
 **Path E — Agent Passport web routes**
 `Internet → Next.js route → session cookie / registry admin token / role check → repositories, issuer signer, Stripe client → SQLite, Stripe`
 Classification: **APP-LEVEL AUTHENTICATED.** Governed by the application's own authorization, **not by Frontera authority** at any point.
@@ -213,7 +218,8 @@ Classification: outbound **TRUSTED-IN-PROCESS**; inbound **APP-LEVEL AUTHENTICAT
 - Filesystem: `existsSync`/`mkdirSync` in 13 SQLite store modules; paths come from boot configuration, never from a request. **TRUSTED-IN-PROCESS.**
 - Operator tooling: `scripts/portability/backup-enterprise-v1.mjs` / `restore-enterprise-v1.mjs` — full read/write over the data directory. **DEPLOYMENT-GATED.**
 - `packages/control-plane/store.ts`, `packages/commercial-demo/src/cli.ts` — file writes. **Non-production.**
-- **No** shell, child process, dynamic `import()`, `eval`, or `new Function` exists in production TypeScript anywhere in the repository.
+- Raw provider seam: `createPinataProviderClient({ jwt })` constructs a `PinataSDK` directly and is what Paths D and D2 both sit on. Possession of `PINATA_JWT` is sufficient. **TRUSTED-IN-PROCESS** (`NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` EP-020).
+- **No** shell, child process, `eval`, or `new Function` exists in production TypeScript anywhere in the repository. Six `await import(...)` calls exist in `apps/agent-passport-web`, **all with constant string specifiers** and none caller-influenced — corrected from "no dynamic `import()`" as first written here.
 
 Application authentication is **not** Frontera authority governance. Paths E and F are authenticated and entirely ungoverned by the Kernel.
 
@@ -285,7 +291,7 @@ One SQLite file (`AOC_AGENT_PASSPORT_DB_PATH`, default `.data/agent-passport.sql
 | Chokepoint | Classification | Why |
 |---|---|---|
 | Enterprise HTTP authentication | **DEPLOYMENT CHOKEPOINT** | Real and constant-time, but **off by default** (`AOC_ENTERPRISE_REQUIRE_AUTH` default `false`) |
-| Store-layer tenant scoping | **HARD CHOKEPOINT** | Enforced inside the stores; a bypassed adapter still cannot cross tenants |
+| Store-layer tenant scoping | **DEPLOYMENT CHOKEPOINT** *(corrected by Prompt 3, NB-005)* | Enforced inside the stores, and a bypassed adapter still cannot cross tenants **once the caller is organization-scoped**. But `resolveGovernanceAccessContext` returns `{ system: true }` whenever `AOC_ENTERPRISE_REQUIRE_AUTH` is false — the default — and every scoping predicate begins `if (context.system) return true;`. The scoping is real; the principal it scopes against is produced by a configuration flag |
 | Kernel decision boundary | **HARD CHOKEPOINT** for decisions | Sole decision producer; narrowing-only composition; invariants asserted per call |
 | Bounded-grant exercise gate | **HARD CHOKEPOINT within its path** | Single adapter call site, ordered after the gate, test-pinned — but PATH-LOCAL |
 | Grant issuance commit guard | **HARD CHOKEPOINT** | Synchronous by type; no `await` can interleave |
@@ -308,11 +314,11 @@ Architectural enumeration. Nothing here was exploited.
 
 | Primitive | Present? | Holder | Boundary crossed | Existing mitigation | Future owner |
 |---|---|---|---|---|---|
-| Arbitrary executor closure | **Yes** | Any in-process host caller | Decision → effect | Decision-time authorization only (SEC-INV-010) | Prompt 3 |
+| Arbitrary executor closure | **Yes** | Any in-process host caller | Decision → effect | Decision-time authorization only (SEC-INV-010) | *Prompt 3: assessed — EP-014, PARTIALLY BOUND, NB-002. SC-003 remains open* |
 | Direct network egress | **Yes** | Any code in either process | Process → provider | None | Prompt 11 |
 | Direct provider credential access (`process.env`) | **Yes** | Any code in the holding process | Process → secret | Type-level exclusion from the *public composition surface* only | Prompt 9 |
 | Authority-store write access | **Yes, in-process** | Composition-root-wired code | Caller → authority | No caller identity on `PolicyPackRegistry`; operator context on Kernel Authority | Prompt 14 |
-| Alternate API path (Sovereign Access) | **Yes** | In-process host | Authority model → effect | Its own store read + `assertActive` | Prompt 3 |
+| Alternate API path (Sovereign Access) | **Yes** | In-process host | Authority model → effect | Its own store read + `assertActive` | *Prompt 3: assessed — EP-015/016/017, EXCEPTED. A **second** such path was found (Content Protection, EP-018, NB-003). SC-002 remains open* |
 | Filesystem write to store files | **Yes** | Process user / operator | Software → persistence | Digests + chains detect; `verify` must be run | Prompt 5 |
 | Host compromise | **Yes** | Attacker with host access | Everything | None in software | Prompt 17 |
 | DB compromise | **Yes** | Anyone with file access | Persistence | Detective only; re-sealing defeats it | Prompt 5 |
@@ -580,3 +586,21 @@ Arbitrary executor closure · direct network egress · `process.env` access · i
 
 ### 17.6 Sequencing constraint
 Prompt 3 must **not** run before the inserted Agent Passport threat-model prompt. §10 establishes that surface's inventory; Paths E and F cannot be responsibly excepted until that audit has examined them.
+
+### 17.7 Resolution — Prompt 3 outcome
+
+Prompt 3 consumed every item in §17 and produced `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`. The sequencing constraint in §17.6 was honoured: the Agent Passport Web threat model (Prompt 2.5) and the APW-001 remediation (Prompt 2.6) both landed first.
+
+| §17.1 path | Prompt 3 outcome |
+|---|---|
+| A — `AocKernel.evaluate()` | **Proven** NON-EFFECTING — EP-001 |
+| B — `AocKernel.enforce()` opaque executor | **Excepted** as PARTIALLY BOUND — EP-014, NB-002 |
+| C — Bounded-grant exercise | **Proven** PATH-LOCAL, with a repository-wide single-call-site test — EP-011 |
+| D — Sovereign Access provider | **Excepted**, not converged — EP-015/016/017, §9.4 |
+| E — Agent Passport web routes | **Excepted** — EP-032…EP-046, plus one Server Action this inventory missed (NB-004) |
+| F — Stripe | **Excepted** — EP-032…EP-035 |
+| G1 — SQLite filesystem writes | **Excepted** as DEPLOYMENT-GATED — EP-010, EP-046 |
+| G2 — Backup/restore tooling | **Excepted** as DEPLOYMENT-GATED — EP-028 |
+| G3 — `packages/control-plane`, `commercial-demo` | **Excepted** as DEAD / UNREACHABLE — EP-031 |
+
+**Two paths this list did not contain**, both found by enumerating from source rather than from it: Content Protection's Pinata egress (EP-018, NB-003) and the Agent Passport Web Server Action (EP-037, NB-004). That is the reason Prompt 3 was told not to rely on prior route/effect counts.
