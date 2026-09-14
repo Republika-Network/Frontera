@@ -3,7 +3,7 @@
 Status: release deliverable for Soberanía Enterprise v1.0.0 (PR-008).
 Scope: the Enterprise Host runtime (`src/enterprise`) — HTTP adapter, Governance Store, Evidence Runtime, Agent Passport Runtime, Assurance Runtime, configuration, lifecycle — and its three SQLite stores. The Kernel and the seeded provider runtimes are in scope as trust boundaries; the `apps/` products and `packages/` libraries have their own surfaces and are out of scope here except where they share code.
 
-Companion documents: `SECURITY_HARDENING_V1.md` (what was audited and changed for v1), `docs/enterprise/API_STABILITY_V1.md` (frozen API surface), `docs/enterprise/MIGRATION_REVIEW_V1.md` (schema/migration behavior), `docs/operations/*` (operational response).
+Companion documents: `SECURITY_INVARIANTS.md` (canonical: every security invariant with its scope, enforcement and boundary), `SECURITY_HARDENING_V1.md` (what was audited and changed for v1), `docs/enterprise/API_STABILITY_V1.md` (frozen API surface), `docs/enterprise/MIGRATION_REVIEW_V1.md` (schema/migration behavior), `docs/operations/*` (operational response).
 
 ---
 
