@@ -2,8 +2,8 @@
   "name": "@aoc-enterprise/runtime",
   "version": "1.2.1",
   "generated": {
-    "commit": "a937cfb4180ec02de7b736b92039f5f8210152bc",
-    "branch": "fix/frontera-protocol-rc1-repin",
+    "commit": "3cf03fb8739d98cd34069ddb264895e50df6a7ba",
+    "branch": "chore/regenerate-release-manifest",
     "node": "v22.23.1"
   },
   "runtimeVersions": {
@@ -73,7 +73,7 @@
     },
     {
       "path": "./dist/src/runtime/crypto/index.js",
-      "checksum": "sha256:9c8b0fa716d59fab4bb28fdfcfca1fa4f5198413df4b8954c34af13707a4d99d"
+      "checksum": "sha256:416a00bb902e07974cbef3f17fff272d83b0d372a7f425e5865ad50db69e68cb"
     },
     {
       "path": "./dist/src/runtime/index.js",
