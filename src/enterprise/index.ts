@@ -504,6 +504,29 @@ export type { EvaluateGovernanceRequestInput, EvaluateGovernanceRequestDependenc
 export { createEnterprise, createDefaultEnterprise } from './composition/composition-root.js';
 export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseRequestContext } from './composition/composition-root.js';
 export type { EnterpriseAuthorityControlledExecutionOptions } from './composition/composition-root.js';
+export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';
+
+/**
+ * Customer-plane identity admission -- type-only, for the same reason the
+ * execution composition below is. A deployment adopts it through
+ * `createEnterprise({ customerIdentityAdmission: { enabled: true } })`; the
+ * factory and reason-code values live in `src/enterprise/customer-identity`,
+ * which is not a frozen artifact. See
+ * `docs/enterprise/AOC_CUSTOMER_PRINCIPAL_BINDING.md`.
+ */
+export type {
+  BoundCustomerActor,
+  BoundCustomerIdentity,
+  CustomerExternalSubject,
+  CustomerIdentityAdmissionRequest,
+  CustomerIdentityAdmissionResult,
+  CustomerIdentityAdmissionService,
+  CustomerIdentityConfigurationErrorCode,
+  CustomerIdentityRefusalReason,
+  CustomerIdentityUnavailableReason,
+  CustomerPrincipal,
+} from './customer-identity/index.js';
+export type { EnterpriseApiKeyCustomerIdentity } from './configuration/enterprise-configuration.js';
 
 /**
  * Authority-Controlled Execution -- the opt-in composition that gates external

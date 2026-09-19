@@ -15,6 +15,31 @@ export type EnterprisePersistenceProviderKind = 'memory' | 'sqlite';
 export interface EnterpriseApiKey {
   readonly key: string;
   readonly organizationId?: string;
+  /**
+   * Non-secret identity metadata that makes this credential eligible for the
+   * secure **customer plane** (`docs/enterprise/AOC_CUSTOMER_PRINCIPAL_BINDING.md`).
+   *
+   * Additive and ignored by every legacy v1 route: those keep authenticating
+   * with `key` and scoping with `organizationId` exactly as before. A key
+   * without this block, or without `organizationId`, is never admitted as a
+   * customer principal. Supplied through typed composition configuration only;
+   * `AOC_ENTERPRISE_API_KEYS` has no syntax for it and never will set it.
+   *
+   * The secret authenticates the principal; it is not the identity. Rotating
+   * `key` while keeping this block keeps the same principal, external subject
+   * and actor binding.
+   */
+  readonly customerIdentity?: EnterpriseApiKeyCustomerIdentity;
+}
+
+/** Who a customer-plane credential authenticates as. Server-configured, non-secret, and never derived from the key itself. */
+export interface EnterpriseApiKeyCustomerIdentity {
+  readonly principalId: string;
+  /** The Kernel Authority external subject this principal represents. Resolved to a Frontera actor only through `KernelAuthorityStore.findActorByExternalSubject`. */
+  readonly externalSubject: {
+    readonly system: string;
+    readonly subjectId: string;
+  };
 }
 
 export interface EnterpriseFeatureFlags {
