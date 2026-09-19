@@ -79,8 +79,9 @@ export interface GovernedActionOrchestratorOptions {
   readonly traceLevel: 'basic' | 'full';
   /**
    * ACE's host-level source revalidation, when the deployment configured one.
-   * On this path the committed record *is* the source, so it is not consulted
-   * for a source — but it keeps its veto: answering `undefined` refuses.
+   * The committed record remains the source the grant is *derived* from; this
+   * supplies the *current* source the grant-store commit guard re-proves
+   * eligibility, subject, scope and validity against. `undefined` refuses.
    */
   readonly revalidateSource?: (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined;
 }
@@ -176,17 +177,21 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   }
 
   /**
-   * The synchronous commit-boundary source: the frozen snapshot projected from
-   * the committed record. No I/O — every Store read finished before issuance
-   * began. A foreign correlation is refused, and a host-configured ACE
-   * revalidation keeps its veto.
+   * The synchronous commit-boundary source. A foreign correlation is refused.
+   * Without a host revalidator it is the frozen snapshot projected from the
+   * committed record — no I/O, every Store read finished before issuance began.
+   * With one, it is whatever the host reports as the source *now*, unchanged:
+   * the grant's identity and `sourceDigest` are still derived from the
+   * committed record, but the commit guard re-proves the grant against the
+   * current authorization, so a source that has narrowed since refuses the
+   * issuance rather than being masked by the persisted snapshot.
    */
   function persistedSourceGuard(verified: VerifiedDecision): (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined {
     const source = verified.source;
     return (correlation) => {
       if (!grantCorrelationMatches(correlation, source.correlation)) return undefined;
-      if (hostRevalidateSource !== undefined && hostRevalidateSource(correlation) === undefined) return undefined;
-      return source;
+      if (hostRevalidateSource === undefined) return source;
+      return hostRevalidateSource(correlation);
     };
   }
 

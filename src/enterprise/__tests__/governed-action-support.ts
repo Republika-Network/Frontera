@@ -17,6 +17,8 @@ import { createInMemoryObligationDischargeProvider } from '../../features/obliga
 import {
   createInMemoryBoundedGrantStore,
   type BoundedGrantStorePort,
+  type GrantCorrelation,
+  type GrantSourceAuthorization,
   type IssueBoundedGrantInput,
   type IssueBoundedGrantOutcome,
 } from '../../features/grant-runtime/index.js';
@@ -128,6 +130,9 @@ export interface GovernedWorld {
   readonly adapter: RecordingExecutionAdapter;
   readonly log: CallLog;
   readonly kernelRequests: KernelEvaluationRequest[];
+  readonly kernelResults: KernelEvaluationResult[];
+  /** Every source the host revalidator answered, in order. */
+  readonly revalidatedSources: (GrantSourceAuthorization | undefined)[];
   readonly accessContexts: unknown[];
   readonly issueOutcomes: IssueBoundedGrantOutcome[];
   readonly events: EnterpriseEvent[];
@@ -153,6 +158,8 @@ export interface WorldOptions {
   readonly clock?: ReturnType<typeof createManualEnforcementClock>;
   readonly adapter?: RecordingExecutionAdapter;
   readonly kernelIdStart?: number;
+  /** The host-level ACE `revalidateSource`, handed to the orchestrator. Receives the world so it can derive the current source. */
+  readonly revalidateSource?: (correlation: GrantCorrelation, world: GovernedWorld) => GrantSourceAuthorization | undefined;
 }
 
 export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
@@ -177,13 +184,16 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
   });
 
   const kernelRequests: KernelEvaluationRequest[] = [];
+  const kernelResults: KernelEvaluationResult[] = [];
   const kernel: ExecutionKernelPort = {
     async evaluate(request: KernelEvaluationRequest, evaluationOptions?: KernelEvaluationOptions): Promise<KernelEvaluationResult> {
       log.entries.push('kernel.evaluate');
       kernelRequests.push(request);
       if (options.kernelThrows !== undefined) throw options.kernelThrows;
-      const result = await realKernel.evaluate(request, evaluationOptions);
-      return options.kernelOverride === undefined ? result : options.kernelOverride(result);
+      const raw = await realKernel.evaluate(request, evaluationOptions);
+      const result = options.kernelOverride === undefined ? raw : options.kernelOverride(raw);
+      kernelResults.push(result);
+      return result;
     },
   };
 
@@ -264,6 +274,8 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
   const publisher = createInProcessEventPublisher();
   publisher.subscribe((event) => events.push(event));
   let eventCounter = 0;
+  const revalidatedSources: (GrantSourceAuthorization | undefined)[] = [];
+  const hostRevalidate = options.revalidateSource;
 
   const orchestrator = createGovernedActionOrchestrator({
     organizationId: options.organizationId ?? ORG,
@@ -276,9 +288,19 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     enterpriseContext: () => ({ enterpriseVersion: 'test', lifecycleState: 'ready', modules: [], environment: 'test' }),
     events: { enabled: true, publisher, nextId: (prefix) => `${prefix}-${(eventCounter += 1)}` },
     traceLevel: 'basic',
+    ...(hostRevalidate !== undefined
+      ? {
+          revalidateSource: (correlation: GrantCorrelation) => {
+            const current = hostRevalidate(correlation, world);
+            revalidatedSources.push(current);
+            return current;
+          },
+        }
+      : {}),
   });
 
-  return { orchestrator, ace, store, rawStore, grantStore, adapter, log, kernelRequests, accessContexts, issueOutcomes, events, clock, grantCapability };
+  const world: GovernedWorld = { orchestrator, ace, store, rawStore, grantStore, adapter, log, kernelRequests, kernelResults, revalidatedSources, accessContexts, issueOutcomes, events, clock, grantCapability };
+  return world;
 }
 
 export { TRUST_DOMAIN_ID, PMFREAK_ACTOR_ID };

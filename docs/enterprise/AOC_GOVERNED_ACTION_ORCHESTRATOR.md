@@ -99,8 +99,13 @@ reads are asynchronous. The orchestrator does not put I/O inside the guard:
 4. The grant source is projected from that record and deep-frozen.
 5. Issuance begins.
 6. The synchronous `revalidateSource` closes over the frozen snapshot. It
-   refuses a foreign correlation, and it keeps a host-configured ACE
-   `revalidateSource`'s veto.
+   refuses a foreign correlation. Without a host-configured ACE
+   `revalidateSource` it answers the frozen snapshot; with one it answers the
+   host's *current* source unchanged, so the grant-store commit guard
+   re-proves eligibility, subject, scope and validity against the
+   authorization as it stands now. The grant's identity and `sourceDigest` are
+   still derived from the committed record. A current source that is
+   `undefined`, ineligible or narrower than the grant refuses the issuance.
 7. ACE's synchronous authority-binding re-resolution still runs inside the
    commit boundary. A binding that changes at all between issuance and commit
    refuses.

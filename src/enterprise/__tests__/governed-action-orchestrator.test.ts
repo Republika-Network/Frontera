@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { GRANT_REASON_CODES, grantSourceDigest } from '../../features/grant-runtime/index.js';
+import { GRANT_REASON_CODES, grantSourceDigest, type GrantSourceAuthorization } from '../../features/grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODES } from '../../features/execution-runtime/index.js';
 import { deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
 import { AUTHORITY_BINDING_REASON_CODES } from '../execution-governance/index.js';
@@ -238,6 +238,89 @@ describe('Governed action — every decision is committed, whatever it says', ()
     assert.equal(withheldBy(result), 'grant');
     assert.deepEqual([...result.reasonCodes], [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
     assert.equal(world.adapter.callCount, 0);
+  });
+});
+
+/**
+ * The current source a host revalidator would answer if nothing had changed
+ * since the decision: the projection of the decision the Kernel returned,
+ * which the orchestrator has already proved equal to the committed record.
+ */
+function unchangedCurrentSource(world: GovernedWorld): GrantSourceAuthorization {
+  const [request] = world.kernelRequests;
+  const [decision] = world.kernelResults;
+  assert.ok(request !== undefined && decision !== undefined);
+  return deriveGrantSourceAuthorization(world.grantCapability, request, decision);
+}
+
+function assertRefusedAtCommit(world: GovernedWorld, result: GovernedActionResult, reasonCodes: readonly string[]): void {
+  assert.equal(withheldBy(result), 'grant');
+  assert.deepEqual([...result.reasonCodes], [...reasonCodes]);
+  assert.ok(world.revalidatedSources.length > 0, 'the host revalidator was consulted at the commit boundary');
+  assert.ok(world.log.indexOf('grantStore.issue') !== -1, 'issuance reached the grant store');
+  assert.deepEqual(
+    world.issueOutcomes.map((outcome) => outcome.outcome),
+    ['refused'],
+    'the grant store refused the commit',
+  );
+  assert.equal(world.adapter.callCount, 0);
+  assertNoGrantLeak(result);
+}
+
+describe('Governed action — the host ACE revalidateSource is the commit guard\'s current source, not a veto', () => {
+  it('revalidateSource returns undefined → no grant, no adapter', async () => {
+    const world = buildGovernedWorld({ revalidateSource: () => undefined });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assertRefusedAtCommit(world, result, [GRANT_REASON_CODES.GRANT_CORRELATION_INVALID]);
+    assert.deepEqual(world.revalidatedSources, [undefined]);
+  });
+
+  it('revalidateSource returns a current source that is no longer eligible → issuance refused, no adapter', async () => {
+    const world = buildGovernedWorld({
+      revalidateSource: (_correlation, self) => ({ ...unchangedCurrentSource(self), authorizationPermitsExercise: false }),
+    });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assertRefusedAtCommit(world, result, [GRANT_REASON_CODES.GRANT_AUTHORIZATION_NOT_PERMITTED]);
+  });
+
+  it('revalidateSource returns a current source whose scope has narrowed → issuance refused, no adapter', async () => {
+    const world = buildGovernedWorld({
+      revalidateSource: (_correlation, self) => {
+        const current = unchangedCurrentSource(self);
+        return { ...current, scope: { ...current.scope, resources: { kind: 'set', values: ['resource-no-longer-covered'] } } };
+      },
+    });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assertRefusedAtCommit(world, result, [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
+  });
+
+  it('revalidateSource returns a current source whose validity has narrowed → issuance refused, no adapter', async () => {
+    // The grant ends ten minutes after the decision; the authority now ends at five.
+    const world = buildGovernedWorld({
+      revalidateSource: (_correlation, self) => {
+        const current = unchangedCurrentSource(self);
+        return { ...current, validityCeilings: [...current.validityCeilings, { source: 'authority', notAfter: '2026-01-01T00:05:00.000Z' }] };
+      },
+    });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assertRefusedAtCommit(world, result, [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
+  });
+
+  it('revalidateSource returns the unchanged current source → normal execution, grant derived from the committed record', async () => {
+    const world = buildGovernedWorld({ revalidateSource: (_correlation, self) => unchangedCurrentSource(self) });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(result.status, 'executed');
+    assert.equal(world.adapter.callCount, 1);
+    assert.equal(world.revalidatedSources.length, 1);
+
+    const record = await recordFor(world, REQUEST_ID);
+    assert.ok(record !== null);
+    const read = await world.grantStore.read(world.adapter.calls[0]?.boundedGrantId ?? '');
+    assert.ok(read.grant !== undefined);
+    const [request] = world.kernelRequests;
+    assert.ok(request !== undefined);
+    const persistedDigest = grantSourceDigest(deriveGrantSourceAuthorization(world.grantCapability, request, toKernelEvaluationResult(record)));
+    assert.equal(read.grant.sourceDigest, persistedDigest, 'the artifact is still derived from the persisted decision');
   });
 });
 
