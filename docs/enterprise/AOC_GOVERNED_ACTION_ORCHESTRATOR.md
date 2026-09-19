@@ -66,8 +66,25 @@ signatures and behaviour, and the existing ACE suites pass unmodified.
 `issueFromDecision()` accepts a decision it did not produce, and a caller able
 to supply one could supply `status: 'allowed'`. So the core is **not** exported
 from `execution-governance/index.ts` or from any public entrypoint. Only the
-composition root, the ACE service and the orchestrator import it, and a
+composition root, the ACE service and the governed-action module
+(`orchestrator.ts`, plus `decision-commit.ts` for its type) import it, and a
 structural test pins that list.
+
+### Module layout
+
+The orchestrator is split along its trust boundaries and lifecycle phases:
+
+| Module | Owns |
+| --- | --- |
+| `kernel-request.ts` | Identity → Kernel request. Reads the four identity fields and builds the request. |
+| `decision-commit.ts` | Idempotency → Kernel → `appendEvaluation` → re-read/`verify` → reconstruct → bind. It is the **only** producer of a `VerifiedDecision`, and that type has no transient-decision field. |
+| `execution-ledger.ts` | Every Governance reference write: the authorization artifact, the write-ahead claim and the outcome. |
+| `orchestrator.ts` | The order between phases: status gate, grant terms, `issueFromDecision(persisted)`, exercise, and result mapping. |
+
+A structural test pins the call sites. Only `decision-commit.ts` calls
+`evaluate`, `appendEvaluation` and `verify`. Only `orchestrator.ts` calls
+`issueFromDecision`, and it passes `decision: persisted`. Only
+`execution-ledger.ts` calls `appendReference`.
 
 ### The synchronous commit guard
 

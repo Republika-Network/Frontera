@@ -310,8 +310,28 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       .filter((file) => /issuance-core\.js/.test(codeOf(file)));
     assert.deepEqual(
       importers.map((file) => file.replaceAll('\\', '/')).sort(),
-      ['src/enterprise/composition/composition-root.ts', 'src/enterprise/execution-governance/service.ts', 'src/enterprise/governed-action/orchestrator.ts'],
+      [
+        'src/enterprise/composition/composition-root.ts',
+        'src/enterprise/execution-governance/service.ts',
+        'src/enterprise/governed-action/decision-commit.ts',
+        'src/enterprise/governed-action/orchestrator.ts',
+      ],
     );
+  });
+
+  it('persist-before-grant is structural: only decision-commit evaluates and appends; only the orchestrator issues, from a VerifiedDecision', () => {
+    const callers = (pattern: RegExp) => SOURCES.filter((file) => pattern.test(codeOf(file))).map((file) => file.replaceAll('\\', '/').split('/').pop()).sort();
+    assert.deepEqual(callers(/\.evaluate\s*\(/), ['decision-commit.ts'], 'only the commit phase reaches the Kernel');
+    assert.deepEqual(callers(/\.appendEvaluation\s*\(/), ['decision-commit.ts']);
+    assert.deepEqual(callers(/\.verify\s*\(/), ['decision-commit.ts']);
+    assert.deepEqual(callers(/\.issueFromDecision\s*\(/), ['orchestrator.ts']);
+    assert.deepEqual(callers(/\.appendReference\s*\(/), ['execution-ledger.ts'], 'evidence is written in one place');
+    const commit = codeOf(join(ROOT, 'decision-commit.ts'));
+    const verifiedShape = commit.slice(commit.indexOf('export interface VerifiedDecision'), commit.indexOf('export type DecisionCommitOutcome'));
+    assert.equal(/transient/.test(verifiedShape), false, 'a VerifiedDecision cannot carry the transient Kernel result');
+    const orchestrator = codeOf(join(ROOT, 'orchestrator.ts'));
+    assert.match(orchestrator, /issueFromDecision\(\{[^}]*decision:\s*persisted,/, 'issuance is handed the persisted decision');
+    assert.equal(/transient/.test(orchestrator), false, 'the orchestrator never sees a transient decision');
   });
 
   it('the public entrypoint exports the orchestrator as types only', () => {
