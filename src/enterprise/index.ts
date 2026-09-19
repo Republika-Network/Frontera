@@ -505,6 +505,7 @@ export { createEnterprise, createDefaultEnterprise } from './composition/composi
 export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseRequestContext } from './composition/composition-root.js';
 export type { EnterpriseAuthorityControlledExecutionOptions } from './composition/composition-root.js';
 export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';
+export type { EnterpriseGovernedActionOrchestratorOptions } from './composition/composition-root.js';
 
 /**
  * Customer-plane identity admission -- type-only, for the same reason the
@@ -527,6 +528,29 @@ export type {
   CustomerPrincipal,
 } from './customer-identity/index.js';
 export type { EnterpriseApiKeyCustomerIdentity } from './configuration/enterprise-configuration.js';
+
+/**
+ * The Governed Action Orchestrator -- internal orchestration capability; no
+ * customer route yet. Type-only, for the reason the two compositions around it
+ * are: a deployment adopts it through
+ * `createEnterprise({ governedActionOrchestrator })`, and the values live in
+ * `src/enterprise/governed-action`, which is not a frozen artifact. See
+ * `docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md`.
+ */
+export type {
+  GovernedActionAmount,
+  GovernedActionConfigurationErrorCode,
+  GovernedActionDecisionRef,
+  GovernedActionGrantPolicy,
+  GovernedActionGrantPolicyQuery,
+  GovernedActionGrantTerms,
+  GovernedActionIntent,
+  GovernedActionOrchestrator,
+  GovernedActionReasonCode,
+  GovernedActionResult,
+  GovernedActionResultStatus,
+  GovernedActionWithheldBy,
+} from './governed-action/index.js';
 
 /**
  * Authority-Controlled Execution -- the opt-in composition that gates external
