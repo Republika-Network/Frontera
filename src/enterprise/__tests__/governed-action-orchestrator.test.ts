@@ -5,6 +5,7 @@ import { GRANT_REASON_CODES, grantSourceDigest, type GrantSourceAuthorization } 
 import { GRANT_EXERCISE_REASON_CODES } from '../../features/execution-runtime/index.js';
 import { deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
 import { AUTHORITY_BINDING_REASON_CODES } from '../execution-governance/index.js';
+import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
 import { toKernelEvaluationResult } from '../governance-store/store-common.js';
 import type { GovernanceRecord } from '../governance-store/contracts.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
@@ -12,8 +13,10 @@ import {
   GOVERNED_ACTION_REASON_CODES as R,
   deriveGovernedActionExecutionId,
   deriveGovernedActionRequestId,
+  validateGovernedActionIntent,
   type GovernedActionResult,
 } from '../governed-action/index.js';
+import { executionOutcomeReferenceId } from '../governed-action/identifiers.js';
 import {
   ALLOWED_INTENT,
   APPROVAL_INTENT,
@@ -22,6 +25,7 @@ import {
   EVALUATED_AT_POLICY,
   IDENTITY,
   NOW,
+  NO_TEMPORAL_BOUND,
   ORG,
   PMFREAK_ACTOR_ID,
   TRUST_DOMAIN_ID,
@@ -605,7 +609,16 @@ describe('Governed action — decision idempotency', () => {
   });
 
   it('a retry does not mint a wider or later grant: it re-derives the same one', async () => {
-    const world = buildGovernedWorld();
+    // The first call stops at the pre-assessment, before any execution is
+    // claimed, so the retry is not a replay and reaches issuance again.
+    let revokeOnce = true;
+    const world = buildGovernedWorld({
+      beforeAssess: async ({ ace }, grantId) => {
+        if (!revokeOnce) return;
+        revokeOnce = false;
+        await ace.revokeGrant({ grantId, reason: 'manual-revocation', issuerRef: 'operator-1' });
+      },
+    });
     await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
     world.clock.advance(60_000);
     await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
@@ -732,5 +745,199 @@ describe('Governed action — GOV-ACT-07: the ACE exercise gate still decides wh
     assert.equal(outcome.status, 'withheld');
     assert.deepEqual([...outcome.assessment.reasonCodes], [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND]);
     assert.equal(world.adapter.callCount, 0);
+  });
+});
+
+describe('Governed action — a recorded execution is replayed before any mutable gate', () => {
+  it('executed and recorded; the grant policy then yields nothing → the retry still reports the recorded execution', async () => {
+    let policyAvailable = true;
+    const world = buildGovernedWorld({ grantPolicy: (query) => (policyAvailable ? EVALUATED_AT_POLICY(query) : undefined) });
+    const first = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(first.status, 'executed');
+    assert.ok(first.status === 'executed');
+    assert.equal(first.outcomeRecorded, true);
+
+    policyAvailable = false;
+    world.clock.advance(60_000);
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'executed', JSON.stringify(retry));
+    assert.ok(retry.status === 'executed');
+    assert.equal(retry.replayed, true);
+    assert.equal(retry.outcomeRecorded, true);
+    assert.equal(retry.executionId, first.executionId);
+    assert.equal(world.adapter.callCount, 1);
+    assert.equal(world.issueOutcomes.length, 1, 'no issuance on replay');
+  });
+
+  it('executed and recorded; source revalidation and the authority binding would now refuse → the retry reports the recorded outcome and issues nothing', async () => {
+    let authorityStands = true;
+    const world = buildGovernedWorld({
+      resolveAuthorityBinding: () => (authorityStands ? NO_TEMPORAL_BOUND : undefined),
+      revalidateSource: (_correlation, self) => (authorityStands ? unchangedCurrentSource(self) : undefined),
+    });
+    const first = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(first.status, 'executed');
+
+    authorityStands = false;
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'executed', JSON.stringify(retry));
+    assert.ok(retry.status === 'executed');
+    assert.equal(retry.replayed, true);
+    assert.equal(world.adapter.callCount, 1);
+    assert.equal(world.log.entries.filter((entry) => entry === 'grantStore.issue').length, 1, 'no new grant is issued');
+    assert.equal(world.revalidatedSources.length, 1, 'revalidation is not consulted on replay');
+  });
+
+  it('a recorded execution failure is replayed as that failure — no re-issuance, no adapter call', async () => {
+    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'failed', reason: 'PROVIDER_REJECTED' }) });
+    const first = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(first.status, 'execution_failed');
+
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'execution_failed');
+    assert.ok(retry.status === 'execution_failed');
+    assert.equal(retry.failure, 'PROVIDER_REJECTED');
+    assert.deepEqual([...retry.reasonCodes], ['PROVIDER_REJECTED']);
+    assert.equal(retry.replayed, true);
+    assert.equal(retry.outcomeRecorded, true);
+    assert.equal(world.adapter.callCount, 1);
+    assert.equal(world.issueOutcomes.length, 1);
+  });
+});
+
+describe('Governed action — a withheld exercise keeps its reasons on replay', () => {
+  it('exercise withheld (revoked after the claim) → reasons persisted → the retry reports the same reasons', async () => {
+    let revokeOnce = true;
+    const world = buildGovernedWorld({
+      beforeExercise: async ({ ace }, grantId) => {
+        if (!revokeOnce) return;
+        revokeOnce = false;
+        await ace.revokeGrant({ grantId, reason: 'manual-revocation', issuerRef: 'operator-1' });
+      },
+    });
+    const first = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(withheldBy(first), 'exercise');
+    assert.deepEqual([...first.reasonCodes], [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED]);
+
+    const record = await recordFor(world, REQUEST_ID);
+    assert.deepEqual(
+      record?.references.map((reference) => reference.externalVersion ?? reference.referenceType),
+      ['authorization_artifact', 'attempt', `withheld:${GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED}`],
+    );
+
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(withheldBy(retry), 'exercise');
+    assert.deepEqual([...retry.reasonCodes], [...first.reasonCodes]);
+    assert.equal(retry.executionId, first.executionId);
+    assert.equal(world.adapter.callCount, 0);
+    assert.equal(world.issueOutcomes.length, 1);
+  });
+
+  it('several reasons survive in their assessed order (expired after the claim)', async () => {
+    let expireOnce = true;
+    const world = buildGovernedWorld({
+      beforeExercise: async ({ ace, clock }, grantId) => {
+        if (!expireOnce) return;
+        expireOnce = false;
+        clock.advance(11 * 60 * 1000);
+        await ace.revokeGrant({ grantId, reason: 'manual-revocation', issuerRef: 'operator-1' });
+      },
+    });
+    const first = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(withheldBy(first), 'exercise');
+    assert.ok(first.reasonCodes.length >= 2, JSON.stringify(first.reasonCodes));
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.deepEqual([...retry.reasonCodes], [...first.reasonCodes]);
+    assert.equal(world.adapter.callCount, 0);
+  });
+
+  it('a recorded withheld row that does not decode exactly is never reported as a withheld refusal', async () => {
+    // The attempt is claimed, then the exercise port fails: an attempt with no outcome.
+    const allowedWorld = buildGovernedWorld({
+      beforeExercise: async () => {
+        throw new Error('the exercise port is unreachable');
+      },
+    });
+    const unconfirmed = await allowedWorld.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(unconfirmed.status, 'execution_unconfirmed');
+    const record = await recordFor(allowedWorld, REQUEST_ID);
+    assert.ok(record !== null && unconfirmed.executionId !== undefined);
+    // A hand-written outcome row naming no known reason: evidence cannot manufacture an explanation.
+    await allowedWorld.rawStore.appendReference({ system: false, organizationId: ORG }, {
+      referenceId: executionOutcomeReferenceId(unconfirmed.executionId),
+      evaluationId: record.evaluation.evaluationId,
+      referenceType: 'execution_record',
+      externalId: unconfirmed.executionId,
+      externalVersion: 'withheld:NOT_A_REASON',
+      createdAt: NOW,
+    });
+    const retry = await allowedWorld.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'execution_unconfirmed');
+    assert.equal(allowedWorld.adapter.callCount, 0);
+  });
+});
+
+describe('Governed action — an own "__proto__" key in the asserted context is data', () => {
+  const contextWith = (topLevel: unknown, nested: unknown): unknown =>
+    JSON.parse(
+      JSON.stringify({ ...ALLOWED_INTENT, assertedContext: { ...ALLOWED_INTENT.assertedContext, nested: { keep: 1 } } })
+        .replace('"nested":{', `"__proto__":${JSON.stringify(topLevel)},"nested":{"__proto__":${JSON.stringify(nested)},`),
+    ) as unknown;
+
+  it('top-level and nested own "__proto__" keys survive validation as own enumerable data, and no prototype moves', () => {
+    const raw = contextWith({ polluted: true }, 'nested-value') as { assertedContext: Record<string, unknown> };
+    assert.ok(Object.hasOwn(raw.assertedContext, '__proto__'), 'fixture: JSON.parse defines an own key');
+
+    const validation = validateGovernedActionIntent(raw);
+    assert.ok(validation.valid, JSON.stringify(validation));
+    const context = validation.intent.assertedContext as Record<string, unknown>;
+    assert.ok(Object.hasOwn(context, '__proto__'));
+    assert.ok(Object.prototype.propertyIsEnumerable.call(context, '__proto__'));
+    assert.deepEqual(Object.getOwnPropertyDescriptor(context, '__proto__')?.value, { polluted: true });
+    assert.equal(Object.getPrototypeOf(context), Object.prototype, 'the copy keeps an ordinary prototype');
+    assert.equal((context as { polluted?: unknown }).polluted, undefined);
+
+    const nested = context['nested'] as Record<string, unknown>;
+    assert.ok(Object.hasOwn(nested, '__proto__'));
+    assert.ok(Object.prototype.propertyIsEnumerable.call(nested, '__proto__'));
+    assert.equal(Object.getOwnPropertyDescriptor(nested, '__proto__')?.value, 'nested-value');
+    assert.equal(Object.getPrototypeOf(nested), Object.prototype);
+    assert.equal(nested['keep'], 1);
+
+    assert.equal(({} as { polluted?: unknown }).polluted, undefined, 'Object.prototype is untouched');
+  });
+
+  it('the Kernel request carries the value, and it is covered by the payload digest', async () => {
+    const world = buildGovernedWorld();
+    const result = await world.orchestrator.govern(IDENTITY, contextWith({ marker: 'a' }, 'n'));
+    assert.equal(result.status, 'executed', JSON.stringify(result));
+    const [request] = world.kernelRequests;
+    assert.ok(request?.context !== undefined);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(request.context, '__proto__')?.value, { marker: 'a' });
+    assert.equal(Object.getOwnPropertyDescriptor(request.context['nested'] as object, '__proto__')?.value, 'n');
+
+    // The Kernel evaluated it — its own request snapshot kept the key — and the
+    // committed record's payload digest is over the request that carries it.
+    const record = await recordFor(world, REQUEST_ID);
+    assert.equal(record?.request.payloadDigest, computeGovernanceRequestPayloadDigest(request));
+
+    const withoutValue = { ...request, context: { ...request.context } };
+    delete (withoutValue.context as Record<string, unknown>)['__proto__'];
+    assert.equal(Object.hasOwn(withoutValue.context, '__proto__'), false);
+    assert.notEqual(computeGovernanceRequestPayloadDigest(request), computeGovernanceRequestPayloadDigest(withoutValue));
+  });
+
+  it('two contexts differing only in "__proto__" are different payloads — the second is an idempotency conflict, not a replay', async () => {
+    const world = buildGovernedWorld();
+    const first = await world.orchestrator.govern(IDENTITY, contextWith({ marker: 'a' }, 'n'));
+    assert.equal(first.status, 'executed', JSON.stringify(first));
+    const second = await world.orchestrator.govern(IDENTITY, contextWith({ marker: 'b' }, 'n'));
+    assert.equal(second.status, 'rejected');
+    assert.deepEqual([...second.reasonCodes], [R.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT]);
+    const nestedOnly = await world.orchestrator.govern(IDENTITY, contextWith({ marker: 'a' }, 'other'));
+    assert.deepEqual([...nestedOnly.reasonCodes], [R.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT]);
+    const same = await world.orchestrator.govern(IDENTITY, contextWith({ marker: 'a' }, 'n'));
+    assert.equal(same.decision?.decisionId, first.decision?.decisionId, 'the identical payload is still the same logical request');
+    assert.equal(world.kernelRequests.length, 1);
   });
 });

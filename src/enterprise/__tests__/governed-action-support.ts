@@ -154,6 +154,8 @@ export interface WorldOptions {
   readonly adapterBehaviour?: (action: ValidatedExecutionAction) => ExecutionAdapterResult | Promise<ExecutionAdapterResult>;
   /** Wraps ACE's exercise port — used to revoke or expire a grant between issuance and exercise. */
   readonly beforeAssess?: (world: { readonly ace: AuthorityControlledExecutionService; readonly clock: ReturnType<typeof createManualEnforcementClock> }, grantId: string) => Promise<void>;
+  /** Wraps ACE's exercise itself — after the pre-assessment and the write-ahead claim, so a refusal here is a *recorded* withheld outcome. */
+  readonly beforeExercise?: (world: { readonly ace: AuthorityControlledExecutionService; readonly clock: ReturnType<typeof createManualEnforcementClock> }, grantId: string) => Promise<void>;
   readonly log?: CallLog;
   readonly clock?: ReturnType<typeof createManualEnforcementClock>;
   readonly adapter?: RecordingExecutionAdapter;
@@ -260,14 +262,17 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
   const ace = createAuthorityControlledExecution(aceOptions);
 
   const execution: GovernedActionOrchestratorOptions['execution'] =
-    options.beforeAssess === undefined
+    options.beforeAssess === undefined && options.beforeExercise === undefined
       ? ace
       : {
           async assessExercise(request) {
             await options.beforeAssess?.({ ace, clock }, request.boundedGrantId);
             return ace.assessExercise(request);
           },
-          exercise: (request) => ace.exercise(request),
+          async exercise(request) {
+            await options.beforeExercise?.({ ace, clock }, request.boundedGrantId);
+            return ace.exercise(request);
+          },
         };
 
   const events: EnterpriseEvent[] = [];

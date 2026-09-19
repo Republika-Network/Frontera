@@ -33,11 +33,13 @@ BoundCustomerIdentity + GovernedActionIntent
   7  appendEvaluation()    — COMMIT the decision, whatever its status
   8  re-read + verify()    — the committed record, digest-checked, bound to this request
   9  status gate           — denied / indeterminate / approval_required stop here
+ 10  derive executionId    = H(requestId, decisionId)
+     replay                — an attempt/outcome already on the committed record is
+                             answered from it, BEFORE any mutable gate below
      grant terms           — trusted host policy; no expiry → withheld
- 10  authority binding     — resolved at issuance, re-resolved inside the commit
- 11  issue bounded grant   — from the PERSISTED decision (ACE issuance core)
+ 11  authority binding     — resolved at issuance, re-resolved inside the commit
+ 12  issue bounded grant   — from the PERSISTED decision (ACE issuance core)
      authorization_artifact reference (evidence)
- 12  derive executionId    = H(requestId, decisionId)
  13  ACE assessExercise    — pure read
      execution_record "attempt" reference — WRITE-AHEAD, at most once per executionId
      ACE exercise          — re-reads the grant; adapter gets a ValidatedExecutionAction
@@ -181,6 +183,12 @@ nothing is recorded. Examples of such properties are `actorId`,
 `url` and `payload`. The asserted context may not carry identity or authority
 keys at its top level, and it is bounded in keys and depth.
 
+Every other JSON key is data, `__proto__` included. The validated copy, the
+Governance Store's redacted projection and the Kernel's request snapshot all
+*define* each key rather than assigning it, so an own `__proto__` key reaches
+the Kernel, is covered by the payload digest, and never replaces a prototype.
+Two contexts that differ only in that key are different payloads.
+
 Every intent axis maps onto an existing `GrantScope`/`ValidatedExecutionAction`
 axis. There is no payload, provider body or metadata channel to an adapter.
 The conceptual `workflow` field is **deliberately omitted**. No canonical
@@ -210,8 +218,12 @@ decision before it exists.
   re-resolves once. It adopts the committed decision and discards its own
   transient one. The append transaction's conflict protection is untouched.
 - With a grant policy anchored to the committed decision's `evaluatedAt` (the
-  recommended shape), a retry re-derives the **same** grant (`already-issued`),
-  never a wider or later one.
+  recommended shape), a retry that reaches issuance re-derives the **same**
+  grant (`already-issued`), never a wider or later one.
+- A retry whose execution id is already on the committed record never reaches
+  issuance. It is answered from the record before grant terms, the authority
+  binding, source revalidation or issuance run, because those describe what
+  may happen *now* and must not rewrite what already happened.
 
 ## Execution correlation and the write-ahead record
 
@@ -225,12 +237,18 @@ Governance references are the evidence trail:
 | --- | --- | --- | --- |
 | The issued grant | `authorization_artifact` | grant id | — (the grant digest goes in `digest`) |
 | Write-ahead claim | `execution_record` | execution id | `attempt` |
-| Outcome | `execution_record` | execution id | `executed` \| `withheld` \| `execution-failed:<reason>` |
+| Outcome | `execution_record` | execution id | `executed` \| `withheld:<CODE>,…` \| `execution-failed:<reason>` |
 
 Reference ids are deterministic, and the Governance Store refuses a second
 append of the same reference id. So the `attempt` row is a durable
 **at-most-once** marker for an execution id, written before the adapter. If
 that write fails, the adapter is not invoked.
+
+A withheld outcome records the exercise assessment's reason codes in their
+assessed order: at least one, each from the closed
+`GRANT_EXERCISE_REASON_CODES` vocabulary, none repeated. A replay reports
+exactly those codes. A row that does not decode exactly is never reported as
+a withheld refusal; the attempt replays as `execution_unconfirmed`.
 
 **GOV-ACT-09: evidence is not authority.** A reference row can only *prevent* a
 repeat invocation. Its presence never permits one: the exercise gate reads the

@@ -108,7 +108,9 @@ function result(value: GovernedActionResult): GovernedActionResult {
 /** An execution identity already on record is answered from the record; the adapter is not invoked again. */
 function replayResult(context: ResultContext, prior: PriorExecution, decisionReasonCodes: readonly string[]): GovernedActionResult {
   if (prior.outcome === 'executed') return result({ status: 'executed', ...context, reasonCodes: decisionReasonCodes, replayed: true, outcomeRecorded: true });
-  if (prior.outcome === 'withheld') return result({ status: 'withheld', withheldBy: 'exercise', ...context, reasonCodes: [] });
+  if (prior.outcome === 'withheld' && prior.withheldReasonCodes !== undefined) {
+    return result({ status: 'withheld', withheldBy: 'exercise', ...context, reasonCodes: prior.withheldReasonCodes });
+  }
   const failure = prior.outcome?.startsWith('execution-failed:') === true ? prior.outcome.slice('execution-failed:'.length) : undefined;
   if (failure === 'PROVIDER_REJECTED' || failure === 'PROVIDER_UNAVAILABLE' || failure === 'PROVIDER_RESPONSE_INVALID' || failure === 'ADAPTER_ERROR') {
     return result({ status: 'execution_failed', ...context, failure, reasonCodes: [failure], replayed: true, outcomeRecorded: true });
@@ -233,6 +235,19 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (persisted.status === 'indeterminate') return result({ status: 'indeterminate', ...decided, reasonCodes: persisted.reasonCodes });
       if (persisted.status === 'approval_required') return result({ status: 'withheld', withheldBy: 'approval', ...decided, reasonCodes: persisted.reasonCodes });
 
+      // Phase: replay. An execution identity already on the committed record is
+      // answered from that record, before any mutable gate runs: grant terms,
+      // authority binding, source revalidation and issuance describe what may
+      // happen *now*, and none of them may rewrite what already happened. A
+      // caller recovering from a lost response learns the recorded outcome, and
+      // no new grant is minted to tell them.
+      const ledger = createExecutionLedger(store, accessContext, now);
+      const evaluationId = record.evaluation.evaluationId;
+      const executionId = deriveGovernedActionExecutionId({ requestId, decisionId: persisted.decisionId });
+      const executed: ResultContext = { ...decided, executionId };
+      const known = ledger.prior(record, executionId);
+      if (known.attempted) return replayResult(executed, known, persisted.reasonCodes);
+
       const terms = termsFor(scope, verified);
       if (terms === undefined) return result({ status: 'withheld', withheldBy: 'grant-terms', ...decided, reasonCodes: [R.GOVERNED_ACTION_GRANT_TERMS_UNAVAILABLE] });
 
@@ -262,20 +277,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       }
 
       // Phase: evidence + claim, then exercise.
-      const ledger = createExecutionLedger(store, accessContext, now);
-      const evaluationId = record.evaluation.evaluationId;
       try {
         await ledger.recordAuthorization(evaluationId, grant);
       } catch {
         return result({ status: 'system_error', ...decided, reasonCodes: [R.GOVERNED_ACTION_AUTHORIZATION_EVIDENCE_FAILED] });
       }
 
-      const executionId = deriveGovernedActionExecutionId({ requestId, decisionId: persisted.decisionId });
-      const executed: ResultContext = { ...decided, executionId };
       const exercise = exerciseFor(verified, scope, grant, executionId);
-
-      const known = ledger.prior(record, executionId);
-      if (known.attempted) return replayResult(executed, known, persisted.reasonCodes);
 
       // Pre-assessment through ACE. A pure read: no provider is contacted.
       const assessment = await execution.assessExercise(exercise);

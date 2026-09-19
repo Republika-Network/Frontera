@@ -77,12 +77,22 @@ function isContextValue(value: unknown, depth: number): boolean {
   return false;
 }
 
-/** Deep copy of an already-validated context value, so the caller's object is never retained. */
+/**
+ * Deep copy of an already-validated context value, so the caller's object is
+ * never retained.
+ *
+ * Every key is *defined*, never assigned: an own `__proto__` key is ordinary
+ * JSON data, and `out[key] = value` would invoke the legacy prototype setter
+ * instead — dropping the value from the request and its digest, and replacing
+ * the copy's prototype.
+ */
 function copyContextValue(value: unknown): unknown {
   if (Array.isArray(value)) return Object.freeze(value.map(copyContextValue));
   if (isPlainObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) out[key] = copyContextValue(value[key]);
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(out, key, { value: copyContextValue(value[key]), enumerable: true, writable: true, configurable: true });
+    }
     return Object.freeze(out);
   }
   return value;

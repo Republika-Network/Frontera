@@ -1,5 +1,5 @@
 import type { BoundedGrant } from '../../features/grant-runtime/index.js';
-import type { ExecutionOutcome } from '../../features/execution-runtime/index.js';
+import { GRANT_EXERCISE_REASON_CODE_VALUES, type ExecutionOutcome, type GrantExerciseReasonCode } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { authorizationReferenceId, executionAttemptReferenceId, executionOutcomeReferenceId } from './identifiers.js';
@@ -24,8 +24,43 @@ import { authorizationReferenceId, executionAttemptReferenceId, executionOutcome
  */
 export interface PriorExecution {
   readonly attempted: boolean;
-  /** `executed` | `withheld` | `execution-failed:<reason>`, as recorded. Absent when no outcome row exists. */
+  /**
+   * `executed` | `withheld` | `execution-failed:<reason>`, as recorded — or the
+   * raw recorded string when it cannot be decoded, which no replay maps onto a
+   * known outcome. Absent when no outcome row exists.
+   */
   readonly outcome?: string;
+  /** The exercise assessment's reason codes, exactly as recorded. Present only with `outcome: 'withheld'`. */
+  readonly withheldReasonCodes?: readonly GrantExerciseReasonCode[];
+}
+
+/**
+ * A withheld exercise is recorded as `withheld:<CODE>,<CODE>…` — the
+ * assessment's reason codes in the assessment's own (stable) order. The format
+ * is deterministic and bounded: at least one code, every code drawn from the
+ * closed `GRANT_EXERCISE_REASON_CODES` vocabulary, none repeated, so at most one
+ * entry per vocabulary member. Anything else is not encoded and never decoded:
+ * a replay reports only reasons that were recorded, and records nothing it
+ * could not later read back exactly.
+ *
+ * The codes explain a refusal. They are evidence of why nothing ran, and they
+ * cannot permit anything.
+ */
+const WITHHELD_PREFIX = 'withheld:';
+const EXERCISE_REASON_CODES: ReadonlySet<string> = new Set(GRANT_EXERCISE_REASON_CODE_VALUES);
+
+function isCanonicalWithheldCodes(codes: readonly string[]): codes is readonly GrantExerciseReasonCode[] {
+  return codes.length > 0 && codes.length <= EXERCISE_REASON_CODES.size && new Set(codes).size === codes.length && codes.every((code) => EXERCISE_REASON_CODES.has(code));
+}
+
+function encodeWithheldOutcome(reasonCodes: readonly string[]): string | undefined {
+  return isCanonicalWithheldCodes(reasonCodes) ? `${WITHHELD_PREFIX}${reasonCodes.join(',')}` : undefined;
+}
+
+function decodeWithheldOutcome(recorded: string): readonly GrantExerciseReasonCode[] | undefined {
+  if (!recorded.startsWith(WITHHELD_PREFIX)) return undefined;
+  const codes = recorded.slice(WITHHELD_PREFIX.length).split(',');
+  return isCanonicalWithheldCodes(codes) ? Object.freeze([...codes]) : undefined;
 }
 
 export type ExecutionClaim = { readonly kind: 'claimed' } | { readonly kind: 'already-claimed'; readonly prior: PriorExecution };
@@ -62,7 +97,10 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
   function prior(record: GovernanceRecord, executionId: string): PriorExecution {
     const attempted = record.references.some((entry) => entry.referenceId === executionAttemptReferenceId(executionId) && entry.externalId === executionId);
     const outcome = record.references.find((entry) => entry.referenceId === executionOutcomeReferenceId(executionId) && entry.externalId === executionId);
-    return { attempted, ...(outcome?.externalVersion !== undefined ? { outcome: outcome.externalVersion } : {}) };
+    const recorded = outcome?.externalVersion;
+    if (recorded === undefined) return { attempted };
+    const withheldReasonCodes = decodeWithheldOutcome(recorded);
+    return withheldReasonCodes === undefined ? { attempted, outcome: recorded } : { attempted, outcome: 'withheld', withheldReasonCodes };
   }
 
   return {
@@ -100,7 +138,12 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
     },
 
     async recordOutcome(evaluationId, executionId, outcome) {
-      const recordedAs = outcome.status === 'executed' ? 'executed' : outcome.status === 'withheld' ? 'withheld' : `execution-failed:${outcome.reason}`;
+      const recordedAs =
+        outcome.status === 'executed' ? 'executed' : outcome.status === 'withheld' ? encodeWithheldOutcome(outcome.assessment.reasonCodes) : `execution-failed:${outcome.reason}`;
+      // A withheld assessment whose reasons cannot be recorded exactly is not
+      // recorded at all: a replay then reports the attempt as unconfirmed rather
+      // than a refusal stripped of its explanation.
+      if (recordedAs === undefined) return false;
       try {
         await appendOnce({
           referenceId: executionOutcomeReferenceId(executionId),

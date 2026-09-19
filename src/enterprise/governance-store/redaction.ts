@@ -70,7 +70,14 @@ function redactValue(value: unknown, sensitiveTerms: readonly string[]): unknown
   for (const key of Object.keys(source)) {
     const entry = source[key];
     if (entry === undefined) continue;
-    result[key] = isSensitiveKey(key, sensitiveTerms) ? GOVERNANCE_REDACTED_VALUE : redactValue(entry, sensitiveTerms);
+    // Defined, never assigned: an own `__proto__` key is data, and assignment
+    // would invoke the prototype setter and drop it from the digest.
+    Object.defineProperty(result, key, {
+      value: isSensitiveKey(key, sensitiveTerms) ? GOVERNANCE_REDACTED_VALUE : redactValue(entry, sensitiveTerms),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return result;
 }
