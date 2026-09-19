@@ -52,6 +52,13 @@ import { createAuthorityControlledExecution, type AuthorityControlledExecutionOp
 import { createAuthorityControlledExecutionModule } from '../modules/authority-controlled-execution-module.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
 import { createSqliteBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
+import {
+  CustomerIdentityConfigurationError,
+  assertCustomerCredentialConfiguration,
+  createCustomerIdentityAdmission,
+  createKernelAuthoritySubjectBindingReader,
+  type CustomerIdentityAdmissionService,
+} from '../customer-identity/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -126,6 +133,27 @@ export interface CreateEnterpriseOptions {
    * `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
    */
   readonly authorityControlledExecution?: EnterpriseAuthorityControlledExecutionOptions;
+  /**
+   * Opt-in secure customer-plane identity admission: credential → principal →
+   * organization → external subject → Frontera actor.
+   *
+   * **Omitting it changes nothing.** No route is added, no legacy route is
+   * rerouted through it, and `evaluate()` keeps its v1 authentication exactly.
+   *
+   * Supplying `{ enabled: true }` composes it over this Host's Kernel Authority
+   * store — the one binding source of truth — and the configured
+   * `authentication.apiKeys`. It fails composition, rather than producing a
+   * weaker mode, when there is no Kernel Authority store, no credential
+   * carrying `customerIdentity`, or any customer credential that is unscoped,
+   * malformed, ambiguous or scoped to an organization this instance does not
+   * serve. See `docs/enterprise/AOC_CUSTOMER_PRINCIPAL_BINDING.md`.
+   */
+  readonly customerIdentityAdmission?: EnterpriseCustomerIdentityAdmissionOptions;
+}
+
+/** What a host states to adopt customer identity admission. Credentials come from `configuration.authentication.apiKeys`; the binding source is always the Kernel Authority store. */
+export interface EnterpriseCustomerIdentityAdmissionOptions {
+  readonly enabled: boolean;
 }
 
 /**
@@ -250,6 +278,13 @@ export interface AocEnterprise {
    * should be handed the evaluation surface rather than this object.
    */
   readonly authorityControlledExecution?: AuthorityControlledExecutionService;
+  /**
+   * Customer-plane identity admission, present only when this deployment
+   * composed it. Admits a caller as the Frontera actor bound to its
+   * authenticated external subject, or refuses; it never decides what that
+   * actor may do. No route consumes it yet.
+   */
+  readonly customerIdentityAdmission?: CustomerIdentityAdmissionService;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -413,6 +448,21 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   const configuration = options.configuration ?? loadEnterpriseConfiguration();
   const eventIdGenerator = createEnterpriseIdGenerator();
 
+  // Customer identity admission is checked before anything is opened: a
+  // deployment that asked for the customer plane with credentials that could
+  // only ever produce an ambiguous or foreign principal, or with no binding
+  // source at all, is refused outright instead of starting in a weaker mode.
+  const customerIdentityRequested = options.customerIdentityAdmission?.enabled === true;
+  if (customerIdentityRequested) {
+    if (options.kernelAuthorityStore === undefined && !configuration.kernelAuthority.enabled) {
+      throw new CustomerIdentityConfigurationError(
+        'CUSTOMER_IDENTITY_AUTHORITY_UNAVAILABLE',
+        'Customer identity admission resolves actors only through the Kernel Authority store, and this Host has none configured.',
+      );
+    }
+    assertCustomerCredentialConfiguration(configuration.authentication.apiKeys, configuration.kernelAuthority.organizationId);
+  }
+
   // P0-PKG-07: the durable authority path. Explicitly-supplied
   // `kernelProviders` still win outright -- that is how the Kernel's own
   // characterization suite injects a seeded world, and how an embedder
@@ -470,6 +520,24 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
           organizationId: configuration.kernelAuthority.organizationId,
           ...(durableKernelWorld !== undefined ? { onCommitted: () => durableKernelWorld.service.reload() } : {}),
         });
+
+  // The read half, narrowed further: customer admission is handed a
+  // one-method binding reader over this same store, never the store and never
+  // the provisioning surface above.
+  let customerIdentityAdmission: CustomerIdentityAdmissionService | undefined;
+  if (customerIdentityRequested) {
+    if (kernelAuthorityStore === undefined) {
+      throw new CustomerIdentityConfigurationError(
+        'CUSTOMER_IDENTITY_AUTHORITY_UNAVAILABLE',
+        'Customer identity admission was requested, but the Kernel Authority store could not be opened; no customer principal can be bound without it.',
+      );
+    }
+    customerIdentityAdmission = createCustomerIdentityAdmission({
+      apiKeys: configuration.authentication.apiKeys,
+      subjectBindings: createKernelAuthoritySubjectBindingReader(kernelAuthorityStore),
+      organizationId: configuration.kernelAuthority.organizationId,
+    });
+  }
 
   const persistence = options.persistence ?? (await buildStore(configuration, kernelProviders.clock.now));
   const evidenceStore = options.evidenceStore ?? createInMemoryEvidenceStore({ now: kernelProviders.clock.now });
@@ -684,6 +752,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     assuranceFrameworks: assuranceFrameworkRegistry,
     ...(kernelAuthorityStore !== undefined ? { kernelAuthorityStore } : {}),
     ...(kernelAuthorityProvisioning !== undefined ? { kernelAuthorityProvisioning } : {}),
+    ...(customerIdentityAdmission !== undefined ? { customerIdentityAdmission } : {}),
     ...(authorityControlledExecution !== undefined ? { authorityControlledExecution } : {}),
     eventPublisher,
     telemetry,
