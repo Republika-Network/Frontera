@@ -525,3 +525,16 @@ tests refuse the vocabulary and the import paths in both new modules.
 - **A usage/consumption model** (§12).
 - **Delegation.** No accepted ADR defines it for grants.
 - **A public grant-issuance or exercise endpoint** (§13).
+
+## Internal split for the Governed Action Orchestrator
+
+`authorize()` is now composed from two internal halves in
+`src/enterprise/execution-governance/issuance-core.ts`: `evaluate()` (the
+Kernel call) and `issueFromDecision()` (grant-awareness and declaration checks,
+authority binding, issuance with commit-boundary re-resolution). `authorize()`
+calls them back to back, so its behaviour and signature are unchanged. The split
+exists so the Governed Action Orchestrator can commit the decision to the
+Governance Store *between* them and issue from the persisted decision. The core
+is deliberately not exported from `execution-governance/index.ts` or any public
+entrypoint, because `issueFromDecision()` accepts a decision it did not produce.
+See [`AOC_GOVERNED_ACTION_ORCHESTRATOR.md`](AOC_GOVERNED_ACTION_ORCHESTRATOR.md).

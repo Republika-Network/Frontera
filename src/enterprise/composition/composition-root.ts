@@ -50,6 +50,14 @@ import { createAssuranceService, type AssuranceService } from '../assurance/serv
 import type { AssuranceFramework } from '../assurance/contracts.js';
 import { createAuthorityControlledExecution, type AuthorityControlledExecutionOptions, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
 import { createAuthorityControlledExecutionModule } from '../modules/authority-controlled-execution-module.js';
+import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
+import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
+import {
+  GovernedActionConfigurationError,
+  createGovernedActionOrchestrator,
+  type GovernedActionGrantPolicy,
+  type GovernedActionOrchestrator,
+} from '../governed-action/index.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
 import { createSqliteBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
 import {
@@ -57,6 +65,7 @@ import {
   assertCustomerCredentialConfiguration,
   createCustomerIdentityAdmission,
   createKernelAuthoritySubjectBindingReader,
+  isCanonicalCustomerIdentifier,
   type CustomerIdentityAdmissionService,
 } from '../customer-identity/index.js';
 
@@ -149,6 +158,31 @@ export interface CreateEnterpriseOptions {
    * serve. See `docs/enterprise/AOC_CUSTOMER_PRINCIPAL_BINDING.md`.
    */
   readonly customerIdentityAdmission?: EnterpriseCustomerIdentityAdmissionOptions;
+  /**
+   * Opt-in Governed Action Orchestrator: bound customer identity → Kernel →
+   * **committed** Governance Record → bounded grant → exercise → adapter.
+   *
+   * **Omitting it changes nothing**, and supplying it adds **no route** — it is
+   * internal orchestration capability only, exposed as
+   * `AocEnterprise.governedActionOrchestrator` for trusted in-process code.
+   *
+   * It composes from capabilities this Host already has and fails composition,
+   * rather than producing a weaker mode, unless customer identity admission
+   * is enabled, `authorityControlledExecution` is supplied with a Kernel this
+   * root built (so its grant-awareness is proven by construction), and the
+   * Governance Store can append, re-read, verify and reference decisions. See
+   * `docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md`.
+   */
+  readonly governedActionOrchestrator?: EnterpriseGovernedActionOrchestratorOptions;
+}
+
+/** What a host states to adopt governed actions. Everything else is composed from capabilities the Host already has. */
+export interface EnterpriseGovernedActionOrchestratorOptions {
+  readonly enabled: boolean;
+  /** The trust domain governed-action requests are evaluated in. Trusted host configuration; never caller input. */
+  readonly trustDomainId: string;
+  /** **Required.** The trusted grant expiry (and optional narrowing) for each governed action. No default exists, and `undefined` withholds. */
+  readonly grantPolicy: GovernedActionGrantPolicy;
 }
 
 /** What a host states to adopt customer identity admission. Credentials come from `configuration.authentication.apiKeys`; the binding source is always the Kernel Authority store. */
@@ -285,6 +319,12 @@ export interface AocEnterprise {
    * actor may do. No route consumes it yet.
    */
   readonly customerIdentityAdmission?: CustomerIdentityAdmissionService;
+  /**
+   * Internal governed-action orchestration, present only when this deployment
+   * composed it. No route consumes it: trusted in-process code hands it a
+   * `BoundCustomerIdentity` from `customerIdentityAdmission` and an intent.
+   */
+  readonly governedActionOrchestrator?: GovernedActionOrchestrator;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -463,6 +503,37 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     assertCustomerCredentialConfiguration(configuration.authentication.apiKeys, configuration.kernelAuthority.organizationId);
   }
 
+  // Governed actions are checked just as early, and for the same reason: the
+  // canonical ordering needs every one of its prerequisites, and a deployment
+  // missing any of them gets no orchestrator rather than a weaker one.
+  const governedActionOptions = options.governedActionOrchestrator?.enabled === true ? options.governedActionOrchestrator : undefined;
+  if (governedActionOptions !== undefined) {
+    if (!customerIdentityRequested) {
+      throw new GovernedActionConfigurationError(
+        'GOVERNED_ACTION_CUSTOMER_IDENTITY_REQUIRED',
+        'Governed actions act only for a bound customer identity, and customer identity admission is not enabled.',
+      );
+    }
+    if (options.authorityControlledExecution === undefined) {
+      throw new GovernedActionConfigurationError(
+        'GOVERNED_ACTION_EXECUTION_REQUIRED',
+        'Governed actions issue and exercise bounded grants, and authorityControlledExecution is not composed.',
+      );
+    }
+    if (options.authorityControlledExecution.kernel !== undefined) {
+      throw new GovernedActionConfigurationError(
+        'GOVERNED_ACTION_KERNEL_NOT_PROVABLY_GRANT_AWARE',
+        'Governed actions require the execution Kernel this composition root builds with the declared grant capability; a host-supplied Kernel cannot be proven grant-aware here.',
+      );
+    }
+    if (!isCanonicalCustomerIdentifier(governedActionOptions.trustDomainId) || typeof governedActionOptions.grantPolicy !== 'function') {
+      throw new GovernedActionConfigurationError(
+        'GOVERNED_ACTION_CONFIGURATION_INVALID',
+        'Governed actions require a canonical trustDomainId and a trusted grantPolicy function.',
+      );
+    }
+  }
+
   // P0-PKG-07: the durable authority path. Explicitly-supplied
   // `kernelProviders` still win outright -- that is how the Kernel's own
   // characterization suite injects a seeded world, and how an embedder
@@ -540,6 +611,19 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
 
   const persistence = options.persistence ?? (await buildStore(configuration, kernelProviders.clock.now));
+  if (governedActionOptions !== undefined) {
+    // Checked here, against the store actually composed, because a host may inject its own.
+    // Before the lifecycle starts, so a refused composition leaves nothing running.
+    const canonicalStore = [persistence.appendEvaluation, persistence.resolveIdempotency, persistence.getByRequestId, persistence.getByEvaluationId, persistence.verify, persistence.appendReference].every(
+      (method) => typeof method === 'function',
+    );
+    if (!canonicalStore) {
+      throw new GovernedActionConfigurationError(
+        'GOVERNED_ACTION_GOVERNANCE_STORE_UNAVAILABLE',
+        'Governed actions commit every decision to the Governance Store before issuing authority, and the composed store cannot append, re-read, verify and reference decisions.',
+      );
+    }
+  }
   const evidenceStore = options.evidenceStore ?? createInMemoryEvidenceStore({ now: kernelProviders.clock.now });
   const passportStore = options.passportStore ?? (await buildPassportStore(configuration, kernelProviders.clock.now, eventIdGenerator.nextId));
   const assuranceStore = options.assuranceStore ?? (await buildAssuranceStore(configuration, kernelProviders.clock.now));
@@ -572,10 +656,13 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
 
-  const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
+  // One options object, so the legacy service and the governed-action
+  // issuance core are composed over exactly the same Kernel, declaration,
+  // grant store, adapter, clock and binding resolver.
+  const authorityControlledExecutionOptions: AuthorityControlledExecutionOptions | undefined =
     options.authorityControlledExecution === undefined || grantStore === undefined
       ? undefined
-      : createAuthorityControlledExecution({
+      : {
           kernel:
             options.authorityControlledExecution.kernel ??
             createAocKernel({
@@ -593,7 +680,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
             ? { revalidateSource: options.authorityControlledExecution.revalidateSource }
             : {}),
           now: kernelProviders.clock.now,
-        });
+        };
+  const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
+    authorityControlledExecutionOptions === undefined ? undefined : createAuthorityControlledExecution(authorityControlledExecutionOptions);
 
   const bootId = eventIdGenerator.nextId('boot');
   await persistence.recordEnterpriseVersion({
@@ -658,6 +747,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       ),
     );
   }
+  if (governedActionOptions !== undefined) {
+    registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now));
+  }
   registry.register(createAgentPassportModule(passportStore, kernelProviders.clock.now, configuration.passport.required));
   registry.register(createAssuranceModule(assuranceStore, assuranceFrameworkRegistry, kernelProviders.clock.now, configuration.assurance.required));
   if (kernelAuthorityStore !== undefined) {
@@ -697,6 +789,27 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ],
     environment: configuration.environment,
   });
+
+  let governedActionOrchestrator: GovernedActionOrchestrator | undefined;
+  if (governedActionOptions !== undefined) {
+    if (customerIdentityAdmission === undefined || authorityControlledExecution === undefined || authorityControlledExecutionOptions === undefined) {
+      // Unreachable after the checks above; kept so a future refactor that breaks them fails closed.
+      throw new GovernedActionConfigurationError('GOVERNED_ACTION_EXECUTION_REQUIRED', 'Governed actions require customer identity admission and Authority-Controlled Execution.');
+    }
+    governedActionOrchestrator = createGovernedActionOrchestrator({
+      organizationId: customerIdentityAdmission.organizationId,
+      trustDomainId: governedActionOptions.trustDomainId,
+      issuance: createAuthorityControlledIssuanceCore(authorityControlledExecutionOptions),
+      execution: authorityControlledExecution,
+      governanceStore: persistence,
+      grantPolicy: governedActionOptions.grantPolicy,
+      now: kernelProviders.clock.now,
+      enterpriseContext,
+      events: { enabled: configuration.eventPublishing.enabled, publisher: eventPublisher, nextId: eventIdGenerator.nextId },
+      traceLevel: configuration.features.traceLevel,
+      ...(authorityControlledExecutionOptions.revalidateSource !== undefined ? { revalidateSource: authorityControlledExecutionOptions.revalidateSource } : {}),
+    });
+  }
 
   const governanceReads = createGovernanceReadService(persistence, configuration, telemetry);
   const evidence = createEvidenceService({
@@ -754,6 +867,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ...(kernelAuthorityProvisioning !== undefined ? { kernelAuthorityProvisioning } : {}),
     ...(customerIdentityAdmission !== undefined ? { customerIdentityAdmission } : {}),
     ...(authorityControlledExecution !== undefined ? { authorityControlledExecution } : {}),
+    ...(governedActionOrchestrator !== undefined ? { governedActionOrchestrator } : {}),
     eventPublisher,
     telemetry,
     logger,
