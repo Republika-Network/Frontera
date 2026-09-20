@@ -138,7 +138,8 @@ Cloud infrastructure is **not** assumed hardened. `infrastructure/terraform`, `i
 | **A-07** Agent passports + event chains | SQLite | D-08/D-14 | **HTTP-reachable** lifecycle routes | verify, views | Forge agent standing |
 | **A-08** Assurance assessments / frameworks | SQLite | D-08 | HTTP assessments, reviews, signals | eligibility | Fabricate compliance posture |
 | **A-09** Evidence bundles | SQLite | D-08 | build | third parties | Mislead relying parties |
-| **A-10** `emergencyDeny` flag | instance field | D-04 | `setEmergencyDeny` | preflight only | Stop-everything is process-local and invisible to the exercise path |
+| **A-10** `emergencyDeny` flag (Action Enforcement path) | instance field | D-04 | `setEmergencyDeny` | preflight only | Stop-everything is process-local and invisible to the exercise path. **Unchanged by Prompt 4** |
+| **A-27** Emergency controls (bounded-grant path) | SQLite when `persistence.provider === 'sqlite'`, otherwise in-process | D-06 (file: its own, never shared with A-01 or A-03) | `EmergencyControlStorePort.activate` / `release`, operator-only | orchestrator admission, grant commit guard, exercise gate, adapter registry — all through a **reader** port that declares no mutation | Clearing or deleting a control silently re-enables execution the operator believed stopped. The record digest covers the `active` flag, so a flipped flag reads `unavailable` (which withholds) rather than `clear`; it cannot detect a **deleted** row, and cannot stop a re-sealing writer (SEC-TRUST-002, GS-001). Setting a control cannot permit anything |
 | **A-11** Sovereign Access grants + revocations | SQLite | D-12 | access-governance service | credential mint | Mint provider credentials |
 | **A-12** `AOC_ENTERPRISE_API_KEYS` | env | D-17 | operator | HTTP auth | Full API; unscoped key ⇒ cross-tenant |
 | **A-13** `AOC_ISSUER_PRIVATE_KEY_PEM` (an HMAC secret) | env | D-17 | operator | D-15 | Forge any Agent Passport |
@@ -176,7 +177,8 @@ Every production path that creates, changes, narrows, revokes or extends authori
 | **Passport lifecycle** — issue / activate / suspend / reactivate / revoke / retire | A-07 | **HTTP, authenticated, tenant-scoped** (`node-http-adapter.ts:339,377-402`) | **YES** | Yes | Chained, contiguous event log | Forge agent standing within one tenant |
 | **Assurance** — assessments / manual reviews / signals | A-08 | **HTTP, authenticated, tenant-scoped** (`:231,298,306`) | **YES** | Yes | Digest-sealed, append-only, attributable | Shift assurance outcomes within one tenant |
 | Sovereign Access grant lifecycle | A-11 | In-process; `assertActive` on use | **No route** | Yes | Revocation + enforcement records | Mint provider credentials |
-| `setEmergencyDeny` | A-10 | In-process, no identity | **No route** | **No** | Control-plane metric only | Disable or fake the stop switch |
+| `setEmergencyDeny` | A-10 | In-process, no identity | **No route** | **No** | Control-plane metric only | Disable or fake the stop switch on the Action Enforcement path |
+| `EmergencyControlStorePort.activate` / `release` | A-27 | In-process operator surface (`AocEnterprise.emergencyControlAdministration`); an `issuerRef` is **recorded, not checked** | **No route**, no SDK method, no intent field | **Yes when `persistence.provider === 'sqlite'`**, otherwise no | Each control row carries its declaring `issuerRef`, instant and record digest | `release` re-enables execution on the bounded-grant path. `activate` can only withhold. The execution path is typed against the reader, so it cannot disable the interlock that governs it (SEC-INV-051) |
 
 **The correction this table forces.** It is accurate to say *grant* authority-write surfaces are not caller-exposed (SEC-INV-027). It is **not** accurate to generalize that to all authoritative state: passport lifecycle and assurance writes are deliberately HTTP-reachable, authenticated and tenant-scoped. Both are append-only and attributable, which is the mitigation — not inaccessibility.
 
@@ -298,7 +300,8 @@ One SQLite file (`AOC_AGENT_PASSPORT_DB_PATH`, default `.data/agent-passport.sql
 | Bounded-grant exercise gate | **HARD CHOKEPOINT within its path** | Single adapter call site, ordered after the gate, test-pinned — but PATH-LOCAL |
 | Grant issuance commit guard | **HARD CHOKEPOINT** | Synchronous by type; no `await` can interleave |
 | Authoritative store digest check | **HARD CHOKEPOINT against naive tampering**, not against a re-sealing writer | SEC-TRUST-002 |
-| Execution adapter port | **VOLUNTARY CHOKEPOINT** | Constrains data crossing it; nothing forces effects through it |
+| Execution adapter port | **VOLUNTARY CHOKEPOINT** | Constrains data crossing it; nothing forces effects through it. Server-side routing does not change this: a host holding a child adapter can call it directly (SEC-TRUST-004, SEC-TRUST-006) |
+| Server-side execution adapter routing | **HARD CHOKEPOINT for *which* provider Frontera reaches** | Membership frozen at composition, selector synchronous and host-owned, at most one child per decision, and no caller input selects an adapter (SEC-INV-039 … SEC-INV-042). It decides **where**, never **whether** |
 | Sovereign Access `assertActive` | **VOLUNTARY CHOKEPOINT** | Real check, different model, in-process callers only |
 | Signer boundary (`AgentPassportSignerPort`) | **VOLUNTARY CHOKEPOINT** | Correctly shaped for KMS, but the secret is in-process today |
 | Stripe webhook signature | **HARD CHOKEPOINT** | Cryptographic, fails closed |
@@ -306,7 +309,8 @@ One SQLite file (`AOC_AGENT_PASSPORT_DB_PATH`, default `.data/agent-passport.sql
 | Deployment network boundary | **DEPLOYMENT CHOKEPOINT** | Documented (bind `127.0.0.1`, TLS at proxy); `infrastructure/` is empty |
 | Egress control | **FUTURE CHOKEPOINT** | Does not exist (SEC-INV-U03) |
 | Process isolation for agents | **FUTURE CHOKEPOINT** | Does not exist (SEC-TRUST-005) |
-| Durable kill switch | **FUTURE CHOKEPOINT** | `emergencyDeny` is process-local and invisible to the exercise path |
+| Durable operational interlock (bounded-grant path) | **HARD CHOKEPOINT within its path, when composed** | Four checkpoints — admission, the synchronous grant commit guard, effect time after the authoritative grant re-read, and the selected child adapter. Unreadable state withholds (SEC-INV-043 … SEC-INV-052). It is **opt-in**: a deployment that does not compose it gets no checks |
+| One durable kill switch across every path | **FUTURE CHOKEPOINT** | The bounded-grant path now has its own (above), but the Action Enforcement path still uses the process-local `emergencyDeny`, and Sovereign Access and Content Protection honour neither. Convergence is SEC-INV-U05's remaining work |
 
 ---
 
@@ -361,7 +365,7 @@ Architectural enumeration. Nothing here was exploited.
 |---|---|---|
 | SEC-TRUST-001 | Host trust / root of trust | Extended: the **CI and build system** (D-21) is also a root of trust. A changed artifact reaches every future deployment, and the release manifest is the only anchor. |
 | SEC-TRUST-002 | Privileged writer limit (unkeyed digests) | Confirmed. Additionally: the web app's store (A-22) has **no digest at all**, so the limit there is not "detectable but re-sealable" — it is undetectable. |
-| SEC-TRUST-003 | Authoritative state durability | Confirmed for grants and recognition. Extended: `emergencyDeny` (A-10) shares the property. |
+| SEC-TRUST-003 | Authoritative state durability | Confirmed for grants and recognition. Extended: `emergencyDeny` (A-10) shares the property. *Updated by Prompt 4:* emergency controls (A-27) are durable **when `persistence.provider === 'sqlite'`** and process-local otherwise — and for a control, being lost on restart fails **open**, which is precisely why the durable store exists and why the in-memory one is never described as durable. |
 | SEC-TRUST-004 | Voluntary chokepoint limit | Confirmed and enumerated as §12. |
 | SEC-TRUST-005 | Process-isolation absence | Confirmed. D-22 is conceptual: there is no agent runtime to isolate yet. |
 | SEC-TRUST-006 | Provider adapter trust | Confirmed. |

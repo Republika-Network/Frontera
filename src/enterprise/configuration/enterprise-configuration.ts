@@ -135,6 +135,20 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the bounded-grant store when `persistence.provider === 'sqlite'`. */
     readonly sqlitePath: string;
   };
+  /**
+   * The durable emergency-control store: the operational safety interlock's
+   * own file.
+   *
+   * Its own, for the reason every other store has its own: an operator must be
+   * able to back up, restore and rotate the kill switch independently of the
+   * records it governs, and a control that shared a file with the grants it
+   * stops could be lost by a restore that was only ever about grants. See
+   * `docs/enterprise/AOC_EMERGENCY_CONTROL.md`.
+   */
+  readonly emergencyControl: {
+    /** SQLite path for the emergency-control store when `persistence.provider === 'sqlite'`. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -236,6 +250,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     boundedGrant: {
       sqlitePath: env.AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH ?? '.data/bounded-grants.sqlite',
+    },
+    emergencyControl: {
+      sqlitePath: env.AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH ?? '.data/emergency-controls.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

@@ -822,7 +822,10 @@ describe('Governed action — a withheld exercise keeps its reasons on replay', 
     const record = await recordFor(world, REQUEST_ID);
     assert.deepEqual(
       record?.references.map((reference) => reference.externalVersion ?? reference.referenceType),
-      ['authorization_artifact', 'attempt', `withheld:${GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED}`],
+      // `withheld:<layer>:<CODE>`. The layer is recorded rather than inferred
+      // from the codes, because two layers can withhold an effect and a replay
+      // must report the one that actually did.
+      ['authorization_artifact', 'attempt', `withheld:grant-exercise:${GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED}`],
     );
 
     const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
@@ -874,6 +877,65 @@ describe('Governed action — a withheld exercise keeps its reasons on replay', 
     const retry = await allowedWorld.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
     assert.equal(retry.status, 'execution_unconfirmed');
     assert.equal(allowedWorld.adapter.callCount, 0);
+  });
+
+  it('a row naming a layer it did not come from, or a code from the other layer, decodes as nothing', async () => {
+    // Every one of these is a well-formed-looking string that must not be read
+    // back as a withholding reason: a code from the wrong vocabulary, an
+    // invented layer, and an empty code list.
+    for (const [index, forged] of [
+      'withheld:grant-exercise:EMERGENCY_CONTROL_ACTIVE',
+      'withheld:emergency-control:GRANT_EXERCISE_REVOKED',
+      'withheld:made-up-layer:GRANT_EXERCISE_REVOKED',
+      'withheld:emergency-control:',
+      'withheld:',
+    ].entries()) {
+      const world = buildGovernedWorld({
+        beforeExercise: async () => {
+          throw new Error('the exercise port is unreachable');
+        },
+      });
+      const intent = { ...ALLOWED_INTENT, idempotencyKey: `key-forged-${index}` };
+      const unconfirmed = await world.orchestrator.govern(IDENTITY, intent);
+      assert.equal(unconfirmed.status, 'execution_unconfirmed');
+      const record = await recordFor(world, unconfirmed.requestId ?? '');
+      assert.ok(record !== null && unconfirmed.executionId !== undefined);
+      await world.rawStore.appendReference({ system: false, organizationId: ORG }, {
+        referenceId: executionOutcomeReferenceId(unconfirmed.executionId),
+        evaluationId: record.evaluation.evaluationId,
+        referenceType: 'execution_record',
+        externalId: unconfirmed.executionId,
+        externalVersion: forged,
+        createdAt: NOW,
+      });
+      const retry = await world.orchestrator.govern(IDENTITY, intent);
+      assert.equal(retry.status, 'execution_unconfirmed', `'${forged}' must not decode into a withholding`);
+      assert.equal(world.adapter.callCount, 0);
+    }
+  });
+
+  it('the Prompt 3 unlayered form still replays, as the only layer that could have written it', async () => {
+    const world = buildGovernedWorld({
+      beforeExercise: async () => {
+        throw new Error('the exercise port is unreachable');
+      },
+    });
+    const intent = { ...ALLOWED_INTENT, idempotencyKey: 'key-legacy-form' };
+    const unconfirmed = await world.orchestrator.govern(IDENTITY, intent);
+    const record = await recordFor(world, unconfirmed.requestId ?? '');
+    assert.ok(record !== null && unconfirmed.executionId !== undefined);
+    await world.rawStore.appendReference({ system: false, organizationId: ORG }, {
+      referenceId: executionOutcomeReferenceId(unconfirmed.executionId),
+      evaluationId: record.evaluation.evaluationId,
+      referenceType: 'execution_record',
+      externalId: unconfirmed.executionId,
+      externalVersion: `withheld:${GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED}`,
+      createdAt: NOW,
+    });
+    const retry = await world.orchestrator.govern(IDENTITY, intent);
+    assert.equal(withheldBy(retry), 'exercise');
+    assert.deepEqual([...retry.reasonCodes], [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED]);
+    assert.equal(world.adapter.callCount, 0);
   });
 });
 

@@ -1,3 +1,8 @@
+import {
+  emergencyControlPermits,
+  readEmergencyControl,
+  type EmergencyControlReaderPort,
+} from '../../features/emergency-control-runtime/index.js';
 import { GRANT_REASON_CODES, grantCorrelationMatches, type GrantCorrelation, type GrantSourceAuthorization } from '../../features/grant-runtime/index.js';
 import type { ExecutionOutcome, GrantExerciseRequest } from '../../features/execution-runtime/index.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
@@ -40,6 +45,22 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  *   -> ACE exercise -> ExecutionAdapter           ValidatedExecutionAction only
  *   -> execution outcome reference
  * ```
+ *
+ * ## Where the operational interlock sits
+ *
+ * When a deployment composes emergency control, four checkpoints are consulted
+ * on this path, and only one of them is here:
+ *
+ * ```
+ * committed decision -> replay -> [ADMISSION: this file] -> grant terms
+ *   -> issuance      -> [COMMIT BOUNDARY: issuance-core, synchronous]
+ *   -> exercise      -> [AFTER AUTHORITATIVE GRANT REREAD: grant-execution-service]
+ *   -> routing       -> [ADAPTER-SCOPED: execution-adapter-registry]
+ *   -> provider
+ * ```
+ *
+ * None of them produces a decision, none revokes a grant, and none rewrites a
+ * recorded historical outcome. See `docs/enterprise/AOC_EMERGENCY_CONTROL.md`.
  *
  * ## Nothing here decides
  *
@@ -84,6 +105,19 @@ export interface GovernedActionOrchestratorOptions {
    * eligibility, subject, scope and validity against. `undefined` refuses.
    */
   readonly revalidateSource?: (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined;
+  /**
+   * The operational safety interlock, when the deployment composed one.
+   *
+   * This orchestrator owns the **admission** checkpoint: after the decision is
+   * committed and after historical execution replay, and before grant terms,
+   * authority binding and issuance. The other checkpoints are ACE's (the
+   * commit boundary and the exercise) and the registry's (the adapter-scoped
+   * stop). A deployment must hand the **same reader instance** to all of them,
+   * which is what the composition root does.
+   *
+   * Read-only by type: this orchestrator cannot activate or release a control.
+   */
+  readonly emergencyControl?: EmergencyControlReaderPort;
 }
 
 export interface GovernedActionOrchestrator {
@@ -108,8 +142,13 @@ function result(value: GovernedActionResult): GovernedActionResult {
 /** An execution identity already on record is answered from the record; the adapter is not invoked again. */
 function replayResult(context: ResultContext, prior: PriorExecution, decisionReasonCodes: readonly string[]): GovernedActionResult {
   if (prior.outcome === 'executed') return result({ status: 'executed', ...context, reasonCodes: decisionReasonCodes, replayed: true, outcomeRecorded: true });
-  if (prior.outcome === 'withheld' && prior.withheldReasonCodes !== undefined) {
-    return result({ status: 'withheld', withheldBy: 'exercise', ...context, reasonCodes: prior.withheldReasonCodes });
+  if (prior.outcome === 'withheld' && prior.withheldReasonCodes !== undefined && prior.withheldBy !== undefined) {
+    // The layer that withheld it is replayed as the layer that withheld it. A
+    // stop cleared since does not turn a recorded emergency withholding into a
+    // grant problem, and a stop active now does not turn a recorded grant
+    // refusal into an emergency one: the record is what happened.
+    const withheldBy: GovernedActionWithheldBy = prior.withheldBy === 'emergency-control' ? 'emergency-control' : 'exercise';
+    return result({ status: 'withheld', withheldBy, ...context, reasonCodes: prior.withheldReasonCodes });
   }
   const failure = prior.outcome?.startsWith('execution-failed:') === true ? prior.outcome.slice('execution-failed:'.length) : undefined;
   if (failure === 'PROVIDER_REJECTED' || failure === 'PROVIDER_UNAVAILABLE' || failure === 'PROVIDER_RESPONSE_INVALID' || failure === 'ADAPTER_ERROR') {
@@ -148,6 +187,7 @@ function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: 
 export function createGovernedActionOrchestrator(options: GovernedActionOrchestratorOptions): GovernedActionOrchestrator {
   const { organizationId: servedOrganizationId, issuance, execution, governanceStore: store, grantPolicy, now } = options;
   const hostRevalidateSource = options.revalidateSource;
+  const emergencyControl = options.emergencyControl;
   const committer = createDecisionCommitter({
     store,
     issuance,
@@ -248,6 +288,33 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const known = ledger.prior(record, executionId);
       if (known.attempted) return replayResult(executed, known, persisted.reasonCodes);
 
+      // Phase: emergency-control admission. Deliberately **after** replay and
+      // **before** grantPolicy.
+      //
+      // After replay, because an administrative stop declared today must not
+      // rewrite what an action did yesterday: a retry of an execution identity
+      // already on the record is answered from the record, and current
+      // operational state is not evidence about a past effect.
+      //
+      // Before grantPolicy, because the next thing that happens is the minting
+      // of *new bounded authority*, and an action nobody has attempted must not
+      // acquire authority while execution is stopped. Withholding here also
+      // means no grant exists to have to reason about afterwards.
+      //
+      // The query is trusted server-side material only: the bound organization,
+      // the bound actor, and the resource scope the committed decision was
+      // evaluated for. No adapter (routing has not run, and inventing one would
+      // apply an adapter-scoped stop to an adapter that may never be selected)
+      // and no workflow (no canonical trusted source exists).
+      const admission = readEmergencyControl(emergencyControl, {
+        organizationId: scope.organizationId,
+        actorId: scope.actorId,
+        resource: verified.request.action.resourceScope,
+      });
+      if (!emergencyControlPermits(admission)) {
+        return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: admission.reasonCodes });
+      }
+
       const terms = termsFor(scope, verified);
       if (terms === undefined) return result({ status: 'withheld', withheldBy: 'grant-terms', ...decided, reasonCodes: [R.GOVERNED_ACTION_GRANT_TERMS_UNAVAILABLE] });
 
@@ -266,6 +333,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       }
       if (authorization.outcome === 'authority-binding-unresolved') {
         return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+      }
+      // The commit-boundary interlock fired: a stop turned on, or became
+      // unreadable, between admission above and the store's critical section.
+      // No grant was committed, so there is nothing to revoke and nothing to
+      // exercise.
+      if (authorization.outcome === 'emergency-control-withheld') {
+        return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: authorization.reasonCodes });
       }
       if (authorization.outcome === 'grant-withheld') {
         const withheldBy: GovernedActionWithheldBy = authorization.reasonCodes.includes(GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED) ? 'obligations' : 'grant';
@@ -322,6 +396,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         });
       }
       if (outcome.status === 'withheld') {
+        // Two layers can withhold at effect time, and they are reported in
+        // their own vocabularies. The emergency case carries no exercise reason
+        // codes because there are none: the assessment was *usable*, and what
+        // stopped the effect was the interlock.
+        if (outcome.withheldBy === 'emergency-control') {
+          return result({ status: 'withheld', withheldBy: 'emergency-control', ...executed, reasonCodes: [...outcome.emergencyControl.reasonCodes, ...unrecorded] });
+        }
         return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.assessment.reasonCodes, ...unrecorded] });
       }
       return result({ status: 'execution_failed', ...executed, failure: outcome.reason, reasonCodes: [outcome.reason, ...unrecorded], replayed: false, outcomeRecorded });

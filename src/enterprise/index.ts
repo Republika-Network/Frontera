@@ -503,7 +503,8 @@ export type { EvaluateGovernanceRequestInput, EvaluateGovernanceRequestDependenc
 
 export { createEnterprise, createDefaultEnterprise } from './composition/composition-root.js';
 export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseRequestContext } from './composition/composition-root.js';
-export type { EnterpriseAuthorityControlledExecutionOptions } from './composition/composition-root.js';
+export type { EnterpriseAuthorityControlledExecutionOptions, EnterpriseExecutionAdapterRoutingOptions } from './composition/composition-root.js';
+export type { EnterpriseEmergencyControlOptions } from './composition/composition-root.js';
 export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';
 export type { EnterpriseGovernedActionOrchestratorOptions } from './composition/composition-root.js';
 
@@ -602,6 +603,49 @@ export type {
   CreateSqliteBoundedGrantStoreOptions,
   DurableBoundedGrantStore,
 } from './bounded-grant-store/index.js';
+
+/**
+ * The durable emergency-control store -- type-only, for the same reason the
+ * bounded-grant store above is, and scoped the same way.
+ *
+ * A deployment adopts the interlock through
+ * `createEnterprise({ emergencyControl: { enabled: true } })`, and an operator
+ * activates and releases controls through
+ * `AocEnterprise.emergencyControlAdministration`. The **values** --
+ * `createSqliteEmergencyControlStore`, `createInMemoryEmergencyControlStore`,
+ * the reason-code constants -- are deliberately not re-exported here: a
+ * published-package consumer must not be handed a factory for a store that can
+ * stop or resume a deployment, and `dist/src/enterprise/index.js` is a
+ * checksummed release artifact. A trusted host that opens its own store imports
+ * from `src/enterprise/emergency-control`, which is not a frozen artifact.
+ *
+ * The **feature-level** types (`EmergencyControlReaderPort`,
+ * `EmergencyControlStorePort`, the query, the assessment, the scopes) are
+ * deliberately **not** re-exported either. This barrel has never re-exported a
+ * `src/features` type -- not `BoundedGrantStorePort`, not `KernelGrantCapability`,
+ * not `ExecutionAdapter` -- even where an option type it exports already names
+ * one; TypeScript resolves those through the declaration graph without a
+ * re-export, and a host that needs to *write* one imports the feature module
+ * directly. The same rule is applied here rather than an exception made for
+ * this capability. `DurableEmergencyControlStore` below is the concrete type a
+ * host composing its own store actually needs.
+ *
+ * There is **no customer route, no SDK method and no intent field** for any of
+ * this, and no mutation is reachable through `AocEnterprise.evaluate()` or
+ * through the Governed Action Orchestrator. Server-side adapter routing follows
+ * the same posture: `createExecutionAdapterRegistry` stays in
+ * `src/features/execution-runtime`, and a deployment composes routing by
+ * handing `authorityControlledExecution.executionAdapterRouting` to
+ * `createEnterprise`, which builds the registry itself so the interlock reader
+ * stays a single instance. See `docs/enterprise/AOC_EMERGENCY_CONTROL.md` and
+ * `docs/enterprise/AOC_EXECUTION_ADAPTER_REGISTRY.md`.
+ */
+export type {
+  CreateSqliteEmergencyControlStoreOptions,
+  DurableEmergencyControlStore,
+  EmergencyControlStoreErrorCode,
+  EmergencyControlStoreHealth,
+} from './emergency-control/index.js';
 
 export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js';
 

@@ -1,3 +1,4 @@
+import type { EmergencyControlReasonCode, EmergencyControlScopeMatch } from '../../features/emergency-control-runtime/index.js';
 import type { BoundedGrant, GrantCorrelation, GrantReasonCode, GrantValidityCeiling, RequestedGrantBounds } from '../../features/grant-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import type { GrantAuthorityBinding } from './authority-binding.js';
@@ -115,4 +116,30 @@ export type AuthorityControlledAuthorizationOutcome =
       readonly outcome: 'authority-binding-unresolved';
       readonly decision: KernelEvaluationResult;
       readonly reasonCodes: readonly AuthorityBindingReasonCode[];
+    }
+  | {
+      /**
+       * An operational emergency control was active — or unreadable — at the
+       * **commit boundary**, so no bounded grant was committed.
+       *
+       * An additive case rather than a rewrite of `grant-withheld`, and the
+       * distinction is the point. `grant-withheld` means layer E refused: the
+       * authorization did not permit exercise, an obligation was unsatisfied,
+       * the bounds broadened, the ceiling was exceeded. This means every one of
+       * those checks would have passed and an operator has administratively
+       * stopped execution. They send an operator to opposite places, and the
+       * second is cleared by a person rather than fixed by a change.
+       *
+       * The reason codes are the emergency-control vocabulary's own. They are
+       * deliberately not translated into `GRANT_CORRELATION_INVALID`, which is
+       * the code the store's commit guard sees when the synchronous
+       * re-validation returns `undefined`: that code describes a correlation
+       * defect, and reporting one here would send an operator hunting a bug
+       * that does not exist.
+       */
+      readonly outcome: 'emergency-control-withheld';
+      readonly decision: KernelEvaluationResult;
+      readonly reasonCodes: readonly EmergencyControlReasonCode[];
+      /** Which applicable controls matched, when the state was readable. Operator diagnostics; never authority. */
+      readonly matchedScopes: readonly EmergencyControlScopeMatch[];
     };

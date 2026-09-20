@@ -149,8 +149,19 @@ interface GovernedActionResultBase {
   readonly reasonCodes: readonly string[];
 }
 
-/** Which gate withheld an allowed-or-pending action. Each has its own owner and vocabulary. */
-export type GovernedActionWithheldBy = 'approval' | 'obligations' | 'grant' | 'authority-binding' | 'grant-terms' | 'exercise';
+/**
+ * Which gate withheld an allowed-or-pending action. Each has its own owner and
+ * vocabulary.
+ *
+ * `emergency-control` is the operational safety interlock, and it is its own
+ * value rather than a flavour of `grant` or `exercise` because it is cleared by
+ * a *person* rather than fixed by a change: the decision was sound, the grant
+ * terms were sound, and an operator has stopped execution. Reporting it as a
+ * grant refusal would send whoever is on call to debug an authorization that
+ * was never wrong. Its reason codes are `EMERGENCY_CONTROL_*`, owned by
+ * `src/features/emergency-control-runtime`.
+ */
+export type GovernedActionWithheldBy = 'approval' | 'obligations' | 'grant' | 'authority-binding' | 'grant-terms' | 'exercise' | 'emergency-control';
 
 /**
  * What a governed action produced.

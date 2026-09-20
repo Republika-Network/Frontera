@@ -15,12 +15,19 @@ import assert from 'node:assert/strict';
  * on, and nothing else. Specifically:
  *
  * 1. **The bounded-grant gate is the only Frontera route to an execution
- *    adapter — repository-wide.** `security-invariants.test.ts` already asserts
- *    a single call site, but it walks only `src/features/execution-runtime`.
+ *    adapter — repository-wide.** `security-invariants.test.ts` asserts the
+ *    call sites too, but it walks only `src/features/execution-runtime`.
  *    `src/enterprise/execution-governance/service.ts` holds the *same*
  *    `ExecutionAdapter` reference and lies outside that scan, so a call added
  *    there would have voided SEC-INV-011 with every existing test still green
  *    (NB-001). This widens the scan to `src/`, `packages/` and `apps/`.
+ *
+ *    Since the execution adapter registry, there are **two** call sites rather
+ *    than one, and the claim is correspondingly two-part: the gate invokes the
+ *    composite, and the composite invokes exactly one trusted child, after
+ *    routing and after the emergency-control check. Both are pinned below, and
+ *    so is the ordering inside each, because "two call sites" is only safe
+ *    while the second is reachable solely through the first.
  *
  * 2. **The egress inventory stays complete.** The document claims the entire
  *    outbound network surface is two provider SDKs at five construction sites.
@@ -143,14 +150,16 @@ describe('NB — the canonical no-bypass document exists and is measurable', () 
   });
 });
 
-describe('NB-001 — repository-wide, exactly one production source invokes an execution adapter', () => {
+describe('NB-001 — repository-wide, only the enumerated production sources invoke an execution adapter', () => {
   /**
    * Matches an invocation through any identifier or member expression whose
    * name ends in `adapter` (case-insensitive) — `adapter.execute(`,
    * `executionAdapter.execute(`, `this.adapter.execute(`,
-   * `options.executionAdapter.execute(`. That is every spelling the two
-   * modules holding an `ExecutionAdapter` actually use, and every spelling a
-   * new holder would plausibly use.
+   * `options.executionAdapter.execute(`, `childAdapter.execute(`. That is every
+   * spelling the modules holding an `ExecutionAdapter` actually use, and every
+   * spelling a new holder would plausibly use — which is why the registry's
+   * resolved child is deliberately named `childAdapter` rather than `child`: a
+   * call site this pattern cannot see is a call site the inventory loses.
    */
   const ADAPTER_INVOCATION = /\b[\w$]*[Aa]dapter\s*\.\s*execute\s*\(/;
 
@@ -160,13 +169,21 @@ describe('NB-001 — repository-wide, exactly one production source invokes an e
     assert.equal(ADAPTER_INVOCATION.test('the adapter is invoked only after a usable assessment'), false);
   });
 
-  it('is invoked from exactly one production source in the whole repository', () => {
+  it('is invoked from exactly the two enumerated production sources — the gate, and the composite it may route through', () => {
     const callSites = PRODUCTION_SOURCES.filter((file) => ADAPTER_INVOCATION.test(codeOf(file)));
     assert.deepEqual(
-      callSites,
-      ['src/features/execution-runtime/services/grant-execution-service.ts'],
-      'SEC-INV-011 holds only because there is exactly one place an ExecutionAdapter can be invoked. ' +
-        'A second call site — in src/enterprise/execution-governance, in an app, or anywhere else — voids the ' +
+      callSites.slice().sort(),
+      [
+        // The registry is a **composite** ExecutionAdapter: it satisfies the
+        // port, it is reached only through the gate below, and it resolves one
+        // trusted child. `GrantExecutionService -> registry -> child adapter` is
+        // one provider boundary, not a second way in — which the ordering rule
+        // in this suite proves rather than asserts in prose.
+        'src/features/execution-runtime/services/execution-adapter-registry.ts',
+        'src/features/execution-runtime/services/grant-execution-service.ts',
+      ],
+      'SEC-INV-011 holds only because every place an ExecutionAdapter can be invoked is enumerated. ' +
+        'A third call site — in src/enterprise/execution-governance, in an app, or anywhere else — voids the ' +
         'PROVEN classification of EP-011 in NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §17. ' +
         'If a new call site is legitimate, it is a new effect path and needs its own EP id.',
     );
@@ -177,14 +194,57 @@ describe('NB-001 — repository-wide, exactly one production source invokes an e
     assert.deepEqual(
       holders.slice().sort(),
       [
+        // Type-only: the composition root builds the registry from the host's
+        // trusted routing table and hands the result to ACE. It invokes nothing.
+        'src/enterprise/composition/composition-root.ts',
         'src/enterprise/execution-governance/service.ts',
+        // Deliberately NOT `src/enterprise/index.ts`: the Enterprise barrel has
+        // never re-exported a `src/features` type — not `BoundedGrantStorePort`,
+        // not `KernelGrantCapability`, not `ExecutionAdapter` — even where an
+        // option type it exports already names one. Routing did not become the
+        // exception.
         'src/features/execution-runtime/domain/execution-adapter-port.ts',
         'src/features/execution-runtime/domain/index.ts',
+        'src/features/execution-runtime/services/execution-adapter-registry.ts',
         'src/features/execution-runtime/services/grant-execution-service.ts',
       ],
       'NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §7.1 enumerates every ExecutionAdapter reference. ' +
         'A new holder is a new potential call site and must be added there before it ships.',
     );
+  });
+
+  it('the registry invokes at most one child, and only after routing and the emergency-control check', () => {
+    const registry = codeOf('src/features/execution-runtime/services/execution-adapter-registry.ts');
+    const invocations = [...registry.matchAll(/\b[\w$]*[Aa]dapter\s*\.\s*execute\s*\(/g)];
+    assert.equal(invocations.length, 1, 'one routing decision must resolve to exactly one child invocation, written once');
+
+    const select = registry.indexOf('selectAdapter(action)');
+    const resolve = registry.indexOf('resolved.get(selected)');
+    const unresolvedGuard = registry.indexOf('if (childAdapter === undefined)');
+    const emergency = registry.indexOf('readEmergencyControl(emergencyControl');
+    const permits = registry.indexOf('if (!emergencyControlPermits(assessment))');
+    const call = registry.search(/\b[\w$]*[Aa]dapter\s*\.\s*execute\s*\(/);
+    for (const [label, index] of [['selection', select], ['resolution', resolve], ['unresolved guard', unresolvedGuard], ['emergency read', emergency], ['emergency gate', permits]] as const) {
+      assert.notEqual(index, -1, `the registry must still perform ${label}`);
+    }
+    assert.ok(select < resolve, 'the selector runs before the adapter is resolved');
+    assert.ok(resolve < unresolvedGuard, 'an unresolved route is refused before anything is invoked');
+    assert.ok(unresolvedGuard < emergency, 'the emergency check runs on a resolved child, so it can be adapter-scoped');
+    assert.ok(permits < call, 'no child may be invoked before the emergency-control gate has returned');
+  });
+
+  it('the composite is only reachable through the bounded-grant gate: it holds no store, no Kernel and no policy', () => {
+    const registry = codeOf('src/features/execution-runtime/services/execution-adapter-registry.ts');
+    for (const forbidden of ['AocKernel', 'KernelEvaluation', 'BoundedGrant', 'GovernanceStore', 'issueGrant', 'assessBoundedGrantExercise', 'evaluatePolicy', 'authorizationHeader']) {
+      assert.equal(registry.includes(forbidden), false, `the registry must not reference ${forbidden}: routing chooses where, never whether`);
+    }
+    for (const match of readFileSync('src/features/execution-runtime/services/execution-adapter-registry.ts', 'utf8').matchAll(/from '([^']+)'/g)) {
+      const specifier = match[1] ?? '';
+      assert.ok(
+        specifier === '../domain/index.js' || specifier === '../../emergency-control-runtime/index.js',
+        `the registry imports '${specifier}'; its inputs are the validated action, a trusted selector, trusted adapters and an optional emergency-control reader`,
+      );
+    }
   });
 
   it('the single invocation is still preceded, in the same function, by the store read and the usable-assessment gate', () => {
@@ -444,8 +504,10 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Three of forty-six effect paths are under bounded-grant control.'),
-      'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with',
+      DOC.includes('Three of forty-eight effect paths are under bounded-grant control.'),
+      'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
+        'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
+        'the execution adapter registry added no effect path.',
     );
   });
 

@@ -20,6 +20,39 @@ It is composed in-process only. There is no `POST /api/governed-actions`, the
 frozen v1 HTTP surface (`release/api-surface.v1.json`) is unchanged, and
 `POST /api/governance/evaluate` behaves exactly as it did.
 
+## Emergency control and server-side adapter routing
+
+Two capabilities were added around this orchestrator after it shipped. Neither
+changes what authorizes an action.
+
+**Emergency control** is an optional operational interlock. When composed, the
+orchestrator consults it at **admission** — after the decision is committed and
+after historical execution replay, and before grant terms, authority binding and
+issuance — and reports `withheld` / `emergency-control` when it is active or
+unreadable. Three further checkpoints sit below: the bounded-grant commit guard,
+the exercise gate after the authoritative grant re-read, and the selected child
+adapter.
+
+The ordering is deliberate on both sides. **After replay**, because an
+administrative stop declared today must not rewrite what an action did
+yesterday: an execution identity already on the record is answered from the
+record, and no new grant is minted to tell a caller what already happened.
+**Before grant terms**, because the next thing that happens is the minting of new
+bounded authority, and an action nobody has attempted must not acquire authority
+while execution is stopped.
+
+`GovernedActionWithheldBy` gains `'emergency-control'`, and the ledger records
+which layer withheld an effect (`withheld:<layer>:<CODE>…`) so a replay reports
+the layer that actually did. See
+[`AOC_EMERGENCY_CONTROL.md`](AOC_EMERGENCY_CONTROL.md).
+
+**Server-side adapter routing** lets a deployment register several provider
+adapters and route between them. `GovernedActionIntent` is unchanged and remains
+closed: it still cannot name an adapter, provider, URL, host, endpoint or
+credential, and an intent carrying one is rejected rather than sanitized. See
+[`AOC_EXECUTION_ADAPTER_REGISTRY.md`](AOC_EXECUTION_ADAPTER_REGISTRY.md).
+
+
 ## Canonical lifecycle
 
 ```

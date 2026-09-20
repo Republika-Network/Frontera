@@ -59,6 +59,11 @@ import {
   type GovernedActionOrchestrator,
 } from '../governed-action/index.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
+import { createExecutionAdapterRegistry, type ExecutionAdapter, type ExecutionAdapterSelector } from '../../features/execution-runtime/index.js';
+import type { EmergencyControlReaderPort, EmergencyControlStorePort } from '../../features/emergency-control-runtime/index.js';
+import { createEmergencyControlReader, createInMemoryEmergencyControlStore } from '../../features/emergency-control-runtime/index.js';
+import { createSqliteEmergencyControlStore } from '../emergency-control/sqlite-emergency-control-store.js';
+import { ExecutionGovernanceError } from '../execution-governance/errors.js';
 import { createSqliteBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
 import {
   CustomerIdentityConfigurationError,
@@ -174,6 +179,51 @@ export interface CreateEnterpriseOptions {
    * `docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md`.
    */
   readonly governedActionOrchestrator?: EnterpriseGovernedActionOrchestratorOptions;
+  /**
+   * Opt-in durable emergency control: the operational safety interlock that
+   * lets an operator stop execution on the bounded-grant path.
+   *
+   * **Omitting it changes nothing.** No check runs anywhere, no store is
+   * opened, and every existing behaviour is byte-identical — the same posture
+   * every other optional capability here takes.
+   *
+   * Supplying `{ enabled: true }` composes **one** reader and hands that same
+   * instance to all four checkpoints: the Governed Action Orchestrator's
+   * admission check, the bounded-grant store's synchronous commit guard, the
+   * exercise gate after the authoritative grant re-read, and the execution
+   * adapter registry's adapter-scoped check. Four readers would be four
+   * different worlds, and an operator stopping one of them would believe they
+   * had stopped all four.
+   *
+   * It adds **no route and no SDK method**. A caller can never activate,
+   * release, inspect or evade a control; the operator surface is
+   * `AocEnterprise.emergencyControlAdministration`, reachable only from trusted
+   * in-process host code. See `docs/enterprise/AOC_EMERGENCY_CONTROL.md`.
+   */
+  readonly emergencyControl?: EnterpriseEmergencyControlOptions;
+}
+
+/**
+ * What a host states to adopt emergency control.
+ *
+ * Nothing here is caller input, and there is deliberately no "permissive" or
+ * "advisory" mode: a deployment that enables the interlock and whose store
+ * cannot be opened fails composition rather than running with a stand-in that
+ * always answers `clear`.
+ */
+export interface EnterpriseEmergencyControlOptions {
+  readonly enabled: boolean;
+  /**
+   * A store the **host** opened and owns.
+   *
+   * Supplied, it is used verbatim and is never closed from here — the host
+   * closes what the host opened, exactly as the bounded-grant store rule
+   * states. Omitted, the composition root selects one the way it selects every
+   * other store: the durable store when `persistence.provider === 'sqlite'`, on
+   * `emergencyControl.sqlitePath`; the process-local one otherwise, which is
+   * **not durable** and loses every control on restart.
+   */
+  readonly store?: EmergencyControlStorePort;
 }
 
 /** What a host states to adopt governed actions. Everything else is composed from capabilities the Host already has. */
@@ -200,7 +250,33 @@ export interface EnterpriseCustomerIdentityAdmissionOptions {
  * to guarantee that is to make the host unable to compose without answering the
  * question.
  */
-export interface EnterpriseAuthorityControlledExecutionOptions extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore'> {
+export interface EnterpriseAuthorityControlledExecutionOptions
+  extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore' | 'executionAdapter' | 'emergencyControl'> {
+  /**
+   * One provider adapter, when this deployment has one.
+   *
+   * Still the whole story for a single-provider deployment: nothing about that
+   * composition changed, and no host is forced to adopt routing. Exactly one of
+   * this and `executionAdapterRouting` must be stated — "both, and one wins" is
+   * not a thing to resolve by precedence when what it decides is which provider
+   * receives a real-world effect.
+   */
+  readonly executionAdapter?: ExecutionAdapter;
+  /**
+   * Trusted **server-side** routing across several provider adapters.
+   *
+   * The composition root builds `createExecutionAdapterRegistry(...)` from it
+   * and hands the result to ACE as the execution adapter, so the registry is
+   * the composite that satisfies the port and the children are reached only
+   * through it. Building it here rather than in the host is what lets the
+   * emergency-control reader be the *same instance* the other three checkpoints
+   * use.
+   *
+   * Nothing a caller sends reaches the selector: it receives the
+   * `ValidatedExecutionAction` the exercise gate built, and nothing else. See
+   * `docs/enterprise/AOC_EXECUTION_ADAPTER_REGISTRY.md`.
+   */
+  readonly executionAdapterRouting?: EnterpriseExecutionAdapterRoutingOptions;
   /**
    * The grant-aware Kernel this composition evaluates through.
    *
@@ -232,6 +308,15 @@ export interface EnterpriseAuthorityControlledExecutionOptions extends Omit<Auth
    * `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
    */
   readonly grantStore?: AuthorityControlledExecutionOptions['grantStore'];
+}
+
+/** The trusted routing table. Host configuration; never caller input, and never mutable after composition. */
+export interface EnterpriseExecutionAdapterRoutingOptions {
+  /** The registry's own identity, reported on outcomes. Defaults to the registry's canonical id. */
+  readonly adapterId?: string;
+  readonly adapters: readonly ExecutionAdapter[];
+  /** Synchronous, trusted, and fed only the validated action. Returning `undefined` means "no route", which fails the execution safely rather than falling through to an arbitrary provider. */
+  readonly selectAdapter: ExecutionAdapterSelector;
 }
 
 /**
@@ -325,6 +410,26 @@ export interface AocEnterprise {
    * `BoundCustomerIdentity` from `customerIdentityAdmission` and an intent.
    */
   readonly governedActionOrchestrator?: GovernedActionOrchestrator;
+  /**
+   * The **trusted operator** surface over the emergency-control store, present
+   * only when this deployment composed one.
+   *
+   * Exposed here for the reason `kernelAuthorityProvisioning` is: a
+   * deployment's own administration code — a bootstrap script, a CLI, an
+   * authenticated operator route the deployment writes and owns — must be able
+   * to stop and resume execution without reaching into internals.
+   *
+   * It is emphatically not part of any caller path. `evaluate()` never touches
+   * it, `govern()` never touches it, no frozen HTTP route reaches it, the SDK
+   * has no method for it, and `GovernedActionIntent` has no field that could
+   * name it. An application handed an `AocEnterprise` should be handed the
+   * evaluation surface rather than this object.
+   *
+   * `undefined` means this Host enforces no emergency control — never that
+   * execution is unstoppable, because without this composition there are no
+   * checks to satisfy.
+   */
+  readonly emergencyControlAdministration?: EmergencyControlStorePort;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -426,6 +531,27 @@ async function buildBoundedGrantStore(configuration: EnterpriseConfiguration): P
   return createInMemoryBoundedGrantStore();
 }
 
+/**
+ * The emergency-control store, when the host did not supply one.
+ *
+ * Mirrors `buildBoundedGrantStore` exactly, including its fail-closed posture:
+ * a configured SQLite store that cannot be opened raises rather than being
+ * quietly replaced by a process-local one. That substitution is the specific
+ * shape this capability exists to prevent — a deployment that believes it has a
+ * durable kill switch, running on one that forgets every control at restart.
+ *
+ * The in-memory selection under `persistence.provider === 'memory'` is not that
+ * substitution: it is the same store-selection rule every other store follows,
+ * it is what a test and a single-process development host want, and it is
+ * documented as non-durable everywhere it appears.
+ */
+async function buildEmergencyControlStore(configuration: EnterpriseConfiguration): Promise<EmergencyControlStorePort> {
+  if (configuration.persistence.provider === 'sqlite') {
+    return createSqliteEmergencyControlStore(configuration.emergencyControl.sqlitePath, { busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+  }
+  return createInMemoryEmergencyControlStore();
+}
+
 /** A dedicated id source for Enterprise-internal bookkeeping (event ids, boot id) -- independent of the Kernel's own `idGenerator`, so Enterprise bookkeeping never perturbs the Kernel's internal id sequence. */
 function createEnterpriseIdGenerator(): KernelIdGenerator {
   return { nextId: (prefix: string) => `${prefix}-${randomUUID()}` };
@@ -501,6 +627,21 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       );
     }
     assertCustomerCredentialConfiguration(configuration.authentication.apiKeys, configuration.kernelAuthority.organizationId);
+  }
+
+  // Adapter composition is checked before anything is opened: a deployment that
+  // states both a single adapter and a routing table, or neither, has not said
+  // which provider an authorized action reaches, and that is not a question to
+  // answer by precedence.
+  if (options.authorityControlledExecution !== undefined) {
+    const single = options.authorityControlledExecution.executionAdapter !== undefined;
+    const routed = options.authorityControlledExecution.executionAdapterRouting !== undefined;
+    if (single === routed) {
+      throw new ExecutionGovernanceError(
+        'EXECUTION_ADAPTER_COMPOSITION_INVALID',
+        'Authority-Controlled Execution needs exactly one of executionAdapter or executionAdapterRouting: one provider adapter, or a trusted server-side routing table over several.',
+      );
+    }
   }
 
   // Governed actions are checked just as early, and for the same reason: the
@@ -656,11 +797,48 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
 
+  // ONE emergency-control instance for the whole deployment. Every checkpoint
+  // below reads this object: the orchestrator's admission check, the grant
+  // store's synchronous commit guard, the exercise gate, and the adapter
+  // registry. Composing more than one would create worlds that disagree, and an
+  // operator who stopped one of them would believe they had stopped execution.
+  const emergencyControlRequested = options.emergencyControl?.enabled === true;
+  const emergencyControlStore: EmergencyControlStorePort | undefined = emergencyControlRequested
+    ? (options.emergencyControl?.store ?? (await buildEmergencyControlStore(configuration)))
+    : undefined;
+  const emergencyControlOpenedHere = emergencyControlRequested && options.emergencyControl?.store === undefined;
+  // Narrowed to the **read** capability before it is handed to anything that
+  // executes — a fresh one-method object over the same store, exactly as
+  // customer admission is handed a binding reader rather than the authority
+  // store. Typing alone would make `activate`/`release` unreachable to the
+  // compiler; this makes them unreachable to a cast as well, while keeping one
+  // emergency-control world behind all four checkpoints.
+  const emergencyControl: EmergencyControlReaderPort | undefined =
+    emergencyControlStore === undefined ? undefined : createEmergencyControlReader(emergencyControlStore);
+
+  // The execution boundary: one provider adapter, or the composite registry
+  // built from the host's trusted routing table. The registry is built *here*
+  // rather than by the host so it receives the same emergency-control reader
+  // every other checkpoint uses.
+  const executionAdapter: ExecutionAdapter | undefined =
+    options.authorityControlledExecution === undefined
+      ? undefined
+      : options.authorityControlledExecution.executionAdapterRouting !== undefined
+        ? createExecutionAdapterRegistry({
+            ...(options.authorityControlledExecution.executionAdapterRouting.adapterId !== undefined
+              ? { adapterId: options.authorityControlledExecution.executionAdapterRouting.adapterId }
+              : {}),
+            adapters: options.authorityControlledExecution.executionAdapterRouting.adapters,
+            selectAdapter: options.authorityControlledExecution.executionAdapterRouting.selectAdapter,
+            ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+          })
+        : options.authorityControlledExecution.executionAdapter;
+
   // One options object, so the legacy service and the governed-action
   // issuance core are composed over exactly the same Kernel, declaration,
   // grant store, adapter, clock and binding resolver.
   const authorityControlledExecutionOptions: AuthorityControlledExecutionOptions | undefined =
-    options.authorityControlledExecution === undefined || grantStore === undefined
+    options.authorityControlledExecution === undefined || grantStore === undefined || executionAdapter === undefined
       ? undefined
       : {
           kernel:
@@ -674,11 +852,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
             }),
           grantCapability: options.authorityControlledExecution.grantCapability,
           grantStore,
-          executionAdapter: options.authorityControlledExecution.executionAdapter,
+          executionAdapter,
           resolveAuthorityBinding: options.authorityControlledExecution.resolveAuthorityBinding,
           ...(options.authorityControlledExecution.revalidateSource !== undefined
             ? { revalidateSource: options.authorityControlledExecution.revalidateSource }
             : {}),
+          ...(emergencyControl !== undefined ? { emergencyControl } : {}),
           now: kernelProviders.clock.now,
         };
   const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
@@ -708,6 +887,22 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   async function closeComposedGrantStore(): Promise<void> {
     if (!grantStoreOpenedHere || grantStore === undefined) return;
     const closable = grantStore as Partial<{ close: () => Promise<void> }>;
+    if (typeof closable.close === 'function') await closable.close();
+  }
+
+  /**
+   * The same ownership discipline for the emergency-control store: closed only
+   * when this composition root opened it.
+   *
+   * A host-supplied store outlives this Host by design. It may be shared with
+   * an operator CLI or a second Host, and closing someone else's kill switch on
+   * shutdown would leave them unable to read it — which, since an unreadable
+   * control withholds, would stop their execution rather than free it. Closed
+   * is the safe direction here, but it is still not ours to do.
+   */
+  async function closeComposedEmergencyControlStore(): Promise<void> {
+    if (!emergencyControlOpenedHere || emergencyControlStore === undefined) return;
+    const closable = emergencyControlStore as Partial<{ close: () => Promise<void> }>;
     if (typeof closable.close === 'function') await closable.close();
   }
 
@@ -742,7 +937,10 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     registry.register(
       createAuthorityControlledExecutionModule(
         authorityControlledExecution,
-        options.authorityControlledExecution.executionAdapter.adapterId,
+        // The composite registry's own id when routing is composed, so the
+        // module reports the boundary this Host actually holds rather than one
+        // of the children behind it.
+        executionAdapter?.adapterId ?? 'unknown',
         kernelProviders.clock.now,
       ),
     );
@@ -808,6 +1006,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       events: { enabled: configuration.eventPublishing.enabled, publisher: eventPublisher, nextId: eventIdGenerator.nextId },
       traceLevel: configuration.features.traceLevel,
       ...(authorityControlledExecutionOptions.revalidateSource !== undefined ? { revalidateSource: authorityControlledExecutionOptions.revalidateSource } : {}),
+      // The same instance ACE's commit guard, the exercise gate and the adapter
+      // registry read.
+      ...(emergencyControl !== undefined ? { emergencyControl } : {}),
     });
   }
 
@@ -868,6 +1069,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ...(customerIdentityAdmission !== undefined ? { customerIdentityAdmission } : {}),
     ...(authorityControlledExecution !== undefined ? { authorityControlledExecution } : {}),
     ...(governedActionOrchestrator !== undefined ? { governedActionOrchestrator } : {}),
+    ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     eventPublisher,
     telemetry,
     logger,
@@ -915,12 +1117,14 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       unsubscribeLifecyclePersistence();
       await evidenceStore.close();
       await closeComposedGrantStore();
+      await closeComposedEmergencyControlStore();
     },
     stop: async () => {
       await lifecycle.shutdown();
       unsubscribeLifecyclePersistence();
       await evidenceStore.close();
       await closeComposedGrantStore();
+      await closeComposedEmergencyControlStore();
     },
   };
 
