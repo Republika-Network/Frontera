@@ -147,7 +147,14 @@ describe('Governed action — the canonical path executes once, through every ga
     assert.ok(record !== null);
     const grantId = world.adapter.calls[0]?.boundedGrantId;
     const byType = record.references.map((reference) => `${reference.referenceType}:${reference.externalId}:${reference.externalVersion ?? ''}`);
-    assert.deepEqual(byType, [`authorization_artifact:${String(grantId)}:`, `execution_record:${String(result.executionId)}:attempt`, `execution_record:${String(result.executionId)}:executed`]);
+    // The outcome row names the adapter that **performed** the effect, so "which
+    // provider did this" is answerable from the durable record rather than only
+    // from whichever boundary happened to be composed.
+    assert.deepEqual(byType, [
+      `authorization_artifact:${String(grantId)}:`,
+      `execution_record:${String(result.executionId)}:attempt`,
+      `execution_record:${String(result.executionId)}:executed@${world.adapter.adapterId}`,
+    ]);
     assert.equal((await world.rawStore.verify({ system: false, organizationId: ORG }, record.evaluation.evaluationId)).checks.referenceIntegrity, true);
   });
 });
@@ -408,7 +415,7 @@ describe('Governed action — GOV-ACT-02: no durable decision, no authority, no 
     assert.equal((await world.rawStore.verify({ system: false, organizationId: ORG }, record.evaluation.evaluationId)).valid, true);
     assert.deepEqual(
       record.references.map((reference) => reference.externalVersion ?? reference.referenceType),
-      ['authorization_artifact', 'attempt', 'execution-failed:PROVIDER_REJECTED'],
+      ['authorization_artifact', 'attempt', `execution-failed:PROVIDER_REJECTED@${world.adapter.adapterId}`],
     );
   });
 

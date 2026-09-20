@@ -125,6 +125,33 @@ effect is not a question to answer by precedence.
   child saw with the object a directly-composed adapter saw for the same
   exercise: they are deep-equal.
 
+### The outcome names the child, not the router
+
+`ExecutionOutcome.adapterId` is **the adapter that performed the effect** — the
+routed child when routing occurred — and `routedBy` names the composite that
+selected it. An outcome carrying only the registry's own id would tell an
+auditor which orchestrator was composed and nothing about which of several
+providers received the effect, which is the question the record exists to
+answer.
+
+The identity is set by the registry from its own frozen membership. A child's
+`adapterId` on its result is **discarded**: attribution is the routing
+decision's to make, not the routed adapter's to claim. A plain adapter omits the
+field and the execution service falls back to the adapter it holds — previous
+behaviour exactly. A structural test asserts the registry is the only production
+source that writes it.
+
+A child that throws is converted here rather than left to reach the execution
+service, so the `ADAPTER_ERROR` it produces still names the child that raised
+it. Only an *unresolved route* is attributed to the registry, because in that
+case no child ran.
+
+Child ids are therefore checked at composition against
+`isRecordableExecutionAdapterId` — bounded length, no `@` to collide with the
+delimiter the durable record uses. An identity whose effect could not be
+attributed afterwards is refused where the deployment is wired, rather than
+discovered after an unattributable payment.
+
 ### Unresolved route
 
 Reported as an **infrastructure failure** in the vocabulary the execution

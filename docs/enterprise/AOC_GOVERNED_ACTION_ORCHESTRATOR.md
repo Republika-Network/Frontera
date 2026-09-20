@@ -47,7 +47,15 @@ the layer that actually did. See
 [`AOC_EMERGENCY_CONTROL.md`](AOC_EMERGENCY_CONTROL.md).
 
 **Server-side adapter routing** lets a deployment register several provider
-adapters and route between them. `GovernedActionIntent` is unchanged and remains
+adapters and route between them. The execution ledger records **which child
+adapter performed the effect** (`executed@<adapterId>`,
+`execution-failed:<REASON>@<adapterId>`), so two otherwise-identical governed
+actions that reached different providers are distinguishable in the durable
+record and on replay. That identity comes from trusted routing alone; it is
+evidence, and it is deliberately **not** on `GovernedActionResult` — which
+provider ran is answerable from the Governance Record, not handed to the caller.
+
+`GovernedActionIntent` is unchanged and remains
 closed: it still cannot name an adapter, provider, URL, host, endpoint or
 credential, and an intent carrying one is rejected rather than sanitized. See
 [`AOC_EXECUTION_ADAPTER_REGISTRY.md`](AOC_EXECUTION_ADAPTER_REGISTRY.md).

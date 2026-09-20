@@ -279,24 +279,86 @@ that withheld it, then that layer's reason codes in their own stable order.
 scope algebra and a process-local store for focused tests.
 `src/enterprise/emergency-control` holds the SQLite implementation.
 
-### Schema — `aoc.emergency-control-store.schema.v1`
+### Schema — `aoc.emergency-control-store.schema.v2`
+
+Three records that vouch for each other. One was not enough, and the reason is
+worth stating plainly because it is the difference between a kill switch and the
+appearance of one.
 
 ```sql
-CREATE TABLE emergency_controls (
-  control_key   TEXT PRIMARY KEY,   -- 'global' | '<scope>:<value>'
-  scope         TEXT NOT NULL,
-  scope_value   TEXT,               -- NULL only for global
-  active        INTEGER NOT NULL,   -- 0 | 1
-  issuer_ref    TEXT NOT NULL,      -- operator audit; never returned by a read
-  declared_at   TEXT NOT NULL,
-  record_digest TEXT NOT NULL,      -- sha256 over the canonical record, INCLUDING `active`
-  committed_at  TEXT NOT NULL,
+CREATE TABLE emergency_control_events (      -- append-only, contiguous, chained
+  sequence              INTEGER PRIMARY KEY, -- assigned by the store, not AUTOINCREMENT
+  control_key           TEXT NOT NULL,
+  scope                 TEXT NOT NULL,
+  scope_value           TEXT,
+  transition            TEXT NOT NULL,       -- 'activated' | 'released'
+  issuer_ref            TEXT NOT NULL,
+  recorded_at           TEXT NOT NULL,
+  previous_event_digest TEXT NOT NULL,       -- hash chain
+  event_digest          TEXT NOT NULL,
+  schema_version        TEXT NOT NULL
+);
+
+CREATE TABLE emergency_controls (            -- current-state projection
+  control_key    TEXT PRIMARY KEY,
+  scope          TEXT NOT NULL,
+  scope_value    TEXT,
+  active         INTEGER NOT NULL,
+  issuer_ref     TEXT NOT NULL,
+  declared_at    TEXT NOT NULL,
+  event_sequence INTEGER NOT NULL,           -- the event that produced this state
+  event_digest   TEXT NOT NULL,
+  record_digest  TEXT NOT NULL,
+  committed_at   TEXT NOT NULL,
+  schema_version TEXT NOT NULL
+);
+
+CREATE TABLE emergency_control_head (        -- exactly one row
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  event_sequence INTEGER NOT NULL,           -- the latest event
+  event_count    INTEGER NOT NULL,           -- how many events must exist
+  event_digest   TEXT NOT NULL,
+  head_digest    TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
   schema_version TEXT NOT NULL
 );
 ```
 
-`active` is a flag rather than a row's presence, so a released control keeps its
-history instead of vanishing.
+### Why a deleted row is not a release
+
+An earlier revision kept **only** the projection, with a digest over its fields.
+That digest makes a *modified* row detectable — a flipped `active` flag no
+longer matches — and it is completely silent about a row that is **no longer
+there**. Row absent and "no control was ever declared" were the same observable
+state, so deleting an active control read back as `clear`.
+
+For a grant store that direction is safe: losing a grant removes authority. For
+a kill switch it fails **open** — the stop silently stops stopping — which is
+the one failure mode this capability exists to remove. And an operator who wants
+execution to resume already has `release`, an explicit recorded transition. So a
+control that simply vanishes is damage, never consent, and damage withholds.
+
+A read now cross-checks all three records, and every partial deletion is caught:
+
+| destructive edit | detected by | result |
+|---|---|---|
+| control row deleted | the key still has events, and no projection | `unavailable` |
+| events for that key deleted too | the head's `event_count`/`event_sequence` no longer match the table | `unavailable` |
+| head row deleted | an initialized store always has one | `unavailable` |
+| projection re-pointed at another event | the event's key and digest disagree with the projection | `unavailable` |
+| projection left behind a newer transition | it is not the latest event for its key | `unavailable` |
+| `active` flipped, or an event's `transition` rewritten | the record digest no longer recomputes | `unavailable` |
+
+The three cases a reader must tell apart are now genuinely distinguishable:
+**(a)** no control was ever declared — no events, no projection — reads `clear`;
+**(b)** a control was explicitly released — projection `active = 0`, derived
+from a `released` event — reads `clear`; **(c)** an active control disappeared —
+reads `unavailable`. Only (a) and (b) are consent.
+
+`v2` because `v1` could not make that distinction. A `v1` file is **refused at
+open** rather than read under rules it was never written to satisfy: a database
+that cannot prove an active stop was not removed is not one this runtime will
+answer `clear` from.
 
 ### Properties
 
@@ -307,30 +369,43 @@ history instead of vanishing.
 2. **One transaction per mutation**, `journal_mode = WAL`,
    `synchronous = FULL` — an acknowledged `activate` is durable before it
    returns.
-3. **Every read verifies.** A row whose digest does not match its fields, whose
-   scope is outside the closed vocabulary, whose `active` is not `0`/`1`, whose
-   `scope_value` disagrees with its scope, or which is filed under a key that
-   does not match its own scope and value, is never interpreted: the read reports
-   `unavailable`. It is never repaired into `clear`.
+3. **Every read verifies all three records.** Anything the store cannot vouch
+   for is `unavailable`, never repaired into `clear` — see the table above.
 4. **Malformed writes are refused**, so nothing unreadable is stored through the
-   typed writer in the first place.
-5. **Scoped fail-closed.** Only the rows that could apply are fetched. A corrupt
-   row for an organization this query is not about does not block that query —
-   stopping every tenant because one unrelated row is unreadable would be an
-   availability failure nobody chose, and would make nobody safer.
+   typed writer in the first place. A write into state the store cannot verify
+   is refused **loudly**: reads withhold, writes throw, and an operator learns
+   they are writing into damage rather than silently extending it.
+5. **Scoped fail-closed.** Only the rows that could apply are fetched, so a
+   corrupt row for an organization this query is not about does not block that
+   query. The **head** is the exception, because it is global state: if it
+   cannot be verified, no query can be answered.
 6. **A closed store withholds.** `read` returns `unavailable`; the operator
    mutations throw, because an operator is entitled to know a stop did not take.
 
-### What the digest does not do
+### What the digests do not do
 
-It is **unkeyed SHA-256** — storage integrity, not cryptographic authenticity,
-exactly as `storedGrantRecordDigest` and the Governance Store's `computeDigest`
-already are. It detects a flipped `active` flag. It does **not** stop a writer
-who can re-seal a row, and it cannot detect a **deleted** row: a writer with raw
-database access can clear a control, and
-`emergency-control-durability.test.ts` records that plainly rather than papering
-over it. Attaching a key boundary is later work;
-`AUTHORITATIVE_GRANT_STORE.md` §10 states where it attaches.
+They are **unkeyed SHA-256** — storage integrity, not cryptographic
+authenticity, exactly as `storedGrantRecordDigest` and the Governance Store's
+`computeDigest` already are. They detect mutation, and the three-record
+cross-check now detects *partial* deletion as well.
+
+Two limits remain, and neither is papered over:
+
+1. **A writer who rewrites everything consistently.** Re-sealing a control row,
+   its event, and the head together defeats every check here, because the
+   digests are unkeyed (`SEC-TRUST-002`, GS-001). Attaching a key boundary is
+   later work; `AUTHORITATIVE_GRANT_STORE.md` §10 and §23 state where it
+   attaches.
+2. **Wholesale replacement of the file.** Nothing inside one database can detect
+   that database being swapped for a blank one, or restored from a snapshot
+   taken before a control was declared. That is the same anti-rollback gap the
+   grant store records as **GS-002**, and closing it needs an anchor outside the
+   database.
+
+What changed is the *accidental and partial* cases — a mistyped `DELETE`, a
+half-restored backup, a truncated table, an interrupted migration. None of those
+needs malice, all of them previously produced a silent `clear`, and all of them
+now withhold.
 
 ### Deployment scope
 
@@ -431,8 +506,9 @@ evaluation surface, not this object.
   (`SEC-TRUST-001`, `SEC-TRUST-004`).
 - Child adapters are trusted code.
 - No process or egress containment exists.
-- The record digest detects mutation, not deletion, and not a writer who
-  re-seals.
+- The record digests detect mutation and partial deletion, but not a writer who
+  re-seals every record consistently, and not wholesale replacement of the
+  database file (GS-002).
 - Single-host durability only; no distributed control plane.
 - The `workflow` scope has no canonical Governed Action source (§4).
 - Only the bounded-grant / Governed Action path honours these controls. The

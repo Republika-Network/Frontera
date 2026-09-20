@@ -11,7 +11,7 @@ import {
 } from '../../features/emergency-control-runtime/index.js';
 import { createSqliteEmergencyControlStore, type DurableEmergencyControlStore } from '../emergency-control/index.js';
 import { isEmergencyControlStoreError } from '../emergency-control/errors.js';
-import { EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, storedEmergencyControlDigest } from '../emergency-control/emergency-control-record.js';
+import { EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, emergencyControlEventDigest, storedEmergencyControlDigest } from '../emergency-control/emergency-control-record.js';
 
 /**
  * The durable interlock's properties, each measured across a **real** process
@@ -178,7 +178,11 @@ describe('Durable emergency control — corrupt state is never repaired into cle
 
     const reopened = await open(dbPath);
     assert.equal(reopened.read({ organizationId: 'org-other' }).state, 'unavailable', 'a mis-filed control is state that cannot be established');
-    assert.equal(reopened.read({ organizationId: 'org-acme' }).state, 'clear', 'and it no longer exists under the identity it was declared for');
+    // And — this is the part the projection-only schema got wrong — the tenant
+    // the control was actually declared for does **not** read clear merely
+    // because its row was moved away. History says a control exists for that
+    // key; the state it produced is missing; that withholds.
+    assert.equal(reopened.read({ organizationId: 'org-acme' }).state, 'unavailable', 'a control cannot be cleared by moving its row elsewhere');
   });
 
   it('a row recorded under an unknown record schema version reads unavailable', async () => {
@@ -203,15 +207,142 @@ describe('Durable emergency control — corrupt state is never repaired into cle
     assert.equal(reopened.read({ organizationId: 'org-other' }).state, 'unavailable');
   });
 
-  it('deleting an active control removes it — durability protects the record, not the intent behind it', async () => {
-    const dbPath = await activeGlobal('deleted');
+  it('REGRESSION — deleting an active control row is detected, and withholds instead of reading clear', async () => {
+    // The defect this test pins. Under the projection-only schema the read did
+    // `if (row === undefined) continue`, so a deleted ACTIVE control was
+    // indistinguishable from "no control was ever declared" and the reader
+    // returned `clear` — a kill switch silently failing open. A legitimate
+    // resume has its own `release` operation, so a row that simply vanishes is
+    // damage, never consent.
+    const dbPath = await activeGlobal('deleted-projection');
     await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_controls WHERE control_key = 'global'`).run());
+
     const reopened = await open(dbPath);
-    // Stated plainly rather than papered over: an unkeyed digest detects a
-    // *modified* row, and cannot detect a *deleted* one. A writer with raw
-    // database access can clear a control, and this store does not claim
-    // otherwise. See docs/enterprise/AOC_EMERGENCY_CONTROL.md.
-    assert.equal(reopened.read(QUERY).state, 'clear');
+    const assessment = reopened.read(QUERY);
+    assert.equal(assessment.state, 'unavailable', 'a vanished active control must never read as clear');
+    assert.deepEqual(assessment.reasonCodes, [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_UNAVAILABLE]);
+    assert.equal(emergencyControlPermits(assessment), false);
+    // The history is what makes it detectable: the key still has events.
+    const events = await withRawDb(dbPath, (db) => db.prepare(`SELECT COUNT(*) AS c FROM emergency_control_events WHERE control_key = 'global'`).get() as { c: number });
+    assert.equal(events.c, 1);
+  });
+
+  it('REGRESSION — deleting the events as well is caught by the head anchor', async () => {
+    // The natural follow-up move: erase the history too, so the key looks like
+    // one that was never declared. The head records how many events must exist
+    // and what the highest sequence is, so the table no longer matches it.
+    const dbPath = await activeGlobal('deleted-events');
+    await withRawDb(dbPath, (db) => {
+      db.prepare(`DELETE FROM emergency_controls WHERE control_key = 'global'`).run();
+      db.prepare(`DELETE FROM emergency_control_events WHERE control_key = 'global'`).run();
+    });
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+    // And it stays unavailable for every query, because the head is global state.
+    assert.equal(reopened.read({ organizationId: 'org-unrelated' }).state, 'unavailable');
+  });
+
+  it('REGRESSION — deleting the head is damage, not a fresh database', async () => {
+    const dbPath = await activeGlobal('deleted-head');
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_control_head`).run());
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable', 'an initialized store always has a head; a missing one is damage');
+  });
+
+  it('the three cases a read must tell apart are told apart', async () => {
+    // (a) never declared -> clear. (b) explicitly released -> clear.
+    // (c) active row that disappeared -> unavailable.
+    const dbPath = tempDbPath('three-cases');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-released', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'organization', value: 'org-released', issuerRef: ISSUER, releasedAt: AT });
+    store.activate({ scope: 'organization', value: 'org-deleted', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_controls WHERE control_key = 'organization:org-deleted'`).run());
+    const reopened = await open(dbPath);
+
+    assert.equal(reopened.read({ organizationId: 'org-never-declared' }).state, 'clear', '(a) never declared');
+    assert.equal(reopened.read({ organizationId: 'org-released' }).state, 'clear', '(b) explicitly released');
+    assert.equal(reopened.read({ organizationId: 'org-deleted' }).state, 'unavailable', '(c) active row deleted');
+  });
+
+  it('a projection left behind a newer transition cannot stand in for it', async () => {
+    // Activate, release, then roll the projection back to the activation event
+    // by hand: the row is internally consistent but is no longer the latest
+    // transition for its key.
+    const dbPath = tempDbPath('stale-projection');
+    const store = await open(dbPath);
+    store.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'global', issuerRef: ISSUER, releasedAt: AT });
+    await store.close();
+
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_control_events WHERE sequence = 2`).run());
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+  });
+
+  it('a projection re-pointed at another key’s event is detected', async () => {
+    const dbPath = tempDbPath('repointed');
+    const store = await open(dbPath);
+    store.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+
+    // Point the global projection at the organization's event, re-sealing the
+    // row so its own digest still recomputes.
+    await withRawDb(dbPath, (db) => {
+      const other = db.prepare(`SELECT event_digest FROM emergency_control_events WHERE control_key = 'organization:org-acme'`).get() as { event_digest: string };
+      db.prepare(`UPDATE emergency_controls SET event_sequence = 2, event_digest = ? WHERE control_key = 'global'`).run(other.event_digest);
+    });
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+  });
+
+  it('a tampered event digest is detected', async () => {
+    const dbPath = await activeGlobal('event-digest');
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_control_events SET transition = 'released' WHERE sequence = 1`).run());
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+  });
+
+  it('a head rolled back to genesis is detected', async () => {
+    const dbPath = await activeGlobal('rolled-back-head');
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_control_head SET event_sequence = 0, event_count = 0 WHERE id = 1`).run());
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+  });
+
+  it('a control projection with no history behind it is detected', async () => {
+    const dbPath = await activeGlobal('orphan-projection');
+    await withRawDb(dbPath, (db) => {
+      db.prepare(`DELETE FROM emergency_control_events`).run();
+      db.prepare(`UPDATE emergency_control_head SET event_sequence = 0, event_count = 0`).run();
+    });
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+  });
+
+  it('a v1 database — projection only, no history — is refused at open rather than read', async () => {
+    const dbPath = tempDbPath('legacy-v1');
+    await withRawDb(dbPath, (db) => {
+      db.exec(`CREATE TABLE emergency_control_store_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, schema_version TEXT NOT NULL, migration_state TEXT NOT NULL, recorded_at TEXT NOT NULL);`);
+      db.prepare(`INSERT INTO emergency_control_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.emergency-control-store.schema.v1', 'current', ?)`).run(AT);
+    });
+    await assert.rejects(
+      () => createSqliteEmergencyControlStore(dbPath, { now: () => AT }),
+      (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_UNAVAILABLE',
+    );
+  });
+
+  it('an operator write into unverifiable state is refused loudly rather than extending it', async () => {
+    const dbPath = await activeGlobal('write-into-damage');
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_control_head`).run());
+    const reopened = await open(dbPath);
+    // Reads withhold; writes refuse. An operator is entitled to learn that the
+    // store cannot vouch for what they are writing into.
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+    assert.throws(() => reopened.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT }), (error: unknown) => isEmergencyControlStoreError(error));
   });
 
   it('a database recorded under an unknown store schema version is refused rather than migrated', async () => {
@@ -223,10 +354,16 @@ describe('Durable emergency control — corrupt state is never repaired into cle
     );
   });
 
-  it('the digest covers the active flag, which is what makes a flipped flag detectable', () => {
-    const base = { controlKey: 'global', scope: 'global', active: true, issuerRef: ISSUER, declaredAt: AT } as const;
+  it('the digests cover the state-bearing fields, which is what makes a flipped flag or transition detectable', () => {
+    const base = { controlKey: 'global', scope: 'global', active: true, issuerRef: ISSUER, declaredAt: AT, eventSequence: 1, eventDigest: 'sha256:aa' } as const;
     assert.notEqual(storedEmergencyControlDigest(base), storedEmergencyControlDigest({ ...base, active: false }));
-    assert.equal(EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, 'aoc.emergency-control-store.schema.v1');
+    assert.notEqual(storedEmergencyControlDigest(base), storedEmergencyControlDigest({ ...base, eventSequence: 2 }));
+
+    const event = { sequence: 1, controlKey: 'global', scope: 'global', transition: 'activated', issuerRef: ISSUER, recordedAt: AT, previousEventDigest: 'sha256:bb' } as const;
+    assert.notEqual(emergencyControlEventDigest(event), emergencyControlEventDigest({ ...event, transition: 'released' }));
+    assert.notEqual(emergencyControlEventDigest(event), emergencyControlEventDigest({ ...event, previousEventDigest: 'sha256:cc' }));
+
+    assert.equal(EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, 'aoc.emergency-control-store.schema.v2');
   });
 });
 

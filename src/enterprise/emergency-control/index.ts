@@ -13,12 +13,23 @@ export { EmergencyControlStoreError, isEmergencyControlStoreError } from './erro
 export type { EmergencyControlStoreErrorCode } from './errors.js';
 
 export {
+  EMERGENCY_CONTROL_GENESIS_DIGEST,
   EMERGENCY_CONTROL_RECORD_FORMAT,
   EMERGENCY_CONTROL_STORE_SCHEMA_VERSION,
+  emergencyControlEventDigest,
+  emergencyControlHeadDigest,
+  isEmergencyControlTransition,
+  serializeEmergencyControlEvent,
+  serializeEmergencyControlHead,
   serializeStoredEmergencyControl,
   storedEmergencyControlDigest,
 } from './emergency-control-record.js';
-export type { StoredEmergencyControl } from './emergency-control-record.js';
+export type {
+  EmergencyControlEventRecord,
+  EmergencyControlHeadRecord,
+  EmergencyControlTransition,
+  StoredEmergencyControl,
+} from './emergency-control-record.js';
 
 export { createSqliteEmergencyControlStore } from './sqlite-emergency-control-store.js';
 export type {

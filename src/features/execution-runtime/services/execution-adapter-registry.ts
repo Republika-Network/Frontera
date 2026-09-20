@@ -120,6 +120,27 @@ const COMPOSED_REGISTRIES = new WeakSet<object>();
 
 const DEFAULT_REGISTRY_ADAPTER_ID = 'frontera.execution-adapter-registry';
 
+/**
+ * Whether an adapter identity can be carried through to the durable execution
+ * record exactly.
+ *
+ * The durable execution record encodes the performing adapter into a single
+ * bounded token, so an id that could collide with its delimiters or grow without bound
+ * is an id whose effect could not be attributed later. Refusing it at
+ * composition is the fail-closed direction: a deployment learns where it is
+ * wired rather than discovering an unattributable payment afterwards.
+ *
+ * Only the registry enforces this, and only over the children it routes to. A
+ * host that composes one adapter directly is unaffected — its id is recorded
+ * when it happens to be recordable, and omitted when it is not, exactly as the
+ * ledger behaved before routing existed.
+ */
+const RECORDABLE_ADAPTER_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
+
+export function isRecordableExecutionAdapterId(adapterId: string): boolean {
+  return RECORDABLE_ADAPTER_ID.test(adapterId);
+}
+
 function isUsableAdapter(candidate: unknown): candidate is ExecutionAdapter {
   if (typeof candidate !== 'object' || candidate === null) return false;
   const adapter = candidate as Partial<ExecutionAdapter>;
@@ -165,6 +186,12 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
         'An execution adapter registry may not be registered inside a registry: one routing decision must resolve to one provider adapter.',
       );
     }
+    if (!isRecordableExecutionAdapterId(candidate.adapterId)) {
+      throw new ExecutionAdapterRegistryError(
+        'EXECUTION_ADAPTER_MALFORMED',
+        `The execution adapter identity '${candidate.adapterId}' cannot be recorded in the durable execution record, so an effect it performed could not be attributed to it afterwards.`,
+      );
+    }
     if (resolved.has(candidate.adapterId)) {
       throw new ExecutionAdapterRegistryError(
         'EXECUTION_ADAPTER_ID_DUPLICATE',
@@ -194,6 +221,9 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
         // execution boundary already owns — never as a denial, and never by
         // falling through to some arbitrary adapter, because "whichever one was
         // registered first" is not a routing decision anybody made.
+        // No child ran, so there is no child to attribute this to: the routing
+        // boundary itself is what failed, and the execution service falls back
+        // to the registry's own identity.
         return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: 'No execution adapter is configured for this action.' };
       }
 
@@ -218,7 +248,30 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       //    scanner in `no-bypass-effect-paths.test.ts` matches an invocation on
       //    an identifier ending in `adapter`, and a call site it cannot see is a
       //    call site the effect-path inventory would silently lose.
-      return childAdapter.execute(action);
+      //
+      //    Every return below names `childAdapter.adapterId`, because the
+      //    registry is the only thing that knows which provider actually ran
+      //    and an outcome naming the router would answer the wrong question.
+      //    The identity comes from trusted routing over a frozen membership —
+      //    never from the child, never from the caller.
+      let result: ExecutionAdapterResult;
+      try {
+        result = await childAdapter.execute(action);
+      } catch (error) {
+        // A child that raises has failed to execute, and it is still *that*
+        // child that failed. Converting here rather than letting the throw
+        // reach the execution service preserves the attribution; the outcome is
+        // the same `ADAPTER_ERROR` it has always been.
+        return {
+          outcome: 'failed',
+          reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
+          ...(error instanceof Error && error.message.length > 0 ? { detail: error.message } : {}),
+          adapterId: childAdapter.adapterId,
+        };
+      }
+      // The child's own `adapterId`, if it set one, is discarded: attribution
+      // is the routing decision's to make, not the routed adapter's to claim.
+      return { ...result, adapterId: childAdapter.adapterId };
     },
   });
 

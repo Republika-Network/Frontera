@@ -266,6 +266,15 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         correlation,
       };
 
+      // The adapter that actually performed the effect, and the composite that
+      // selected it when one did. A plain adapter names itself; the registry
+      // names the child trusted routing chose, so "which provider did this" is
+      // answerable from the outcome and from the durable record built on it.
+      const performedBy = (result: { readonly adapterId?: string }): { readonly adapterId: string; readonly routedBy?: string } =>
+        result.adapterId === undefined || result.adapterId === adapter.adapterId
+          ? { adapterId: adapter.adapterId }
+          : { adapterId: result.adapterId, routedBy: adapter.adapterId };
+
       let result;
       try {
         result = await adapter.execute(action);
@@ -289,6 +298,9 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         // An adapter that raises has failed to execute. It has emphatically not
         // produced an authorization outcome, and nothing here lets it: the
         // throw becomes a provider failure with the authorization untouched.
+        // A throw carries no attribution, so the adapter this service holds is
+        // the most that can honestly be said. The registry converts a child's
+        // throw itself, precisely so the routed case keeps its attribution.
         return {
           status: 'execution-failed',
           assessment,
@@ -305,7 +317,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           status: 'execution-failed',
           assessment,
           correlation,
-          adapterId: adapter.adapterId,
+          ...performedBy(result),
           reason: result.reason,
           ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
@@ -316,7 +328,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         status: 'executed',
         assessment,
         correlation,
-        adapterId: adapter.adapterId,
+        ...performedBy(result),
         ...(result.providerRef !== undefined ? { providerRef: result.providerRef } : {}),
         exercisedAt,
       };

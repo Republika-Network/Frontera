@@ -33,7 +33,17 @@ export type ExecutionOutcome =
       readonly correlation: ValidatedExecutionCorrelation;
       /** The adapter's provider-neutral handle on what it did, when it supplied one. */
       readonly providerRef?: string;
+      /**
+       * The adapter that **performed** the effect.
+       *
+       * With a single composed adapter, that adapter. With the composite
+       * registry, the child trusted routing selected — because naming the
+       * router would leave an auditor unable to tell which of several providers
+       * received the effect, which is the question the record exists to answer.
+       */
       readonly adapterId: string;
+      /** The composite that selected it, present only when routing occurred. The boundary stays visible beside the provider. */
+      readonly routedBy?: string;
       /** The instant the exercise was assessed at, from the injected clock. */
       readonly exercisedAt: string;
     }
@@ -94,7 +104,10 @@ export type ExecutionOutcome =
       readonly status: 'execution-failed';
       readonly assessment: BoundedGrantExerciseAssessment;
       readonly correlation: ValidatedExecutionCorrelation;
+      /** The adapter that was asked, and failed — the routed child where routing occurred, so a provider outage names the provider. */
       readonly adapterId: string;
+      /** The composite that selected it, present only when routing occurred. */
+      readonly routedBy?: string;
       readonly reason: ExecutionFailureReason;
       readonly detail?: string;
       readonly exercisedAt: string;

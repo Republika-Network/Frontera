@@ -21,6 +21,13 @@ services/
 The durable implementation is `src/enterprise/emergency-control`
 (`better-sqlite3`), because the composition root is what knows about storage.
 
+The two implement the same **port**, not the same guarantees. The durable store
+additionally keeps an append-only transition history and a head anchor, so an
+active control that disappears from storage reads `unavailable` instead of
+`clear`. The process-local store has no storage for anything to disappear from —
+and loses every control on restart, which for a control fails *open*. That is
+why it is for tests and single-process development only.
+
 ## Three rules that explain the whole module
 
 1. **`unavailable` is not `clear`.** A reader that throws, returns a

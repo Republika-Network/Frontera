@@ -416,6 +416,125 @@ describe('Emergency control — checkpoint 4, the adapter-scoped stop after trus
   });
 });
 
+describe('Governed action — the durable record names the child adapter that performed the effect', () => {
+  function namedAdapter(adapterId: string): RecordingExecutionAdapter {
+    const inner = createRecordingExecutionAdapter();
+    return {
+      adapterId,
+      calls: inner.calls,
+      get callCount(): number {
+        return inner.callCount;
+      },
+      execute: (action) => inner.execute(action),
+    };
+  }
+
+  /** Two children behind one registry, routed by the intent's action. */
+  function routedWorld(options: { readonly select: (action: { readonly action: string }) => string }) {
+    const a = namedAdapter('adapter-a');
+    const b = namedAdapter('adapter-b');
+    const registry: ExecutionAdapter = createExecutionAdapterRegistry({
+      adapterId: 'registry',
+      adapters: [a, b],
+      selectAdapter: (action) => options.select(action),
+    });
+    return { a, b, w: world({ executionAdapter: registry }) };
+  }
+
+  async function outcomeRowFor(w: GovernedWorld, requestId: string, executionId: string): Promise<string | undefined> {
+    const record = await recordFor(w, requestId);
+    return record?.references.find((reference) => reference.referenceId === executionOutcomeReferenceId(executionId))?.externalVersion;
+  }
+
+  it('two successful effects through two different children are distinguishable in the durable record', async () => {
+    const routedToA = routedWorld({ select: () => 'adapter-a' });
+    const first = await routedToA.w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(first.status, 'executed', JSON.stringify(first));
+
+    const routedToB = routedWorld({ select: () => 'adapter-b' });
+    const second = await routedToB.w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(second.status, 'executed', JSON.stringify(second));
+
+    // The two requests are byte-identical apart from which child trusted
+    // routing chose — and the record says which one it was.
+    assert.equal(await outcomeRowFor(routedToA.w, first.requestId ?? '', first.executionId ?? ''), 'executed@adapter-a');
+    assert.equal(await outcomeRowFor(routedToB.w, second.requestId ?? '', second.executionId ?? ''), 'executed@adapter-b');
+    assert.equal(routedToA.a.callCount, 1);
+    assert.equal(routedToA.b.callCount, 0);
+    assert.equal(routedToB.a.callCount, 0);
+    assert.equal(routedToB.b.callCount, 1);
+  });
+
+  it('the recorded identity is the child, never the registry that routed to it', async () => {
+    const { w } = routedWorld({ select: () => 'adapter-a' });
+    const result = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const recorded = await outcomeRowFor(w, result.requestId ?? '', result.executionId ?? '');
+    assert.equal(recorded, 'executed@adapter-a');
+    assert.equal(recorded?.includes('registry'), false, 'naming the router would answer the wrong question');
+  });
+
+  it('a replay preserves the same child identity, because it replays the same row', async () => {
+    const { w, a } = routedWorld({ select: () => 'adapter-a' });
+    const first = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const before = await outcomeRowFor(w, first.requestId ?? '', first.executionId ?? '');
+
+    const retry = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'executed');
+    assert.equal(retry.status === 'executed' ? retry.replayed : undefined, true);
+    assert.equal(a.callCount, 1, 'the adapter is not invoked again');
+
+    const after = await outcomeRowFor(w, first.requestId ?? '', first.executionId ?? '');
+    assert.equal(after, before, 'the outcome row is never rewritten');
+    assert.equal(after, 'executed@adapter-a');
+  });
+
+  it('a provider failure records which child failed, and replays as that failure', async () => {
+    const failing: ExecutionAdapter = {
+      adapterId: 'adapter-b',
+      async execute() {
+        return { outcome: 'failed', reason: 'PROVIDER_REJECTED' };
+      },
+    };
+    const registry: ExecutionAdapter = createExecutionAdapterRegistry({
+      adapterId: 'registry',
+      adapters: [namedAdapter('adapter-a'), failing],
+      selectAdapter: () => 'adapter-b',
+    });
+    const w = world({ executionAdapter: registry });
+
+    const first = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(first.status, 'execution_failed');
+    assert.equal(await outcomeRowFor(w, first.requestId ?? '', first.executionId ?? ''), 'execution-failed:PROVIDER_REJECTED@adapter-b');
+
+    const retry = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'execution_failed');
+    assert.deepEqual([...retry.reasonCodes], ['PROVIDER_REJECTED'], 'the suffix never leaks into the reported failure');
+  });
+
+  it('a withheld attempt records no adapter, because nothing performed anything', async () => {
+    const emergencyControl = controls();
+    const w = world({
+      emergencyControl,
+      beforeExercise: async () => {
+        emergencyControl.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: NOW });
+      },
+    });
+    const result = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const recorded = await outcomeRowFor(w, result.requestId ?? '', result.executionId ?? '');
+    assert.equal(recorded, `withheld:emergency-control:${EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE}`);
+    assert.equal(recorded?.includes('@'), false);
+  });
+
+  it('the child identity stays out of the customer result — evidence, not disclosure', async () => {
+    const { w } = routedWorld({ select: () => 'adapter-a' });
+    const result = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const serialized = JSON.stringify(result);
+    assert.equal(serialized.includes('adapter-a'), false, 'which provider ran is answerable from the record, not handed to the caller');
+    assert.equal(serialized.includes('registry'), false);
+    assert.equal(Object.hasOwn(result, 'adapterId'), false);
+  });
+});
+
 describe('Emergency control — historical replay is never rewritten by current state', () => {
   async function replayAfter(options: {
     readonly first: WorldOptions;

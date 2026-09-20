@@ -8,6 +8,7 @@ import {
   createExecutionAdapterRegistry,
   createGrantExecutionService,
   isExecutionAdapterRegistryError,
+  isRecordableExecutionAdapterId,
   type ExecutionAdapter,
   type ExecutionOutcome,
   type ValidatedExecutionAction,
@@ -235,6 +236,104 @@ describe('Adapter registry — the child sees exactly what was assessed', () => 
     assert.equal(seen.length, 1);
     assert.equal((seen[0] as readonly unknown[]).length, 1, 'the selector receives one argument: the validated action');
     assert.deepEqual(seen[0], [child.calls[0]]);
+  });
+});
+
+describe('Adapter registry — the outcome names the child that performed the effect', () => {
+  it('a successful route reports the child as the performer and the registry as the router', async () => {
+    const a = namedAdapter('adapter-a');
+    const b = namedAdapter('adapter-b');
+    const registry = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [a, b], selectAdapter: () => 'adapter-a' });
+
+    const outcome = await exerciseThrough(registry);
+    assert.equal(outcome.status, 'executed');
+    // The question an auditor asks is "which provider did this", and the name
+    // of the router is not an answer to it.
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'registry');
+    assert.equal(a.callCount, 1);
+    assert.equal(b.callCount, 0);
+  });
+
+  it('a different route reports a different performer, so two effects are distinguishable', async () => {
+    const a = namedAdapter('adapter-a');
+    const b = namedAdapter('adapter-b');
+    const registry = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [a, b], selectAdapter: () => 'adapter-b' });
+
+    const outcome = await exerciseThrough(registry);
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-b');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'registry');
+  });
+
+  it('a provider failure names the provider that failed, not the router', async () => {
+    const failing: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute() {
+        return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED };
+      },
+    };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [failing], selectAdapter: () => 'adapter-a' });
+    const outcome = await exerciseThrough(registry);
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED);
+    assert.equal(outcome.adapterId, 'adapter-a');
+    assert.equal(outcome.routedBy, 'registry');
+  });
+
+  it('a child that throws is still attributed to that child', async () => {
+    const throwing: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      execute() {
+        throw new Error('provider client exploded');
+      },
+    };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [throwing], selectAdapter: () => 'adapter-a' });
+    const outcome = await exerciseThrough(registry);
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, 'adapter-a');
+    assert.equal(outcome.detail, 'provider client exploded');
+  });
+
+  it('an unresolved route is attributed to the router, because no child ran', async () => {
+    const registry = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [namedAdapter('adapter-a')], selectAdapter: () => undefined });
+    const outcome = await exerciseThrough(registry);
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.adapterId, 'registry');
+    assert.equal(outcome.routedBy, undefined);
+  });
+
+  it('a child cannot claim to be a different adapter — attribution is the routing decision’s', async () => {
+    const liar: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute() {
+        return { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-b' };
+      },
+    };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [liar], selectAdapter: () => 'adapter-a' });
+    const outcome = await exerciseThrough(registry);
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a', 'the registry overwrites what the child claimed');
+  });
+
+  it('a single composed adapter names itself and reports no router — unchanged behaviour', async () => {
+    const store = await seed();
+    const direct = createRecordingExecutionAdapter();
+    const service = createGrantExecutionService({ store, adapter: direct, now: () => AT_T_PLUS_5 });
+    const outcome = await service.exercise(buildExerciseRequest(buildTestGrant()));
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, direct.adapterId);
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, undefined);
+  });
+
+  it('an identity that could not be recorded exactly is refused at composition', async () => {
+    for (const adapterId of ['has@delimiter', 'x'.repeat(65), '-leading-dash', 'has space']) {
+      assert.throws(
+        () => createExecutionAdapterRegistry({ adapters: [namedAdapter(adapterId)], selectAdapter: () => adapterId }),
+        (error: unknown) => isExecutionAdapterRegistryError(error) && error.code === 'EXECUTION_ADAPTER_MALFORMED',
+        `'${adapterId}' must be refused`,
+      );
+    }
+    assert.equal(isRecordableExecutionAdapterId('frontera.execution-adapter-registry'), true);
+    assert.equal(isRecordableExecutionAdapterId('test.fake-provider'), true);
   });
 });
 

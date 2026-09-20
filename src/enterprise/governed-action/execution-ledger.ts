@@ -1,6 +1,6 @@
 import { EMERGENCY_CONTROL_REASON_CODE_VALUES } from '../../features/emergency-control-runtime/index.js';
 import type { BoundedGrant } from '../../features/grant-runtime/index.js';
-import { GRANT_EXERCISE_REASON_CODE_VALUES, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
+import { GRANT_EXERCISE_REASON_CODE_VALUES, isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { authorizationReferenceId, executionAttemptReferenceId, executionOutcomeReferenceId } from './identifiers.js';
@@ -38,6 +38,17 @@ export interface PriorExecution {
   readonly withheldBy?: WithholdingLayer;
   /** That layer's own reason codes, exactly as recorded. Present only with `outcome: 'withheld'`. */
   readonly withheldReasonCodes?: readonly string[];
+  /**
+   * The adapter that **performed** the effect, as recorded.
+   *
+   * Present for an executed or provider-failed attempt whose adapter identity
+   * was recordable; absent for a withheld attempt, where nothing ran, and for
+   * rows written before adapter attribution existed. Under server-side routing
+   * this is the trusted-routed **child**, not the routing boundary — which is
+   * the whole point: an auditor asking "which provider moved this money"
+   * cannot be answered by the name of the router.
+   */
+  readonly adapterId?: string;
 }
 
 /**
@@ -71,6 +82,37 @@ export interface PriorExecution {
  * identity was already attempted, so do not attempt it again.
  */
 const WITHHELD_PREFIX = 'withheld:';
+
+/**
+ * The performing adapter is appended to an effect-bearing outcome as
+ * `…@<adapterId>`.
+ *
+ * Deterministic and bounded on both sides: the id is recorded only when
+ * `isRecordableExecutionAdapterId` accepts it — bounded length, and no `@` to
+ * collide with the delimiter — so the recorded string decodes back to exactly
+ * the id that was written. The registry refuses a non-recordable child at
+ * composition, so the routed path always carries attribution; a host that
+ * composed one adapter directly with an exotic identity records the outcome
+ * without it rather than failing to record the outcome at all, because losing
+ * the *fact* of execution is far worse than losing its label.
+ *
+ * `@` is split from the right, so an id containing `:` — as the reason-code and
+ * layer delimiters do — is still unambiguous.
+ */
+const ADAPTER_DELIMITER = '@';
+
+function withAdapter(recorded: string, adapterId: string | undefined): string {
+  return adapterId !== undefined && isRecordableExecutionAdapterId(adapterId) ? `${recorded}${ADAPTER_DELIMITER}${adapterId}` : recorded;
+}
+
+function splitAdapter(recorded: string): { readonly body: string; readonly adapterId?: string } {
+  const at = recorded.lastIndexOf(ADAPTER_DELIMITER);
+  if (at === -1) return { body: recorded };
+  const adapterId = recorded.slice(at + 1);
+  // A suffix that is not a recordable identity is not one this ledger wrote,
+  // and is never decoded into an attribution.
+  return isRecordableExecutionAdapterId(adapterId) ? { body: recorded.slice(0, at), adapterId } : { body: recorded };
+}
 
 const WITHHOLDING_VOCABULARIES: Readonly<Record<WithholdingLayer, ReadonlySet<string>>> = Object.freeze({
   'grant-exercise': new Set(GRANT_EXERCISE_REASON_CODE_VALUES),
@@ -140,13 +182,18 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
     const outcome = record.references.find((entry) => entry.referenceId === executionOutcomeReferenceId(executionId) && entry.externalId === executionId);
     const recorded = outcome?.externalVersion;
     if (recorded === undefined) return { attempted };
-    const withheld = decodeWithheldOutcome(recorded);
+    // A withheld row never carries an adapter — nothing ran — so the split is
+    // applied to the effect-bearing forms only, and a `@` inside a withheld row
+    // is left exactly where it is (where it will fail to decode, as it should).
+    const { body, adapterId } = recorded.startsWith(WITHHELD_PREFIX) ? { body: recorded, adapterId: undefined } : splitAdapter(recorded);
+    const attribution = adapterId !== undefined ? { adapterId } : {};
+    const withheld = decodeWithheldOutcome(body);
     // A stored value that cannot be decoded is reported raw and matches no
     // known outcome, so a malformed or tampered row replays as "attempted,
     // outcome unknown" — never as a withholding reason, and never as anything
     // that could permit an effect.
     return withheld === undefined
-      ? { attempted, outcome: recorded }
+      ? { attempted, outcome: body, ...attribution }
       : { attempted, outcome: 'withheld', withheldBy: withheld.layer, withheldReasonCodes: withheld.reasonCodes };
   }
 
@@ -187,12 +234,12 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
     async recordOutcome(evaluationId, executionId, outcome) {
       const recordedAs =
         outcome.status === 'executed'
-          ? 'executed'
+          ? withAdapter('executed', outcome.adapterId)
           : outcome.status === 'withheld'
             ? outcome.withheldBy === 'emergency-control'
               ? encodeWithheldOutcome('emergency-control', outcome.emergencyControl.reasonCodes)
               : encodeWithheldOutcome('grant-exercise', outcome.assessment.reasonCodes)
-            : `execution-failed:${outcome.reason}`;
+            : withAdapter(`execution-failed:${outcome.reason}`, outcome.adapterId);
       // A withheld assessment whose reasons cannot be recorded exactly is not
       // recorded at all: a replay then reports the attempt as unconfirmed rather
       // than a refusal stripped of its explanation.

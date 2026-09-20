@@ -113,8 +113,29 @@ export const EXECUTION_FAILURE_REASON_VALUES: readonly ExecutionFailureReason[] 
  * decision is not something it is allowed to do and there is no field for it.
  */
 export type ExecutionAdapterResult =
-  | { readonly outcome: 'completed'; readonly providerRef?: string }
-  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string };
+  | { readonly outcome: 'completed'; readonly providerRef?: string; readonly adapterId?: string }
+  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string; readonly adapterId?: string };
+
+/**
+ * ## `adapterId` on a result: which adapter actually performed the effect
+ *
+ * A composite adapter — `createExecutionAdapterRegistry` — satisfies this port
+ * and then routes to one registered child. Its own `adapterId` names the
+ * *routing boundary*, not the provider integration that ran, so an outcome
+ * carrying only that value tells an auditor which orchestrator was composed and
+ * nothing about which of several providers received the effect.
+ *
+ * So a result may name the adapter that performed it. It is **set by trusted
+ * server-side routing and by nothing else**: the child never sets it, the
+ * caller has no field anywhere on this path that reaches it, and a structural
+ * test asserts the registry is the only production source that writes it. A
+ * plain adapter omits it and the execution service falls back to the adapter it
+ * holds, which is exactly the previous behaviour.
+ *
+ * It is **evidence, not authority**. Nothing reads it to decide anything: it is
+ * reported on the outcome and recorded in the execution ledger so "which
+ * provider did this" is answerable from the durable record.
+ */
 
 export interface ExecutionAdapter {
   /** Names the provider integration, for correlation and operator diagnostics. Mirrors `EnterpriseProviderCapabilityDeclaration.providerSystem`. */
