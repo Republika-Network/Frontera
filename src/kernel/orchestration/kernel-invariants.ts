@@ -81,7 +81,10 @@ function cloneValue(value: unknown): unknown {
   if (value !== null && typeof value === 'object' && value.constructor === Object) {
     const cloned: Record<string, unknown> = {};
     for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
-      cloned[key] = cloneValue(entryValue);
+      // Defined, never assigned: an own `__proto__` key in a request's context
+      // is data, and assignment would invoke the prototype setter — the
+      // snapshot would then differ from the request it was taken of.
+      Object.defineProperty(cloned, key, { value: cloneValue(entryValue), enumerable: true, writable: true, configurable: true });
     }
     return cloned;
   }

@@ -1,9 +1,16 @@
 import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type { KernelEvaluationResult } from '../contracts/kernel-result.js';
 import { KernelInvariantError } from '../errors/kernel-errors.js';
-import { assertKernelInvariants, assertReasonCodesPresent, assertRecognitionPrecedesAllow, assertRequestNotMutated } from '../orchestration/kernel-invariants.js';
+import {
+  assertKernelInvariants,
+  assertReasonCodesPresent,
+  assertRecognitionPrecedesAllow,
+  assertRequestNotMutated,
+  cloneKernelEvaluationRequest,
+} from '../orchestration/kernel-invariants.js';
 import { assertThrowsInstance } from './assert-helpers.js';
 
 const REQUEST: KernelEvaluationRequest = {
@@ -77,5 +84,18 @@ describe('assertRequestNotMutated', () => {
 describe('assertKernelInvariants', () => {
   it('runs all three checks together without throwing for a consistent allowed result', () => {
     assertKernelInvariants(REQUEST, { ...REQUEST }, baseResult({}));
+  });
+});
+
+describe('cloneKernelEvaluationRequest', () => {
+  it('keeps an own "__proto__" context key, top-level and nested, as data — so the snapshot equals the request', () => {
+    const context = JSON.parse('{"__proto__":{"marker":"a"},"nested":{"__proto__":"n","keep":1}}') as Record<string, unknown>;
+    const request: KernelEvaluationRequest = { ...REQUEST, context };
+    const snapshot = cloneKernelEvaluationRequest(request);
+    const cloned = snapshot.context as Record<string, unknown>;
+    assert.deepEqual(Object.getOwnPropertyDescriptor(cloned, '__proto__')?.value, { marker: 'a' });
+    assert.equal(Object.getPrototypeOf(cloned), Object.prototype);
+    assert.equal(Object.getOwnPropertyDescriptor(cloned['nested'] as object, '__proto__')?.value, 'n');
+    assertRequestNotMutated(snapshot, request);
   });
 });

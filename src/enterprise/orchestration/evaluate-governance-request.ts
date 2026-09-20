@@ -19,6 +19,7 @@ import type { GovernanceEnterpriseContext, GovernanceIdempotencyContext, Governa
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import type { EnterpriseTelemetry } from '../telemetry/enterprise-telemetry.js';
 import { extractBearerToken, matchApiKey } from './credential-matching.js';
+import { buildGovernanceEvaluationOutcomeEvent } from './governance-evaluation-events.js';
 
 /** Transport-level input to one evaluation call -- the not-yet-validated wire body plus the caller's auth header and optional `Idempotency-Key` header value. */
 export interface EvaluateGovernanceRequestInput {
@@ -168,17 +169,7 @@ export async function evaluateGovernanceRequest(
   deps.telemetry.recordEvaluation(result.status, durationMs);
 
   const completionEvent = deps.configuration.eventPublishing.enabled
-    ? {
-        eventId: deps.eventIdGenerator.nextId('enterprise-event'),
-        type: eventTypeForStatus(result.status),
-        occurredAt: result.evaluatedAt,
-        requestId: result.requestId,
-        decisionId: result.decisionId,
-        status: result.status,
-        reasonCodes: result.reasonCodes,
-        kernelVersion: result.kernelVersion,
-        ...(result.correlationId !== undefined ? { correlationId: result.correlationId } : {}),
-      }
+    ? buildGovernanceEvaluationOutcomeEvent(result, deps.eventIdGenerator.nextId('enterprise-event'))
     : undefined;
   const aggregateEvents: EnterpriseEvent[] = [];
   if (requestedEvent !== undefined) aggregateEvents.push(requestedEvent);
@@ -305,19 +296,6 @@ function idempotencyConflictError(conflictKind: 'idempotency-key' | 'request-id'
   return EnterpriseHttpErrors.concurrencyConflict(
     `requestId '${requestId}' was already submitted with a different payload; a request id must uniquely identify one governance request.`,
   );
-}
-
-function eventTypeForStatus(status: GovernanceEvaluateResponseBody['status']) {
-  switch (status) {
-    case 'denied':
-      return 'GovernanceEvaluationDenied' as const;
-    case 'approval_required':
-      return 'GovernanceEvaluationApprovalRequired' as const;
-    case 'allowed':
-      return 'GovernanceEvaluationCompleted' as const;
-    case 'indeterminate':
-      return 'GovernanceEvaluationFailed' as const;
-  }
 }
 
 function isPlainObjectWithOrganization(value: unknown): value is { organization?: { id?: string } } {
