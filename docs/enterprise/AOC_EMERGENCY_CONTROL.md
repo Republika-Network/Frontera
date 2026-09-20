@@ -344,7 +344,8 @@ A read now cross-checks all three records, and every partial deletion is caught:
 |---|---|---|
 | control row deleted | the key still has events, and no projection | `unavailable` |
 | events for that key deleted too | the head's `event_count`/`event_sequence` no longer match the table | `unavailable` |
-| head row deleted | an initialized store always has one | `unavailable` |
+| head row deleted | an initialized store always has one, and one is never regenerated | `unavailable` |
+| projection, events **and** head all deleted | the surviving v2 version row proves the file was already initialized | `unavailable` |
 | projection re-pointed at another event | the event's key and digest disagree with the projection | `unavailable` |
 | projection left behind a newer transition | it is not the latest event for its key | `unavailable` |
 | `active` flipped, or an event's `transition` rewritten | the record digest no longer recomputes | `unavailable` |
@@ -354,6 +355,50 @@ The three cases a reader must tell apart are now genuinely distinguishable:
 **(b)** a control was explicitly released — projection `active = 0`, derived
 from a `released` event — reads `clear`; **(c)** an active control disappeared —
 reads `unavailable`. Only (a) and (b) are consent.
+
+### A store is initialized once, and never re-initialized
+
+The last row of that table is the one the cross-checks alone could not reach.
+Each of the earlier destructive edits leaves at least one state-bearing
+structure behind to disagree with the others. Deleting all three at once —
+
+```sql
+DELETE FROM emergency_controls;
+DELETE FROM emergency_control_events;
+DELETE FROM emergency_control_head;
+```
+
+— leaves nothing to disagree, and an earlier revision then *supplied* the
+missing piece: opening a store with no head wrote a fresh genesis head, on the
+reasoning that a store with no head must be new. The regenerated head verified
+against an empty event table, the key had no projection and no events, and an
+active global stop read back as `clear`.
+
+That is not the whole-file-replacement limit below. The initialized database is
+still here, still carrying the `current` `aoc.emergency-control-store.schema.v2`
+row that records it as initialized. The version row is *not* state: no deletion
+of controls, events or head touches it, which is exactly what makes it usable as
+evidence. So opening now classifies the file **before** any `CREATE TABLE` or
+`INSERT` runs, because recreating the schema erases the difference:
+
+| what is on disk | reading | on open |
+|---|---|---|
+| no version table, no emergency-control tables | a genuinely new database | schema, version row and genesis head written in **one** transaction |
+| version table, newest row is a `current` v2 row, head present | an initialized store | opens normally |
+| version table, newest row is a `current` v2 row, head absent | an initialized store that lost its head — damage | opens, and **every** read is `unavailable`; `active()` and operator writes throw; `health()` reports unhealthy |
+| version table with no version row, or a newest row not recorded `current` | an initialization that cannot be established as complete | **refused at open** |
+| version table recording a schema version this runtime does not implement | a database written by another runtime | **refused at open** |
+| emergency-control tables but no version table | a partially created or partially restored file | **refused at open** |
+
+The rule underneath all six rows: a genesis head is written **only** for a file
+carrying no emergency-control structure at all, and never again. A missing head
+in an initialized store therefore stays missing, and `verifiedHead` reads it as
+what it is. Nothing ambiguous is initialized over — the store refuses rather
+than guessing that a file is new, because guessing "new" is guessing `clear`.
+
+Initialization is one transaction so this strictness cannot brick a fresh store:
+a crash mid-initialization commits nothing, leaving the file genuinely new
+rather than leaving a version row with no head behind it.
 
 `v2` because `v1` could not make that distinction. A `v1` file is **refused at
 open** rather than read under rules it was never written to satisfy: a database
@@ -405,7 +450,11 @@ Two limits remain, and neither is papered over:
 What changed is the *accidental and partial* cases — a mistyped `DELETE`, a
 half-restored backup, a truncated table, an interrupted migration. None of those
 needs malice, all of them previously produced a silent `clear`, and all of them
-now withhold.
+now withhold. That includes deleting **every** state-bearing table at once,
+which is not case 2: the file, and the v2 version row recording it as
+initialized, both survive that deletion, so the store has what it needs to tell
+its own wreckage from a new database. Case 2 is only the file itself going
+away.
 
 ### Deployment scope
 

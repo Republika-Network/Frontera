@@ -60,9 +60,21 @@ import {
  *    read reports `unavailable`. None of them is ever repaired into `clear` —
  *    "clear" is the one direction that must never be guessed.
  *
+ * 5. **A store is initialized once, and never re-initialized.** The genesis
+ *    head is written only for a file carrying no emergency-control structure
+ *    at all. A file that already holds a `current` v2 version row is *never*
+ *    given a fresh head, so a head that was deleted stays missing and every
+ *    read withholds. Anything in between — a version table with no valid
+ *    current row, or emergency-control tables with no version table — refuses
+ *    to open rather than guessing that the file is new. See
+ *    `classifyInitialization`.
+ *
  * **A vanished row is not a release.** An operator who wants execution to
  * resume calls `release`, which records an explicit later transition. Anything
  * else that makes an active control disappear is damage, and damage withholds.
+ * That includes deleting every state-bearing table at once: the version row is
+ * not state, it survives, and it is what stops the store reading its own
+ * wreckage as a new database.
  *
  * ## Why the read is synchronous, and why that is not a shortcut
  *
@@ -321,6 +333,116 @@ function tableExists(db: import('better-sqlite3').Database, tableName: string): 
   return db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName) !== undefined;
 }
 
+/**
+ * The three state-bearing tables. `emergency_control_store_versions` is
+ * deliberately not one of them: it is the *marker* that says this file was
+ * initialized, and it is what the tables below are judged against.
+ */
+const STATE_TABLES = ['emergency_control_events', 'emergency_controls', 'emergency_control_head'] as const;
+
+interface VersionRow {
+  readonly schema_version: string;
+  readonly migration_state: string;
+  readonly recorded_at: string;
+}
+
+/**
+ * Whether this file has been initialized as a v2 emergency-control store
+ * before — decided **before** a single `CREATE TABLE` or `INSERT` runs, because
+ * once the schema has been recreated the two cases are indistinguishable.
+ *
+ * This is the distinction the store previously did not draw, and the omission
+ * fails **open** in the one direction that must never be guessed. Old
+ * behaviour: an absent head row was written back as a genesis head, on the
+ * reasoning that a store with no head must be new. But a store whose head was
+ * *deleted* also has no head. So
+ *
+ *     activate global stop -> close -> DELETE FROM emergency_controls;
+ *                                      DELETE FROM emergency_control_events;
+ *                                      DELETE FROM emergency_control_head;
+ *                          -> reopen
+ *
+ * regenerated genesis over a database that had held an active global stop. The
+ * head then verified (0 events, 0 counted), the key had no projection and no
+ * events, `verifiedControl` reported `never-declared` — its one honest shape
+ * for "no control was ever declared" — and the read returned **clear**. The
+ * kill switch had been switched off by a `DELETE`.
+ *
+ * The version row is the evidence that separates the two, and it survives that
+ * deletion because it is not state, it is history: an initialized store can
+ * never legitimately return to having no head, so a missing head in a store
+ * that carries a v2 marker is damage, and damage withholds.
+ *
+ * Returns `'new'` only for a file carrying no emergency-control structure at
+ * all. Everything ambiguous refuses rather than initializing over it:
+ *
+ * - a version table whose newest row is not a valid `current` row — an
+ *   interrupted or hand-edited initialization — is **not** silently completed;
+ * - emergency-control tables with no version table at all — a partially created
+ *   or partially restored file — are **not** adopted as fresh.
+ */
+function classifyInitialization(db: import('better-sqlite3').Database): 'new' | 'initialized' {
+  const versioned = tableExists(db, 'emergency_control_store_versions');
+  const stateTables = STATE_TABLES.filter((table) => tableExists(db, table));
+
+  if (!versioned) {
+    // (E) Emergency-control structure with nothing vouching for how it got
+    // there. Treating it as fresh would mean writing a genesis head into a file
+    // whose history this runtime cannot account for.
+    if (stateTables.length > 0) {
+      throw unavailableError(
+        `The emergency-control database already holds emergency-control tables (${stateTables.join(', ')}) but no schema-version record, so this runtime cannot establish whether it was ever initialized. Refusing to open it rather than treating it as a new store.`,
+      );
+    }
+    // (A) Nothing here. This is the only shape that may be initialized.
+    return 'new';
+  }
+
+  let newest: VersionRow | undefined;
+  try {
+    newest = db.prepare(`SELECT schema_version, migration_state, recorded_at FROM emergency_control_store_versions ORDER BY id DESC LIMIT 1`).get() as VersionRow | undefined;
+  } catch {
+    // A version table this runtime cannot even read is not a fresh store.
+    throw unavailableError(
+      'The emergency-control database holds a schema-version table this runtime cannot read. Refusing to open it rather than treating it as a new store.',
+    );
+  }
+
+  // (D) A version table with no valid current row. Silently initializing here
+  // would mint a genesis head for a file that may already have held controls.
+  if (newest === undefined) {
+    throw unavailableError(
+      'The emergency-control store has a schema-version table but no version row, so this runtime cannot establish what state the database is in. Refusing to open it rather than initializing over it.',
+    );
+  }
+  if (typeof newest.schema_version !== 'string' || newest.schema_version.length === 0) {
+    throw unavailableError(
+      'The emergency-control store has a schema-version row that does not record a schema version. Refusing to open it rather than initializing over it.',
+    );
+  }
+  // The version guard proper: a database written by a runtime this one does not
+  // implement is refused without being mutated. That includes a `schema.v1`
+  // file, which held only the projection and could not prove an active control
+  // had not been deleted.
+  if (newest.schema_version !== EMERGENCY_CONTROL_STORE_SCHEMA_VERSION) {
+    throw unavailableError(
+      `The emergency-control store is recorded under schema version '${newest.schema_version}', which this runtime does not implement (expected '${EMERGENCY_CONTROL_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
+    );
+  }
+  // (D, continued) A version row left mid-migration records an initialization
+  // that never finished; completing it silently is the same guess.
+  if (newest.migration_state !== 'current') {
+    throw unavailableError(
+      `The emergency-control store's newest schema-version row is recorded as '${newest.migration_state}' rather than 'current', so its initialization cannot be established as complete. Refusing to open it.`,
+    );
+  }
+
+  // (B and C) Previously initialized under v2. Whether its head survived is not
+  // decided here: it is decided by `verifiedHead`, which withholds when it did
+  // not. What matters is that nothing below writes a genesis head into it.
+  return 'initialized';
+}
+
 function resolveOnDisk(dbPath: string): string {
   const absPath = resolve(dbPath);
   const dir = dirname(absPath);
@@ -345,31 +467,37 @@ export async function createSqliteEmergencyControlStore(
   db.pragma('synchronous = FULL');
   db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(options.busyTimeoutMs)}`);
 
-  // The version guard runs *before* `CREATE TABLE IF NOT EXISTS`, so a database
-  // written by a runtime this one does not implement is refused without being
-  // mutated. That includes a `schema.v1` file, which held only the projection
-  // and could not prove an active control had not been deleted: it is refused
-  // rather than read under rules it was never written to satisfy.
-  if (tableExists(db, 'emergency_control_store_versions')) {
-    const existing = db.prepare(`SELECT schema_version FROM emergency_control_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-    if (existing !== undefined && existing.schema_version !== EMERGENCY_CONTROL_STORE_SCHEMA_VERSION) {
-      db.close();
-      throw unavailableError(
-        `The emergency-control store is recorded under schema version '${existing.schema_version}', which this runtime does not implement (expected '${EMERGENCY_CONTROL_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
-      );
-    }
+  // Which of the two this file is must be settled *before* `CREATE TABLE IF
+  // NOT EXISTS` runs, because recreating the schema erases the difference. A
+  // refusal here has not mutated the database.
+  let initialization: 'new' | 'initialized';
+  try {
+    initialization = classifyInitialization(db);
+  } catch (error) {
+    db.close();
+    throw error;
   }
 
-  db.exec(SCHEMA_V2);
-
-  const latest = db.prepare(`SELECT schema_version FROM emergency_control_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-  if (latest === undefined) {
-    db.prepare(`INSERT INTO emergency_control_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, now());
-  } else if (latest.schema_version !== EMERGENCY_CONTROL_STORE_SCHEMA_VERSION) {
-    db.close();
-    throw unavailableError(
-      `The emergency-control store is recorded under schema version '${latest.schema_version}', which this runtime does not implement (expected '${EMERGENCY_CONTROL_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
-    );
+  if (initialization === 'new') {
+    // One transaction for the whole initialization: the schema, the marker that
+    // says this file is initialized, and the genesis head that an initialized
+    // file must always have. All three or none — an interrupted initialization
+    // must not leave behind a version row with no head, which the rule above
+    // would (correctly, but uselessly) refuse forever after.
+    const genesis: EmergencyControlHeadRecord = { eventSequence: 0, eventCount: 0, eventDigest: EMERGENCY_CONTROL_GENESIS_DIGEST, updatedAt: now() };
+    db.transaction(() => {
+      db.exec(SCHEMA_V2);
+      db.prepare(`INSERT INTO emergency_control_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, now());
+      db.prepare(
+        `INSERT INTO emergency_control_head (id, event_sequence, event_count, event_digest, head_digest, updated_at, schema_version) VALUES (1, ?, ?, ?, ?, ?, ?)`,
+      ).run(genesis.eventSequence, genesis.eventCount, genesis.eventDigest, emergencyControlHeadDigest(genesis), genesis.updatedAt, EMERGENCY_CONTROL_STORE_SCHEMA_VERSION);
+    })();
+  } else {
+    // An already-initialized store. Missing tables are recreated so the
+    // statements below can be prepared, and that is all: no version row, and
+    // above all **no genesis head**. A table that had to be recreated is empty,
+    // which is exactly what `verifiedHead` and `verifiedControl` read as damage.
+    db.exec(SCHEMA_V2);
   }
 
   const selectControl = db.prepare(
@@ -424,12 +552,6 @@ export async function createSqliteEmergencyControlStore(
       updatedAt: head.updatedAt,
       schemaVersion: EMERGENCY_CONTROL_STORE_SCHEMA_VERSION,
     });
-  }
-
-  // The genesis head. An initialized store **always** has one, which is what
-  // lets a missing head be read as damage rather than as a fresh database.
-  if (selectHead.get() === undefined) {
-    writeHead({ eventSequence: 0, eventCount: 0, eventDigest: EMERGENCY_CONTROL_GENESIS_DIGEST, updatedAt: now() });
   }
 
   let closed = false;

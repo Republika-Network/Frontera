@@ -11,7 +11,7 @@ import {
 } from '../../features/emergency-control-runtime/index.js';
 import { createSqliteEmergencyControlStore, type DurableEmergencyControlStore } from '../emergency-control/index.js';
 import { isEmergencyControlStoreError } from '../emergency-control/errors.js';
-import { EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, emergencyControlEventDigest, storedEmergencyControlDigest } from '../emergency-control/emergency-control-record.js';
+import { EMERGENCY_CONTROL_GENESIS_DIGEST, EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, emergencyControlEventDigest, storedEmergencyControlDigest } from '../emergency-control/emergency-control-record.js';
 
 /**
  * The durable interlock's properties, each measured across a **real** process
@@ -247,6 +247,130 @@ describe('Durable emergency control — corrupt state is never repaired into cle
     await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_control_head`).run());
     const reopened = await open(dbPath);
     assert.equal(reopened.read(QUERY).state, 'unavailable', 'an initialized store always has a head; a missing one is damage');
+  });
+
+  it('REGRESSION — deleting the projection, the events AND the head at once still never reads clear', async () => {
+    // The defect this test pins, and the one the three tests above did not
+    // reach between them. Each of those leaves at least one state-bearing
+    // structure behind for the cross-check to catch. Destroying all three at
+    // once left nothing to disagree with — and the old initialization then
+    // *supplied* the missing piece, writing a fresh genesis head on reopen
+    // because "a store with no head must be new". Event stats were 0/0, so the
+    // regenerated head verified; the key had no projection and no events, so it
+    // read as `never-declared`; and an active global stop became `clear`.
+    //
+    // This is not the documented whole-file-replacement limitation. The same
+    // initialized database file is still here, carrying its own v2 version row
+    // as evidence that it was initialized — only the state was destroyed. So
+    // the store has what it needs to tell damage from a new database, and must.
+    const dbPath = await activeGlobal('deleted-everything');
+    await withRawDb(dbPath, (db) => {
+      db.exec(`DELETE FROM emergency_controls; DELETE FROM emergency_control_events; DELETE FROM emergency_control_head;`);
+    });
+
+    // The v2 version row is deliberately left intact: it is the initialization
+    // marker, it is not state, and no state deletion removes it.
+    const versions = await withRawDb(
+      dbPath,
+      (db) => db.prepare(`SELECT schema_version, migration_state FROM emergency_control_store_versions ORDER BY id DESC`).all() as readonly { schema_version: string; migration_state: string }[],
+    );
+    assert.equal(versions.length, 1);
+    assert.equal(versions[0]?.schema_version, EMERGENCY_CONTROL_STORE_SCHEMA_VERSION);
+    assert.equal(versions[0]?.migration_state, 'current');
+
+    const reopened = await open(dbPath);
+    const assessment = reopened.read(QUERY);
+    assert.equal(assessment.state, 'unavailable', 'an active global stop must never be deleted back into clear');
+    assert.notEqual(assessment.state, 'clear');
+    assert.deepEqual(assessment.reasonCodes, [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_UNAVAILABLE]);
+    assert.equal(emergencyControlPermits(assessment), false);
+    // The head is global state, so no query can be answered, not just this one.
+    assert.equal(reopened.read({ organizationId: 'org-unrelated' }).state, 'unavailable');
+    assert.equal(reopened.read({ actorId: 'agent-unrelated' }).state, 'unavailable');
+    // And the store says so to an operator rather than reporting health.
+    assert.equal(reopened.health().status, 'unhealthy');
+    assert.equal(reopened.health().readable, false);
+    assert.throws(() => reopened.active(), (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_STATE_CORRUPT');
+    assert.throws(() => reopened.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT }), (error: unknown) => isEmergencyControlStoreError(error));
+
+    // The mechanism: opening an already-initialized store must not mint a head.
+    const head = await withRawDb(dbPath, (db) => db.prepare(`SELECT COUNT(*) AS c FROM emergency_control_head`).get() as { c: number });
+    assert.equal(head.c, 0, 'reopening an initialized store must not regenerate a genesis head');
+  });
+
+  it('REGRESSION — a missing head is damage even when the store never held a control', async () => {
+    // The same rule with the state deletion removed from the picture: a store
+    // that was initialized, was legitimately empty, and then lost its head.
+    // "Empty and undamaged" and "empty because it was emptied" are the two the
+    // old code could not tell apart, and it resolved both as clear.
+    const dbPath = tempDbPath('initialized-empty-headless');
+    const first = await open(dbPath);
+    assert.equal(first.read(QUERY).state, 'clear', 'an initialized, undamaged, empty store reads clear');
+    await first.close();
+
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_control_head`).run());
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable', 'an initialized store with no head is damaged, not new');
+    assert.equal(reopened.health().status, 'unhealthy');
+  });
+
+  it('a version table with no version row is refused rather than silently initialized', async () => {
+    // A version table is initialization evidence in its own right. With no
+    // valid current row, what the file has been through cannot be established,
+    // and writing a version row plus a genesis head over it would be the same
+    // guess in a different costume.
+    const dbPath = await activeGlobal('empty-version-table');
+    await withRawDb(dbPath, (db) => db.exec(`DELETE FROM emergency_control_store_versions;`));
+    await assert.rejects(
+      () => createSqliteEmergencyControlStore(dbPath, { now: () => AT }),
+      (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_UNAVAILABLE',
+    );
+  });
+
+  it('a version row left mid-migration is refused rather than completed', async () => {
+    const dbPath = await activeGlobal('mid-migration');
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_control_store_versions SET migration_state = 'in-progress'`).run());
+    await assert.rejects(
+      () => createSqliteEmergencyControlStore(dbPath, { now: () => AT }),
+      (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_UNAVAILABLE',
+    );
+  });
+
+  it('emergency-control tables with no initialization marker are refused rather than adopted as fresh', async () => {
+    // A partially created or partially restored file. There is no marker
+    // vouching for how those tables got here, so treating the file as new —
+    // and writing a genesis head into it — is exactly the guess this store
+    // must not make.
+    const dbPath = await activeGlobal('no-marker');
+    await withRawDb(dbPath, (db) => db.exec(`DROP TABLE emergency_control_store_versions;`));
+    await assert.rejects(
+      () => createSqliteEmergencyControlStore(dbPath, { now: () => AT }),
+      (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_UNAVAILABLE',
+    );
+  });
+
+  it('a genuinely new database is still initialized, with a version row and a genesis head', async () => {
+    // The other half of the rule, and the one a fail-closed fix could easily
+    // break: refusing more must not stop a fresh store from opening, reading
+    // clear and taking a control.
+    const dbPath = tempDbPath('genuinely-new');
+    const store = await open(dbPath);
+    assert.equal(store.read(QUERY).state, 'clear');
+    assert.equal(store.health().status, 'healthy');
+    assert.deepEqual(store.active(), []);
+
+    const initialized = await withRawDb(dbPath, (db) => ({
+      versions: db.prepare(`SELECT schema_version, migration_state FROM emergency_control_store_versions`).all() as readonly { schema_version: string; migration_state: string }[],
+      head: db.prepare(`SELECT event_sequence, event_count, event_digest FROM emergency_control_head WHERE id = 1`).get() as { event_sequence: number; event_count: number; event_digest: string } | undefined,
+    }));
+    assert.deepEqual(initialized.versions, [{ schema_version: EMERGENCY_CONTROL_STORE_SCHEMA_VERSION, migration_state: 'current' }]);
+    assert.deepEqual(initialized.head, { event_sequence: 0, event_count: 0, event_digest: EMERGENCY_CONTROL_GENESIS_DIGEST });
+
+    // And it still works as a store, across a restart.
+    store.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'blocked');
   });
 
   it('the three cases a read must tell apart are told apart', async () => {
