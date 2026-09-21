@@ -136,12 +136,19 @@ describe('Execution layer boundaries — it reads layer E and nothing above it',
     }
   });
 
-  it('imports nothing outside its own module except the grant runtime it gates', () => {
+  it('imports nothing outside its own module except the grant runtime it gates and the interlock it honours', () => {
+    // Two allowances, both deliberate and both narrow. The grant runtime is
+    // what this layer proves containment against. The emergency-control runtime
+    // is a **read port and a closed reason vocabulary** — no store, no policy,
+    // no decision — consulted after the grant gate and before the provider;
+    // `emergency-control-boundaries.test.ts` fails the build if that module
+    // grows into anything else.
+    const allowed = ['../../grant-runtime/', '../../emergency-control-runtime/'];
     for (const file of PRODUCTION_SOURCES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';
-        if (specifier.startsWith('../../grant-runtime/') || specifier === '../../grant-runtime/index.js') continue;
-        assert.equal(specifier.startsWith('.'), true, `${file} imports '${specifier}'; the execution runtime is self-contained logic over a store port and an adapter port`);
+        if (allowed.some((prefix) => specifier.startsWith(prefix))) continue;
+        assert.equal(specifier.startsWith('.'), true, `${file} imports '${specifier}'; the execution runtime is self-contained logic over a store port, an adapter port and an interlock port`);
       }
     }
   });

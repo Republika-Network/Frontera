@@ -1,3 +1,4 @@
+import type { EmergencyControlReaderPort } from '../../features/emergency-control-runtime/index.js';
 import {
   createGrantIssuanceService,
   type BoundedGrantStorePort,
@@ -116,6 +117,25 @@ export interface AuthorityControlledExecutionOptions {
    * repository that read is `GovernanceStore.getByDecisionId`.
    */
   readonly revalidateSource?: (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined;
+  /**
+   * The durable operational safety interlock, when the deployment composed one.
+   *
+   * **Read-only by type.** This composition is handed
+   * `EmergencyControlReaderPort` and never the store behind it: an execution
+   * path able to reach `activate`/`release` could disable the interlock that
+   * governs it, and `emergency-control-boundaries.test.ts` fails the build if
+   * a mutation method becomes reachable from here.
+   *
+   * It is consulted at two of the four lifecycle checkpoints this composition
+   * owns — inside the grant store's synchronous commit guard, and after the
+   * authoritative grant re-read but before the provider. The other two belong
+   * to the Governed Action Orchestrator (admission) and to the execution
+   * adapter registry (the adapter-scoped stop, after routing).
+   *
+   * **Omitting it changes nothing.** No check runs, no permissive stand-in is
+   * invented, and every existing behaviour is byte-identical.
+   */
+  readonly emergencyControl?: EmergencyControlReaderPort;
 }
 
 export interface AuthorityControlledExecutionService {
@@ -143,14 +163,27 @@ export type RevokeBoundedGrantResult =
 
 export function createAuthorityControlledExecution(options: AuthorityControlledExecutionOptions): AuthorityControlledExecutionService {
   const { kernel, grantCapability, grantStore, executionAdapter, now, resolveAuthorityBinding, revalidateSource } = options;
+  const emergencyControl = options.emergencyControl;
 
-  const execution = createGrantExecutionService({ store: grantStore, adapter: executionAdapter, now });
+  const execution = createGrantExecutionService({
+    store: grantStore,
+    adapter: executionAdapter,
+    now,
+    ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+  });
 
   // The authorization internals live in `issuance-core.ts` so the Governed
   // Action Orchestrator can commit the decision *between* evaluation and
   // issuance. `authorize()` composes the same two halves with nothing in
   // between, which is exactly what it always did.
-  const core = createAuthorityControlledIssuanceCore({ kernel, grantCapability, grantStore, now, resolveAuthorityBinding });
+  const core = createAuthorityControlledIssuanceCore({
+    kernel,
+    grantCapability,
+    grantStore,
+    now,
+    resolveAuthorityBinding,
+    ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+  });
 
   return {
     async authorize(input: AuthorityControlledAuthorizationInput): Promise<AuthorityControlledAuthorizationOutcome> {

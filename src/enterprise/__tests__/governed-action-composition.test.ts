@@ -226,10 +226,16 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
     assert.ok(SOURCES.length >= 5, `expected sources under ${ROOT}, found ${SOURCES.length}`);
   });
 
-  it('imports only identity types, Kernel contracts, the Governance Store, ACE, grant/execution runtime types and event infrastructure', () => {
+  it('imports only identity types, Kernel contracts, the Governance Store, ACE, grant/execution/emergency-control runtime types and event infrastructure', () => {
     const allowed = new Set([
       '../../features/grant-runtime/index.js',
       '../../features/execution-runtime/index.js',
+      // The operational interlock's **read** port and its reason-code
+      // vocabulary. The orchestrator owns the admission checkpoint and the
+      // ledger records which layer withheld an effect, so both need the
+      // vocabulary; neither can reach a mutation, because the reader port
+      // declares none (`emergency-control-boundaries.test.ts`).
+      '../../features/emergency-control-runtime/index.js',
       '../../kernel/index.js',
       '../customer-identity/index.js',
       '../events/enterprise-events.js',

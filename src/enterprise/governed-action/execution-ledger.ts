@@ -1,5 +1,6 @@
+import { EMERGENCY_CONTROL_REASON_CODE_VALUES } from '../../features/emergency-control-runtime/index.js';
 import type { BoundedGrant } from '../../features/grant-runtime/index.js';
-import { GRANT_EXERCISE_REASON_CODE_VALUES, type ExecutionOutcome, type GrantExerciseReasonCode } from '../../features/execution-runtime/index.js';
+import { GRANT_EXERCISE_REASON_CODE_VALUES, isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { authorizationReferenceId, executionAttemptReferenceId, executionOutcomeReferenceId } from './identifiers.js';
@@ -22,6 +23,9 @@ import { authorizationReferenceId, executionAttemptReferenceId, executionOutcome
  * what makes the `attempt` row a durable at-most-once marker — and no more
  * than that: it is not exactly-once.
  */
+/** Which layer withheld an effect. Two layers can, they own different vocabularies, and a replay must report the one that actually did. */
+export type WithholdingLayer = 'grant-exercise' | 'emergency-control';
+
 export interface PriorExecution {
   readonly attempted: boolean;
   /**
@@ -30,37 +34,116 @@ export interface PriorExecution {
    * known outcome. Absent when no outcome row exists.
    */
   readonly outcome?: string;
-  /** The exercise assessment's reason codes, exactly as recorded. Present only with `outcome: 'withheld'`. */
-  readonly withheldReasonCodes?: readonly GrantExerciseReasonCode[];
+  /** Which layer withheld it. Present only with `outcome: 'withheld'`. */
+  readonly withheldBy?: WithholdingLayer;
+  /** That layer's own reason codes, exactly as recorded. Present only with `outcome: 'withheld'`. */
+  readonly withheldReasonCodes?: readonly string[];
+  /**
+   * The adapter that **performed** the effect, as recorded.
+   *
+   * Present for an executed or provider-failed attempt whose adapter identity
+   * was recordable; absent for a withheld attempt, where nothing ran, and for
+   * rows written before adapter attribution existed. Under server-side routing
+   * this is the trusted-routed **child**, not the routing boundary — which is
+   * the whole point: an auditor asking "which provider moved this money"
+   * cannot be answered by the name of the router.
+   */
+  readonly adapterId?: string;
 }
 
 /**
- * A withheld exercise is recorded as `withheld:<CODE>,<CODE>…` — the
- * assessment's reason codes in the assessment's own (stable) order. The format
- * is deterministic and bounded: at least one code, every code drawn from the
- * closed `GRANT_EXERCISE_REASON_CODES` vocabulary, none repeated, so at most one
- * entry per vocabulary member. Anything else is not encoded and never decoded:
- * a replay reports only reasons that were recorded, and records nothing it
- * could not later read back exactly.
+ * A withheld effect is recorded as `withheld:<layer>:<CODE>,<CODE>…` — the
+ * layer that withheld it, then that layer's reason codes in their own stable
+ * order.
+ *
+ * The format is deterministic and bounded: a layer drawn from a closed
+ * two-member set, at least one code, every code drawn from **that layer's own**
+ * closed vocabulary, none repeated, so at most one entry per vocabulary member.
+ * Anything else is not encoded and never decoded: a replay reports only reasons
+ * that were recorded, and the ledger records nothing it could not later read
+ * back exactly.
+ *
+ * The layer is part of the record rather than inferred from the codes, because
+ * inferring it would make the two vocabularies' disjointness a *correctness*
+ * requirement of the replay path rather than a hygiene property — and a code
+ * added to the wrong constant would then silently re-label history.
+ *
+ * ## The Prompt 3 form still reads
+ *
+ * Rows written before this phase carry `withheld:<CODE>,<CODE>…` with no layer,
+ * and only the grant-exercise layer could write one. They decode as
+ * `grant-exercise`, unchanged. The two forms cannot be confused: a layer token
+ * is lowercase and hyphenated, a reason code is upper-snake, and neither
+ * vocabulary contains the other's spellings.
  *
  * The codes explain a refusal. They are evidence of why nothing ran, and they
- * cannot permit anything.
+ * cannot permit anything. **The ledger is never read to decide whether a new
+ * action is allowed** — its only behavioural use stays negative: this execution
+ * identity was already attempted, so do not attempt it again.
  */
 const WITHHELD_PREFIX = 'withheld:';
-const EXERCISE_REASON_CODES: ReadonlySet<string> = new Set(GRANT_EXERCISE_REASON_CODE_VALUES);
 
-function isCanonicalWithheldCodes(codes: readonly string[]): codes is readonly GrantExerciseReasonCode[] {
-  return codes.length > 0 && codes.length <= EXERCISE_REASON_CODES.size && new Set(codes).size === codes.length && codes.every((code) => EXERCISE_REASON_CODES.has(code));
+/**
+ * The performing adapter is appended to an effect-bearing outcome as
+ * `…@<adapterId>`.
+ *
+ * Deterministic and bounded on both sides: the id is recorded only when
+ * `isRecordableExecutionAdapterId` accepts it — bounded length, and no `@` to
+ * collide with the delimiter — so the recorded string decodes back to exactly
+ * the id that was written. The registry refuses a non-recordable child at
+ * composition, so the routed path always carries attribution; a host that
+ * composed one adapter directly with an exotic identity records the outcome
+ * without it rather than failing to record the outcome at all, because losing
+ * the *fact* of execution is far worse than losing its label.
+ *
+ * `@` is split from the right, so an id containing `:` — as the reason-code and
+ * layer delimiters do — is still unambiguous.
+ */
+const ADAPTER_DELIMITER = '@';
+
+function withAdapter(recorded: string, adapterId: string | undefined): string {
+  return adapterId !== undefined && isRecordableExecutionAdapterId(adapterId) ? `${recorded}${ADAPTER_DELIMITER}${adapterId}` : recorded;
 }
 
-function encodeWithheldOutcome(reasonCodes: readonly string[]): string | undefined {
-  return isCanonicalWithheldCodes(reasonCodes) ? `${WITHHELD_PREFIX}${reasonCodes.join(',')}` : undefined;
+function splitAdapter(recorded: string): { readonly body: string; readonly adapterId?: string } {
+  const at = recorded.lastIndexOf(ADAPTER_DELIMITER);
+  if (at === -1) return { body: recorded };
+  const adapterId = recorded.slice(at + 1);
+  // A suffix that is not a recordable identity is not one this ledger wrote,
+  // and is never decoded into an attribution.
+  return isRecordableExecutionAdapterId(adapterId) ? { body: recorded.slice(0, at), adapterId } : { body: recorded };
 }
 
-function decodeWithheldOutcome(recorded: string): readonly GrantExerciseReasonCode[] | undefined {
+const WITHHOLDING_VOCABULARIES: Readonly<Record<WithholdingLayer, ReadonlySet<string>>> = Object.freeze({
+  'grant-exercise': new Set(GRANT_EXERCISE_REASON_CODE_VALUES),
+  'emergency-control': new Set(EMERGENCY_CONTROL_REASON_CODE_VALUES),
+});
+
+function isWithholdingLayer(value: string): value is WithholdingLayer {
+  return value === 'grant-exercise' || value === 'emergency-control';
+}
+
+/** Deterministic, bounded, and closed against the layer's own vocabulary. A code from another layer is not canonical here, which is what keeps the two from bleeding together. */
+function isCanonicalWithheldCodes(layer: WithholdingLayer, codes: readonly string[]): boolean {
+  const vocabulary = WITHHOLDING_VOCABULARIES[layer];
+  return codes.length > 0 && codes.length <= vocabulary.size && new Set(codes).size === codes.length && codes.every((code) => vocabulary.has(code));
+}
+
+function encodeWithheldOutcome(layer: WithholdingLayer, reasonCodes: readonly string[]): string | undefined {
+  return isCanonicalWithheldCodes(layer, reasonCodes) ? `${WITHHELD_PREFIX}${layer}:${reasonCodes.join(',')}` : undefined;
+}
+
+function decodeWithheldOutcome(recorded: string): { readonly layer: WithholdingLayer; readonly reasonCodes: readonly string[] } | undefined {
   if (!recorded.startsWith(WITHHELD_PREFIX)) return undefined;
-  const codes = recorded.slice(WITHHELD_PREFIX.length).split(',');
-  return isCanonicalWithheldCodes(codes) ? Object.freeze([...codes]) : undefined;
+  const body = recorded.slice(WITHHELD_PREFIX.length);
+  const separator = body.indexOf(':');
+  const head = separator === -1 ? '' : body.slice(0, separator);
+  // Layered form when the head names a layer; otherwise the Prompt 3 form,
+  // which only the grant-exercise layer could have written. A head that looks
+  // like neither decodes as nothing at all.
+  const layer: WithholdingLayer = isWithholdingLayer(head) ? head : 'grant-exercise';
+  const codes = (isWithholdingLayer(head) ? body.slice(separator + 1) : body).split(',');
+  return isCanonicalWithheldCodes(layer, codes) ? { layer, reasonCodes: Object.freeze([...codes]) } : undefined;
 }
 
 export type ExecutionClaim = { readonly kind: 'claimed' } | { readonly kind: 'already-claimed'; readonly prior: PriorExecution };
@@ -99,8 +182,19 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
     const outcome = record.references.find((entry) => entry.referenceId === executionOutcomeReferenceId(executionId) && entry.externalId === executionId);
     const recorded = outcome?.externalVersion;
     if (recorded === undefined) return { attempted };
-    const withheldReasonCodes = decodeWithheldOutcome(recorded);
-    return withheldReasonCodes === undefined ? { attempted, outcome: recorded } : { attempted, outcome: 'withheld', withheldReasonCodes };
+    // A withheld row never carries an adapter — nothing ran — so the split is
+    // applied to the effect-bearing forms only, and a `@` inside a withheld row
+    // is left exactly where it is (where it will fail to decode, as it should).
+    const { body, adapterId } = recorded.startsWith(WITHHELD_PREFIX) ? { body: recorded, adapterId: undefined } : splitAdapter(recorded);
+    const attribution = adapterId !== undefined ? { adapterId } : {};
+    const withheld = decodeWithheldOutcome(body);
+    // A stored value that cannot be decoded is reported raw and matches no
+    // known outcome, so a malformed or tampered row replays as "attempted,
+    // outcome unknown" — never as a withholding reason, and never as anything
+    // that could permit an effect.
+    return withheld === undefined
+      ? { attempted, outcome: body, ...attribution }
+      : { attempted, outcome: 'withheld', withheldBy: withheld.layer, withheldReasonCodes: withheld.reasonCodes };
   }
 
   return {
@@ -139,7 +233,13 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
 
     async recordOutcome(evaluationId, executionId, outcome) {
       const recordedAs =
-        outcome.status === 'executed' ? 'executed' : outcome.status === 'withheld' ? encodeWithheldOutcome(outcome.assessment.reasonCodes) : `execution-failed:${outcome.reason}`;
+        outcome.status === 'executed'
+          ? withAdapter('executed', outcome.adapterId)
+          : outcome.status === 'withheld'
+            ? outcome.withheldBy === 'emergency-control'
+              ? encodeWithheldOutcome('emergency-control', outcome.emergencyControl.reasonCodes)
+              : encodeWithheldOutcome('grant-exercise', outcome.assessment.reasonCodes)
+            : withAdapter(`execution-failed:${outcome.reason}`, outcome.adapterId);
       // A withheld assessment whose reasons cannot be recorded exactly is not
       // recorded at all: a replay then reports the attempt as unconfirmed rather
       // than a refusal stripped of its explanation.

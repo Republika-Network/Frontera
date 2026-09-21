@@ -18,7 +18,9 @@ export type ExecutionGovernanceErrorCode =
   /** The Kernel handed to this composition is not grant-aware — `evaluate()` returned a result with no `grants` block, so `KernelGrantOptions` was never configured on it. Nothing can be issued from such a result, and guessing is not the closed direction. */
   | 'EXECUTION_KERNEL_NOT_GRANT_AWARE'
   /** The grant declaration this composition was given differs from the one the Kernel evaluates under. Two declarations means two deployment ceilings, and the grant would be contained by whichever one happened to be read. */
-  | 'EXECUTION_GRANT_DECLARATION_MISMATCH';
+  | 'EXECUTION_GRANT_DECLARATION_MISMATCH'
+  /** The host stated both a single execution adapter and an adapter routing table, or neither. Which provider an authorized action reaches is not a thing to resolve by precedence. */
+  | 'EXECUTION_ADAPTER_COMPOSITION_INVALID';
 
 export class ExecutionGovernanceError extends Error {
   constructor(

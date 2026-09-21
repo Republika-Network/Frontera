@@ -145,16 +145,30 @@ describe('SEC-INV-011 — the bounded-grant gate is the only way to reach an ada
     assert.ok(EXECUTION_SOURCES.length >= 5, `expected the execution runtime to have production sources, found ${EXECUTION_SOURCES.length}`);
   });
 
-  it('exactly one production source invokes the execution adapter, and it is the gated service', () => {
-    const callSites = EXECUTION_SOURCES.filter((file) => /\badapter\s*\.\s*execute\s*\(/.test(codeOf(file)));
+  it('only the gated service and the composite registry invoke an execution adapter', () => {
+    const callSites = EXECUTION_SOURCES.filter((file) => /\b[\w$]*[Aa]dapter\s*\.\s*execute\s*\(/.test(codeOf(file)));
     assert.deepEqual(
-      callSites,
-      ['src/features/execution-runtime/services/grant-execution-service.ts'],
-      'SEC-INV-011 holds only because there is exactly one place an adapter can be invoked; a second call site would void the invariant while execution-exercise.test.ts still passed',
+      callSites.slice().sort(),
+      [
+        'src/features/execution-runtime/services/execution-adapter-registry.ts',
+        'src/features/execution-runtime/services/grant-execution-service.ts',
+      ],
+      'SEC-INV-011 holds only because every place an adapter can be invoked is enumerated; an unlisted call site would void the invariant while execution-exercise.test.ts still passed',
     );
   });
 
-  it('the single invocation is preceded by the usable-assessment gate in the same function', () => {
+  it('the composite is reachable only through the gate: it reads no store, resolves no grant and holds no clock', () => {
+    // `GrantExecutionService -> registry -> child adapter` is one provider
+    // boundary. That is only true while the registry cannot be entered from
+    // anywhere else and cannot re-derive authority once entered, so both halves
+    // are asserted rather than argued.
+    const registry = codeOf('src/features/execution-runtime/services/execution-adapter-registry.ts');
+    for (const forbidden of [/\bstore\b/, /BoundedGrant/, /assessBoundedGrantExercise/, /Date\.now\s*\(/, /\bnow\s*\(\s*\)/]) {
+      assert.equal(forbidden.test(registry), false, `the registry must not reference ${String(forbidden)} — it routes an already-assessed action and nothing more`);
+    }
+  });
+
+  it('the gate\'s own invocation is preceded by the usable-assessment gate in the same function', () => {
     const service = codeOf('src/features/execution-runtime/services/grant-execution-service.ts');
     const gate = service.indexOf('if (!assessment.usable');
     const call = service.indexOf('adapter.execute(');

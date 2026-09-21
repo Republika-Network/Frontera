@@ -160,7 +160,7 @@ Not HTTP-reachable by design: no route issues, extends, revokes or exercises a g
 
 | ID | Effect path | Entry point | Effect | Authority gate | Effect binding | External dependency | Reachable? | Class |
 |---|---|---|---|---|---|---|---|---|
-| **EP-011** | **Bounded-grant exercise** | `AuthorityControlledExecutionService.exercise()` → `GrantExecutionService.exercise()` → `ExecutionAdapter.execute()` | EXTERNAL — whatever the host-supplied adapter translates the validated action into | Authoritative store re-read on **every** attempt + 12 fail-closed checks (§6 proof) | **Yes** — the assessed action *is* the payload; 17-field whitelist; no free-form channel | host-supplied adapter → provider | IN-PROCESS | **PROVEN — PATH LOCAL** |
+| **EP-011** | **Bounded-grant exercise** | `AuthorityControlledExecutionService.exercise()` → `GrantExecutionService.exercise()` → `ExecutionAdapter.execute()` — where that adapter may be the composite `createExecutionAdapterRegistry(...)`, which routes server-side to exactly one trusted child (§7.1) | EXTERNAL — whatever the host-supplied adapter translates the validated action into | Authoritative store re-read on **every** attempt + 12 fail-closed checks (§6 proof); plus, when composed, the operational emergency-control interlock at four checkpoints (§6.4 limit 4) | **Yes** — the assessed action *is* the payload; 17-field whitelist; no free-form channel | host-supplied adapter → provider | IN-PROCESS | **PROVEN — PATH LOCAL** |
 | **EP-012** | Bounded-grant issuance | `AuthorityControlledExecutionService.authorize()` → `GrantIssuanceService.issueGrant()` | AUTHORITY MUTATION (A-01) | Kernel decision + attenuation + synchronous `commitGuard` inside the store transaction + commit-time authority-binding **equality** | n/a | in-memory store | IN-PROCESS | **PROVEN — PATH LOCAL** |
 | **EP-013** | Bounded-grant revocation | `AuthorityControlledExecutionService.revokeGrant()` | AUTHORITY MUTATION (A-01) | Store idempotency; first revocation stands and is never re-dated | n/a | in-memory store | IN-PROCESS | **PROVEN — PATH LOCAL** |
 
@@ -204,7 +204,9 @@ Each of these mutates state that a later authorization decision reads. None is H
 | **EP-023** | Policy-pack writes | `PolicyPackRegistry.savePack` / `saveVersion` / `activatePolicyPackVersion` | AUTHORITY MUTATION (A-05) — rewrites the rules decisions are made under | **None. No caller-identity parameter exists.** Protected only by not being exposed | in-process store | IN-PROCESS | **DEPLOYMENT-GATED** |
 | **EP-024** | Recognition capability tokens | `capability-token-service` issue / revoke / suspend | AUTHORITY MUTATION (A-04) | none — in-process, no identity; state is a non-durable `Map` | in-process | IN-PROCESS | **DEPLOYMENT-GATED** |
 | **EP-025** | Approval state | `ApprovalRuntime` state changes | AUTHORITY MUTATION (A-06) | in-process | in-process | IN-PROCESS | **DEPLOYMENT-GATED** |
-| **EP-026** | Emergency deny | `ActionEnforcementRuntime.setEmergencyDeny` | AUTHORITY MUTATION (A-10) | none — instance field, no identity, not durable, **not consulted by EP-011** | in-process | IN-PROCESS; only non-test caller is a demo scenario | **DEPLOYMENT-GATED** |
+| **EP-026** | Emergency deny (Action Enforcement) | `ActionEnforcementRuntime.setEmergencyDeny` | AUTHORITY MUTATION (A-10) | none — instance field, no identity, not durable, **not consulted by EP-011** | in-process | IN-PROCESS; only non-test caller is a demo scenario | **DEPLOYMENT-GATED** |
+| **EP-047** | Emergency control activate (bounded-grant path) | `AocEnterprise.emergencyControlAdministration.activate()` → `EmergencyControlStorePort.activate` | OPERATIONAL MUTATION (A-10) — **restricting only.** Sets a stop that can withhold execution on EP-011; it cannot permit anything, cannot issue or widen a grant, and cannot alter a decision | Composing-host discipline. The writer is on the operator side of the trust boundary: no route, no SDK method, no intent field, and the execution path is typed against the **reader** port, which declares no mutation (SEC-INV-051) | SQLite when `persistence.provider === 'sqlite'`; process-local otherwise | IN-PROCESS, operator-only | **DEPLOYMENT-GATED** |
+| **EP-048** | Emergency control release (bounded-grant path) | `AocEnterprise.emergencyControlAdministration.release()` → `EmergencyControlStorePort.release` | OPERATIONAL MUTATION (A-10) — **permitting direction.** Clears a stop, restoring execution under grants that were never revoked. The one write in this pair that can increase what runs, and therefore the one that a deployment must protect operationally | Same as EP-047. Note the asymmetry: a writer with raw database access can also clear a control by deleting its row, which the record digest cannot detect (`AOC_EMERGENCY_CONTROL.md` §8) | as EP-047 | IN-PROCESS, operator-only | **DEPLOYMENT-GATED** |
 
 ### 5.8 Frontera Core — port-shaped signing with no shipped implementation
 
@@ -251,12 +253,14 @@ Every row here is **EXCEPTED — SEPARATE AUTHORITY MODEL** unless stated. None 
 | PROVEN — PATH LOCAL | **3** | EP-011, EP-012, EP-013 |
 | EXCEPTED — SEPARATE AUTHORITY MODEL | **18** | EP-015…EP-019, EP-032…EP-044 |
 | PARTIALLY BOUND | **1** | EP-014 |
-| DEPLOYMENT-GATED | **17** | EP-002, EP-003, EP-006…EP-010, EP-020…EP-026, EP-028, EP-029, EP-046 |
+| DEPLOYMENT-GATED | **19** | EP-002, EP-003, EP-006…EP-010, EP-020…EP-026, EP-028, EP-029, EP-046, EP-047, EP-048 |
 | NON-EFFECTING | **5** | EP-001, EP-004, EP-005, EP-030, EP-045 |
 | DEAD / UNREACHABLE | **2** | EP-027, EP-031 |
-| **Total** | **46** | |
+| **Total** | **48** | |
 
-**Three of forty-six effect paths are under bounded-grant control.** That is the single most important number in this document, and every external statement about Frontera's execution control must be consistent with it.
+**Three of forty-eight effect paths are under bounded-grant control.** That is the single most important number in this document, and every external statement about Frontera's execution control must be consistent with it.
+
+*Prompt 4 changed this number from forty-six to forty-eight, and did not change the numerator.* The two additions are EP-047 and EP-048, the operator write surface of the emergency-control interlock. They are inventoried because they mutate state a later execution reads, which is exactly the criterion §5.7 applies to EP-021…EP-026 — not because any new way to reach a provider appeared. The server-side execution adapter registry added **no** effect path: it introduces no entry point, no egress site and no provider, and the children a deployment registers are the same trusted host code a single `executionAdapter` always was (§7.1).
 
 ---
 
@@ -288,7 +292,7 @@ The distinction is where the principal comes from.
 | 7 | Every field crossing the boundary is represented in the assessed action model | ✅ (with NB-007) | Of the nine fields on `ValidatedExecutionAction`: `subject` and `notAfter` are **read from the store**; `action`, `resource`, `counterparty`, `organization`, `amount` were each bound-checked; `boundedGrantId` is the id that was read; `correlation.requestId`/`decisionId` were equality-checked against the grant. `correlation.executionId` is caller-supplied and checked only for non-emptiness — it is a correlation label with no authority meaning (NB-007) |
 | 8 | No free-form payload bypass | ✅ | `execution-adapter-port.ts` declares no `payload`, `blob`, `rawBody`, `opaqueRef` or `commandRef`; `execution-layer-boundaries.test.ts:352-396` bans that vocabulary and whitelists exactly 17 field names |
 | 9 | Adapter invoked only after a successful assessment | ✅ | `grant-execution-service.ts:176` returns `{status:'withheld'}` on `!assessment.usable`; the single `adapter.execute(action)` is at `:198`, after it, in the same function |
-| 10 | No alternate method invokes the same adapter before or without the assessment | ✅ **within this repository** | Repository-wide scan: exactly one production source calls an `ExecutionAdapter` — `grant-execution-service.ts:198`. See §7 for the full reachability argument and for the one bypass primitive that lies outside the repository |
+| 10 | No alternate method invokes the same adapter before or without the assessment | ✅ **within this repository** | Repository-wide scan: exactly **two** production sources call an `ExecutionAdapter` — `grant-execution-service.ts` (the gate) and `execution-adapter-registry.ts` (the composite it may route through, reachable only from the gate, after routing and after the adapter-scoped interlock). See §7.1 for the enumeration and §7.4 for the one bypass primitive that lies outside the repository |
 | 11 | No cache permits use after revocation | ✅ | No cache, no fast path, no `already-checked` short-circuit exists in the module. The read is unconditional |
 | 12 | Correctness does not depend on a background revocation sweeper | ✅ | `execution-layer-boundaries.test.ts:291-299` bans timers, schedulers, jobs and sweepers structurally. Expiry and revocation are both *derived at read time* from the record the store holds now |
 | 13 | Repeated-exercise behaviour accurately documented | ✅ **as of this document** (NB-006) | There is **no consumption model** — no counter, no remaining-uses, no replay ledger — and `execution-layer-boundaries.test.ts:311-319` bans one structurally. A usable grant may therefore be exercised an **unbounded** number of times within its validity window. §6.4 states this as a first-class limit |
@@ -305,11 +309,13 @@ Four limits travel with the claim and must be repeated wherever it is repeated.
 1. **It is per-attempt, not aggregate.** A grant for `transfer` / `7500 USD` authorises an unlimited number of 7500-USD transfers until it expires or is revoked. SEC-INV-011's "covers the exact attempted action at that instant" is true of each attempt and silent about the sequence. Aggregate bounding is SEC-INV-U06, unimplemented, owned by Prompt 13 (NB-006).
 2. **The adapter is trusted code.** The boundary constrains what data may cross it; it does not verify what the adapter then does with it (SEC-TRUST-006). Frontera ships **no** `ExecutionAdapter` implementation at all — every one is host code.
 3. **The authoritative store is the root of the whole proof, and its integrity is unkeyed.** *Updated by Prompt 4:* a durable implementation now exists (`createSqliteBoundedGrantStore`) and is selected when `persistence.provider === 'sqlite'`; the in-memory store remains the default for every other provider. Under **either**, integrity rests on an unkeyed SHA-256 digest, so a writer who can re-digest can re-seal (SEC-TRUST-002). That half is now **GS-001**, owned by Prompt 5. See `docs/security/AUTHORITATIVE_GRANT_STORE.md` (NB-009, §21).
-4. **The kill switch does not reach it.** `emergencyDeny` (EP-026) is consulted by the enforcement preflight and **not** by the exercise path — the one path that reaches real providers (SEC-INV-U05).
+4. **There are now two separate stops, and only one of them reaches this path.** *Updated by Prompt 4.* A durable operational interlock (`EmergencyControlReaderPort`, `docs/enterprise/AOC_EMERGENCY_CONTROL.md`) **is** consulted by this path when a deployment composes it — at admission, inside the bounded-grant commit guard, after the authoritative grant re-read and before the provider, and again at the selected child adapter — and an emergency state that cannot be read withholds rather than permits (SEC-INV-043 … SEC-INV-052). It is **opt-in**: a deployment that does not compose it gets no checks. The older process-local `emergencyDeny` (EP-026) remains consulted by the enforcement preflight and **not** by this path, and the two are not wired together, so "Frontera has one kill switch" is still false (SEC-INV-U05).
+
+5. **Routing chooses where, never whether.** When the composite registry is composed, which provider receives the effect is decided by trusted host configuration from fields the grant already contained. No caller input selects an adapter, and a routing failure is an infrastructure failure rather than an authorization outcome (SEC-INV-039 … SEC-INV-042, `docs/enterprise/AOC_EXECUTION_ADAPTER_REGISTRY.md`).
 
 ### 6.5 Verdict
 
-**BOUNDED-GRANT NO-BYPASS PROOF: YES** — path-local, repository-scoped, with the four limits in §6.4 and the host-held adapter reference in §7.4 named as its boundary.
+**BOUNDED-GRANT NO-BYPASS PROOF: YES** — path-local, repository-scoped, with the five limits in §6.4 and the host-held adapter reference in §7.4 named as its boundary. Prompt 4 added a hop below the gate (the composite registry) and an interlock that can only withhold; neither widens the claim, and §7.1 and §7.4 are the places that say so.
 
 ---
 
@@ -323,13 +329,23 @@ Repository-wide scan of `src/`, `packages/` and `apps/` for the type name and fo
 
 | File | Role |
 |---|---|
-| `src/features/execution-runtime/domain/execution-adapter-port.ts:119` | The port declaration itself |
-| `src/features/execution-runtime/domain/index.ts:12` | Re-export |
-| `src/features/execution-runtime/services/grant-execution-service.ts:7,63,198` | Holds the adapter, and **the only production invocation in the repository** |
-| `src/enterprise/execution-governance/service.ts:14,97` | Holds an `ExecutionAdapter` as `options.executionAdapter` and passes it straight into `createGrantExecutionService`. **Never invokes it** |
-| `src/features/execution-runtime/tests/execution-fixture.ts:8,23` | Test fixture (`RecordingExecutionAdapter`) |
+| `src/features/execution-runtime/domain/execution-adapter-port.ts` | The port declaration itself |
+| `src/features/execution-runtime/domain/index.ts` | Re-export |
+| `src/features/execution-runtime/services/grant-execution-service.ts` | Holds the adapter, and **invokes it** — the gate, after the authoritative store read and the usable-assessment gate |
+| `src/features/execution-runtime/services/execution-adapter-registry.ts` | **The composite.** Satisfies the port itself, resolves one registered child by trusted server-side routing, and **invokes that child** — after routing and after the adapter-scoped emergency-control gate |
+| `src/features/execution-runtime/services/index.ts` | Re-export of the registry factory and its option types |
+| `src/enterprise/execution-governance/service.ts` | Holds an `ExecutionAdapter` as `options.executionAdapter` and passes it straight into `createGrantExecutionService`. **Never invokes it** |
+| `src/enterprise/composition/composition-root.ts` | Type position. Builds the registry from the host's trusted routing table when one is configured, and hands the result to ACE. **Never invokes it** |
+| *(not `src/enterprise/index.ts`)* | The Enterprise barrel deliberately re-exports **no** `src/features` type — not `BoundedGrantStorePort`, not `KernelGrantCapability`, not `ExecutionAdapter` — even where an exported option type already names one. A host that needs to write an adapter imports the feature module, which is not a frozen artifact |
+| `src/features/execution-runtime/tests/execution-fixture.ts` | Test fixture (`RecordingExecutionAdapter`) |
 
-**Production invocation sites: exactly one.** Every other reference is a type position, a re-export, or a pass-through.
+**Production invocation sites: exactly two, and the second is reachable only through the first.** Every other reference is a type position, a re-export, or a pass-through.
+
+`no-bypass-effect-paths.test.ts` pins this list, pins both call sites, and additionally pins the ordering *inside* the registry: selection, then the unresolved-route refusal, then the emergency-control read, then the gate on it, and only then the single child invocation. `security-invariants.test.ts` independently pins that the registry reads no store, resolves no grant and holds no clock.
+
+**This is not a second way in.** `GrantExecutionService → registry → child adapter` is **one composite provider boundary**: the registry has no other caller, no HTTP route, no export path a customer package reaches, and no input but the `ValidatedExecutionAction` the gate built. What the second call site adds is a hop *below* the gate, not a route *around* it.
+
+**No new effect path was created.** The registry introduces no entry point, no egress site and no provider of its own; the children a deployment registers are the same trusted host code a single `executionAdapter` always was. EP-011's row is unchanged apart from the extra hop, and the inventory's totals in §5.11 are unchanged.
 
 ### 7.2 The gap the existing test did not cover, and what this prompt did about it
 
@@ -341,7 +357,9 @@ This prompt widens the scan to the whole repository in `src/enterprise/__tests__
 
 **Yes, within this repository — and the composition makes it structurally so.**
 
-`createAuthorityControlledExecution` takes `executionAdapter` and does one thing with it: `createGrantExecutionService({ store: grantStore, adapter: executionAdapter, now })`. The `GrantExecutionService` closes over it. No Frontera module retains a second reference, and no route exposes one: the composition root registers `authorityControlledExecution` on the `AocEnterprise` object, and `node-http-adapter.ts` routes nothing to it (SEC-INV-027).
+`createAuthorityControlledExecution` takes `executionAdapter` and does one thing with it: `createGrantExecutionService({ store: grantStore, adapter: executionAdapter, now, emergencyControl? })`. The `GrantExecutionService` closes over it. No Frontera module retains a second reference, and no route exposes one: the composition root registers `authorityControlledExecution` on the `AocEnterprise` object, and `node-http-adapter.ts` routes nothing to it (SEC-INV-027).
+
+When a deployment configures `executionAdapterRouting`, the object handed to ACE is the composite registry the composition root built. The registry closes over its children; the children are not retained anywhere else in Frontera, are not exported, and are not reachable from any route. Membership is frozen at composition — there is no `register`/`unregister` surface to mutate while traffic flows (SEC-INV-042).
 
 ### 7.4 The one caller that is **not** accounted for, stated plainly
 
@@ -356,6 +374,8 @@ and **not**:
 > No invocation of that adapter can occur without a bounded grant.
 
 The second sentence is false and must never be written.
+
+Server-side routing does **not** change this. A host that hands the registry a child adapter still holds its own reference to that child and can call it directly, bypassing the gate, the registry, the routing decision and every emergency control. Routing constrains which provider *Frontera* reaches for a given authorized action; it constrains nothing about what the process can do (SEC-TRUST-001, SEC-TRUST-004, SEC-TRUST-006).
 
 ### 7.5 The other provider seams, for completeness
 
@@ -632,7 +652,9 @@ A no-bypass proof over an authority gate is meaningless if an actor can simply r
 | EP-023 policy-pack writes | A-05 | No | **Yes** — rewrites the decision rules | Any in-process code holding the registry | **No route** | **No. No caller-identity parameter exists** | **No** |
 | EP-024 capability-token revoke/suspend/issue | A-04 recognition | No | **Yes** | In-process host | **No route** | No | No |
 | EP-025 approval state | A-06 | No | **Yes** | In-process host | **No route** | No | Via approval records |
-| EP-026 `setEmergencyDeny` | A-10 kill switch | No | **Yes** | Any in-process code holding the runtime | **No route** | **No identity of any kind** | No |
+| EP-026 `setEmergencyDeny` | A-10 kill switch (Action Enforcement path) | No | **Yes** | Any in-process code holding the runtime | **No route** | **No identity of any kind** | No |
+| EP-047 emergency control `activate` | A-10 interlock (bounded-grant path) | No — **restricting only**; it can withhold an execution, never cause one | **Yes** | Operator/admin code holding `emergencyControlAdministration` | **No route** | No — composing-host discipline; an `issuerRef` is *recorded*, not *checked* | Via the control's own `organization` scope |
+| EP-048 emergency control `release` | A-10 interlock (bounded-grant path) | No — but this is the **permitting** direction of the pair | **Yes** | as EP-047 | **No route** | as EP-047 | as EP-047 |
 | EP-006 / EP-007 passport lifecycle | A-07 | No | **Yes** — agent standing | HTTP caller | **YES** | No | **Yes**, in the store — but see §13.2 |
 | EP-008 assurance writes | A-08 | No | **Yes** — compliance posture | HTTP caller | **YES** | No | **Yes**, in the store — but see §13.2 |
 | EP-017 Sovereign Access grant lifecycle | A-11 | No | **Yes** | In-process host | **No route** | No | Via `AccessGovernanceContext` |
@@ -923,8 +945,15 @@ One row per effect path group. Every EP in §5 is covered.
 ### EP-024, EP-025, EP-026 — Recognition, approval and kill-switch state
 - **CLAIM:** none beyond "no route reaches them".
 - **CLASSIFICATION:** DEPLOYMENT-GATED.
-- **EXCEPTIONS:** recognition-token revocation is **not durable**; `emergencyDeny` is a process-local instance field with no identity check and is **not consulted by EP-011**.
+- **EXCEPTIONS:** recognition-token revocation is **not durable**; `emergencyDeny` is a process-local instance field with no identity check and is **not consulted by EP-011**. Prompt 4 did **not** change any of that: the new interlock (EP-047/EP-048) is a separate control plane on a separate path.
 - **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4.
+
+### EP-047, EP-048 — Emergency control operator writes
+- **CLAIM:** these are the **only** way to set or clear an emergency control, they are reachable from trusted in-process operator code alone, and the execution path that reads them is typed against a reader port that declares no mutation — so no governed action, no route and no SDK method can disable the interlock that governs it (SEC-INV-051).
+- **EVIDENCE:** `EmergencyControlReaderPort` / `EmergencyControlStorePort` in `src/features/emergency-control-runtime`; `emergency-control-composition.test.ts` asserts no execution source names the store port or calls `activate`/`release`, that the HTTP adapter and the frozen route list mention neither, that the SDK has no method, and that the Enterprise barrel re-exports types only.
+- **CLASSIFICATION:** DEPLOYMENT-GATED — the *principal* is asserted by the composing host (§6.1), exactly as for EP-021…EP-026. The `issuerRef` a declaration carries is recorded for operator audit; it is not an authorization check, and this document does not describe it as one.
+- **BYPASS CONDITIONS:** a writer with raw database access can clear a control by deleting its row. The record digest covers the `active` flag — so flipping it is detected and reads `unavailable`, which withholds — but an unkeyed digest cannot detect deletion, and cannot stop a writer who re-seals (SEC-TRUST-002, GS-001). `AOC_EMERGENCY_CONTROL.md` §8 states this rather than papering over it.
+- **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4, D-A9.
 
 ### EP-027 — Runtime host signing
 - **CLAIM:** none. **CLASSIFICATION:** DEAD / UNREACHABLE. **EVIDENCE:** `createAocEnterpriseRuntime` has no production caller in this repository — only `examples/`, `tests/` and `src/runtime/__tests__/`. Frontera ships no `RuntimeSignerPort` implementation.
@@ -1199,7 +1228,7 @@ Neither SC-002 nor SC-003 is a defect this prompt could close without changing p
 | **Prompt 9** (secret handling) | §15 — direct `process.env` access is a bypass primitive for **every** provider gate; the type-level exclusion covers only the public composition surface |
 | **Prompt 10** (capability constraint) | §4.2 is the current, verified capability baseline; `apps/agent-passport-web` and most of `packages/` still have no capability-ban test (SEC-INV-U08) |
 | **Prompt 11** (egress allowlisting) | §14.1 and §7.5 — the **complete** egress inventory is one Pinata construction site and four Stripe ones. NB-010 records that a published consumer already cannot reach Pinata; that is the starting position |
-| **Prompt 12** (kill switch) | EP-026 — `emergencyDeny` is process-local, identity-free, on no route, and **not consulted by EP-011**, the one path that reaches real providers |
+| **Prompt 12** (kill switch) | EP-026 — `emergencyDeny` is process-local, identity-free, on no route, and **not consulted by EP-011**. *Updated by Prompt 4:* EP-011 now has its **own** durable, fail-closed interlock (EP-047/EP-048, `AOC_EMERGENCY_CONTROL.md`), so the remaining gap is **convergence** rather than absence — one durable control plane honoured by the Action Enforcement path, Sovereign Access and Content Protection as well, plus an identity model on the operator writes |
 | **Prompt 13** (aggregate bounding) | **NB-006** — the per-attempt/aggregate gap, with the structural ban at `execution-layer-boundaries.test.ts:311` that forces it to be built outside layers B–E |
 | **Prompt 14** (authority-write hardening) | **NB-008** — `PolicyPackRegistry` has no caller identity; §13 is the complete authority-write inventory with each entry's identity model |
 | **Prompt 15** (tamper-evident evidence) | §14.8 — the web store has no digest, no chain and no `verify` surface (APW-006); seven mutable `*_events` tables are the natural starting point |

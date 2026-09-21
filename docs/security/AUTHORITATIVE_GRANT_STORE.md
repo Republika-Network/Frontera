@@ -343,6 +343,8 @@ Stated precisely, because the temptation to overstate it is real.
 | Exercise read vs revocation | The read either sees the committed revocation or precedes it. There is no partial view | WAL gives the reader a consistent snapshot. A read that began before a revocation committed may return the pre-revocation state — see below |
 | Restart between operations | §13 | §13 |
 
+> **A second store now shares these semantics.** The durable emergency-control store (`docs/enterprise/AOC_EMERGENCY_CONTROL.md` §8) is a separate SQLite file with the same pragmas, the same synchronous access model and the same single-host deployment assumption recorded here. Its read is synchronous for a reason that is specific to this store: it is called inside `BoundedGrantStorePort.issue`'s `commitGuard`, where an `await` is forbidden.
+
 ### 12.1 What is **not** claimed
 
 - **Linearizability across processes is not claimed.** Under WAL, a reader holds a snapshot. A read transaction that began before a revocation committed in another process returns the pre-revocation state. The window is the duration of one `read` — microseconds — and it is the same window the in-memory store has between `await store.read(...)` returning and the assessment running. It is not zero, and this document does not pretend it is.
@@ -456,7 +458,7 @@ Owners: **Prompt 5** may strengthen authenticity in a way that makes an external
 | **R-GS-05** | A grant minted under a maliciously modified policy pack is persisted faithfully and durably. Grant-store integrity does **not** imply authority-policy integrity. | NB-008 is untouched by this prompt, and durability arguably makes such a grant *outlive* the process in which the policy was tampered with. | **Prompt 14** |
 | **R-GS-06** | A usable grant may be exercised an unbounded number of times within its window, and now survives restart while doing so. | No consumption model exists and inventing one here is structurally banned. | **Prompt 13** |
 | **R-GS-07** | Cross-process read/revoke linearizability is not established (§12.1). | Single-Host deployment is the assumption. | Recorded; no owner assigned |
-| **R-GS-08** | There is no global emergency deny consulted by this store. | Out of scope. Durable persistence does not make it harder: a kill switch would sit **in front of** or beside the authoritative read in `runRead`, which is one place, in one transaction. | **Prompt 12** |
+| **R-GS-08** | There is no global emergency deny consulted by this store. | **Partially addressed by Prompt 4, and deliberately not inside this store.** A durable operational interlock now exists (`docs/enterprise/AOC_EMERGENCY_CONTROL.md`) and is consulted *around* the bounded-grant path: at Governed Action admission, **inside this store's own synchronous `commitGuard`** at issuance, after the authoritative `runRead` at exercise, and at the selected child adapter. It lives in its own module and its own database file rather than in `runRead`, because a store that could withhold for an operational reason would be making a second kind of decision about a grant it is only supposed to report. What remains open is convergence: the Action Enforcement path's `emergencyDeny` is still separate and process-local. | **Prompt 12** |
 
 ## 20. Findings
 
@@ -531,7 +533,8 @@ Every one of claims 1–5 is PATH-LOCAL to bounded-grant exercise, issuance and 
 | "Grants are cryptographically signed / authenticated." | There is no signature anywhere in `src/`. SEC-INV-U01 remains ASPIRATIONAL-UNIMPLEMENTED |
 | "A privileged host or DBA cannot modify authority." | They can. D-GS1, D-GS3, R-GS-03, R-GS-04 |
 | "Rollback of an old database snapshot cannot restore old authority." | It can. §17, GS-002. **Not proven, not implemented** |
-| "All Frontera authority is now durable." | False. Recognition state, approvals, capability-token revocation, the policy pack registry and `emergencyDeny` all remain in-process. Only the bounded-grant store changed |
+| "All Frontera authority is now durable." | False. Recognition state, approvals, capability-token revocation, the policy pack registry and the Action Enforcement `emergencyDeny` all remain in-process. The bounded-grant store changed in Prompt 3; Prompt 4 added a separately-configured durable emergency-control store on its own file, under the same `persistence.provider === 'sqlite'` condition and with the same in-memory default |
+| "Frontera has a global kill switch." | False. Prompt 4 added a durable operational interlock for the **bounded-grant / Governed Action path only**, and it is opt-in. `AocKernel.enforce()`, Sovereign Access and Content Protection honour nothing of the sort (SEC-INV-U05) |
 | "Frontera durably stores grants by default." | False as stated. The durable store is selected when `persistence.provider === 'sqlite'`; the default provider is `memory` (GS-003, D-GS5) |
 | "The store guarantees linearizable multi-process reads." | Not claimed and not established. §12.1 |
 | "Revocation is enforced at the provider." | Out of scope here entirely. Provider-side enforcement is `src/enterprise/access-governance`'s separate concern |

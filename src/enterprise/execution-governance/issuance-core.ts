@@ -1,4 +1,11 @@
 import {
+  emergencyControlPermits,
+  readEmergencyControl,
+  type EmergencyControlAssessment,
+  type EmergencyControlQuery,
+  type EmergencyControlReaderPort,
+} from '../../features/emergency-control-runtime/index.js';
+import {
   createGrantIssuanceService,
   withGrantValidityCeiling,
   type BoundedGrantStorePort,
@@ -51,6 +58,20 @@ export interface AuthorityControlledIssuanceCoreOptions {
   readonly grantStore: BoundedGrantStorePort;
   readonly now: () => string;
   readonly resolveAuthorityBinding: GrantAuthorityBindingResolver;
+  /**
+   * The operational safety interlock, when the deployment composed one.
+   *
+   * Read **inside the grant store's synchronous commit guard**, which is the
+   * only place the check is worth anything: a stop that turns on between an
+   * admission check and the commit would otherwise mint bounded authority under
+   * a world that had already stopped. That is why
+   * `EmergencyControlReaderPort.read` is synchronous — see its own header, and
+   * `GrantAuthorityBindingQuery`'s, which states the same requirement for the
+   * same reason.
+   *
+   * Omitted, nothing about issuance changes.
+   */
+  readonly emergencyControl?: EmergencyControlReaderPort;
 }
 
 export interface IssueFromDecisionInput {
@@ -111,8 +132,28 @@ function serializeValidityCeilings(ceilings: readonly { readonly source: string;
     .join('|');
 }
 
+/**
+ * The emergency-control query for an evaluated request, from trusted material
+ * only: the organization the request was evaluated under, the actor the Kernel
+ * bound, and the resource scope the decision was made about.
+ *
+ * `adapterId` is absent on purpose — no adapter has been selected at issuance
+ * time, and guessing one would make an adapter-scoped stop apply to actions
+ * that will never reach that adapter. `workflowId` is absent because no
+ * canonical trusted workflow identity exists on this request; see
+ * `EMERGENCY_CONTROL_SCOPES`.
+ */
+function emergencyQueryFor(request: KernelEvaluationRequest): EmergencyControlQuery {
+  return {
+    ...(request.organization !== undefined ? { organizationId: request.organization.id } : {}),
+    actorId: request.actor.id,
+    resource: request.action.resourceScope,
+  };
+}
+
 export function createAuthorityControlledIssuanceCore(options: AuthorityControlledIssuanceCoreOptions): AuthorityControlledIssuanceCore {
   const { kernel, grantCapability, grantStore, now, resolveAuthorityBinding } = options;
+  const emergencyControl = options.emergencyControl;
 
   /**
    * One issuance service per authorization, so the commit guard closes directly
@@ -129,10 +170,32 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
     measured: GrantSourceAuthorization,
     measuredBinding: GrantAuthorityBinding,
     revalidateSource: IssueFromDecisionInput['revalidateSource'],
+    captureEmergencyRefusal: (assessment: EmergencyControlAssessment) => void,
   ) {
     return createGrantIssuanceService({
       store: grantStore,
       revalidateSource: (correlation: GrantCorrelation): GrantSourceAuthorization | undefined => {
+        // THE COMMIT BOUNDARY. The grant store calls this inside its own
+        // critical section, synchronously, with no `await` between the read
+        // that decides and the write that records.
+        //
+        // The emergency control is read here **first**, and the read is
+        // synchronous for exactly that reason. A pre-issuance admission check
+        // alone leaves a TOCTOU window: an operator who activates a stop after
+        // admission and before the commit would still see a fresh grant minted
+        // under it. Nothing below may become a promise, an `await`, a network
+        // call or a filesystem call; `emergency-control-commit-boundary.test.ts`
+        // fails the build if one appears.
+        const emergency = readEmergencyControl(emergencyControl, emergencyQueryFor(request));
+        if (!emergencyControlPermits(emergency)) {
+          // `undefined` is what the issuance service reads as "the authoritative
+          // source could no longer be read", and it refuses. The *reason* would
+          // be lost there — the store reports `GRANT_CORRELATION_INVALID` — so
+          // it is captured here, in a variable owned by this one
+          // `issueFromDecision` call, and re-attached to the outcome below.
+          captureEmergencyRefusal(emergency);
+          return undefined;
+        }
         // Whatever the host revalidates about the decision, the authority
         // binding is re-resolved here as well. A mandate whose window was
         // shortened between the caller's measurement and the commit refuses the
@@ -228,8 +291,17 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         return { outcome: 'authority-binding-unresolved', decision, reasonCodes: [AUTHORITY_BINDING_REASON_CODES.AUTHORITY_BINDING_MALFORMED] };
       }
 
+      // Owned by this call and nothing else. A module-level variable would be
+      // shared by every concurrent issuance and could attribute one call's stop
+      // to another call's refusal; declared here, it cannot outlive or escape
+      // the single `issueGrant` below.
+      let emergencyRefusal: EmergencyControlAssessment | undefined;
+      const captureEmergencyRefusal = (assessment: EmergencyControlAssessment): void => {
+        emergencyRefusal = assessment;
+      };
+
       const source = withAuthorityCeilings(measured, binding);
-      const issued = await issuanceFor(request, measured, binding, input.revalidateSource).issueGrant({
+      const issued = await issuanceFor(request, measured, binding, input.revalidateSource, captureEmergencyRefusal).issueGrant({
         source,
         ...(input.requestedBounds !== undefined ? { requestedBounds: input.requestedBounds } : {}),
         // The holder is the subject the authorization was evaluated for. There
@@ -242,6 +314,18 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
       });
 
       if (issued.outcome === 'refused') {
+        // Set only when this call's commit guard ran and refused for the
+        // interlock. A refusal the store reached without calling the guard — a
+        // preclusive revocation, a duplicate identity — leaves it unset, so a
+        // grant refusal is never dressed up as an emergency stop.
+        if (emergencyRefusal !== undefined) {
+          return {
+            outcome: 'emergency-control-withheld',
+            decision,
+            reasonCodes: emergencyRefusal.reasonCodes,
+            matchedScopes: emergencyRefusal.state === 'blocked' ? emergencyRefusal.matchedScopes : [],
+          };
+        }
         return {
           outcome: 'grant-withheld',
           decision,

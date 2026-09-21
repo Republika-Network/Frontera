@@ -394,6 +394,35 @@ that refuses becomes `PROVIDER_REJECTED`. Neither is an authorization outcome,
 and `execution-failed` is a distinct status from `withheld` precisely so a
 provider outage is never reported as an authority problem.
 
+### The adapter may be a composite
+
+`executionAdapterRouting` composes `createExecutionAdapterRegistry(...)`, whose
+outer object satisfies this same port and whose inside resolves one registered
+child by trusted, synchronous, **server-side** routing. This service cannot tell
+the difference, and must not: which provider translates an authorized action is
+a host-configuration question, decided below this port.
+
+Nothing a caller sends chooses an adapter — there is no `adapterId`, `provider`,
+`url`, `host`, `endpoint` or `credential` on any contract on this path, and an
+intent carrying one is rejected. A routing failure is an infrastructure failure
+(`ADAPTER_ERROR`), never a denial. See
+[`AOC_EXECUTION_ADAPTER_REGISTRY.md`](AOC_EXECUTION_ADAPTER_REGISTRY.md).
+
+### The operational interlock, when composed
+
+`emergencyControl` is an optional, **read-only** `EmergencyControlReaderPort`.
+When a deployment supplies one, this composition consults it at two of its four
+lifecycle checkpoints — **inside the grant store's synchronous commit guard**,
+and after the authoritative grant re-read but before the provider — and
+withholds when it reports `blocked` **or** `unavailable`. The other two
+checkpoints belong to the Governed Action Orchestrator (admission) and to the
+registry (the adapter-scoped stop, after routing).
+
+It is not a second decision producer, and it does not revoke: a grant withheld
+by an active control is still valid and runs the moment the control is released.
+Omitting it leaves every behaviour on this page byte-identical. See
+[`AOC_EMERGENCY_CONTROL.md`](AOC_EMERGENCY_CONTROL.md).
+
 ## 11. Result model
 
 ```ts
@@ -519,6 +548,9 @@ tests refuse the vocabulary and the import paths in both new modules.
   exercise, revocation and expiry.
 - **The Intelligence layer**, and everything advisory.
 - **A durable bounded-grant store** (§15).
+- **A generic HTTP provider adapter.** The registry is what one will plug into;
+  no `fetch(url)`, method, header, credential, redirect or DNS surface exists on
+  this path today.
 - **Cryptographic signing of a grant**, and any external token format.
 - **Upstream authority revalidation at exercise time** (§8) — declined on the
   accepted precedent, not postponed for effort.

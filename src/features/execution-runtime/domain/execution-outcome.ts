@@ -1,3 +1,4 @@
+import type { EmergencyControlReasonCode, EmergencyControlScopeMatch } from '../../emergency-control-runtime/index.js';
 import type { BoundedGrantExerciseAssessment } from './grant-exercise-assessment.js';
 import type { ExecutionFailureReason, ValidatedExecutionCorrelation } from './execution-adapter-port.js';
 
@@ -32,7 +33,17 @@ export type ExecutionOutcome =
       readonly correlation: ValidatedExecutionCorrelation;
       /** The adapter's provider-neutral handle on what it did, when it supplied one. */
       readonly providerRef?: string;
+      /**
+       * The adapter that **performed** the effect.
+       *
+       * With a single composed adapter, that adapter. With the composite
+       * registry, the child trusted routing selected — because naming the
+       * router would leave an auditor unable to tell which of several providers
+       * received the effect, which is the question the record exists to answer.
+       */
       readonly adapterId: string;
+      /** The composite that selected it, present only when routing occurred. The boundary stays visible beside the provider. */
+      readonly routedBy?: string;
       /** The instant the exercise was assessed at, from the injected clock. */
       readonly exercisedAt: string;
     }
@@ -40,14 +51,44 @@ export type ExecutionOutcome =
       /**
        * The exercise was not usable, so **the adapter was not called.**
        *
-       * `withheldBy: 'grant-exercise'` is the only value this field takes in
-       * this phase, and it is a field rather than an implied constant so a
-       * later layer that withholds for its own reason has somewhere to say so
-       * without re-shaping the type.
+       * `withheldBy` is a field rather than an implied constant because a
+       * second layer now withholds for its own reason, in its own vocabulary —
+       * see the case below.
        */
       readonly status: 'withheld';
       readonly withheldBy: 'grant-exercise';
       readonly assessment: BoundedGrantExerciseAssessment;
+      readonly correlation: ValidatedExecutionCorrelation;
+      readonly exercisedAt: string;
+    }
+  | {
+      /**
+       * The grant **covered** the action, and an operational emergency control
+       * stopped it anyway — or that control's state could not be established.
+       * Either way the adapter was not called.
+       *
+       * This case exists because collapsing it into the one above would destroy
+       * the distinction an operator most needs at 3am. `assessment.usable` is
+       * `true` here: the authorization stood, the grant stood, and what stopped
+       * execution was an administrative interlock that a person can clear. An
+       * expired or revoked grant is a different situation with a different
+       * remedy, and reporting them alike would make a kill switch look like a
+       * grant defect.
+       *
+       * The emergency reasons are carried **separately** from
+       * `assessment.reasonCodes`: that array belongs to the grant-exercise
+       * vocabulary, and putting a foreign code in it would break the
+       * disjointness `execution-layer-boundaries.test.ts` asserts.
+       */
+      readonly status: 'withheld';
+      readonly withheldBy: 'emergency-control';
+      /** Present, and usable — the grant was sufficient. Kept so "why was this withheld" and "was the grant fine" are answerable from one record. */
+      readonly assessment: BoundedGrantExerciseAssessment;
+      readonly emergencyControl: {
+        readonly reasonCodes: readonly EmergencyControlReasonCode[];
+        /** Which applicable controls matched. Operator diagnostics; never authority. */
+        readonly matchedScopes: readonly EmergencyControlScopeMatch[];
+      };
       readonly correlation: ValidatedExecutionCorrelation;
       readonly exercisedAt: string;
     }
@@ -63,7 +104,10 @@ export type ExecutionOutcome =
       readonly status: 'execution-failed';
       readonly assessment: BoundedGrantExerciseAssessment;
       readonly correlation: ValidatedExecutionCorrelation;
+      /** The adapter that was asked, and failed — the routed child where routing occurred, so a provider outage names the provider. */
       readonly adapterId: string;
+      /** The composite that selected it, present only when routing occurred. */
+      readonly routedBy?: string;
       readonly reason: ExecutionFailureReason;
       readonly detail?: string;
       readonly exercisedAt: string;

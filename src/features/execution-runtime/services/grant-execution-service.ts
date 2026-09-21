@@ -1,3 +1,10 @@
+import {
+  emergencyControlPermits,
+  isEmergencyControlWithheldError,
+  readEmergencyControl,
+  type EmergencyControlQuery,
+  type EmergencyControlReaderPort,
+} from '../../emergency-control-runtime/index.js';
 import type { BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
@@ -28,11 +35,14 @@ import {
  * wrong counterparty / tenant → adapter NOT called
  * amount above the ceiling    → adapter NOT called
  * correlation mismatch        → adapter NOT called
- * usable exercise             → adapter called exactly once
+ * emergency control active    → adapter NOT called
+ * emergency control unreadable→ adapter NOT called
+ * usable exercise, stop clear → adapter called exactly once
  * ```
  *
- * `tests/execution-exercise.test.ts` counts the adapter's invocations for every
- * one of those rows.
+ * `tests/execution-exercise.test.ts` and
+ * `tests/execution-emergency-control.test.ts` count the adapter's invocations
+ * for every one of those rows.
  *
  * ## The grant is read, never received
  *
@@ -52,9 +62,11 @@ import {
  * There is no allow, no deny and no policy anywhere in this file. The
  * authorization that produced the grant happened earlier and elsewhere, and a
  * refusal here leaves it exactly as it was. What this service produces is an
- * `ExecutionOutcome`, whose three cases are "ran", "was withheld" and "the
- * provider failed" — none of which is a decision status, and none of which can
- * be turned into one.
+ * `ExecutionOutcome`, whose cases are "ran", "was withheld" and "the provider
+ * failed" — none of which is a decision status, and none of which can be
+ * turned into one. That includes the emergency-control case: an operational
+ * stop withholds an effect, and leaves the authorization, the grant and the
+ * containment assessment exactly as they were.
  */
 export interface GrantExecutionServiceOptions {
   /**
@@ -69,8 +81,30 @@ export interface GrantExecutionServiceOptions {
    * `revoke` are not reachable from here even by accident.
    */
   readonly store: BoundedGrantReaderPort;
-  /** The provider-neutral execution boundary. Invoked only after a usable assessment. */
+  /**
+   * The provider-neutral execution boundary. Invoked only after a usable
+   * assessment **and** a clear emergency control.
+   *
+   * It may be one provider adapter, or the composite
+   * `createExecutionAdapterRegistry(...)` — this service cannot tell the
+   * difference and must not: which provider translates an authorized action is
+   * a trusted host-routing question, decided below this port.
+   */
   readonly adapter: ExecutionAdapter;
+  /**
+   * The operational safety interlock, when the deployment composed one.
+   *
+   * Read **after** the authoritative grant read and the containment assessment,
+   * and **before** the adapter — so a grant that is still perfectly valid
+   * cannot reach a provider while a stop is active. Omitting it preserves this
+   * service's previous behaviour exactly: no reader, no check, and no
+   * permissive stand-in invented in its place.
+   *
+   * The `adapter` scope is deliberately **not** queried here, because the
+   * adapter this service holds may be a composite and the child is not yet
+   * known. That check belongs to the registry, after routing.
+   */
+  readonly emergencyControl?: EmergencyControlReaderPort;
   /** The injected clock. Expiry is derived from what this returns, never from `Date.now()` — a structural test fails the build if an ambient clock appears in this module. */
   readonly now: () => string;
 }
@@ -90,6 +124,7 @@ export interface GrantExecutionService {
 
 export function createGrantExecutionService(options: GrantExecutionServiceOptions): GrantExecutionService {
   const { store, adapter, now } = options;
+  const emergencyControl = options.emergencyControl;
 
   async function assess(request: GrantExerciseRequest): Promise<BoundedGrantExerciseAssessment> {
     const identity = { boundedGrantId: request.boundedGrantId, correlation: request.correlation, executionId: request.executionId };
@@ -187,6 +222,34 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         return { status: 'withheld', withheldBy: 'grant-exercise', assessment, correlation, exercisedAt };
       }
 
+      // The effect-time interlock. It runs **after** the authoritative grant
+      // read and the containment assessment, so what it decides about is an
+      // action that is genuinely covered by a genuinely valid grant, and
+      // **before** anything is handed across the provider boundary. A stop that
+      // turned on while the grant was being read is therefore still honoured.
+      //
+      // Every value in the query is trusted: the holder and the horizon came
+      // from the store, the organization and the resource were proven inside
+      // the grant's bounds. Nothing a caller described reaches it.
+      const exerciseControl = readEmergencyControl(emergencyControl, {
+        ...(request.organization !== undefined ? { organizationId: request.organization } : {}),
+        actorId: grantSubject,
+        resource: request.resource,
+      } satisfies EmergencyControlQuery);
+      if (!emergencyControlPermits(exerciseControl)) {
+        return {
+          status: 'withheld',
+          withheldBy: 'emergency-control',
+          assessment,
+          emergencyControl: {
+            reasonCodes: exerciseControl.reasonCodes,
+            matchedScopes: exerciseControl.state === 'blocked' ? exerciseControl.matchedScopes : [],
+          },
+          correlation,
+          exercisedAt,
+        };
+      }
+
       // Every value handed across the boundary is either the attempt proven to
       // be inside a bound, or a value read from the trusted grant. The subject
       // and the horizon come from the store rather than from the request, so a
@@ -203,13 +266,41 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         correlation,
       };
 
+      // The adapter that actually performed the effect, and the composite that
+      // selected it when one did. A plain adapter names itself; the registry
+      // names the child trusted routing chose, so "which provider did this" is
+      // answerable from the outcome and from the durable record built on it.
+      const performedBy = (result: { readonly adapterId?: string }): { readonly adapterId: string; readonly routedBy?: string } =>
+        result.adapterId === undefined || result.adapterId === adapter.adapterId
+          ? { adapterId: adapter.adapterId }
+          : { adapterId: result.adapterId, routedBy: adapter.adapterId };
+
       let result;
       try {
         result = await adapter.execute(action);
       } catch (error) {
+        // One typed signal, and one only. A composite adapter that resolved a
+        // child and found an adapter-scoped stop active reports it this way,
+        // because no provider was contacted and calling that a provider
+        // rejection would record a refusal nobody made. Every **other** throw
+        // stays `ADAPTER_ERROR`: an adapter cannot promote its own failure into
+        // an emergency stop by throwing something that looks like one.
+        if (isEmergencyControlWithheldError(error)) {
+          return {
+            status: 'withheld',
+            withheldBy: 'emergency-control',
+            assessment,
+            emergencyControl: { reasonCodes: error.reasonCodes, matchedScopes: error.matchedScopes },
+            correlation,
+            exercisedAt,
+          };
+        }
         // An adapter that raises has failed to execute. It has emphatically not
         // produced an authorization outcome, and nothing here lets it: the
         // throw becomes a provider failure with the authorization untouched.
+        // A throw carries no attribution, so the adapter this service holds is
+        // the most that can honestly be said. The registry converts a child's
+        // throw itself, precisely so the routed case keeps its attribution.
         return {
           status: 'execution-failed',
           assessment,
@@ -226,7 +317,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           status: 'execution-failed',
           assessment,
           correlation,
-          adapterId: adapter.adapterId,
+          ...performedBy(result),
           reason: result.reason,
           ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
@@ -237,7 +328,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         status: 'executed',
         assessment,
         correlation,
-        adapterId: adapter.adapterId,
+        ...performedBy(result),
         ...(result.providerRef !== undefined ? { providerRef: result.providerRef } : {}),
         exercisedAt,
       };

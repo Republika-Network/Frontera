@@ -23,7 +23,8 @@ import {
   type IssueBoundedGrantOutcome,
 } from '../../features/grant-runtime/index.js';
 import { createRecordingExecutionAdapter, type RecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
-import type { ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
+import type { ExecutionAdapter, ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
+import type { EmergencyControlReaderPort } from '../../features/emergency-control-runtime/index.js';
 import { AocKernel, type KernelEvaluationOptions, type KernelEvaluationRequest, type KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
@@ -162,6 +163,24 @@ export interface WorldOptions {
   readonly kernelIdStart?: number;
   /** The host-level ACE `revalidateSource`, handed to the orchestrator. Receives the world so it can derive the current source. */
   readonly revalidateSource?: (correlation: GrantCorrelation, world: GovernedWorld) => GrantSourceAuthorization | undefined;
+  /**
+   * The operational interlock, handed to **every** checkpoint: the
+   * orchestrator's admission check, the grant store's synchronous commit guard,
+   * the exercise gate, and the adapter registry when one is composed. One
+   * instance, exactly as the composition root wires it.
+   */
+  readonly emergencyControl?: EmergencyControlReaderPort;
+  /**
+   * Runs immediately before the grant store's `issue` — which is to say
+   * **after** the orchestrator's admission check and **before** the store's
+   * synchronous commit guard runs inside it.
+   *
+   * That is precisely the TOCTOU window the commit-boundary recheck exists to
+   * close, and this is the only way to stand in it.
+   */
+  readonly beforeGrantIssue?: () => void;
+  /** An execution adapter to compose instead of the recording one — an adapter registry, for the adapter-scoped checkpoint. */
+  readonly executionAdapter?: ExecutionAdapter;
 }
 
 export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
@@ -236,6 +255,9 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     async issue(input: IssueBoundedGrantInput) {
       log.entries.push('grantStore.issue');
       if (options.grantIssueThrows === true) throw new Error('injected grant store failure');
+      // The commit-boundary window: admission has already passed, and the
+      // store's synchronous guard has not yet run.
+      options.beforeGrantIssue?.();
       const outcome = await rawGrantStore.issue(input);
       issueOutcomes.push(outcome);
       return outcome;
@@ -255,9 +277,10 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     kernel,
     grantCapability,
     grantStore,
-    executionAdapter: adapter,
+    executionAdapter: options.executionAdapter ?? adapter,
     now: () => clock.now(),
     resolveAuthorityBinding: options.resolveAuthorityBinding ?? (() => NO_TEMPORAL_BOUND),
+    ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
   };
   const ace = createAuthorityControlledExecution(aceOptions);
 
@@ -293,6 +316,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     enterpriseContext: () => ({ enterpriseVersion: 'test', lifecycleState: 'ready', modules: [], environment: 'test' }),
     events: { enabled: true, publisher, nextId: (prefix) => `${prefix}-${(eventCounter += 1)}` },
     traceLevel: 'basic',
+    ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
     ...(hostRevalidate !== undefined
       ? {
           revalidateSource: (correlation: GrantCorrelation) => {
