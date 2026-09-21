@@ -149,6 +149,24 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         return;
       }
 
+      // -- P5 customer governed actions. Capability-gated: mounted only when
+      // the Host composed BOTH customer identity admission and the Governed
+      // Action Orchestrator; otherwise this falls through to the unmounted-route
+      // 404 below. Admission, intent validation and everything after them live
+      // inside `enterprise.governAction` -- this adapter only routes. The body's
+      // own `idempotencyKey` is canonical; no `Idempotency-Key` header is read.
+      if (method === 'POST' && url.pathname === '/api/governed-actions') {
+        const governAction =
+          enterprise.customerIdentityAdmission !== undefined && enterprise.governedActionOrchestrator !== undefined ? enterprise.governAction : undefined;
+        if (governAction !== undefined) {
+          readRequestBody(req)
+            .then((rawBody) => governAction(rawBody, req.headers.authorization !== undefined ? { authorizationHeader: req.headers.authorization } : {}))
+            .then((outcome) => writeJson(res, outcome.httpStatus, outcome.body))
+            .catch(fail);
+          return;
+        }
+      }
+
       // -- PR-005 Evidence Bundle endpoints. Tenant scoping is resolved
       // entirely inside `enterprise.evidence` (never here), the same way the
       // PR-004 governance-read routes below defer to `governanceReads`.

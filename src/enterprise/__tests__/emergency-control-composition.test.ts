@@ -345,22 +345,31 @@ describe('Emergency control composition — adapter routing is host configuratio
 });
 
 describe('Emergency control composition — no customer surface', () => {
-  it('the frozen HTTP surface gains nothing, and no route mentions emergency control', () => {
+  it('the frozen HTTP surface gains no emergency or adapter route, and no route mentions emergency control', () => {
     const adapterSource = readFileSync('src/enterprise/adapters/node-http-adapter.ts', 'utf8');
     for (const token of ['emergency', 'emergencyControl', 'adapterRouting', 'selectAdapter']) {
       assert.equal(new RegExp(token, 'i').test(adapterSource), false, `the HTTP adapter must not mention ${token}`);
     }
     const freeze = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { readonly routeLiterals: readonly string[] };
     for (const route of freeze.routeLiterals) {
-      assert.equal(/emergency|adapter|governed-action/i.test(route), false, `${route} must not exist`);
+      // `/api/governed-actions` (P5) is the customer route onto the path the
+      // interlock governs; it can observe a withholding, never administer one.
+      assert.equal(/emergency|adapter/i.test(route), false, `${route} must not exist`);
     }
   });
 
-  it('the SDK is unchanged: transport only, with no emergency or adapter method', () => {
+  it('the SDK stays transport only, with no emergency or adapter method', () => {
     const sdk = readFileSync('packages/enterprise-host-sdk/src/client.ts', 'utf8');
+    // The governed-action response decoder must recognize the one value a
+    // caller can *observe* — `withheldBy: 'emergency-control'` — so that exact
+    // quoted literal is the single permitted mention. Anything else (a method,
+    // a route, an option, a field name) is still a failure.
+    assert.equal((sdk.match(/'emergency-control'/g) ?? []).length, 1, 'the withheldBy vocabulary names emergency-control exactly once');
+    const withoutObservedValue = sdk.replace("'emergency-control'", '');
     for (const token of ['emergency', 'adapterId', 'selectAdapter']) {
-      assert.equal(new RegExp(token, 'i').test(sdk), false, `the SDK must not expose ${token}`);
+      assert.equal(new RegExp(token, 'i').test(withoutObservedValue), false, `the SDK must not expose ${token}`);
     }
+    assert.equal(/\/api\/[^'"`]*emergency/i.test(sdk), false, 'the SDK must call no emergency-control route');
   });
 
   it('the Enterprise barrel re-exports no emergency-control value a consumer could call', () => {

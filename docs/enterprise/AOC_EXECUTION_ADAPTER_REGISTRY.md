@@ -1,7 +1,10 @@
 # AOC Execution Adapter Registry
 
 **Status:** internal capability. Opt-in at composition. No customer HTTP route,
-no SDK method, no caller-facing selector.
+no SDK method, no caller-facing selector. The customer route
+`POST /api/governed-actions` (P5) runs *through* it but cannot name, select or
+learn a child: an intent carrying `adapterId`, `provider`, `url` or similar is
+rejected, and no response carries an adapter identity.
 
 > **Which trusted provider adapter translates this already-authorized action —
 > and who gets to decide that?**

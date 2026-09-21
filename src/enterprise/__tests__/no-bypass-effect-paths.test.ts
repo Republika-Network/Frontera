@@ -504,11 +504,21 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Three of forty-eight effect paths are under bounded-grant control.'),
+      DOC.includes('Four of forty-nine effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
-        'the execution adapter registry added no effect path.',
+        'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
+        'which is why both numbers moved by one — and only that path.',
     );
+  });
+
+  it('inventories the customer governed-action route as its own effect path, classified and capability-gated', () => {
+    const row = DOC.split('\n').find((line) => line.startsWith('| **EP-049** |'));
+    assert.ok(row !== undefined, 'POST /api/governed-actions is an externally reachable effect path and needs its own EP id (§9 rule 4 of SECURITY_INVARIANTS.md)');
+    assert.ok(row.includes('POST /api/governed-actions'), 'EP-049 must name the route');
+    assert.ok(row.includes('PROVEN — PATH LOCAL'), 'EP-049 must carry the path-local classification, never a system-wide one');
+    assert.ok(/capability-gated/i.test(row), 'EP-049 must state that it exists only when both capabilities are composed');
+    assert.ok(DOC.includes('It does **not** mean any other effect path became governed'), 'the qualification that P5 governs no other path must stay recorded');
   });
 
   it('keeps the enforce() effect-binding limit stated without overstatement', () => {

@@ -1,7 +1,7 @@
 {
   "surface": "aoc-enterprise-host-http.v1",
   "documentation": "docs/enterprise/API_STABILITY_V1.md",
-  "endpointCount": 27,
+  "endpointCount": 28,
   "routeLiterals": [
     "/api/assurance/assessments",
     "/api/assurance/manual-reviews",
@@ -9,6 +9,7 @@
     "/api/evidence/build",
     "/api/evidence/verify",
     "/api/governance/evaluate",
+    "/api/governed-actions",
     "/api/passports",
     "/health",
     "/live",
@@ -78,5 +79,13 @@
     { "method": "POST", "path": "/api/assurance/signals" },
     { "method": "GET", "path": "/api/assurance/subjects/freeze-probe/state" },
     { "method": "POST", "path": "/api/assurance/subjects/freeze-probe/reassess" }
+  ],
+  "capabilityGatedProbes": [
+    {
+      "method": "POST",
+      "path": "/api/governed-actions",
+      "requires": ["customerIdentityAdmission", "governedActionOrchestrator"],
+      "provenMountedBy": "src/enterprise/__tests__/governed-action-api-endpoint.test.ts"
+    }
   ]
 }

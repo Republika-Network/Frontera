@@ -26,7 +26,7 @@ import { createEnterpriseHostClient, isEnterpriseHostApiError } from '@aoc-enter
 
 const client = createEnterpriseHostClient({
   baseUrl: 'http://127.0.0.1:8080',
-  apiKey: process.env.AOC_API_KEY,   // only when the Host runs with AOC_ENTERPRISE_REQUIRE_AUTH=true
+  apiKey: process.env.AOC_API_KEY,   // legacy routes: only when AOC_ENTERPRISE_REQUIRE_AUTH=true; governAction(): always
   timeoutMs: 10_000,                 // default 30_000
 });
 
@@ -63,9 +63,82 @@ const assessment = await client.createAssessment({
 await client.evaluateAssessment(assessment.assessmentId as string);
 ```
 
+## Governed actions
+
+`governAction()` asks the Host to **govern and, if authorized, execute** one
+action — `POST /api/governed-actions`. The Host admits the caller from the
+client's `apiKey` (which must be a customer credential; this route requires it
+even when the Host runs with `AOC_ENTERPRISE_REQUIRE_AUTH=false`), derives the
+actor and organization from that credential's binding, has the Kernel decide,
+commits the decision, and only then issues and exercises bounded authority on
+the server. The SDK does none of that: it sends the intent and decodes the
+answer.
+
+```ts
+const client = createEnterpriseHostClient({
+  baseUrl,
+  apiKey,
+});
+
+const result = await client.governAction({
+  action: 'payment.create',
+  resource: 'invoice:INV-100',
+  counterparty: 'vendor:V123',
+  amount: {
+    value: 7500,
+    currency: 'USD',
+  },
+  idempotencyKey: 'payment-INV-100-v1',
+});
+
+switch (result.status) {
+  case 'executed':
+    // The provider effect happened. `result.replayed` is true when this was a
+    // retry answered from the record, with no second effect.
+    break;
+
+  case 'denied':                // the Kernel said no
+  case 'withheld':              // allowed or pending, but a gate held it — see result.withheldBy
+  case 'execution_failed':      // the provider failed — see result.failure
+  case 'execution_unconfirmed': // attempted before, outcome unknown — reconcile; never re-sent
+  case 'indeterminate':         // the Kernel could not decide
+  case 'rejected':              // malformed intent, or an idempotency-key conflict
+  case 'system_error':
+    console.log(result.status, result.reasonCodes);
+    break;
+}
+```
+
+The intent names **what** you want done, never **who** is doing it or **how**
+it is carried out. `GovernedActionIntent` is a closed type: there is no field
+for an actor, organization, grant, adapter, provider, URL or credential, and
+the Host rejects a body that carries one. `assertedContext` (optional) is
+evidence you assert — the Host verifies it; sending it does not make it
+trusted.
+
+**Results are returned, not thrown.** `GovernedActionResult` domain responses
+are returned, even though the Host uses non-2xx statuses for most of them
+(`withheld` 409, `denied` 422, `execution_failed` 502, `indeterminate` 503, …).
+Enterprise error envelopes and invalid/unrecognized protocol responses throw
+`EnterpriseHostApiError`:
+
+- an error envelope — a missing or non-customer credential (`401`/`403`),
+  malformed JSON, or `404 NOT_FOUND` when the Host has not enabled governed
+  actions — throws with the envelope's `code`;
+- a body that is not a well-formed `GovernedActionResult` (unknown `status`,
+  non-string `reasonCodes`, a missing or unknown `withheldBy`/`failure`,
+  mistyped `replayed`/`outcomeRecorded`, an unknown `decision.status`, …), or a
+  well-formed result under an HTTP status the Host never pairs with it (e.g. a
+  `denied` result on `500`), throws with code `UNKNOWN` and the raw body on
+  `error.body`. This is transport decoding of the Host's contract, not a
+  governance decision.
+
+A returned result never contains a grant, grant digest, adapter identity or
+credential.
+
 ## Errors
 
-Every non-2xx response throws:
+Every non-2xx response throws (except `governAction()`'s governed results — see below):
 
 | Error | Meaning |
 |---|---|
@@ -90,6 +163,11 @@ responds `422` for a governance **denial**. The SDK surfaces these as
 `EnterpriseHostApiError` with the full body in `error.body` — inspect
 `error.status` before treating them as infrastructure failures.
 
+`governAction()` is the one exception: it **returns** its non-2xx governed
+outcomes as a `GovernedActionResult` (see *Governed actions*). Enterprise error
+envelopes and invalid/unrecognized protocol responses — on any HTTP status,
+including 2xx — throw.
+
 ## Timeouts
 
 Each request is aborted after `timeoutMs` (default 30 s) via `AbortSignal.timeout`.
@@ -104,6 +182,12 @@ The SDK never retries. Guidance for callers:
 - **Safe to retry always:** all `GET` methods (`getEvaluation`, `getPassport`,
   `getAssessment`, `getContinuousState`, …) and the verify endpoints — they are
   read-only recomputations.
+- **`governAction`:** retry with the **same** intent and the same
+  `idempotencyKey` (it is required, and it lives in the body). The Host replays
+  the recorded result and never runs the effect twice; the same key with a
+  *different* intent comes back as a `rejected` result with
+  `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`. An `execution_unconfirmed` result is
+  final for that key: reconcile with the provider rather than retrying.
 - **`evaluate`:** retry **only** with the same `idempotencyKey`. The Host
   replays the committed decision instead of re-evaluating; a key reused with a
   *different* payload is rejected with `409 GOVERNANCE_IDEMPOTENCY_CONFLICT`.
@@ -118,5 +202,18 @@ The SDK never retries. Guidance for callers:
 ## Stability
 
 The client tracks the frozen v1 HTTP surface. Additive Host changes (new
-response fields) are non-breaking; the SDK types keep open index signatures so
-new fields flow through without an SDK upgrade.
+response fields) are non-breaking. Most SDK wire types keep open index
+signatures so new fields flow through without an SDK upgrade.
+
+The governed-action types are deliberately different:
+
+- `GovernedActionIntent` (a **request**) is **closed**, so identity-,
+  authority- and routing-shaped fields fail to compile.
+- `GovernedActionResult` and `GovernedActionDecisionRef` (**responses**) are
+  exact mirrors with closed vocabularies and **no** index signature. At runtime,
+  `governAction()` tolerates unknown additive response fields — they are
+  validated around, not rejected, and remain present on the returned object —
+  but they are not typed until an SDK release declares them.
+
+`1.1.0` added `governAction()` and its type-only mirrors; the five runtime
+exports are unchanged.

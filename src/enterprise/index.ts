@@ -502,7 +502,8 @@ export { evaluateGovernanceRequest } from './orchestration/evaluate-governance-r
 export type { EvaluateGovernanceRequestInput, EvaluateGovernanceRequestDependencies, EnterpriseEvaluationResponse } from './orchestration/evaluate-governance-request.js';
 
 export { createEnterprise, createDefaultEnterprise } from './composition/composition-root.js';
-export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseRequestContext } from './composition/composition-root.js';
+export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseGovernedActionContext, EnterpriseRequestContext } from './composition/composition-root.js';
+export type { EnterpriseGovernedActionResponse } from './api/governed-action-contract.js';
 export type { EnterpriseAuthorityControlledExecutionOptions, EnterpriseExecutionAdapterRoutingOptions } from './composition/composition-root.js';
 export type { EnterpriseEmergencyControlOptions } from './composition/composition-root.js';
 export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';

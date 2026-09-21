@@ -4,9 +4,18 @@
 // fails if the routing source drifts from the freeze file in either
 // direction (routes added, removed, or re-patterned), and live-probes every
 // frozen route against an in-memory Host to prove each is actually wired.
+//
+// Capability-gated routes (`capabilityGatedProbes`) are frozen exactly like
+// every other route -- their literals are in `routeLiterals`, so a removed,
+// renamed or undeclared one fails the static drift check -- but they are
+// mounted only when the Host composes the capabilities they name. The default
+// Host composes none of them, so here they are probed the other way round: the
+// default Host must answer them with the unmounted-route envelope, proving the
+// gate holds. That they ARE mounted under full composition is proven by the
+// suite each entry names in `provenMountedBy`, which must exist.
 // Run AFTER `npm run build`.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
@@ -48,6 +57,24 @@ const prefixMatches = new Set(
 );
 diffSets(prefixMatches, freeze.routePrefixGuards, 'Route prefix guards');
 
+// -- capability-gated routes: frozen statically, never an exemption -------------
+
+const gatedProbes = freeze.capabilityGatedProbes ?? [];
+for (const gated of gatedProbes) {
+  if (!freeze.routeLiterals.includes(gated.path)) {
+    fail(`Capability-gated route ${gated.method} ${gated.path} is not in routeLiterals; gating is not an exemption from drift detection.`);
+  }
+  if (freeze.probes.some((probe) => probe.method === gated.method && probe.path === gated.path)) {
+    fail(`Route ${gated.method} ${gated.path} is listed both as an unconditional probe and as capability-gated.`);
+  }
+  if (!Array.isArray(gated.requires) || gated.requires.length === 0) {
+    fail(`Capability-gated route ${gated.method} ${gated.path} must name the capabilities it requires.`);
+  }
+  if (typeof gated.provenMountedBy !== 'string' || !existsSync(resolve(root, gated.provenMountedBy))) {
+    fail(`Capability-gated route ${gated.method} ${gated.path} must name an existing suite proving it is mounted under full composition.`);
+  }
+}
+
 const actionsMatch = adapterSource.match(/const PASSPORT_ACTIONS[^=]*= \[([^\]]+)\]/);
 if (!actionsMatch) fail('Could not locate PASSPORT_ACTIONS in the adapter source.');
 const actionSet = new Set([...actionsMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1]));
@@ -88,8 +115,25 @@ try {
       fail(`Frozen route ${probe.method} ${probe.path} is no longer wired (got the unknown-route envelope). Removing or renaming a v1 route is a breaking change.`);
     }
   }
+
+  // ...while every capability-gated route must stay unmounted on a Host that
+  // composed none of its capabilities: a route that answers here has lost its gate.
+  for (const gated of gatedProbes) {
+    const response = await fetch(`${baseUrl}${gated.path}`, {
+      method: gated.method,
+      headers: { 'content-type': 'application/json' },
+      ...(gated.method === 'POST' ? { body: '{}' } : {}),
+    });
+    const body = await response.json();
+    const isUnrouted = response.status === 404 && body?.error?.code === 'NOT_FOUND' && String(body.error.message).startsWith('No route');
+    if (!isUnrouted) {
+      fail(`Capability-gated route ${gated.method} ${gated.path} answered on a Host without ${gated.requires.join(' + ')} (got ${response.status}). It must be mounted only when those capabilities are composed.`);
+    }
+  }
 } finally {
   await server.close();
 }
 
-console.log(`API freeze check passed: ${freeze.probes.length} frozen routes wired, no source drift (${freeze.endpointCount} endpoints).`);
+console.log(
+  `API freeze check passed: ${freeze.probes.length} frozen routes wired, ${gatedProbes.length} capability-gated route(s) unmounted on the default Host, no source drift (${freeze.endpointCount} endpoints).`,
+);

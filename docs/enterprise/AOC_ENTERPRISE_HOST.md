@@ -119,8 +119,8 @@ explicit, injected dependency rather than an implicit import.
 | `persistence/` | `GovernanceStore` port + in-memory and SQLite implementations. |
 | `health/` | `computeEnterpriseHealth()` -- version, persistence connectivity, provider/config status, no secrets. |
 | `composition/` | The one composition root, `createEnterprise()` / `createDefaultEnterprise()`. |
-| `api/` | Wire contracts for `POST /api/governance/evaluate`, request validation, Kernel request/response adaptation, `EnterpriseHttpError`. |
-| `orchestration/` | `evaluateGovernanceRequest()` -- the full request lifecycle, framework-agnostic. |
+| `api/` | Wire contracts for `POST /api/governance/evaluate`, request validation, Kernel request/response adaptation, `EnterpriseHttpError`; `governed-action-contract.ts` for `POST /api/governed-actions` (result → HTTP status, admission failure → envelope). |
+| `orchestration/` | `evaluateGovernanceRequest()` -- the full request lifecycle, framework-agnostic; `governGovernedActionRequest()` -- customer admission, then `governedActionOrchestrator.govern()`. |
 | `adapters/` | `node-http-adapter.ts` -- the only module that touches `node:http`. |
 | `host/` | `createEnterpriseServer()` -- binds the adapter to a real `http.Server`. |
 | `__tests__/` | Endpoint, persistence, composition-root, health, error-mapping, concurrency, Kernel-parity, structural-boundary, and compatibility tests. |
@@ -444,6 +444,26 @@ checkout before this iteration began (354 pre-existing failures, e.g.
 (and correctly) flagged by that same pre-existing root-harness limitation,
 exactly like every other package's `.ts` test file already was -- this is
 not a regression this PR introduces.
+
+## Customer governed actions (1.3.0)
+
+`POST /api/governed-actions` is the one customer-facing route onto the
+Governed Action path. It is **capability-gated**: the adapter mounts it only
+when the composed `AocEnterprise` has both `customerIdentityAdmission` and
+`governedActionOrchestrator` (and therefore `governAction`); otherwise it is the
+ordinary `404 NOT_FOUND`. The adapter stays translational:
+
+```
+read body -> enterprise.governAction(rawBody, { authorizationHeader }) -> write { httpStatus, body }
+```
+
+`governAction` admits the caller through the customer plane (never the legacy
+`AOC_ENTERPRISE_REQUIRE_AUTH` path, and never optional), then hands the bound
+identity and the untouched body to `govern()`. Nothing below the orchestrator
+— the Kernel, the Governance Store, grant issuance, exercise, the adapter
+registry or emergency control — is reachable from the adapter. See
+`docs/enterprise/API_STABILITY_V1.md` §2.6 for the wire contract and
+`docs/security/SECURITY_INVARIANTS.md` SEC-INV-055 … SEC-INV-061.
 
 ## Known Limitations
 

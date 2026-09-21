@@ -1,6 +1,8 @@
 /**
- * The Governed Action Orchestrator — internal orchestration capability; no
- * customer route yet.
+ * The Governed Action Orchestrator — internal orchestration capability. Its one
+ * customer route, `POST /api/governed-actions`, lives outside this layer
+ * (`orchestration/govern-governed-action-request.ts` admits the caller, then
+ * calls `govern()`); nothing here authenticates or parses HTTP.
  *
  * See `docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md`. The one thing to
  * know from here: a governed action's decision is durably committed to the

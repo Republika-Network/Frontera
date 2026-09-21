@@ -9,6 +9,8 @@ import {
   type EnterpriseEvaluationResponse,
   type EvaluateGovernanceRequestInput,
 } from '../orchestration/evaluate-governance-request.js';
+import { governGovernedActionRequest } from '../orchestration/govern-governed-action-request.js';
+import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
@@ -84,6 +86,16 @@ export interface EnterpriseRequestContext {
 }
 
 /**
+ * Side-channel context `AocEnterprise.governAction()` accepts: the caller's
+ * `Authorization` header and nothing else. There is deliberately no
+ * idempotency key here — a governed action's key is the intent's own required
+ * `idempotencyKey` — and no identity, actor, organization, grant or adapter.
+ */
+export interface EnterpriseGovernedActionContext {
+  readonly authorizationHeader?: string;
+}
+
+/**
  * Every field a caller may substitute for the composition root's own
  * default construction. Tests inject the same real, fully-composed
  * `KernelProviderSet` the Kernel's own characterization suite uses
@@ -151,8 +163,10 @@ export interface CreateEnterpriseOptions {
    * Opt-in secure customer-plane identity admission: credential → principal →
    * organization → external subject → Frontera actor.
    *
-   * **Omitting it changes nothing.** No route is added, no legacy route is
-   * rerouted through it, and `evaluate()` keeps its v1 authentication exactly.
+   * **Omitting it changes nothing**, and on its own it adds **no route**: no
+   * legacy route is rerouted through it, and `evaluate()` keeps its v1
+   * authentication exactly. `POST /api/governed-actions` exists only when this
+   * **and** `governedActionOrchestrator` are both composed.
    *
    * Supplying `{ enabled: true }` composes it over this Host's Kernel Authority
    * store — the one binding source of truth — and the configured
@@ -167,9 +181,12 @@ export interface CreateEnterpriseOptions {
    * Opt-in Governed Action Orchestrator: bound customer identity → Kernel →
    * **committed** Governance Record → bounded grant → exercise → adapter.
    *
-   * **Omitting it changes nothing**, and supplying it adds **no route** — it is
-   * internal orchestration capability only, exposed as
-   * `AocEnterprise.governedActionOrchestrator` for trusted in-process code.
+   * **Omitting it changes nothing.** Supplying it exposes
+   * `AocEnterprise.governedActionOrchestrator` to trusted in-process code and,
+   * because it cannot compose without customer identity admission, mounts the
+   * one customer route onto it: `POST /api/governed-actions`
+   * (`AocEnterprise.governAction`), which admits the caller and then calls
+   * `govern()` — nothing below the orchestrator is reachable from it.
    *
    * It composes from capabilities this Host already has and fails composition,
    * rather than producing a weaker mode, unless customer identity admission
@@ -401,15 +418,31 @@ export interface AocEnterprise {
    * Customer-plane identity admission, present only when this deployment
    * composed it. Admits a caller as the Frontera actor bound to its
    * authenticated external subject, or refuses; it never decides what that
-   * actor may do. No route consumes it yet.
+   * actor may do. On its own it mounts no route; `governAction` consumes it
+   * only when `governedActionOrchestrator` is composed too.
    */
   readonly customerIdentityAdmission?: CustomerIdentityAdmissionService;
   /**
    * Internal governed-action orchestration, present only when this deployment
-   * composed it. No route consumes it: trusted in-process code hands it a
-   * `BoundCustomerIdentity` from `customerIdentityAdmission` and an intent.
+   * composed it. Trusted in-process code hands it a `BoundCustomerIdentity`
+   * from `customerIdentityAdmission` and an intent; the customer route reaches
+   * it only through `governAction`.
    */
   readonly governedActionOrchestrator?: GovernedActionOrchestrator;
+  /**
+   * The customer-facing governed-action application call behind
+   * `POST /api/governed-actions`, present **only** when both
+   * `customerIdentityAdmission` and `governedActionOrchestrator` are composed.
+   * Absent otherwise — there is no weaker implementation to fall back to.
+   *
+   * `Authorization` header → customer identity admission → `BoundCustomerIdentity`
+   * → `governedActionOrchestrator.govern(identity, rawIntent)`. It accepts no
+   * identity, actor, organization, grant or adapter, and it requires a bound
+   * customer credential whatever `AOC_ENTERPRISE_REQUIRE_AUTH` says. An
+   * admission failure rejects with the Enterprise error envelope; every
+   * orchestrator outcome resolves as `{ httpStatus, body: GovernedActionResult }`.
+   */
+  readonly governAction?: (rawIntent: unknown, context?: EnterpriseGovernedActionContext) => Promise<EnterpriseGovernedActionResponse>;
   /**
    * The **trusted operator** surface over the emergency-control store, present
    * only when this deployment composed one.
@@ -1069,6 +1102,19 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ...(customerIdentityAdmission !== undefined ? { customerIdentityAdmission } : {}),
     ...(authorityControlledExecution !== undefined ? { authorityControlledExecution } : {}),
     ...(governedActionOrchestrator !== undefined ? { governedActionOrchestrator } : {}),
+    ...(customerIdentityAdmission !== undefined && governedActionOrchestrator !== undefined
+      ? {
+          governAction: (rawIntent: unknown, context?: EnterpriseGovernedActionContext) => {
+            if (!lifecycle.isReady()) {
+              return Promise.reject(EnterpriseHttpErrors.enterpriseNotReady(lifecycle.lifecycleState()));
+            }
+            return governGovernedActionRequest(
+              { rawIntent, ...(typeof context?.authorizationHeader === 'string' ? { authorizationHeader: context.authorizationHeader } : {}) },
+              { admission: customerIdentityAdmission, orchestrator: governedActionOrchestrator, logger },
+            );
+          },
+        }
+      : {}),
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     eventPublisher,
     telemetry,

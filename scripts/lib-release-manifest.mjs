@@ -71,7 +71,7 @@ export async function buildReleaseManifest() {
     api: {
       surface: 'aoc-enterprise-host-http.v1',
       documentation: 'docs/enterprise/API_STABILITY_V1.md',
-      endpointCount: 27,
+      endpointCount: 28,
     },
     compatibilityMatrix: {
       node: '>=22',

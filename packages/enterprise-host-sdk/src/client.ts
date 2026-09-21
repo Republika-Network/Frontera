@@ -14,6 +14,8 @@ import type {
   GovernanceEvaluateResponse,
   GovernanceRecord,
   GovernanceVerificationResult,
+  GovernedActionIntent,
+  GovernedActionResult,
   HealthReport,
   IssuePassportRequest,
   LivenessResponse,
@@ -43,6 +45,19 @@ export interface EnterpriseHostClient {
   verifyEvaluation(evaluationId: string): Promise<GovernanceVerificationResult>;
   getDecision(decisionId: string): Promise<GovernanceRecord>;
   getRequest(requestId: string): Promise<GovernanceRecord>;
+
+  // governed actions
+  /**
+   * `POST /api/governed-actions` under the client's `apiKey`.
+   *
+   * `GovernedActionResult` domain responses are returned — `executed` (200),
+   * `denied` (422), `withheld` (409), `execution_failed` (502) and the rest —
+   * once the body is a well-formed result under the HTTP status the Host pairs
+   * with it. Enterprise error envelopes (authentication, authorization,
+   * malformed request, unmounted route) and invalid, unrecognized or
+   * mismatched-status protocol responses throw `EnterpriseHostApiError`.
+   */
+  governAction(intent: GovernedActionIntent): Promise<GovernedActionResult>;
 
   // evidence
   buildEvidence(request: EvidenceBuildRequest): Promise<EvidenceBundleResponse>;
@@ -108,6 +123,113 @@ function extractEnvelope(body: unknown): { code: string; message: string; detail
   };
 }
 
+/** Builds the `EnterpriseHostApiError` for a response the caller must not receive as data. */
+function apiErrorFor(status: number, parsed: unknown, fallbackMessage: string): EnterpriseHostApiError {
+  const envelope = extractEnvelope(parsed);
+  return new EnterpriseHostApiError(status, envelope?.code ?? 'UNKNOWN', envelope?.message ?? fallbackMessage, parsed, envelope?.details);
+}
+
+// -- governed-action wire decoding ---------------------------------------------
+//
+// Transport decoding of the Host's `GovernedActionResult` contract: the known
+// vocabularies, the field types each status requires, and the HTTP status the
+// Host pairs with each result. It proves the *shape* the server promised; it
+// never judges an outcome. Unknown additive fields are tolerated.
+
+const GOVERNED_ACTION_RESULT_STATUSES: readonly string[] = ['executed', 'denied', 'indeterminate', 'withheld', 'execution_failed', 'execution_unconfirmed', 'rejected', 'system_error'];
+const DECISION_STATUSES: readonly string[] = ['allowed', 'denied', 'approval_required', 'indeterminate'];
+const WITHHELD_BY: readonly string[] = ['approval', 'obligations', 'grant', 'authority-binding', 'grant-terms', 'exercise', 'emergency-control'];
+const EXECUTION_FAILURES: readonly string[] = ['PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE', 'PROVIDER_RESPONSE_INVALID', 'ADAPTER_ERROR'];
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isOneOf(value: unknown, allowed: readonly string[]): value is string {
+  return typeof value === 'string' && allowed.includes(value);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function isDecisionRef(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value['decisionId'] === 'string' &&
+    typeof value['evaluationId'] === 'string' &&
+    isOneOf(value['status'], DECISION_STATUSES) &&
+    isStringArray(value['reasonCodes'])
+  );
+}
+
+/** Proves `body` is a well-formed `GovernedActionResult`. Unknown additive fields are tolerated; nothing is coerced. */
+function isGovernedActionResult(body: unknown): body is GovernedActionResult {
+  if (!isRecord(body) || body['error'] !== undefined) return false;
+  const status = body['status'];
+  if (!isOneOf(status, GOVERNED_ACTION_RESULT_STATUSES) || !isStringArray(body['reasonCodes'])) return false;
+  if (!isOptionalString(body['requestId']) || !isOptionalString(body['correlationId']) || !isOptionalString(body['executionId'])) return false;
+  if (body['decision'] !== undefined && !isDecisionRef(body['decision'])) return false;
+  switch (status) {
+    case 'executed':
+      return typeof body['replayed'] === 'boolean' && typeof body['outcomeRecorded'] === 'boolean' && isOptionalString(body['providerRef']);
+    case 'withheld':
+      return isOneOf(body['withheldBy'], WITHHELD_BY);
+    case 'execution_failed':
+      return isOneOf(body['failure'], EXECUTION_FAILURES) && typeof body['replayed'] === 'boolean' && typeof body['outcomeRecorded'] === 'boolean';
+    default:
+      return true;
+  }
+}
+
+/** The HTTP status the Host pairs with each result (docs/enterprise/API_STABILITY_V1.md §2.6). */
+function expectedGovernedActionHttpStatus(result: GovernedActionResult): number {
+  switch (result.status) {
+    case 'executed':
+      return 200;
+    case 'denied':
+      return 422;
+    case 'indeterminate':
+      return 503;
+    case 'withheld':
+    case 'execution_unconfirmed':
+      return 409;
+    case 'execution_failed':
+      return 502;
+    case 'rejected':
+      if (result.reasonCodes.includes('GOVERNED_ACTION_IDEMPOTENCY_CONFLICT')) return 409;
+      if (result.reasonCodes.includes('GOVERNED_ACTION_IDENTITY_INVALID')) return 403;
+      return 400;
+    case 'system_error':
+      return 500;
+  }
+}
+
+/**
+ * `governAction`'s decoder, applied on **every** HTTP status: a well-formed
+ * result under the HTTP status the Host pairs with it is returned; an
+ * Enterprise error envelope throws as on every other route; anything else —
+ * malformed, unrecognized, or a valid result under the wrong status — is
+ * protocol drift and throws rather than reaching the caller as a typed result.
+ */
+function decodeGovernedActionResponse(status: number, parsed: unknown, route: string): GovernedActionResult {
+  if (extractEnvelope(parsed) !== undefined) {
+    throw apiErrorFor(status, parsed, `Request to '${route}' failed with status ${status}.`);
+  }
+  if (!isGovernedActionResult(parsed)) {
+    throw apiErrorFor(status, parsed, `Request to '${route}' returned an unrecognized governed-action response (HTTP ${status}).`);
+  }
+  const expected = expectedGovernedActionHttpStatus(parsed);
+  if (expected !== status) {
+    throw apiErrorFor(status, parsed, `Request to '${route}' returned a '${parsed.status}' result under HTTP ${status}; the Host pairs it with ${expected}.`);
+  }
+  return parsed;
+}
+
 /**
  * Creates a typed HTTP client for the Soberanía Enterprise Host v1 API.
  *
@@ -120,7 +242,18 @@ export function createEnterpriseHostClient(options: EnterpriseHostClientOptions)
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const baseUrl = options.baseUrl.replace(/\/+$/, '');
 
-  async function request<T>(method: string, path: string, body?: unknown, extraHeaders?: Readonly<Record<string, string>>): Promise<T> {
+  /**
+   * `decode` lets one route own its whole response contract, on every HTTP
+   * status. Only `governAction` passes it; every other method keeps the
+   * original rule that any status >= 400 throws and anything else is returned.
+   */
+  async function request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Readonly<Record<string, string>>,
+    decode?: (status: number, parsed: unknown, route: string) => T,
+  ): Promise<T> {
     const route = `${method} ${path}`;
     const headers: Record<string, string> = {
       accept: 'application/json',
@@ -149,15 +282,10 @@ export function createEnterpriseHostClient(options: EnterpriseHostClientOptions)
       throw new EnterpriseHostNetworkError(route, error);
     }
 
+    if (decode !== undefined) return decode(response.status, parsed, route);
+
     if (response.status >= 400) {
-      const envelope = extractEnvelope(parsed);
-      throw new EnterpriseHostApiError(
-        response.status,
-        envelope?.code ?? 'UNKNOWN',
-        envelope?.message ?? `Request to '${route}' failed with status ${response.status}.`,
-        parsed,
-        envelope?.details,
-      );
+      throw apiErrorFor(response.status, parsed, `Request to '${route}' failed with status ${response.status}.`);
     }
     return parsed as T;
   }
@@ -175,6 +303,8 @@ export function createEnterpriseHostClient(options: EnterpriseHostClientOptions)
     verifyEvaluation: (evaluationId) => request('GET', `/api/governance/evaluations/${encode(evaluationId)}/verify`),
     getDecision: (decisionId) => request('GET', `/api/governance/decisions/${encode(decisionId)}`),
     getRequest: (requestId) => request('GET', `/api/governance/requests/${encode(requestId)}`),
+
+    governAction: (intent) => request('POST', '/api/governed-actions', intent, undefined, decodeGovernedActionResponse),
 
     buildEvidence: (body) => request('POST', '/api/evidence/build', body),
     verifyEvidence: (bundleId) => request('POST', '/api/evidence/verify', { bundleId }),

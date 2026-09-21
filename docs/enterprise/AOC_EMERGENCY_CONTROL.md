@@ -1,6 +1,6 @@
 # AOC Emergency Control
 
-**Status:** internal capability. Opt-in at composition. No customer HTTP route, no SDK method, no intent field.
+**Status:** internal capability. Opt-in at composition. No customer HTTP route, no SDK method, no intent field. The customer route `POST /api/governed-actions` (P5) *observes* a stop as a `withheld` / `emergency-control` result; it can never activate, release, inspect or choose one.
 
 > **Has an operator administratively stopped execution for what is being
 > attempted, and can that be established at all right now?**
@@ -587,7 +587,11 @@ enterprise.emergencyControlAdministration?.activate({
 
 No HTTP route, no SDK method, no `GovernedActionIntent` field, no path through
 `AocEnterprise.evaluate()`, and nothing an actor could use to disable its own
-stop. The Enterprise barrel re-exports **types only**: a published-package
+stop. `POST /api/governed-actions` (P5) reaches this interlock only as the path
+it governs: a caller sees `{ status: "withheld", withheldBy: "emergency-control" }`
+with HTTP 409, and nothing about which control, who declared it or when
+(`governed-action-api-endpoint.test.ts` covers global, organization, actor,
+resource, selected-adapter and unreadable stops, and historical replay). The Enterprise barrel re-exports **types only**: a published-package
 consumer is never handed a factory for a store that can stop or resume a
 deployment. `emergency-control-composition.test.ts` pins each of these.
 
