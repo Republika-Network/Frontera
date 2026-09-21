@@ -9,9 +9,12 @@ import type { BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant
 import {
   EXECUTION_FAILURE_REASONS,
   GRANT_EXERCISE_REASON_CODES,
+  adapterErrorDetail,
   assessBoundedGrantExercise,
+  readExecutionAdapterResult,
   type BoundedGrantExerciseAssessment,
   type ExecutionAdapter,
+  type ExecutionAdapterResult,
   type ExecutionOutcome,
   type GrantExerciseRequest,
   type ValidatedExecutionAction,
@@ -318,9 +321,9 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           ? { adapterId: composedAdapterId }
           : { adapterId: result.adapterId, routedBy: composedAdapterId };
 
-      let result;
+      let returned: unknown;
       try {
-        result = await adapter.execute(action);
+        returned = await adapter.execute(action);
       } catch (error) {
         // One typed signal, from one trusted source, and no other. A composite
         // adapter that resolved a child and found an adapter-scoped stop active
@@ -359,7 +362,34 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           correlation,
           adapterId: composedAdapterId,
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
-          ...(error instanceof Error && error.message.length > 0 ? { detail: error.message } : {}),
+          ...adapterErrorDetail(error),
+          exercisedAt,
+        };
+      }
+
+      // Reading what the adapter returned runs the adapter's code — a getter,
+      // a Proxy trap — so it happens in a try of its own, and **after** the
+      // emergency-control check above has been left behind: a throw from here
+      // is never read as a withholding, from any adapter, registry or not. A
+      // result that throws while being read, or is not a well-formed result,
+      // is the adapter failing its port contract, and becomes `ADAPTER_ERROR`
+      // rather than an exception escaping the execution boundary. From here on
+      // only the normalized copy is touched.
+      let result: ExecutionAdapterResult | undefined;
+      let unreadable: unknown;
+      try {
+        result = readExecutionAdapterResult(returned);
+      } catch (error) {
+        unreadable = error;
+      }
+      if (result === undefined) {
+        return {
+          status: 'execution-failed',
+          assessment,
+          correlation,
+          adapterId: composedAdapterId,
+          reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
+          ...adapterErrorDetail(unreadable),
           exercisedAt,
         };
       }

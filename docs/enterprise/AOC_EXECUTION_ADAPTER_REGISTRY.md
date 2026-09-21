@@ -225,6 +225,27 @@ a registry consults a reader before reaching a child. A direct adapter's throw
 stays `ADAPTER_ERROR` whether it is a plain `Error`, a lookalike, or a genuine
 `EmergencyControlWithheldError`.
 
+Registry membership authenticates the *registry*. It does not authenticate every
+throw that passes through the registry, so no child-originated throw may leave
+it. That includes throws raised while **reading** what a child returned, not
+only throws from `execute`. The returned object is child code: an enumerable
+getter runs on a field read or on `{ ...result }`, and a `Proxy` runs a trap on
+every observation. An earlier revision caught the child's `execute` throw and
+then spread the result outside that catch. A child could therefore resolve
+normally, have a getter throw a genuine `EmergencyControlWithheldError` during
+the spread, and have it recorded as an emergency stop nobody declared.
+
+The call and every read of its result now happen inside one `try`, through
+`readExecutionAdapterResult`. That reader reads each field exactly once, copies
+only primitives from the closed vocabulary into a fresh frozen object, and
+treats a malformed shape as `ADAPTER_ERROR`. The thrown value's `message` is
+read through the total `adapterErrorDetail`, so even a hostile `message` getter
+cannot escape the catch. `GrantExecutionService` applies the same reader to what
+the composed adapter returned, in a `try` that sits after the emergency-control
+check. A throw there is `ADAPTER_ERROR` from any adapter and never escapes the
+execution boundary. The only withholding a registry can raise is the one from
+its own reader check, before any child runs.
+
 A stop here is never reported as `PROVIDER_REJECTED`: the provider was never
 contacted. See `AOC_EMERGENCY_CONTROL.md` §2.
 

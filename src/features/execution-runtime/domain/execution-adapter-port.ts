@@ -117,6 +117,67 @@ export type ExecutionAdapterResult =
   | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string; readonly adapterId?: string };
 
 /**
+ * An adapter's returned value, copied into a fresh, plain
+ * `ExecutionAdapterResult` — or `undefined` when it is not one.
+ *
+ * ## Why this exists: the result is adapter-controlled code, not data
+ *
+ * What `execute` resolves to is an object the adapter built, and observing it
+ * **runs the adapter's code**: an enumerable getter runs on `result.providerRef`
+ * and on `{ ...result }`, and a `Proxy` runs a trap on every `get`, `ownKeys`
+ * and `getOwnPropertyDescriptor`. An earlier revision caught a child's throw
+ * around `await childAdapter.execute(action)` and then spread the result
+ * *outside* that catch, so a child could resolve successfully with a getter
+ * that threw a genuine `EmergencyControlWithheldError`. The throw left the
+ * registry, the execution service saw it arrive from an authenticated
+ * registry, and recorded `withheldBy: 'emergency-control'` for a stop no
+ * `EmergencyControlReaderPort` had declared — the provenance claim registry
+ * authentication exists to deny. A directly composed adapter's getter, read by
+ * the service after its own catch, escaped the execution boundary entirely.
+ *
+ * So both call sites run this **inside** the try that already turns an adapter
+ * throw into `ADAPTER_ERROR`, and treat `undefined` the same way. Everything
+ * after it touches only the value this returns, which the adapter cannot run
+ * code in.
+ *
+ * ## What it accepts
+ *
+ * Each field is read **exactly once**, and only primitives from the closed
+ * vocabulary are copied: `outcome` of `'completed'` or `'failed'`; a string
+ * `providerRef`, `detail` or `adapterId` where present; a `reason` from
+ * `EXECUTION_FAILURE_REASON_VALUES`. Anything else — a non-object, an unknown
+ * outcome, a non-string reference, a reason outside the vocabulary — is a
+ * result that broke the port's contract, and the answer is `undefined`, never
+ * a best guess. Nothing adapter-controlled survives to be read again later by
+ * the ledger or a serializer.
+ *
+ * It may throw — that is the adapter's code running — and callers must catch
+ * it. It never throws on its own account.
+ */
+export function readExecutionAdapterResult(value: unknown): ExecutionAdapterResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const source = value as Record<string, unknown>;
+  const outcome = source['outcome'];
+  const adapterId = source['adapterId'];
+  if (adapterId !== undefined && typeof adapterId !== 'string') return undefined;
+  const attribution = adapterId !== undefined ? { adapterId } : {};
+
+  if (outcome === 'completed') {
+    const providerRef = source['providerRef'];
+    if (providerRef !== undefined && typeof providerRef !== 'string') return undefined;
+    return Object.freeze({ outcome: 'completed', ...(providerRef !== undefined ? { providerRef } : {}), ...attribution });
+  }
+  if (outcome === 'failed') {
+    const reason = source['reason'];
+    const detail = source['detail'];
+    if (!EXECUTION_FAILURE_REASON_VALUES.includes(reason as ExecutionFailureReason)) return undefined;
+    if (detail !== undefined && typeof detail !== 'string') return undefined;
+    return Object.freeze({ outcome: 'failed', reason: reason as ExecutionFailureReason, ...(detail !== undefined ? { detail } : {}), ...attribution });
+  }
+  return undefined;
+}
+
+/**
  * ## `adapterId` on a result: which adapter actually performed the effect
  *
  * A composite adapter — `createExecutionAdapterRegistry` — satisfies this port
@@ -147,4 +208,27 @@ export interface ExecutionAdapter {
   readonly adapterId: string;
   /** Translate and execute an already-authorized, grant-valid action. Called only after a usable exercise assessment, and never otherwise. */
   execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult>;
+}
+
+/**
+ * The `detail` an `ADAPTER_ERROR` may carry, taken from what an adapter threw
+ * — **total**: it never throws, whatever it is handed.
+ *
+ * The thrown value is adapter-controlled too. `error.message` can be a getter,
+ * and `instanceof` runs a Proxy's `getPrototypeOf` trap, so reading either in
+ * a `catch` block is running adapter code where nothing is left to catch it: a
+ * `message` getter that throws a genuine `EmergencyControlWithheldError` from
+ * inside the registry's catch would escape the registry exactly as a result
+ * getter did. Any throw while reading is swallowed and the detail omitted — the
+ * outcome is `ADAPTER_ERROR` regardless, and only a plain non-empty string is
+ * ever copied.
+ */
+export function adapterErrorDetail(error: unknown): { readonly detail?: string } {
+  try {
+    if (!(error instanceof Error)) return {};
+    const message: unknown = error.message;
+    return typeof message === 'string' && message.length > 0 ? { detail: message } : {};
+  } catch {
+    return {};
+  }
 }

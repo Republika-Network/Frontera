@@ -7,6 +7,8 @@ import {
 } from '../../emergency-control-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
+  adapterErrorDetail,
+  readExecutionAdapterResult,
   type ExecutionAdapter,
   type ExecutionAdapterResult,
   type ValidatedExecutionAction,
@@ -325,24 +327,45 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       //    comes from the membership snapshotted at composition — never from
       //    the child's result, never from the child's live property, and never
       //    from the caller.
-      let result: ExecutionAdapterResult;
+      //
+      //    **Everything** the child controls is observed inside this one try:
+      //    the call, and reading what it returned. The returned object is the
+      //    child's code as much as `execute` is — a getter or a Proxy trap runs
+      //    when it is read — so an earlier revision that spread it *after* the
+      //    catch let a child resolve normally and then throw a genuine
+      //    `EmergencyControlWithheldError` from a getter. That throw left this
+      //    registry, which the execution service authenticates, and was
+      //    recorded as an emergency stop nobody declared. No child-originated
+      //    throw may leave this block: the only withholding this registry
+      //    raises is the one from its own reader check above.
+      let normalized: ExecutionAdapterResult | undefined;
+      let failure: unknown;
       try {
-        result = await childAdapter.execute(action);
+        normalized = readExecutionAdapterResult(await childAdapter.execute(action));
       } catch (error) {
-        // A child that raises has failed to execute, and it is still *that*
-        // child that failed. Converting here rather than letting the throw
-        // reach the execution service preserves the attribution; the outcome is
-        // the same `ADAPTER_ERROR` it has always been.
+        failure = error;
+      }
+      if (normalized === undefined) {
+        // A child that raises — from `execute` or from its result — or returns
+        // something that is not a result has failed to execute, and it is
+        // still *that* child that failed. Converting here rather than letting
+        // anything reach the execution service preserves the attribution; the
+        // outcome is the same `ADAPTER_ERROR` it has always been.
+        // `adapterErrorDetail` is total, so even a thrown value whose `message`
+        // getter throws cannot escape from here.
         return {
           outcome: 'failed',
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
-          ...(error instanceof Error && error.message.length > 0 ? { detail: error.message } : {}),
+          ...adapterErrorDetail(failure),
           adapterId: member.adapterId,
         };
       }
-      // The child's own `adapterId`, if it set one, is discarded: attribution
-      // is the routing decision's to make, not the routed adapter's to claim.
-      return { ...result, adapterId: member.adapterId };
+      // Built from the normalized copy, never from the child's object. The
+      // child's own `adapterId`, if it set one, is discarded: attribution is
+      // the routing decision's to make, not the routed adapter's to claim.
+      return normalized.outcome === 'completed'
+        ? { outcome: 'completed', ...(normalized.providerRef !== undefined ? { providerRef: normalized.providerRef } : {}), adapterId: member.adapterId }
+        : { outcome: 'failed', reason: normalized.reason, ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
     },
   });
 
