@@ -9,6 +9,7 @@ import {
   isEmergencyControlScope,
   isWellFormedEmergencyControlDeclaration,
   isWellFormedEmergencyControlQuery,
+  isWellFormedEmergencyControlRelease,
   EMERGENCY_CONTROL_CLEAR,
   type EmergencyControlAssessment,
   type EmergencyControlDeclaration,
@@ -503,13 +504,20 @@ export async function createSqliteEmergencyControlStore(
   const selectControl = db.prepare(
     `SELECT control_key, scope, scope_value, active, issuer_ref, declared_at, event_sequence, event_digest, record_digest, schema_version FROM emergency_controls WHERE control_key = ?`,
   );
-  const selectActive = db.prepare(
-    `SELECT control_key, scope, scope_value, active, issuer_ref, declared_at, event_sequence, event_digest, record_digest, schema_version FROM emergency_controls WHERE active = 1`,
-  );
   const selectEvent = db.prepare(
     `SELECT sequence, control_key, scope, scope_value, transition, issuer_ref, recorded_at, previous_event_digest, event_digest, schema_version FROM emergency_control_events WHERE sequence = ?`,
   );
-  const selectEventStats = db.prepare(`SELECT COUNT(*) AS count, COALESCE(MAX(sequence), 0) AS max_sequence FROM emergency_control_events`);
+  // The whole history, in order, for the chain walk. Ordered by the primary
+  // key, so SQLite returns it from the index without a sort.
+  const selectAllEvents = db.prepare(
+    `SELECT sequence, control_key, scope, scope_value, transition, issuer_ref, recorded_at, previous_event_digest, event_digest, schema_version FROM emergency_control_events ORDER BY sequence ASC`,
+  );
+  // Every key this database has ever mentioned, from either side. A key present
+  // in only one of the two is precisely the disagreement operator diagnostics
+  // have to notice.
+  const selectKnownKeys = db.prepare(
+    `SELECT control_key FROM emergency_control_events UNION SELECT control_key FROM emergency_controls`,
+  );
   const selectKeyStats = db.prepare(`SELECT COUNT(*) AS count, COALESCE(MAX(sequence), 0) AS max_sequence FROM emergency_control_events WHERE control_key = ?`);
   const selectHead = db.prepare(`SELECT event_sequence, event_count, event_digest, head_digest, updated_at, schema_version FROM emergency_control_head WHERE id = 1`);
   const insertEvent = db.prepare(
@@ -557,13 +565,43 @@ export async function createSqliteEmergencyControlStore(
   let closed = false;
 
   /**
-   * The head, proven consistent with the event table — or `undefined`.
+   * The head, proven consistent with the **entire** event history — or
+   * `undefined`.
    *
-   * Three things are checked, and each catches a different destructive edit:
-   * the head row recomputes its own digest (mutation); the event table holds
-   * exactly the number of rows the head counts, with exactly the head's highest
-   * sequence (deletion, truncation, or a rolled-back head); and the event the
-   * head names exists and digests to what the head recorded (substitution).
+   * An earlier revision checked the head's own digest, the event table's count
+   * and highest sequence, and the single event the head names. That is enough
+   * to catch a deleted head, a truncated table and a substituted latest event,
+   * and it is **not** enough to catch a rewritten *old* one. With
+   *
+   *     event 1  organization:org-acme  activated
+   *     event 2  organization:org-acme  released     — the head names this
+   *
+   * rewriting event 1's `transition` leaves the count at 2, the maximum
+   * sequence at 2, and event 2 digesting exactly as recorded, so every check
+   * passed and the read reported success over a history that had been altered.
+   * `verifiedControl` did not catch it either: it verifies only the *latest*
+   * event for its key. The module advertises an append-only hash chain, and a
+   * chain nobody walks is a chain nobody has.
+   *
+   * So the walk is the verification. From genesis forward, each row must be the
+   * next sequence, must parse (which recomputes its own digest over its
+   * state-bearing fields), and must name the previous row's digest as its
+   * `previousEventDigest` — the link that makes rewriting *any* event break
+   * every event after it. What the head claims is then checked against what the
+   * walk actually found: the number of events, the final sequence, and the
+   * final digest.
+   *
+   * ## Cost, stated exactly
+   *
+   * This is **O(number of operator transitions)**, on every read — not
+   * constant-time, and it is not cached, because a cache is a second answer
+   * that can disagree with the database at the commit boundary this read exists
+   * to be correct at. What bounds it is that the history grows only when an
+   * operator activates or releases a control: it is bounded by operator
+   * actions, never by request traffic, so a deployment taking a million
+   * governed actions against a handful of declared stops walks a handful of
+   * rows each time. It stays synchronous, and it stays inside the caller's
+   * transaction.
    */
   function verifiedHead(): EmergencyControlHeadRecord | undefined {
     const headRow = selectHead.get() as HeadRow | undefined;
@@ -571,19 +609,30 @@ export async function createSqliteEmergencyControlStore(
     const head = parseStoredHead(headRow);
     if (head === undefined) return undefined;
 
-    const stats = selectEventStats.get() as { count: number; max_sequence: number };
-    if (stats.count !== head.eventCount) return undefined;
-    if (stats.max_sequence !== head.eventSequence) return undefined;
+    const rows = selectAllEvents.all() as readonly EventRow[];
+    let expectedPrevious = EMERGENCY_CONTROL_GENESIS_DIGEST;
+    let verified = 0;
 
-    if (head.eventSequence === 0) {
-      return head.eventDigest === EMERGENCY_CONTROL_GENESIS_DIGEST && head.eventCount === 0 ? head : undefined;
+    for (const row of rows) {
+      // Contiguous from 1: a gap, a duplicate or a re-numbered row is caught
+      // here rather than by counting alone, so deleting an interior event
+      // cannot be hidden by inserting another somewhere else.
+      if (row.sequence !== verified + 1) return undefined;
+      const event = parseStoredEvent(row);
+      if (event === undefined) return undefined;
+      // The link. Rewriting event N changes its digest, which is what event
+      // N+1 recorded as its predecessor, so the break surfaces even when the
+      // head and the latest event are untouched.
+      if (event.previousEventDigest !== expectedPrevious) return undefined;
+      expectedPrevious = row.event_digest;
+      verified += 1;
     }
 
-    const eventRow = selectEvent.get(head.eventSequence) as EventRow | undefined;
-    if (eventRow === undefined) return undefined;
-    const event = parseStoredEvent(eventRow);
-    if (event === undefined) return undefined;
-    return event.sequence === head.eventSequence && eventRow.event_digest === head.eventDigest ? head : undefined;
+    // And the head must describe the history that was just walked, rather than
+    // some other one.
+    if (verified !== head.eventCount) return undefined;
+    if (verified !== head.eventSequence) return undefined;
+    return expectedPrevious === head.eventDigest ? head : undefined;
   }
 
   /**
@@ -759,18 +808,47 @@ export async function createSqliteEmergencyControlStore(
     });
   });
 
+  /**
+   * The operator view: every key this database knows about, reconciled, and
+   * only then filtered to the active ones.
+   *
+   * The distinction from the effect-path read is deliberate and runs the other
+   * way. A read answers *one query* and is scoped to it: a corrupt row for an
+   * organization the query is not about does not block an unrelated tenant,
+   * because blocking every tenant over one unrelated row is an availability
+   * failure nobody chose. `active()` and `health()` answer *about the store*,
+   * so they must reconcile all of it — an operator asking whether the kill
+   * switch is sound is owed the whole answer or none of it.
+   *
+   * An earlier revision selected `WHERE active = 1` and validated only what
+   * came back, which is the one query that cannot see the rows that matter: an
+   * active projection that was **deleted**, and one whose `active` flag was
+   * **flipped to 0**, both leave that result set before anything validates
+   * them. History and head stayed intact, the loop validated nothing, and
+   * `active()` returned `[]` while `health()` reported `healthy` — at the same
+   * moment an effect-path read for that very control was correctly returning
+   * `unavailable`. Operator diagnostics contradicting the effect path, in the
+   * direction that says "all clear", is the worst available answer.
+   *
+   * Enumerating from **both** sides is what closes it: a key in the history
+   * with no projection, and a projection with no history, are each a
+   * disagreement, and neither side alone can see both.
+   */
   const runActive = db.transaction((): readonly EmergencyControlScopeMatch[] => {
     if (verifiedHead() === undefined) {
       throw corruptError('The emergency-control history could not be verified, so the active-control list cannot be reported.');
     }
-    const rows = selectActive.all() as readonly ControlRow[];
+    const keys = selectKnownKeys.all() as readonly { control_key: string }[];
     const out: EmergencyControlScopeMatch[] = [];
-    for (const row of rows) {
-      const control = verifiedControl(row.control_key);
-      if (control === undefined) {
-        throw corruptError(`Persisted state for emergency control '${row.scope}' could not be verified, so the active-control list cannot be reported.`);
+    for (const { control_key: key } of keys) {
+      const control = verifiedControl(key);
+      // A key named by the history or by the projection is a key that was
+      // declared, so `never-declared` here is itself a disagreement rather than
+      // an honest absence.
+      if (control === undefined || control === 'never-declared') {
+        throw corruptError('Persisted emergency-control state could not be reconciled, so the active-control list cannot be reported.');
       }
-      if (control === 'never-declared' || !control.active) continue;
+      if (!control.active) continue;
       out.push(control.value === undefined ? { scope: control.scope } : { scope: control.scope, value: control.value });
     }
     return Object.freeze(out);
@@ -806,14 +884,14 @@ export async function createSqliteEmergencyControlStore(
 
     release(release: EmergencyControlRelease): void {
       if (closed) throw unavailableError('The emergency-control store has been closed.');
-      if (!isEmergencyControlScope(release.scope)) {
-        throw new EmergencyControlStoreError('EMERGENCY_CONTROL_DECLARATION_INVALID', 'An emergency-control release must name a known scope.');
-      }
-      if (release.scope === 'global' ? release.value !== undefined : typeof release.value !== 'string' || release.value.length === 0) {
-        throw new EmergencyControlStoreError('EMERGENCY_CONTROL_DECLARATION_INVALID', 'An emergency-control release must state a value for every scope but global.');
-      }
-      if (typeof release.issuerRef !== 'string' || release.issuerRef.length === 0 || typeof release.releasedAt !== 'string' || release.releasedAt.length === 0) {
-        throw new EmergencyControlStoreError('EMERGENCY_CONTROL_DECLARATION_INVALID', 'An emergency-control release must state an issuerRef and an instant.');
+      // The same predicate the in-memory store applies, rather than a second
+      // hand-written copy of the rule. The two had already drifted once, in the
+      // direction that resumes execution.
+      if (!isWellFormedEmergencyControlRelease(release)) {
+        throw new EmergencyControlStoreError(
+          'EMERGENCY_CONTROL_DECLARATION_INVALID',
+          'An emergency-control release must state a known scope, a value for every scope but global, an issuerRef and an instant.',
+        );
       }
       runRelease(release);
     },

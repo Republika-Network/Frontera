@@ -17,10 +17,29 @@ import { EMERGENCY_CONTROL_REASON_CODES, type EmergencyControlReasonCode } from 
  *
  * Widening `ExecutionAdapterResult` with a third case was the alternative, and
  * it is worse: every adapter implementation in existence, including ones a host
- * writes, would gain the ability to claim an emergency stop. Only trusted code
- * holding an `EmergencyControlReaderPort` can construct this class, and the
- * execution service recognises **this type and no other** — an ordinary adapter
- * throw remains `ADAPTER_ERROR`, exactly as it was.
+ * writes, would gain the ability to claim an emergency stop.
+ *
+ * ## The type is not the authentication
+ *
+ * An earlier revision of this comment claimed that only trusted code holding an
+ * `EmergencyControlReaderPort` could construct this class. That was never true.
+ * The constructor takes an assessment object — an ordinary value anyone can
+ * write down — so any module that can reach this class can throw a genuine
+ * instance, and a directly composed adapter could turn its own provider failure
+ * into `withheldBy: 'emergency-control'` simply by throwing one. Recognising it
+ * by type alone was therefore recognising a claim, not evidence.
+ *
+ * What authenticates it is **who threw it**: `GrantExecutionService` honours
+ * this signal only from an adapter that `isExecutionAdapterRegistry` confirms
+ * was produced by `createExecutionAdapterRegistry`, because only a registry
+ * actually consults an `EmergencyControlReaderPort` before reaching a child.
+ * From anything else — including a real instance — the throw stays
+ * `ADAPTER_ERROR`, exactly as an ordinary adapter failure always has.
+ *
+ * The class is exported from this feature so the registry can construct it and
+ * the execution service can recognise it. It is on **no** published entrypoint:
+ * neither `src/index.ts` nor `src/enterprise/index.ts` re-exports it, so it is
+ * not part of any customer or host surface, and nothing here adds one.
  *
  * ## What it may carry
  *

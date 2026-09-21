@@ -5,6 +5,7 @@ import {
   emergencyControlUnavailable,
   isWellFormedEmergencyControlDeclaration,
   isWellFormedEmergencyControlQuery,
+  isWellFormedEmergencyControlRelease,
   EMERGENCY_CONTROL_CLEAR,
   type EmergencyControlAssessment,
   type EmergencyControlDeclaration,
@@ -58,6 +59,18 @@ export function createInMemoryEmergencyControlStore(): InMemoryEmergencyControlS
     },
 
     release(release: EmergencyControlRelease): void {
+      // Validated **before** the delete, and to the same rule the durable store
+      // applies. A release is the one operator action that makes execution
+      // resume, so a malformed one must not resume it: this store is the
+      // default persistence provider, and it previously deleted by derived key
+      // without looking at the object at all. `emergencyControlKey` ignores
+      // `value` for `global`, so `{ scope: 'global', value: 'unexpected',
+      // issuerRef: '', releasedAt: '' }` cleared a live global stop — an
+      // administrative call that was wrong in three places still resumed
+      // execution.
+      if (!isWellFormedEmergencyControlRelease(release)) {
+        throw new RangeError('An emergency control release must state a known scope, a value for every scope but global, an issuerRef and an instant.');
+      }
       controls.delete(emergencyControlKey(release.scope, release.value));
     },
 

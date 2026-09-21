@@ -12,6 +12,7 @@ export {
   isEmergencyControlScope,
   isWellFormedEmergencyControlDeclaration,
   isWellFormedEmergencyControlQuery,
+  isWellFormedEmergencyControlRelease,
   readEmergencyControl,
 } from './emergency-control-port.js';
 export type {

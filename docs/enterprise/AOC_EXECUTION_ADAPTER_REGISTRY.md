@@ -136,10 +136,22 @@ answer.
 
 The identity is set by the registry from its own frozen membership. A child's
 `adapterId` on its result is **discarded**: attribution is the routing
-decision's to make, not the routed adapter's to claim. A plain adapter omits the
-field and the execution service falls back to the adapter it holds — previous
-behaviour exactly. A structural test asserts the registry is the only production
-source that writes it.
+decision's to make, not the routed adapter's to claim. A structural test asserts
+the registry is the only production source that writes it.
+
+And `GrantExecutionService` reads the field only from a registry. The field
+lives on `ExecutionAdapterResult`, so every adapter implementation in existence
+can set it; an earlier revision honoured it from any of them, which let a
+directly composed `adapter-a` return `adapterId: 'adapter-b'` and persist an
+effect as having been performed by an adapter that never ran. The service now
+asks `isExecutionAdapterRegistry(adapter)` — a module-private `WeakSet` the
+factory alone adds to, with no exported `add` — and a direct adapter is always
+recorded under **its own** id, whatever it returns. A plain adapter that omits
+the field behaves exactly as it always did.
+
+The check is deliberately not a naming convention, a boolean property, an
+`instanceof` against an interface or a marker a caller could copy: each of those
+is a value the untrusted side can also produce.
 
 A child that throws is converted here rather than left to reach the execution
 service, so the `ADAPTER_ERROR` it produces still names the child that raised
@@ -187,9 +199,18 @@ propagated as one typed signal, `EmergencyControlWithheldError`, which
 
 Why a signal rather than a third `ExecutionAdapterResult` case: widening that
 result type would let **every** adapter implementation, including ones a host
-writes, claim an emergency stop. Only trusted code holding a reader can
-construct this class, and the execution service recognises this type and no
-other — an ordinary adapter throw stays `ADAPTER_ERROR`.
+writes, claim an emergency stop.
+
+The type is not what makes the signal trustworthy, and this document previously
+said it was. `EmergencyControlWithheldError` has an ordinary constructor taking
+an ordinary assessment object, so any module that can reach the class can throw
+a real instance — and a directly composed adapter doing so turned its own
+provider failure into `withheldBy: 'emergency-control'`. The execution service
+now honours the signal only from an adapter that passes the same
+`isExecutionAdapterRegistry` membership check used for attribution, because only
+a registry consults a reader before reaching a child. A direct adapter's throw
+stays `ADAPTER_ERROR` whether it is a plain `Error`, a lookalike, or a genuine
+`EmergencyControlWithheldError`.
 
 A stop here is never reported as `PROVIDER_REJECTED`: the provider was never
 contacted. See `AOC_EMERGENCY_CONTROL.md` §2.

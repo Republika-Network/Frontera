@@ -10,6 +10,7 @@ import {
   emergencyControlPermits,
   isWellFormedEmergencyControlDeclaration,
   isWellFormedEmergencyControlQuery,
+  isWellFormedEmergencyControlRelease,
   readEmergencyControl,
   type EmergencyControlAssessment,
   type EmergencyControlQuery,
@@ -200,6 +201,64 @@ describe('Emergency control — the writer refuses what it could not read back',
       assert.throws(() => controls.activate(declaration as never));
     }
     assert.deepEqual(controls.active(), []);
+  });
+
+  it('REGRESSION — a malformed release is refused, and the stop it named stays up', () => {
+    // The defect this pins. `release` deleted by derived key without looking at
+    // the object, and `emergencyControlKey` ignores `value` for `global` — so
+    // `{ scope: 'global', value: 'unexpected', issuerRef: '', releasedAt: '' }`,
+    // wrong in three places at once, still deleted the real global stop. This
+    // is the default persistence provider, so an invalid administrative call
+    // silently resumed execution here while the durable store refused the same
+    // call. A release is the one mutation that runs in the dangerous
+    // direction: rejecting it must leave the control exactly as it was.
+    const malformed = [
+      { scope: 'global', value: 'unexpected', issuerRef: ISSUER, releasedAt: AT },
+      { scope: 'organization', issuerRef: ISSUER, releasedAt: AT },
+      { scope: 'organization', value: '', issuerRef: ISSUER, releasedAt: AT },
+      { scope: 'global', issuerRef: '', releasedAt: AT },
+      { scope: 'global', issuerRef: ISSUER, releasedAt: '' },
+      { scope: 'nonsense', value: 'x', issuerRef: ISSUER, releasedAt: AT },
+    ];
+    for (const release of malformed) {
+      const controls = store();
+      controls.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+      assert.equal(isWellFormedEmergencyControlRelease(release as never), false, `${JSON.stringify(release)} must not be well formed`);
+      assert.throws(() => controls.release(release as never), `${JSON.stringify(release)} must be refused`);
+      // The property that actually matters: execution did not resume.
+      assert.deepEqual(controls.active(), [{ scope: 'global' }], `${JSON.stringify(release)} must not clear the stop`);
+      assert.equal(emergencyControlPermits(controls.read(query())), false);
+    }
+  });
+
+  it('a well-formed release still clears the control, and stays idempotent', () => {
+    const controls = store();
+    controls.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    controls.release({ scope: 'global', issuerRef: ISSUER, releasedAt: AT });
+    assert.deepEqual(controls.active(), []);
+    assert.equal(emergencyControlPermits(controls.read(query())), true);
+    // Releasing an already-clear control is a no-op, not an error.
+    controls.release({ scope: 'global', issuerRef: ISSUER, releasedAt: AT });
+    assert.deepEqual(controls.active(), []);
+
+    // And a scoped release clears only what it names.
+    controls.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    controls.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT });
+    controls.release({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, releasedAt: AT });
+    assert.deepEqual(controls.active(), [{ scope: 'actor', value: 'agent-A' }]);
+  });
+
+  it('the release rule is the declaration rule, applied to the mutation that resumes execution', () => {
+    // One predicate, shared by both store implementations, so the two cannot
+    // drift apart again in the direction that clears a stop.
+    assert.equal(isWellFormedEmergencyControlRelease({ scope: 'global', issuerRef: ISSUER, releasedAt: AT }), true);
+    assert.equal(isWellFormedEmergencyControlRelease({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, releasedAt: AT }), true);
+    for (const scope of EMERGENCY_CONTROL_SCOPES) {
+      const release = scope === 'global' ? { scope, issuerRef: ISSUER, releasedAt: AT } : { scope, value: 'v', issuerRef: ISSUER, releasedAt: AT };
+      assert.equal(isWellFormedEmergencyControlRelease(release), true, `${scope} must accept its own shape`);
+      assert.equal(isWellFormedEmergencyControlRelease({ ...release, issuerRef: '' }), false, `${scope} must require an issuerRef`);
+      assert.equal(isWellFormedEmergencyControlRelease({ ...release, releasedAt: '' }), false, `${scope} must require an instant`);
+    }
   });
 
   it('activating twice leaves the first declaration standing', () => {

@@ -118,6 +118,34 @@ export function isExecutionAdapterRegistryError(error: unknown): error is Execut
  */
 const COMPOSED_REGISTRIES = new WeakSet<object>();
 
+/**
+ * Whether this exact object was produced by `createExecutionAdapterRegistry`.
+ *
+ * The **only** way an adapter becomes trusted, and the reason two of this
+ * service's trust decisions can be made at all. Membership is recorded by the
+ * factory below, into a `WeakSet` that is module-private and has no exported
+ * `add`: nothing outside this file can enrol an object, so the answer cannot be
+ * forged from outside. Every cheaper test was rejected for being forgeable —
+ * an `adapterId` naming convention is a string a caller picks, a boolean
+ * property is a property a caller sets, `instanceof` against an interface does
+ * not exist at runtime, and a marker symbol is a marker anything can copy.
+ *
+ * Two things downstream depend on this and nothing else:
+ *
+ * 1. **Routed attribution.** Only a registry may report a performing adapter
+ *    other than itself, because only a registry resolved that child from a
+ *    membership frozen at composition.
+ * 2. **The emergency-control signal.** Only a registry may raise the typed
+ *    withholding the execution service maps onto `withheldBy:
+ *    'emergency-control'`, because only a registry consulted an
+ *    `EmergencyControlReaderPort` before reaching a child.
+ *
+ * A directly composed adapter gets neither, whatever it returns or throws.
+ */
+export function isExecutionAdapterRegistry(adapter: unknown): boolean {
+  return typeof adapter === 'object' && adapter !== null && COMPOSED_REGISTRIES.has(adapter);
+}
+
 const DEFAULT_REGISTRY_ADAPTER_ID = 'frontera.execution-adapter-registry';
 
 /**
