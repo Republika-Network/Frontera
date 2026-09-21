@@ -135,7 +135,7 @@ The entire outbound network surface of this repository is **two SDKs**: `pinata`
 
 ## 5. Effect-Path Inventory
 
-Forty-six production-capable effect paths, enumerated from current source. Every one carries a stable `EP-` id and exactly one classification from §6.
+Forty-nine production-capable effect paths, enumerated from current source. Every one carries a stable `EP-` id and exactly one classification from §6.
 
 `Reachable?` uses: **HTTP** (reachable over the network), **IN-PROCESS** (trusted host code only, no route), **PUBLISHED API** (reachable by a consumer of the published tarball), **OPERATOR** (a human running tooling), **NONE** (no production caller found).
 
@@ -156,12 +156,13 @@ Forty-six production-capable effect paths, enumerated from current source. Every
 
 ### 5.2 Frontera Core — bounded-grant authority-controlled execution
 
-Not HTTP-reachable by design: no route issues, extends, revokes or exercises a grant (SEC-INV-027).
+No route issues, extends, revokes or exercises a grant *as a caller-held artifact* (SEC-INV-027). Since P5 the path has exactly **one** HTTP entry, EP-049, which enters at the top — customer admission, then the Governed Action Orchestrator — and reaches EP-011 only through a committed decision and a server-held grant.
 
 | ID | Effect path | Entry point | Effect | Authority gate | Effect binding | External dependency | Reachable? | Class |
 |---|---|---|---|---|---|---|---|---|
 | **EP-011** | **Bounded-grant exercise** | `AuthorityControlledExecutionService.exercise()` → `GrantExecutionService.exercise()` → `ExecutionAdapter.execute()` — where that adapter may be the composite `createExecutionAdapterRegistry(...)`, which routes server-side to exactly one trusted child (§7.1) | EXTERNAL — whatever the host-supplied adapter translates the validated action into | Authoritative store re-read on **every** attempt + 12 fail-closed checks (§6 proof); plus, when composed, the operational emergency-control interlock at four checkpoints (§6.4 limit 4) | **Yes** — the assessed action *is* the payload; 17-field whitelist; no free-form channel | host-supplied adapter → provider | IN-PROCESS | **PROVEN — PATH LOCAL** |
 | **EP-012** | Bounded-grant issuance | `AuthorityControlledExecutionService.authorize()` → `GrantIssuanceService.issueGrant()` | AUTHORITY MUTATION (A-01) | Kernel decision + attenuation + synchronous `commitGuard` inside the store transaction + commit-time authority-binding **equality** | n/a | in-memory store | IN-PROCESS | **PROVEN — PATH LOCAL** |
+| **EP-049** | **Customer governed action (HTTP)** — the first customer-facing HTTP route onto the bounded-grant path | `POST /api/governed-actions` → `AocEnterprise.governAction` → `CustomerIdentityAdmission.admit()` → `GovernedActionOrchestrator.govern()` → Kernel decision → **committed** Governance Record → bounded grant (ACE issuance core) → ACE exercise (EP-011) → `ExecutionAdapter` / registry child | EXTERNAL — the provider effect of EP-011; plus the PERSISTENCE of the committed record and execution references | `CustomerIdentityAdmission` (bound customer credential, **always**, independent of `AOC_ENTERPRISE_REQUIRE_AUTH`) + Kernel + persisted, re-verified decision + bounded grant + authoritative exercise + optional emergency control at four checkpoints (SEC-INV-055 … SEC-INV-061) | **Yes** — as EP-011; the request body is a closed intent that names no adapter, provider, destination, credential or payload | host-supplied adapter / registry children | HTTP — **capability-gated**: mounted only when customer identity admission **and** the orchestrator are composed | **PROVEN — PATH LOCAL** |
 | **EP-013** | Bounded-grant revocation | `AuthorityControlledExecutionService.revokeGrant()` | AUTHORITY MUTATION (A-01) | Store idempotency; first revocation stands and is never re-dated | n/a | in-memory store | IN-PROCESS | **PROVEN — PATH LOCAL** |
 
 ### 5.3 Frontera Core — decision-time enforcement
@@ -250,15 +251,17 @@ Every row here is **EXCEPTED — SEPARATE AUTHORITY MODEL** unless stated. None 
 | Classification | Count | Effect paths |
 |---|---|---|
 | PROVEN | **0** | — |
-| PROVEN — PATH LOCAL | **3** | EP-011, EP-012, EP-013 |
+| PROVEN — PATH LOCAL | **4** | EP-011, EP-012, EP-013, EP-049 |
 | EXCEPTED — SEPARATE AUTHORITY MODEL | **18** | EP-015…EP-019, EP-032…EP-044 |
 | PARTIALLY BOUND | **1** | EP-014 |
 | DEPLOYMENT-GATED | **19** | EP-002, EP-003, EP-006…EP-010, EP-020…EP-026, EP-028, EP-029, EP-046, EP-047, EP-048 |
 | NON-EFFECTING | **5** | EP-001, EP-004, EP-005, EP-030, EP-045 |
 | DEAD / UNREACHABLE | **2** | EP-027, EP-031 |
-| **Total** | **48** | |
+| **Total** | **49** | |
 
-**Three of forty-eight effect paths are under bounded-grant control.** That is the single most important number in this document, and every external statement about Frontera's execution control must be consistent with it.
+**Four of forty-nine effect paths are under bounded-grant control.** That is the single most important number in this document, and every external statement about Frontera's execution control must be consistent with it.
+
+*P5 changed this number from three of forty-eight to four of forty-nine.* The one addition, EP-049, is `POST /api/governed-actions` — the first customer-facing HTTP route onto the bounded-grant path. It is counted in the numerator because it **is** that path, entered from the top: it reaches a provider only through EP-011, after customer admission, a committed Kernel decision and a server-held bounded grant. It does **not** mean any other effect path became governed: `enforce()`, Sovereign Access, Content Protection, the raw provider seam, the authority-write surfaces and Agent Passport Web are exactly as classified above, with every path-local caveat intact.
 
 *Prompt 4 changed this number from forty-six to forty-eight, and did not change the numerator.* The two additions are EP-047 and EP-048, the operator write surface of the emergency-control interlock. They are inventoried because they mutate state a later execution reads, which is exactly the criterion §5.7 applies to EP-021…EP-026 — not because any new way to reach a provider appeared. The server-side execution adapter registry added **no** effect path: it introduces no entry point, no egress site and no provider, and the children a deployment registers are the same trusted host code a single `executionAdapter` always was (§7.1).
 
@@ -710,6 +713,7 @@ This is the heart of the proof. For each protected resource: **what are all know
 | Path | Governed by | Notes |
 |---|---|---|
 | EP-011 `GrantExecutionService.exercise()` | The full 12-check gate | The only Frontera path |
+| EP-049 `POST /api/governed-actions` | Customer admission, then EP-011 via a committed decision and a server-held grant | Not a second path to the adapter: an HTTP entry to the first |
 | Host's own reference to the adapter it constructed | **Nothing** | §7.4; outside the repository's control |
 | Whatever provider the adapter wraps, reached directly | **Nothing** | The adapter is host code; Frontera ships none |
 
@@ -896,6 +900,15 @@ One row per effect path group. Every EP in §5 is covered.
 - **EXCEPTIONS:** §6.4 — per-attempt not aggregate; adapter is trusted code; store is in-memory by default; the kill switch does not reach it.
 - **BYPASS CONDITIONS:** the host's own reference to the adapter it constructed (§7.4).
 - **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4, D-A8.
+
+### EP-049 — Customer governed action over HTTP (P5)
+- **CLAIM:** a caller reaches a provider through this route only as a bound customer principal, only for the actor its credential is bound to, only after a Kernel decision is durably committed and a bounded grant is issued from it server-side, and only through EP-011's exercise gate; the caller can name no identity, grant, adapter, provider, destination, credential or payload, and receives no grant, digest or adapter identity.
+- **EVIDENCE:** `src/enterprise/__tests__/governed-action-api-endpoint.test.ts` (real composed Host over real HTTP: authentication, identity, intent, routing, every governance outcome, idempotency, five emergency-control scopes plus unreadable state, historical replay, response key walk), `governed-action-composition.test.ts` GOV-ACT-11 (adapter and sequence structure), `scripts/check-api-freeze.mjs` (gated route unmounted on the default Host).
+- **CLASSIFICATION:** **PROVEN — PATH LOCAL.**
+- **SCOPE:** this route, when both capabilities are composed. Nothing here extends to any other EP.
+- **EXCEPTIONS:** as EP-011 (§6.4). Credentials are static bearer API keys; identity is as strong as their configuration and the operator-provisioned subject binding.
+- **BYPASS CONDITIONS:** as EP-011 — the host's own adapter reference (§7.4). A host that writes its own listener around `AocEnterprise.governAction` is trusted code.
+- **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4, D-A8; TLS in front of the listener.
 
 ### EP-012, EP-013 — Bounded-grant issuance and revocation
 - **CLAIM:** issuance checks run inside the store's commit boundary — the guard is synchronous *by type*, so no `await` can interleave between the read that decides and the write that records; any change to the authority binding between measurement and commit refuses, by **equality** rather than containment; an issued grant is equal to or narrower than the authority it derives from on every axis.

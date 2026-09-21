@@ -25,8 +25,9 @@ import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js'
 
 /**
  * The composition hook (§41–42), legacy `POST /api/governance/evaluate` parity
- * (GOV-ACT-10), the absence of any route (GOV-ACT-11), and the structural
- * boundary of `src/enterprise/governed-action` (§30, §31, §44).
+ * (GOV-ACT-10), the one capability-gated customer route (GOV-ACT-11, narrowed
+ * by P5), and the structural boundary of `src/enterprise/governed-action`
+ * (§30, §31, §44).
  */
 
 const SUBJECT = { system: 'datasys-app', subjectId: 'user-pmfreak' } as const;
@@ -363,14 +364,46 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
   });
 });
 
-describe('GOV-ACT-11: no HTTP governed-action route exists', () => {
-  it('the Node HTTP adapter has no governed-action route and does not reach the orchestrator', () => {
-    const adapter = codeOf('src/enterprise/adapters/node-http-adapter.ts');
-    assert.equal(/governed-action|governedAction|governed_action/i.test(adapter), false);
+describe('GOV-ACT-11 (narrowed by P5): exactly one HTTP route reaches the orchestrator, and only through the customer-plane sequence', () => {
+  const ADAPTER = 'src/enterprise/adapters/node-http-adapter.ts';
+  const SEQUENCE = 'src/enterprise/orchestration/govern-governed-action-request.ts';
+
+  it('the Node HTTP adapter reaches governed actions only through `enterprise.governAction`, gated on both capabilities', () => {
+    const adapter = codeOf(ADAPTER);
+    assert.equal((adapter.match(/url\.pathname === '\/api\/governed-actions'/g) ?? []).length, 1, 'one route, one literal');
+    assert.match(adapter, /enterprise\.customerIdentityAdmission !== undefined && enterprise\.governedActionOrchestrator !== undefined \? enterprise\.governAction : undefined/);
+    // Nothing below the application call is reachable from the transport.
+    for (const pattern of [/\.govern\s*\(/, /\.admit\s*\(/, /governed-action\/|customer-identity\//, /execution-governance|grant-runtime|execution-runtime|emergency-control/, /\.exercise\s*\(|\.execute\s*\(|issueFromDecision|selectAdapter/]) {
+      assert.equal(pattern.test(adapter), false, `the HTTP adapter must not reach ${String(pattern)}`);
+    }
   });
 
-  it('the frozen API surface lists no governed-action route', () => {
-    const surface = readFileSync('release/api-surface.v1.json', 'utf8');
-    assert.equal(/governed/i.test(surface), false);
+  it('the application sequence admits, then calls govern() — and reaches nothing below the orchestrator', () => {
+    const sequence = codeOf(SEQUENCE);
+    assert.deepEqual([...importsOf(SEQUENCE)].sort(), [
+      '../api/governed-action-contract.js',
+      '../customer-identity/index.js',
+      '../governed-action/index.js',
+      '../telemetry/enterprise-logger.js',
+    ]);
+    assert.ok(sequence.indexOf('.admit(') < sequence.indexOf('.govern('), 'admission precedes govern()');
+    assert.match(sequence, /if \(admitted\.status !== 'bound'\)/, 'only a bound identity proceeds');
+    for (const pattern of [/\.evaluate\s*\(/, /\.exercise\s*\(|\.execute\s*\(/, /issue|selectAdapter|grantStore|emergencyControl/, /system\s*:\s*true/, /requireAuthentication/]) {
+      assert.equal(pattern.test(sequence), false, `${SEQUENCE} must not reach ${String(pattern)}`);
+    }
+  });
+
+  it('the frozen API surface lists the route once, as capability-gated — never as an unconditional probe', () => {
+    const surface = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as {
+      readonly routeLiterals: readonly string[];
+      readonly probes: readonly { readonly path: string }[];
+      readonly capabilityGatedProbes: readonly { readonly path: string; readonly requires: readonly string[] }[];
+    };
+    assert.equal(surface.routeLiterals.filter((route) => /governed/i.test(route)).length, 1);
+    assert.ok(surface.routeLiterals.includes('/api/governed-actions'));
+    assert.equal(surface.probes.some((probe) => /governed/i.test(probe.path)), false);
+    const gated = surface.capabilityGatedProbes.find((probe) => probe.path === '/api/governed-actions');
+    assert.ok(gated !== undefined);
+    assert.deepEqual([...gated.requires].sort(), ['customerIdentityAdmission', 'governedActionOrchestrator']);
   });
 });

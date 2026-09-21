@@ -22,7 +22,7 @@ export function createGovernedActionOrchestratorModule(now: () => string): Enter
       id: GOVERNED_ACTION_ORCHESTRATOR_MODULE_ID,
       version: AOC_ENTERPRISE_HOST_VERSION,
       displayName: 'Governed Action Orchestrator',
-      description: 'Internal governed-action orchestration: bound identity -> Kernel -> committed decision -> bounded grant -> exercise. No customer route.',
+      description: 'Internal governed-action orchestration: bound identity -> Kernel -> committed decision -> bounded grant -> exercise. Customer route: POST /api/governed-actions, through customer identity admission only.',
       criticality: 'optional',
       dependencies: [{ moduleId: KERNEL_MODULE_ID }, { moduleId: GOVERNANCE_STORE_MODULE_ID }, { moduleId: AUTHORITY_CONTROLLED_EXECUTION_MODULE_ID }],
       capabilities: ['governed-action.orchestrate'],

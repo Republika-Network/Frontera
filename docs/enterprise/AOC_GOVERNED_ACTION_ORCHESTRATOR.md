@@ -1,6 +1,6 @@
 # Governed Action Orchestrator
 
-**Status: internal orchestration capability; no customer route yet.**
+**Status: internal orchestration capability, with one capability-gated customer route (`POST /api/governed-actions`, P5).**
 
 > This actor requested this action, the Kernel decided it, that decision was
 > durably recorded, and only then could bounded authority be issued and
@@ -16,9 +16,24 @@ and adds exactly one thing neither had: **order**. The decision is committed to
 the Governance Store before any bounded grant for it can exist, and an execution
 identity is durably claimed before any adapter runs.
 
-It is composed in-process only. There is no `POST /api/governed-actions`, the
-frozen v1 HTTP surface (`release/api-surface.v1.json`) is unchanged, and
-`POST /api/governance/evaluate` behaves exactly as it did.
+It is composed in-process. Since P5 it has exactly one customer route,
+`POST /api/governed-actions`, mounted only when customer identity admission is
+composed too (which the orchestrator already requires). That route exposes the
+**top** of this path and nothing below it:
+
+```
+HTTP -> customer identity admission -> BoundCustomerIdentity -> govern(identity, rawIntent)
+```
+
+The admission step lives outside this module
+(`src/enterprise/orchestration/govern-governed-action-request.ts`), so the
+orchestrator still authenticates nothing. The request body is the
+`GovernedActionIntent` this document describes, validated by the same closed
+validator; the response body is the `GovernedActionResult`, with one transport
+mapping (`src/enterprise/api/governed-action-contract.ts`). Grants, grant
+exercise, adapter selection and emergency-control administration remain
+unreachable from a caller. `POST /api/governance/evaluate` behaves exactly as
+it did. See `docs/enterprise/API_STABILITY_V1.md`.
 
 ## Emergency control and server-side adapter routing
 
@@ -397,7 +412,7 @@ public entrypoint exports its types only, so the checksummed
 | GOV-ACT-08 | The adapter receives only `ValidatedExecutionAction`. | adapter-input test; structural "never calls an adapter" |
 | GOV-ACT-09 | Governance references are evidence and correlation only. | forged-reference test |
 | GOV-ACT-10 | Legacy `POST /api/governance/evaluate` is unchanged. | side-by-side parity test |
-| GOV-ACT-11 | No HTTP governed-action route exists. | adapter-source and API-surface tests |
+| GOV-ACT-11 | *(Narrowed by P5.)* Exactly one HTTP route reaches the orchestrator — `POST /api/governed-actions` — only when customer identity admission and the orchestrator are both composed, and only through admission → `govern()`. No route reaches anything below `govern()`. | `governed-action-composition.test.ts` (adapter, sequence and API-surface scans); `governed-action-api-endpoint.test.ts` |
 | GOV-ACT-12 | Execution identity is server-derived. | derivation test |
 
 These are local to this capability and are not promoted to global `SEC-INV`
@@ -407,7 +422,8 @@ entries.
 
 - An adapter registry and the durable kill-switch reader. Today the
   orchestrator uses ACE's single composed adapter.
-- The customer HTTP route and its error mapping.
+- ~~The customer HTTP route and its error mapping.~~ Done in P5
+  (`POST /api/governed-actions`).
 - Exactly-once external execution: a provider idempotency key, an adapter
   "indeterminate" variant, and reconciliation of `execution_unconfirmed`.
 - Recording `providerRef` for replay.

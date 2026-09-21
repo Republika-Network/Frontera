@@ -59,7 +59,8 @@ export interface BoundCustomerIdentity {
 
 /**
  * Why a caller was not admitted, where the caller (or its configuration) is
- * the cause. A future HTTP mapping answers these with 401/403.
+ * the cause. `POST /api/governed-actions` answers these with 401/403
+ * (`api/governed-action-contract.ts`).
  *
  * A vocabulary of its own, disjoint from every Kernel, obligation, issuance and
  * exercise reason code: admission happens **before** the Kernel, so none of
@@ -93,7 +94,8 @@ export const CUSTOMER_IDENTITY_REFUSAL_REASON_VALUES: readonly CustomerIdentityR
 
 /**
  * Why a caller could not be admitted because Frontera could not answer, not
- * because the caller is wrong. A future HTTP mapping answers these with 5xx.
+ * because the caller is wrong. `POST /api/governed-actions` answers these with
+ * 503.
  * Kept apart from "unbound" so an outage is never reported as a missing
  * binding, and a missing binding is never retried as an outage.
  */

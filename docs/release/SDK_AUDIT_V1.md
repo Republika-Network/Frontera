@@ -50,6 +50,42 @@ README covers construction, auth, health, governance/evidence/assurance examples
 - **Tree shaking:** CJS is not tree-shakeable by standard bundlers. Accepted for v1 and mitigated by size: the package is 4 small modules, zero dependencies (~6 KB compiled). Dual ESM/CJS build is a post-v1 nice-to-have, noted in Known Issues.
 - **Zero runtime dependencies** (machine-enforced); requires global `fetch` (Node ≥ 18; the workspace pins Node ≥ 22) or an injected `FetchLike`.
 
+## Addendum — 1.1.0: `governAction()` (P5)
+
+An additive, reviewed change. Version `1.0.0` → `1.1.0` (MINOR: one new client
+method mirroring one new, capability-gated Host endpoint; nothing removed or
+changed).
+
+- **Runtime exports: still exactly the five above.** `governAction` is a method
+  on the existing `EnterpriseHostClient`, not a new factory. New **type-only**
+  exports: `GovernedActionIntent`, `GovernedActionAmount`,
+  `GovernedActionResult`, `GovernedActionResultStatus`,
+  `GovernedActionDecisionRef`, `GovernedActionWithheldBy`,
+  `GovernedActionExecutionFailure` — structural mirrors
+  declared in `src/types.ts`, not imported from the Host.
+- **`GovernedActionIntent` is closed** (no index signature, unlike the other
+  request mirrors), so `adapterId`, `provider`, `url`, `actorId`,
+  `organizationId` and the like fail to compile; the SDK tests pin this with
+  `@ts-expect-error`. `GovernedActionResult` declares no grant, digest, adapter
+  or credential field, and its closed vocabularies — `decision.status` and
+  `execution_failed.failure` — are mirrored exactly, never widened to `string`
+  (also `@ts-expect-error`-tested).
+- **Governed-action response decoding.** For `governAction()` only, the
+  response is decoded on **every** HTTP status, 2xx included.
+  `GovernedActionResult` domain responses are returned — including on 409, 422,
+  502, 503 and 500 — when the body proves the full wire shape (known `status`;
+  `reasonCodes` all strings; optional `requestId`/`correlationId`/`executionId`
+  strings; a well-formed `decision` with a known status; `replayed`/
+  `outcomeRecorded` booleans and a known `failure` or `withheldBy` where the
+  status requires them) **and** arrives under the HTTP status the Host pairs
+  with it. Enterprise error envelopes throw with their code; invalid,
+  unrecognized or mismatched-status protocol responses throw with code
+  `UNKNOWN` and the raw body. Unknown additive fields are tolerated; nothing is
+  coerced. This is transport decoding, not a decision. Every other method — `evaluate()` included — keeps the original
+  rule that any status ≥ 400 throws; a test pins `evaluate()`'s 422 behaviour.
+- **Credential:** the client's existing `apiKey` is the only input; no actor,
+  organization or auth option was added. Zero dependencies, unchanged.
+
 ## Verdict
 
 The SDK exposes only intended public APIs; no internal implementation details leak. Surface, dependency-freedom, and self-containment are enforced by the release gate, not just documented.

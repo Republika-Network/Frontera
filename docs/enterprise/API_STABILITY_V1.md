@@ -5,7 +5,7 @@
 > `src/enterprise/adapters/node-http-adapter.ts` (routing) and
 > `src/enterprise/api/` (wire contracts: `governance-evaluate-contract.ts`,
 > `evidence-contract.ts`, `passport-contract.ts`, `assurance-contract.ts`,
-> `enterprise-http-errors.ts`). Anything documented here is contract;
+> `governed-action-contract.ts`, `enterprise-http-errors.ts`). Anything documented here is contract;
 > anything not documented here is not.
 
 ## 1. Versioning Policy
@@ -55,7 +55,8 @@ Conventions used below:
   when authentication is enabled, `401 AUTHENTICATION_FAILED`. Store-backed
   routes can produce their store's `*_UNAVAILABLE` (503) and integrity
   (500) codes. These are not repeated in every row.
-- Authentication (all `/api/*` routes): when
+- Authentication (all `/api/*` routes **except** `POST /api/governed-actions`,
+  section 2.6, which always requires a customer credential): when
   `AOC_ENTERPRISE_REQUIRE_AUTH=true`, a Bearer token matching a configured
   API key is required (401 otherwise). An organization-scoped key is
   confined to that organization's records (violations surface as the
@@ -234,6 +235,152 @@ semantics.
 | `GET /api/assurance/subjects/{id}/state?frameworkId=&frameworkVersion=` | Derived continuous-assurance state. Both query parameters optional (latest completed assessment used when omitted). | -- | `200` `ContinuousAssuranceState` (`subjectId`, `frameworkId`, `frameworkVersion`, `latestCompletedAssessmentId?`, `state`, `openFindingCounts`, `activeSignalIds`, `eligibilityState?`, `staleReasons`, `updatedAt`) | -- |
 | `POST /api/assurance/subjects/{id}/reassess` | Request a reassessment (creates a new assessment). | Required: `reason`, `requestedBy`. Optional: `assessmentId`, `evidenceCutoffAt`. | `201` `AssuranceAssessment` | `404 ASSURANCE_ASSESSMENT_NOT_FOUND` / `ASSURANCE_SUBJECT_NOT_FOUND` / `ASSURANCE_FRAMEWORK_NOT_FOUND` |
 
+### 2.6 Governed Actions (capability-gated; added in 1.3.0)
+
+#### `POST /api/governed-actions`
+
+The customer-facing entry to the canonical governed-execution path:
+
+```
+Authorization: Bearer <customer credential>
+  -> customer identity admission -> BoundCustomerIdentity
+  -> Governed Action Orchestrator: Kernel decision -> committed Governance Record
+     -> bounded grant -> exercise -> trusted server-side adapter routing -> provider
+```
+
+The route exposes the **top** of that path and nothing below it. A caller can
+never receive, name or exercise a bounded grant, choose an adapter or
+provider, or read or change an emergency control.
+
+**Mounting (capability-gated).** The route exists only when the Host composes
+**both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
+it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
+`release/api-surface.v1.json` freezes it under `capabilityGatedProbes`;
+`scripts/check-api-freeze.mjs` proves it is **unmounted** on the default Host,
+and `src/enterprise/__tests__/governed-action-api-endpoint.test.ts` proves it is
+mounted under full composition.
+
+**Authentication.** Always the customer plane, whatever
+`AOC_ENTERPRISE_REQUIRE_AUTH` says. The bearer credential must be a configured
+key carrying an `organizationId` **and** `customerIdentity` metadata, and its
+external subject must be bound to an active actor in the Kernel Authority
+store. Actor, organization, principal and system context come from that
+binding — never from the request.
+
+Request body — the `GovernedActionIntent`, validated **closed** (any undeclared
+property is rejected, never ignored):
+
+```json
+{
+  "action": "payment.create",
+  "resource": "invoice:INV-100",
+  "counterparty": "vendor:V123",
+  "amount": { "value": 7500, "currency": "USD" },
+  "assertedContext": { "passportId": "passport-..." },
+  "correlationId": "order-123",
+  "idempotencyKey": "pay-invoice-INV-100-v1"
+}
+```
+
+- **Required:** `action`, `resource`, `idempotencyKey` — canonical identifiers
+  (non-empty, trim-stable, no control characters, at most 256 characters).
+- **Optional:** `counterparty`, `correlationId` (canonical identifiers);
+  `amount` (`{ value: finite number >= 0, currency: canonical identifier }`,
+  nothing else); `assertedContext` (plain JSON object, at most 64 keys per
+  level, depth 8).
+- `assertedContext` is **asserted** evidence. It reaches the Kernel as request
+  context and is verified there by the canonical context and authority
+  machinery; submitting it does not make it trusted, and it never reaches an
+  adapter. Identity-, authority- and routing-shaped keys (`actorId`,
+  `organizationId`, `system`, `grant`, `adapterId`, `url`, `authorization`, …)
+  are rejected in it.
+- There is no field for an actor, organization, principal, external subject,
+  system flag, trust domain, request/decision/execution id, grant, grant
+  expiry, authority binding, adapter, provider, URL, host, destination,
+  endpoint, headers, credential, provider payload, signer or workflow. Sending
+  any of them is `400` `rejected`.
+
+**Idempotency.** `idempotencyKey` in the body is the only idempotency source;
+the `Idempotency-Key` header is **not** read on this route. The key is scoped
+to (organization, principal): replaying the same key with the same intent
+returns the recorded result without re-running the Kernel or the adapter (an
+`executed` replay carries `"replayed": true`); the same key with a different
+intent is `409` `rejected` / `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT` with no
+second effect; another principal may use the same raw key without collision.
+
+**Response body — a `GovernedActionResult`, whatever the status.** Once the
+caller is admitted, every outcome is a **domain result body**, never an error
+envelope:
+
+| `status` | HTTP | Meaning |
+| --- | --- | --- |
+| `executed` | `200` | The provider effect happened (or is on record as having happened: `replayed: true`). |
+| `denied` | `422` | The Kernel denied the action. Committed, no effect. |
+| `indeterminate` | `503` | The Kernel could not decide (provider fault). Committed, no effect. |
+| `withheld` | `409` | Allowed or pending, but a gate held it; `withheldBy` is one of `approval`, `obligations`, `grant`, `authority-binding`, `grant-terms`, `exercise`, `emergency-control`. No effect. |
+| `execution_failed` | `502` | The provider behind the adapter failed (`failure`: `PROVIDER_REJECTED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_RESPONSE_INVALID`, `ADAPTER_ERROR`). |
+| `execution_unconfirmed` | `409` | Already attempted and the outcome is not on record. The adapter is **not** invoked again; reconcile. |
+| `rejected` | `409` | `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`. |
+| `rejected` | `403` | `GOVERNED_ACTION_IDENTITY_INVALID` — unreachable from an admitted request; fails closed if it ever occurs. |
+| `rejected` | `400` | Any other rejection, e.g. `GOVERNED_ACTION_INTENT_INVALID`. Nothing was evaluated. |
+| `system_error` | `500` | An orchestration fault; no effect beyond what the reason codes state. |
+
+Fields: `status`, `reasonCodes` (always); `requestId`, `correlationId`,
+`decision` (`{ decisionId, evaluationId, status, reasonCodes }` — the committed
+Kernel decision), `executionId` when known; `withheldBy` on `withheld`;
+`providerRef`, `replayed`, `outcomeRecorded` on `executed`; `failure`,
+`replayed`, `outcomeRecorded` on `execution_failed`. A result **never** carries
+a bounded grant, grant id, grant digest, grant scope, authority binding,
+adapter identity, provider credential, store handle or system context.
+
+Examples:
+
+```jsonc
+// 200
+{ "status": "executed", "requestId": "aoc.gar:…", "correlationId": "order-123",
+  "decision": { "decisionId": "…", "evaluationId": "…", "status": "allowed", "reasonCodes": [] },
+  "executionId": "aoc.exec:…", "reasonCodes": [], "providerRef": "…", "replayed": false, "outcomeRecorded": true }
+
+// 422
+{ "status": "denied", "requestId": "…",
+  "decision": { "decisionId": "…", "evaluationId": "…", "status": "denied", "reasonCodes": ["…"] },
+  "reasonCodes": ["…"] }
+
+// 409
+{ "status": "withheld", "withheldBy": "emergency-control", "requestId": "…", "decision": { … },
+  "reasonCodes": ["EMERGENCY_CONTROL_ACTIVE"] }
+
+// 502
+{ "status": "execution_failed", "failure": "PROVIDER_REJECTED", "requestId": "…", "decision": { … },
+  "executionId": "…", "reasonCodes": ["PROVIDER_REJECTED"], "replayed": false, "outcomeRecorded": true }
+
+// 409
+{ "status": "execution_unconfirmed", "requestId": "…", "decision": { … }, "executionId": "…",
+  "reasonCodes": ["GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED"] }
+```
+
+**Errors — the Enterprise envelope (section 3), before the orchestrator:**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` | Malformed JSON, body over 1 MiB |
+| 401 | `AUTHENTICATION_FAILED` | Missing, non-Bearer, or unrecognized credential |
+| 403 | `AUTHORIZATION_FAILED` | Legacy key without `customerIdentity`, unscoped key, malformed identity, organization not served, unbound subject, revoked actor |
+| 404 | `NOT_FOUND` | Route not mounted (capabilities not composed), or any other method on the path |
+| 500 | `INFRASTRUCTURE_FAILURE` | Unexpected host fault |
+| 503 | `INFRASTRUCTURE_FAILURE` | The subject-binding source could not be read or was inconsistent |
+| 503 | `ENTERPRISE_NOT_READY` | Lifecycle not ready |
+
+The specific `CUSTOMER_*` admission reason is logged server-side and is not
+returned. No response, error or log line carries the credential.
+
+**Distinguishing the two shapes.** An error envelope has a top-level `error`
+object; a result has a top-level `status` and `reasonCodes`. They never mix.
+The SDK's `governAction()` returns `GovernedActionResult` domain responses;
+Enterprise error envelopes and invalid/unrecognized protocol responses —
+including a well-formed result under an HTTP status other than the one this
+table pairs with it — throw.
+
 ## 3. Error Taxonomy
 
 Every error the Host raises itself is delivered as this envelope:
@@ -275,7 +422,7 @@ full `GovernanceEvaluateResponseBody` (section 2.2).
 
 ### Non-enveloped responses (frozen as-is for v1)
 
-Three routes deliberately return a domain result body -- not the error
+Four routes deliberately return a domain result body -- not the error
 envelope -- on a non-2xx status. These are frozen exactly as implemented:
 
 1. `GET /api/passports/{id}` returns the raw `AgentPassportLoadResult`
@@ -286,6 +433,9 @@ envelope -- on a non-2xx status. These are frozen exactly as implemented:
 3. `POST /api/assurance/assessments/{id}/verify` returns the raw
    `AssuranceAssessmentVerificationResult` with **409** when
    `valid: false`.
+4. `POST /api/governed-actions` (1.3.0, capability-gated) returns the
+   `GovernedActionResult` on **422**, **409**, **502**, **503**, **403**,
+   **400** or **500** for an admitted caller, per the table in section 2.6.
 
 (By contrast, `POST /api/evidence/verify` and
 `GET /api/governance/evaluations/{id}/verify` always return **200** for an
@@ -308,12 +458,15 @@ These transport behaviors are contract for v1:
 - **Unauthenticated requests** are `401 AUTHENTICATION_FAILED` on every
   `/api/*` route when `AOC_ENTERPRISE_REQUIRE_AUTH=true`; authentication
   is disabled by default (local/dev posture, system scope).
+  `POST /api/governed-actions` is the exception: it has no unauthenticated
+  mode, and answers `401`/`403` whatever that flag says.
 - **Cross-organization keys** on `POST /api/governance/evaluate` are
   `403 AUTHORIZATION_FAILED`; on other routes tenant scoping is enforced
   by the owning module and surfaces as its 403
   `*_ACCESS_SCOPE_VIOLATION` / `*_TENANT_SCOPE_REQUIRED` code.
 - **Unknown routes** (any method + path not in section 2) are
-  `404 NOT_FOUND`.
+  `404 NOT_FOUND`. So is a capability-gated route (section 2.6) on a Host
+  that did not compose its capabilities.
 - **Content-Type is not enforced.** Request bodies are parsed as JSON
   regardless of the `Content-Type` header. This leniency is documented,
   observable v1 behavior; clients should nevertheless send

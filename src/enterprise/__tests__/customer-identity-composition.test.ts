@@ -232,13 +232,33 @@ describe('IDENTITY-12: existing v1 routes are unchanged by this capability', () 
     assert.equal(legacy.body.status, 'allowed');
   });
 
-  it('adds no HTTP route and does not reach the HTTP adapter', () => {
+  it('on its own adds no HTTP route: the one customer route needs the orchestrator too', async () => {
+    // Since P5, `POST /api/governed-actions` consumes admission — but only when
+    // the Governed Action Orchestrator is composed as well. Admission alone
+    // mounts nothing and exposes no application call.
+    const enterprise = await track(
+      createEnterprise({
+        configuration: configurationWith(CUSTOMER_KEYS),
+        kernelProviders: buildTestKernelProviders(),
+        kernelAuthorityStore: await boundStore(),
+        customerIdentityAdmission: { enabled: true },
+      }),
+    );
+    assert.ok(enterprise.customerIdentityAdmission !== undefined);
+    assert.equal(enterprise.governAction, undefined);
+
     const adapter = readFileSync('src/enterprise/adapters/node-http-adapter.ts', 'utf8');
-    for (const needle of ['customerIdentityAdmission', 'customer-identity', '/api/governed-actions', '/api/customer-identity', '/api/grants']) {
+    assert.match(
+      adapter,
+      /enterprise\.customerIdentityAdmission !== undefined && enterprise\.governedActionOrchestrator !== undefined \? enterprise\.governAction : undefined/,
+      'the governed-action route must be gated on BOTH capabilities',
+    );
+    // The adapter never admits a caller itself: admission runs inside `governAction`.
+    for (const needle of ['customer-identity', '.admit(', 'BoundCustomerIdentity', '/api/customer-identity', '/api/grants']) {
       assert.equal(adapter.includes(needle), false, `the HTTP adapter must not reference ${needle}`);
     }
     const surface = readFileSync('release/api-surface.v1.json', 'utf8');
-    for (const needle of ['governed-actions', 'customer-identity', '/api/grants']) {
+    for (const needle of ['customer-identity', '/api/grants']) {
       assert.equal(surface.includes(needle), false, `the frozen v1 API surface must not list ${needle}`);
     }
   });

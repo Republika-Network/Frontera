@@ -1,6 +1,8 @@
 # Customer Principal and Subject Binding
 
-- Status: implemented — identity foundation only; **no route consumes it yet**
+- Status: implemented — identity foundation. On its own it mounts **no route**;
+  its one consumer is `POST /api/governed-actions`, which exists only when the
+  Governed Action Orchestrator is composed as well (see §10)
 - Source: `src/enterprise/customer-identity/`
 - Composition: `createEnterprise({ customerIdentityAdmission: { enabled: true } })`
 - Tests: `src/enterprise/__tests__/customer-identity-admission.test.ts`,
@@ -106,7 +108,7 @@ Admission failures happen **before the Kernel**. They are not `DENIED` or
 `INDETERMINATE`, they write no Governance Record, and they carry no free-form
 detail (the reason code is the whole answer).
 
-| Case | Result | Reason | Future HTTP |
+| Case | Result | Reason | HTTP (`POST /api/governed-actions`) |
 |---|---|---|---|
 | No / empty `Authorization` header | `refused` | `CUSTOMER_AUTH_REQUIRED` | 401 |
 | Header is not `Bearer <token>` | `refused` | `CUSTOMER_AUTH_MALFORMED` | 401 |
@@ -117,12 +119,16 @@ detail (the reason code is the whole answer).
 | Key's organization not served here | `refused` | `CUSTOMER_ORGANIZATION_NOT_SERVED` | 403 |
 | Subject bound to no actor (nothing is created) | `refused` | `CUSTOMER_SUBJECT_UNBOUND` | 403 |
 | Bound actor revoked | `refused` | `CUSTOMER_SUBJECT_ACTOR_REVOKED` | 403 |
-| Binding source threw / closed | `unavailable` | `CUSTOMER_SUBJECT_LOOKUP_FAILED` | 5xx |
-| Binding source returned a record for a different kind, organization or subject | `unavailable` | `CUSTOMER_SUBJECT_BINDING_INCONSISTENT` | 5xx |
+| Binding source threw / closed | `unavailable` | `CUSTOMER_SUBJECT_LOOKUP_FAILED` | 503 |
+| Binding source returned a record for a different kind, organization or subject | `unavailable` | `CUSTOMER_SUBJECT_BINDING_INCONSISTENT` | 503 |
 | Eligible key, active bound actor | `bound` | — | — |
 
-The HTTP column is guidance for the route that will consume admission; no
-mapping is implemented here.
+The HTTP column is implemented by `mapCustomerAdmissionFailureToHttp`
+(`src/enterprise/api/governed-action-contract.ts`): 401/403 map to
+`AUTHENTICATION_FAILED`/`AUTHORIZATION_FAILED`, the 503s to
+`INFRASTRUCTURE_FAILURE`, all as the ordinary Enterprise error envelope. The
+`CUSTOMER_*` reason itself is **not** returned to the caller — it is logged
+server-side (`errorCode`), never with the credential or header.
 
 ## 6. Composition
 
@@ -147,9 +153,9 @@ package barrel exports its types only.
 
 ## 7. Invariants (Prompt 2 scope)
 
-These are local to the customer-identity capability. They are not promoted to
-system-wide `SEC-INV` entries, because no customer-facing route consumes them
-yet.
+These are local to the customer-identity capability. The customer-facing
+route that now consumes them is covered by its own system invariants,
+`SEC-INV-055` … `SEC-INV-061` in `docs/security/SECURITY_INVARIANTS.md`.
 
 | ID | Invariant | Evidence |
 |---|---|---|
@@ -164,7 +170,7 @@ yet.
 | IDENTITY-09 | Raw credential material never leaves the authenticator. | sentinel tests over principals, results, errors, service and public configuration |
 | IDENTITY-10 | Identity admission grants no authority and performs no Kernel decision. | structural Kernel/grant/provisioning bans; no Governance Record written |
 | IDENTITY-11 | Failure of the binding source results in no admitted identity. | throwing, closed and inconsistent binding-source tests |
-| IDENTITY-12 | Existing v1 routes are unchanged by this capability. | evaluate parity test; HTTP adapter and `api-surface.v1.json` scan |
+| IDENTITY-12 | Existing v1 routes are unchanged by this capability, and admission alone mounts no route. | evaluate parity test; admission-only Host exposes no `governAction`; HTTP adapter gating scan |
 
 ## 8. What this preserves
 
@@ -183,10 +189,28 @@ yet.
 
 ## 9. Not in scope
 
-This change adds none of the following: a Governed Action route, grant
-endpoints, an adapter registry, a kill switch, aggregate limits, an event
-stream, OIDC/JWT/mTLS, delegating-application ("act as") binding, or an
-operator API.
+This change adds none of the following: grant endpoints, an adapter registry,
+a kill switch, aggregate limits, an event stream, OIDC/JWT/mTLS,
+delegating-application ("act as") binding, or an operator API. (The Governed
+Action route arrived later, in P5 — §10.)
 
 The contract is mechanism-neutral: a future OIDC, mTLS or workload-identity
 authenticator produces the same `CustomerPrincipal`.
+
+## 10. The consuming route (P5)
+
+`POST /api/governed-actions` is the one route that consumes admission. It is
+mounted **only** when both `customerIdentityAdmission` and
+`governedActionOrchestrator` are composed; admission alone mounts nothing.
+
+```
+Authorization header -> admit() -> bound? -> governedActionOrchestrator.govern(identity, rawIntent)
+                               -> refused / unavailable -> Enterprise error envelope, before the Kernel
+```
+
+The sequence lives in `src/enterprise/orchestration/govern-governed-action-request.ts`,
+outside both this module and the orchestrator: the orchestrator still imports no
+credential matcher and parses no header. The route requires a bound customer
+credential even with `AOC_ENTERPRISE_REQUIRE_AUTH=false`, and the request body
+can name no actor, organization, principal, external subject or system context.
+See `docs/enterprise/API_STABILITY_V1.md` for the wire contract.
