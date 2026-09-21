@@ -413,6 +413,8 @@ flowchart LR
   style W fill:#15803d,color:#fff
 ```
 
+**P6 — the Generic HTTP adapter as a provider below this path.** When a deployment composes `executionAdapterRouting.genericHttpAdapters`, the `ExecutionAdapter` above may be a registry child that performs one HTTPS request to one operator-pinned origin (EP-050). Its trust inputs are the `ValidatedExecutionAction` (untrusted-origin data already proven inside a grant bound) and **operator configuration** (trusted: origin, method, mapping, credential). Its privileged asset is the configured provider credential, which is held in process memory, snapshotted at composition, and never emitted into results, records, logs or events. The boundary it adds is application-level destination control for that one adapter — pinned HTTPS origin, per-execution DNS with every answer public-address-checked and the approved IP bound to the socket, TLS verified with `rejectUnauthorized: true` hardcoded (not configurable, immune to `NODE_TLS_REJECT_UNAUTHORIZED=0`), no redirect, retry, proxy or connection reuse. It is **not** a network trust boundary: SEC-TRUST-004 (voluntary chokepoint) and SEC-TRUST-006 (adapter trust) are unchanged, and SEC-INV-U03 remains unimplemented. See `docs/enterprise/AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`.
+
 ### C. Sovereign Access path (separate authority model)
 
 ```mermaid

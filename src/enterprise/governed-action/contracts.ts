@@ -116,6 +116,16 @@ export const GOVERNED_ACTION_REASON_CODES = {
   GOVERNED_ACTION_EXECUTION_CLAIM_FAILED: 'GOVERNED_ACTION_EXECUTION_CLAIM_FAILED',
   /** This execution identity was already attempted and its outcome is not on record. The adapter is not invoked again; the attempt needs reconciliation. */
   GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED: 'GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED',
+  /**
+   * The adapter ran and **reported** that the provider was contacted but the
+   * effect could not be confirmed either way — a connection lost after the
+   * request was sent, a provider 5xx. Distinct from `…_ALREADY_ATTEMPTED`,
+   * which means no outcome was ever recorded (a crash between claim and
+   * outcome): here the adapter's own answer *is* on record, and that answer is
+   * "unknown". The adapter is not invoked again; the effect needs
+   * reconciliation, which nothing in Frontera performs.
+   */
+  GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED: 'GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED',
   /** The adapter ran, but the outcome record could not be appended. Reported beside the outcome — never instead of it. */
   GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED: 'GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED',
 } as const;

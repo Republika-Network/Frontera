@@ -135,7 +135,7 @@ The entire outbound network surface of this repository is **two SDKs**: `pinata`
 
 ## 5. Effect-Path Inventory
 
-Forty-nine production-capable effect paths, enumerated from current source. Every one carries a stable `EP-` id and exactly one classification from §6.
+Fifty production-capable effect paths, enumerated from current source. Every one carries a stable `EP-` id and exactly one classification from §6.
 
 `Reachable?` uses: **HTTP** (reachable over the network), **IN-PROCESS** (trusted host code only, no route), **PUBLISHED API** (reachable by a consumer of the published tarball), **OPERATOR** (a human running tooling), **NONE** (no production caller found).
 
@@ -163,6 +163,7 @@ No route issues, extends, revokes or exercises a grant *as a caller-held artifac
 | **EP-011** | **Bounded-grant exercise** | `AuthorityControlledExecutionService.exercise()` → `GrantExecutionService.exercise()` → `ExecutionAdapter.execute()` — where that adapter may be the composite `createExecutionAdapterRegistry(...)`, which routes server-side to exactly one trusted child (§7.1) | EXTERNAL — whatever the host-supplied adapter translates the validated action into | Authoritative store re-read on **every** attempt + 12 fail-closed checks (§6 proof); plus, when composed, the operational emergency-control interlock at four checkpoints (§6.4 limit 4) | **Yes** — the assessed action *is* the payload; 17-field whitelist; no free-form channel | host-supplied adapter → provider | IN-PROCESS | **PROVEN — PATH LOCAL** |
 | **EP-012** | Bounded-grant issuance | `AuthorityControlledExecutionService.authorize()` → `GrantIssuanceService.issueGrant()` | AUTHORITY MUTATION (A-01) | Kernel decision + attenuation + synchronous `commitGuard` inside the store transaction + commit-time authority-binding **equality** | n/a | in-memory store | IN-PROCESS | **PROVEN — PATH LOCAL** |
 | **EP-049** | **Customer governed action (HTTP)** — the first customer-facing HTTP route onto the bounded-grant path | `POST /api/governed-actions` → `AocEnterprise.governAction` → `CustomerIdentityAdmission.admit()` → `GovernedActionOrchestrator.govern()` → Kernel decision → **committed** Governance Record → bounded grant (ACE issuance core) → ACE exercise (EP-011) → `ExecutionAdapter` / registry child | EXTERNAL — the provider effect of EP-011; plus the PERSISTENCE of the committed record and execution references | `CustomerIdentityAdmission` (bound customer credential, **always**, independent of `AOC_ENTERPRISE_REQUIRE_AUTH`) + Kernel + persisted, re-verified decision + bounded grant + authoritative exercise + optional emergency control at four checkpoints (SEC-INV-055 … SEC-INV-061) | **Yes** — as EP-011; the request body is a closed intent that names no adapter, provider, destination, credential or payload | host-supplied adapter / registry children | HTTP — **capability-gated**: mounted only when customer identity admission **and** the orchestrator are composed | **PROVEN — PATH LOCAL** |
+| **EP-050** | **Generic HTTP adapter outbound request (P6)** — the first concrete provider network effect Frontera itself ships, below the bounded-grant path | `POST /api/governed-actions` → `GovernedActionOrchestrator` → ACE exercise (EP-011) → `GrantExecutionService` → `ExecutionAdapterRegistry` (trusted routing + adapter-scoped emergency check) → Generic HTTP child (`generic-http-execution-adapter.ts`) → `node:https.request` in `src/enterprise/execution-adapters/generic-http/node-https-transport.ts` → one operator-pinned HTTPS origin | EXTERNAL — one HTTPS request to the configured provider | Everything EP-011 / EP-049 require, **plus**: operator-pinned `https:` origin (DNS hostname only), closed declarative mapping from `ValidatedExecutionAction` fields and literals, fresh DNS per execution with every answer public-address-checked and the approved IP bound to the socket, TLS verification on (`rejectUnauthorized: true` hardcoded in the transport, not configurable, immune to `NODE_TLS_REJECT_UNAUTHORIZED=0`), no redirect, no retry, no connection reuse, at most one request per `execute()` (SEC-INV-062 … SEC-INV-069) | **Yes** — as EP-011; the outbound request is built only from the validated action and operator constants; `boundedGrantId` and `assertedContext` are not mapping sources | the configured HTTPS provider | IN-PROCESS — **composition-gated**: exists only when a deployment configures `executionAdapterRouting.genericHttpAdapters`; reached from HTTP only through EP-049 | **PROVEN — PATH LOCAL** |
 | **EP-013** | Bounded-grant revocation | `AuthorityControlledExecutionService.revokeGrant()` | AUTHORITY MUTATION (A-01) | Store idempotency; first revocation stands and is never re-dated | n/a | in-memory store | IN-PROCESS | **PROVEN — PATH LOCAL** |
 
 ### 5.3 Frontera Core — decision-time enforcement
@@ -251,15 +252,17 @@ Every row here is **EXCEPTED — SEPARATE AUTHORITY MODEL** unless stated. None 
 | Classification | Count | Effect paths |
 |---|---|---|
 | PROVEN | **0** | — |
-| PROVEN — PATH LOCAL | **4** | EP-011, EP-012, EP-013, EP-049 |
+| PROVEN — PATH LOCAL | **5** | EP-011, EP-012, EP-013, EP-049, EP-050 |
 | EXCEPTED — SEPARATE AUTHORITY MODEL | **18** | EP-015…EP-019, EP-032…EP-044 |
 | PARTIALLY BOUND | **1** | EP-014 |
 | DEPLOYMENT-GATED | **19** | EP-002, EP-003, EP-006…EP-010, EP-020…EP-026, EP-028, EP-029, EP-046, EP-047, EP-048 |
 | NON-EFFECTING | **5** | EP-001, EP-004, EP-005, EP-030, EP-045 |
 | DEAD / UNREACHABLE | **2** | EP-027, EP-031 |
-| **Total** | **49** | |
+| **Total** | **50** | |
 
-**Four of forty-nine effect paths are under bounded-grant control.** That is the single most important number in this document, and every external statement about Frontera's execution control must be consistent with it.
+**Five of fifty effect paths are under bounded-grant control.** That is the single most important number in this document, and every external statement about Frontera's execution control must be consistent with it.
+
+*P6 changed this number from four of forty-nine to five of fifty.* The one addition, EP-050, is the Generic HTTP Execution Adapter's outbound HTTPS request — the first concrete network effect site Frontera itself ships. It is counted in the numerator because it is reachable **only** below the bounded-grant path: from the registry, after the authoritative grant re-read, the usable-assessment gate and the adapter-scoped emergency check (§7.6). Constructing or adopting this adapter does **not** retroactively govern Pinata, Stripe, Sovereign Access, Content Protection, `enforce()` or arbitrary host egress: every other path is exactly as classified above, and SEC-INV-U03 (a controlled network egress boundary) remains unimplemented. What P6 adds is application-level destination control for one adapter — "when the governed-action path routes through a Generic HTTP adapter, that adapter can contact only its configured HTTPS origin, subject to its public-address policy" — not a firewall.
 
 *P5 changed this number from three of forty-eight to four of forty-nine.* The one addition, EP-049, is `POST /api/governed-actions` — the first customer-facing HTTP route onto the bounded-grant path. It is counted in the numerator because it **is** that path, entered from the top: it reaches a provider only through EP-011, after customer admission, a committed Kernel decision and a server-held bounded grant. It does **not** mean any other effect path became governed: `enforce()`, Sovereign Access, Content Protection, the raw provider seam, the authority-write surfaces and Agent Passport Web are exactly as classified above, with every path-local caveat intact.
 
@@ -338,7 +341,8 @@ Repository-wide scan of `src/`, `packages/` and `apps/` for the type name and fo
 | `src/features/execution-runtime/services/execution-adapter-registry.ts` | **The composite.** Satisfies the port itself, resolves one registered child by trusted server-side routing, and **invokes that child** — after routing and after the adapter-scoped emergency-control gate |
 | `src/features/execution-runtime/services/index.ts` | Re-export of the registry factory and its option types |
 | `src/enterprise/execution-governance/service.ts` | Holds an `ExecutionAdapter` as `options.executionAdapter` and passes it straight into `createGrantExecutionService`. **Never invokes it** |
-| `src/enterprise/composition/composition-root.ts` | Type position. Builds the registry from the host's trusted routing table when one is configured, and hands the result to ACE. **Never invokes it** |
+| `src/enterprise/composition/composition-root.ts` | Type position. Builds the registry from the host's trusted routing table when one is configured — including one child per `genericHttpAdapters` entry (P6) — and hands the result to ACE. **Never invokes it** |
+| `src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts` | **Implements** the port (P6). A registry child built by the composition root; invokes no adapter. Its one outbound network call is EP-050, enumerated in §7.6 |
 | *(not `src/enterprise/index.ts`)* | The Enterprise barrel deliberately re-exports **no** `src/features` type — not `BoundedGrantStorePort`, not `KernelGrantCapability`, not `ExecutionAdapter` — even where an exported option type already names one. A host that needs to write an adapter imports the feature module, which is not a frozen artifact |
 | `src/features/execution-runtime/tests/execution-fixture.ts` | Test fixture (`RecordingExecutionAdapter`) |
 
@@ -389,6 +393,20 @@ Server-side routing does **not** change this. A host that hands the registry a c
 | Issuer HMAC signer | `lib/passport-adapter.ts:52,116,151,334` via `createIssuerSignerFromEnv()` | Nothing. Possession of `AOC_ISSUER_PRIVATE_KEY_PEM` |
 
 All three are pinned by the structural test in §18 so a new site cannot appear without this inventory being updated.
+
+### 7.6 Outbound network client sites (P6)
+
+`no-bypass-effect-paths.test.ts` scans `src/` and `packages/` for Node network **client** modules (`node:https`, `node:dns`, `node:net`, `node:tls`, `node:http2`, `node:dgram`, value imports only) and client calls (`http(s).request/get`, `net.connect`, `tls.connect`, `new Socket`, `fetch(` under `src/`, and common HTTP client libraries):
+
+| File | Role |
+|---|---|
+| `src/enterprise/execution-adapters/generic-http/node-https-transport.ts` | **The one outbound call site (EP-050).** `dns.promises.lookup` once per execution, `node:https.request` once per execution with a pinned `lookup`, `agent: false`, SNI = pinned hostname, TLS verification on (`rejectUnauthorized: true` hardcoded in the transport, not configurable, immune to `NODE_TLS_REJECT_UNAUTHORIZED=0`) |
+| `src/enterprise/execution-adapters/generic-http/configuration.ts` | `isIP` from `node:net` — a syntax check. No socket |
+| `src/enterprise/execution-adapters/generic-http/public-address-policy.ts` | `isIPv4` / `isIPv6` from `node:net` — syntax checks. No socket |
+
+The transport is imported only by the adapter core, and the production factory is called only by the composition root; both are pinned. The inbound listener (`node:http` in `node-http-adapter.ts` and `enterprise-server.ts`, EP-009) is pinned to make no outbound call. **A second outbound site fails the build** until it is inventoried with its own `EP-` id.
+
+This is a statement about *Frontera's* code. It is not egress control: any code in the process can still open a socket (SEC-TRUST-004, SEC-INV-U03), and the Pinata and Stripe SDK sites (§7.5) remain exactly as before.
 
 ---
 
@@ -714,6 +732,7 @@ This is the heart of the proof. For each protected resource: **what are all know
 |---|---|---|
 | EP-011 `GrantExecutionService.exercise()` | The full 12-check gate | The only Frontera path |
 | EP-049 `POST /api/governed-actions` | Customer admission, then EP-011 via a committed decision and a server-held grant | Not a second path to the adapter: an HTTP entry to the first |
+| EP-050 Generic HTTP child → pinned HTTPS provider | EP-011, then the registry's adapter-scoped emergency check, then the adapter's own pinned-origin, public-address, no-redirect, no-retry rules | The one provider effect Frontera ships. The provider it reaches is still reachable by anything else in the process that holds its credential |
 | Host's own reference to the adapter it constructed | **Nothing** | §7.4; outside the repository's control |
 | Whatever provider the adapter wraps, reached directly | **Nothing** | The adapter is host code; Frontera ships none |
 
@@ -910,6 +929,15 @@ One row per effect path group. Every EP in §5 is covered.
 - **BYPASS CONDITIONS:** as EP-011 — the host's own adapter reference (§7.4). A host that writes its own listener around `AocEnterprise.governAction` is trusted code.
 - **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4, D-A8; TLS in front of the listener.
 
+### EP-050 — Generic HTTP adapter outbound request (P6)
+- **CLAIM:** when the governed-action path routes to a Generic HTTP child, that child sends **at most one** HTTPS request per `execute()`, to the one operator-pinned origin, over a fresh connection to an address that was resolved for that execution and proven publicly routable, with TLS verification on (`rejectUnauthorized: true` hardcoded in the transport, not configurable, immune to `NODE_TLS_REJECT_UNAUTHORIZED=0`), no redirect followed and no retry; completion is claimed only for 200, 201 and 204, and every other 2xx and every 3xx is `execution_unconfirmed`; every outbound value is an operator literal or one approved field of the `ValidatedExecutionAction`; the credential is operator configuration and appears in no result, record, log or event; and a post-send loss of certainty is reported as `execution_unconfirmed`, never as a definite failure.
+- **EVIDENCE:** `src/enterprise/__tests__/generic-http-execution-adapter.test.ts` (origin, mapping, address-policy, DNS-per-execution and rebinding, status, redirect, retry, credential and transport-phase matrices; real local TCP/TLS sockets for refusal, SNI, certificate verification, reset, timeout and single-request delivery), `generic-http-composition.test.ts` (one registry, fail-at-startup configuration, adapter-scoped emergency stop before DNS, zero-network rejection of every caller routing field measured through Node diagnostics channels, full governed path to the mapping), §7.6 structural scans.
+- **CLASSIFICATION:** **PROVEN — PATH LOCAL.**
+- **SCOPE:** the Generic HTTP adapter, reached through EP-011 via the registry. It does **not** retroactively govern any other EP, and it is **not** a network egress boundary (SEC-INV-U03 stays unimplemented).
+- **EXCEPTIONS:** as EP-011; plus: the configuration and credential are trusted, process-resident operator data (no KMS); a malicious public provider may itself forward the request; provider-side exactly-once is not guaranteed; `execution_unconfirmed` is not reconciled.
+- **BYPASS CONDITIONS:** as EP-011 (§7.4); any in-process code that holds the provider credential can call the provider directly (SEC-TRUST-004).
+- **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4, D-A8; a trustworthy system resolver is *not* assumed — a resolver answer naming a forbidden address is refused.
+
 ### EP-012, EP-013 — Bounded-grant issuance and revocation
 - **CLAIM:** issuance checks run inside the store's commit boundary — the guard is synchronous *by type*, so no `await` can interleave between the read that decides and the write that records; any change to the authority binding between measurement and commit refuses, by **equality** rather than containment; an issued grant is equal to or narrower than the authority it derives from on every axis.
 - **EVIDENCE:** `grant-store-port.ts` `commitGuard: () => GrantCommitPrecondition`; `in-memory-bounded-grant-store.ts` critical section with no `await`; `execution-governance/service.ts:197-234`; `grantScopeIsWithin`; `grant-transaction-boundary.test.ts`, `grant-attenuation.test.ts`.
@@ -1027,7 +1055,7 @@ Each sentence below is repeatable verbatim. Each is backed by source and by a te
 7. **"Frontera contains multiple authority domains. The bounded-grant path has a strong path-local no-bypass property; the other application and provider paths are explicitly modelled and explicitly excepted in `NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`."**
 8. **"Frontera never holds, requests, or can express a customer transaction signing key — no wallet, mnemonic, `signTransaction`, nonce, sequence number, chain identifier or ledger client exists anywhere in the repository."** (SEC-INV-025)
 9. **"No production TypeScript in this repository executes a shell, spawns a child process, or evaluates dynamic code. The six dynamic imports that exist all carry constant string specifiers and none is caller-influenced."** (§4.2)
-10. **"The entire outbound network surface of this repository is two provider SDKs — Pinata (one construction site) and Stripe (four) — and every site is enumerated in the effect-path inventory and pinned by a structural test."** (§7.5, §18 test)
+10. **"The entire outbound network surface of this repository is two provider SDKs — Pinata (one construction site) and Stripe (four) — plus, since P6, one Node HTTPS transport in the Generic HTTP adapter, and every site is enumerated in the effect-path inventory and pinned by a structural test."** (§7.5, §7.6, §18 test)
 11. **"Correctness never depends on a background job having run: no timer, scheduler, cron, queue, worker or sweeper exists in the execution runtime."** (SEC-INV-023)
 12. **"Inbound Stripe webhooks are signature-verified over the raw body, fail closed when unconfigured, and are replay-blocked by a unique constraint."** (§11.3)
 13. **"No Agent Passport Web route accepts a caller-supplied Stripe customer or price identifier, so a tenant cannot cause an effect on another tenant's Stripe customer."** (§11.2)

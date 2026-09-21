@@ -363,9 +363,16 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       // Built from the normalized copy, never from the child's object. The
       // child's own `adapterId`, if it set one, is discarded: attribution is
       // the routing decision's to make, not the routed adapter's to claim.
-      return normalized.outcome === 'completed'
-        ? { outcome: 'completed', ...(normalized.providerRef !== undefined ? { providerRef: normalized.providerRef } : {}), adapterId: member.adapterId }
-        : { outcome: 'failed', reason: normalized.reason, ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
+      if (normalized.outcome === 'completed') {
+        return { outcome: 'completed', ...(normalized.providerRef !== undefined ? { providerRef: normalized.providerRef } : {}), adapterId: member.adapterId };
+      }
+      // An unconfirmed effect keeps its own outcome and gains the same
+      // registry-owned attribution as the other two: which provider may have
+      // acted is exactly what an operator reconciling it needs to know.
+      if (normalized.outcome === 'unconfirmed') {
+        return { outcome: 'unconfirmed', ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
+      }
+      return { outcome: 'failed', reason: normalized.reason, ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
     },
   });
 

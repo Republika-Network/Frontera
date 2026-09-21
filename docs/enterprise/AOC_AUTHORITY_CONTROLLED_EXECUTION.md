@@ -390,7 +390,11 @@ gives it nothing to do but translate and execute.
 An adapter may not authorize, evaluate policy, resolve context, discharge an
 obligation, issue or widen a grant, interpret an AI recommendation, or infer
 missing authority. An adapter that throws becomes `ADAPTER_ERROR`; a provider
-that refuses becomes `PROVIDER_REJECTED`. Neither is an authorization outcome,
+that refuses becomes `PROVIDER_REJECTED`; `PROVIDER_UNAVAILABLE` means a failure
+proven to precede transmission; and an adapter that cannot know whether the
+provider acted returns `unconfirmed` rather than a failure (P6). Frontera's
+first concrete adapter, the Generic HTTP adapter, is documented in
+[`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`](AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md). Neither is an authorization outcome,
 and `execution-failed` is a distinct status from `withheld` precisely so a
 provider outage is never reported as an authority problem.
 
@@ -427,10 +431,20 @@ Omitting it leaves every behaviour on this page byte-identical. See
 
 ```ts
 ExecutionOutcome =
-  | { status: 'executed';         assessment, correlation, adapterId, providerRef?, exercisedAt }
-  | { status: 'withheld';         withheldBy: 'grant-exercise', assessment, correlation, exercisedAt }
-  | { status: 'execution-failed'; assessment, correlation, adapterId, reason, detail?, exercisedAt }
+  | { status: 'executed';              assessment, correlation, adapterId, routedBy?, providerRef?, exercisedAt }
+  | { status: 'withheld';              withheldBy: 'grant-exercise' | 'emergency-control', assessment, correlation, exercisedAt }
+  | { status: 'execution-failed';      assessment, correlation, adapterId, routedBy?, reason, detail?, exercisedAt }
+  | { status: 'execution-unconfirmed'; assessment, correlation, adapterId, routedBy?, detail?, exercisedAt }   // P6
 ```
+
+`execution-unconfirmed` (P6) is the provider-neutral answer to "the provider was
+contacted and whether the effect happened is not known" — a connection lost
+after the request was sent, or a status that does not confirm the outcome. It is
+not `withheld` (the adapter ran), not `execution-failed` (nothing proves the
+provider did not act) and not `executed`. Authorization is untouched. It maps
+from an adapter's `{ outcome: 'unconfirmed' }` result, which
+`readExecutionAdapterResult` normalizes like the other two, and nothing in this
+runtime retries it.
 
 `KernelDecisionStatus` is not overloaded, extended or reused. Every case carries
 the assessment, including `executed` — "why did this run?" and "why did this not

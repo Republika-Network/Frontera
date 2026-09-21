@@ -315,13 +315,36 @@ pass its own reader into it.
 The ACE module reports the composite's `adapterId`, so a deployment's health
 names the boundary the Host holds rather than one of the children behind it.
 
+### Generic HTTP children (P6)
+
+`executionAdapterRouting.genericHttpAdapters` adds operator-pinned Generic HTTP
+integrations as further children of **this same registry**:
+
+```ts
+executionAdapterRouting: {
+  adapters: [ledgerAdapter],                 // may be [] when generic adapters exist
+  genericHttpAdapters: [{ adapterId: 'erp.invoice-payment', origin: 'https://api.erp.example', method: 'POST', path: [/* … */] }],
+  selectAdapter: (action) => (action.action === 'invoice.pay' ? 'erp.invoice-payment' : 'ledger'),
+}
+```
+
+The composition root validates, snapshots and freezes each entry **before any
+store is opened** and appends the resulting adapters after `adapters`. Identities
+must be unique across both lists. The registry remains the only routing
+boundary — a Generic HTTP adapter has no router of its own — and its
+adapter-scoped emergency check runs before a generic child exactly as before any
+other child. An `unconfirmed` child result (P6) is preserved as `unconfirmed`
+and gains the same registry-owned attribution as `completed` and `failed`. See
+[`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`](AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md).
+
 ---
 
 ## 9. Out of scope in this phase
 
-- **No generic HTTP provider adapter.** No `fetch(url)`, method, headers,
-  credential, redirect or DNS surface appears here. The registry is what such an
-  adapter will plug into.
+- **No generic HTTP surface on the registry itself.** No `fetch(url)`, method,
+  headers, credential, redirect or DNS surface appears here. Since P6 the Generic
+  HTTP adapter plugs in as an ordinary child (§8); everything network-shaped
+  lives in that adapter, below this boundary.
 - **No XRPL, wallet, signer, transaction builder, seed or key.** Provider-neutral
   throughout.
 - **No async, network-backed routing.**

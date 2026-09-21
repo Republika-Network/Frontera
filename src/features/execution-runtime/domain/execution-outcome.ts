@@ -111,4 +111,31 @@ export type ExecutionOutcome =
       readonly reason: ExecutionFailureReason;
       readonly detail?: string;
       readonly exercisedAt: string;
+    }
+  | {
+      /**
+       * The exercise was usable, the adapter was called, the provider was
+       * contacted — and **whether the effect happened is not known**.
+       *
+       * Not `withheld` (the adapter ran), not `execution-failed` (nothing
+       * proves the provider did not act), not `executed` (nothing proves it
+       * did). A connection that reset after the request was sent, or a provider
+       * that answered 5xx after possibly committing, is exactly this. Reporting
+       * it as a failure would invite a retry of an effect that may already have
+       * occurred; reporting it as a success would claim a certainty nobody has.
+       *
+       * Authorization is untouched, as in every other case: the decision stood,
+       * the grant covered the action, and only the provider's answer was lost.
+       * Nothing in this runtime retries or reconciles it.
+       */
+      readonly status: 'execution-unconfirmed';
+      readonly assessment: BoundedGrantExerciseAssessment;
+      readonly correlation: ValidatedExecutionCorrelation;
+      /** The adapter that was asked — the routed child where routing occurred. */
+      readonly adapterId: string;
+      /** The composite that selected it, present only when routing occurred. */
+      readonly routedBy?: string;
+      /** A bounded, static phrase the adapter chose. Never a provider body, never a secret. */
+      readonly detail?: string;
+      readonly exercisedAt: string;
     };

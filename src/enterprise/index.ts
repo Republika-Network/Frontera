@@ -505,6 +505,28 @@ export { createEnterprise, createDefaultEnterprise } from './composition/composi
 export type { AocEnterprise, CreateEnterpriseOptions, EnterpriseEvaluationRequest, EnterpriseGovernedActionContext, EnterpriseRequestContext } from './composition/composition-root.js';
 export type { EnterpriseGovernedActionResponse } from './api/governed-action-contract.js';
 export type { EnterpriseAuthorityControlledExecutionOptions, EnterpriseExecutionAdapterRoutingOptions } from './composition/composition-root.js';
+
+/**
+ * The Generic HTTP Execution Adapter's configuration contract -- **types only**.
+ * A deployment adopts it through
+ * `createEnterprise({ authorityControlledExecution: { executionAdapterRouting: { genericHttpAdapters } } })`,
+ * and the composition root builds each entry into a child of the one trusted
+ * registry. The factory, the address policy, the request mapper and the Node
+ * transport are deliberately **not** exported: no published-package consumer
+ * can obtain an open HTTP client, or substitute a transport that bypasses the
+ * pinned-origin, public-address and TLS rules, through this barrel. See
+ * `docs/enterprise/AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`.
+ */
+export type {
+  EnterpriseGenericHttpActionSource,
+  EnterpriseGenericHttpConfigurationErrorCode,
+  EnterpriseGenericHttpCredential,
+  EnterpriseGenericHttpExecutionAdapterOptions,
+  EnterpriseGenericHttpJsonBody,
+  EnterpriseGenericHttpMethod,
+  EnterpriseGenericHttpPathSegment,
+  EnterpriseGenericHttpValueBinding,
+} from './execution-adapters/generic-http/index.js';
 export type { EnterpriseEmergencyControlOptions } from './composition/composition-root.js';
 export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';
 export type { EnterpriseGovernedActionOrchestratorOptions } from './composition/composition-root.js';
@@ -532,9 +554,10 @@ export type {
 export type { EnterpriseApiKeyCustomerIdentity } from './configuration/enterprise-configuration.js';
 
 /**
- * The Governed Action Orchestrator -- internal orchestration capability; no
- * customer route yet. Type-only, for the reason the two compositions around it
- * are: a deployment adopts it through
+ * The Governed Action Orchestrator -- reached by customers only through its one
+ * capability-gated route, `POST /api/governed-actions`, which is mounted when
+ * both customer identity admission and the orchestrator are composed. Type-only,
+ * for the reason the two compositions around it are: a deployment adopts it through
  * `createEnterprise({ governedActionOrchestrator })`, and the values live in
  * `src/enterprise/governed-action`, which is not a frozen artifact. See
  * `docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md`.

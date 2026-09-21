@@ -252,6 +252,15 @@ The route exposes the **top** of that path and nothing below it. A caller can
 never receive, name or exercise a bounded grant, choose an adapter or
 provider, or read or change an emergency control.
 
+**1.4.0 (P6) adds no endpoint and no request field.** A deployment may compose
+Generic HTTP Execution Adapters (`executionAdapterRouting.genericHttpAdapters`,
+see `AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`) as server-side registry children;
+the destination, method, headers, credential and payload of that outbound
+request are operator configuration and are never expressible in this request.
+The frozen surface stays 28 endpoints. The only wire-visible change is one
+additional `reasonCodes` value on the existing `execution_unconfirmed` status
+(below); the SDK needs no change and stays `1.1.0`.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
@@ -319,7 +328,7 @@ envelope:
 | `indeterminate` | `503` | The Kernel could not decide (provider fault). Committed, no effect. |
 | `withheld` | `409` | Allowed or pending, but a gate held it; `withheldBy` is one of `approval`, `obligations`, `grant`, `authority-binding`, `grant-terms`, `exercise`, `emergency-control`. No effect. |
 | `execution_failed` | `502` | The provider behind the adapter failed (`failure`: `PROVIDER_REJECTED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_RESPONSE_INVALID`, `ADAPTER_ERROR`). |
-| `execution_unconfirmed` | `409` | Already attempted and the outcome is not on record. The adapter is **not** invoked again; reconcile. |
+| `execution_unconfirmed` | `409` | The outcome is not known and the adapter is **not** invoked again; reconcile. `GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED`: attempted, no outcome on record. `GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED` (1.4.0): the adapter reported the provider contacted and its result lost — e.g. a Generic HTTP 5xx or a connection lost after sending. Same status and shape; one additional reason-code value. |
 | `rejected` | `409` | `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`. |
 | `rejected` | `403` | `GOVERNED_ACTION_IDENTITY_INVALID` — unreachable from an admitted request; fails closed if it ever occurs. |
 | `rejected` | `400` | Any other rejection, e.g. `GOVERNED_ACTION_INTENT_INVALID`. Nothing was evaluated. |

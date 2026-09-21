@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { GRANT_REASON_CODES, grantSourceDigest, type GrantSourceAuthorization } from '../../features/grant-runtime/index.js';
-import { GRANT_EXERCISE_REASON_CODES } from '../../features/execution-runtime/index.js';
+import { GRANT_EXERCISE_REASON_CODES, createExecutionAdapterRegistry, type ExecutionAdapter } from '../../features/execution-runtime/index.js';
+import { createRecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import { deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
 import { AUTHORITY_BINDING_REASON_CODES } from '../execution-governance/index.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
@@ -17,6 +18,7 @@ import {
   type GovernedActionResult,
 } from '../governed-action/index.js';
 import { executionOutcomeReferenceId } from '../governed-action/identifiers.js';
+import { EXECUTION_UNCONFIRMED_OUTCOME, createExecutionLedger } from '../governed-action/execution-ledger.js';
 import {
   ALLOWED_INTENT,
   APPROVAL_INTENT,
@@ -1008,5 +1010,148 @@ describe('Governed action — an own "__proto__" key in the asserted context is 
     const same = await world.orchestrator.govern(IDENTITY, contextWith({ marker: 'a' }, 'n'));
     assert.equal(same.decision?.decisionId, first.decision?.decisionId, 'the identical payload is still the same logical request');
     assert.equal(world.kernelRequests.length, 1);
+  });
+});
+
+describe('Governed action — P6: an adapter-reported unconfirmed effect is recorded, replayed and never retried', () => {
+  async function referencesOf(world: GovernedWorld, requestId: string): Promise<readonly string[]> {
+    const record = await recordFor(world, requestId);
+    assert.ok(record !== null);
+    return record.references.map((reference) => reference.externalVersion ?? reference.referenceType);
+  }
+
+  it('an unconfirmed adapter result is execution_unconfirmed with its own reason code, and a canonical outcome row naming the adapter', async () => {
+    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed', detail: 'lost after send' }) });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(result.status, 'execution_unconfirmed');
+    assert.deepEqual([...result.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED]);
+    assert.equal(world.adapter.callCount, 1);
+    assert.deepEqual(await referencesOf(world, REQUEST_ID), ['authorization_artifact', 'attempt', `execution-unconfirmed@${world.adapter.adapterId}`]);
+    assert.equal(JSON.stringify(result).includes('lost after send'), false, 'adapter detail is not echoed to the consumer');
+    for (const key of ['failure', 'providerRef', 'replayed', 'outcomeRecorded']) assert.equal(key in result, false, `the unchanged execution_unconfirmed shape has no ${key}`);
+  });
+
+  it('the write-ahead claim is still appended before the adapter runs', async () => {
+    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed' }) });
+    await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const claim = world.log.indexOf('store.appendReference:execution_record:attempt');
+    const call = world.log.indexOf('adapter.execute');
+    assert.ok(claim !== -1 && call !== -1 && claim < call);
+  });
+
+  it('replaying a recorded unconfirmed outcome answers from the record — the adapter is not invoked again', async () => {
+    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed' }) });
+    await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const replay = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(replay.status, 'execution_unconfirmed');
+    assert.deepEqual([...replay.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED]);
+    assert.equal(world.adapter.callCount, 1);
+  });
+
+  it('under routing, the row names the child that may have acted, and a child cannot forge it', async () => {
+    const child = createRecordingExecutionAdapter(() => ({ outcome: 'unconfirmed', adapterId: 'someone-else' }));
+    const named: ExecutionAdapter = { adapterId: 'adapter-a', execute: (action) => child.execute(action) };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [named], selectAdapter: () => 'adapter-a' });
+    const world = buildGovernedWorld({ executionAdapter: registry });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(result.status, 'execution_unconfirmed');
+    assert.deepEqual(await referencesOf(world, REQUEST_ID), ['authorization_artifact', 'attempt', 'execution-unconfirmed@adapter-a']);
+    assert.equal(JSON.stringify(result).includes('adapter-a'), false, 'no adapter identity reaches the customer result');
+  });
+
+  it('a claim with no outcome row stays distinguishable: ALREADY_ATTEMPTED, not OUTCOME_UNCONFIRMED — and prior() says why', async () => {
+    const world = buildGovernedWorld({
+      beforeExercise: async () => {
+        throw new Error('crash between claim and outcome');
+      },
+    });
+    const crashed = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(crashed.status, 'execution_unconfirmed');
+    assert.deepEqual([...crashed.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED]);
+    const record = await recordFor(world, REQUEST_ID);
+    assert.ok(record !== null && crashed.executionId !== undefined);
+    const ledger = createExecutionLedger(world.rawStore, { system: false, organizationId: ORG, actorId: PMFREAK_ACTOR_ID }, () => NOW);
+    assert.deepEqual(ledger.prior(record, crashed.executionId), { attempted: true }, 'no outcome row: nothing is known');
+
+    const recorded = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed' }) });
+    const unconfirmed = await recorded.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const recordedRecord = await recordFor(recorded, REQUEST_ID);
+    assert.ok(recordedRecord !== null && unconfirmed.executionId !== undefined);
+    const recordedLedger = createExecutionLedger(recorded.rawStore, { system: false, organizationId: ORG, actorId: PMFREAK_ACTOR_ID }, () => NOW);
+    assert.deepEqual({ ...recordedLedger.prior(recordedRecord, unconfirmed.executionId) }, { attempted: true, outcome: EXECUTION_UNCONFIRMED_OUTCOME, adapterId: recorded.adapter.adapterId });
+  });
+
+  it('a malformed or tampered unconfirmed row never becomes executed or failed, and never permits a second effect', async () => {
+    for (const [index, forged] of [
+      'execution-unconfirmed:PROVIDER_REJECTED',
+      'execution-unconfirmed@',
+      'execution-unconfirmed@bad id!',
+      'EXECUTION-UNCONFIRMED',
+      'execution-unconfirmedexecuted',
+      'executed-unconfirmed',
+      ' execution-unconfirmed',
+    ].entries()) {
+      const world = buildGovernedWorld({
+        beforeExercise: async () => {
+          throw new Error('the exercise port is unreachable');
+        },
+      });
+      const intent = { ...ALLOWED_INTENT, idempotencyKey: `key-tampered-unconfirmed-${index}` };
+      const first = await world.orchestrator.govern(IDENTITY, intent);
+      const record = await recordFor(world, first.requestId ?? '');
+      assert.ok(record !== null && first.executionId !== undefined);
+      await world.rawStore.appendReference({ system: false, organizationId: ORG }, {
+        referenceId: executionOutcomeReferenceId(first.executionId),
+        evaluationId: record.evaluation.evaluationId,
+        referenceType: 'execution_record',
+        externalId: first.executionId,
+        externalVersion: forged,
+        createdAt: NOW,
+      });
+      const retry = await world.orchestrator.govern(IDENTITY, intent);
+      assert.equal(retry.status, 'execution_unconfirmed', `'${forged}'`);
+      assert.deepEqual([...retry.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED], `'${forged}' is not the canonical form and decodes as nothing`);
+      assert.equal(world.adapter.callCount, 0);
+    }
+  });
+
+  it('the canonical form with an attribution suffix replays as OUTCOME_UNCONFIRMED', async () => {
+    const world = buildGovernedWorld({
+      beforeExercise: async () => {
+        throw new Error('the exercise port is unreachable');
+      },
+    });
+    const first = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    const record = await recordFor(world, REQUEST_ID);
+    assert.ok(record !== null && first.executionId !== undefined);
+    await world.rawStore.appendReference({ system: false, organizationId: ORG }, {
+      referenceId: executionOutcomeReferenceId(first.executionId),
+      evaluationId: record.evaluation.evaluationId,
+      referenceType: 'execution_record',
+      externalId: first.executionId,
+      externalVersion: 'execution-unconfirmed@erp.invoice-payment',
+      createdAt: NOW,
+    });
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.deepEqual([...retry.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED]);
+    assert.equal(world.adapter.callCount, 0);
+  });
+
+  it('an unconfirmed outcome whose row cannot be written is still unconfirmed, flagged unrecorded, and never retried', async () => {
+    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed' }), storeFault: { appendOutcomeReference: true } });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(result.status, 'execution_unconfirmed');
+    assert.deepEqual([...result.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED]);
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'execution_unconfirmed');
+    assert.deepEqual([...retry.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED]);
+    assert.equal(world.adapter.callCount, 1);
+  });
+
+  it('no ledger row authorizes anything: the two unconfirmed codes are orchestration-owned and neither is a Kernel status', () => {
+    for (const code of [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED]) {
+      assert.ok(code.startsWith('GOVERNED_ACTION_'));
+      for (const status of ['allowed', 'denied', 'approval_required', 'indeterminate']) assert.equal(code.toLowerCase().includes(status), false);
+    }
   });
 });
