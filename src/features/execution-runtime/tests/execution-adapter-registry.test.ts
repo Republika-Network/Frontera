@@ -664,3 +664,140 @@ describe('Adapter trust — only a real registry can name another adapter, or cl
     assert.equal(outcome.adapterId, 'adapter-a');
   });
 });
+
+describe('Adapter trust — child identity is the one snapshotted at composition, not the live property', () => {
+  /**
+   * `readonly adapterId` is compile-time only. Each child here is a plain,
+   * writable object — what a JavaScript adapter, a cast or a self-mutating
+   * adapter actually is at runtime — so every test can reassign the property
+   * the registry used to re-read.
+   */
+  interface MutableChild {
+    adapterId: string;
+    callCount: number;
+    execute(action: ValidatedExecutionAction): Promise<{ outcome: 'completed'; providerRef: string; adapterId?: string }>;
+  }
+
+  function mutableChild(adapterId: string, onExecute?: (self: MutableChild) => void): MutableChild {
+    const self: MutableChild = {
+      adapterId,
+      callCount: 0,
+      async execute() {
+        self.callCount += 1;
+        onExecute?.(self);
+        return { outcome: 'completed', providerRef: 'ref' };
+      },
+    };
+    return self;
+  }
+
+  function routerOver(child: MutableChild, emergencyControl?: ReturnType<typeof createInMemoryEmergencyControlStore>): ExecutionAdapter {
+    return createExecutionAdapterRegistry({
+      adapterId: 'router',
+      adapters: [child as ExecutionAdapter],
+      selectAdapter: () => 'adapter-a',
+      ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+    });
+  }
+
+  it('REGRESSION — 1. an id reassigned after composition, before execution, changes neither emergency scoping nor attribution', async () => {
+    const child = mutableChild('adapter-a');
+    const controls = createInMemoryEmergencyControlStore();
+    const registry = routerOver(child, controls);
+    child.adapterId = 'adapter-b';
+    // A stop on the name the child moved *to* must not reach it: the query is
+    // scoped to the configured membership id, not the live property.
+    controls.activate({ scope: 'adapter', value: 'adapter-b', issuerRef: ISSUER, declaredAt: AT });
+
+    const outcome = await exerciseThrough(registry, controls);
+    assert.equal(outcome.status, 'executed');
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'router');
+    assert.equal(child.callCount, 1);
+  });
+
+  it('REGRESSION — 2. a child that renames itself inside execute() is still recorded under its configured id', async () => {
+    const child = mutableChild('adapter-a', (self) => {
+      self.adapterId = 'adapter-b';
+    });
+    const outcome = await exerciseThrough(routerOver(child));
+    assert.equal(outcome.status, 'executed');
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'router');
+  });
+
+  it('REGRESSION — 2. the same holds when the renamed child then throws', async () => {
+    const child = mutableChild('adapter-a', (self) => {
+      self.adapterId = 'adapter-b';
+      throw new Error('provider timed out');
+    });
+    const outcome = await exerciseThrough(routerOver(child));
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, 'adapter-a');
+  });
+
+  it('REGRESSION — 3. property mutation and a result-level spoof together still lose to the configured id', async () => {
+    const child: MutableChild = {
+      adapterId: 'adapter-a',
+      callCount: 0,
+      async execute() {
+        child.callCount += 1;
+        child.adapterId = 'adapter-b';
+        return { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-c' };
+      },
+    };
+    const outcome = await exerciseThrough(routerOver(child));
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+  });
+
+  it('REGRESSION — 4. a stop on the configured id still blocks a child whose live id was reassigned', async () => {
+    const child = mutableChild('adapter-a');
+    const controls = createInMemoryEmergencyControlStore();
+    const registry = routerOver(child, controls);
+    child.adapterId = 'adapter-evaded';
+    controls.activate({ scope: 'adapter', value: 'adapter-a', issuerRef: ISSUER, declaredAt: AT });
+
+    const outcome = await exerciseThrough(registry, controls);
+    assert.equal(outcome.status, 'withheld');
+    assert.equal(outcome.status === 'withheld' ? outcome.withheldBy : undefined, 'emergency-control');
+    assert.equal(child.callCount, 0, 'the provider is never contacted');
+  });
+
+  it('an identity getter is read once at composition, so it cannot validate as one id and record as another', async () => {
+    const answers = ['adapter-a', 'adapter-z'];
+    let reads = 0;
+    const child = {
+      get adapterId(): string {
+        const answer = answers[Math.min(reads, answers.length - 1)] as string;
+        reads += 1;
+        return answer;
+      },
+      async execute() {
+        return { outcome: 'completed' as const, providerRef: 'ref' };
+      },
+    };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [child], selectAdapter: () => 'adapter-a' });
+    const readsAtComposition = reads;
+    const outcome = await exerciseThrough(registry);
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(reads, readsAtComposition, 'nothing reads the child identity after composition');
+  });
+
+  it('the host’s adapter object is not frozen or modified by composition', () => {
+    const child = mutableChild('adapter-a');
+    routerOver(child);
+    assert.equal(Object.isFrozen(child), false);
+    assert.deepEqual(Object.keys(child).sort(), ['adapterId', 'callCount', 'execute']);
+  });
+
+  it('a directly composed adapter that renames itself inside execute() is recorded under the id it was composed with', async () => {
+    const direct = mutableChild('adapter-a', (self) => {
+      self.adapterId = 'adapter-b';
+    });
+    const service = createGrantExecutionService({ store: await seed(), adapter: direct as ExecutionAdapter, now: () => AT_T_PLUS_5 });
+    const outcome = await service.exercise(buildExerciseRequest(buildTestGrant()));
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, undefined);
+  });
+});

@@ -136,8 +136,21 @@ answer.
 
 The identity is set by the registry from its own frozen membership. A child's
 `adapterId` on its result is **discarded**: attribution is the routing
-decision's to make, not the routed adapter's to claim. A structural test asserts
-the registry is the only production source that writes it.
+decision's to make, not the routed adapter's to claim.
+
+That membership identity is a **snapshot**, taken once per child at
+composition into a registry-owned, frozen descriptor. `readonly adapterId` is a
+compile-time annotation only: a JavaScript adapter, a cast, a getter, or an
+adapter assigning to its own property can change what the child object reports
+afterwards. An earlier revision keyed membership on the value read at
+construction and then re-read the live property, so a child renaming itself
+before execution evaded an adapter-scoped stop declared for its configured id,
+and one renaming itself *inside* `execute()` was recorded under a name that was
+never registered. Routing lookup, the adapter-scoped emergency query, success
+and failure attribution all now use the snapshot; after composition the
+registry reads nothing from the child object but `execute`. The host's adapter
+objects are not frozen or otherwise modified. `GrantExecutionService` likewise
+snapshots the composed adapter's own id at composition.
 
 And `GrantExecutionService` reads the field only from a registry. The field
 lives on `ExecutionAdapterResult`, so every adapter implementation in existence

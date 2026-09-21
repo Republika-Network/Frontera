@@ -136,8 +136,8 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
    * it, and both are claims a directly composed adapter has no standing to
    * make: that some *other* adapter performed the effect, and that an
    * *emergency control* — not the adapter itself — stopped it. Only a registry
-   * has the facts behind either: it resolved the child from a membership frozen
-   * at construction, and it read the `EmergencyControlReaderPort` before
+   * has the facts behind either: it resolved the child from a membership
+   * snapshotted and frozen at construction, and it read the `EmergencyControlReaderPort` before
    * reaching that child. Nothing a direct adapter returns or throws can put it
    * in that position, so nothing it returns or throws is read that way.
    *
@@ -146,6 +146,18 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
    * made once cannot be raced.
    */
   const adapterIsTrustedRegistry = isExecutionAdapterRegistry(adapter);
+
+  /**
+   * The composed adapter's identity, read **once, at composition** — for the
+   * same reason the registry snapshots its children's. `readonly adapterId` is
+   * a compile-time annotation: a directly composed adapter that reassigns its
+   * own property inside `execute()` would otherwise be recorded under whatever
+   * name it chose afterwards, which is the attribution forgery
+   * `adapterIsTrustedRegistry` closes for `result.adapterId`, reached through
+   * the object instead of the result. The host's adapter object is not frozen
+   * or touched; this service simply stops re-reading it.
+   */
+  const composedAdapterId = adapter.adapterId;
 
   async function assess(request: GrantExerciseRequest): Promise<BoundedGrantExerciseAssessment> {
     const identity = { boundedGrantId: request.boundedGrantId, correlation: request.correlation, executionId: request.executionId };
@@ -302,9 +314,9 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       // handed. Only the registry's answer came from routing rather than from
       // the routed party's own claim about itself.
       const performedBy = (result: { readonly adapterId?: string }): { readonly adapterId: string; readonly routedBy?: string } =>
-        !adapterIsTrustedRegistry || result.adapterId === undefined || result.adapterId === adapter.adapterId
-          ? { adapterId: adapter.adapterId }
-          : { adapterId: result.adapterId, routedBy: adapter.adapterId };
+        !adapterIsTrustedRegistry || result.adapterId === undefined || result.adapterId === composedAdapterId
+          ? { adapterId: composedAdapterId }
+          : { adapterId: result.adapterId, routedBy: composedAdapterId };
 
       let result;
       try {
@@ -345,7 +357,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           status: 'execution-failed',
           assessment,
           correlation,
-          adapterId: adapter.adapterId,
+          adapterId: composedAdapterId,
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
           ...(error instanceof Error && error.message.length > 0 ? { detail: error.message } : {}),
           exercisedAt,

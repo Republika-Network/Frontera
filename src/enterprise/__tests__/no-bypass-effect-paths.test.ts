@@ -220,7 +220,7 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
 
     const select = registry.indexOf('selectAdapter(action)');
     const resolve = registry.indexOf('resolved.get(selected)');
-    const unresolvedGuard = registry.indexOf('if (childAdapter === undefined)');
+    const unresolvedGuard = registry.indexOf('if (member === undefined)');
     const emergency = registry.indexOf('readEmergencyControl(emergencyControl');
     const permits = registry.indexOf('if (!emergencyControlPermits(assessment))');
     const call = registry.search(/\b[\w$]*[Aa]dapter\s*\.\s*execute\s*\(/);

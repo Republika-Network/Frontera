@@ -84,8 +84,11 @@ import {
  * `BoundedGrantStorePort.issue`'s synchronous `commitGuard`, which is where the
  * commit-boundary recheck has to happen and where an `await` is forbidden. No
  * cache, no background refresh, no snapshot: every call queries the database.
- * The cross-checks are a handful of primary-key and indexed lookups over a
- * table whose size is bounded by operator actions, not by traffic.
+ * Verification is **not** a handful of lookups: every read walks the whole
+ * event chain from genesis (see `verifiedHead`), so it costs O(number of
+ * operator transitions), deliberately uncached. The history grows only when an
+ * operator activates or releases a control, so the bound is operator actions,
+ * never request traffic.
  *
  * ## Deployment scope, stated rather than implied
  *

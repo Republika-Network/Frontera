@@ -125,12 +125,17 @@ export type ExecutionAdapterResult =
  * carrying only that value tells an auditor which orchestrator was composed and
  * nothing about which of several providers received the effect.
  *
- * So a result may name the adapter that performed it. It is **set by trusted
- * server-side routing and by nothing else**: the child never sets it, the
- * caller has no field anywhere on this path that reaches it, and a structural
- * test asserts the registry is the only production source that writes it. A
- * plain adapter omits it and the execution service falls back to the adapter it
- * holds, which is exactly the previous behaviour.
+ * So a result may name the adapter that performed it. The field is on the
+ * result type every adapter implements, so **any** adapter can set it — a
+ * child, a directly composed adapter, one a host wrote. What makes it safe is
+ * that it is **trusted only from an authenticated registry**:
+ * `GrantExecutionService` reads it only when `isExecutionAdapterRegistry`
+ * confirms the composed adapter came from `createExecutionAdapterRegistry`, and
+ * the registry itself overwrites whatever its child set with the identity it
+ * snapshotted at composition. A direct adapter's value is ignored and it is
+ * recorded under its own id; the caller has no field anywhere on this path
+ * that reaches it. A plain adapter omits it and the execution service falls
+ * back to the adapter it holds, which is exactly the previous behaviour.
  *
  * It is **evidence, not authority**. Nothing reads it to decide anything: it is
  * reported on the outcome and recorded in the execution ledger so "which
