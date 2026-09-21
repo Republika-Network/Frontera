@@ -225,6 +225,42 @@ export interface EmergencyControlRelease {
 }
 
 /**
+ * Whether a release states what its own scope requires — the **same** rule as
+ * `isWellFormedEmergencyControlDeclaration`, for the mutation that runs in the
+ * dangerous direction.
+ *
+ * This lives here, next to the port, because a release is the one operator
+ * action that makes execution resume, and both implementations of
+ * `EmergencyControlStorePort` must refuse exactly the same inputs. Two
+ * hand-written validators had already drifted: the durable store checked its
+ * releases and the in-memory store checked nothing, so
+ * `{ scope: 'global', value: 'unexpected', issuerRef: '', releasedAt: '' }`
+ * threw in one and cleared a live global stop in the other. `emergencyControlKey`
+ * ignores `value` for `global`, so the stray value did not even change which
+ * control was deleted — it simply went unnoticed on its way to deleting the
+ * right one.
+ *
+ * A malformed release is not a weaker release, it is **not a release at all**:
+ * an operator who cannot state which control they are clearing, or who they
+ * are, has not cleared anything, and the stop stays up. Refusing at write time
+ * is what keeps that true — a release that is rejected leaves the control
+ * exactly as it was.
+ *
+ * Total, and unforgiving in the same places the declaration form is: a scope
+ * outside the closed vocabulary, a `value` present on `global` or absent on
+ * anything else, a blank `issuerRef` or a blank `releasedAt` each refuse.
+ */
+export function isWellFormedEmergencyControlRelease(release: EmergencyControlRelease): boolean {
+  if (!isEmergencyControlScope(release.scope)) return false;
+  if (release.scope === 'global') {
+    if (release.value !== undefined) return false;
+  } else if (typeof release.value !== 'string' || release.value.length === 0) {
+    return false;
+  }
+  return typeof release.issuerRef === 'string' && release.issuerRef.length > 0 && typeof release.releasedAt === 'string' && release.releasedAt.length > 0;
+}
+
+/**
  * The operator surface: the read capability **plus** the two mutations.
  *
  * Kept on the host/operator side of the trust boundary. There is no customer

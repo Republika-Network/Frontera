@@ -1,12 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createInMemoryEmergencyControlStore, EMERGENCY_CONTROL_REASON_CODES } from '../../emergency-control-runtime/index.js';
+import { EmergencyControlWithheldError, createInMemoryEmergencyControlStore, EMERGENCY_CONTROL_REASON_CODES } from '../../emergency-control-runtime/index.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../grant-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
   createExecutionAdapterRegistry,
   createGrantExecutionService,
+  isExecutionAdapterRegistry,
   isExecutionAdapterRegistryError,
   isRecordableExecutionAdapterId,
   type ExecutionAdapter,
@@ -438,5 +439,575 @@ describe('Adapter registry — the adapter-scoped emergency control', () => {
     const outcome = await exerciseThrough(registry);
     assert.equal(outcome.status, 'executed');
     assert.equal(a.callCount, 1);
+  });
+});
+
+describe('Adapter trust — only a real registry can name another adapter, or claim an emergency stop', () => {
+  /** The exercise gate over a **directly composed** adapter, the way a host that never built a registry reaches it. */
+  async function exerciseDirect(adapter: ExecutionAdapter, emergencyControl?: ReturnType<typeof createInMemoryEmergencyControlStore>): Promise<ExecutionOutcome> {
+    const store = await seed();
+    const service = createGrantExecutionService({
+      store,
+      adapter,
+      now: () => AT_T_PLUS_5,
+      ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+    });
+    return service.exercise(buildExerciseRequest(buildTestGrant()));
+  }
+
+  it('membership is the proof, and it cannot be forged from outside', () => {
+    // Every cheaper test is a value some caller can also produce. This one is a
+    // `WeakSet` the factory alone adds to, so the impostors below — including
+    // one that copies the real registry's own shape and identity — are all
+    // answered `false`.
+    const real = createExecutionAdapterRegistry({ adapterId: 'registry', adapters: [namedAdapter('adapter-a')], selectAdapter: () => 'adapter-a' });
+    assert.equal(isExecutionAdapterRegistry(real), true);
+
+    const impostors: unknown[] = [
+      namedAdapter('adapter-a'),
+      { adapterId: 'frontera.execution-adapter-registry', execute: async () => ({ outcome: 'completed' }) },
+      { adapterId: 'registry', execute: real.execute },
+      Object.freeze({ ...real }),
+      Object.create(real as object),
+      null,
+      undefined,
+      'registry',
+    ];
+    for (const impostor of impostors) {
+      assert.equal(isExecutionAdapterRegistry(impostor), false, `${String((impostor as { adapterId?: string } | null)?.adapterId ?? impostor)} must not pass as a registry`);
+    }
+  });
+
+  it('REGRESSION — A. a direct adapter returning another adapterId is ignored; it keeps its own identity', async () => {
+    // The defect this pins. `ExecutionAdapterResult.adapterId` exists for the
+    // registry's benefit, but the type exposes it to every adapter in
+    // existence, and the service used to honour it from any of them: an effect
+    // performed by adapter-a persisted as having been performed by adapter-b,
+    // with no registry and no routing anywhere in the picture. A durable record
+    // that names the wrong party is worse than one that names nobody.
+    const liar: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute() {
+        return { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-b' };
+      },
+    };
+    const outcome = await exerciseDirect(liar);
+    assert.equal(outcome.status, 'executed');
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a', 'a direct adapter cannot override its own identity');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, undefined, 'nothing routed, so nothing routed it');
+  });
+
+  it('REGRESSION — A. the same holds on the failure arm, where attribution also persists', async () => {
+    const liar: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute() {
+        return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, adapterId: 'adapter-b' };
+      },
+    };
+    const outcome = await exerciseDirect(liar);
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.adapterId, 'adapter-a');
+    assert.equal(outcome.routedBy, undefined);
+  });
+
+  it('B. a direct adapter returning its own id behaves exactly as it always did', async () => {
+    const honest: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute() {
+        return { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-a' };
+      },
+    };
+    const outcome = await exerciseDirect(honest);
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, undefined);
+
+    // And so does one that says nothing at all about its identity.
+    const silent = createRecordingExecutionAdapter();
+    const quiet = await exerciseDirect(silent);
+    assert.equal(quiet.status === 'executed' ? quiet.adapterId : undefined, silent.adapterId);
+    assert.equal(quiet.status === 'executed' ? quiet.routedBy : undefined, undefined);
+  });
+
+  it('C and D. a real registry still carries its child’s identity through, whichever child it chose', async () => {
+    for (const child of ['adapter-a', 'adapter-b'] as const) {
+      const a = namedAdapter('adapter-a');
+      const b = namedAdapter('adapter-b');
+      const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [a, b], selectAdapter: () => child });
+      const outcome = await exerciseThrough(registry);
+      assert.equal(outcome.status, 'executed');
+      assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, child, 'trusted routing may name the child it resolved');
+      assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'router');
+      assert.equal(child === 'adapter-a' ? a.callCount : b.callCount, 1);
+      assert.equal(child === 'adapter-a' ? b.callCount : a.callCount, 0);
+    }
+  });
+
+  it('REGRESSION — a direct adapter throwing a real EmergencyControlWithheldError is still ADAPTER_ERROR', async () => {
+    // The defect this pins. The class is an ordinary one whose constructor
+    // takes an assessment object, so recognising it by type alone let any
+    // directly composed adapter relabel its own provider failure as an
+    // operator stop — and that mislabelling is what gets persisted. The type is
+    // not the authentication; registry membership is, because only a registry
+    // actually consults an EmergencyControlReaderPort before reaching a child.
+    const spoofer: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute(): Promise<never> {
+        throw new EmergencyControlWithheldError({
+          state: 'blocked',
+          reasonCodes: [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE],
+          matchedScopes: [{ scope: 'global' }],
+        });
+      },
+    };
+    const outcome = await exerciseDirect(spoofer);
+    assert.equal(outcome.status, 'execution-failed', 'no reader withheld anything, so nothing was withheld');
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, 'adapter-a');
+    assert.equal(Object.hasOwn(outcome, 'withheldBy'), false);
+
+    // It holds with an interlock composed, too: the reader is clear, and the
+    // adapter's throw must not be able to speak for it.
+    const controls = createInMemoryEmergencyControlStore();
+    const withReader = await exerciseDirect(spoofer, controls);
+    assert.equal(withReader.status, 'execution-failed');
+  });
+
+  it('B. a direct adapter throwing a lookalike is ADAPTER_ERROR, as it always was', async () => {
+    class EmergencyControlWithheldError2 extends Error {
+      readonly reasonCodes = [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE];
+      readonly matchedScopes = [{ scope: 'global' as const }];
+      constructor() {
+        super('Execution was withheld by an active or unreadable emergency control.');
+        this.name = 'EmergencyControlWithheldError';
+      }
+    }
+    for (const error of [new EmergencyControlWithheldError2(), new Error('provider exploded'), 'a string']) {
+      const thrower: ExecutionAdapter = {
+        adapterId: 'adapter-a',
+        async execute(): Promise<never> {
+          throw error;
+        },
+      };
+      const outcome = await exerciseDirect(thrower);
+      assert.ok(outcome.status === 'execution-failed', `${String(error)} must not be read as a withholding`);
+      assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    }
+  });
+
+  it('C. a registry that finds an adapter-scoped stop still withholds through the interlock', async () => {
+    const child = namedAdapter('adapter-a');
+    const controls = createInMemoryEmergencyControlStore();
+    controls.activate({ scope: 'adapter', value: 'adapter-a', issuerRef: ISSUER, declaredAt: AT });
+    const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [child], selectAdapter: () => 'adapter-a', emergencyControl: controls });
+
+    const outcome = await exerciseThrough(registry, controls);
+    assert.equal(outcome.status, 'withheld');
+    assert.equal(outcome.status === 'withheld' ? outcome.withheldBy : undefined, 'emergency-control');
+    assert.deepEqual(
+      outcome.status === 'withheld' && outcome.withheldBy === 'emergency-control' ? outcome.emergencyControl.reasonCodes : [],
+      [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE],
+    );
+    assert.equal(child.callCount, 0, 'the provider is never contacted');
+  });
+
+  it('D. a registry whose emergency reader is unreadable withholds rather than proceeding', async () => {
+    const child = namedAdapter('adapter-a');
+    const controls = createInMemoryEmergencyControlStore();
+    controls.simulateUnavailable(true);
+    const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [child], selectAdapter: () => 'adapter-a', emergencyControl: controls });
+
+    const outcome = await exerciseThrough(registry);
+    assert.equal(outcome.status, 'withheld');
+    assert.equal(outcome.status === 'withheld' ? outcome.withheldBy : undefined, 'emergency-control');
+    assert.deepEqual(
+      outcome.status === 'withheld' && outcome.withheldBy === 'emergency-control' ? outcome.emergencyControl.reasonCodes : [],
+      [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_UNAVAILABLE],
+    );
+    assert.equal(child.callCount, 0);
+  });
+
+  it('E. an ordinary throw from a child behind a registry stays ADAPTER_ERROR, attributed to that child', async () => {
+    const throwing: ExecutionAdapter = {
+      adapterId: 'adapter-b',
+      async execute(): Promise<never> {
+        throw new Error('provider timed out');
+      },
+    };
+    const registry = createExecutionAdapterRegistry({
+      adapterId: 'router',
+      adapters: [namedAdapter('adapter-a'), throwing],
+      selectAdapter: () => 'adapter-b',
+    });
+    const outcome = await exerciseThrough(registry);
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, 'adapter-b', 'the child that failed is the child named');
+    assert.equal(outcome.routedBy, 'router');
+    assert.equal(outcome.detail, 'provider timed out');
+  });
+
+  it('a child behind a registry cannot spoof a withholding either — only the registry’s own check can', async () => {
+    // The registry converts a child's throw into an ADAPTER_ERROR result before
+    // it ever reaches the service, so even the real class thrown by a routed
+    // child is attributed as that child's failure.
+    const spoofingChild: ExecutionAdapter = {
+      adapterId: 'adapter-a',
+      async execute(): Promise<never> {
+        throw new EmergencyControlWithheldError({ state: 'unavailable', reasonCodes: [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_UNAVAILABLE] });
+      },
+    };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [spoofingChild], selectAdapter: () => 'adapter-a' });
+    const outcome = await exerciseThrough(registry);
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, 'adapter-a');
+  });
+});
+
+describe('Adapter trust — child identity is the one snapshotted at composition, not the live property', () => {
+  /**
+   * `readonly adapterId` is compile-time only. Each child here is a plain,
+   * writable object — what a JavaScript adapter, a cast or a self-mutating
+   * adapter actually is at runtime — so every test can reassign the property
+   * the registry used to re-read.
+   */
+  interface MutableChild {
+    adapterId: string;
+    callCount: number;
+    execute(action: ValidatedExecutionAction): Promise<{ outcome: 'completed'; providerRef: string; adapterId?: string }>;
+  }
+
+  function mutableChild(adapterId: string, onExecute?: (self: MutableChild) => void): MutableChild {
+    const self: MutableChild = {
+      adapterId,
+      callCount: 0,
+      async execute() {
+        self.callCount += 1;
+        onExecute?.(self);
+        return { outcome: 'completed', providerRef: 'ref' };
+      },
+    };
+    return self;
+  }
+
+  function routerOver(child: MutableChild, emergencyControl?: ReturnType<typeof createInMemoryEmergencyControlStore>): ExecutionAdapter {
+    return createExecutionAdapterRegistry({
+      adapterId: 'router',
+      adapters: [child as ExecutionAdapter],
+      selectAdapter: () => 'adapter-a',
+      ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+    });
+  }
+
+  it('REGRESSION — 1. an id reassigned after composition, before execution, changes neither emergency scoping nor attribution', async () => {
+    const child = mutableChild('adapter-a');
+    const controls = createInMemoryEmergencyControlStore();
+    const registry = routerOver(child, controls);
+    child.adapterId = 'adapter-b';
+    // A stop on the name the child moved *to* must not reach it: the query is
+    // scoped to the configured membership id, not the live property.
+    controls.activate({ scope: 'adapter', value: 'adapter-b', issuerRef: ISSUER, declaredAt: AT });
+
+    const outcome = await exerciseThrough(registry, controls);
+    assert.equal(outcome.status, 'executed');
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'router');
+    assert.equal(child.callCount, 1);
+  });
+
+  it('REGRESSION — 2. a child that renames itself inside execute() is still recorded under its configured id', async () => {
+    const child = mutableChild('adapter-a', (self) => {
+      self.adapterId = 'adapter-b';
+    });
+    const outcome = await exerciseThrough(routerOver(child));
+    assert.equal(outcome.status, 'executed');
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, 'router');
+  });
+
+  it('REGRESSION — 2. the same holds when the renamed child then throws', async () => {
+    const child = mutableChild('adapter-a', (self) => {
+      self.adapterId = 'adapter-b';
+      throw new Error('provider timed out');
+    });
+    const outcome = await exerciseThrough(routerOver(child));
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, 'adapter-a');
+  });
+
+  it('REGRESSION — 3. property mutation and a result-level spoof together still lose to the configured id', async () => {
+    const child: MutableChild = {
+      adapterId: 'adapter-a',
+      callCount: 0,
+      async execute() {
+        child.callCount += 1;
+        child.adapterId = 'adapter-b';
+        return { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-c' };
+      },
+    };
+    const outcome = await exerciseThrough(routerOver(child));
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+  });
+
+  it('REGRESSION — 4. a stop on the configured id still blocks a child whose live id was reassigned', async () => {
+    const child = mutableChild('adapter-a');
+    const controls = createInMemoryEmergencyControlStore();
+    const registry = routerOver(child, controls);
+    child.adapterId = 'adapter-evaded';
+    controls.activate({ scope: 'adapter', value: 'adapter-a', issuerRef: ISSUER, declaredAt: AT });
+
+    const outcome = await exerciseThrough(registry, controls);
+    assert.equal(outcome.status, 'withheld');
+    assert.equal(outcome.status === 'withheld' ? outcome.withheldBy : undefined, 'emergency-control');
+    assert.equal(child.callCount, 0, 'the provider is never contacted');
+  });
+
+  it('an identity getter is read once at composition, so it cannot validate as one id and record as another', async () => {
+    const answers = ['adapter-a', 'adapter-z'];
+    let reads = 0;
+    const child = {
+      get adapterId(): string {
+        const answer = answers[Math.min(reads, answers.length - 1)] as string;
+        reads += 1;
+        return answer;
+      },
+      async execute() {
+        return { outcome: 'completed' as const, providerRef: 'ref' };
+      },
+    };
+    const registry = createExecutionAdapterRegistry({ adapterId: 'router', adapters: [child], selectAdapter: () => 'adapter-a' });
+    const readsAtComposition = reads;
+    const outcome = await exerciseThrough(registry);
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(reads, readsAtComposition, 'nothing reads the child identity after composition');
+  });
+
+  it('the host’s adapter object is not frozen or modified by composition', () => {
+    const child = mutableChild('adapter-a');
+    routerOver(child);
+    assert.equal(Object.isFrozen(child), false);
+    assert.deepEqual(Object.keys(child).sort(), ['adapterId', 'callCount', 'execute']);
+  });
+
+  it('a directly composed adapter that renames itself inside execute() is recorded under the id it was composed with', async () => {
+    const direct = mutableChild('adapter-a', (self) => {
+      self.adapterId = 'adapter-b';
+    });
+    const service = createGrantExecutionService({ store: await seed(), adapter: direct as ExecutionAdapter, now: () => AT_T_PLUS_5 });
+    const outcome = await service.exercise(buildExerciseRequest(buildTestGrant()));
+    assert.equal(outcome.status === 'executed' ? outcome.adapterId : undefined, 'adapter-a');
+    assert.equal(outcome.status === 'executed' ? outcome.routedBy : undefined, undefined);
+  });
+});
+
+describe('Adapter trust — a returned result is adapter code, and reading it cannot forge a withholding', () => {
+  /** The genuine signal, constructed the only way anyone can: with an ordinary assessment object. */
+  function realSignal(): EmergencyControlWithheldError {
+    return new EmergencyControlWithheldError({
+      state: 'blocked',
+      reasonCodes: [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE],
+      matchedScopes: [{ scope: 'adapter', value: 'adapter-a' }],
+    });
+  }
+
+  /** A plain result object with one enumerable getter that throws the genuine signal when read. */
+  function withThrowingField(base: Record<string, unknown>, field: string): Record<string, unknown> {
+    const result = { ...base };
+    Object.defineProperty(result, field, {
+      enumerable: true,
+      get() {
+        throw realSignal();
+      },
+    });
+    return result;
+  }
+
+  /**
+   * A Proxy result whose every observation path — get, ownKeys,
+   * getOwnPropertyDescriptor, has — throws the signal, **except** the `then`
+   * probe that `await` makes when the promise resolves. Answering that one
+   * honestly is what lets the value get past the child's own catch; a Proxy
+   * that threw on `then` would be rejected inside it and prove nothing.
+   */
+  function hostileProxy(base: Record<string, unknown>): Record<string, unknown> {
+    return new Proxy(base, {
+      get(target, key) {
+        if (key === 'then') return undefined;
+        throw realSignal();
+      },
+      ownKeys() {
+        throw realSignal();
+      },
+      getOwnPropertyDescriptor() {
+        throw realSignal();
+      },
+      has() {
+        throw realSignal();
+      },
+    });
+  }
+
+  function returning(value: unknown, adapterId = 'adapter-a'): ExecutionAdapter & { callCount: number } {
+    const adapter = {
+      adapterId,
+      callCount: 0,
+      async execute() {
+        adapter.callCount += 1;
+        return value as never;
+      },
+    };
+    return adapter;
+  }
+
+  function routed(child: ExecutionAdapter, emergencyControl?: ReturnType<typeof createInMemoryEmergencyControlStore>): ExecutionAdapter {
+    return createExecutionAdapterRegistry({
+      adapterId: 'router',
+      adapters: [child],
+      selectAdapter: () => 'adapter-a',
+      ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+    });
+  }
+
+  async function exerciseComposed(adapter: ExecutionAdapter): Promise<ExecutionOutcome> {
+    const service = createGrantExecutionService({ store: await seed(), adapter, now: () => AT_T_PLUS_5 });
+    return service.exercise(buildExerciseRequest(buildTestGrant()));
+  }
+
+  function assertAdapterError(outcome: ExecutionOutcome, adapterId: string, routedBy?: string): void {
+    assert.equal(outcome.status, 'execution-failed', 'a result that cannot be read is a provider failure, never a withholding');
+    assert.ok(outcome.status === 'execution-failed');
+    assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    assert.equal(outcome.adapterId, adapterId);
+    assert.equal(outcome.routedBy, routedBy);
+  }
+
+  it('REGRESSION — 1. a routed child’s completed result with a getter throwing the real signal is ADAPTER_ERROR', async () => {
+    const outcome = await exerciseThrough(routed(returning(withThrowingField({ outcome: 'completed' }, 'providerRef'))));
+    assertAdapterError(outcome, 'adapter-a', 'router');
+  });
+
+  it('REGRESSION — 2. a routed child’s failed result with a throwing detail or reason is ADAPTER_ERROR', async () => {
+    for (const field of ['detail', 'reason', 'outcome', 'adapterId']) {
+      const result = withThrowingField({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED }, field);
+      const outcome = await exerciseThrough(routed(returning(result)));
+      assertAdapterError(outcome, 'adapter-a', 'router');
+    }
+    const proxied = hostileProxy({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, detail: 'x' });
+    assertAdapterError(await exerciseThrough(routed(returning(proxied))), 'adapter-a', 'router');
+  });
+
+  it('REGRESSION — 3. a Proxy result whose get, ownKeys and descriptor traps throw the real signal is ADAPTER_ERROR', async () => {
+    const outcome = await exerciseThrough(routed(returning(hostileProxy({ outcome: 'completed', providerRef: 'ref' }))));
+    assertAdapterError(outcome, 'adapter-a', 'router');
+  });
+
+  it('a child throwing a value whose message getter or prototype trap throws the real signal is still ADAPTER_ERROR', async () => {
+    const hostileMessage = new Error('placeholder');
+    Object.defineProperty(hostileMessage, 'message', {
+      get() {
+        throw realSignal();
+      },
+    });
+    const hostilePrototype = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw realSignal();
+        },
+      },
+    );
+    for (const thrown of [hostileMessage, hostilePrototype]) {
+      const child: ExecutionAdapter = {
+        adapterId: 'adapter-a',
+        async execute(): Promise<never> {
+          throw thrown;
+        },
+      };
+      assertAdapterError(await exerciseThrough(routed(child)), 'adapter-a', 'router');
+    }
+  });
+
+  it('REGRESSION — 4. the registry’s own reader check still withholds before the child is reached', async () => {
+    const child = returning(withThrowingField({ outcome: 'completed' }, 'providerRef'));
+    const controls = createInMemoryEmergencyControlStore();
+    controls.activate({ scope: 'adapter', value: 'adapter-a', issuerRef: ISSUER, declaredAt: AT });
+
+    const outcome = await exerciseThrough(routed(child, controls), controls);
+    assert.equal(outcome.status, 'withheld');
+    assert.equal(outcome.status === 'withheld' ? outcome.withheldBy : undefined, 'emergency-control');
+    assert.deepEqual(
+      outcome.status === 'withheld' && outcome.withheldBy === 'emergency-control' ? outcome.emergencyControl.reasonCodes : [],
+      [EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE],
+    );
+    assert.equal(child.callCount, 0);
+  });
+
+  it('REGRESSION — 5. a direct adapter whose result getters throw is ADAPTER_ERROR, with nothing escaping the service', async () => {
+    const completed = { outcome: 'completed', providerRef: 'ref' };
+    const failed = { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, detail: 'x' };
+    const cases = [
+      withThrowingField(completed, 'outcome'),
+      withThrowingField(completed, 'providerRef'),
+      withThrowingField(failed, 'reason'),
+      withThrowingField(failed, 'detail'),
+      withThrowingField(completed, 'adapterId'),
+      hostileProxy(completed),
+    ];
+    for (const result of cases) {
+      assertAdapterError(await exerciseComposed(returning(result, 'direct')), 'direct');
+    }
+  });
+
+  it('a result outside the port contract is ADAPTER_ERROR rather than a best guess, routed or direct', async () => {
+    const malformed: unknown[] = [
+      null,
+      'completed',
+      { outcome: 'succeeded' },
+      { outcome: 'completed', providerRef: 42 },
+      { outcome: 'completed', adapterId: { toString: () => 'adapter-b' } },
+      { outcome: 'failed', reason: 'NOT_A_REASON' },
+      { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, detail: ['x'] },
+    ];
+    for (const result of malformed) {
+      assertAdapterError(await exerciseComposed(returning(result, 'direct')), 'direct');
+      assertAdapterError(await exerciseThrough(routed(returning(result))), 'adapter-a', 'router');
+    }
+  });
+
+  it('6. ordinary completed and failed results are unchanged, routed and direct', async () => {
+    const completed = { outcome: 'completed', providerRef: 'provider-ref-1' };
+    const failed = { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, detail: 'insufficient funds' };
+
+    const directDone = await exerciseComposed(returning(completed, 'direct'));
+    assert.equal(directDone.status, 'executed');
+    assert.equal(directDone.status === 'executed' ? directDone.providerRef : undefined, 'provider-ref-1');
+    assert.equal(directDone.status === 'executed' ? directDone.adapterId : undefined, 'direct');
+
+    const routedDone = await exerciseThrough(routed(returning(completed)));
+    assert.equal(routedDone.status === 'executed' ? routedDone.providerRef : undefined, 'provider-ref-1');
+    assert.equal(routedDone.status === 'executed' ? routedDone.adapterId : undefined, 'adapter-a');
+    assert.equal(routedDone.status === 'executed' ? routedDone.routedBy : undefined, 'router');
+
+    for (const [outcome, adapterId, routedBy] of [
+      [await exerciseComposed(returning(failed, 'direct')), 'direct', undefined],
+      [await exerciseThrough(routed(returning(failed))), 'adapter-a', 'router'],
+    ] as const) {
+      assert.ok(outcome.status === 'execution-failed');
+      assert.equal(outcome.reason, EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED);
+      assert.equal(outcome.detail, 'insufficient funds');
+      assert.equal(outcome.adapterId, adapterId);
+      assert.equal(outcome.routedBy, routedBy);
+    }
+  });
+
+  it('the registry hands the execution service a fresh plain result, never the child’s object', async () => {
+    const childResult = { outcome: 'completed', providerRef: 'ref', extra: 'not part of the port' };
+    const registry = routed(returning(childResult));
+    const action = { subject: 's', resource: 'r', notAfter: AT, correlation: { requestId: 'q', decisionId: 'd', executionId: 'e' } } as unknown as ValidatedExecutionAction;
+    const result = await registry.execute(action);
+    assert.notEqual(result, childResult);
+    assert.deepEqual({ ...result }, { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-a' });
   });
 });

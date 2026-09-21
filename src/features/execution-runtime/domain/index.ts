@@ -7,7 +7,7 @@ export type { GrantExerciseAmount, GrantExerciseRequest } from './grant-exercise
 export { assessBoundedGrantExercise } from './grant-exercise-assessment.js';
 export type { BoundedGrantExerciseAssessment } from './grant-exercise-assessment.js';
 
-export { EXECUTION_FAILURE_REASONS, EXECUTION_FAILURE_REASON_VALUES } from './execution-adapter-port.js';
+export { EXECUTION_FAILURE_REASONS, EXECUTION_FAILURE_REASON_VALUES, adapterErrorDetail, readExecutionAdapterResult } from './execution-adapter-port.js';
 export type {
   ExecutionAdapter,
   ExecutionAdapterResult,

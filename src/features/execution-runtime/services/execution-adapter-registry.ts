@@ -7,6 +7,8 @@ import {
 } from '../../emergency-control-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
+  adapterErrorDetail,
+  readExecutionAdapterResult,
   type ExecutionAdapter,
   type ExecutionAdapterResult,
   type ValidatedExecutionAction,
@@ -118,6 +120,34 @@ export function isExecutionAdapterRegistryError(error: unknown): error is Execut
  */
 const COMPOSED_REGISTRIES = new WeakSet<object>();
 
+/**
+ * Whether this exact object was produced by `createExecutionAdapterRegistry`.
+ *
+ * The **only** way an adapter becomes trusted, and the reason two of this
+ * service's trust decisions can be made at all. Membership is recorded by the
+ * factory below, into a `WeakSet` that is module-private and has no exported
+ * `add`: nothing outside this file can enrol an object, so the answer cannot be
+ * forged from outside. Every cheaper test was rejected for being forgeable —
+ * an `adapterId` naming convention is a string a caller picks, a boolean
+ * property is a property a caller sets, `instanceof` against an interface does
+ * not exist at runtime, and a marker symbol is a marker anything can copy.
+ *
+ * Two things downstream depend on this and nothing else:
+ *
+ * 1. **Routed attribution.** Only a registry may report a performing adapter
+ *    other than itself, because only a registry resolved that child from a
+ *    membership snapshotted and frozen at composition.
+ * 2. **The emergency-control signal.** Only a registry may raise the typed
+ *    withholding the execution service maps onto `withheldBy:
+ *    'emergency-control'`, because only a registry consulted an
+ *    `EmergencyControlReaderPort` before reaching a child.
+ *
+ * A directly composed adapter gets neither, whatever it returns or throws.
+ */
+export function isExecutionAdapterRegistry(adapter: unknown): boolean {
+  return typeof adapter === 'object' && adapter !== null && COMPOSED_REGISTRIES.has(adapter);
+}
+
 const DEFAULT_REGISTRY_ADAPTER_ID = 'frontera.execution-adapter-registry';
 
 /**
@@ -141,10 +171,43 @@ export function isRecordableExecutionAdapterId(adapterId: string): boolean {
   return RECORDABLE_ADAPTER_ID.test(adapterId);
 }
 
-function isUsableAdapter(candidate: unknown): candidate is ExecutionAdapter {
-  if (typeof candidate !== 'object' || candidate === null) return false;
+/**
+ * One member of a registry, as the registry recorded it at composition.
+ *
+ * The identity is **snapshotted here, once**, and every later use reads the
+ * snapshot — never the child object's live `adapterId`. `readonly` on
+ * `ExecutionAdapter.adapterId` is a compile-time annotation and nothing more:
+ * a JavaScript adapter, an adversarial cast, a getter, or an adapter that simply
+ * assigns to its own property can change what `childAdapter.adapterId` reads
+ * after composition. An earlier revision keyed membership on the value it read
+ * at construction and then re-read the live property for the adapter-scoped
+ * emergency query and for attribution, so a child that renamed itself before
+ * execution slipped past a stop declared for its configured id, and one that
+ * renamed itself *inside* `execute()` was recorded as an adapter that was never
+ * registered.
+ *
+ * The registry owns this descriptor and freezes it. The host's adapter object
+ * is neither frozen nor otherwise touched: the registry stops *trusting* the
+ * mutable property rather than trying to stop it mutating.
+ */
+interface RegistryMember {
+  /** The identity routing resolves by, the emergency query scopes to, and the outcome records. Read once, at composition. */
+  readonly adapterId: string;
+  /** The provider integration itself. Only `execute` is ever read from it after composition. */
+  readonly adapter: ExecutionAdapter;
+}
+
+/**
+ * The identity a usable adapter declares, read **exactly once** — or
+ * `undefined` if it is not a usable adapter. Returning the value rather than a
+ * boolean is the point: a type guard that reads `adapterId` and a caller that
+ * then reads it again are two reads, and a getter can answer them differently.
+ */
+function usableAdapterId(candidate: unknown): string | undefined {
+  if (typeof candidate !== 'object' || candidate === null) return undefined;
   const adapter = candidate as Partial<ExecutionAdapter>;
-  return typeof adapter.adapterId === 'string' && typeof adapter.execute === 'function';
+  const adapterId: unknown = adapter.adapterId;
+  return typeof adapterId === 'string' && typeof adapter.execute === 'function' ? adapterId : undefined;
 }
 
 /**
@@ -172,33 +235,38 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
     );
   }
 
-  const resolved = new Map<string, ExecutionAdapter>();
+  const resolved = new Map<string, RegistryMember>();
   for (const candidate of options.adapters) {
-    if (!isUsableAdapter(candidate)) {
+    // The identity is read exactly once. Every check below, the membership key
+    // and the descriptor all use this one value, so a getter that answers
+    // differently on each read cannot pass validation as one id and be
+    // recorded as another.
+    const memberId = usableAdapterId(candidate);
+    if (memberId === undefined) {
       throw new ExecutionAdapterRegistryError('EXECUTION_ADAPTER_MALFORMED', 'Every registered execution adapter must declare an adapterId and an execute function.');
     }
-    if (candidate.adapterId.trim().length === 0) {
+    if (memberId.trim().length === 0) {
       throw new ExecutionAdapterRegistryError('EXECUTION_ADAPTER_MALFORMED', 'A registered execution adapter may not carry a blank adapterId.');
     }
-    if (candidate.adapterId === adapterId || COMPOSED_REGISTRIES.has(candidate)) {
+    if (memberId === adapterId || COMPOSED_REGISTRIES.has(candidate)) {
       throw new ExecutionAdapterRegistryError(
         'EXECUTION_ADAPTER_REGISTRY_RECURSIVE',
         'An execution adapter registry may not be registered inside a registry: one routing decision must resolve to one provider adapter.',
       );
     }
-    if (!isRecordableExecutionAdapterId(candidate.adapterId)) {
+    if (!isRecordableExecutionAdapterId(memberId)) {
       throw new ExecutionAdapterRegistryError(
         'EXECUTION_ADAPTER_MALFORMED',
-        `The execution adapter identity '${candidate.adapterId}' cannot be recorded in the durable execution record, so an effect it performed could not be attributed to it afterwards.`,
+        `The execution adapter identity '${memberId}' cannot be recorded in the durable execution record, so an effect it performed could not be attributed to it afterwards.`,
       );
     }
-    if (resolved.has(candidate.adapterId)) {
+    if (resolved.has(memberId)) {
       throw new ExecutionAdapterRegistryError(
         'EXECUTION_ADAPTER_ID_DUPLICATE',
-        `Two registered execution adapters declare the identity '${candidate.adapterId}'; routing would resolve to whichever was registered last.`,
+        `Two registered execution adapters declare the identity '${memberId}'; routing would resolve to whichever was registered last.`,
       );
     }
-    resolved.set(candidate.adapterId, candidate);
+    resolved.set(memberId, Object.freeze({ adapterId: memberId, adapter: candidate }));
   }
 
   const emergencyControl = options.emergencyControl;
@@ -215,8 +283,8 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       } catch {
         selected = undefined;
       }
-      const childAdapter = typeof selected === 'string' ? resolved.get(selected) : undefined;
-      if (childAdapter === undefined) {
+      const member = typeof selected === 'string' ? resolved.get(selected) : undefined;
+      if (member === undefined) {
         // No route. Reported as an infrastructure failure in the vocabulary the
         // execution boundary already owns — never as a denial, and never by
         // falling through to some arbitrary adapter, because "whichever one was
@@ -226,6 +294,10 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
         // to the registry's own identity.
         return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: 'No execution adapter is configured for this action.' };
       }
+      // From here on the child's identity is `member.adapterId`, the value
+      // snapshotted at composition — never `childAdapter.adapterId`, which the
+      // child can reassign at any moment, including during its own `execute`.
+      const childAdapter = member.adapter;
 
       // 2. The adapter-scoped interlock, which only became answerable once the
       //    adapter was known. Blocked or unreadable stops the child from being
@@ -234,7 +306,7 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       const query: EmergencyControlQuery = {
         ...(action.organization !== undefined ? { organizationId: action.organization } : {}),
         actorId: action.subject,
-        adapterId: childAdapter.adapterId,
+        adapterId: member.adapterId,
         resource: action.resource,
       };
       const assessment = readEmergencyControl(emergencyControl, query);
@@ -249,29 +321,51 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       //    an identifier ending in `adapter`, and a call site it cannot see is a
       //    call site the effect-path inventory would silently lose.
       //
-      //    Every return below names `childAdapter.adapterId`, because the
-      //    registry is the only thing that knows which provider actually ran
-      //    and an outcome naming the router would answer the wrong question.
-      //    The identity comes from trusted routing over a frozen membership —
-      //    never from the child, never from the caller.
-      let result: ExecutionAdapterResult;
+      //    Every return below names `member.adapterId`, because the registry is
+      //    the only thing that knows which provider actually ran and an outcome
+      //    naming the router would answer the wrong question. The identity
+      //    comes from the membership snapshotted at composition — never from
+      //    the child's result, never from the child's live property, and never
+      //    from the caller.
+      //
+      //    **Everything** the child controls is observed inside this one try:
+      //    the call, and reading what it returned. The returned object is the
+      //    child's code as much as `execute` is — a getter or a Proxy trap runs
+      //    when it is read — so an earlier revision that spread it *after* the
+      //    catch let a child resolve normally and then throw a genuine
+      //    `EmergencyControlWithheldError` from a getter. That throw left this
+      //    registry, which the execution service authenticates, and was
+      //    recorded as an emergency stop nobody declared. No child-originated
+      //    throw may leave this block: the only withholding this registry
+      //    raises is the one from its own reader check above.
+      let normalized: ExecutionAdapterResult | undefined;
+      let failure: unknown;
       try {
-        result = await childAdapter.execute(action);
+        normalized = readExecutionAdapterResult(await childAdapter.execute(action));
       } catch (error) {
-        // A child that raises has failed to execute, and it is still *that*
-        // child that failed. Converting here rather than letting the throw
-        // reach the execution service preserves the attribution; the outcome is
-        // the same `ADAPTER_ERROR` it has always been.
+        failure = error;
+      }
+      if (normalized === undefined) {
+        // A child that raises — from `execute` or from its result — or returns
+        // something that is not a result has failed to execute, and it is
+        // still *that* child that failed. Converting here rather than letting
+        // anything reach the execution service preserves the attribution; the
+        // outcome is the same `ADAPTER_ERROR` it has always been.
+        // `adapterErrorDetail` is total, so even a thrown value whose `message`
+        // getter throws cannot escape from here.
         return {
           outcome: 'failed',
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
-          ...(error instanceof Error && error.message.length > 0 ? { detail: error.message } : {}),
-          adapterId: childAdapter.adapterId,
+          ...adapterErrorDetail(failure),
+          adapterId: member.adapterId,
         };
       }
-      // The child's own `adapterId`, if it set one, is discarded: attribution
-      // is the routing decision's to make, not the routed adapter's to claim.
-      return { ...result, adapterId: childAdapter.adapterId };
+      // Built from the normalized copy, never from the child's object. The
+      // child's own `adapterId`, if it set one, is discarded: attribution is
+      // the routing decision's to make, not the routed adapter's to claim.
+      return normalized.outcome === 'completed'
+        ? { outcome: 'completed', ...(normalized.providerRef !== undefined ? { providerRef: normalized.providerRef } : {}), adapterId: member.adapterId }
+        : { outcome: 'failed', reason: normalized.reason, ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
     },
   });
 

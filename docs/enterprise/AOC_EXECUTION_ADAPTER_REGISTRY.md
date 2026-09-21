@@ -136,10 +136,35 @@ answer.
 
 The identity is set by the registry from its own frozen membership. A child's
 `adapterId` on its result is **discarded**: attribution is the routing
-decision's to make, not the routed adapter's to claim. A plain adapter omits the
-field and the execution service falls back to the adapter it holds — previous
-behaviour exactly. A structural test asserts the registry is the only production
-source that writes it.
+decision's to make, not the routed adapter's to claim.
+
+That membership identity is a **snapshot**, taken once per child at
+composition into a registry-owned, frozen descriptor. `readonly adapterId` is a
+compile-time annotation only: a JavaScript adapter, a cast, a getter, or an
+adapter assigning to its own property can change what the child object reports
+afterwards. An earlier revision keyed membership on the value read at
+construction and then re-read the live property, so a child renaming itself
+before execution evaded an adapter-scoped stop declared for its configured id,
+and one renaming itself *inside* `execute()` was recorded under a name that was
+never registered. Routing lookup, the adapter-scoped emergency query, success
+and failure attribution all now use the snapshot; after composition the
+registry reads nothing from the child object but `execute`. The host's adapter
+objects are not frozen or otherwise modified. `GrantExecutionService` likewise
+snapshots the composed adapter's own id at composition.
+
+And `GrantExecutionService` reads the field only from a registry. The field
+lives on `ExecutionAdapterResult`, so every adapter implementation in existence
+can set it; an earlier revision honoured it from any of them, which let a
+directly composed `adapter-a` return `adapterId: 'adapter-b'` and persist an
+effect as having been performed by an adapter that never ran. The service now
+asks `isExecutionAdapterRegistry(adapter)` — a module-private `WeakSet` the
+factory alone adds to, with no exported `add` — and a direct adapter is always
+recorded under **its own** id, whatever it returns. A plain adapter that omits
+the field behaves exactly as it always did.
+
+The check is deliberately not a naming convention, a boolean property, an
+`instanceof` against an interface or a marker a caller could copy: each of those
+is a value the untrusted side can also produce.
 
 A child that throws is converted here rather than left to reach the execution
 service, so the `ADAPTER_ERROR` it produces still names the child that raised
@@ -187,9 +212,39 @@ propagated as one typed signal, `EmergencyControlWithheldError`, which
 
 Why a signal rather than a third `ExecutionAdapterResult` case: widening that
 result type would let **every** adapter implementation, including ones a host
-writes, claim an emergency stop. Only trusted code holding a reader can
-construct this class, and the execution service recognises this type and no
-other — an ordinary adapter throw stays `ADAPTER_ERROR`.
+writes, claim an emergency stop.
+
+The type is not what makes the signal trustworthy, and this document previously
+said it was. `EmergencyControlWithheldError` has an ordinary constructor taking
+an ordinary assessment object, so any module that can reach the class can throw
+a real instance — and a directly composed adapter doing so turned its own
+provider failure into `withheldBy: 'emergency-control'`. The execution service
+now honours the signal only from an adapter that passes the same
+`isExecutionAdapterRegistry` membership check used for attribution, because only
+a registry consults a reader before reaching a child. A direct adapter's throw
+stays `ADAPTER_ERROR` whether it is a plain `Error`, a lookalike, or a genuine
+`EmergencyControlWithheldError`.
+
+Registry membership authenticates the *registry*. It does not authenticate every
+throw that passes through the registry, so no child-originated throw may leave
+it. That includes throws raised while **reading** what a child returned, not
+only throws from `execute`. The returned object is child code: an enumerable
+getter runs on a field read or on `{ ...result }`, and a `Proxy` runs a trap on
+every observation. An earlier revision caught the child's `execute` throw and
+then spread the result outside that catch. A child could therefore resolve
+normally, have a getter throw a genuine `EmergencyControlWithheldError` during
+the spread, and have it recorded as an emergency stop nobody declared.
+
+The call and every read of its result now happen inside one `try`, through
+`readExecutionAdapterResult`. That reader reads each field exactly once, copies
+only primitives from the closed vocabulary into a fresh frozen object, and
+treats a malformed shape as `ADAPTER_ERROR`. The thrown value's `message` is
+read through the total `adapterErrorDetail`, so even a hostile `message` getter
+cannot escape the catch. `GrantExecutionService` applies the same reader to what
+the composed adapter returned, in a `try` that sits after the emergency-control
+check. A throw there is `ADAPTER_ERROR` from any adapter and never escapes the
+execution boundary. The only withholding a registry can raise is the one from
+its own reader check, before any child runs.
 
 A stop here is never reported as `PROVIDER_REJECTED`: the provider was never
 contacted. See `AOC_EMERGENCY_CONTROL.md` §2.

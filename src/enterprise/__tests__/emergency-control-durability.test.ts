@@ -554,3 +554,240 @@ describe('Durable emergency control — a closed store withholds, and refuses to
     assert.equal(store.health().readable, false);
   });
 });
+
+describe('Durable emergency control — the whole hash chain is verified, not just its head', () => {
+  /** Two transitions for one key: an activation, then the release that supersedes it. Neither the head nor the latest event is touched by the corruptions below. */
+  async function activatedThenReleased(name: string): Promise<string> {
+    const dbPath = tempDbPath(name);
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, releasedAt: AT });
+    assert.equal(store.read({ organizationId: 'org-acme' }).state, 'clear');
+    await store.close();
+    return dbPath;
+  }
+
+  /** The three answers that must move together once state cannot be established. */
+  async function assertUnverifiable(dbPath: string, what: string): Promise<void> {
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read({ organizationId: 'org-acme' }).state, 'unavailable', `${what}: the effect-path read must withhold`);
+    assert.equal(reopened.read({}).state, 'unavailable', `${what}: the history is global state, so every query withholds`);
+    assert.throws(
+      () => reopened.active(),
+      (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_STATE_CORRUPT',
+      `${what}: active() must refuse`,
+    );
+    assert.equal(reopened.health().status, 'unhealthy', `${what}: health must not claim health it did not check`);
+    assert.equal(reopened.health().readable, false, what);
+  }
+
+  it('REGRESSION — A. rewriting the FIRST event’s transition is caught, though the head names the second', async () => {
+    // The defect this pins. Verification checked the head's own digest, the
+    // event count, the highest sequence, and the single event the head names —
+    // all four of which an edit to event 1 leaves alone. `verifiedControl` did
+    // not catch it either: it verifies only the *latest* event for its key. So
+    // an append-only history advertising a `previousEventDigest` chain could
+    // have its opening activation rewritten and still read as sound.
+    const dbPath = await activatedThenReleased('chain-first-transition');
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_control_events SET transition = 'released' WHERE sequence = 1`).run());
+    await assertUnverifiable(dbPath, 'rewritten first transition');
+  });
+
+  it('REGRESSION — B. rewriting the first event’s previousEventDigest breaks the link to genesis', async () => {
+    const dbPath = await activatedThenReleased('chain-genesis-link');
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_control_events SET previous_event_digest = 'sha256:deadbeef' WHERE sequence = 1`).run());
+    await assertUnverifiable(dbPath, 'broken genesis link');
+  });
+
+  it('REGRESSION — E. rewriting an old event’s digest is caught, though head and latest still agree', async () => {
+    // The head names event 2 and event 2 still digests correctly; only event
+    // 1's recorded digest was changed. The link from event 2 back to event 1 is
+    // what notices.
+    const dbPath = await activatedThenReleased('chain-old-digest');
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_control_events SET event_digest = 'sha256:deadbeef' WHERE sequence = 1`).run());
+    await assertUnverifiable(dbPath, 'rewritten old digest');
+  });
+
+  it('C. deleting an interior event from a three-link chain is caught — the projection cross-check already saw this one, and the chain sees it directly', async () => {
+    const dbPath = tempDbPath('chain-interior-delete');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    store.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, releasedAt: AT });
+    await store.close();
+    // Event 2 removed, and the head's count adjusted to match, so counting
+    // alone would be satisfied. Contiguity and the chain are not.
+    await withRawDb(dbPath, (db) => {
+      db.prepare(`DELETE FROM emergency_control_events WHERE sequence = 2`).run();
+      db.prepare(`DELETE FROM emergency_controls WHERE control_key = 'actor:agent-A'`).run();
+      db.prepare(`UPDATE emergency_control_head SET event_count = 2 WHERE id = 1`).run();
+    });
+    await assertUnverifiable(dbPath, 'deleted interior event');
+  });
+
+  it('D. re-numbering an interior event to close the gap is caught by the chain', async () => {
+    const dbPath = tempDbPath('chain-renumber');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    store.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, releasedAt: AT });
+    await store.close();
+    // Contiguity restored by hand: events 1 and 3 renumbered to 1 and 2. The
+    // count and the maximum sequence now both agree with a patched head, and
+    // the `previousEventDigest` link is what refuses — the surviving second
+    // event still names the deleted one as its predecessor.
+    await withRawDb(dbPath, (db) => {
+      db.prepare(`DELETE FROM emergency_control_events WHERE sequence = 2`).run();
+      db.prepare(`UPDATE emergency_control_events SET sequence = 2 WHERE sequence = 3`).run();
+      db.prepare(`UPDATE emergency_control_head SET event_count = 2, event_sequence = 2 WHERE id = 1`).run();
+    });
+    await assertUnverifiable(dbPath, 're-numbered interior event');
+  });
+
+  it('a swapped pair of events is caught, because each link names a specific predecessor', async () => {
+    const dbPath = await activatedThenReleased('chain-swap');
+    await withRawDb(dbPath, (db) => {
+      db.prepare(`UPDATE emergency_control_events SET sequence = 99 WHERE sequence = 1`).run();
+      db.prepare(`UPDATE emergency_control_events SET sequence = 1 WHERE sequence = 2`).run();
+      db.prepare(`UPDATE emergency_control_events SET sequence = 2 WHERE sequence = 99`).run();
+    });
+    await assertUnverifiable(dbPath, 'swapped events');
+  });
+
+  it('F. a healthy multi-event chain still verifies, so the refusals above are not vacuous', async () => {
+    const dbPath = tempDbPath('chain-healthy');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    store.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, releasedAt: AT });
+    store.activate({ scope: 'adapter', value: 'adapter-a', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read({ organizationId: 'org-acme' }).state, 'clear', 'the released control is released');
+    assert.equal(reopened.read({ actorId: 'agent-A' }).state, 'blocked');
+    assert.equal(reopened.read({ adapterId: 'adapter-a' }).state, 'blocked');
+    assert.equal(reopened.health().status, 'healthy');
+    assert.deepEqual(
+      [...reopened.active()].sort((left, right) => left.scope.localeCompare(right.scope)),
+      [{ scope: 'actor', value: 'agent-A' }, { scope: 'adapter', value: 'adapter-a' }],
+    );
+    // Four transitions, walked on every read, and the head agrees with all four.
+    const events = await withRawDb(dbPath, (db) => db.prepare(`SELECT COUNT(*) AS c FROM emergency_control_events`).get() as { c: number });
+    assert.equal(events.c, 4);
+  });
+});
+
+describe('Durable emergency control — operator diagnostics reconcile every key, not just the active ones', () => {
+  it('REGRESSION — A. a deleted active projection makes active() refuse and health unhealthy', async () => {
+    // The defect this pins. `active()` selected `WHERE active = 1` and
+    // validated only what came back — the one query that cannot see a row that
+    // was deleted. History and head stayed intact, the loop validated nothing,
+    // and `active()` returned `[]` while `health()` said `healthy`, at the same
+    // moment the effect-path read for that control was correctly withholding.
+    // Operator diagnostics contradicting the effect path in the direction of
+    // "all clear" is the worst available answer.
+    const dbPath = tempDbPath('operator-deleted-projection');
+    const store = await open(dbPath);
+    store.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_controls WHERE control_key = 'global'`).run());
+
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable', 'the effect path already withheld; diagnostics must agree');
+    assert.throws(
+      () => reopened.active(),
+      (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_STORE_STATE_CORRUPT',
+    );
+    assert.equal(reopened.health().status, 'unhealthy');
+    assert.equal(reopened.health().readable, false);
+    assert.equal(reopened.health().activeControls, 0);
+  });
+
+  it('REGRESSION — B. an active flag flipped to 0 without resealing is caught, though the row leaves the active set', async () => {
+    const dbPath = tempDbPath('operator-flag-flipped');
+    const store = await open(dbPath);
+    store.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+    // The row is still there and still says it was derived from event 1 — but
+    // its digest covers `active`, and event 1 says `activated`.
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_controls SET active = 0 WHERE control_key = 'global'`).run());
+
+    const reopened = await open(dbPath);
+    assert.equal(reopened.read(QUERY).state, 'unavailable');
+    assert.throws(() => reopened.active(), (error: unknown) => isEmergencyControlStoreError(error));
+    assert.equal(reopened.health().status, 'unhealthy');
+  });
+
+  it('a projection with no history behind it is reconciled too, from the projection side', async () => {
+    const dbPath = tempDbPath('operator-orphan-projection');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+    await withRawDb(dbPath, (db) => db.prepare(`DELETE FROM emergency_control_events WHERE control_key = 'organization:org-acme'`).run());
+
+    const reopened = await open(dbPath);
+    assert.throws(() => reopened.active(), (error: unknown) => isEmergencyControlStoreError(error));
+    assert.equal(reopened.health().status, 'unhealthy');
+  });
+
+  it('C. a released, internally consistent control is not an error — it is simply not active', async () => {
+    const dbPath = tempDbPath('operator-released');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, declaredAt: AT });
+    store.release({ scope: 'organization', value: 'org-acme', issuerRef: ISSUER, releasedAt: AT });
+    store.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+
+    const reopened = await open(dbPath);
+    // The released key still has a projection row and a history; reconciling it
+    // must succeed and then filter it out, not mistake `active = 0` for damage.
+    assert.deepEqual(reopened.active(), [{ scope: 'actor', value: 'agent-A' }]);
+    assert.equal(reopened.health().status, 'healthy');
+    assert.equal(reopened.health().activeControls, 1);
+    assert.equal(reopened.read({ organizationId: 'org-acme' }).state, 'clear');
+  });
+
+  it('D. a corrupt unrelated control keeps scoped reads narrow, and still makes operator diagnostics unhealthy', async () => {
+    // The two questions are different, and are answered differently on purpose.
+    // A read asks about *one query* and stays scoped to it, because blocking
+    // every tenant over one unrelated row is an availability failure nobody
+    // chose. `active()` and `health()` ask about *the store*, and an operator
+    // asking whether the kill switch is sound is owed the whole answer.
+    const dbPath = tempDbPath('operator-unrelated-corrupt');
+    const store = await open(dbPath);
+    store.activate({ scope: 'organization', value: 'org-other', issuerRef: ISSUER, declaredAt: AT });
+    await store.close();
+    await withRawDb(dbPath, (db) => db.prepare(`UPDATE emergency_controls SET record_digest = 'sha256:deadbeef' WHERE control_key = 'organization:org-other'`).run());
+
+    const reopened = await open(dbPath);
+    // Unchanged, and deliberately so.
+    assert.equal(reopened.read({ organizationId: 'org-acme' }).state, 'clear', 'scoped reads stay narrow');
+    assert.equal(reopened.read({ organizationId: 'org-other' }).state, 'unavailable');
+    // Newly correct.
+    assert.throws(() => reopened.active(), (error: unknown) => isEmergencyControlStoreError(error));
+    assert.equal(reopened.health().status, 'unhealthy');
+  });
+
+  it('a malformed release cannot clear a durable stop either — the rule is shared with the in-memory store', async () => {
+    const dbPath = tempDbPath('durable-malformed-release');
+    const store = await open(dbPath);
+    store.activate({ scope: 'global', issuerRef: ISSUER, declaredAt: AT });
+    for (const release of [
+      { scope: 'global', value: 'unexpected', issuerRef: ISSUER, releasedAt: AT },
+      { scope: 'global', issuerRef: '', releasedAt: AT },
+      { scope: 'global', issuerRef: ISSUER, releasedAt: '' },
+      { scope: 'nonsense', value: 'x', issuerRef: ISSUER, releasedAt: AT },
+    ]) {
+      assert.throws(
+        () => store.release(release as never),
+        (error: unknown) => isEmergencyControlStoreError(error) && error.code === 'EMERGENCY_CONTROL_DECLARATION_INVALID',
+        `${JSON.stringify(release)} must be refused`,
+      );
+      assert.deepEqual(store.active(), [{ scope: 'global' }], `${JSON.stringify(release)} must not clear the stop`);
+    }
+    // And the well-formed one still works.
+    store.release({ scope: 'global', issuerRef: ISSUER, releasedAt: AT });
+    assert.deepEqual(store.active(), []);
+  });
+});

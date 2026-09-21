@@ -9,14 +9,18 @@ import type { BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant
 import {
   EXECUTION_FAILURE_REASONS,
   GRANT_EXERCISE_REASON_CODES,
+  adapterErrorDetail,
   assessBoundedGrantExercise,
+  readExecutionAdapterResult,
   type BoundedGrantExerciseAssessment,
   type ExecutionAdapter,
+  type ExecutionAdapterResult,
   type ExecutionOutcome,
   type GrantExerciseRequest,
   type ValidatedExecutionAction,
   type ValidatedExecutionCorrelation,
 } from '../domain/index.js';
+import { isExecutionAdapterRegistry } from './execution-adapter-registry.js';
 
 /**
  * The gate. Nothing external runs through this service unless a bounded grant
@@ -125,6 +129,38 @@ export interface GrantExecutionService {
 export function createGrantExecutionService(options: GrantExecutionServiceOptions): GrantExecutionService {
   const { store, adapter, now } = options;
   const emergencyControl = options.emergencyControl;
+
+  /**
+   * Whether the composed adapter is an actual `createExecutionAdapterRegistry`
+   * product, decided **once, at composition**, from a `WeakSet` no other module
+   * can add to.
+   *
+   * Two things this service would otherwise take on an adapter's word depend on
+   * it, and both are claims a directly composed adapter has no standing to
+   * make: that some *other* adapter performed the effect, and that an
+   * *emergency control* — not the adapter itself — stopped it. Only a registry
+   * has the facts behind either: it resolved the child from a membership
+   * snapshotted and frozen at construction, and it read the `EmergencyControlReaderPort` before
+   * reaching that child. Nothing a direct adapter returns or throws can put it
+   * in that position, so nothing it returns or throws is read that way.
+   *
+   * Resolved here rather than per-exercise because `adapter` is fixed at
+   * composition: the answer cannot change while traffic flows, and a decision
+   * made once cannot be raced.
+   */
+  const adapterIsTrustedRegistry = isExecutionAdapterRegistry(adapter);
+
+  /**
+   * The composed adapter's identity, read **once, at composition** — for the
+   * same reason the registry snapshots its children's. `readonly adapterId` is
+   * a compile-time annotation: a directly composed adapter that reassigns its
+   * own property inside `execute()` would otherwise be recorded under whatever
+   * name it chose afterwards, which is the attribution forgery
+   * `adapterIsTrustedRegistry` closes for `result.adapterId`, reached through
+   * the object instead of the result. The host's adapter object is not frozen
+   * or touched; this service simply stops re-reading it.
+   */
+  const composedAdapterId = adapter.adapterId;
 
   async function assess(request: GrantExerciseRequest): Promise<BoundedGrantExerciseAssessment> {
     const identity = { boundedGrantId: request.boundedGrantId, correlation: request.correlation, executionId: request.executionId };
@@ -270,22 +306,41 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       // selected it when one did. A plain adapter names itself; the registry
       // names the child trusted routing chose, so "which provider did this" is
       // answerable from the outcome and from the durable record built on it.
+      //
+      // `result.adapterId` is read **only** from a trusted registry. It is a
+      // field on `ExecutionAdapterResult`, which means every adapter
+      // implementation in existence can set it, including ones a host wrote and
+      // ones it merely installed — and an effect performed by adapter A that
+      // persists as adapter B's is a durable record that names the wrong party.
+      // A directly composed adapter therefore cannot override its own identity:
+      // whatever it returns, the outcome names the adapter this service was
+      // handed. Only the registry's answer came from routing rather than from
+      // the routed party's own claim about itself.
       const performedBy = (result: { readonly adapterId?: string }): { readonly adapterId: string; readonly routedBy?: string } =>
-        result.adapterId === undefined || result.adapterId === adapter.adapterId
-          ? { adapterId: adapter.adapterId }
-          : { adapterId: result.adapterId, routedBy: adapter.adapterId };
+        !adapterIsTrustedRegistry || result.adapterId === undefined || result.adapterId === composedAdapterId
+          ? { adapterId: composedAdapterId }
+          : { adapterId: result.adapterId, routedBy: composedAdapterId };
 
-      let result;
+      let returned: unknown;
       try {
-        result = await adapter.execute(action);
+        returned = await adapter.execute(action);
       } catch (error) {
-        // One typed signal, and one only. A composite adapter that resolved a
-        // child and found an adapter-scoped stop active reports it this way,
-        // because no provider was contacted and calling that a provider
-        // rejection would record a refusal nobody made. Every **other** throw
-        // stays `ADAPTER_ERROR`: an adapter cannot promote its own failure into
-        // an emergency stop by throwing something that looks like one.
-        if (isEmergencyControlWithheldError(error)) {
+        // One typed signal, from one trusted source, and no other. A composite
+        // adapter that resolved a child and found an adapter-scoped stop active
+        // reports it this way, because no provider was contacted and calling
+        // that a provider rejection would record a refusal nobody made.
+        //
+        // The **type is not the authentication** — `EmergencyControlWithheldError`
+        // is an ordinary class whose constructor takes an assessment object, so
+        // a directly composed adapter could construct a genuine instance and
+        // throw it, turning its own provider failure into `withheldBy:
+        // 'emergency-control'` when no `EmergencyControlReaderPort` withheld
+        // anything. Registry membership is what authenticates it: only a
+        // registry actually consults a reader before reaching a child, so only a
+        // registry's throw is evidence that a reader spoke. Every other throw —
+        // a plain `Error`, a lookalike, or a real instance from a direct
+        // adapter — stays `ADAPTER_ERROR`.
+        if (adapterIsTrustedRegistry && isEmergencyControlWithheldError(error)) {
           return {
             status: 'withheld',
             withheldBy: 'emergency-control',
@@ -305,9 +360,36 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           status: 'execution-failed',
           assessment,
           correlation,
-          adapterId: adapter.adapterId,
+          adapterId: composedAdapterId,
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
-          ...(error instanceof Error && error.message.length > 0 ? { detail: error.message } : {}),
+          ...adapterErrorDetail(error),
+          exercisedAt,
+        };
+      }
+
+      // Reading what the adapter returned runs the adapter's code — a getter,
+      // a Proxy trap — so it happens in a try of its own, and **after** the
+      // emergency-control check above has been left behind: a throw from here
+      // is never read as a withholding, from any adapter, registry or not. A
+      // result that throws while being read, or is not a well-formed result,
+      // is the adapter failing its port contract, and becomes `ADAPTER_ERROR`
+      // rather than an exception escaping the execution boundary. From here on
+      // only the normalized copy is touched.
+      let result: ExecutionAdapterResult | undefined;
+      let unreadable: unknown;
+      try {
+        result = readExecutionAdapterResult(returned);
+      } catch (error) {
+        unreadable = error;
+      }
+      if (result === undefined) {
+        return {
+          status: 'execution-failed',
+          assessment,
+          correlation,
+          adapterId: composedAdapterId,
+          reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
+          ...adapterErrorDetail(unreadable),
           exercisedAt,
         };
       }

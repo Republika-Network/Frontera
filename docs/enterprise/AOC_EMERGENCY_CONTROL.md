@@ -119,9 +119,27 @@ is invoked. See `AOC_EXECUTION_ADAPTER_REGISTRY.md`.
 
 It is propagated back as one **typed signal**,
 `EmergencyControlWithheldError`, which `GrantExecutionService` maps onto
-`withheldBy: 'emergency-control'`. Every *other* adapter throw remains
-`ADAPTER_ERROR`: an adapter cannot promote its own failure into an emergency
-stop by throwing something that looks like one.
+`withheldBy: 'emergency-control'`.
+
+The type alone is not what makes that safe, and an earlier revision wrongly said
+it was. The class has an ordinary constructor taking an ordinary assessment
+object, so a directly composed adapter could throw a genuine instance and
+relabel its own provider failure as an operator stop. What authenticates the
+signal is **who threw it**: the service honours it only from an adapter that
+`isExecutionAdapterRegistry` confirms came from
+`createExecutionAdapterRegistry`, backed by a module-private `WeakSet` with no
+exported `add`. Only a registry consults an `EmergencyControlReaderPort` before
+reaching a child, so only a registry's throw is evidence that a reader spoke.
+
+The same membership check governs **attribution**. `ExecutionAdapterResult`
+carries an optional `adapterId` so a registry can report which child performed
+an effect, but the field is visible to every adapter implementation. It is read
+only from a registry: a directly composed adapter that returns someone else's
+id is ignored and recorded under its own, because an effect performed by
+adapter A that persists as adapter B's is a durable record naming the wrong
+party. Every *other* adapter throw remains `ADAPTER_ERROR`: an adapter cannot
+promote its own failure into an emergency stop by throwing something that looks
+like one — or something that *is* one.
 
 A stop here is never reported as `PROVIDER_REJECTED`. The provider was never
 contacted.
@@ -414,18 +432,51 @@ answer `clear` from.
 2. **One transaction per mutation**, `journal_mode = WAL`,
    `synchronous = FULL` — an acknowledged `activate` is durable before it
    returns.
-3. **Every read verifies all three records.** Anything the store cannot vouch
-   for is `unavailable`, never repaired into `clear` — see the table above.
+3. **Every read verifies all three records, and the whole chain.** Anything the
+   store cannot vouch for is `unavailable`, never repaired into `clear` — see
+   the table above. Verification walks the event history from genesis on every
+   read: each row must be the next sequence, must recompute its own digest, and
+   must name its predecessor's digest, and the head must then match the number
+   of events, the final sequence and the final digest that the walk found. An
+   earlier revision checked only the event the head named, so rewriting an
+   *older* event — the opening activation behind a later release — left every
+   check passing over an altered history.
 4. **Malformed writes are refused**, so nothing unreadable is stored through the
    typed writer in the first place. A write into state the store cannot verify
    is refused **loudly**: reads withhold, writes throw, and an operator learns
    they are writing into damage rather than silently extending it.
-5. **Scoped fail-closed.** Only the rows that could apply are fetched, so a
+5. **Scoped fail-closed on the effect path; store-wide for operators.** A read
+   answers *one query*, so only the rows that could apply are fetched and a
    corrupt row for an organization this query is not about does not block that
-   query. The **head** is the exception, because it is global state: if it
-   cannot be verified, no query can be answered.
+   query — blocking every tenant over one unrelated row is an availability
+   failure nobody chose. The **history** is the exception, because it is global
+   state: if the chain cannot be verified, no query can be answered.
+
+   `active()` and `health()` ask a different question — *is the store sound* —
+   and answer it over every key the database knows, enumerated from the event
+   history **and** the projection. An earlier revision selected
+   `WHERE active = 1` and validated only what came back, which is the one query
+   that cannot see the rows that matter: a deleted active projection, and one
+   whose `active` flag was flipped to `0`, both leave that result set before
+   anything validates them, so `active()` returned `[]` and `health()` reported
+   `healthy` while the effect-path read for that control was correctly
+   withholding. Operator diagnostics must never contradict the effect path in
+   the direction of "all clear".
 6. **A closed store withholds.** `read` returns `unavailable`; the operator
    mutations throw, because an operator is entitled to know a stop did not take.
+
+#### What verification costs, stated exactly
+
+The chain walk is **O(number of operator transitions)**, on every read. It is
+not constant-time, and it is deliberately not cached: a cache is a second answer
+that can disagree with the database at the very commit boundary this read exists
+to be correct at. What bounds it is that the history grows only when an operator
+activates or releases a control — it is bounded by **operator actions, never by
+request traffic**, so a deployment taking a million governed actions against a
+handful of declared stops walks a handful of rows each time. It remains
+synchronous, introduces no I/O of its own, and runs inside the caller's
+transaction, so `EmergencyControlReaderPort` and the grant store's `commitGuard`
+are unchanged.
 
 ### What the digests do not do
 

@@ -414,3 +414,58 @@ describe('Execution layer boundaries — no caller-facing surface was added', ()
     assert.deepEqual(orchestration, [], 'this is an execution boundary, not a workflow engine');
   });
 });
+
+describe('Execution layer boundaries — the trust anchor for routed attribution stays unforgeable', () => {
+  const REGISTRY = 'src/features/execution-runtime/services/execution-adapter-registry.ts';
+  const SERVICE = 'src/features/execution-runtime/services/grant-execution-service.ts';
+
+  it('only the registry factory can enrol an object as a registry', () => {
+    const text = readFileSync(REGISTRY, 'utf8');
+    // The WeakSet is the anchor. It must stay module-private — declared here,
+    // added to here, and never handed out — because an exported `add` would let
+    // any caller enrol its own adapter and inherit both trusted-registry
+    // powers: naming another performer, and raising the interlock signal.
+    assert.ok(/const COMPOSED_REGISTRIES = new WeakSet<object>\(\);/.test(text), 'the registry WeakSet must stay declared in the factory module');
+    assert.equal(/export\s+(const|let|var|function)\s+COMPOSED_REGISTRIES/.test(text), false, 'the WeakSet itself must never be exported');
+
+    const additions = [...text.matchAll(/COMPOSED_REGISTRIES\.add\(/g)];
+    assert.equal(additions.length, 1, 'exactly one enrolment site, inside createExecutionAdapterRegistry');
+    assert.ok(text.indexOf('COMPOSED_REGISTRIES.add(') > text.indexOf('export function createExecutionAdapterRegistry'), 'the only enrolment must happen inside the factory');
+
+    // And the predicate reads membership rather than any forgeable property.
+    // Anchored on the open paren: `isExecutionAdapterRegistryError` is declared
+    // earlier and would otherwise prefix-match it.
+    const predicate = text.slice(text.indexOf('export function isExecutionAdapterRegistry('));
+    const body = predicate.slice(0, predicate.indexOf('\n}'));
+    assert.ok(/COMPOSED_REGISTRIES\.has\(/.test(body), 'membership must come from the WeakSet');
+    for (const forgeable of ['adapterId', 'instanceof', 'isRegistry', 'constructor', 'Symbol']) {
+      assert.equal(body.includes(forgeable), false, `the predicate must not rely on '${forgeable}', which a caller can also produce`);
+    }
+  });
+
+  it('nothing outside the registry module can enrol a registry', () => {
+    for (const file of sourceFiles(ROOT)) {
+      if (file === REGISTRY) continue;
+      assert.equal(readFileSync(file, 'utf8').includes('COMPOSED_REGISTRIES'), false, `${file} must not reach the registry trust anchor`);
+    }
+  });
+
+  it('the execution service gates BOTH trusted behaviours on registry membership', () => {
+    const text = readFileSync(SERVICE, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+    assert.ok(/isExecutionAdapterRegistry\(adapter\)/.test(text), 'the service must ask whether its adapter is a real registry');
+
+    // 1. Routed attribution: `result.adapterId` may only be honoured behind the check.
+    assert.ok(/!adapterIsTrustedRegistry\s*\|\|\s*result\.adapterId === undefined/.test(text), 'a non-registry adapter must never override its own identity');
+    // 2. The interlock signal: the type alone must never be the whole condition.
+    assert.ok(/adapterIsTrustedRegistry && isEmergencyControlWithheldError\(error\)/.test(text), 'the withholding signal must be authenticated by registry membership, not by type alone');
+    assert.equal(/if \(isEmergencyControlWithheldError\(error\)\)/.test(text), false, 'recognising the error type on its own is the defect this pins');
+  });
+
+  it('the emergency reader stays synchronous through both trust decisions', () => {
+    const text = readFileSync(SERVICE, 'utf8');
+    // The trust check is a plain predicate over an object, resolved at
+    // composition: it cannot introduce an await into the exercise path.
+    assert.equal(/await\s+isExecutionAdapterRegistry/.test(text), false, 'the registry check must never be awaited');
+    assert.equal(/await\s+readEmergencyControl/.test(text), false, 'the emergency read must stay synchronous');
+  });
+});
