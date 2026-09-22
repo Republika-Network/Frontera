@@ -4,7 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Soberanía Agent Passport',
   description:
-    'Give your AI agents a constitution. Enroll, verify, and govern AI agents with Soberanía Agent Passport.',
+    'Give your SI agents a constitution. Enroll, verify, and govern SI agents with Soberanía Agent Passport.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
