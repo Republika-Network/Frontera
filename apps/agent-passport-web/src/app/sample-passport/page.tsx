@@ -17,7 +17,7 @@ export default async function SamplePassportPage() {
         <h1>Sample Governed Agent</h1>
         <p>
           This is a demonstration passport for <strong>{passport.agentName}</strong> by{' '}
-          <strong>{passport.ownerName}</strong>. It shows what a fully governed AI agent
+          <strong>{passport.ownerName}</strong>. It shows what a fully governed SI agent
           passport looks like in the Soberanía framework.
         </p>
       </div>

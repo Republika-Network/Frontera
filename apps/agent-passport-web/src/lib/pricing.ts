@@ -18,7 +18,7 @@ export const AGENT_PASSPORT_TIERS: AgentPassportTier[] = [
     name: 'Agent Passport',
     priceLabel: '$99',
     billingLabel: 'one-time',
-    description: 'For founders, builders, and teams that need a verifiable identity and public governance page for one AI agent.',
+    description: 'For founders, builders, and teams that need a verifiable identity and public governance page for one SI agent.',
     features: [
       '1 Agent Passport',
       'Passport ID',
@@ -60,7 +60,7 @@ export const AGENT_PASSPORT_TIERS: AgentPassportTier[] = [
     name: 'Organization Agent Registry',
     priceLabel: '$999',
     billingLabel: 'per month',
-    description: 'For organizations that want to govern multiple AI agents under a shared registry with a buyer admin view and up to 10 governed agent passports.',
+    description: 'For organizations that want to govern multiple SI agents under a shared registry with a buyer admin view and up to 10 governed agent passports.',
     features: [
       'Up to 10 governed agent passports',
       'Buyer admin registry dashboard',

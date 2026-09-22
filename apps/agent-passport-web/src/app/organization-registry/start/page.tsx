@@ -72,7 +72,7 @@ export default function OrgRegistryStartPage() {
       <div className="section-label">Organization Agent Registry</div>
       <h1 style={{ fontSize: 28, marginBottom: 12 }}>Start your Organization Agent Registry</h1>
       <p style={{ color: 'var(--text-muted)', marginBottom: 32 }}>
-        Create a governed registry for up to 10 AI agent passports and capture the organization profile
+        Create a governed registry for up to 10 SI agent passports and capture the organization profile
         used in your registry evidence.
       </p>
 
@@ -207,7 +207,7 @@ export default function OrgRegistryStartPage() {
         </div>
 
         <div className="card" style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Primary AI Agent Use Case</h2>
+          <h2 style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Primary SI Agent Use Case</h2>
           <div className="form-field">
             <label className="form-label">Describe your primary use case</label>
             <textarea

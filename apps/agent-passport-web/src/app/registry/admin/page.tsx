@@ -54,7 +54,7 @@ export default function RegistryAdminPage({ searchParams }: Props) {
         <div className="section-label">Organization Registry</div>
         <h1>Organization Agent Registry</h1>
         <p style={{ color: 'var(--text-muted)', maxWidth: 640 }}>
-          Manage your governed AI agent passports, verification links, and runtime governance readiness.
+          Manage your governed SI agent passports, verification links, and runtime governance readiness.
         </p>
       </div>
 
@@ -305,7 +305,7 @@ export default function RegistryAdminPage({ searchParams }: Props) {
         </div>
         {registry.organizationUseCase && (
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Primary AI Agent Use Case</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Primary SI Agent Use Case</div>
             <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{registry.organizationUseCase}</div>
           </div>
         )}
