@@ -237,6 +237,12 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       // vocabulary; neither can reach a mutation, because the reader port
       // declares none (`emergency-control-boundaries.test.ts`).
       '../../features/emergency-control-runtime/index.js',
+      // P7: the exercise-control **reason-code vocabulary** only, so the
+      // evidence ledger can record `withheld:exercise-control:<CODE>…` against
+      // a closed set. The orchestrator never holds the exercise-control
+      // reservation store and never reserves, settles or releases —
+      // `exercise-control-boundaries.test.ts` pins that.
+      '../../features/exercise-control-runtime/index.js',
       '../../kernel/index.js',
       '../customer-identity/index.js',
       '../events/enterprise-events.js',

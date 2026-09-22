@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { GrantValidityCeiling } from '../../features/grant-runtime/index.js';
 
 /**
@@ -124,4 +126,42 @@ export function grantValidityCeilingsFor(binding: GrantAuthorityBinding): readon
     return [{ source: 'authority', notAfter: binding.expiresAt }];
   }
   return [];
+}
+
+/** The canonical-serialization format of an authority binding. Bumped only if the bytes below ever change; a digest taken under another value is not comparable. */
+export const GRANT_AUTHORITY_BINDING_FORMAT = 'aoc.grant-authority-binding.v1';
+
+/**
+ * The canonical serialization of an authority binding: every field that gives
+ * the binding its meaning, in fixed lexicographic key order, no whitespace, no
+ * ambient `JSON.stringify` key ordering, and the format tag in the bytes so a
+ * digest can never be confused with one taken over a different encoding.
+ *
+ * ```
+ * bounded-authority            authorityKind, authorityRef, expiresAt, kind
+ * no-temporal-authority-bound  justification, kind, sourceKind
+ * ```
+ *
+ * Exactly the fields `grantAuthorityBindingsMatch` compares at the issuance
+ * commit boundary, so "the same binding" means the same thing at issuance and
+ * at exercise.
+ */
+export function serializeGrantAuthorityBinding(binding: GrantAuthorityBinding): string {
+  if (binding.kind === 'bounded-authority') {
+    return `{"authorityKind":${JSON.stringify(binding.authorityKind)},"authorityRef":${JSON.stringify(binding.authorityRef)},"expiresAt":${JSON.stringify(binding.expiresAt)},"format":${JSON.stringify(GRANT_AUTHORITY_BINDING_FORMAT)},"kind":"bounded-authority"}`;
+  }
+  return `{"format":${JSON.stringify(GRANT_AUTHORITY_BINDING_FORMAT)},"justification":${JSON.stringify(binding.justification)},"kind":"no-temporal-authority-bound","sourceKind":${JSON.stringify(binding.sourceKind)}}`;
+}
+
+/**
+ * `sha256:<hex>` over `serializeGrantAuthorityBinding` — the provenance
+ * commitment recorded on a bounded grant as `authorityBindingDigest`, and the
+ * value exercise-time revalidation compares for exact equality.
+ *
+ * Integrity, not authenticity: unkeyed, like every other digest in this
+ * repository. It proves "this is the binding the grant was issued under", not
+ * who asserted it.
+ */
+export function grantAuthorityBindingDigest(binding: GrantAuthorityBinding): string {
+  return `sha256:${createHash('sha256').update(serializeGrantAuthorityBinding(binding)).digest('hex')}`;
 }

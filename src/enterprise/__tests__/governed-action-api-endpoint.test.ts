@@ -620,6 +620,48 @@ describe('POST /api/governed-actions — the fully composed Host', () => {
       });
     }
 
+    // P7: aggregate / velocity exercise controls are trusted host composition.
+    // No limit, bucket, budget, window, reservation or binding digest can be
+    // named by a caller — at the top level or in asserted context — and every
+    // attempt stops before the Kernel with no provider call.
+    const P7_FIELDS: readonly (readonly [string, unknown])[] = [
+      ['limit', 5],
+      ['limits', [{ limitId: 'x', maximum: 1e9 }]],
+      ['limitId', 'caller-limit'],
+      ['scopeKey', 'caller-scope'],
+      ['quota', 1e9],
+      ['budget', { amount: 1e9 }],
+      ['velocity', { perMinute: 1e6 }],
+      ['window', { kind: 'lifetime' }],
+      ['windowSeconds', 1],
+      ['maximum', 1e9],
+      ['maxCount', 1e9],
+      ['maxAmount', '1000000000'],
+      ['reservation', { state: 'released' }],
+      ['reservationId', 'aoc.exercise-reservation:caller'],
+      ['exerciseControls', { policy: 'none' }],
+      ['aggregateControls', { enabled: false }],
+      ['authorityBindingDigest', `sha256:${'a'.repeat(64)}`],
+    ];
+    for (const [field, value] of P7_FIELDS) {
+      it(`P7 '${field}' at top level → 400 rejected / GOVERNED_ACTION_INTENT_INVALID; no Kernel, no Store, no provider`, async () => {
+        const measured = await measure(() => send(baseUrl, allowed('p7', { [field]: value }), { authorization: bearer(SECRET) }));
+        assert.equal(measured.value.status, 400, measured.value.text);
+        const body = assertDomainBody(measured.value, 'rejected');
+        assert.deepEqual([...body.reasonCodes], [GOVERNED_ACTION_REASON_CODES.GOVERNED_ACTION_INTENT_INVALID]);
+        assert.equal(measured.kernel, 0);
+        assert.equal(measured.commits, 0);
+        assert.equal(measured.provider, 0);
+      });
+      it(`P7 '${field}' inside assertedContext → 400 rejected; no Kernel, no provider`, async () => {
+        const measured = await measure(() => send(baseUrl, allowed('p7-ctx', { assertedContext: { ...ALLOWED_INTENT.assertedContext, [field]: value } }), { authorization: bearer(SECRET) }));
+        assert.equal(measured.value.status, 400, measured.value.text);
+        assertDomainBody(measured.value, 'rejected');
+        assert.equal(measured.kernel, 0);
+        assert.equal(measured.provider, 0);
+      });
+    }
+
     for (const key of ['adapterId', 'adapter', 'url', 'grant', 'actorId', 'organizationId', 'system', 'credential', 'authorization']) {
       it(`reserved assertedContext key '${key}' → 400 rejected`, async () => {
         const measured = await measure(() => send(baseUrl, allowed('ctx', { assertedContext: { ...ALLOWED_INTENT.assertedContext, [key]: 'x' } }), { authorization: bearer(SECRET) }));

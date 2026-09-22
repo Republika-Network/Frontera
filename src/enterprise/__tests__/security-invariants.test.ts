@@ -259,6 +259,23 @@ describe('SECURITY_INVARIANTS.md — P6: the Generic HTTP invariants are recorde
     }
   });
 
+  it('records SEC-INV-070 … SEC-INV-079 as EXERCISE-CTRL-01 … 10, each path- or component-local and none system-wide', () => {
+    for (let index = 0; index < 10; index += 1) {
+      const id = `SEC-INV-0${70 + index}`;
+      const alias = `EXERCISE-CTRL-${String(index + 1).padStart(2, '0')}`;
+      const row = doc.split('\n').find((line) => line.startsWith(`| ${id} (**${alias}**)`));
+      assert.ok(row !== undefined, `${id} must be recorded as ${alias}`);
+      assert.ok(/PATH-LOCAL|COMPONENT-LOCAL/.test(row), `${id} must be scoped`);
+      assert.equal(/SYSTEM-WIDE/.test(row), false, `${id} must not be system-wide`);
+    }
+    const section = doc.slice(doc.indexOf('### 4.9 Aggregate / velocity exercise controls (P7)'), doc.indexOf('## 5. Execution Path Guarantees'));
+    for (const excluded of ['AocKernel.enforce', 'Sovereign Access', 'Content Protection']) assert.ok(section.includes(excluded), `the P7 section must name ${excluded} as not covered`);
+    const u06 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-U06 |')) ?? '';
+    assert.ok(u06.includes('ASPIRATIONAL-UNIMPLEMENTED **system-wide**'), 'aggregate control is never marked system-wide');
+    assert.ok(doc.includes('"Frontera bounds aggregate behaviour" is false'));
+    assert.ok(/Distributed or cross-host quota/.test(doc), 'the distributed-quota non-claim must stay recorded');
+  });
+
   it('keeps SEC-INV-U03 unimplemented and never describes origin pinning as an egress firewall', () => {
     const u03 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-U03 |'));
     assert.ok(u03 !== undefined);

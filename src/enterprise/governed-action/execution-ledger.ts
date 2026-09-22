@@ -1,4 +1,5 @@
 import { EMERGENCY_CONTROL_REASON_CODE_VALUES } from '../../features/emergency-control-runtime/index.js';
+import { EXERCISE_CONTROL_REASON_CODE_VALUES } from '../../features/exercise-control-runtime/index.js';
 import type { BoundedGrant } from '../../features/grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODE_VALUES, isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
@@ -23,8 +24,17 @@ import { authorizationReferenceId, executionAttemptReferenceId, executionOutcome
  * what makes the `attempt` row a durable at-most-once marker — and no more
  * than that: it is not exactly-once.
  */
-/** Which layer withheld an effect. Two layers can, they own different vocabularies, and a replay must report the one that actually did. */
-export type WithholdingLayer = 'grant-exercise' | 'emergency-control';
+/**
+ * Which layer withheld an effect. Three layers can, they own different
+ * vocabularies, and a replay must report the one that actually did.
+ *
+ * `exercise-control` (P7) is the aggregate / velocity and exercise-time
+ * authority-binding layer. Its row is **evidence** that an effect was withheld
+ * and why — never the consumption state the admission was decided from, which
+ * lives in the separate exercise-control ledger and is never reconstructed
+ * from here.
+ */
+export type WithholdingLayer = 'grant-exercise' | 'emergency-control' | 'exercise-control';
 
 export interface PriorExecution {
   readonly attempted: boolean;
@@ -64,7 +74,7 @@ export interface PriorExecution {
  * order.
  *
  * The format is deterministic and bounded: a layer drawn from a closed
- * two-member set, at least one code, every code drawn from **that layer's own**
+ * three-member set, at least one code, every code drawn from **that layer's own**
  * closed vocabulary, none repeated, so at most one entry per vocabulary member.
  * Anything else is not encoded and never decoded: a replay reports only reasons
  * that were recorded, and the ledger records nothing it could not later read
@@ -137,10 +147,11 @@ function splitAdapter(recorded: string): { readonly body: string; readonly adapt
 const WITHHOLDING_VOCABULARIES: Readonly<Record<WithholdingLayer, ReadonlySet<string>>> = Object.freeze({
   'grant-exercise': new Set(GRANT_EXERCISE_REASON_CODE_VALUES),
   'emergency-control': new Set(EMERGENCY_CONTROL_REASON_CODE_VALUES),
+  'exercise-control': new Set(EXERCISE_CONTROL_REASON_CODE_VALUES),
 });
 
 function isWithholdingLayer(value: string): value is WithholdingLayer {
-  return value === 'grant-exercise' || value === 'emergency-control';
+  return value === 'grant-exercise' || value === 'emergency-control' || value === 'exercise-control';
 }
 
 /** Deterministic, bounded, and closed against the layer's own vocabulary. A code from another layer is not canonical here, which is what keeps the two from bleeding together. */
@@ -258,7 +269,9 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
           : outcome.status === 'withheld'
             ? outcome.withheldBy === 'emergency-control'
               ? encodeWithheldOutcome('emergency-control', outcome.emergencyControl.reasonCodes)
-              : encodeWithheldOutcome('grant-exercise', outcome.assessment.reasonCodes)
+              : outcome.withheldBy === 'exercise-control'
+                ? encodeWithheldOutcome('exercise-control', outcome.exerciseControl.reasonCodes)
+                : encodeWithheldOutcome('grant-exercise', outcome.assessment.reasonCodes)
             : outcome.status === 'execution-unconfirmed'
               ? withAdapter(EXECUTION_UNCONFIRMED_OUTCOME, outcome.adapterId)
               : withAdapter(`execution-failed:${outcome.reason}`, outcome.adapterId);

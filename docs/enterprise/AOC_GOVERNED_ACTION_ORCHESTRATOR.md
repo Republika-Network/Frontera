@@ -75,6 +75,43 @@ closed: it still cannot name an adapter, provider, URL, host, endpoint or
 credential, and an intent carrying one is rejected rather than sanitized. See
 [`AOC_EXECUTION_ADAPTER_REGISTRY.md`](AOC_EXECUTION_ADAPTER_REGISTRY.md).
 
+## Aggregate / velocity exercise controls (P7)
+
+When a deployment composes `authorityControlledExecution.exerciseControls`,
+ACE's exercise — the step after this orchestrator's write-ahead claim — also
+requires exact-equality revalidation of the grant's authority binding, a valid
+trusted policy snapshot and an atomic, durable reservation across every
+applicable aggregate count, amount and rolling-velocity limit, revalidates the
+binding and re-reads the emergency control after the reservation, and settles
+or releases the reservation from the outcome. See
+[`AOC_EXERCISE_CONTROLS.md`](AOC_EXERCISE_CONTROLS.md).
+
+What changes here, and what does not:
+
+- **The public contract is unchanged.** Internally a refusal is
+  `withheld / exercise-control`; publicly it is the existing
+  `withheldBy: 'exercise'`, with `EXERCISE_CONTROL_*` reason codes and the
+  existing withheld HTTP status. No new status, no new `withheldBy` value, no
+  new request field, no SDK change, no route.
+- **No quota leaks.** A result carries no reservation, limit, bucket, remaining
+  capacity, policy digest or binding digest.
+- **The evidence ledger gains one layer**, `withheld:exercise-control:<CODE>…`,
+  validated against the exercise-control vocabulary and replayed as
+  `withheld / exercise`. Historical rows read exactly as before. This is
+  evidence of *why* nothing ran; the consumption state itself is the separate
+  exercise-control ledger, which this orchestrator never holds and never
+  reconstructs from evidence.
+- **Replay precedes everything, as before.** An execution identity already on
+  the record is answered from the record: no reservation, no provider call.
+- **The write-ahead claim is unchanged.** P7's reservation is keyed to the same
+  execution identity and is a second, independent guard; neither replaces the
+  other.
+- **The caller still cannot name anything.** `limit`, `limits`, `limitId`,
+  `scopeKey`, `quota`, `budget`, `velocity`, `window`, `windowSeconds`,
+  `maximum`, `maxCount`, `maxAmount`, `reservation`, `reservationId`,
+  `exerciseControls`, `aggregateControls` and `authorityBindingDigest` are
+  undeclared intent fields, and reserved `assertedContext` keys.
+
 
 ## Canonical lifecycle
 

@@ -5,7 +5,8 @@ import {
   type EmergencyControlQuery,
   type EmergencyControlReaderPort,
 } from '../../emergency-control-runtime/index.js';
-import type { BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
+import type { ExerciseControlGate, ExerciseReservationDisposition, ExerciseReservationHandle } from '../../exercise-control-runtime/index.js';
+import type { BoundedGrant, BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
   GRANT_EXERCISE_REASON_CODES,
@@ -41,7 +42,10 @@ import { isExecutionAdapterRegistry } from './execution-adapter-registry.js';
  * correlation mismatch        → adapter NOT called
  * emergency control active    → adapter NOT called
  * emergency control unreadable→ adapter NOT called
- * usable exercise, stop clear → adapter called exactly once
+ * exercise control composed and
+ *   binding changed / unverifiable, policy invalid, ledger unavailable,
+ *   limit exceeded, execution already reserved → adapter NOT called
+ * usable exercise, stop clear, reservation held → adapter called exactly once
  * ```
  *
  * `tests/execution-exercise.test.ts` and
@@ -109,6 +113,28 @@ export interface GrantExecutionServiceOptions {
    * known. That check belongs to the registry, after routing.
    */
   readonly emergencyControl?: EmergencyControlReaderPort;
+  /**
+   * Aggregate / velocity exercise controls and exercise-time authority-binding
+   * revalidation (P7), when the deployment composed them.
+   *
+   * Consulted **after** the containment assessment and the emergency control,
+   * and **before** the adapter:
+   *
+   * ```
+   * grant read -> containment -> emergency -> admit(binding #1, policy, reservation, binding #2)
+   *   -> emergency re-check -> adapter -> settle | release
+   * ```
+   *
+   * When composed, no adapter call happens without a reservation, and every
+   * path after the reservation passes through one finalization step that
+   * settles an effect that happened or may have happened and releases one the
+   * port contract says did not. The gate owns its ledger; this service never
+   * sees it and never hands it to an adapter.
+   *
+   * Omitted, nothing changes: no reservation, no second emergency read, and
+   * every existing behaviour is byte-identical.
+   */
+  readonly exerciseControl?: ExerciseControlGate;
   /** The injected clock. Expiry is derived from what this returns, never from `Date.now()` — a structural test fails the build if an ambient clock appears in this module. */
   readonly now: () => string;
 }
@@ -129,6 +155,7 @@ export interface GrantExecutionService {
 export function createGrantExecutionService(options: GrantExecutionServiceOptions): GrantExecutionService {
   const { store, adapter, now } = options;
   const emergencyControl = options.emergencyControl;
+  const exerciseControl = options.exerciseControl;
 
   /**
    * Whether the composed adapter is an actual `createExecutionAdapterRegistry`
@@ -241,11 +268,13 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       let assessment: BoundedGrantExerciseAssessment;
       let grantExpiresAt: string | undefined;
       let grantSubject: string | undefined;
+      let trustedGrant: BoundedGrant | undefined;
       if (read?.grant === undefined) {
         assessment = notFound();
       } else {
         grantExpiresAt = read.grant.expiresAt;
         grantSubject = read.grant.subject;
+        trustedGrant = read.grant;
         assessment = assessBoundedGrantExercise({
           grant: read.grant,
           ...(read.revocation !== undefined ? { revocation: read.revocation } : {}),
@@ -254,7 +283,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         });
       }
 
-      if (!assessment.usable || grantExpiresAt === undefined || grantSubject === undefined) {
+      if (!assessment.usable || grantExpiresAt === undefined || grantSubject === undefined || trustedGrant === undefined) {
         return { status: 'withheld', withheldBy: 'grant-exercise', assessment, correlation, exercisedAt };
       }
 
@@ -267,23 +296,105 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       // Every value in the query is trusted: the holder and the horizon came
       // from the store, the organization and the resource were proven inside
       // the grant's bounds. Nothing a caller described reaches it.
-      const exerciseControl = readEmergencyControl(emergencyControl, {
+      const emergencyQuery = {
         ...(request.organization !== undefined ? { organizationId: request.organization } : {}),
         actorId: grantSubject,
         resource: request.resource,
-      } satisfies EmergencyControlQuery);
-      if (!emergencyControlPermits(exerciseControl)) {
+      } satisfies EmergencyControlQuery;
+      const emergency = readEmergencyControl(emergencyControl, emergencyQuery);
+      if (!emergencyControlPermits(emergency)) {
         return {
           status: 'withheld',
           withheldBy: 'emergency-control',
           assessment,
           emergencyControl: {
-            reasonCodes: exerciseControl.reasonCodes,
-            matchedScopes: exerciseControl.state === 'blocked' ? exerciseControl.matchedScopes : [],
+            reasonCodes: emergency.reasonCodes,
+            matchedScopes: emergency.state === 'blocked' ? emergency.matchedScopes : [],
           },
           correlation,
           exercisedAt,
         };
+      }
+
+      // Aggregate / velocity exercise controls (P7), when composed. The grant
+      // covered this attempt; what is asked now is whether *repeated* use of it
+      // still fits the trusted aggregate limits, and whether the authority it
+      // was issued under still stands exactly. Every value handed over was read
+      // from the authoritative grant or proven inside it by the assessment
+      // above — the same material the emergency query is built from.
+      let reservation: ExerciseReservationHandle | undefined;
+      if (exerciseControl !== undefined) {
+        const admission = await exerciseControl.admit({
+          grant: {
+            id: trustedGrant.id,
+            subject: grantSubject,
+            issuedAt: trustedGrant.issuedAt,
+            expiresAt: grantExpiresAt,
+            correlation: trustedGrant.correlation,
+            ...(trustedGrant.authorityBindingDigest !== undefined ? { authorityBindingDigest: trustedGrant.authorityBindingDigest } : {}),
+          },
+          attempt: {
+            action: request.action,
+            resource: request.resource,
+            ...(request.counterparty !== undefined ? { counterparty: request.counterparty } : {}),
+            ...(request.organization !== undefined ? { organization: request.organization } : {}),
+            ...(request.amount !== undefined ? { amount: { value: request.amount.value, unit: request.amount.unit } } : {}),
+          },
+          executionId: request.executionId,
+          at: exercisedAt,
+        });
+        if (admission.kind === 'withheld') {
+          // Nothing was reserved — or what was reserved has already been
+          // released by the gate — so there is nothing to finalize.
+          return {
+            status: 'withheld',
+            withheldBy: 'exercise-control',
+            assessment,
+            exerciseControl: { reasonCodes: admission.reasonCodes },
+            correlation,
+            exercisedAt,
+          };
+        }
+        reservation = admission.reservation;
+      }
+
+      /**
+       * The one exit for every path after a reservation exists.
+       *
+       * Every `return` below this line goes through here, so the reservation is
+       * settled or released exactly once, from the outcome actually produced —
+       * and `reservationDispositionFor` is exhaustive over `ExecutionOutcome`,
+       * so a new outcome cannot be added without deciding what it does to a
+       * reservation. A finalization that cannot be recorded leaves the
+       * reservation consuming and never rewrites the outcome.
+       */
+      const finish = async (outcome: ExecutionOutcome): Promise<ExecutionOutcome> => {
+        if (exerciseControl !== undefined && reservation !== undefined) {
+          await exerciseControl.finalize(reservation, reservationDispositionFor(outcome));
+        }
+        return outcome;
+      };
+
+      // The emergency control, re-read after the reservation. The reservation
+      // may have waited on a write lock; a stop an operator activated meanwhile
+      // must still be honoured, and the reservation it interrupted is released
+      // because nothing was sent. Only when exercise controls are composed —
+      // otherwise the single read above is exactly the behaviour it always was.
+      if (reservation !== undefined) {
+        const recheck = readEmergencyControl(emergencyControl, emergencyQuery);
+        if (!emergencyControlPermits(recheck)) {
+          return finish({
+            status: 'withheld',
+            withheldBy: 'emergency-control',
+            assessment,
+            emergencyControl: {
+              reasonCodes: recheck.reasonCodes,
+              matchedScopes: recheck.state === 'blocked' ? recheck.matchedScopes : [],
+            },
+            correlation,
+            exercisedAt,
+          });
+        }
       }
 
       // Every value handed across the boundary is either the attempt proven to
@@ -341,14 +452,14 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         // a plain `Error`, a lookalike, or a real instance from a direct
         // adapter — stays `ADAPTER_ERROR`.
         if (adapterIsTrustedRegistry && isEmergencyControlWithheldError(error)) {
-          return {
+          return finish({
             status: 'withheld',
             withheldBy: 'emergency-control',
             assessment,
             emergencyControl: { reasonCodes: error.reasonCodes, matchedScopes: error.matchedScopes },
             correlation,
             exercisedAt,
-          };
+          });
         }
         // An adapter that raises has failed to execute. It has emphatically not
         // produced an authorization outcome, and nothing here lets it: the
@@ -356,7 +467,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         // A throw carries no attribution, so the adapter this service holds is
         // the most that can honestly be said. The registry converts a child's
         // throw itself, precisely so the routed case keeps its attribution.
-        return {
+        return finish({
           status: 'execution-failed',
           assessment,
           correlation,
@@ -364,7 +475,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
           ...adapterErrorDetail(error),
           exercisedAt,
-        };
+        });
       }
 
       // Reading what the adapter returned runs the adapter's code — a getter,
@@ -383,7 +494,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         unreadable = error;
       }
       if (result === undefined) {
-        return {
+        return finish({
           status: 'execution-failed',
           assessment,
           correlation,
@@ -391,25 +502,25 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
           ...adapterErrorDetail(unreadable),
           exercisedAt,
-        };
+        });
       }
 
       if (result.outcome === 'unconfirmed') {
         // The provider was contacted and its answer was lost. Kept distinct from
         // a failure all the way up, because a failure invites a retry and this
         // effect may already have happened.
-        return {
+        return finish({
           status: 'execution-unconfirmed',
           assessment,
           correlation,
           ...performedBy(result),
           ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
-        };
+        });
       }
 
       if (result.outcome === 'failed') {
-        return {
+        return finish({
           status: 'execution-failed',
           assessment,
           correlation,
@@ -417,17 +528,59 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           reason: result.reason,
           ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
-        };
+        });
       }
 
-      return {
+      return finish({
         status: 'executed',
         assessment,
         correlation,
         ...performedBy(result),
         ...(result.providerRef !== undefined ? { providerRef: result.providerRef } : {}),
         exercisedAt,
-      };
+      });
     },
   };
+}
+
+/**
+ * What an observed outcome does to the reservation it was produced under.
+ *
+ * | outcome | disposition | why |
+ * | --- | --- | --- |
+ * | `executed` | settle | the effect happened |
+ * | `execution-unconfirmed` | settle | the provider may have acted; returning the capacity could spend it twice |
+ * | `execution-failed` | release | the port contract: the effect did not complete — including an adapter throw and a malformed result |
+ * | `withheld` (any layer) | release | withheld after the reservation and before any provider was reached |
+ *
+ * Exhaustive by construction: the `never` arm makes a new `ExecutionOutcome`
+ * status or withholding layer a compile error here until someone decides what
+ * it does to capacity, so no outcome can silently skip finalization.
+ */
+function reservationDispositionFor(outcome: ExecutionOutcome): ExerciseReservationDisposition {
+  switch (outcome.status) {
+    case 'executed':
+      return { kind: 'settle', reason: 'executed' };
+    case 'execution-unconfirmed':
+      return { kind: 'settle', reason: 'execution-unconfirmed' };
+    case 'execution-failed':
+      return { kind: 'release', reason: 'execution-failed' };
+    case 'withheld':
+      switch (outcome.withheldBy) {
+        case 'emergency-control':
+          return { kind: 'release', reason: 'emergency-control' };
+        case 'exercise-control':
+          return { kind: 'release', reason: 'exercise-control' };
+        case 'grant-exercise':
+          return { kind: 'release', reason: 'grant-exercise' };
+        default: {
+          const unreachable: never = outcome;
+          return unreachable;
+        }
+      }
+    default: {
+      const unreachable: never = outcome;
+      return unreachable;
+    }
+  }
 }

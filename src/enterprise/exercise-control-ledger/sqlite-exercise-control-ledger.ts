@@ -1,0 +1,710 @@
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+
+import {
+  EXERCISE_RESERVATION_TERMINAL_KINDS,
+  assessExerciseReservationAdmission,
+  exerciseControlBucketKey,
+  exerciseReservationTerminalReasonMatches,
+  exerciseReservationsDescribeSameAttempt,
+  isWellFormedExerciseReservation,
+  type ExerciseControlActiveUsage,
+  type ExerciseControlLedgerPort,
+  type ExerciseControlLimit,
+  type ExerciseControlRuleUsage,
+  type ExerciseControlWindow,
+  type ExerciseReservationOutcome,
+  type ExerciseReservationRecord,
+  type ExerciseReservationRelease,
+  type ExerciseReservationRequest,
+  type ExerciseReservationSettlement,
+  type ExerciseReservationTerminalEvent,
+  type ExerciseReservationTerminalKind,
+  type ExerciseReservationTerminalOutcome,
+  type ExerciseReservationTerminalReason,
+  type ExerciseReservationView,
+} from '../../features/exercise-control-runtime/index.js';
+import { ExerciseControlLedgerError } from './errors.js';
+import {
+  EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
+  storedBucketHeadDigest,
+  storedReservationDigest,
+  storedRuleDigest,
+  storedTerminalEventDigest,
+} from './exercise-control-record.js';
+
+/**
+ * The durable, authoritative exercise-control ledger — the production
+ * reference implementation of `ExerciseControlLedgerPort`.
+ *
+ * ## The one property everything else serves
+ *
+ * ```
+ * two processes racing for the LAST remaining unit of a bucket cannot both win
+ * ```
+ *
+ * Every admission is one `BEGIN IMMEDIATE` transaction (`better-sqlite3`'s
+ * `transaction(...).immediate(...)`): the database write lock is taken
+ * **before** the first read, so "read active usage → test every applicable
+ * limit → insert the reservation" happens with no other writer able to
+ * interleave, in this process or any other process sharing the file. There is
+ * no `SELECT`, then `await`, then `INSERT` across two transactions anywhere in
+ * this file. `exercise-control-concurrency.test.ts` races independent
+ * connections on one file — in worker threads, genuinely in parallel — and
+ * asserts that no more than `maximum` are ever admitted.
+ *
+ * ## Immutable base records, one immutable terminal event
+ *
+ * ```
+ * exercise_control_reservations         one row per admitted reservation
+ * exercise_control_reservation_limits   one row per applicable limit, with its usage
+ * exercise_control_terminal_events      at most one row per reservation: settled | released
+ * ```
+ *
+ * There is no status column. A reservation with no terminal event is
+ * `reserved`; the terminal event's own kind is the rest. The primary key on
+ * `exercise_control_terminal_events.reservation_id` makes "at most one" a
+ * database fact, and triggers refuse every `UPDATE` and `DELETE` on all three
+ * tables, so releasing capacity appends history and never erases it.
+ *
+ * A fourth table, `exercise_control_bucket_heads`, is a sealed cross-check and
+ * not a source of truth: one row per `(limitId, scopeKey)` holding how many rule
+ * rows the bucket has, advanced inside the same admission transaction that adds
+ * them. Admission compares it with what the bucket index returns, so a rule row
+ * deleted from a bucket — or edited into another one — fails the bucket closed
+ * rather than returning its capacity.
+ *
+ * ## No expiry, no sweeper, no startup cleanup
+ *
+ * Nothing here ages a reservation out of `reserved`. A process that crashed
+ * after reserving leaves a reservation that keeps consuming — indefinitely for
+ * a lifetime limit, until it leaves the window for a rolling one — and opening
+ * the ledger again changes nothing about it. Reconciliation is future work.
+ *
+ * ## Fail closed, never repair
+ *
+ * Every row an admission reads is validated before it counts: schema version,
+ * record digest, rule digests, rule count, ordinals, reservation instant,
+ * reservation-id derivation, policy digest and terminal-event digest. A row
+ * that fails any of them throws `EXERCISE_CONTROL_LEDGER_STATE_CORRUPT`, the
+ * gate reports `EXERCISE_CONTROL_LEDGER_UNAVAILABLE`, and the adapter is not
+ * invoked. Nothing is normalized, skipped or rewritten.
+ *
+ * ## What this is not
+ *
+ * - **Not authenticity.** Digests are unkeyed; a writer able to rewrite the file
+ *   and re-seal every digest, or to delete whole reservations, is trusted. The
+ *   rolling-window range query reads the indexed timestamp column to find
+ *   candidate rows, so a row whose timestamp was re-sealed out of the window is
+ *   the same class of trusted-writer compromise. One edit is detected only
+ *   late: a rule row whose indexed timestamp is rewritten *backwards* keeps its
+ *   bucket's head count intact and falls outside a rolling range scan, so that
+ *   admission does not read it; the rewritten row still fails validation the
+ *   moment its reservation is read, settled, released, or counted by a lifetime
+ *   bucket.
+ * - **Not distributed.** One SQLite file serializes the processes that share it
+ *   on one host. Separate files on separate hosts do not share a quota, and
+ *   SQLite on a network filesystem that does not honour its locking is not a
+ *   distributed lock.
+ * - **Not optimized for very large buckets.** Amount limits are summed exactly
+ *   in `BigInt` over the active rows the bucket index returns — never with
+ *   `SUM()` over a floating column — so admission is linear in a bucket's
+ *   indexed rows. Stage A accepts that.
+ */
+
+export interface CreateSqliteExerciseControlLedgerOptions {
+  /** Records when a row was committed. Bookkeeping only; admission reads the reservation instant it is handed, never this. */
+  readonly now?: () => string;
+  readonly busyTimeoutMs?: number;
+}
+
+export interface ExerciseControlLedgerHealth {
+  readonly status: 'healthy' | 'unhealthy';
+  readonly readable: boolean;
+  readonly writable: boolean;
+  readonly schemaVersion: string;
+  readonly checkedAt: string;
+}
+
+/** The durable ledger, plus the lifecycle surface a host needs. The gate is handed only `ExerciseControlLedgerPort`. */
+export interface DurableExerciseControlLedger extends ExerciseControlLedgerPort {
+  readonly providerKind: 'sqlite';
+  health(): Promise<ExerciseControlLedgerHealth>;
+  close(): Promise<void>;
+}
+
+const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+const MAXIMUM_BUSY_TIMEOUT_MS = 60_000;
+
+const SCHEMA_V1 = `
+  CREATE TABLE IF NOT EXISTS exercise_control_ledger_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version TEXT NOT NULL,
+    migration_state TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS exercise_control_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL,
+    bounded_grant_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    policy_digest TEXT NOT NULL,
+    authority_binding_digest TEXT NOT NULL,
+    reserved_at TEXT NOT NULL,
+    reserved_at_ms INTEGER NOT NULL,
+    rule_count INTEGER NOT NULL,
+    record_digest TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    schema_version TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS exercise_control_reservations_by_execution
+    ON exercise_control_reservations (execution_id);
+
+  CREATE TABLE IF NOT EXISTS exercise_control_reservation_limits (
+    reservation_id TEXT NOT NULL REFERENCES exercise_control_reservations (reservation_id),
+    ordinal INTEGER NOT NULL,
+    limit_id TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    maximum TEXT NOT NULL,
+    unit TEXT,
+    window_kind TEXT NOT NULL,
+    window_seconds INTEGER,
+    usage TEXT NOT NULL,
+    reserved_at_ms INTEGER NOT NULL,
+    rule_digest TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    PRIMARY KEY (reservation_id, ordinal),
+    UNIQUE (reservation_id, limit_id, scope_key)
+  );
+
+  CREATE INDEX IF NOT EXISTS exercise_control_limits_by_bucket
+    ON exercise_control_reservation_limits (limit_id, scope_key, reserved_at_ms);
+
+  CREATE TABLE IF NOT EXISTS exercise_control_terminal_events (
+    reservation_id TEXT PRIMARY KEY REFERENCES exercise_control_reservations (reservation_id),
+    terminal_kind TEXT NOT NULL CHECK (terminal_kind IN ('settled', 'released')),
+    reason TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    event_digest TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    schema_version TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS exercise_control_bucket_heads (
+    limit_id TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    rule_row_count INTEGER NOT NULL,
+    head_digest TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    PRIMARY KEY (limit_id, scope_key)
+  );
+
+  CREATE TRIGGER IF NOT EXISTS exercise_control_bucket_heads_no_delete
+    BEFORE DELETE ON exercise_control_bucket_heads
+    BEGIN SELECT RAISE(ABORT, 'exercise-control bucket heads are never deleted'); END;
+
+  CREATE TRIGGER IF NOT EXISTS exercise_control_reservations_append_only_update
+    BEFORE UPDATE ON exercise_control_reservations
+    BEGIN SELECT RAISE(ABORT, 'exercise-control reservations are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_reservations_append_only_delete
+    BEFORE DELETE ON exercise_control_reservations
+    BEGIN SELECT RAISE(ABORT, 'exercise-control reservations are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_limits_append_only_update
+    BEFORE UPDATE ON exercise_control_reservation_limits
+    BEGIN SELECT RAISE(ABORT, 'exercise-control reservation limits are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_limits_append_only_delete
+    BEFORE DELETE ON exercise_control_reservation_limits
+    BEGIN SELECT RAISE(ABORT, 'exercise-control reservation limits are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_terminal_events_append_only_update
+    BEFORE UPDATE ON exercise_control_terminal_events
+    BEGIN SELECT RAISE(ABORT, 'exercise-control terminal events are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_terminal_events_append_only_delete
+    BEFORE DELETE ON exercise_control_terminal_events
+    BEGIN SELECT RAISE(ABORT, 'exercise-control terminal events are append-only'); END;
+`;
+
+interface ReservationRow {
+  readonly reservation_id: string;
+  readonly execution_id: string;
+  readonly bounded_grant_id: string;
+  readonly request_digest: string;
+  readonly policy_digest: string;
+  readonly authority_binding_digest: string;
+  readonly reserved_at: string;
+  readonly reserved_at_ms: number;
+  readonly rule_count: number;
+  readonly record_digest: string;
+  readonly schema_version: string;
+}
+
+interface RuleRow {
+  readonly reservation_id: string;
+  readonly ordinal: number;
+  readonly limit_id: string;
+  readonly scope_key: string;
+  readonly metric: string;
+  readonly maximum: string;
+  readonly unit: string | null;
+  readonly window_kind: string;
+  readonly window_seconds: number | null;
+  readonly usage: string;
+  readonly reserved_at_ms: number;
+  readonly rule_digest: string;
+  readonly schema_version: string;
+}
+
+interface TerminalRow {
+  readonly reservation_id: string;
+  readonly terminal_kind: string;
+  readonly reason: string;
+  readonly recorded_at: string;
+  readonly event_digest: string;
+  readonly schema_version: string;
+}
+
+interface VerifiedReservation {
+  readonly record: ExerciseReservationRecord;
+  readonly terminal?: ExerciseReservationTerminalEvent;
+}
+
+function corrupt(reservationId: string, what: string): ExerciseControlLedgerError {
+  return new ExerciseControlLedgerError(
+    'EXERCISE_CONTROL_LEDGER_STATE_CORRUPT',
+    `Persisted exercise-control state for reservation '${reservationId}' failed validation (${what}). The ledger refuses to answer from state it cannot validate.`,
+  );
+}
+
+function unavailable(message: string): ExerciseControlLedgerError {
+  return new ExerciseControlLedgerError('EXERCISE_CONTROL_LEDGER_UNAVAILABLE', message);
+}
+
+function invalidInput(message: string): ExerciseControlLedgerError {
+  return new ExerciseControlLedgerError('EXERCISE_CONTROL_LEDGER_INPUT_INVALID', message);
+}
+
+function resolveBusyTimeoutMs(value: number | undefined): number {
+  const timeout = value ?? DEFAULT_BUSY_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > MAXIMUM_BUSY_TIMEOUT_MS) {
+    throw new RangeError(`busyTimeoutMs must be a positive integer of at most ${String(MAXIMUM_BUSY_TIMEOUT_MS)}, received '${String(value)}'.`);
+  }
+  return timeout;
+}
+
+function tableExists(db: import('better-sqlite3').Database, tableName: string): boolean {
+  return db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName) !== undefined;
+}
+
+function resolveOnDisk(dbPath: string): string {
+  const absPath = resolve(dbPath);
+  const dir = dirname(absPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return absPath;
+}
+
+/** A persisted window, or `undefined` when the columns do not spell one. */
+function windowOf(row: RuleRow): ExerciseControlWindow | undefined {
+  if (row.window_kind === 'lifetime' && row.window_seconds === null) return { kind: 'lifetime' };
+  if (row.window_kind === 'rolling' && typeof row.window_seconds === 'number') return { kind: 'rolling', seconds: row.window_seconds };
+  return undefined;
+}
+
+/** A persisted limit, or `undefined`. Deliberately literal: the rule digest and the reservation's policy digest are what prove it is the limit that was admitted. */
+function limitOf(row: RuleRow): ExerciseControlLimit | undefined {
+  const window = windowOf(row);
+  if (window === undefined) return undefined;
+  if (row.metric === 'count') {
+    if (row.unit !== null) return undefined;
+    const maximum = Number(row.maximum);
+    if (!Number.isSafeInteger(maximum) || String(maximum) !== row.maximum) return undefined;
+    return { limitId: row.limit_id, scopeKey: row.scope_key, metric: 'count', maximum, window };
+  }
+  if (row.metric === 'amount') {
+    if (row.unit === null) return undefined;
+    return { limitId: row.limit_id, scopeKey: row.scope_key, metric: 'amount', maximum: row.maximum, unit: row.unit, window };
+  }
+  return undefined;
+}
+
+function isTerminalKind(value: string): value is ExerciseReservationTerminalKind {
+  return (EXERCISE_RESERVATION_TERMINAL_KINDS as readonly string[]).includes(value);
+}
+
+export async function createSqliteExerciseControlLedger(dbPath: string, options: CreateSqliteExerciseControlLedgerOptions = {}): Promise<DurableExerciseControlLedger> {
+  if (typeof dbPath !== 'string' || dbPath.trim().length === 0) throw unavailable('The exercise-control ledger path must be a non-empty string.');
+  const busyTimeoutMs = resolveBusyTimeoutMs(options.busyTimeoutMs);
+  const { default: Database } = await import('better-sqlite3');
+
+  const now = options.now ?? (() => new Date().toISOString());
+
+  const path = dbPath === ':memory:' ? ':memory:' : resolveOnDisk(dbPath);
+  const db = new Database(path);
+  db.pragma('foreign_keys = ON');
+  db.pragma('journal_mode = WAL');
+  // FULL: an acknowledged reservation that a power loss could still lose would
+  // return capacity that was already spent.
+  db.pragma('synchronous = FULL');
+  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+
+  // The version guard runs *before* `CREATE TABLE IF NOT EXISTS`, so a ledger
+  // written by a runtime this one does not implement is refused without being
+  // mutated. Unknown authority state is never reinterpreted.
+  if (tableExists(db, 'exercise_control_ledger_versions')) {
+    const existing = db.prepare(`SELECT schema_version FROM exercise_control_ledger_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
+    if (existing !== undefined && existing.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) {
+      db.close();
+      throw unavailable(
+        `The exercise-control ledger is recorded under schema version '${existing.schema_version}', which this runtime does not implement (expected '${EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION}'). Refusing to open it.`,
+      );
+    }
+  }
+
+  db.exec(SCHEMA_V1);
+
+  const latest = db.prepare(`SELECT schema_version FROM exercise_control_ledger_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
+  if (latest === undefined) {
+    db.prepare(`INSERT INTO exercise_control_ledger_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION, now());
+  }
+
+  const selectReservation = db.prepare(
+    `SELECT reservation_id, execution_id, bounded_grant_id, request_digest, policy_digest, authority_binding_digest, reserved_at, reserved_at_ms, rule_count, record_digest, schema_version
+       FROM exercise_control_reservations WHERE reservation_id = ?`,
+  );
+  const selectRules = db.prepare(
+    `SELECT reservation_id, ordinal, limit_id, scope_key, metric, maximum, unit, window_kind, window_seconds, usage, reserved_at_ms, rule_digest, schema_version
+       FROM exercise_control_reservation_limits WHERE reservation_id = ? ORDER BY ordinal`,
+  );
+  const selectReservationIdByExecution = db.prepare(`SELECT reservation_id FROM exercise_control_reservations WHERE execution_id = ?`);
+  const selectTerminal = db.prepare(
+    `SELECT reservation_id, terminal_kind, reason, recorded_at, event_digest, schema_version FROM exercise_control_terminal_events WHERE reservation_id = ?`,
+  );
+  // The two load-bearing bucket queries. Both are answered by
+  // `exercise_control_limits_by_bucket`; neither scans the table.
+  const selectBucketLifetime = db.prepare(`SELECT DISTINCT reservation_id FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ?`);
+  const selectBucketSince = db.prepare(
+    `SELECT DISTINCT reservation_id FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ? AND reserved_at_ms > ?`,
+  );
+  const countBucket = db.prepare(`SELECT COUNT(*) AS n FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ?`);
+  const selectHead = db.prepare(`SELECT limit_id, scope_key, rule_row_count, head_digest, schema_version FROM exercise_control_bucket_heads WHERE limit_id = ? AND scope_key = ?`);
+  const upsertHead = db.prepare(
+    `INSERT INTO exercise_control_bucket_heads (limit_id, scope_key, rule_row_count, head_digest, schema_version) VALUES (@limitId, @scopeKey, @ruleRowCount, @headDigest, @schemaVersion)
+     ON CONFLICT (limit_id, scope_key) DO UPDATE SET rule_row_count = excluded.rule_row_count, head_digest = excluded.head_digest, schema_version = excluded.schema_version`,
+  );
+  const insertReservation = db.prepare(
+    `INSERT INTO exercise_control_reservations
+       (reservation_id, execution_id, bounded_grant_id, request_digest, policy_digest, authority_binding_digest, reserved_at, reserved_at_ms, rule_count, record_digest, committed_at, schema_version)
+     VALUES (@reservationId, @executionId, @boundedGrantId, @requestDigest, @policyDigest, @authorityBindingDigest, @reservedAt, @reservedAtMs, @ruleCount, @recordDigest, @committedAt, @schemaVersion)`,
+  );
+  const insertRule = db.prepare(
+    `INSERT INTO exercise_control_reservation_limits
+       (reservation_id, ordinal, limit_id, scope_key, metric, maximum, unit, window_kind, window_seconds, usage, reserved_at_ms, rule_digest, schema_version)
+     VALUES (@reservationId, @ordinal, @limitId, @scopeKey, @metric, @maximum, @unit, @windowKind, @windowSeconds, @usage, @reservedAtMs, @ruleDigest, @schemaVersion)`,
+  );
+  const insertTerminal = db.prepare(
+    `INSERT INTO exercise_control_terminal_events (reservation_id, terminal_kind, reason, recorded_at, event_digest, committed_at, schema_version)
+     VALUES (@reservationId, @terminalKind, @reason, @recordedAt, @eventDigest, @committedAt, @schemaVersion)`,
+  );
+
+  let closed = false;
+
+  function assertOpen(): void {
+    if (closed) throw unavailable('The exercise-control ledger has been closed.');
+  }
+
+  /**
+   * How many rule rows a bucket holds, proven against its sealed head. Throws
+   * when they disagree — a row that left the bucket, a row that arrived in it,
+   * a head that was edited or deleted — because either direction means the
+   * bucket's usage can no longer be established.
+   */
+  function verifiedBucketRowCount(limitId: string, scopeKey: string): number {
+    const actual = (countBucket.get(limitId, scopeKey) as { n: number }).n;
+    const head = selectHead.get(limitId, scopeKey) as { rule_row_count: number; head_digest: string; schema_version: string } | undefined;
+    if (head === undefined) {
+      if (actual !== 0) throw corrupt(`bucket ${JSON.stringify([limitId, scopeKey])}`, 'rule rows exist for a bucket that has no head');
+      return 0;
+    }
+    if (head.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(`bucket ${JSON.stringify([limitId, scopeKey])}`, 'unrecognized bucket-head schema version');
+    if (storedBucketHeadDigest({ limitId, scopeKey, ruleRowCount: head.rule_row_count }) !== head.head_digest) {
+      throw corrupt(`bucket ${JSON.stringify([limitId, scopeKey])}`, 'bucket-head digest mismatch');
+    }
+    if (head.rule_row_count !== actual) throw corrupt(`bucket ${JSON.stringify([limitId, scopeKey])}`, 'the bucket holds a different number of rule rows than its head records');
+    return actual;
+  }
+
+  /**
+   * One reservation, its rules and its terminal event, proven to be what was
+   * written — or `undefined` when no reservation has this id. Throws rather
+   * than returning anything a caller could mistake for "no usage".
+   */
+  function loadVerified(reservationId: string): VerifiedReservation | undefined {
+    const row = selectReservation.get(reservationId) as ReservationRow | undefined;
+    const terminalRow = selectTerminal.get(reservationId) as TerminalRow | undefined;
+    if (row === undefined) {
+      // Under the foreign keys an orphan can only be tampering.
+      if (terminalRow !== undefined || (selectRules.all(reservationId) as RuleRow[]).length > 0) throw corrupt(reservationId, 'rows exist for a reservation that does not');
+      return undefined;
+    }
+    if (row.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(reservationId, 'unrecognized reservation schema version');
+    const reservedAtMs = Date.parse(row.reserved_at);
+    if (Number.isNaN(reservedAtMs) || row.reserved_at_ms !== reservedAtMs) throw corrupt(reservationId, 'the reservation instant does not agree with itself');
+
+    const ruleRows = selectRules.all(reservationId) as RuleRow[];
+    if (!Number.isSafeInteger(row.rule_count) || ruleRows.length !== row.rule_count) throw corrupt(reservationId, 'the recorded rule count does not match the rule rows');
+    const rules: ExerciseControlRuleUsage[] = [];
+    ruleRows.forEach((ruleRow, ordinal) => {
+      if (ruleRow.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(reservationId, 'unrecognized rule schema version');
+      if (ruleRow.ordinal !== ordinal) throw corrupt(reservationId, 'rule ordinals are not contiguous');
+      if (ruleRow.reserved_at_ms !== reservedAtMs) throw corrupt(reservationId, 'a rule row disagrees with its reservation instant');
+      const limit = limitOf(ruleRow);
+      if (limit === undefined) throw corrupt(reservationId, 'a rule row does not spell a limit');
+      const rule: ExerciseControlRuleUsage = { limit, usage: ruleRow.usage };
+      if (storedRuleDigest({ reservationId, ordinal, rule, reservedAtMs }) !== ruleRow.rule_digest) throw corrupt(reservationId, 'rule digest mismatch');
+      rules.push(rule);
+    });
+
+    const record: ExerciseReservationRecord = {
+      reservationId: row.reservation_id,
+      executionId: row.execution_id,
+      boundedGrantId: row.bounded_grant_id,
+      requestDigest: row.request_digest,
+      policyDigest: row.policy_digest,
+      authorityBindingDigest: row.authority_binding_digest,
+      reservedAt: row.reserved_at,
+      rules,
+    };
+    if (storedReservationDigest(record) !== row.record_digest) throw corrupt(reservationId, 'reservation record digest mismatch');
+    // Recomputes the id from the grant and execution identity, and the policy
+    // digest from the rule rows — so a rule row that was dropped, added or
+    // swapped under a re-sealed digest still fails here.
+    if (!isWellFormedExerciseReservation(record)) throw corrupt(reservationId, 'the reservation is not internally consistent');
+
+    if (terminalRow === undefined) return { record };
+    if (terminalRow.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(reservationId, 'unrecognized terminal-event schema version');
+    if (!isTerminalKind(terminalRow.terminal_kind) || !exerciseReservationTerminalReasonMatches(terminalRow.terminal_kind, terminalRow.reason)) {
+      throw corrupt(reservationId, 'the terminal event is outside the closed vocabulary');
+    }
+    const terminal: ExerciseReservationTerminalEvent = {
+      reservationId,
+      kind: terminalRow.terminal_kind,
+      reason: terminalRow.reason as ExerciseReservationTerminalReason,
+      recordedAt: terminalRow.recorded_at,
+    };
+    if (storedTerminalEventDigest(terminal) !== terminalRow.event_digest) throw corrupt(reservationId, 'terminal-event digest mismatch');
+    return { record, terminal };
+  }
+
+  /** After inserting one rule row: the head must record exactly one fewer row than the bucket now holds. */
+  function verifiedBucketRowCountAfterInsert(limitId: string, scopeKey: string): number {
+    const actual = (countBucket.get(limitId, scopeKey) as { n: number }).n;
+    const head = selectHead.get(limitId, scopeKey) as { rule_row_count: number } | undefined;
+    const previous = head?.rule_row_count ?? 0;
+    if (previous + 1 !== actual) throw corrupt(`bucket ${JSON.stringify([limitId, scopeKey])}`, 'the bucket head does not account for the row just written');
+    return actual;
+  }
+
+  const runReserve = db.transaction((request: ExerciseReservationRequest): ExerciseReservationOutcome => {
+    const existing = loadVerified(request.reservationId);
+    if (existing !== undefined) {
+      return exerciseReservationsDescribeSameAttempt(existing.record, request) ? { outcome: 'already-reserved', reservation: existing.record } : { outcome: 'conflict' };
+    }
+    // One execution identity is one attempt, whichever grant it names. The
+    // unique index makes this a database fact as well; checking first turns it
+    // into a `conflict` answer rather than a constraint error.
+    if ((selectReservationIdByExecution.get(request.executionId) as { reservation_id: string } | undefined) !== undefined) return { outcome: 'conflict' };
+
+    // Active usage per bucket, read inside this transaction — which already
+    // holds the write lock — and validated row by row before it counts.
+    const verified = new Map<string, VerifiedReservation>();
+    const activeUsageFor = (rule: ExerciseControlRuleUsage): readonly ExerciseControlActiveUsage[] => {
+      const { limit } = rule;
+      verifiedBucketRowCount(limit.limitId, limit.scopeKey);
+      const candidates = (
+        limit.window.kind === 'lifetime'
+          ? selectBucketLifetime.all(limit.limitId, limit.scopeKey)
+          : selectBucketSince.all(limit.limitId, limit.scopeKey, Date.parse(request.reservedAt) - limit.window.seconds * 1000)
+      ) as { reservation_id: string }[];
+      const bucket = exerciseControlBucketKey(limit);
+      const active: ExerciseControlActiveUsage[] = [];
+      for (const { reservation_id: reservationId } of candidates) {
+        let entry = verified.get(reservationId);
+        if (entry === undefined) {
+          entry = loadVerified(reservationId);
+          if (entry === undefined) throw corrupt(reservationId, 'a rule row names a reservation that does not exist');
+          verified.set(reservationId, entry);
+        }
+        if (entry.terminal?.kind === 'released') continue;
+        const recorded = entry.record.rules.find((candidate) => exerciseControlBucketKey(candidate.limit) === bucket);
+        if (recorded === undefined) throw corrupt(reservationId, 'the bucket index names a reservation that holds no such rule');
+        active.push({
+          metric: recorded.limit.metric,
+          ...(recorded.limit.metric === 'amount' ? { unit: recorded.limit.unit } : {}),
+          usage: recorded.usage,
+          reservedAtMs: Date.parse(entry.record.reservedAt),
+        });
+      }
+      return active;
+    };
+
+    const admission = assessExerciseReservationAdmission(request, activeUsageFor);
+    if (!admission.admitted) return { outcome: 'refused', reasonCodes: admission.reasonCodes, refusedBuckets: admission.refusedBuckets };
+
+    const reservedAtMs = Date.parse(request.reservedAt);
+    const committedAt = now();
+    insertReservation.run({
+      reservationId: request.reservationId,
+      executionId: request.executionId,
+      boundedGrantId: request.boundedGrantId,
+      requestDigest: request.requestDigest,
+      policyDigest: request.policyDigest,
+      authorityBindingDigest: request.authorityBindingDigest,
+      reservedAt: request.reservedAt,
+      reservedAtMs,
+      ruleCount: request.rules.length,
+      recordDigest: storedReservationDigest(request),
+      committedAt,
+      schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
+    });
+    request.rules.forEach((rule, ordinal) => {
+      insertRule.run({
+        reservationId: request.reservationId,
+        ordinal,
+        limitId: rule.limit.limitId,
+        scopeKey: rule.limit.scopeKey,
+        metric: rule.limit.metric,
+        maximum: String(rule.limit.maximum),
+        unit: rule.limit.metric === 'amount' ? rule.limit.unit : null,
+        windowKind: rule.limit.window.kind,
+        windowSeconds: rule.limit.window.kind === 'rolling' ? rule.limit.window.seconds : null,
+        usage: rule.usage,
+        reservedAtMs,
+        ruleDigest: storedRuleDigest({ reservationId: request.reservationId, ordinal, rule, reservedAtMs }),
+        schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
+      });
+      // The bucket's head advances in the same transaction, from the count it
+      // was verified at during admission above.
+      const ruleRowCount = verifiedBucketRowCountAfterInsert(rule.limit.limitId, rule.limit.scopeKey);
+      upsertHead.run({
+        limitId: rule.limit.limitId,
+        scopeKey: rule.limit.scopeKey,
+        ruleRowCount,
+        headDigest: storedBucketHeadDigest({ limitId: rule.limit.limitId, scopeKey: rule.limit.scopeKey, ruleRowCount }),
+        schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
+      });
+    });
+
+    // Read back through the same verification path every later admission uses.
+    const written = loadVerified(request.reservationId);
+    if (written === undefined) throw corrupt(request.reservationId, 'the reservation could not be read back');
+    return { outcome: 'reserved', reservation: written.record };
+  });
+
+  const runTerminal = db.transaction(
+    (kind: ExerciseReservationTerminalKind, input: ExerciseReservationSettlement | ExerciseReservationRelease): ExerciseReservationTerminalOutcome => {
+      const current = loadVerified(input.reservationId);
+      if (current === undefined) return { outcome: 'not-found' };
+      if (current.terminal !== undefined) {
+        if (current.terminal.kind === kind && current.terminal.reason === input.reason) {
+          return { outcome: kind === 'settled' ? 'already-settled' : 'already-released', terminal: current.terminal };
+        }
+        // Settle after release, release after settle, or the same kind for a
+        // different reason: the first event stands and nothing is written.
+        return { outcome: 'conflict', terminal: current.terminal };
+      }
+      const terminal: ExerciseReservationTerminalEvent = { reservationId: input.reservationId, kind, reason: input.reason, recordedAt: input.recordedAt };
+      insertTerminal.run({
+        reservationId: terminal.reservationId,
+        terminalKind: terminal.kind,
+        reason: terminal.reason,
+        recordedAt: terminal.recordedAt,
+        eventDigest: storedTerminalEventDigest(terminal),
+        committedAt: now(),
+        schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
+      });
+      const written = loadVerified(input.reservationId);
+      if (written?.terminal === undefined) throw corrupt(input.reservationId, 'the terminal event could not be read back');
+      return { outcome: kind, terminal: written.terminal };
+    },
+  );
+
+  const runRead = db.transaction((reservationId: string): ExerciseReservationView | undefined => {
+    const current = loadVerified(reservationId);
+    if (current === undefined) return undefined;
+    return {
+      reservation: current.record,
+      state: current.terminal === undefined ? 'reserved' : current.terminal.kind,
+      ...(current.terminal !== undefined ? { terminal: current.terminal } : {}),
+    };
+  });
+
+  function terminal(kind: ExerciseReservationTerminalKind, input: ExerciseReservationSettlement | ExerciseReservationRelease): ExerciseReservationTerminalOutcome {
+    assertOpen();
+    if (
+      typeof input.reservationId !== 'string' ||
+      !exerciseReservationTerminalReasonMatches(kind, input.reason) ||
+      typeof input.recordedAt !== 'string' ||
+      Number.isNaN(Date.parse(input.recordedAt))
+    ) {
+      throw invalidInput('The terminal transition is outside the closed contract.');
+    }
+    // IMMEDIATE, like admission: the one-terminal-event check and the insert
+    // happen under the write lock, so two processes finalizing one reservation
+    // cannot both append.
+    return runTerminal.immediate(kind, input);
+  }
+
+  return {
+    providerKind: 'sqlite',
+
+    async reserve(request: ExerciseReservationRequest): Promise<ExerciseReservationOutcome> {
+      assertOpen();
+      if (!isWellFormedExerciseReservation(request)) throw invalidInput('The reservation request is outside the closed contract.');
+      // BEGIN IMMEDIATE: the write lock is held from before the first usage
+      // read until COMMIT. Returns only after COMMIT; with `synchronous = FULL`
+      // the reservation is durable before this resolves.
+      return runReserve.immediate(request);
+    },
+
+    async settle(input: ExerciseReservationSettlement): Promise<ExerciseReservationTerminalOutcome> {
+      return terminal('settled', input);
+    },
+
+    async release(input: ExerciseReservationRelease): Promise<ExerciseReservationTerminalOutcome> {
+      return terminal('released', input);
+    },
+
+    async read(reservationId: string): Promise<ExerciseReservationView | undefined> {
+      assertOpen();
+      return runRead(reservationId);
+    },
+
+    async health(): Promise<ExerciseControlLedgerHealth> {
+      let readable = false;
+      try {
+        if (!closed) {
+          const version = db.prepare(`SELECT schema_version FROM exercise_control_ledger_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
+          readable = version?.schema_version === EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION;
+        }
+      } catch {
+        readable = false;
+      }
+      const writable = readable && !closed && !db.readonly;
+      return {
+        status: readable && writable ? 'healthy' : 'unhealthy',
+        readable,
+        writable,
+        schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
+        checkedAt: now(),
+      };
+    },
+
+    async close(): Promise<void> {
+      if (!closed) {
+        closed = true;
+        db.close();
+      }
+    },
+  };
+}

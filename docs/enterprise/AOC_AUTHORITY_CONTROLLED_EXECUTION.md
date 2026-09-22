@@ -308,6 +308,22 @@ Where a deployment wants an authority change to end a live grant sooner, the
 mechanism already exists and is explicit: **revoke the grant**. That is a
 recorded, correlated, immediate act rather than an implicit consequence.
 
+**Updated by P7 — opt-in exercise-time binding revalidation.** Without
+exercise controls, everything above holds unchanged. A deployment that composes
+`exerciseControls` opts into a narrower rule: every ACE grant now carries
+`authorityBindingDigest`, an opaque SHA-256 commitment to the binding resolved
+(and commit-proved) at issuance, and at exercise a separate, synchronous
+`revalidateAuthorityBinding` resolver must answer with a binding whose canonical
+digest is **exactly** that one — before and after the reservation. This does not
+re-derive lineage or re-read the mandate for containment; it asks the host
+"is the authority this grant was issued under still exactly the one that
+holds?", and any difference — a new `authorityRef`, a shorter or longer
+horizon, a changed justification — withholds (`EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED`).
+A grant without provenance cannot be revalidated and is withheld when P7 is
+composed; it executes exactly as before when P7 is not. Not atomic with the
+external authority store: the binding can change after the last check. See
+`docs/enterprise/AOC_EXERCISE_CONTROLS.md` §8.
+
 ## 9. Issuance wiring and the transaction boundary
 
 A grant is issued only after: ALLOW, context evaluated, policy satisfied, every
@@ -450,14 +466,23 @@ runtime retries it.
 the assessment, including `executed` — "why did this run?" and "why did this not
 run?" are the same question asked of the same record.
 
-## 12. No consumption model
+## 12. No consumption model on the grant — and, since P7, an opt-in one beside it
 
-Every accepted ADR is silent on single-use, use counters, remaining uses, nonce
-consumption, replay ledgers and destruction after exercise, and
+Every accepted ADR before P7 was silent on single-use, use counters, remaining
+uses, nonce consumption, replay ledgers and destruction after exercise, and
 `ADR-ACCESS-LIFECYCLE.md` states the opposite for the record *about* use: usage
 events are "many per `grantRef` — repeatable by design".
 
-So **repeated exercise of the same valid grant is permitted and preserved**.
+**P7 defines consumption, and defines it outside the grant.**
+`ADR-EXERCISE-AGGREGATE-CONTROLS.md` keeps the grant immutable and puts every
+reservation, settlement and release in the separate authoritative
+exercise-control ledger. When a deployment composes `exerciseControls`,
+repeated use is bounded by host-declared count, amount and rolling-velocity
+limits admitted through a reservation before the adapter runs
+(`docs/enterprise/AOC_EXERCISE_CONTROLS.md`). The grant itself still gains no
+counter, and nothing below remains untrue of it.
+
+Without exercise controls, **repeated exercise of the same valid grant is permitted and preserved**.
 Execution mutates no grant state: after two exercises the stored grant is
 byte-identical and no revocation appears. A structural test refuses the
 vocabulary (`remainingUses`, `consume`, `decrement`, `singleUse`, a replay
@@ -568,7 +593,9 @@ tests refuse the vocabulary and the import paths in both new modules.
 - **Cryptographic signing of a grant**, and any external token format.
 - **Upstream authority revalidation at exercise time** (§8) — declined on the
   accepted precedent, not postponed for effort.
-- **A usage/consumption model** (§12).
+- **A usage/consumption model on the grant itself** (§12). The opt-in P7
+  exercise-control ledger bounds repeated use beside the grant; reconciliation of
+  abandoned reservations, distributed quota and exactly-once remain deferred.
 - **Delegation.** No accepted ADR defines it for grants.
 - **A public grant-issuance or exercise endpoint** (§13).
 

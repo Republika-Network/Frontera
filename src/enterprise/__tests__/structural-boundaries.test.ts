@@ -3,6 +3,11 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { GenericHttpConfigurationError, createGenericHttpExecutionAdapter, type EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
+import { EXERCISE_CONTROL_REASON_CODE_VALUES } from '../../features/exercise-control-runtime/index.js';
+import { AUTHORITY_BINDING_REASON_CODE_VALUES } from '../execution-governance/index.js';
+import { GOVERNED_ACTION_REASON_CODE_VALUES } from '../governed-action/index.js';
+
 /**
  * Enforces the architectural boundaries this iteration establishes:
  * `src/enterprise` is the new Enterprise Host, `src/runtime` (grants/
@@ -501,6 +506,92 @@ describe('Structural boundaries: Grant Runtime (layer E)', () => {
     const applyStep = adapter.slice(adapter.indexOf('export function applyGrantStep'));
     for (const forbidden of ['result.status', 'result.reasonCodes', 'result.summary', 'result.policies']) {
       assert.equal(applyStep.includes(forbidden), false, `applyGrantStep must not read ${forbidden}`);
+    }
+  });
+});
+
+describe('Structural boundaries: P7 exercise controls (§4, §37, §53, §57)', () => {
+  const production = (dir: string) => walkTsFiles(dir).filter((file) => !file.includes('/tests/') && !file.includes('/__tests__/'));
+  const stripComments = (file: string) => readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+  const LEDGER = production('src/enterprise/exercise-control-ledger');
+  const GOVERNED_ACTION = production('src/enterprise/governed-action');
+  const ADAPTER_SIDE = [
+    ...production('src/enterprise/execution-adapters'),
+    'src/features/execution-runtime/domain/execution-adapter-port.ts',
+    'src/features/execution-runtime/services/execution-adapter-registry.ts',
+  ];
+
+  it('the durable exercise-control ledger has production sources to measure', () => {
+    assert.ok(LEDGER.length >= 3);
+  });
+
+  it('§4. the aggregate ledger is not the evidence ledger: it imports no Governance Store and no governed-action module', () => {
+    assert.deepEqual(importsMatching(LEDGER, /from '[^']*governance-store/), []);
+    assert.deepEqual(importsMatching(LEDGER, /from '[^']*governed-action/), []);
+    assert.deepEqual(importsMatching(LEDGER, /from '[^']*\/kernel\//), []);
+  });
+
+  it('§4. evidence never becomes authority: the governed-action layer never holds, reserves, settles or releases exercise-control state', () => {
+    for (const file of GOVERNED_ACTION) {
+      const code = stripComments(file);
+      for (const pattern of [/exercise-control-ledger/, /ExerciseControlLedgerPort/, /createExerciseControlGate/, /\.reserve\s*\(/, /\.settle\s*\(/, /\.release\s*\(/, /exerciseReservationId/]) {
+        assert.equal(pattern.test(code), false, `${file}: ${String(pattern)}`);
+      }
+    }
+  });
+
+  it('§57. adapters cannot reach the exercise ledger, a reservation or a limit', () => {
+    for (const file of ADAPTER_SIDE) {
+      const code = stripComments(file);
+      for (const pattern of [/ExerciseControl/, /exercise-control/, /[Rr]eservation/, /scopeKey/, /limitId/]) {
+        assert.equal(pattern.test(code), false, `${file}: ${String(pattern)}`);
+      }
+    }
+  });
+
+  it('§57. Generic HTTP configuration cannot name a P7 structure — its closed contract refuses the key', () => {
+    const valid: EnterpriseGenericHttpExecutionAdapterOptions = {
+      adapterId: 'erp.p7-structural',
+      origin: 'https://api.erp.example',
+      method: 'POST',
+      path: [{ kind: 'literal', value: 'v1' }],
+      credential: { kind: 'bearer', token: 'StructuralBearerSentinel1' },
+      timeoutMs: 1000,
+    } as EnterpriseGenericHttpExecutionAdapterOptions;
+    assert.doesNotThrow(() => createGenericHttpExecutionAdapter(valid));
+    for (const key of ['exerciseControls', 'limits', 'quota', 'budget', 'reservation', 'reservationLedger']) {
+      assert.throws(() => createGenericHttpExecutionAdapter({ ...valid, [key]: {} } as EnterpriseGenericHttpExecutionAdapterOptions), (error: unknown) => error instanceof GenericHttpConfigurationError, key);
+    }
+    const configuration = readFileSync('src/enterprise/execution-adapters/generic-http/configuration.ts', 'utf8');
+    const sources = /GENERIC_HTTP_ACTION_SOURCES[^=]*= Object\.freeze\(\[([\s\S]*?)\]\)/.exec(configuration)?.[1] ?? '';
+    assert.ok(sources.length > 0);
+    for (const forbidden of ['limit', 'scopeKey', 'reservation', 'quota', 'budget', 'binding']) assert.equal(sources.includes(forbidden), false, forbidden);
+  });
+
+  it('§37 / §59. no HTTP route and no SDK method was added for limits, quotas, budgets, reservations or the ledger', () => {
+    const adapter = readFileSync('src/enterprise/adapters/node-http-adapter.ts', 'utf8');
+    assert.equal(/\/api\/(limits|quotas|budgets|reservations|exercise-ledger|exercise-controls)/.test(adapter), false);
+    const freeze = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { routeLiterals: string[]; routePatterns: string[] };
+    assert.equal(JSON.stringify(freeze).match(/limit|quota|budget|reservation|exercise/i), null);
+    const sdk = [readFileSync('packages/enterprise-host-sdk/src/client.ts', 'utf8'), readFileSync('packages/enterprise-host-sdk/src/index.ts', 'utf8')].join('\n');
+    assert.equal(/quota|budget|reservation|exerciseControl|limitId|scopeKey/i.test(sdk), false);
+  });
+
+  it('the Enterprise barrel exposes P7 types only — no ledger, gate or bridge value a published consumer could call', () => {
+    const barrel = stripComments('src/enterprise/index.ts');
+    for (const value of ['createSqliteExerciseControlLedger', 'createExerciseControlGate', 'createInMemoryExerciseControlLedger', 'exerciseAuthorityBindingDigestResolver']) {
+      assert.equal(barrel.includes(value), false, value);
+    }
+    assert.ok(/export type \{ EnterpriseExerciseControlsOptions \}/.test(barrel));
+  });
+
+  it('§11. the exercise-control vocabulary is disjoint from the governed-action and authority-binding vocabularies', () => {
+    const governed: readonly string[] = GOVERNED_ACTION_REASON_CODE_VALUES;
+    const binding: readonly string[] = AUTHORITY_BINDING_REASON_CODE_VALUES;
+    assert.ok(governed.length > 0 && binding.length > 0);
+    for (const code of EXERCISE_CONTROL_REASON_CODE_VALUES) {
+      assert.equal(governed.includes(code), false, code);
+      assert.equal(binding.includes(code), false, code);
     }
   });
 });

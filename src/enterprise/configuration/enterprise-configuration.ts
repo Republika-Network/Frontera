@@ -149,6 +149,24 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the emergency-control store when `persistence.provider === 'sqlite'`. */
     readonly sqlitePath: string;
   };
+  /**
+   * The durable exercise-control ledger (P7): aggregate / velocity reservation
+   * state for the bounded-grant path.
+   *
+   * Read **only** when a host composes
+   * `authorityControlledExecution.exerciseControls` **and** supplies no ledger
+   * of its own — and then always, whatever `persistence.provider` says: an
+   * aggregate limit whose consumption is forgotten on restart fails *open*, so
+   * there is no process-local default. The file is never opened or created
+   * otherwise. Its own file, for the reason every authority store has its own:
+   * consumption state must be backed up, restored and rotated on its own terms,
+   * and never inside an evidence database. See
+   * `docs/enterprise/AOC_EXERCISE_CONTROLS.md`.
+   */
+  readonly exerciseLedger: {
+    /** SQLite path for the exercise-control ledger. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -253,6 +271,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     emergencyControl: {
       sqlitePath: env.AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH ?? '.data/emergency-controls.sqlite',
+    },
+    exerciseLedger: {
+      sqlitePath: env.AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH ?? '.data/exercise-ledger.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

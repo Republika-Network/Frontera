@@ -53,6 +53,27 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   'executionId',
   'requestId',
   'decisionId',
+  // P7: aggregate / velocity exercise controls are trusted host composition.
+  // A caller can neither name nor suggest a limit, bucket, budget, window,
+  // reservation or binding digest — at the top level (undeclared keys are
+  // refused already) or inside asserted context.
+  'exerciseControls',
+  'aggregateControls',
+  'limit',
+  'limits',
+  'limitId',
+  'scopeKey',
+  'quota',
+  'budget',
+  'velocity',
+  'window',
+  'windowSeconds',
+  'maximum',
+  'maxCount',
+  'maxAmount',
+  'reservation',
+  'reservationId',
+  'authorityBindingDigest',
 ];
 
 const MAX_CONTEXT_DEPTH = 8;

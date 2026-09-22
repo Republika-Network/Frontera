@@ -311,9 +311,25 @@ effective against an already-issued provider credential — is
 `src/enterprise/access-governance`'s existing, separate concern, untouched by
 this layer.
 
-## Usage and replay — deliberately not implemented
+## Usage and replay — deliberately not on the grant
 
-**Every accepted ADR is silent on single-use, multi-use, usage count,
+> **Updated by P7.** A consumption model now exists, and it is deliberately
+> **not** here. `docs/architecture/ADR-EXERCISE-AGGREGATE-CONTROLS.md` keeps the
+> `BoundedGrant` immutable and puts consumption — reservations, settlements,
+> releases — in the separate authoritative exercise-control ledger
+> (`src/features/exercise-control-runtime`, durable in
+> `src/enterprise/exercise-control-ledger`). Usage remains absent **from the
+> grant** on purpose: a grant rewritten on every use would be a mutable
+> authority artifact with a second source of truth for "how much is left". The
+> history below records why this layer never invented one of its own.
+>
+> P7 also adds one optional field to the artifact, `authorityBindingDigest`: an
+> opaque provenance commitment this layer carries and never interprets. When
+> present it is part of the grant's identity, canonical bytes and digest; when
+> absent — every pre-P7 grant — all three are byte-identical to what they always
+> were.
+
+**Before P7, every accepted ADR was silent on single-use, multi-use, usage count,
 consumption and replay for grants.** `ADR-ACCESS-GRANT.md` enumerates what a
 grant carries and no counter appears; `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md`
 §4–§6 covers derivation, validity and expiry and says nothing about
@@ -679,7 +695,8 @@ been destroyed.
   to signer integration; the attachment point is documented above.
 - **The Evidence extension.** Grant issuance, expiry and revocation as
   first-class `EvidenceBundle` subjects with their own disclosure policy entry.
-- **A usage/consumption model.** No accepted ADR specifies one; see above.
+- **A usage/consumption model on the grant.** Deliberately never: P7 defines
+  consumption in the separate exercise-control ledger; see above.
 - **Delegation.** No accepted ADR defines it for grants; the default posture is
   no delegation.
 - **A durable grant store.** The port's production guarantees are stated; a

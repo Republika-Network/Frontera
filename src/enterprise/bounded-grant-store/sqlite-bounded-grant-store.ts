@@ -226,6 +226,12 @@ function parseStoredGrant(grantJson: string): BoundedGrant | undefined {
   const decisionId = stringField(correlation, 'decisionId');
   const action = stringField(correlation, 'action');
   const resourceScope = stringField(correlation, 'resourceScope');
+  // Optional provenance (P7). Absent on every pre-P7 row, which therefore
+  // parses exactly as before; present, it must be a string — and the
+  // round-trip equality below proves it is exactly the value that was written.
+  const hasProvenance = Object.prototype.hasOwnProperty.call(parsed, 'authorityBindingDigest');
+  const authorityBindingDigest = stringField(parsed, 'authorityBindingDigest');
+  if (hasProvenance && authorityBindingDigest === undefined) return undefined;
 
   if (
     id === undefined ||
@@ -248,6 +254,7 @@ function parseStoredGrant(grantJson: string): BoundedGrant | undefined {
   // per bound kind that a new kind could outrun.
   const grant = {
     id,
+    ...(authorityBindingDigest !== undefined ? { authorityBindingDigest } : {}),
     correlation: { requestId, decisionId, action, resourceScope },
     subject,
     scope: scope as BoundedGrant['scope'],

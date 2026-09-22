@@ -40,9 +40,15 @@ import { serializeGrantSourceAuthorization, type GrantSourceAuthorization } from
  * "Integrity" section for exactly where signing would attach if a later ADR
  * decides it should.
  *
- * **No usage counter.** See the README: every accepted ADR is silent on
- * single-use, multi-use, consumption and replay, so this phase implements
- * issuance, validity and revocation and invents no consumption model.
+ * **No usage counter — still, and now on purpose.** Consumption is defined,
+ * since P7, and it is deliberately defined **outside** this artifact:
+ * `docs/architecture/ADR-EXERCISE-AGGREGATE-CONTROLS.md` keeps the grant
+ * immutable and puts every reservation, settlement and release in the separate
+ * authoritative exercise-control ledger (`src/features/exercise-control-runtime`).
+ * A grant that changed every time it was used would be a mutable authority
+ * artifact with a second source of truth for "how much is left"; there is no
+ * `usesRemaining`, `amountRemaining`, `spent` or `usageCount` here, and there
+ * must never be.
  */
 export interface BoundedGrant {
   /** Deterministic; see `boundedGrantId`. Never a UUID, never a counter, never clock-derived. */
@@ -72,6 +78,19 @@ export interface BoundedGrant {
   readonly expiresAt: string;
   /** A fingerprint of the authority this was narrowed from, so "narrowed from what?" is answerable from the grant alone. */
   readonly sourceDigest: string;
+  /**
+   * An opaque provenance commitment to the authority binding this grant was
+   * issued under — `sha256:<hex>` over a canonical serialization the issuing
+   * composition owns. Layer E never interprets it: it is carried, covered by the
+   * grant's identity and digest, and compared for exact equality at exercise
+   * time by a layer that can.
+   *
+   * **Optional, and additive.** A grant written before it existed has none, and
+   * its canonical bytes, identity and digest are exactly what they always were.
+   * When present it is part of all three, so removing or altering it fails
+   * integrity.
+   */
+  readonly authorityBindingDigest?: string;
   /** A fingerprint of the grant's own canonical form. Integrity, not a signature — see the README. */
   readonly digest: string;
 }
@@ -101,8 +120,16 @@ export function boundedGrantId(input: {
    * report the second as `already-issued`.
    */
   readonly expiresAt: string;
+  /**
+   * Part of the identity when present, because two grants over the same bounds
+   * issued under two different authority bindings are different grants. Absent,
+   * the canonical string is byte-identical to the one every pre-P7 grant was
+   * identified by, so no existing identity moves.
+   */
+  readonly authorityBindingDigest?: string;
 }): string {
-  const canonical = `{${serializeGrantCorrelation(input.correlation)},"expiresAt":${JSON.stringify(input.expiresAt)},"scope":${serializeGrantScope(input.scope)},"subject":${JSON.stringify(input.subject)}}`;
+  const provenance = input.authorityBindingDigest !== undefined ? `"authorityBindingDigest":${JSON.stringify(input.authorityBindingDigest)},` : '';
+  const canonical = `{${provenance}${serializeGrantCorrelation(input.correlation)},"expiresAt":${JSON.stringify(input.expiresAt)},"scope":${serializeGrantScope(input.scope)},"subject":${JSON.stringify(input.subject)}}`;
   return `aoc.grant:${createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;
 }
 
@@ -122,6 +149,9 @@ export function serializeBoundedGrant(grant: BoundedGrant): string {
   return [
     '{',
     [
+      // Lexicographically first, and only when present: a grant without it
+      // serializes to exactly the bytes it always did.
+      ...(grant.authorityBindingDigest !== undefined ? [`"authorityBindingDigest":${JSON.stringify(grant.authorityBindingDigest)}`] : []),
       `"correlation":{${serializeGrantCorrelation(grant.correlation)}}`,
       `"digest":${JSON.stringify(grant.digest)}`,
       `"expiresAt":${JSON.stringify(grant.expiresAt)}`,

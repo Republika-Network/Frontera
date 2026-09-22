@@ -7,10 +7,13 @@
  * flow that does not compose it, and nothing composed here can authorize.
  */
 export {
+  GRANT_AUTHORITY_BINDING_FORMAT,
   GRANT_BOUNDED_AUTHORITY_KINDS,
   GRANT_UNBOUNDED_AUTHORITY_SOURCE_KINDS,
+  grantAuthorityBindingDigest,
   grantValidityCeilingsFor,
   isWellFormedGrantAuthorityBinding,
+  serializeGrantAuthorityBinding,
 } from './authority-binding.js';
 export type { GrantAuthorityBinding, GrantBoundedAuthorityKind, GrantUnboundedAuthoritySourceKind } from './authority-binding.js';
 
@@ -23,6 +26,9 @@ export type {
   GrantAuthorityBindingQuery,
   GrantAuthorityBindingResolver,
 } from './contracts.js';
+
+export { assertValidExerciseControlCallbacks, assertValidExerciseControlStore, exerciseAuthorityBindingDigestResolver } from './exercise-controls.js';
+export type { AuthorityControlledExerciseControls, ExerciseAuthorityBindingResolver } from './exercise-controls.js';
 
 export { ExecutionGovernanceError, isExecutionGovernanceError } from './errors.js';
 export type { ExecutionGovernanceErrorCode } from './errors.js';

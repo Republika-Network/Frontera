@@ -24,6 +24,7 @@ import {
   type GrantAuthorityBindingResolver,
 } from './contracts.js';
 import { createAuthorityControlledIssuanceCore } from './issuance-core.js';
+import { createAuthorityControlledExerciseControlGate, type AuthorityControlledExerciseControls } from './exercise-controls.js';
 
 /**
  * The first production composition of the authority-control pipeline onto a
@@ -136,6 +137,27 @@ export interface AuthorityControlledExecutionOptions {
    * invented, and every existing behaviour is byte-identical.
    */
   readonly emergencyControl?: EmergencyControlReaderPort;
+  /**
+   * P7 — aggregate / velocity exercise controls and exercise-time
+   * authority-binding revalidation, when the deployment composed them.
+   *
+   * **Trusted host composition, in its entirety.** The policy decides which
+   * aggregate limits apply, the resolver answers which authority binding holds
+   * at exercise time, and the ledger is the authoritative consumption state.
+   * Nothing on any caller path can reach or name any of them.
+   *
+   * When composed, every exercise additionally requires, in order: the
+   * binding to equal the grant's recorded provenance exactly; a valid policy
+   * answer; an atomic reservation across every applicable limit; the binding
+   * to still be equal; and the emergency control to still be clear — and only
+   * then is the adapter invoked. The reservation is settled or released from
+   * the outcome. It **narrows only**: nothing here can make an unusable
+   * exercise usable.
+   *
+   * **Omitting it changes nothing.** No reservation, no revalidation, no
+   * ledger, and every existing behaviour is byte-identical.
+   */
+  readonly exerciseControls?: AuthorityControlledExerciseControls;
 }
 
 export interface AuthorityControlledExecutionService {
@@ -164,12 +186,16 @@ export type RevokeBoundedGrantResult =
 export function createAuthorityControlledExecution(options: AuthorityControlledExecutionOptions): AuthorityControlledExecutionService {
   const { kernel, grantCapability, grantStore, executionAdapter, now, resolveAuthorityBinding, revalidateSource } = options;
   const emergencyControl = options.emergencyControl;
+  // Composed once, and refused here — at composition — when the block cannot
+  // work: no policy, no exercise-time resolver, or a ledger that is not a ledger.
+  const exerciseControl = options.exerciseControls === undefined ? undefined : createAuthorityControlledExerciseControlGate(options.exerciseControls, now);
 
   const execution = createGrantExecutionService({
     store: grantStore,
     adapter: executionAdapter,
     now,
     ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+    ...(exerciseControl !== undefined ? { exerciseControl } : {}),
   });
 
   // The authorization internals live in `issuance-core.ts` so the Governed
