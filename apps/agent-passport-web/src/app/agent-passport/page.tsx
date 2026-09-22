@@ -4,8 +4,8 @@ import { PricingCard } from '@/components/PricingCard';
 import { CheckoutButton } from '@/components/CheckoutButton';
 
 export const metadata = {
-  title: 'Soberanía Agent Passport — Give your AI agents a constitution',
-  description: 'Soberanía Agent Passport gives AI agents identity, authority boundaries, signed constitutions, runtime seals, and public verification.',
+  title: 'Soberanía Agent Passport — Give your SI agents a constitution',
+  description: 'Soberanía Agent Passport gives SI agents identity, authority boundaries, signed constitutions, runtime seals, and public verification.',
 };
 
 export default function AgentPassportPage() {
@@ -15,9 +15,9 @@ export default function AgentPassportPage() {
       <section className="hero" style={{ paddingTop: 100, paddingBottom: 80 }}>
         <div className="container">
           <div className="section-label">Agent Governance Protocol</div>
-          <h1>Give your AI agents<br />a constitution.</h1>
+          <h1>Give your SI agents<br />a constitution.</h1>
           <p>
-            Enroll AI agents into a governance framework that defines identity, authority, limits,
+            Enroll SI agents into a governance framework that defines identity, authority, limits,
             human oversight, public verification, and runtime-enforceable evidence.
           </p>
           <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 32 }}>
@@ -41,9 +41,9 @@ export default function AgentPassportPage() {
       <section className="section">
         <div className="container">
           <div className="section-label">The Problem</div>
-          <h2>AI agents are acting without passports.</h2>
+          <h2>SI agents are acting without passports.</h2>
           <p style={{ marginBottom: 32 }}>
-            Businesses are deploying AI agents that can answer customers, trigger workflows, access tools,
+            Businesses are deploying SI agents that can answer customers, trigger workflows, access tools,
             touch data, and represent the company — often without a clear identity, authority boundary, or verification layer.
           </p>
           <div className="card-grid card-grid-2" style={{ gap: 12 }}>
@@ -72,7 +72,7 @@ export default function AgentPassportPage() {
           <div className="section-label">Product</div>
           <h2>What is Soberanía Agent Passport?</h2>
           <p style={{ marginBottom: 40 }}>
-            Soberanía Agent Passport is a verifiable governance identity for AI agents. It packages an agent&apos;s
+            Soberanía Agent Passport is a verifiable governance identity for SI agents. It packages an agent&apos;s
             identity, purpose, owner, allowed actions, prohibited actions, data boundaries, human oversight rules,
             signed constitution, policy manifest, runtime seal, and public verification page.
           </p>
@@ -205,7 +205,7 @@ export default function AgentPassportPage() {
       <section className="section">
         <div className="container">
           <div className="section-label">Comparison</div>
-          <h2>Not just an AI governance document.</h2>
+          <h2>Not just an SI governance document.</h2>
           <div style={{ overflowX: 'auto', marginTop: 32 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
@@ -295,7 +295,7 @@ export default function AgentPassportPage() {
           <div className="section-label">Get Started</div>
           <h2 style={{ fontSize: 32, marginBottom: 16 }}>Start by giving one agent a passport.</h2>
           <p style={{ color: 'var(--text-muted)', marginBottom: 40, maxWidth: 560, margin: '0 auto 40px' }}>
-            Enroll your first AI agent and give it a constitution, verification page, runtime seal,
+            Enroll your first SI agent and give it a constitution, verification page, runtime seal,
             and governance evidence layer.
           </p>
           <div className="hero-actions">
