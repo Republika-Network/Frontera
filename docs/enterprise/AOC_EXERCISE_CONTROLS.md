@@ -320,9 +320,27 @@ remains the only owner of historical outcome replay.
   rolling buckets included, so it is linear in the bucket's indexed history.
   Integrity wins over the former timestamp-range optimization.
 
-## 14. Out of scope
+## 14. Evidence of reservation facts (P8)
 
-Canonical event stream (P8), model convergence (P9), XRPL adapter or signer,
+Since P8, when governed actions are composed, the gate is handed a **write-only**
+`ExerciseControlObserver` (`reservationObserved`) and tells it — only after the
+ledger returned the fact — that a reservation was `reserved`, `settled` or
+`released`, carrying the ledger's own instant (`reservedAt`, or the recorded
+terminal event's `recordedAt`, the first one on an identical repeat). A refused
+admission, a conflicting terminal event and a finalization the ledger could not
+record are not observed, because none of them is a recorded reservation fact.
+
+The observer can change nothing: `admit` and `finalize` decide from the ledger
+alone and then call it inside a catch-all that discards failure; `revalidate`
+never calls it, so nothing awaited is added between the last revalidation and the
+adapter. The canonical authority event stream it feeds is **evidence**: admission,
+`activeUsageFor`, rolling windows, lifetime and amount sums are read only from
+this ledger, never reconstructed from events
+(`docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`).
+
+## 15. Out of scope
+
+Model convergence (P9), XRPL adapter or signer,
 KMS/HSM, process sandbox, network namespace, egress firewall, distributed quota
 (Redis, etcd, consensus, cross-region), reconciliation, manual release API,
 stale-reservation cleanup, provider polling, exactly-once, FX or unit

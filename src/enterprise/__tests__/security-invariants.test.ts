@@ -276,6 +276,23 @@ describe('SECURITY_INVARIANTS.md — P6: the Generic HTTP invariants are recorde
     assert.ok(/Distributed or cross-host quota/.test(doc), 'the distributed-quota non-claim must stay recorded');
   });
 
+  it('records SEC-INV-080 … SEC-INV-087 as EVENT-STREAM-01 … 08, each path- or component-local, and never claims authenticity or system-wide coverage', () => {
+    for (let index = 0; index < 8; index += 1) {
+      const id = `SEC-INV-0${80 + index}`;
+      const alias = `EVENT-STREAM-${String(index + 1).padStart(2, '0')}`;
+      const row = doc.split('\n').find((line) => line.startsWith(`| ${id} (**${alias}**)`));
+      assert.ok(row !== undefined, `${id} must be recorded as ${alias}`);
+      assert.ok(/PATH-LOCAL|COMPONENT-LOCAL/.test(row), `${id} must be scoped`);
+      assert.equal(/SYSTEM-WIDE/.test(row), false, `${id} must not be system-wide`);
+      assert.equal(/tamper-proof|non-repudiab|cryptographically authenticated|exactly-once delivery/i.test(row.replace(/not authenticity/g, '')), false, `${id} must not overclaim`);
+    }
+    const row080 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-080 ')) ?? '';
+    assert.ok(row080.includes('Evidence never becomes authority'));
+    const row084 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-084 ')) ?? '';
+    assert.ok(row084.includes('integrity, not authenticity'), 'the digest limit travels with the tamper-evidence claim');
+    assert.ok(/A tamper-proof, authenticated or system-wide event record/.test(doc), 'the event-stream non-claim must stay recorded');
+  });
+
   it('keeps SEC-INV-U03 unimplemented and never describes origin pinning as an egress firewall', () => {
     const u03 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-U03 |'));
     assert.ok(u03 !== undefined);

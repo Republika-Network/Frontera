@@ -83,3 +83,5 @@ export type {
   ExerciseAuthorityBindingQuery,
   ExerciseAuthorityBindingVerification,
 } from './exercise-authority-binding.js';
+
+export type { ExerciseControlObserver, ExerciseReservationObservation } from './exercise-control-observer.js';

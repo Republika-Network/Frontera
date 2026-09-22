@@ -10,13 +10,16 @@ import {
   type ExerciseAuthorityBindingDigestResolver,
   type ExerciseControlLedgerPort,
   type ExerciseControlLimit,
+  type ExerciseControlObserver,
   type ExerciseControlPolicy,
   type ExerciseControlQuery,
   type ExerciseControlReasonCode,
   type ExerciseControlRuleUsage,
+  type ExerciseReservationObservation,
   type ExerciseReservationReleaseReason,
   type ExerciseReservationRequest,
   type ExerciseReservationSettleReason,
+  type ExerciseReservationTerminalOutcome,
 } from '../domain/index.js';
 
 /**
@@ -68,6 +71,13 @@ export interface ExerciseControlGateOptions {
   readonly reservationLedger: ExerciseControlLedgerPort;
   /** The injected clock. Used for terminal-event instants; never `Date.now()`. The reservation instant is the ledger's, sampled inside its own critical section. */
   readonly now: () => string;
+  /**
+   * P8 — a write-only observer told, **after** the ledger proved it, that a
+   * reservation was admitted, settled or released. Evidence only: its answer is
+   * never read and its failure is swallowed, so omitting it, or composing one
+   * that throws, changes no admission, no finalization and no outcome.
+   */
+  readonly observer?: ExerciseControlObserver;
 }
 
 /** What the gate is told about one exercise. Every field was read from the authoritative grant or proven inside it. */
@@ -184,16 +194,54 @@ function isLedgerRefusalCode(code: unknown): code is ExerciseControlReasonCode {
 
 export function createExerciseControlGate(options: ExerciseControlGateOptions): ExerciseControlGate {
   const { policy, authorityBinding, reservationLedger: ledger, now } = options;
+  const observer = options.observer;
+
+  /**
+   * What the admission proved about each live reservation, for the terminal
+   * observation. Keyed by the opaque handle, so nothing about a reservation is
+   * added to the handle the execution service holds.
+   */
+  const admitted = new WeakMap<ExerciseReservationHandle, { readonly executionId: string; readonly boundedGrantId: string; readonly requestId: string; readonly decisionId: string }>();
+
+  /** Evidence only. Awaited so events keep lifecycle order; any failure is discarded and nothing here is ever read back. */
+  async function observe(observation: () => ExerciseReservationObservation | undefined): Promise<void> {
+    if (observer === undefined) return;
+    try {
+      const built = observation();
+      if (built !== undefined) await observer.reservationObserved(built);
+    } catch {
+      // An observer can never change an admission, a finalization or an outcome.
+    }
+  }
+
+  /** The terminal event the ledger actually recorded — the first one, on an identical repeat. Anything else was not recorded, so it is not observed. */
+  function terminalObservation(reservation: ExerciseReservationHandle, result: ExerciseReservationTerminalOutcome): ExerciseReservationObservation | undefined {
+    const facts = admitted.get(reservation);
+    if (facts === undefined || result.outcome === 'conflict' || result.outcome === 'not-found') return undefined;
+    const terminal = result.terminal;
+    if (terminal.reservationId !== reservation.reservationId) return undefined;
+    if (terminal.kind === 'settled' && (terminal.reason === 'executed' || terminal.reason === 'execution-unconfirmed')) {
+      return { kind: 'settled', reservationId: terminal.reservationId, ...facts, reason: terminal.reason, recordedAt: terminal.recordedAt };
+    }
+    if (terminal.kind === 'released' && terminal.reason !== 'executed' && terminal.reason !== 'execution-unconfirmed') {
+      return { kind: 'released', reservationId: terminal.reservationId, ...facts, reason: terminal.reason, recordedAt: terminal.recordedAt };
+    }
+    return undefined;
+  }
 
   async function release(reservation: ExerciseReservationHandle, reason: ExerciseReservationReleaseReason): Promise<ExerciseReservationFinalization> {
+    let released: ExerciseReservationTerminalOutcome;
     try {
-      const released = await ledger.release({ reservationId: reservation.reservationId, reason, recordedAt: now() });
-      return released.outcome === 'released' || released.outcome === 'already-released' ? 'released' : 'retained';
+      released = await ledger.release({ reservationId: reservation.reservationId, reason, recordedAt: now() });
     } catch {
       // A release that cannot be recorded is not pretended. The reservation
       // stays `reserved`, which still consumes: safe availability loss.
       return 'retained';
     }
+    const finalization = released.outcome === 'released' || released.outcome === 'already-released' ? 'released' : 'retained';
+    // Decided above, from the ledger alone; the observation cannot move it.
+    if (finalization === 'released') await observe(() => terminalObservation(reservation, released));
+    return finalization;
   }
 
   return Object.freeze({
@@ -292,7 +340,17 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
         return codes.length > 0 ? withheld(...codes) : withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
       }
       if (kind !== 'reserved') return withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
-      return { kind: 'admitted', reservation: Object.freeze({ reservationId, authorityBindingDigest }) };
+      const handle: ExerciseReservationHandle = Object.freeze({ reservationId, authorityBindingDigest });
+      const facts = { executionId: input.executionId, boundedGrantId: input.grant.id, requestId: query.correlation.requestId, decisionId: query.correlation.decisionId };
+      admitted.set(handle, facts);
+      // Evidence of the admission the ledger just committed, from the record it
+      // returned. Downstream of the decision above; it cannot change it.
+      await observe(() => {
+        const recorded = (outcome as { readonly reservation?: { readonly reservationId?: unknown; readonly policyDigest?: unknown; readonly authorityBindingDigest?: unknown; readonly reservedAt?: unknown } }).reservation;
+        if (recorded?.reservationId !== reservationId || typeof recorded.reservedAt !== 'string' || typeof recorded.policyDigest !== 'string' || typeof recorded.authorityBindingDigest !== 'string') return undefined;
+        return { kind: 'reserved', reservationId, ...facts, policyDigest: recorded.policyDigest, authorityBindingDigest: recorded.authorityBindingDigest, admittedAt: recorded.reservedAt };
+      });
+      return { kind: 'admitted', reservation: handle };
     },
 
     revalidate(reservation: ExerciseReservationHandle, input: ExerciseControlAdmissionInput): ExerciseControlRevalidation {
@@ -316,14 +374,17 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
 
     async finalize(reservation: ExerciseReservationHandle, disposition: ExerciseReservationDisposition): Promise<ExerciseReservationFinalization> {
       if (disposition.kind === 'release') return release(reservation, disposition.reason);
+      let settled: ExerciseReservationTerminalOutcome;
       try {
-        const settled = await ledger.settle({ reservationId: reservation.reservationId, reason: disposition.reason, recordedAt: now() });
-        return settled.outcome === 'settled' || settled.outcome === 'already-settled' ? 'settled' : 'retained';
+        settled = await ledger.settle({ reservationId: reservation.reservationId, reason: disposition.reason, recordedAt: now() });
       } catch {
         // A settlement that cannot be recorded leaves the reservation
         // `reserved` — still consuming — and never rewrites what the provider did.
         return 'retained';
       }
+      const finalization = settled.outcome === 'settled' || settled.outcome === 'already-settled' ? 'settled' : 'retained';
+      if (finalization === 'settled') await observe(() => terminalObservation(reservation, settled));
+      return finalization;
     },
   });
 }

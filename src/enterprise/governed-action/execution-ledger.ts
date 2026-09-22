@@ -177,7 +177,12 @@ function decodeWithheldOutcome(recorded: string): { readonly layer: WithholdingL
   return isCanonicalWithheldCodes(layer, codes) ? { layer, reasonCodes: Object.freeze([...codes]) } : undefined;
 }
 
-export type ExecutionClaim = { readonly kind: 'claimed' } | { readonly kind: 'already-claimed'; readonly prior: PriorExecution };
+/**
+ * `claimed` carries the instant written on the claim row itself — the trusted
+ * time the write-ahead fact was established, which evidence reports as its
+ * occurrence rather than inventing one.
+ */
+export type ExecutionClaim = { readonly kind: 'claimed'; readonly claimedAt: string } | { readonly kind: 'already-claimed'; readonly prior: PriorExecution };
 
 export interface ExecutionLedger {
   /** Append the `authorization_artifact` reference for an issued grant. Idempotent on retry. Throws when it cannot be proven written. */
@@ -243,15 +248,16 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
     prior,
 
     async claim(evaluationId, executionId) {
+      const claimedAt = now();
       const written = await appendOnce({
         referenceId: executionAttemptReferenceId(executionId),
         evaluationId,
         referenceType: 'execution_record',
         externalId: executionId,
         externalVersion: 'attempt',
-        createdAt: now(),
+        createdAt: claimedAt,
       });
-      if (written === 'appended') return { kind: 'claimed' };
+      if (written === 'appended') return { kind: 'claimed', claimedAt };
       // Another call claimed it first. Report what it recorded, if anything.
       let latest: GovernanceRecord | null = null;
       try {

@@ -4,6 +4,7 @@ import {
   type ExerciseAuthorityBindingQuery,
   type ExerciseControlGate,
   type ExerciseControlLedgerPort,
+  type ExerciseControlObserver,
   type ExerciseControlPolicy,
 } from '../../features/exercise-control-runtime/index.js';
 import {
@@ -150,7 +151,7 @@ export function assertValidExerciseControlStore(store: unknown, label: string): 
 }
 
 /** The gate the exercise service consults, composed from the trusted block and this composition's clock. */
-export function createAuthorityControlledExerciseControlGate(controls: AuthorityControlledExerciseControls, now: () => string): ExerciseControlGate {
+export function createAuthorityControlledExerciseControlGate(controls: AuthorityControlledExerciseControls, now: () => string, observer?: ExerciseControlObserver): ExerciseControlGate {
   assertValidExerciseControlCallbacks(controls, 'exerciseControls');
   assertValidExerciseControlStore(controls.reservationLedger, 'exerciseControls.reservationLedger');
   return createExerciseControlGate({
@@ -158,5 +159,8 @@ export function createAuthorityControlledExerciseControlGate(controls: Authority
     authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding),
     reservationLedger: controls.reservationLedger,
     now,
+    // P8: evidence of what the ledger proved. Composition-supplied, never a
+    // host exercise-control option, and never read by admission.
+    ...(observer !== undefined ? { observer } : {}),
   });
 }

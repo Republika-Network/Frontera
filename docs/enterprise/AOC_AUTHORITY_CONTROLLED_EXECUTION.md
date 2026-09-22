@@ -584,8 +584,14 @@ tests refuse the vocabulary and the import paths in both new modules.
   builder, sequence number, nonce or chain identifier appears anywhere; a
   structural test refuses the vocabulary. A chain adapter is a later
   implementation *of* `ExecutionAdapter`, not part of it.
-- **The Evidence phase.** The canonical authority event stream over issuance,
-  exercise, revocation and expiry.
+- **The Evidence phase** — *Stage A delivered by P8* for the governed-action
+  lifecycle: the canonical authority event stream over the committed decision,
+  issuance, revocation, observed expiry, the write-ahead claim, P7 reservation
+  facts and the execution outcome
+  (`docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`). ACE's part is one
+  write-only call after `revokeGrant` and one observer handed to the P7 gate;
+  both discard failure and neither is read. Grants issued through `authorize()`
+  directly by host code are outside Stage A.
 - **The Intelligence layer**, and everything advisory.
 - **A durable bounded-grant store** (§15).
 - **A generic HTTP provider adapter.** The registry is what one will plug into;

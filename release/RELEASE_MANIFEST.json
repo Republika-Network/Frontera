@@ -1,9 +1,9 @@
 {
   "name": "@aoc-enterprise/runtime",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "generated": {
-    "commit": "c1e6efeb30d080f3af8e44bdc5ed403aae5749ef",
-    "branch": "feat/p7-aggregate-velocity-controls",
+    "commit": "f471f68dc2804dccc9b2cd60106b04a4abc9056c",
+    "branch": "feat/p8-canonical-event-stream",
     "node": "v22.23.1"
   },
   "runtimeVersions": {
