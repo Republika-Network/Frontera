@@ -188,6 +188,25 @@ portability validation
 | **Recovery-copy leakage** (the `.pre-restore-safety-<backupId>/` directory left behind after a `--force` restore) | Written inside `--target`, at normal filesystem permissions, and never deleted automatically. | Operator must include it in their own backup-storage access-control scope, same as any other file under the data directory; not automatically cleaned up because it is the rollback path. |
 | **Operator misuse** (`--force` used carelessly, wrong `--backup`/`--target` pair) | Refuses silently-destructive defaults (no `--force` = refuse to touch existing stores); every restore is logged to `restore-report.json` with the exact backup id and source commit used. | Cannot prevent a deliberate, authorized operator from restoring the wrong (but valid) backup on purpose — this is a process/change-management control, not a software one. |
 
+### 7.18 Generic HTTP execution adapter (added by P6)
+
+P6 adds the first provider network effect Frontera itself ships: an operator-pinned HTTPS request from a Generic HTTP adapter, reachable only as a registry child below the bounded-grant path (EP-050; SEC-INV-062 … SEC-INV-069; `docs/enterprise/AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`).
+
+| Threat | Control | Residual |
+| --- | --- | --- |
+| **SSRF** — a caller steering the request to an internal service | No caller field names a URL, origin, host, method, path structure, header, credential or payload; the intent validator rejects them and the adapter maps only operator literals and approved `ValidatedExecutionAction` fields. Path values are single encoded segments; `.`/`..` are refused. | A caller still chooses *which* pinned integration runs through `action`/`resource`, as with any routing. |
+| **Private-network and cloud-metadata reachability** | Every answer of every resolution must be publicly routable (special-purpose IPv4 incl. `169.254.169.254`; IPv6 allow-list `2000::/3` minus reserved blocks; mapped/compatible/NAT64/6to4/Teredo refused); one bad answer rejects the lookup. IP-literal, `localhost`-style, single-label and trailing-dot origins are refused at startup. | A public address the operator did not intend is not detectable. |
+| **DNS rebinding** | Fresh resolution per execution; the approved IP is handed to the socket through a hostname-ignoring `lookup`; the TCP peer is checked before TLS; `agent: false` forbids reuse of a socket opened under an older answer. | Node's networking stack is trusted. |
+| **Redirect escape** | No redirect is followed, including same-origin; every 3xx is `unconfirmed` (its effect is uncertain — never a definite failure); `Location` is never read; `providerRef` is never dereferenced. | — |
+| **Credential leakage** | Bearer or one explicit credential header, operator configuration only, snapshotted; never in URL, body, detail, result, record, ledger, log, event, health or error text; fixed-phrase details only. | The secret is process-resident (no KMS/HSM); rotation needs a restart. |
+| **Header injection / request-smuggling headers** | Header names must be tokens, values visible ASCII (no CR/LF/NUL); `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Proxy-*`, `TE`, `Trailer`, `Upgrade`, `Expect`, `Authorization`, `Cookie` are adapter-owned or refused; duplicates refused; the adapter computes `Content-Length`. | — |
+| **Post-send network ambiguity** | After `secureConnect`, any loss of certainty before a final status is `unconfirmed` → `execution_unconfirmed`, recorded as `execution-unconfirmed@<adapterId>`, replayed without re-invocation. | Not reconciled in P6. |
+| **Provider status ambiguity** | Completion is declared only for 200, 201 and 204. Every other 2xx (202 Accepted means processing has not finished), every 3xx, 408 and every 5xx are `unconfirmed`, never `completed` and never `PROVIDER_UNAVAILABLE`, which is reserved for failures proven to precede transmission. | — |
+| **Ambient TLS relaxation** | The transport hardcodes `rejectUnauthorized: true`, so `NODE_TLS_REJECT_UNAUTHORIZED=0` in the process environment cannot make it accept an untrusted certificate (isolated child-process regression). | — |
+| **Duplicate effects from retries** | No automatic retry of any kind; at most one request per `execute()`; the write-ahead claim forbids a second `execute()` per execution identity. An operator may map `correlation.executionId` to a provider idempotency header. | Provider-side exactly-once is not guaranteed. |
+| **Proxy interception** | No proxy support; no agent, dispatcher or proxy option exists; environment proxy variables are not consulted (`agent: false`). | — |
+| **Lack of network-level egress containment** | None in P6: the adapter pins **its own** destination only. | SEC-INV-U03 remains unimplemented; other process code, Pinata and Stripe can still reach the network (SEC-TRUST-004). |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.
@@ -197,6 +216,7 @@ portability validation
 5. **Reads don't re-verify digests** — verification is explicit; scheduled verification is an operational control.
 6. **No Unicode normalization in canonical JSON** — deterministic as-is; normalizing now would break every existing digest.
 7. **`/health` unauthenticated** — returns operational status (no secrets); standard practice for probes; restrict at the proxy if needed.
+8. **Generic HTTP adapter residual risks (P6)** — the host process and the adapter configuration remain trusted; configured credentials live in process memory; there is no network namespace or firewall egress enforcement; a malicious resolver answer to a forbidden address is rejected but a malicious *public* provider may itself forward the request; `execution_unconfirmed` is not reconciled; provider-level exactly-once is not guaranteed; static credential rotation requires recomposition; the mapping language is intentionally limited. See §7.18.
 
 ## 9. Out of scope (v1)
 

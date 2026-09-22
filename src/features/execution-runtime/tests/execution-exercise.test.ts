@@ -450,3 +450,31 @@ describe('Exercise — a grant that bounds no optional axis', () => {
     assert.equal(adapter.callCount, 0);
   });
 });
+
+describe('P6 — a provider contacted with its answer lost is execution-unconfirmed, not a failure', () => {
+  async function exerciseWith(result: Parameters<typeof createRecordingExecutionAdapter>[0]): Promise<{ outcome: ExecutionOutcome; calls: number }> {
+    const grant = buildTestGrant();
+    const store = await seed(grant);
+    const adapter = createRecordingExecutionAdapter(result);
+    const service = createGrantExecutionService({ store, adapter, now: () => AT_T_PLUS_5 });
+    const outcome = await service.exercise(buildExerciseRequest(grant));
+    return { outcome, calls: adapter.callCount };
+  }
+
+  it('an unconfirmed adapter result becomes status execution-unconfirmed, with the usable assessment and the adapter named', async () => {
+    const { outcome, calls } = await exerciseWith(() => ({ outcome: 'unconfirmed', detail: 'lost after send' }));
+    assert.equal(calls, 1, 'the adapter ran exactly once');
+    assert.equal(outcome.status, 'execution-unconfirmed');
+    assert.ok(outcome.status === 'execution-unconfirmed');
+    assert.equal(outcome.assessment.usable, true);
+    assert.equal(outcome.adapterId, 'test.fake-provider');
+    assert.equal(outcome.detail, 'lost after send');
+    assert.equal(outcome.exercisedAt, AT_T_PLUS_5);
+    assert.equal(outcome.correlation.executionId, buildExerciseRequest(buildTestGrant()).executionId);
+  });
+
+  it('a definitive provider failure is still execution-failed — the two are never merged', async () => {
+    const { outcome } = await exerciseWith(() => ({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE }));
+    assert.equal(outcome.status, 'execution-failed');
+  });
+});

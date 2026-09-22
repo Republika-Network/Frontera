@@ -244,3 +244,27 @@ describe('SECURITY_INVARIANTS.md — every invariant declares a scope', () => {
     assert.ok(/Sovereign Access/.test(doc), 'the Sovereign Access path must stay named');
   });
 });
+
+describe('SECURITY_INVARIANTS.md — P6: the Generic HTTP invariants are recorded, scoped, and do not overclaim egress control', () => {
+  const doc = existsSync(INVARIANTS_DOC) ? readFileSync(INVARIANTS_DOC, 'utf8') : '';
+
+  it('records SEC-INV-062 … SEC-INV-069 as GEN-HTTP-01 … 08, each scoped to the Generic HTTP adapter', () => {
+    for (let index = 0; index < 8; index += 1) {
+      const id = `SEC-INV-0${62 + index}`;
+      const alias = `GEN-HTTP-0${index + 1}`;
+      const row = doc.split('\n').find((line) => line.startsWith(`| ${id} (**${alias}**)`));
+      assert.ok(row !== undefined, `${id} must be recorded as ${alias}`);
+      assert.ok(row.includes('COMPONENT-LOCAL to the Generic HTTP adapter'), `${id} must be scoped to the Generic HTTP adapter, never to arbitrary ExecutionAdapter implementations`);
+      assert.equal(/SYSTEM-WIDE/.test(row), false, `${id} must not be system-wide`);
+    }
+  });
+
+  it('keeps SEC-INV-U03 unimplemented and never describes origin pinning as an egress firewall', () => {
+    const u03 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-U03 |'));
+    assert.ok(u03 !== undefined);
+    assert.ok(u03.includes('ASPIRATIONAL-UNIMPLEMENTED — **unchanged by P6.**'));
+    assert.equal(/blocks all (unauthorized )?egress|egress (control|firewall) is (now )?implemented/i.test(doc), false);
+    assert.ok(doc.includes('"Frontera blocks unauthorized egress" is false.'));
+    assert.ok(/Exactly-once external execution/.test(doc), 'the exactly-once non-claim must stay recorded');
+  });
+});

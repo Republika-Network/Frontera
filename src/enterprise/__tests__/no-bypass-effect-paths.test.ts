@@ -197,6 +197,10 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
         // Type-only: the composition root builds the registry from the host's
         // trusted routing table and hands the result to ACE. It invokes nothing.
         'src/enterprise/composition/composition-root.ts',
+        // P6: the Generic HTTP adapter **implements** the port — it is a child
+        // the composition root hands to the registry. It invokes no adapter;
+        // its one outbound call is enumerated by the network scan below.
+        'src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts',
         'src/enterprise/execution-governance/service.ts',
         // Deliberately NOT `src/enterprise/index.ts`: the Enterprise barrel has
         // never re-exported a `src/features` type — not `BoundedGrantStorePort`,
@@ -377,6 +381,77 @@ describe('NB — the provider egress inventory stays complete', () => {
   });
 });
 
+describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound network call site in src/ and packages/', () => {
+  /**
+   * An outbound client primitive: a Node network *client* module imported, or
+   * a client call made. The inbound HTTP server (`node:http` in the Enterprise
+   * listener and the host) is a separate, already-inventoried surface (EP-009)
+   * and is pinned separately below, so a client call added there fails too.
+   */
+  const CLIENT_MODULE = /from\s+['"](?:node:)?(?:https|dns|net|tls|dgram|http2)['"]|require\s*\(\s*['"](?:node:)?(?:https|dns|net|tls|dgram|http2)['"]\s*\)/;
+  const CLIENT_CALL = /\b(?:https?|net|tls|http2|dgram)\s*\.\s*(?:request|get|connect|createConnection|createSocket)\s*\(|\bnew\s+(?:net\.)?Socket\s*\(|\bundici\b|\bnode-fetch\b|\baxios\b|\bgot\s*\(/;
+
+  /** Type-only imports carry no capability — `import type { AddressInfo } from 'node:net'` opens nothing — so they are not sites. */
+  const valueCode = (file: string): string => codeOf(file).replace(/import\s+type\s[^;]*;/g, '');
+
+  const EXPECTED_CLIENT_MODULE_SITES = [
+    // `node:https` and `node:dns`: the single bound transport.
+    'src/enterprise/execution-adapters/generic-http/node-https-transport.ts',
+    // `isIP` / `isIPv4` / `isIPv6` from `node:net` — syntax checks, no socket.
+    'src/enterprise/execution-adapters/generic-http/configuration.ts',
+    'src/enterprise/execution-adapters/generic-http/public-address-policy.ts',
+  ];
+
+  it('the detection patterns match a real client import or call and not a mention of one', () => {
+    assert.equal(CLIENT_MODULE.test("import { request } from 'node:https';"), true);
+    assert.equal(CLIENT_MODULE.test("import { lookup } from 'dns';"), true);
+    assert.equal(CLIENT_MODULE.test("const tls = require('node:tls');"), true);
+    assert.equal(CLIENT_MODULE.test("import { createServer } from 'node:http';"), false, 'the inbound server module is pinned separately');
+    assert.equal(CLIENT_CALL.test('const req = https.request(options);'), true);
+    assert.equal(CLIENT_CALL.test('http.get(url)'), true);
+    assert.equal(CLIENT_CALL.test('net.connect(443, host)'), true);
+    assert.equal(CLIENT_CALL.test('the adapter makes one request to the provider'), false);
+  });
+
+  it('only the enumerated Generic HTTP modules import a network client module', () => {
+    const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && CLIENT_MODULE.test(valueCode(file)));
+    assert.deepEqual(
+      sites.slice().sort(),
+      EXPECTED_CLIENT_MODULE_SITES.slice().sort(),
+      'NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §7.6 enumerates every outbound network client site. A second one is a new effect path and needs its own EP id.',
+    );
+  });
+
+  it('exactly one production source performs outbound network I/O, and it is the Generic HTTP transport (EP-050)', () => {
+    const transport = 'src/enterprise/execution-adapters/generic-http/node-https-transport.ts';
+    const importsClient = (file: string): boolean => /from\s+['"]node:(?:https|dns)['"]/.test(valueCode(file));
+    // `fetch(` is counted under src/ only: packages/ holds the customer-side
+    // SDK, whose fetch is the caller reaching Frontera, not Frontera reaching a provider.
+    const fetches = (file: string): boolean => file.startsWith('src/') && /\bfetch\s*\(/.test(codeOf(file));
+    const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && (importsClient(file) || CLIENT_CALL.test(codeOf(file)) || fetches(file)));
+    assert.deepEqual(sites, [transport], 'a second outbound network call site fails the build: add it to the inventory with its own EP id first');
+    const code = codeOf(transport);
+    assert.equal([...code.matchAll(/\bprimitive\s*\(/g)].length, 1, 'the transport invokes its request primitive from exactly one place');
+    assert.equal([...code.matchAll(/\bhttpsRequest\b/g)].length, 2, 'node:https request is imported once and bound once, in the production runtime');
+    assert.equal([...code.matchAll(/dnsPromises\s*\.\s*lookup\s*\(/g)].length, 1, 'the resolver is called from exactly one place');
+  });
+
+  it('the inbound node:http modules make no outbound call', () => {
+    for (const file of ['src/enterprise/adapters/node-http-adapter.ts', 'src/enterprise/host/enterprise-server.ts']) {
+      const code = codeOf(file);
+      assert.equal(CLIENT_CALL.test(code), false, `${file} must not make an outbound network call`);
+      assert.equal(/\brequest\s*\(\s*\{/.test(code), false);
+    }
+  });
+
+  it('the transport is reachable only through the adapter core, which is reachable only through the composition root', () => {
+    const importers = PRODUCTION_SOURCES.filter((file) => /from '[^']*node-https-transport\.js'/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(importers, ['src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts']);
+    const factoryUsers = PRODUCTION_SOURCES.filter((file) => /createGenericHttpExecutionAdapter\s*\(/.test(codeOf(file)) && !file.includes('/execution-adapters/generic-http/'));
+    assert.deepEqual(factoryUsers, ['src/enterprise/composition/composition-root.ts']);
+  });
+});
+
 describe('NB-010 — the separate provider authority models stay off the published surface', () => {
   it('src/enterprise/index.ts barrels neither Sovereign Access nor Content Protection', () => {
     const barrel = codeOf('src/enterprise/index.ts');
@@ -504,12 +579,35 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Four of forty-nine effect paths are under bounded-grant control.'),
+      DOC.includes('Five of fifty effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
-        'which is why both numbers moved by one — and only that path.',
+        'and P6 added EP-050, the Generic HTTP adapter\'s outbound call below that same path — which is why both numbers moved by one each time, and only for those paths.',
     );
+  });
+
+  it('the classification totals add up to the stated denominator and the numerator matches the PROVEN — PATH LOCAL row', () => {
+    const section = DOC.slice(DOC.indexOf('### 5.11 Classification totals'), DOC.indexOf('## 6. Bounded-Grant Execution Proof'));
+    const rows = section.split('\n').filter((line) => /^\| [A-Z]/.test(line) && !line.startsWith('| Classification') && !line.startsWith('| **Total**'));
+    const counts = rows.map((line) => Number(/\*\*(\d+)\*\*/.exec(line)?.[1] ?? Number.NaN));
+    assert.ok(counts.every((count) => Number.isInteger(count)), 'every classification row states a count');
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    assert.equal(total, Number(/\| \*\*Total\*\* \| \*\*(\d+)\*\*/.exec(section)?.[1]), 'the rows must add up to the stated total');
+    const ids = new Set([...DOC.matchAll(/\*\*EP-(\d{3})\*\*/g)].map((match) => match[1]));
+    assert.equal(total, ids.size, 'the total must equal the number of inventoried EP rows');
+    const pathLocal = rows.find((line) => line.startsWith('| PROVEN — PATH LOCAL'));
+    assert.ok(pathLocal?.includes('**5**') && pathLocal.includes('EP-050'));
+  });
+
+  it('inventories the Generic HTTP outbound call as its own effect path, path-local, and without an egress claim', () => {
+    const row = DOC.split('\n').find((line) => line.startsWith('| **EP-050** |'));
+    assert.ok(row !== undefined, 'the Generic HTTP adapter introduces a concrete network effect site and needs its own EP id');
+    assert.ok(row.includes('node-https-transport.ts'), 'EP-050 must name the call site');
+    assert.ok(row.includes('PROVEN — PATH LOCAL'));
+    assert.ok(/composition-gated/i.test(row), 'EP-050 exists only when a deployment composes a Generic HTTP adapter');
+    assert.equal(/blocks all (unauthorized )?egress|system-wide egress control is (now )?implemented/i.test(DOC), false, 'application-level origin pinning is never described as an egress firewall');
+    assert.ok(DOC.includes('does **not** retroactively govern'), 'the qualification that P6 governs no other path must stay recorded');
   });
 
   it('inventories the customer governed-action route as its own effect path, classified and capability-gated', () => {

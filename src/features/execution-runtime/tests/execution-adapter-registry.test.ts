@@ -10,6 +10,7 @@ import {
   isExecutionAdapterRegistry,
   isExecutionAdapterRegistryError,
   isRecordableExecutionAdapterId,
+  readExecutionAdapterResult,
   type ExecutionAdapter,
   type ExecutionOutcome,
   type ValidatedExecutionAction,
@@ -1009,5 +1010,98 @@ describe('Adapter trust — a returned result is adapter code, and reading it ca
     const result = await registry.execute(action);
     assert.notEqual(result, childResult);
     assert.deepEqual({ ...result }, { outcome: 'completed', providerRef: 'ref', adapterId: 'adapter-a' });
+  });
+});
+
+describe('P6 — an unconfirmed provider effect is its own outcome, normalized and attributed like the other two', () => {
+  function returning(value: unknown, adapterId = 'adapter-a'): ExecutionAdapter & { callCount: number } {
+    const adapter = {
+      adapterId,
+      callCount: 0,
+      async execute() {
+        adapter.callCount += 1;
+        return value as never;
+      },
+    };
+    return adapter;
+  }
+
+  function routed(child: ExecutionAdapter): ExecutionAdapter {
+    return createExecutionAdapterRegistry({ adapterId: 'router', adapters: [child], selectAdapter: () => 'adapter-a' });
+  }
+
+  async function exerciseComposed(adapter: ExecutionAdapter): Promise<ExecutionOutcome> {
+    const service = createGrantExecutionService({ store: await seed(), adapter, now: () => AT_T_PLUS_5 });
+    return service.exercise(buildExerciseRequest(buildTestGrant()));
+  }
+
+  it('the port accepts a well-formed unconfirmed result, with and without detail', () => {
+    assert.deepEqual({ ...readExecutionAdapterResult({ outcome: 'unconfirmed' }) }, { outcome: 'unconfirmed' });
+    assert.deepEqual({ ...readExecutionAdapterResult({ outcome: 'unconfirmed', detail: 'lost', adapterId: 'x' }) }, { outcome: 'unconfirmed', detail: 'lost', adapterId: 'x' });
+    assert.ok(Object.isFrozen(readExecutionAdapterResult({ outcome: 'unconfirmed' })));
+  });
+
+  it('a malformed unconfirmed result is refused rather than guessed at', () => {
+    assert.equal(readExecutionAdapterResult({ outcome: 'unconfirmed', detail: 42 }), undefined, 'detail must be a string');
+    assert.equal(readExecutionAdapterResult({ outcome: 'unconfirmed', adapterId: {} }), undefined, 'adapterId must be a string');
+    assert.equal(readExecutionAdapterResult({ outcome: 'Unconfirmed' }), undefined, 'the vocabulary is exact');
+  });
+
+  it('an unconfirmed result never carries a reason or a providerRef, whatever the adapter attached', () => {
+    const read = readExecutionAdapterResult({ outcome: 'unconfirmed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, providerRef: 'ref' });
+    assert.deepEqual({ ...read }, { outcome: 'unconfirmed' });
+  });
+
+  it('a hostile getter on outcome or detail throws inside the caller’s catch, never through it', async () => {
+    const onOutcome = {};
+    Object.defineProperty(onOutcome, 'outcome', { enumerable: true, get: () => { throw new Error('getter'); } });
+    const onDetail: Record<string, unknown> = { outcome: 'unconfirmed' };
+    Object.defineProperty(onDetail, 'detail', { enumerable: true, get: () => { throw new Error('getter'); } });
+    const trap = new Proxy({ outcome: 'unconfirmed' }, { get(target, key) { if (key === 'then') return undefined; throw new Error('trap'); } });
+    for (const hostile of [onOutcome, onDetail, trap]) {
+      for (const outcome of [await exerciseComposed(returning(hostile, 'direct')), await exerciseThrough(routed(returning(hostile)))]) {
+        assert.equal(outcome.status, 'execution-failed', 'an unreadable result is ADAPTER_ERROR — never unconfirmed, never executed');
+        assert.equal(outcome.status === 'execution-failed' ? outcome.reason : undefined, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+      }
+    }
+  });
+
+  it('a routed child’s unconfirmed result stays unconfirmed and gains the registry’s snapshotted attribution', async () => {
+    const child = returning({ outcome: 'unconfirmed', detail: 'connection lost after send' });
+    const outcome = await exerciseThrough(routed(child));
+    assert.equal(outcome.status, 'execution-unconfirmed');
+    assert.ok(outcome.status === 'execution-unconfirmed');
+    assert.equal(outcome.adapterId, 'adapter-a');
+    assert.equal(outcome.routedBy, 'router');
+    assert.equal(outcome.detail, 'connection lost after send');
+    assert.equal(outcome.assessment.usable, true, 'authorization stood: only the provider’s answer was lost');
+    assert.equal(child.callCount, 1);
+  });
+
+  it('a child that names another adapter on an unconfirmed result is overwritten by registry attribution', async () => {
+    const outcome = await exerciseThrough(routed(returning({ outcome: 'unconfirmed', adapterId: 'adapter-forged' })));
+    assert.ok(outcome.status === 'execution-unconfirmed');
+    assert.equal(outcome.adapterId, 'adapter-a');
+  });
+
+  it('a directly composed adapter cannot forge another identity on an unconfirmed result', async () => {
+    const outcome = await exerciseComposed(returning({ outcome: 'unconfirmed', adapterId: 'adapter-forged' }, 'direct'));
+    assert.ok(outcome.status === 'execution-unconfirmed');
+    assert.equal(outcome.adapterId, 'direct');
+    assert.equal(outcome.routedBy, undefined);
+  });
+
+  it('unconfirmed is never read as withheld, denied, executed or execution-failed', async () => {
+    const outcome = await exerciseThrough(routed(returning({ outcome: 'unconfirmed' })));
+    for (const status of ['withheld', 'denied', 'executed', 'execution-failed']) assert.notEqual(outcome.status, status);
+    assert.equal('reason' in outcome, false);
+    assert.equal('providerRef' in outcome, false);
+  });
+
+  it('the registry hands up a fresh plain unconfirmed result', async () => {
+    const childResult = { outcome: 'unconfirmed', detail: 'd', extra: 'x' };
+    const action = { subject: 's', resource: 'r', notAfter: AT, correlation: { requestId: 'q', decisionId: 'd', executionId: 'e' } } as unknown as ValidatedExecutionAction;
+    const result = await routed(returning(childResult)).execute(action);
+    assert.deepEqual({ ...result }, { outcome: 'unconfirmed', detail: 'd', adapterId: 'adapter-a' });
   });
 });

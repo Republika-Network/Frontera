@@ -66,9 +66,9 @@ import { isExecutionAdapterRegistry } from './execution-adapter-registry.js';
  * There is no allow, no deny and no policy anywhere in this file. The
  * authorization that produced the grant happened earlier and elsewhere, and a
  * refusal here leaves it exactly as it was. What this service produces is an
- * `ExecutionOutcome`, whose cases are "ran", "was withheld" and "the provider
- * failed" — none of which is a decision status, and none of which can be
- * turned into one. That includes the emergency-control case: an operational
+ * `ExecutionOutcome`, whose cases are "ran", "was withheld", "the provider
+ * failed" and "the provider was contacted and the result is unknown" — none of
+ * which is a decision status, and none of which can be turned into one. That includes the emergency-control case: an operational
  * stop withholds an effect, and leaves the authorization, the grant and the
  * containment assessment exactly as they were.
  */
@@ -390,6 +390,20 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           adapterId: composedAdapterId,
           reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR,
           ...adapterErrorDetail(unreadable),
+          exercisedAt,
+        };
+      }
+
+      if (result.outcome === 'unconfirmed') {
+        // The provider was contacted and its answer was lost. Kept distinct from
+        // a failure all the way up, because a failure invites a retry and this
+        // effect may already have happened.
+        return {
+          status: 'execution-unconfirmed',
+          assessment,
+          correlation,
+          ...performedBy(result),
+          ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
         };
       }

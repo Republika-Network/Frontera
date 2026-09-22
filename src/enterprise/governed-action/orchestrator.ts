@@ -21,7 +21,7 @@ import {
   type GovernedActionWithheldBy,
 } from './contracts.js';
 import { createDecisionCommitter, type VerifiedDecision } from './decision-commit.js';
-import { createExecutionLedger, type PriorExecution } from './execution-ledger.js';
+import { EXECUTION_UNCONFIRMED_OUTCOME, createExecutionLedger, type PriorExecution } from './execution-ledger.js';
 import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId, governedActionIdempotencyScope } from './identifiers.js';
 import { validateGovernedActionIntent } from './intent.js';
 import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
@@ -154,6 +154,15 @@ function replayResult(context: ResultContext, prior: PriorExecution, decisionRea
   if (failure === 'PROVIDER_REJECTED' || failure === 'PROVIDER_UNAVAILABLE' || failure === 'PROVIDER_RESPONSE_INVALID' || failure === 'ADAPTER_ERROR') {
     return result({ status: 'execution_failed', ...context, failure, reasonCodes: [failure], replayed: true, outcomeRecorded: true });
   }
+  // The adapter's own recorded answer was "contacted, result unknown". It is
+  // replayed as exactly that — never as a failure, which would invite a retry
+  // of an effect that may have happened — and with its own reason code, so it
+  // stays distinguishable from the no-outcome-on-record case below.
+  if (prior.outcome === EXECUTION_UNCONFIRMED_OUTCOME) {
+    return result({ status: 'execution_unconfirmed', ...context, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED] });
+  }
+  // An attempt with no decodable outcome: a crash between claim and outcome,
+  // or a row this ledger did not write. Unconfirmed too, for a different reason.
   return result({ status: 'execution_unconfirmed', ...context, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
 }
 
@@ -404,6 +413,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
           return result({ status: 'withheld', withheldBy: 'emergency-control', ...executed, reasonCodes: [...outcome.emergencyControl.reasonCodes, ...unrecorded] });
         }
         return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.assessment.reasonCodes, ...unrecorded] });
+      }
+      if (outcome.status === 'execution-unconfirmed') {
+        // The adapter ran and says it cannot know whether the provider acted.
+        // Same public status as a lost outcome, its own reason code, and no
+        // retry: the write-ahead claim already forbids a second invocation of
+        // this execution identity.
+        return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, ...unrecorded] });
       }
       return result({ status: 'execution_failed', ...executed, failure: outcome.reason, reasonCodes: [outcome.reason, ...unrecorded], replayed: false, outcomeRecorded });
     },

@@ -42,7 +42,9 @@ export interface EnterpriseGovernedActionResponse {
  * - `withheld` 409 — allowed or pending, but a gate (approval, obligations,
  *   grant terms, authority binding, grant, exercise, emergency control) holds it.
  * - `execution_failed` 502 — the provider behind the adapter failed.
- * - `execution_unconfirmed` 409 — already attempted, outcome not on record; not retried.
+ * - `execution_unconfirmed` 409 — already attempted and the outcome is not known:
+ *   either none is on record, or the adapter reported the provider contacted
+ *   with the result lost (`GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED`). Never retried.
  * - `rejected` 409 for an idempotency conflict, 403 for an identity the
  *   orchestrator refused (unreachable from an admitted request; fails closed if
  *   it ever happens), 400 for anything else.

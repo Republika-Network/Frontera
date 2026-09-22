@@ -62,6 +62,7 @@ import {
 } from '../governed-action/index.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
 import { createExecutionAdapterRegistry, type ExecutionAdapter, type ExecutionAdapterSelector } from '../../features/execution-runtime/index.js';
+import { GenericHttpConfigurationError, createGenericHttpExecutionAdapter, type EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import type { EmergencyControlReaderPort, EmergencyControlStorePort } from '../../features/emergency-control-runtime/index.js';
 import { createEmergencyControlReader, createInMemoryEmergencyControlStore } from '../../features/emergency-control-runtime/index.js';
 import { createSqliteEmergencyControlStore } from '../emergency-control/sqlite-emergency-control-store.js';
@@ -331,7 +332,22 @@ export interface EnterpriseAuthorityControlledExecutionOptions
 export interface EnterpriseExecutionAdapterRoutingOptions {
   /** The registry's own identity, reported on outcomes. Defaults to the registry's canonical id. */
   readonly adapterId?: string;
+  /** Host-written provider adapters. May be empty when `genericHttpAdapters` supplies at least one child. */
   readonly adapters: readonly ExecutionAdapter[];
+  /**
+   * Pinned Generic HTTP integrations, each built by the composition root into
+   * one more child of the **same** registry — after `adapters`, with every
+   * identity required to be unique across both lists.
+   *
+   * Each entry is one operator-pinned HTTPS origin with a closed, declarative
+   * mapping from `ValidatedExecutionAction` fields and literals. It is not a
+   * proxy and has no router of its own: which entry an action reaches is
+   * `selectAdapter`'s trusted decision, and the adapter-scoped emergency stop
+   * is checked by the registry before the child is invoked. Invalid
+   * configuration fails `createEnterprise` before any store is opened. See
+   * `docs/enterprise/AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`.
+   */
+  readonly genericHttpAdapters?: readonly EnterpriseGenericHttpExecutionAdapterOptions[];
   /** Synchronous, trusted, and fed only the validated action. Returning `undefined` means "no route", which fails the execution safely rather than falling through to an arbitrary provider. */
   readonly selectAdapter: ExecutionAdapterSelector;
 }
@@ -677,6 +693,17 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     }
   }
 
+  // Generic HTTP children are built — and their configuration validated,
+  // snapshotted and frozen — here, before any store or listener exists. A bad
+  // origin, mapping, header or credential therefore fails startup rather than
+  // one customer action at a time, and nothing the host's option objects do
+  // afterwards reaches the adapters. Pure: no DNS, no socket, no I/O.
+  const genericHttpOptions = options.authorityControlledExecution?.executionAdapterRouting?.genericHttpAdapters;
+  if (genericHttpOptions !== undefined && !Array.isArray(genericHttpOptions)) {
+    throw new GenericHttpConfigurationError('GENERIC_HTTP_OPTIONS_INVALID', 'executionAdapterRouting.genericHttpAdapters must be an array of Generic HTTP adapter options.');
+  }
+  const genericHttpAdapters: readonly ExecutionAdapter[] = Object.freeze((genericHttpOptions ?? []).map((entry) => createGenericHttpExecutionAdapter(entry)));
+
   // Governed actions are checked just as early, and for the same reason: the
   // canonical ordering needs every one of its prerequisites, and a deployment
   // missing any of them gets no orchestrator rather than a weaker one.
@@ -861,7 +888,13 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
             ...(options.authorityControlledExecution.executionAdapterRouting.adapterId !== undefined
               ? { adapterId: options.authorityControlledExecution.executionAdapterRouting.adapterId }
               : {}),
-            adapters: options.authorityControlledExecution.executionAdapterRouting.adapters,
+            // Host adapters, then the Generic HTTP children built above, as
+            // members of the one registry. A non-array `adapters` is handed
+            // through untouched so the registry refuses it exactly as before.
+            adapters:
+              genericHttpAdapters.length === 0 || !Array.isArray(options.authorityControlledExecution.executionAdapterRouting.adapters)
+                ? options.authorityControlledExecution.executionAdapterRouting.adapters
+                : [...options.authorityControlledExecution.executionAdapterRouting.adapters, ...genericHttpAdapters],
             selectAdapter: options.authorityControlledExecution.executionAdapterRouting.selectAdapter,
             ...(emergencyControl !== undefined ? { emergencyControl } : {}),
           })

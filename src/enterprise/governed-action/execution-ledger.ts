@@ -29,9 +29,16 @@ export type WithholdingLayer = 'grant-exercise' | 'emergency-control';
 export interface PriorExecution {
   readonly attempted: boolean;
   /**
-   * `executed` | `withheld` | `execution-failed:<reason>`, as recorded — or the
-   * raw recorded string when it cannot be decoded, which no replay maps onto a
-   * known outcome. Absent when no outcome row exists.
+   * `executed` | `withheld` | `execution-failed:<reason>` |
+   * `execution-unconfirmed`, as recorded — or the raw recorded string when it
+   * cannot be decoded, which no replay maps onto a known outcome. Absent when
+   * no outcome row exists.
+   *
+   * `execution-unconfirmed` and an **absent** outcome both replay as
+   * "unconfirmed" to a caller, and are deliberately not the same value here:
+   * the first is the adapter's own recorded answer ("the provider was
+   * contacted; the result is unknown"), the second is the absence of any
+   * answer (a crash between the write-ahead claim and the outcome append).
    */
   readonly outcome?: string;
   /** Which layer withheld it. Present only with `outcome: 'withheld'`. */
@@ -41,9 +48,9 @@ export interface PriorExecution {
   /**
    * The adapter that **performed** the effect, as recorded.
    *
-   * Present for an executed or provider-failed attempt whose adapter identity
-   * was recordable; absent for a withheld attempt, where nothing ran, and for
-   * rows written before adapter attribution existed. Under server-side routing
+   * Present for an executed, provider-failed or unconfirmed attempt whose
+   * adapter identity was recordable; absent for a withheld attempt, where
+   * nothing ran, and for rows written before adapter attribution existed. Under server-side routing
    * this is the trusted-routed **child**, not the routing boundary — which is
    * the whole point: an auditor asking "which provider moved this money"
    * cannot be answered by the name of the router.
@@ -100,6 +107,19 @@ const WITHHELD_PREFIX = 'withheld:';
  * layer delimiters do — is still unambiguous.
  */
 const ADAPTER_DELIMITER = '@';
+
+/**
+ * The canonical recorded form of an adapter-reported unconfirmed effect,
+ * before its `@<adapterId>` suffix.
+ *
+ * A separate token rather than a flavour of `execution-failed:` on purpose: a
+ * replay that decoded it as a failure would tell a caller the effect did not
+ * happen, which nobody knows. Only this exact body decodes as unconfirmed;
+ * anything longer, shorter or decorated is an undecodable row, which replays
+ * as "attempted, outcome not on record" — still unconfirmed, never executed,
+ * never failed, and never a second invocation.
+ */
+export const EXECUTION_UNCONFIRMED_OUTCOME = 'execution-unconfirmed';
 
 function withAdapter(recorded: string, adapterId: string | undefined): string {
   return adapterId !== undefined && isRecordableExecutionAdapterId(adapterId) ? `${recorded}${ADAPTER_DELIMITER}${adapterId}` : recorded;
@@ -239,7 +259,9 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
             ? outcome.withheldBy === 'emergency-control'
               ? encodeWithheldOutcome('emergency-control', outcome.emergencyControl.reasonCodes)
               : encodeWithheldOutcome('grant-exercise', outcome.assessment.reasonCodes)
-            : withAdapter(`execution-failed:${outcome.reason}`, outcome.adapterId);
+            : outcome.status === 'execution-unconfirmed'
+              ? withAdapter(EXECUTION_UNCONFIRMED_OUTCOME, outcome.adapterId)
+              : withAdapter(`execution-failed:${outcome.reason}`, outcome.adapterId);
       // A withheld assessment whose reasons cannot be recorded exactly is not
       // recorded at all: a replay then reports the attempt as unconfirmed rather
       // than a refusal stripped of its explanation.

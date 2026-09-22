@@ -293,7 +293,7 @@ Governance references are the evidence trail:
 | --- | --- | --- | --- |
 | The issued grant | `authorization_artifact` | grant id | — (the grant digest goes in `digest`) |
 | Write-ahead claim | `execution_record` | execution id | `attempt` |
-| Outcome | `execution_record` | execution id | `executed` \| `withheld:<CODE>,…` \| `execution-failed:<reason>` |
+| Outcome | `execution_record` | execution id | `executed` \| `withheld:<layer>:<CODE>,…` \| `execution-failed:<reason>` \| `execution-unconfirmed` (P6), each effect-bearing form suffixed `@<adapterId>` when recordable |
 
 Reference ids are deterministic, and the Governance Store refuses a second
 append of the same reference id. So the `attempt` row is a durable
@@ -323,9 +323,19 @@ authoritative bounded-grant store and nothing else. A forged
   and before the outcome row leaves one whose effect is unknown. Both are
   reported as `execution_unconfirmed` (`GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED`)
   and are **never retried automatically**. They need reconciliation, which is
-  later work: a provider-side idempotency key and an adapter "indeterminate"
-  variant. The providerRef of a replayed execution is not recorded, so it is
+  later work. The providerRef of a replayed execution is not recorded, so it is
   not returned on replay.
+- **P6: an adapter-reported unconfirmed effect is recorded, not lost.** When the
+  adapter itself reports `unconfirmed` (the provider was contacted and the
+  result is unknown), the outcome row is the canonical
+  `execution-unconfirmed@<adapterId>` and the result is `execution_unconfirmed`
+  with `GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED`. A replay answers from
+  that row without invoking the adapter. It stays distinguishable from the
+  crash case above (`…_ALREADY_ATTEMPTED`, no outcome row), although a caller
+  sees the same status for both. A malformed or tampered variant decodes as
+  nothing and replays as `…_ALREADY_ATTEMPTED` — never as executed or failed.
+  An operator may map `correlation.executionId` into a provider idempotency
+  header; exactly-once remains out of reach.
 
 ## Result contract
 
@@ -338,7 +348,7 @@ authoritative bounded-grant store and nothing else. A forged
 | `indeterminate` | Kernel `indeterminate`. |
 | `withheld` | `withheldBy`: `approval` (Kernel `approval_required`), `obligations`, `grant`, `authority-binding`, `grant-terms`, `exercise`. Each case uses the codes of the layer that owns it. |
 | `execution_failed` | The adapter failed (`PROVIDER_REJECTED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_RESPONSE_INVALID`, `ADAPTER_ERROR`). The decision and authorization history are intact. |
-| `execution_unconfirmed` | An earlier attempt of this execution id is on record without an outcome. The adapter is not invoked again. |
+| `execution_unconfirmed` | The outcome of an attempt is not known, and the adapter is not invoked again: either an earlier attempt of this execution id is on record without an outcome (`GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED`), or the adapter reported the provider contacted with its result lost (`GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED`, P6). |
 | `rejected` | Intent or identity invalid, or an idempotency conflict. |
 | `system_error` | Infrastructure failure before any effect: persistence, re-read or verify, mismatch, issuance or evidence failure. |
 
@@ -366,6 +376,7 @@ orchestration is the owner, and it is asserted disjoint from the Kernel,
 | Execution claim append fails | `system_error` | issued | no |
 | Grant revoked or expired before exercise | `withheld` / `exercise` | issued | no |
 | Adapter fails or throws | `execution_failed` | issued | once |
+| Adapter reports `unconfirmed` (P6) | `execution_unconfirmed` / `…_OUTCOME_UNCONFIRMED`, recorded | issued | once |
 | Outcome reference append fails | outcome reported, `outcomeRecorded: false` | issued | once |
 
 ## Composition
@@ -424,8 +435,11 @@ entries.
   orchestrator uses ACE's single composed adapter.
 - ~~The customer HTTP route and its error mapping.~~ Done in P5
   (`POST /api/governed-actions`).
-- Exactly-once external execution: a provider idempotency key, an adapter
-  "indeterminate" variant, and reconciliation of `execution_unconfirmed`.
+- Exactly-once external execution and reconciliation of `execution_unconfirmed`.
+  P6 delivered the adapter-level "indeterminate" variant (`unconfirmed`,
+  recorded as `execution-unconfirmed@<adapterId>`) and lets an operator map
+  `correlation.executionId` into a provider idempotency header; neither is
+  exactly-once, and nothing reconciles an unconfirmed effect yet.
 - Recording `providerRef` for replay.
 - Host-supplied execution Kernels, which need a provable grant-awareness check.
 - The `workflow` intent axis, which needs a design decision first.

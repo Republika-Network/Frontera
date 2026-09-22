@@ -111,10 +111,32 @@ export const EXECUTION_FAILURE_REASON_VALUES: readonly ExecutionFailureReason[] 
  * Provider-neutral: an opaque `providerRef` the provider chose, and nothing
  * with a decision shape. An adapter cannot report "denied", because reporting a
  * decision is not something it is allowed to do and there is no field for it.
+ *
+ * ## Three outcomes, because a network effect has three
+ *
+ * `completed` and `failed` are both **definitive**: the provider did the thing,
+ * or it provably did not. A real network effect has a third case that neither
+ * may absorb. A request is written to an established connection, the provider
+ * receives it and moves the money, and the connection resets before the
+ * response arrives. Reporting that as `failed` would be a lie — nothing proves
+ * the provider did not act — and a caller who believed it would retry an
+ * effect that already happened.
+ *
+ * `unconfirmed` is that case: the adapter **did** contact the provider, and
+ * whether the effect occurred is not known. It carries no `reason`, because it
+ * is not a failure, and no `providerRef`, because nothing was confirmed. It is
+ * never a denial, never a withholding, and never an authorization outcome:
+ * authority was sufficient and was exercised; only the provider's answer was
+ * lost. Reconciling it is out of band — nothing in this runtime retries it.
+ *
+ * `PROVIDER_UNAVAILABLE` is correspondingly narrow: a failure proven to have
+ * occurred **before** the request could reach the provider. "I did not get a
+ * successful answer" is not that.
  */
 export type ExecutionAdapterResult =
   | { readonly outcome: 'completed'; readonly providerRef?: string; readonly adapterId?: string }
-  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string; readonly adapterId?: string };
+  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string; readonly adapterId?: string }
+  | { readonly outcome: 'unconfirmed'; readonly detail?: string; readonly adapterId?: string };
 
 /**
  * An adapter's returned value, copied into a fresh, plain
@@ -143,7 +165,8 @@ export type ExecutionAdapterResult =
  * ## What it accepts
  *
  * Each field is read **exactly once**, and only primitives from the closed
- * vocabulary are copied: `outcome` of `'completed'` or `'failed'`; a string
+ * vocabulary are copied: `outcome` of `'completed'`, `'failed'` or
+ * `'unconfirmed'`; a string
  * `providerRef`, `detail` or `adapterId` where present; a `reason` from
  * `EXECUTION_FAILURE_REASON_VALUES`. Anything else — a non-object, an unknown
  * outcome, a non-string reference, a reason outside the vocabulary — is a
@@ -173,6 +196,15 @@ export function readExecutionAdapterResult(value: unknown): ExecutionAdapterResu
     if (!EXECUTION_FAILURE_REASON_VALUES.includes(reason as ExecutionFailureReason)) return undefined;
     if (detail !== undefined && typeof detail !== 'string') return undefined;
     return Object.freeze({ outcome: 'failed', reason: reason as ExecutionFailureReason, ...(detail !== undefined ? { detail } : {}), ...attribution });
+  }
+  if (outcome === 'unconfirmed') {
+    // Read exactly as the failure arm reads `detail`: once, primitive only. A
+    // `reason` or `providerRef` beside it is not read at all — an unconfirmed
+    // effect has neither, and nothing an adapter attaches can turn it into a
+    // failure or a completion here.
+    const detail = source['detail'];
+    if (detail !== undefined && typeof detail !== 'string') return undefined;
+    return Object.freeze({ outcome: 'unconfirmed', ...(detail !== undefined ? { detail } : {}), ...attribution });
   }
   return undefined;
 }
