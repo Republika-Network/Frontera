@@ -53,10 +53,12 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  * established fact above is also *reported* — after it is established, through
  * the write-only `AuthorityEventRecorder` — and never consulted. `report()` is
  * **synchronous**: it enqueues and returns. Nothing on this path awaits durable
- * projection, so a stream that is slow, unreachable or permanently stuck cannot
- * delay a grant issuance, sit between the write-ahead claim and the adapter, or
- * hold a result. A missing, failed or corrupt stream leaves every result below
- * exactly as it would be without one.
+ * projection, so an asynchronous append that is slow, unreachable or
+ * permanently stuck cannot hold a grant issuance, sit between the write-ahead
+ * claim and the adapter, or hold a result. (Control flow only: the projector
+ * shares this event loop, so a synchronous store can still add latency.) A
+ * missing, failed or corrupt stream leaves every result below exactly as it
+ * would be without one.
  *
  * ## Where the operational interlock sits
  *

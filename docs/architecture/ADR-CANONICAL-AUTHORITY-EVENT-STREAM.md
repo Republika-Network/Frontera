@@ -64,10 +64,10 @@ committed decision and the at-most-once execution claim), the bounded-grant stor
 (grants, revocations), the exercise-control ledger (aggregate consumption), the
 emergency-control store (the stop).
 
-### 1a. Evidence is not on the authority path's clock either (hardening)
+### 1a. Durable projection is not part of authority control flow (hardening)
 
-Being unable to *decide* anything is not enough: evidence must also be unable to
-*delay* anything. The first implementation had each call site `await` the
+Being unable to *decide* anything is not enough: evidence must also not be
+something an authority path **waits for**. The first implementation had each call site `await` the
 recorder inside a `try`/`catch`. That catches a **rejected** projection and does
 nothing at all about a **pending** one, and the independent review was right to
 call it a blocker: a store that hung would have held a committed decision before
@@ -87,11 +87,23 @@ authoritative fact -> recorder.x(fact)   [validate, build, enqueue, return]
 - `AuthorityEventRecorder` and `ExerciseControlObserver` methods return `void`.
   An authority-bearing module cannot hold, await or branch on durable projection
   because no value representing it ever reaches one.
-- Reporting does no I/O and never blocks. Even the first append of an idle
-  stream starts one microtask later, so a synchronous driver such as
-  `better-sqlite3` never runs its transaction inside the reporting call.
+- Reporting itself does no I/O. Even the first append of an idle stream starts
+  one microtask later, so a synchronous driver such as `better-sqlite3` never
+  runs its transaction inside the reporting call's own stack frame.
 - "We await it but catch errors, therefore it cannot affect the path" is removed
   from this repository's reasoning. A pending promise disproves it.
+
+**What this is not.** It is *logical* decoupling — control flow — and not
+latency or thread isolation. Projection runs in this process, on this event
+loop. The built-in store is `better-sqlite3`: its `BEGIN IMMEDIATE` append,
+including any lock wait and the `synchronous = FULL` `fsync`, is synchronous
+work on that loop, and a host-supplied store may be synchronous too. So a slow
+or blocking store **can** add process latency to whatever runs next, an
+authority path included. What it cannot do is make an authority path wait for
+projection to finish, which is what turned a pending append into a stalled
+decision, an un-crossed adapter boundary, a stranded reservation or an
+unconfirmed revocation. Moving projection off the loop would need a worker, and
+Stage A deliberately does not add one (§Non-goals).
 
 `authority-event-stream-boundaries.test.ts` fails the build on `await` of a
 recorder, observer, `report(...)` or `observe(...)`, and on any recorder method
@@ -174,6 +186,13 @@ projector owns ordering:
   N's has settled, whatever an async host-supplied store does with scheduling;
 - chains are per key, so a stuck or slow stream holds only itself and another
   lifecycle keeps projecting;
+- a revocation is reported before its lifecycle is known, so every fact carrying
+  a `boundedGrantId` passes through that grant's **intake chain** in report
+  order: the revocation's attribution read is a step of that chain, and a later
+  fact of the same lifecycle cannot be placed in the stream ahead of it. A slow
+  attribution therefore holds that grant's own evidence — a projector-side
+  barrier — and nothing else. The committed decision carries no grant and goes
+  straight to its stream;
 - the queue chooses nothing about an event: sequence, previous digest,
   `recordedAt` and the digest stay the store's, assigned inside its own
   `BEGIN IMMEDIATE` section;
@@ -183,12 +202,10 @@ projector owns ordering:
   worker, retry scheduler or sweeper — and a failed projection is still not
   retried (§8).
 
-A revocation is the one fact whose stream is not known when it is reported: the
-lifecycle comes from the authoritative grant. Its attribution read runs on its
-own per-grant chain and joins the stream's queue only once the correlation is
-known, so it blocks nothing and is appended after the facts already enqueued for
-that stream. Its `occurredAt` is still the revocation instant, and sequence
-remains append order.
+Report order for one lifecycle therefore survives asynchronous attribution: a
+revocation reported between a claim and an outcome is appended between them.
+`occurredAt` is still the revocation instant, and sequence remains append
+order.
 
 **Queue depth is visible, never load-bearing.** The projector's health carries
 `pending`; the module surfaces it. A number that stops falling is how an
@@ -288,7 +305,9 @@ that layer's own codes); the store refuses payloads that blur them.
 
 ## Non-goals
 
-A generic bus; Kafka, NATS, Redis Streams, SSE, WebSocket or webhooks; a public
+Worker-thread or process isolation for projection (Stage A accepts shared-loop
+latency; see §1a); a generic bus; Kafka, NATS, Redis Streams, SSE, WebSocket or
+webhooks; a public
 read API; cross-tenant or global ordering; cross-region replication; distributed
 consensus; exactly-once; WORM storage; signatures, KMS/HSM (P12); behavioural or
 risk intelligence; system-wide coverage beyond the governed-action lifecycle;

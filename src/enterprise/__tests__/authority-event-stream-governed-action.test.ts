@@ -204,11 +204,10 @@ describe('P8 governed action — §30 grant → execution outcomes', () => {
     const result = await world.governed.orchestrator.govern(IDENTITY, intent('revoked'));
     assert.equal(result.status, 'withheld');
     const events = await streamOf(world, result);
-    // A revocation's lifecycle is resolved from the authoritative grant on its
-    // own queue, so it lands after the facts already enqueued for this stream;
-    // its occurredAt is still the revocation instant.
-    assert.deepEqual([...types(events)].sort(), ['execution.attempt.claimed', 'execution.outcome.observed', 'governance.decision.committed', 'grant.issued', 'grant.revoked']);
-    assert.ok(types(events).indexOf('grant.revoked') > types(events).indexOf('grant.issued'), 'a revocation is never recorded before the issuance it revokes');
+    // Exact report order: the revocation was reported before the outcome it
+    // caused, and the grant's intake chain keeps it there even though its
+    // lifecycle had to be resolved from the authoritative grant asynchronously.
+    assert.deepEqual(types(events), ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'grant.revoked', 'execution.outcome.observed']);
     assert.deepEqual(only(events, 'grant.revoked').payload, { reason: 'security-incident' });
     assert.deepEqual(only(events, 'execution.outcome.observed').payload, { status: 'withheld', withheldBy: 'grant-exercise', reasonCodes: [G.GRANT_EXERCISE_REVOKED], outcomeRecorded: true });
     assert.equal(world.governed.adapter.callCount, 0);
@@ -223,7 +222,7 @@ describe('P8 governed action — §30 grant → execution outcomes', () => {
     assert.equal((await world.governed.ace.revokeGrant({ grantId, reason: 'policy-changed', issuerRef: 'operator:1' })).outcome, 'revoked');
     assert.equal((await world.governed.ace.revokeGrant({ grantId, reason: 'policy-changed', issuerRef: 'operator:1' })).outcome, 'already-revoked');
     const events = await streamOf(world, result);
-    assert.equal(types(events).indexOf('grant.revoked'), events.length - 1, 'the later revocation is the newest event');
+    assert.deepEqual(types(events), ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'execution.outcome.observed', 'grant.revoked']);
     assert.equal(events.filter((event) => event.eventType === 'grant.revoked').length, 1);
     const read = await world.grants.read(grantId);
     assert.equal(only(events, 'grant.revoked').occurredAt, read.revocation?.revokedAt, 'occurredAt is the revocation the store holds');
@@ -342,16 +341,18 @@ describe('P8 governed action — §19 / §30 P7 reservation facts', () => {
     world = streamWorld({ exerciseControls: p7({ ledger }) });
     const result = await world.governed.orchestrator.govern(IDENTITY, intent('p7-revoked-wait'));
     const events = await streamOf(world, result);
-    assert.deepEqual([...types(events)].sort(), [
+    // Report order, exactly: the ledger admitted the reservation, the wrapper
+    // revoked the grant before the gate observed the admission, and the release
+    // and outcome follow.
+    assert.deepEqual(types(events), [
       'governance.decision.committed',
       'grant.issued',
-      'grant.revoked',
       'execution.attempt.claimed',
+      'grant.revoked',
       'exercise.reservation.reserved',
       'exercise.reservation.released',
       'execution.outcome.observed',
-    ].sort());
-    assert.ok(types(events).indexOf('exercise.reservation.released') > types(events).indexOf('exercise.reservation.reserved'), 'the reservation is released after it is reserved');
+    ]);
     assert.deepEqual(only(events, 'exercise.reservation.released').payload, { reason: 'grant-exercise' });
     assert.equal(P(only(events, 'execution.outcome.observed')).withheldBy, 'grant-exercise');
   });

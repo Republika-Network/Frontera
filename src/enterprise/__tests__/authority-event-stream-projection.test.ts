@@ -40,9 +40,12 @@ function committedRecord(requestId = REQUEST_1): GovernanceRecord {
   } as unknown as GovernanceRecord;
 }
 
+const GRANT_ID_2 = 'aoc.grant:00000000000000000000000000000002';
+
+/** One grant per lifecycle, as in production: a grant belongs to exactly one request. */
 function issuedGrant(requestId = REQUEST_1): BoundedGrant {
   return {
-    id: GRANT_ID,
+    id: requestId === REQUEST_1 ? GRANT_ID : GRANT_ID_2,
     correlation: { requestId, decisionId: DECISION },
     digest: DIGEST_A,
     issuedAt: T0,
@@ -216,17 +219,137 @@ describe('P8 projection queue — a stuck stream holds only itself', () => {
     assert.equal(projector.health().appended, 2);
   });
 
-  it('a revocation resolves its lifecycle on its own chain, and a stuck grant read blocks no stream', async () => {
+  it('a stuck grant attribution holds that grant\'s own evidence and nothing else', async () => {
     const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock().now });
-    const stuckReader: BoundedGrantReaderPort = { read: () => new Promise(() => {}) };
+    // Only the stuck grant's attribution hangs; the other lifecycle's grant reads normally.
+    const stuckReader: BoundedGrantReaderPort = { read: (id) => (id === GRANT_ID ? new Promise(() => {}) : Promise.resolve({ grant: issuedGrant(REQUEST_2) })) };
     const projector = createAuthorityEventProjector({ organizationId: ORG_A, store, grants: stuckReader });
     projector.decisionCommitted(committedRecord());
     projector.grantRevoked({ grantId: GRANT_ID, revokedAt: T0, reason: 'security-incident', issuerRef: 'operator:1' } as GrantRevocation);
     projector.grantIssued(issuedGrant());
+    // Another lifecycle, whose grant has nothing to do with the stuck one.
+    projector.decisionCommitted(committedRecord(REQUEST_2));
+    projector.grantIssued(issuedGrant(REQUEST_2));
     await tick();
 
-    const events = await store.readStream({ organizationId: ORG_A }, deriveAuthorityEventStreamId({ organizationId: ORG_A, requestId: REQUEST_1 }));
-    assert.deepEqual(events.map((event) => event.eventType), ['governance.decision.committed', 'grant.issued'], 'the stream kept projecting');
-    assert.equal(projector.health().pending, 1, 'only the revocation attribution is outstanding');
+    assert.deepEqual(
+      (await store.readStream({ organizationId: ORG_A }, deriveAuthorityEventStreamId({ organizationId: ORG_A, requestId: REQUEST_1 }))).map((event) => event.eventType),
+      ['governance.decision.committed'],
+      'the decision landed; everything behind the barrier waits, so nothing can overtake the revocation',
+    );
+    assert.deepEqual(
+      (await store.readStream({ organizationId: ORG_A }, deriveAuthorityEventStreamId({ organizationId: ORG_A, requestId: REQUEST_2 }))).map((event) => event.eventType),
+      ['governance.decision.committed', 'grant.issued'],
+      'an unrelated lifecycle is unaffected',
+    );
+  });
+});
+
+describe('P8 projection queue — §2 a revocation cannot be overtaken by the facts it precedes', () => {
+  /** A grant reader the test releases by hand, so "attribution is slow" is a state, not a timing hope. */
+  function heldReader(grant: BoundedGrant): { readonly reader: BoundedGrantReaderPort; readonly release: () => Promise<void>; readonly reads: () => number } {
+    let reads = 0;
+    const waiting: (() => void)[] = [];
+    return {
+      reads: () => reads,
+      reader: {
+        read() {
+          reads += 1;
+          return new Promise((resolve) => waiting.push(() => resolve({ grant })));
+        },
+      },
+      async release() {
+        for (const resolve of waiting.splice(0)) resolve();
+        await tick();
+      },
+    };
+  }
+
+  it('holds later facts for the same grant behind a pending attribution, then appends in report order', async () => {
+    const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock().now });
+    const gate = gated(store);
+    const grant = issuedGrant();
+    const held = heldReader(grant);
+    const projector = createAuthorityEventProjector({ organizationId: ORG_A, store: gate.writer, grants: held.reader });
+
+    // 1. issuance and the claim are established first.
+    projector.decisionCommitted(committedRecord());
+    projector.grantIssued(grant);
+    projector.executionClaimed({ evaluationId: EVALUATION, executionId: EXECUTION, grant, claimedAt: T0 });
+    await tick();
+    await gate.release();
+    await gate.release();
+    await gate.release();
+    assert.deepEqual(gate.invoked, ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed']);
+
+    // 2-4. the attribution read is pending; the revocation and then an outcome
+    //      for the same grant are reported.
+    projector.grantRevoked({ grantId: grant.id, revokedAt: '2026-03-01T10:05:00.000Z', reason: 'security-incident', issuerRef: 'operator:1' } as GrantRevocation);
+    projector.executionOutcomeObserved({ evaluationId: EVALUATION, executionId: EXECUTION, grant, outcome: EXECUTED, outcomeRecorded: true });
+    await tick(10);
+
+    // 5. the outcome has not been invoked — it cannot pass the revocation.
+    assert.equal(held.reads(), 1, 'the attribution read is outstanding');
+    assert.deepEqual(gate.invoked, ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed'], 'nothing was appended past the barrier');
+    assert.equal(gate.heldCount(), 0);
+
+    // 6. release the attribution.
+    await held.release();
+    await tick();
+
+    // 7. the revocation goes first, and only then the outcome.
+    assert.deepEqual(gate.invoked, ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'grant.revoked']);
+    await gate.release();
+    assert.deepEqual(gate.invoked, ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'grant.revoked', 'execution.outcome.observed']);
+    await gate.release();
+
+    // 8. the persisted chain is exactly that order, contiguous and verified.
+    const streamId = deriveAuthorityEventStreamId({ organizationId: ORG_A, requestId: REQUEST_1 });
+    const events = await store.readStream({ organizationId: ORG_A }, streamId);
+    assert.deepEqual(events.map((event) => event.eventType), ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'grant.revoked', 'execution.outcome.observed']);
+    assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5]);
+    events.forEach((event, index) => assert.equal(event.previousEventDigest, index === 0 ? undefined : events[index - 1]?.eventDigest));
+    assert.equal((await store.verifyStream({ organizationId: ORG_A }, streamId)).valid, true);
+    assert.equal(events[3]?.occurredAt, '2026-03-01T10:05:00.000Z', 'the revocation still carries its own instant');
+  });
+
+  it('every grant-scoped fact reported after a pending revocation waits, in its own report order', async () => {
+    const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock().now });
+    const grant = issuedGrant();
+    const held = heldReader(grant);
+    const projector = createAuthorityEventProjector({ organizationId: ORG_A, store, grants: held.reader });
+    projector.decisionCommitted(committedRecord());
+    projector.grantIssued(grant);
+    projector.grantRevoked({ grantId: grant.id, revokedAt: T0, reason: 'policy-changed', issuerRef: 'operator:1' } as GrantRevocation);
+    projector.executionClaimed({ evaluationId: EVALUATION, executionId: EXECUTION, grant, claimedAt: T0 });
+    projector.executionOutcomeObserved({ evaluationId: EVALUATION, executionId: EXECUTION, grant, outcome: EXECUTED, outcomeRecorded: true });
+    projector.grantExpiryObserved(grant);
+    await tick(10);
+    const streamId = deriveAuthorityEventStreamId({ organizationId: ORG_A, requestId: REQUEST_1 });
+    assert.deepEqual((await store.readStream({ organizationId: ORG_A }, streamId)).map((event) => event.eventType), ['governance.decision.committed', 'grant.issued']);
+    await held.release();
+    await tick(5);
+    assert.deepEqual(
+      (await store.readStream({ organizationId: ORG_A }, streamId)).map((event) => event.eventType),
+      ['governance.decision.committed', 'grant.issued', 'grant.revoked', 'execution.attempt.claimed', 'execution.outcome.observed', 'grant.expiry.observed'],
+      'report order, exactly',
+    );
+    assert.equal(projector.health().pending, 0, 'a completed chain drains');
+  });
+
+  it('a completed lifecycle leaves no queue behind: pending returns to 0 and the chains are dropped', async () => {
+    const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock().now });
+    const grant = issuedGrant();
+    const projector = createAuthorityEventProjector({ organizationId: ORG_A, store, grants: grantsReader(grant) });
+    projector.decisionCommitted(committedRecord());
+    projector.grantIssued(grant);
+    projector.executionClaimed({ evaluationId: EVALUATION, executionId: EXECUTION, grant, claimedAt: T0 });
+    projector.executionOutcomeObserved({ evaluationId: EVALUATION, executionId: EXECUTION, grant, outcome: EXECUTED, outcomeRecorded: true });
+    projector.grantRevoked({ grantId: grant.id, revokedAt: T0, reason: 'policy-changed', issuerRef: 'operator:1' } as GrantRevocation);
+    assert.ok(projector.health().pending > 0);
+    await tick(10);
+    assert.equal(projector.health().pending, 0);
+    assert.equal(projector.health().failed, 0);
+    assert.equal(projector.health().appended, 5);
   });
 });

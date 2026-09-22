@@ -24,29 +24,53 @@ import { isSafeEvidenceString } from './validation.js';
  * ```
  *
  * Every recorder method is synchronous and returns `void`. It validates and
- * builds a bounded event input — pure, no I/O — hands it to the queue for its
- * stream, and returns. Durable projection happens after the caller has moved
- * on, so a store that is slow, unreachable, closed or **permanently stuck**
- * cannot hold a decision, a grant issuance, an execution claim, an adapter
- * crossing, a P7 reservation or a revocation. That is the property the earlier
- * awaited-with-a-`catch` shape did not have: a rejected projection was caught,
- * but a projection that never settled would have held the path.
+ * builds a bounded event input — pure, no I/O — hands it to the queue, and
+ * returns. Durable projection happens after the caller has moved on, so an
+ * **asynchronous** append that is slow, unreachable, closed or permanently
+ * stuck cannot hold a decision, a grant issuance, an execution claim, an
+ * adapter crossing, a P7 reservation or a revocation. That is the property the
+ * earlier awaited-with-a-`catch` shape did not have: a rejected projection was
+ * caught, but a projection that never settled would have held the path.
+ *
+ * This is control flow, not latency: the queue runs in this process on this
+ * event loop, and a synchronous store — `better-sqlite3`, whose append includes
+ * a lock wait and an `fsync` — still occupies it. A slow store can add latency
+ * to whatever runs next; it cannot make an authority path wait for projection
+ * to complete. Worker isolation is not part of Stage A.
  *
  * ## Order is the queue's, durability is the store's
  *
- * One serial chain per stream: the append for event N+1 is not invoked until
- * event N's append has settled, so an async host-supplied store cannot reorder
- * or interleave a stream's events however it schedules. Chains are per stream,
- * so a stuck stream holds only its own queue — another lifecycle keeps
- * projecting. The queue chooses **nothing** about an event: sequence, previous
- * digest, `recordedAt` and the digest remain the store's, assigned inside its
- * own critical section.
+ * Two serial stages, and the order a lifecycle was reported in survives both:
  *
- * A revocation is the one fact whose stream is not known at enqueue time — the
- * lifecycle comes from the authoritative grant. Its attribution read runs on its
- * own per-grant chain and only then joins the stream's queue, so it is ordered
- * after the facts already enqueued for that stream and it blocks no other
- * projection. Its `occurredAt` is still the revocation instant.
+ * ```
+ * report(fact)  ->  INTAKE chain, per grant   ->  APPEND chain, per stream  ->  store.append
+ *                   (resolves what a fact          (one at a time; N+1 is
+ *                    needs before it can be         not invoked until N has
+ *                    placed in its stream)          settled)
+ * ```
+ *
+ * **Why intake exists.** A revocation is the one fact whose stream is not known
+ * when it is reported: the lifecycle comes from the authoritative grant, which
+ * has to be read. If that read happened off to one side, a later fact for the
+ * same grant — an execution outcome, say — could be placed in the stream first,
+ * and the stream would claim an effect was recorded before the revocation that
+ * caused it. So every fact carrying a `boundedGrantId` passes through that
+ * grant's **intake chain** in report order, and a step only *places* its event
+ * in the stream (it never waits for the append). A revocation whose attribution
+ * is slow therefore holds the rest of its own grant's evidence behind it — a
+ * projector-side barrier, invisible to every authority path — and holds nothing
+ * else.
+ *
+ * The committed decision carries no grant and is the first fact of a lifecycle,
+ * so it goes straight to its stream's append chain.
+ *
+ * **Why the append chain exists.** One serial chain per stream: the append for
+ * event N+1 is not invoked until event N's append has settled, so an async
+ * host-supplied store cannot reorder or interleave a stream's events however it
+ * schedules. Chains are per key, so a stuck stream or a stuck grant holds only
+ * its own queue — another lifecycle keeps projecting. The queue chooses
+ * **nothing** about an event: sequence, previous digest, `recordedAt` and the
+ * digest remain the store's, assigned inside its own critical section.
  *
  * ## Path-local, tenant-bound
  *
@@ -186,26 +210,56 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
     }
   }
 
+  /** One grant's intake chain. A distinct key space from the stream chains it feeds. */
+  function grantIntakeKey(boundedGrantId: string): string {
+    return `intake:grant:${boundedGrantId}`;
+  }
+
   /**
-   * Builds the envelope from the body's own identities and **enqueues** it on
-   * its stream's chain. Synchronous and total: it returns after enqueueing, and
-   * every failure before that point is counted rather than raised.
+   * Builds the envelope from the body's own identities. Pure: no I/O, no
+   * enqueue. Returns `undefined` — having counted why — for a fact outside
+   * Stage A's scope or outside the contract.
+   */
+  function buildInput(body: Body, occurredAt: string): AppendAuthorityEventInput | undefined {
+    const requestId = body.references.requestId;
+    if (typeof requestId !== 'string' || !requestId.startsWith(GOVERNED_ACTION_REQUEST_PREFIX)) {
+      outOfScope += 1;
+      return undefined;
+    }
+    const sourceId = authorityEventSourceId(body);
+    if (sourceId === undefined) {
+      fail('AUTHORITY_EVENT_INPUT_INVALID');
+      return undefined;
+    }
+    const streamId = deriveAuthorityEventStreamId({ organizationId, requestId });
+    return { ...body, eventId: deriveAuthorityEventId({ streamId, eventType: body.eventType, sourceId }), streamId, organizationId, occurredAt } as AppendAuthorityEventInput;
+  }
+
+  /** Places a built event in its stream's append chain. Never waits for the append. */
+  function placeInStream(input: AppendAuthorityEventInput): void {
+    chain(input.streamId, () => append(input));
+  }
+
+  /**
+   * Builds the envelope and **enqueues** it: straight into the stream's append
+   * chain for a fact that carries no grant, and otherwise through that grant's
+   * intake chain, which is what keeps a revocation's asynchronous attribution
+   * from being overtaken by a later fact of the same lifecycle. Synchronous and
+   * total: it returns after enqueueing, and every failure before that point is
+   * counted rather than raised.
    */
   function project(body: Body, occurredAt: string): void {
     try {
-      const requestId = body.references.requestId;
-      if (typeof requestId !== 'string' || !requestId.startsWith(GOVERNED_ACTION_REQUEST_PREFIX)) {
-        outOfScope += 1;
+      const input = buildInput(body, occurredAt);
+      if (input === undefined) return;
+      const boundedGrantId = input.references.boundedGrantId;
+      if (boundedGrantId === undefined) {
+        placeInStream(input);
         return;
       }
-      const sourceId = authorityEventSourceId(body);
-      if (sourceId === undefined) {
-        fail('AUTHORITY_EVENT_INPUT_INVALID');
-        return;
-      }
-      const streamId = deriveAuthorityEventStreamId({ organizationId, requestId });
-      const input = { ...body, eventId: deriveAuthorityEventId({ streamId, eventType: body.eventType, sourceId }), streamId, organizationId, occurredAt } as AppendAuthorityEventInput;
-      chain(streamId, () => append(input));
+      chain(grantIntakeKey(boundedGrantId), async () => {
+        placeInStream(input);
+      });
     } catch (error) {
       fail(isAuthorityEventStreamError(error) ? error.code : 'AUTHORITY_EVENT_PROJECTION_FAILED');
     }
@@ -305,11 +359,14 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
         const grantId = revocation.grantId;
         const reason = revocation.reason;
         const revokedAt = revocation.revokedAt;
-        // The one fact whose stream is not known at enqueue time: the lifecycle
-        // comes from the authoritative grant. The read runs on this grant's own
-        // chain — so it blocks no stream and no caller — and the event joins its
-        // stream's queue only once the correlation is known.
-        chain(`grant:${grantId}`, async () => {
+        // The one fact whose stream is not known when it is reported: the
+        // lifecycle comes from the authoritative grant. The read runs as a step
+        // of **this grant's intake chain**, so every later fact for the same
+        // grant queues behind it and cannot be placed in the stream first — and
+        // no caller, no other grant and no other stream waits for it. The event
+        // is placed directly once the correlation is known; re-entering intake
+        // here would put it behind the facts it must precede.
+        chain(grantIntakeKey(grantId), async () => {
           try {
             // Attribution only: which lifecycle does this grant belong to? A read
             // of the authoritative store, never a write, and never a decision.
@@ -319,7 +376,8 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
               fail('AUTHORITY_EVENT_INPUT_INVALID');
               return;
             }
-            project({ eventType: 'grant.revoked', references: grantReferences(grant), payload: { reason } }, revokedAt);
+            const input = buildInput({ eventType: 'grant.revoked', references: grantReferences(grant), payload: { reason } }, revokedAt);
+            if (input !== undefined) placeInStream(input);
           } catch (error) {
             fail(isAuthorityEventStreamError(error) ? error.code : 'AUTHORITY_EVENT_PROJECTION_FAILED');
           }

@@ -17,12 +17,12 @@ and makes that lifecycle reconstructable afterwards:
 AUTHORITY / POLICY / OBLIGATIONS / GRANTS / EXECUTION  →  EVENTS  →  EVIDENCE
 ```
 
-**A canonical event may report what happened. It may never make it permissible —
-and it may never make it slower.**
+**A canonical event may report what happened. It may never make it permissible,
+and no authority path may ever wait for it to be recorded.**
 No Kernel, policy, grant, exercise, exercise-control, emergency-control, routing,
-adapter, idempotency or replay code reads the stream, and none of them **waits**
-for it: reporting a fact enqueues it and returns (§6). Every authoritative answer
-keeps its existing owner:
+adapter, idempotency or replay code reads the stream, and none of them awaits a
+projection: reporting a fact enqueues it and returns (§3a). Every authoritative
+answer keeps its existing owner:
 
 | question | authoritative owner | P8's relation |
 | --- | --- | --- |
@@ -128,22 +128,34 @@ sat between the durable execution claim and the provider crossing, kept a P7
 reservation consuming while admission never returned, and withheld a
 revocation's confirmation.
 
+**Scope of the claim.** This is *control-flow* decoupling, not latency or thread
+isolation. Projection runs in the same process and on the same event loop as
+everything else: the built-in store is `better-sqlite3`, whose append (lock wait
+and `fsync` included) is synchronous work on that loop, and a host-supplied
+store may be synchronous too. A slow or blocking store **can** therefore add
+process latency to whatever runs next, an authority path included — it simply
+cannot make one wait for projection to complete. Stage A adds no worker thread
+to change that.
+
 What the queue guarantees:
 
 | property | how |
 | --- | --- |
-| reporting never blocks | build-and-enqueue only; even the first append of an idle stream starts one microtask later, so a synchronous SQLite transaction never runs inside the reporting call |
+| reporting never waits | build-and-enqueue only; even the first append of an idle stream starts one microtask later, so a synchronous SQLite transaction never runs inside the reporting call's own stack frame (it does still run on this event loop — see the scope note above) |
 | one stream keeps its order | one serial chain per stream: event N+1's append is not invoked until N's has settled |
-| a stuck stream holds only itself | chains are per stream; other lifecycles keep projecting |
+| report order survives async attribution | every fact carrying a `boundedGrantId` passes through that grant's **intake chain** in report order, so a revocation — whose lifecycle must be read from the authoritative grant — cannot be overtaken by a later fact of the same lifecycle |
+| a stuck stream or grant holds only itself | chains are per key; other lifecycles keep projecting |
 | the store still owns the record | sequence, previous digest, `recordedAt` and the digest are assigned by the store inside its own critical section — the queue chooses none of them |
 | one lost event does not strand a stream | a chain continues past a failed step |
 | no background machinery | a microtask hop is the only scheduling; no timer, interval, worker, retry loop or sweeper |
 
 A revocation is reported before its lifecycle is known — the correlation comes
-from the authoritative grant — so its attribution read runs on its own chain and
-the event joins the stream's queue once resolved. It is therefore appended after
-the facts already enqueued for that stream; `occurredAt` is still the revocation
-instant.
+from the authoritative grant — so its attribution read is a *step of that grant's
+intake chain*. A later fact for the same grant queues behind it and cannot be
+placed in the stream first, so a revocation reported between a claim and an
+outcome is appended between them however slow the read is. The barrier lives
+entirely inside the projector: no authority path waits for it. `occurredAt` is
+still the revocation instant.
 
 ## 4. Composition and configuration
 
@@ -183,6 +195,9 @@ initialization never throws) reports:
 | `healthy` | store readable and writable; no projection has failed |
 | `degraded` | at least one projection failed (`failed`, `lastFailureCode` in details) |
 | `unhealthy` | the store could not be opened, is closed, or reports unhealthy |
+
+A stuck grant attribution shows up the same way: `pending` stops falling for that
+lifecycle while everything else keeps projecting.
 
 Details carry counters (`appended`, `existing`, `failed`, `outOfScope`,
 `pending`) — never a path, a payload or an id. `pending` is the queue depth: a

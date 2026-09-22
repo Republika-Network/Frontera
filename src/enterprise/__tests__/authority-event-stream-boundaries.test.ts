@@ -7,7 +7,7 @@ import type { AuthorityEventDecisionStatus } from '../authority-event-stream/ind
 import type { KernelDecisionStatus } from '../../kernel/index.js';
 
 /**
- * §6 / §32 — the event stream cannot authorize, and cannot delay, enforced
+ * §6 / §32 — the event stream cannot authorize, and is never awaited, enforced
  * structurally.
  *
  * Evidence flows one way: authority → events → evidence. These rules make two
@@ -21,6 +21,10 @@ import type { KernelDecisionStatus } from '../../kernel/index.js';
  *    earlier contract — a promise awaited inside a `catch` — is gone: catching a
  *    rejection never protected the path from a projection that simply never
  *    settled, and these scans now refuse that shape outright.
+ *
+ * This is control-flow decoupling. Projection still shares the process and the
+ * event loop, so these scans do not — and must not be read to — claim latency or
+ * thread isolation (SEC-INV-088).
  */
 
 function walk(dir: string): string[] {
@@ -161,6 +165,19 @@ describe('P8 boundaries — §32 the event stream cannot authorize', () => {
         assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
       }
     }
+  });
+
+  it('a revocation is attributed inside its grant\'s intake chain, so a later fact of the same lifecycle cannot overtake it', () => {
+    const projector = code('src/enterprise/authority-event-stream/projector.ts');
+    assert.match(projector, /function grantIntakeKey\(boundedGrantId: string\): string \{\s*return `intake:grant:\$\{boundedGrantId\}`;/);
+    // Every grant-scoped fact is placed through the intake chain…
+    assert.match(projector, /const boundedGrantId = input\.references\.boundedGrantId;\s*if \(boundedGrantId === undefined\) \{\s*placeInStream\(input\);\s*return;\s*\}\s*chain\(grantIntakeKey\(boundedGrantId\), async \(\) => \{\s*placeInStream\(input\);/);
+    // …and the revocation's attribution read is a step of that same chain.
+    const revocation = projector.slice(projector.indexOf('grantRevoked(revocation: GrantRevocation): void {'), projector.indexOf('grantExpiryObserved('));
+    assert.match(revocation, /chain\(grantIntakeKey\(grantId\), async \(\) => \{/);
+    assert.match(revocation, /const read = await grants\.read\(grantId\);/);
+    assert.match(revocation, /if \(input !== undefined\) placeInStream\(input\);/, 'the revocation is placed directly, not re-queued behind the facts it must precede');
+    assert.equal(/chain\(`grant:/.test(projector), false, 'no separate per-grant chain outside intake');
   });
 
   it('the projector owns ordering with a per-key serial chain, and no timer, worker or sweeper', () => {

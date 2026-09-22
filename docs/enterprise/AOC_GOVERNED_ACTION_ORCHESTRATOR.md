@@ -121,8 +121,11 @@ canonical authority event stream and hands the orchestrator (and ACE) its
 (`docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`). The orchestrator
 reports through one local `report()` helper that is **synchronous**: it hands the
 fact over and returns. Every recorder method returns `void`, so no step below
-waits for durable projection — in particular nothing may sit between the
-write-ahead claim and the adapter crossing. What it reports:
+waits for durable projection — in particular no projection may sit between the
+write-ahead claim and the adapter crossing. (Control flow only: projection still
+runs in this process and on this event loop, so a synchronous or slow store can
+add latency — see `AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md` §3a.) What it
+reports:
 
 - the committed decision — after commit **and** re-read + verification, for
   every status, and on every replay (which resolves to the event already
@@ -136,11 +139,11 @@ write-ahead claim and the adapter crossing. What it reports:
 - the execution outcome — after the runtime returned it and the outcome
   reference was attempted, with `outcomeRecorded` beside it.
 
-Nothing here reads the stream, and nothing here waits for it. The replay guard is
+Nothing here reads the stream, and nothing here awaits it. The replay guard is
 still the attempt reference; the result is still built from the committed record
 and the `ExecutionOutcome`; a projection that fails, or one that never settles —
 including a recorder that throws synchronously — changes no status, reason code,
-grant, claim, adapter call or timing. The public result gains no field.
+grant, claim or adapter call. The public result gains no field.
 
 
 ## Canonical lifecycle

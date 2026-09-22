@@ -256,9 +256,11 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
       });
       // Evidence of the revocation the store now holds — the first one, on a
       // repeat. Enqueued and returned from immediately: the authoritative result
-      // never waits for durable projection, so a stream that is slow or stuck
-      // cannot delay the confirmation, and the next exercise reads the
-      // revocation from the grant store regardless.
+      // never waits for durable projection, so an asynchronous append that is
+      // slow or stuck cannot withhold the confirmation, and the next exercise
+      // reads the revocation from the grant store regardless. The projector
+      // resolves which lifecycle this grant belongs to on its own queue, in
+      // report order.
       if (evidence !== undefined && (outcome.outcome === 'revoked' || outcome.outcome === 'already-revoked')) {
         try {
           evidence.grantRevoked(outcome.revocation);

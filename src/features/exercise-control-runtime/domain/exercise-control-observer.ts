@@ -14,14 +14,15 @@ import type { ExerciseReservationReleaseReason, ExerciseReservationSettleReason 
  * that threw: none of these is observed, because none of them is a recorded
  * reservation fact.
  *
- * ## It can change nothing, and it can delay nothing
+ * ## It can change nothing, and the gate never waits for it
  *
  * `reservationObserved` returns `void`: it **enqueues** an observation and
  * returns. It never represents durable storage, so the gate has nothing to
- * await and cannot be held by an observer that is slow, stuck or hostile. That
- * matters because P7 reservations have no TTL and no sweeper: a gate blocked
- * between a committed reservation and its finalization would leave capacity
- * consumed indefinitely. An observer that throws synchronously is caught and
+ * await and cannot be held by an observer whose projection is slow, stuck or
+ * never settles. That matters because P7 reservations have no TTL and no
+ * sweeper: a gate blocked between a committed reservation and its finalization
+ * would leave capacity consumed indefinitely. (An observer that blocks
+ * *synchronously* is trusted host code, as every composed port is.) An observer that throws synchronously is caught and
  * discarded; nothing it does can admit, withhold, revalidate, settle, release,
  * or change an outcome or a reason code. Admission still reads consumption only
  * from the ledger.

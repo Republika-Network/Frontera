@@ -205,10 +205,11 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
 
   /**
    * Evidence only, and never awaited: the observer enqueues and returns `void`,
-   * so a slow, stuck or hostile one cannot hold an admission between a
-   * committed reservation and the provider crossing, or a finalization between
-   * a recorded terminal event and the caller. Any synchronous throw is
-   * discarded, and nothing here is ever read back.
+   * so an observation whose durable projection is slow, stuck or never settles
+   * cannot hold an admission between a committed reservation and the provider
+   * crossing, or a finalization between a recorded terminal event and the
+   * caller. Any synchronous throw is discarded, and nothing here is ever read
+   * back.
    */
   function observe(observation: () => ExerciseReservationObservation | undefined): void {
     if (observer === undefined) return;
