@@ -47,7 +47,7 @@ export default function CheckoutSuccessPage({ searchParams }: Props) {
           {isOrgTier ? (
             <h1 style={{ fontSize: 28, marginBottom: 16 }}>Payment received. Your Organization Registry is ready.</h1>
           ) : (
-            <h1 style={{ fontSize: 28, marginBottom: 16 }}>Payment received. Now enroll your AI agent.</h1>
+            <h1 style={{ fontSize: 28, marginBottom: 16 }}>Payment received. Now enroll your SI agent.</h1>
           )}
           {tierName && (
             <div style={{ marginBottom: 16 }}>
@@ -57,11 +57,11 @@ export default function CheckoutSuccessPage({ searchParams }: Props) {
           {isOrgTier ? (
             <p style={{ color: 'var(--text-muted)', marginBottom: 16 }}>
               Your Organization Agent Registry has been created. Access your buyer admin view to enroll
-              up to 10 governed AI agents and manage your registry.
+              up to 10 governed SI agents and manage your registry.
             </p>
           ) : (
             <p style={{ color: 'var(--text-muted)', marginBottom: 16 }}>
-              Your payment has been processed. The next step is to enroll your AI agent and generate its
+              Your payment has been processed. The next step is to enroll your SI agent and generate its
               passport, constitution, and governance evidence layer.
             </p>
           )}
