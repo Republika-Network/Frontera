@@ -261,6 +261,18 @@ The frozen surface stays 28 endpoints. The only wire-visible change is one
 additional `reasonCodes` value on the existing `execution_unconfirmed` status
 (below); the SDK needs no change and stays `1.1.0`.
 
+**1.5.0 (P7) adds no endpoint, no request field, no status and no `withheldBy`
+value.** A deployment may compose aggregate / velocity exercise controls
+(`authorityControlledExecution.exerciseControls`, see `AOC_EXERCISE_CONTROLS.md`).
+A refusal by them is reported on the existing `withheld` status with the
+existing `withheldBy: "exercise"` and `EXERCISE_CONTROL_*` reason codes; no
+limit, bucket, reservation or remaining quota is ever returned. The intent's
+declared fields are unchanged; the list of reserved `assertedContext` keys grows
+by the P7 names (`limit`, `quota`, `budget`, `window`, `reservationId`,
+`exerciseControls`, `authorityBindingDigest`, …), which were never meaningful
+there and are now rejected rather than ignored. The frozen surface stays 28
+endpoints; the SDK stays `1.1.0`.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
@@ -326,7 +338,7 @@ envelope:
 | `executed` | `200` | The provider effect happened (or is on record as having happened: `replayed: true`). |
 | `denied` | `422` | The Kernel denied the action. Committed, no effect. |
 | `indeterminate` | `503` | The Kernel could not decide (provider fault). Committed, no effect. |
-| `withheld` | `409` | Allowed or pending, but a gate held it; `withheldBy` is one of `approval`, `obligations`, `grant`, `authority-binding`, `grant-terms`, `exercise`, `emergency-control`. No effect. |
+| `withheld` | `409` | Allowed or pending, but a gate held it; `withheldBy` is one of `approval`, `obligations`, `grant`, `authority-binding`, `grant-terms`, `exercise`, `emergency-control`. No effect. Since 1.5.0, `exercise` also carries the `EXERCISE_CONTROL_*` codes of an aggregate / velocity limit or exercise-time authority-binding revalidation (same status, same shape). |
 | `execution_failed` | `502` | The provider behind the adapter failed (`failure`: `PROVIDER_REJECTED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_RESPONSE_INVALID`, `ADAPTER_ERROR`). |
 | `execution_unconfirmed` | `409` | The outcome is not known and the adapter is **not** invoked again; reconcile. `GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED`: attempted, no outcome on record. `GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED` (1.4.0): the adapter reported the provider contacted and its result lost — e.g. a Generic HTTP 5xx or a connection lost after sending. Same status and shape; one additional reason-code value. |
 | `rejected` | `409` | `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`. |

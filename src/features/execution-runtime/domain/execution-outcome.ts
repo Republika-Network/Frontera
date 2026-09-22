@@ -1,4 +1,5 @@
 import type { EmergencyControlReasonCode, EmergencyControlScopeMatch } from '../../emergency-control-runtime/index.js';
+import type { ExerciseControlReasonCode } from '../../exercise-control-runtime/index.js';
 import type { BoundedGrantExerciseAssessment } from './grant-exercise-assessment.js';
 import type { ExecutionFailureReason, ValidatedExecutionCorrelation } from './execution-adapter-port.js';
 
@@ -88,6 +89,36 @@ export type ExecutionOutcome =
         readonly reasonCodes: readonly EmergencyControlReasonCode[];
         /** Which applicable controls matched. Operator diagnostics; never authority. */
         readonly matchedScopes: readonly EmergencyControlScopeMatch[];
+      };
+      readonly correlation: ValidatedExecutionCorrelation;
+      readonly exercisedAt: string;
+    }
+  | {
+      /**
+       * The grant **covered** the action, and a trusted aggregate / velocity
+       * exercise control, or exercise-time authority-binding revalidation,
+       * stopped it — or the control's state could not be established. The
+       * adapter was not called.
+       *
+       * A third withholding layer, kept distinct for the reason the emergency
+       * case is: `assessment.usable` is `true` here, because the ordinary
+       * bounded grant covered the attempted action, and what stopped the effect
+       * was a separate, narrower control composed by the host. Reporting it as
+       * `grant-exercise` would make "this bucket is full" look like "this grant
+       * does not cover this action", and those send an operator to different
+       * places.
+       *
+       * The reason codes are the exercise-control vocabulary's own, carried
+       * separately from `assessment.reasonCodes` so the grant-exercise
+       * vocabulary stays disjoint. Internal only: the public governed-action
+       * result maps this onto the existing `withheldBy: 'exercise'`.
+       */
+      readonly status: 'withheld';
+      readonly withheldBy: 'exercise-control';
+      /** Present, and usable — the grant was sufficient. */
+      readonly assessment: BoundedGrantExerciseAssessment;
+      readonly exerciseControl: {
+        readonly reasonCodes: readonly ExerciseControlReasonCode[];
       };
       readonly correlation: ValidatedExecutionCorrelation;
       readonly exercisedAt: string;

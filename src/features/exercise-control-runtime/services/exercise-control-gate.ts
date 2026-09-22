@@ -1,0 +1,297 @@
+import {
+  EXERCISE_CONTROL_REASON_CODES,
+  exerciseControlPolicyDigest,
+  exerciseDecimalFromNumber,
+  exerciseReservationId,
+  exerciseReservationRequestDigest,
+  isExerciseControlReasonCode,
+  snapshotExerciseControlLimits,
+  verifyExerciseAuthorityBinding,
+  type ExerciseAuthorityBindingDigestResolver,
+  type ExerciseControlLedgerPort,
+  type ExerciseControlLimit,
+  type ExerciseControlPolicy,
+  type ExerciseControlQuery,
+  type ExerciseControlReasonCode,
+  type ExerciseControlRuleUsage,
+  type ExerciseReservationReleaseReason,
+  type ExerciseReservationRequest,
+  type ExerciseReservationSettleReason,
+} from '../domain/index.js';
+
+/**
+ * The exercise-control gate: aggregate / velocity limits and exercise-time
+ * authority-binding revalidation, for one exercise that the bounded grant has
+ * **already** been proven to cover.
+ *
+ * ```
+ * authoritative grant read -> containment -> emergency control     (the execution service)
+ *   -> authority-binding revalidation #1                           admit()
+ *   -> trusted policy snapshot                                     admit()
+ *   -> ATOMIC reservation across every applicable limit            admit()
+ *   -> authority-binding revalidation #2                           admit()
+ *   -> emergency control re-check                                  (the execution service)
+ *   -> adapter                                                     (the execution service)
+ *   -> settle or release                                           finalize()
+ * ```
+ *
+ * The second revalidation exists because the reservation can wait on a write
+ * lock: a binding that changed while it waited must not reach the provider. A
+ * failure there releases the reservation it just made — nothing was sent, so
+ * nothing was consumed.
+ *
+ * ## It narrows, and it decides nothing
+ *
+ * Every answer is "reserved, proceed" or "withheld, with these reason codes".
+ * Nothing here can make an unusable exercise usable, extend a grant, or change
+ * a decision, and the only state it writes is the reservation ledger's.
+ *
+ * ## Everything a caller could influence is already gone
+ *
+ * The query the policy and the binding resolver see is built from the trusted
+ * grant and from attempt fields the grant-exercise assessment already proved
+ * inside the grant. The reservation identity is derived from the grant and the
+ * execution identity; the policy, the buckets, the maxima and the windows are
+ * the host's. There is no parameter through which a limit, a bucket, a
+ * reservation id or a binding digest could arrive from a request.
+ */
+export interface ExerciseControlGateOptions {
+  /** Trusted host policy. Synchronous, no I/O. Its answer is re-validated on every exercise. */
+  readonly policy: ExerciseControlPolicy;
+  /** Trusted exercise-time binding resolver, as a canonical digest. Synchronous, read-only. */
+  readonly authorityBinding: ExerciseAuthorityBindingDigestResolver;
+  /** The authoritative consumption state. Held here and handed to nothing else — never to an adapter, a policy or a resolver. */
+  readonly reservationLedger: ExerciseControlLedgerPort;
+  /** The injected clock. Used for the second binding revalidation and for terminal-event instants; never `Date.now()`. */
+  readonly now: () => string;
+}
+
+/** What the gate is told about one exercise. Every field was read from the authoritative grant or proven inside it. */
+export interface ExerciseControlAdmissionInput {
+  readonly grant: {
+    readonly id: string;
+    readonly subject: string;
+    readonly issuedAt: string;
+    readonly expiresAt: string;
+    readonly correlation: ExerciseControlQuery['correlation'];
+    /** The grant's own binding provenance, when it has one. A grant without it cannot be revalidated and is withheld. */
+    readonly authorityBindingDigest?: string;
+  };
+  readonly attempt: {
+    readonly action: string;
+    readonly resource: string;
+    readonly counterparty?: string;
+    readonly organization?: string;
+    readonly amount?: { readonly value: number; readonly unit: string };
+  };
+  readonly executionId: string;
+  /** The exercise instant: the one the grant was assessed at. The reservation is recorded at it. */
+  readonly at: string;
+}
+
+/** An admitted reservation, as the execution service holds it between reservation and finalization. Opaque; never handed to an adapter or returned to a caller. */
+export interface ExerciseReservationHandle {
+  readonly reservationId: string;
+}
+
+export type ExerciseControlAdmission =
+  | { readonly kind: 'admitted'; readonly reservation: ExerciseReservationHandle }
+  | { readonly kind: 'withheld'; readonly reasonCodes: readonly ExerciseControlReasonCode[] };
+
+/**
+ * What happens to a reservation once the effect is known.
+ *
+ * Closed, and chosen by the caller from the outcome it actually observed:
+ * `settle` for an effect that happened or may have happened, `release` for an
+ * effect the port contract says did not complete or that was withheld before
+ * any provider was reached.
+ */
+export type ExerciseReservationDisposition =
+  | { readonly kind: 'settle'; readonly reason: ExerciseReservationSettleReason }
+  | { readonly kind: 'release'; readonly reason: ExerciseReservationReleaseReason };
+
+/**
+ * What finalization achieved. `retained` means the terminal event could not be
+ * recorded — the ledger threw, or a different event already stands — and the
+ * reservation therefore still consumes capacity. That is a safe loss of
+ * availability, never a widening, and it never rewrites the outcome the
+ * provider produced.
+ */
+export type ExerciseReservationFinalization = 'settled' | 'released' | 'retained';
+
+export interface ExerciseControlGate {
+  admit(input: ExerciseControlAdmissionInput): Promise<ExerciseControlAdmission>;
+  finalize(reservation: ExerciseReservationHandle, disposition: ExerciseReservationDisposition): Promise<ExerciseReservationFinalization>;
+}
+
+const R = EXERCISE_CONTROL_REASON_CODES;
+
+function withheld(...reasonCodes: readonly ExerciseControlReasonCode[]): ExerciseControlAdmission {
+  return { kind: 'withheld', reasonCodes: Object.freeze([...reasonCodes]) };
+}
+
+/** The frozen query both trusted callbacks receive. Built field by field, so nothing an input object carries beyond these fields can travel with it. */
+function queryFor(input: ExerciseControlAdmissionInput, at: string): ExerciseControlQuery {
+  const { grant, attempt } = input;
+  return Object.freeze({
+    boundedGrantId: grant.id,
+    subject: grant.subject,
+    action: attempt.action,
+    resource: attempt.resource,
+    ...(attempt.counterparty !== undefined ? { counterparty: attempt.counterparty } : {}),
+    ...(attempt.organization !== undefined ? { organization: attempt.organization } : {}),
+    ...(attempt.amount !== undefined ? { amount: Object.freeze({ value: attempt.amount.value, unit: attempt.amount.unit }) } : {}),
+    correlation: Object.freeze({
+      requestId: grant.correlation.requestId,
+      decisionId: grant.correlation.decisionId,
+      action: grant.correlation.action,
+      resourceScope: grant.correlation.resourceScope,
+    }),
+    grantIssuedAt: grant.issuedAt,
+    grantExpiresAt: grant.expiresAt,
+    at,
+  });
+}
+
+/** Whether a ledger's refusal names only codes a ledger may own. Anything else is a ledger outside its contract. */
+function isLedgerRefusalCode(code: unknown): code is ExerciseControlReasonCode {
+  return isExerciseControlReasonCode(code) && (code === R.EXERCISE_CONTROL_LIMIT_EXCEEDED || code === R.EXERCISE_CONTROL_UNIT_MISMATCH);
+}
+
+export function createExerciseControlGate(options: ExerciseControlGateOptions): ExerciseControlGate {
+  const { policy, authorityBinding, reservationLedger: ledger, now } = options;
+
+  async function release(reservation: ExerciseReservationHandle, reason: ExerciseReservationReleaseReason): Promise<ExerciseReservationFinalization> {
+    try {
+      const released = await ledger.release({ reservationId: reservation.reservationId, reason, recordedAt: now() });
+      return released.outcome === 'released' || released.outcome === 'already-released' ? 'released' : 'retained';
+    } catch {
+      // A release that cannot be recorded is not pretended. The reservation
+      // stays `reserved`, which still consumes: safe availability loss.
+      return 'retained';
+    }
+  }
+
+  return Object.freeze({
+    async admit(input: ExerciseControlAdmissionInput): Promise<ExerciseControlAdmission> {
+      const query = queryFor(input, input.at);
+
+      // 1. Exercise-time authority-binding revalidation #1. Before the policy,
+      //    before the ledger: an authority that no longer stands exactly as it
+      //    did at issuance consumes nothing and reaches nothing.
+      const first = verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, query);
+      if (!first.verified) return withheld(first.reasonCode);
+      const authorityBindingDigest = input.grant.authorityBindingDigest as string;
+
+      // 2. The trusted policy, read once into a validated snapshot. A throw, a
+      //    promise, a getter, a Proxy that misbehaves or any limit outside the
+      //    closed contract is an unbelievable policy, and withholds.
+      let limits: readonly ExerciseControlLimit[] | undefined;
+      try {
+        limits = snapshotExerciseControlLimits(policy(query));
+      } catch {
+        limits = undefined;
+      }
+      if (limits === undefined) return withheld(R.EXERCISE_CONTROL_POLICY_INVALID);
+
+      // 3. What this execution consumes of each limit. Converted from the
+      //    attempt's number to canonical decimal text exactly once; from here
+      //    on only exact arithmetic touches it.
+      const amount = input.attempt.amount;
+      const decimal = amount === undefined ? undefined : exerciseDecimalFromNumber(amount.value);
+      if (amount !== undefined && decimal === undefined) return withheld(R.EXERCISE_CONTROL_AMOUNT_REQUIRED);
+      let amountRequired = false;
+      let unitMismatch = false;
+      const rules: ExerciseControlRuleUsage[] = [];
+      for (const limit of limits) {
+        if (limit.metric === 'count') {
+          rules.push(Object.freeze({ limit, usage: '1' }));
+          continue;
+        }
+        if (amount === undefined || decimal === undefined) {
+          amountRequired = true;
+          continue;
+        }
+        if (amount.unit !== limit.unit) {
+          unitMismatch = true;
+          continue;
+        }
+        rules.push(Object.freeze({ limit, usage: decimal }));
+      }
+      if (amountRequired || unitMismatch) {
+        return withheld(...(amountRequired ? [R.EXERCISE_CONTROL_AMOUNT_REQUIRED] : []), ...(unitMismatch ? [R.EXERCISE_CONTROL_UNIT_MISMATCH] : []));
+      }
+
+      // 4. The reservation: derived identity, canonical fingerprints, and one
+      //    atomic admission across every applicable limit.
+      const reservationId = exerciseReservationId({ boundedGrantId: input.grant.id, executionId: input.executionId });
+      const request: ExerciseReservationRequest = Object.freeze({
+        reservationId,
+        executionId: input.executionId,
+        boundedGrantId: input.grant.id,
+        requestDigest: exerciseReservationRequestDigest({
+          boundedGrantId: input.grant.id,
+          executionId: input.executionId,
+          subject: query.subject,
+          action: query.action,
+          resource: query.resource,
+          ...(query.counterparty !== undefined ? { counterparty: query.counterparty } : {}),
+          ...(query.organization !== undefined ? { organization: query.organization } : {}),
+          ...(amount !== undefined && decimal !== undefined ? { amount: { value: decimal, unit: amount.unit } } : {}),
+          correlation: query.correlation,
+        }),
+        policyDigest: exerciseControlPolicyDigest(limits),
+        authorityBindingDigest,
+        reservedAt: input.at,
+        rules: Object.freeze(rules),
+      });
+
+      let outcome: unknown;
+      let kind: unknown;
+      try {
+        outcome = await ledger.reserve(request);
+        kind = (outcome as { readonly outcome?: unknown }).outcome;
+      } catch {
+        return withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
+      }
+      if (kind === 'already-reserved') return withheld(R.EXERCISE_CONTROL_EXECUTION_ALREADY_RESERVED);
+      if (kind === 'conflict') return withheld(R.EXERCISE_CONTROL_RESERVATION_CONFLICT);
+      if (kind === 'refused') {
+        let codes: readonly ExerciseControlReasonCode[] = [];
+        try {
+          const reported = (outcome as { readonly reasonCodes?: unknown }).reasonCodes;
+          codes = Array.isArray(reported) && reported.length > 0 && reported.every(isLedgerRefusalCode) ? [...new Set(reported as ExerciseControlReasonCode[])] : [];
+        } catch {
+          codes = [];
+        }
+        return codes.length > 0 ? withheld(...codes) : withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
+      }
+      if (kind !== 'reserved') return withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
+      const reservation: ExerciseReservationHandle = Object.freeze({ reservationId });
+
+      // 5. Exercise-time authority-binding revalidation #2, at a fresh instant.
+      //    The reservation may have waited on a write lock; a binding that
+      //    changed meanwhile releases what was just reserved and reaches no
+      //    provider.
+      const second = verifyExerciseAuthorityBinding(authorityBindingDigest, authorityBinding, queryFor(input, now()));
+      if (!second.verified) {
+        await release(reservation, 'exercise-control');
+        return withheld(second.reasonCode);
+      }
+
+      return { kind: 'admitted', reservation };
+    },
+
+    async finalize(reservation: ExerciseReservationHandle, disposition: ExerciseReservationDisposition): Promise<ExerciseReservationFinalization> {
+      if (disposition.kind === 'release') return release(reservation, disposition.reason);
+      try {
+        const settled = await ledger.settle({ reservationId: reservation.reservationId, reason: disposition.reason, recordedAt: now() });
+        return settled.outcome === 'settled' || settled.outcome === 'already-settled' ? 'settled' : 'retained';
+      } catch {
+        // A settlement that cannot be recorded leaves the reservation
+        // `reserved` — still consuming — and never rewrites what the provider did.
+        return 'retained';
+      }
+    },
+  });
+}

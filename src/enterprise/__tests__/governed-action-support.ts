@@ -37,6 +37,7 @@ import {
   type GrantAuthorityBindingQuery,
 } from '../execution-governance/index.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
+import type { AuthorityControlledExerciseControls } from '../execution-governance/exercise-controls.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import {
@@ -181,6 +182,8 @@ export interface WorldOptions {
   readonly beforeGrantIssue?: () => void;
   /** An execution adapter to compose instead of the recording one — an adapter registry, for the adapter-scoped checkpoint. */
   readonly executionAdapter?: ExecutionAdapter;
+  /** P7 exercise controls, composed onto ACE exactly as the composition root composes them. */
+  readonly exerciseControls?: AuthorityControlledExerciseControls;
 }
 
 export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
@@ -281,6 +284,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     now: () => clock.now(),
     resolveAuthorityBinding: options.resolveAuthorityBinding ?? (() => NO_TEMPORAL_BOUND),
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
+    ...(options.exerciseControls !== undefined ? { exerciseControls: options.exerciseControls } : {}),
   };
   const ace = createAuthorityControlledExecution(aceOptions);
 

@@ -579,11 +579,12 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Five of fifty effect paths are under bounded-grant control.'),
+      DOC.includes('Eight of fifty-three effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
-        'and P6 added EP-050, the Generic HTTP adapter\'s outbound call below that same path — which is why both numbers moved by one each time, and only for those paths.',
+        'and P6 added EP-050, the Generic HTTP adapter\'s outbound call below that same path — which is why both numbers moved by one each time, and only for those paths. ' +
+        'P7 added EP-051 … EP-053, the exercise-control reserve / settle / release writes reachable only inside the bounded-grant gate — local authority-state writes, not provider effects — so both moved by three.',
     );
   });
 
@@ -597,7 +598,7 @@ describe('NB — the canonical document keeps its shape', () => {
     const ids = new Set([...DOC.matchAll(/\*\*EP-(\d{3})\*\*/g)].map((match) => match[1]));
     assert.equal(total, ids.size, 'the total must equal the number of inventoried EP rows');
     const pathLocal = rows.find((line) => line.startsWith('| PROVEN — PATH LOCAL'));
-    assert.ok(pathLocal?.includes('**5**') && pathLocal.includes('EP-050'));
+    assert.ok(pathLocal?.includes('**8**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053'));
   });
 
   it('inventories the Generic HTTP outbound call as its own effect path, path-local, and without an egress claim', () => {
@@ -608,6 +609,26 @@ describe('NB — the canonical document keeps its shape', () => {
     assert.ok(/composition-gated/i.test(row), 'EP-050 exists only when a deployment composes a Generic HTTP adapter');
     assert.equal(/blocks all (unauthorized )?egress|system-wide egress control is (now )?implemented/i.test(DOC), false, 'application-level origin pinning is never described as an egress firewall');
     assert.ok(DOC.includes('does **not** retroactively govern'), 'the qualification that P6 governs no other path must stay recorded');
+  });
+
+  it('inventories the P7 exercise-control writes as three path-local authority-state writes, split by direction, and adds no provider path', () => {
+    for (const [id, direction, method] of [
+      ['EP-051', 'restricting', 'ExerciseControlLedgerPort.reserve'],
+      ['EP-052', 'neutral', 'ExerciseControlLedgerPort.settle'],
+      ['EP-053', 'permitting direction', 'ExerciseControlLedgerPort.release'],
+    ] as const) {
+      const row = DOC.split('\n').find((line) => line.startsWith(`| **${id}** |`));
+      assert.ok(row !== undefined, `${id} must be inventoried`);
+      assert.ok(row.includes('PROVEN — PATH LOCAL'), `${id} must be path-local`);
+      assert.ok(row.includes(direction), `${id} must state its direction`);
+      assert.ok(row.includes(method), `${id} must name its write`);
+      assert.ok(/composition-gated|as EP-051/.test(row), `${id} exists only when exercise controls are composed`);
+      assert.equal(/EXTERNAL/.test(row), false, `${id} is not a provider effect`);
+    }
+    assert.ok(DOC.includes('local authority-state writes, not provider effects'), 'the P7 qualification must stay recorded');
+    assert.ok(DOC.includes('P7 does **not** retroactively govern'), 'P7 governs no other path');
+    const ep050 = DOC.split('\n').find((line) => line.startsWith('| **EP-050** |')) ?? '';
+    assert.ok(ep050.includes('EP-051') && ep050.includes('no second adapter invocation site'), 'EP-050 names the optional P7 gate and stays one effect path');
   });
 
   it('inventories the customer governed-action route as its own effect path, classified and capability-gated', () => {

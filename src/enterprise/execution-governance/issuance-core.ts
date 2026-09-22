@@ -15,7 +15,7 @@ import {
 } from '../../features/grant-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability, deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
-import { grantValidityCeilingsFor, isWellFormedGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
+import { grantAuthorityBindingDigest, grantValidityCeilingsFor, isWellFormedGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
 import { ExecutionGovernanceError } from './errors.js';
 import {
   AUTHORITY_BINDING_REASON_CODES,
@@ -311,6 +311,12 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         correlation: source.correlation,
         issuedAt: now(),
         expiresAt: input.grantExpiresAt,
+        // Durable provenance for exercise time (P7): a commitment to the binding
+        // measured above. It does **not** replace the commit-boundary check —
+        // the guard still re-resolves the binding and compares it field by
+        // field, and refuses on any difference, so the digest recorded here is
+        // always the digest of a binding that held at commit.
+        authorityBindingDigest: grantAuthorityBindingDigest(binding),
       });
 
       if (issued.outcome === 'refused') {

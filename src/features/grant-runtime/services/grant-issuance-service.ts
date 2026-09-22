@@ -107,6 +107,16 @@ export interface GrantIssuanceRequest {
    * justifying it" — becomes enforceable on a path the Kernel cannot see.
    */
   readonly additionalValidityCeilings?: readonly GrantValidityCeiling[];
+  /**
+   * Opaque provenance: a commitment to the authority binding the issuing
+   * composition resolved and re-proved for this grant. Carried into the
+   * artifact, its identity and its digest; never interpreted here — this layer
+   * does not know what an authority binding is, and must not.
+   *
+   * Host input, like `requestedBounds`: nothing on `KernelEvaluationRequest`
+   * reaches it.
+   */
+  readonly authorityBindingDigest?: string;
 }
 
 export type GrantIssuanceOutcome =
@@ -208,9 +218,11 @@ export function createGrantIssuanceService(options: GrantIssuanceServiceOptions)
       }
       const expiresAt = validity.expiresAt;
 
-      const id = boundedGrantId({ correlation: request.correlation, subject: request.subject, scope: attenuation.scope, expiresAt });
+      const provenance = request.authorityBindingDigest !== undefined ? { authorityBindingDigest: request.authorityBindingDigest } : {};
+      const id = boundedGrantId({ correlation: request.correlation, subject: request.subject, scope: attenuation.scope, expiresAt, ...provenance });
       const withoutDigest = {
         id,
+        ...provenance,
         correlation: request.correlation,
         subject: request.subject,
         scope: attenuation.scope,

@@ -147,6 +147,9 @@ function replayResult(context: ResultContext, prior: PriorExecution, decisionRea
     // stop cleared since does not turn a recorded emergency withholding into a
     // grant problem, and a stop active now does not turn a recorded grant
     // refusal into an emergency one: the record is what happened.
+    //
+    // `exercise-control` (P7) replays under the public `exercise` value, exactly
+    // as it was reported live, with its own recorded EXERCISE_CONTROL_* codes.
     const withheldBy: GovernedActionWithheldBy = prior.withheldBy === 'emergency-control' ? 'emergency-control' : 'exercise';
     return result({ status: 'withheld', withheldBy, ...context, reasonCodes: prior.withheldReasonCodes });
   }
@@ -411,6 +414,14 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         // stopped the effect was the interlock.
         if (outcome.withheldBy === 'emergency-control') {
           return result({ status: 'withheld', withheldBy: 'emergency-control', ...executed, reasonCodes: [...outcome.emergencyControl.reasonCodes, ...unrecorded] });
+        }
+        // P7: an aggregate / velocity limit or exercise-time binding
+        // revalidation withheld it. Internally its own layer; publicly the
+        // existing `exercise` value — the wire union is unchanged — carrying the
+        // EXERCISE_CONTROL_* codes that explain it. No limit, bucket,
+        // reservation or remaining capacity is ever part of the result.
+        if (outcome.withheldBy === 'exercise-control') {
+          return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.exerciseControl.reasonCodes, ...unrecorded] });
         }
         return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.assessment.reasonCodes, ...unrecorded] });
       }

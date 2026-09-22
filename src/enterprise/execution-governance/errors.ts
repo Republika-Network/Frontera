@@ -20,7 +20,9 @@ export type ExecutionGovernanceErrorCode =
   /** The grant declaration this composition was given differs from the one the Kernel evaluates under. Two declarations means two deployment ceilings, and the grant would be contained by whichever one happened to be read. */
   | 'EXECUTION_GRANT_DECLARATION_MISMATCH'
   /** The host stated both a single execution adapter and an adapter routing table, or neither. Which provider an authorized action reaches is not a thing to resolve by precedence. */
-  | 'EXECUTION_ADAPTER_COMPOSITION_INVALID';
+  | 'EXECUTION_ADAPTER_COMPOSITION_INVALID'
+  /** P7: the host composed `exerciseControls` without a policy, without an exercise-time authority-binding resolver, or with a ledger that does not implement the port. There is no default policy and no permissive stand-in. */
+  | 'EXECUTION_EXERCISE_CONTROLS_INVALID';
 
 export class ExecutionGovernanceError extends Error {
   constructor(

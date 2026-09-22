@@ -1,9 +1,9 @@
 {
   "name": "@aoc-enterprise/runtime",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "generated": {
-    "commit": "53f865939edc70acf416a1dd58cbf0328e3d2167",
-    "branch": "feat/generic-http-execution-adapter",
+    "commit": "c1e6efeb30d080f3af8e44bdc5ed403aae5749ef",
+    "branch": "feat/p7-aggregate-velocity-controls",
     "node": "v22.23.1"
   },
   "runtimeVersions": {

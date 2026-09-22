@@ -52,6 +52,10 @@ import { createAssuranceService, type AssuranceService } from '../assurance/serv
 import type { AssuranceFramework } from '../assurance/contracts.js';
 import { createAuthorityControlledExecution, type AuthorityControlledExecutionOptions, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
 import { createAuthorityControlledExecutionModule } from '../modules/authority-controlled-execution-module.js';
+import { createExerciseControlModule } from '../modules/exercise-control-module.js';
+import { assertValidExerciseControlCallbacks, assertValidExerciseControlStore, type AuthorityControlledExerciseControls } from '../execution-governance/exercise-controls.js';
+import type { ExerciseControlLedgerPort } from '../../features/exercise-control-runtime/index.js';
+import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
 import {
@@ -269,7 +273,7 @@ export interface EnterpriseCustomerIdentityAdmissionOptions {
  * question.
  */
 export interface EnterpriseAuthorityControlledExecutionOptions
-  extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore' | 'executionAdapter' | 'emergencyControl'> {
+  extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore' | 'executionAdapter' | 'emergencyControl' | 'exerciseControls'> {
   /**
    * One provider adapter, when this deployment has one.
    *
@@ -326,6 +330,33 @@ export interface EnterpriseAuthorityControlledExecutionOptions
    * `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
    */
   readonly grantStore?: AuthorityControlledExecutionOptions['grantStore'];
+  /**
+   * P7 — aggregate / velocity exercise controls, a durable reservation ledger
+   * and exercise-time authority-binding revalidation on this path.
+   *
+   * **Omitting it changes nothing**: no ledger file is opened or created, no
+   * reservation is made, and every exercise behaves exactly as before.
+   *
+   * Supplied, `policy` and `revalidateAuthorityBinding` are **required** — a
+   * block missing either fails `createEnterprise` before any store is opened —
+   * and the whole block is trusted host composition: nothing a caller sends can
+   * name a limit, bucket, reservation or binding. See
+   * `docs/enterprise/AOC_EXERCISE_CONTROLS.md`.
+   */
+  readonly exerciseControls?: EnterpriseExerciseControlsOptions;
+}
+
+/**
+ * What a host states to adopt P7 exercise controls.
+ *
+ * `ledger` is optional **here only**. Omitted, the composition root opens the
+ * durable SQLite ledger at `exerciseLedger.sqlitePath` — always the durable one,
+ * whatever `persistence.provider` says, because an aggregate limit whose
+ * consumption is forgotten on restart fails open — and closes it on shutdown.
+ * Supplied, it is used verbatim and the host that supplied it closes it.
+ */
+export interface EnterpriseExerciseControlsOptions extends Omit<AuthorityControlledExerciseControls, 'reservationLedger'> {
+  readonly ledger?: ExerciseControlLedgerPort;
 }
 
 /** The trusted routing table. Host configuration; never caller input, and never mutable after composition. */
@@ -704,6 +735,26 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
   const genericHttpAdapters: readonly ExecutionAdapter[] = Object.freeze((genericHttpOptions ?? []).map((entry) => createGenericHttpExecutionAdapter(entry)));
 
+  // P7 exercise controls are checked just as early: a block with no policy, no
+  // exercise-time binding resolver, a ledger that is not a ledger, or no usable
+  // ledger location fails startup — before any store, ledger file or listener
+  // exists — rather than one customer action at a time.
+  const exerciseControlOptions = options.authorityControlledExecution?.exerciseControls;
+  if (options.authorityControlledExecution !== undefined && 'exerciseControls' in options.authorityControlledExecution && exerciseControlOptions === undefined) {
+    throw new ExecutionGovernanceError('EXECUTION_EXERCISE_CONTROLS_INVALID', 'authorityControlledExecution.exerciseControls was stated without a value; omit it to compose no exercise controls.');
+  }
+  if (exerciseControlOptions !== undefined) {
+    assertValidExerciseControlCallbacks(exerciseControlOptions, 'authorityControlledExecution.exerciseControls');
+    if (exerciseControlOptions.ledger !== undefined) assertValidExerciseControlStore(exerciseControlOptions.ledger, 'authorityControlledExecution.exerciseControls.ledger');
+    const sqlitePath: unknown = configuration.exerciseLedger?.sqlitePath;
+    if (exerciseControlOptions.ledger === undefined && (typeof sqlitePath !== 'string' || sqlitePath.trim().length === 0)) {
+      throw new ExecutionGovernanceError(
+        'EXECUTION_EXERCISE_CONTROLS_INVALID',
+        'Exercise controls need a durable ledger: supply exerciseControls.ledger, or configure a non-empty exerciseLedger.sqlitePath (AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH).',
+      );
+    }
+  }
+
   // Governed actions are checked just as early, and for the same reason: the
   // canonical ordering needs every one of its prerequisites, and a deployment
   // missing any of them gets no orchestrator rather than a weaker one.
@@ -857,6 +908,17 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
 
+  // The exercise-control ledger (P7), opened **only** when exercise controls
+  // are composed and the host supplied no ledger — and then always the durable
+  // SQLite one. Same ownership rule as every store above: what this root
+  // opened, this root closes; what a host supplied, the host closes.
+  const exerciseLedger: ExerciseControlLedgerPort | undefined =
+    exerciseControlOptions === undefined
+      ? undefined
+      : (exerciseControlOptions.ledger ??
+        (await createSqliteExerciseControlLedger(configuration.exerciseLedger.sqlitePath, { busyTimeoutMs: configuration.persistence.busyTimeoutMs })));
+  const exerciseLedgerOpenedHere = exerciseControlOptions !== undefined && exerciseControlOptions.ledger === undefined;
+
   // ONE emergency-control instance for the whole deployment. Every checkpoint
   // below reads this object: the orchestrator's admission check, the grant
   // store's synchronous commit guard, the exercise gate, and the adapter
@@ -924,6 +986,15 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
             ? { revalidateSource: options.authorityControlledExecution.revalidateSource }
             : {}),
           ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined
+            ? {
+                exerciseControls: {
+                  policy: exerciseControlOptions.policy,
+                  revalidateAuthorityBinding: exerciseControlOptions.revalidateAuthorityBinding,
+                  reservationLedger: exerciseLedger,
+                },
+              }
+            : {}),
           now: kernelProviders.clock.now,
         };
   const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
@@ -972,6 +1043,13 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     if (typeof closable.close === 'function') await closable.close();
   }
 
+  /** The same ownership discipline for the exercise-control ledger: closed only when this composition root opened it. */
+  async function closeComposedExerciseLedger(): Promise<void> {
+    if (!exerciseLedgerOpenedHere || exerciseLedger === undefined) return;
+    const closable = exerciseLedger as Partial<{ close: () => Promise<void> }>;
+    if (typeof closable.close === 'function') await closable.close();
+  }
+
   const unsubscribeLifecyclePersistence = eventPublisher.subscribe((event) => {
     if ('lifecycleCorrelationId' in event) {
       void persistence.appendLifecycleEvent(event).catch(() => {});
@@ -1010,6 +1088,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         kernelProviders.clock.now,
       ),
     );
+  }
+  if (authorityControlledExecution !== undefined && exerciseLedger !== undefined) {
+    registry.register(createExerciseControlModule(exerciseLedger, kernelProviders.clock.now));
   }
   if (governedActionOptions !== undefined) {
     registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now));
@@ -1197,6 +1278,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await evidenceStore.close();
       await closeComposedGrantStore();
       await closeComposedEmergencyControlStore();
+      await closeComposedExerciseLedger();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -1204,6 +1286,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await evidenceStore.close();
       await closeComposedGrantStore();
       await closeComposedEmergencyControlStore();
+      await closeComposedExerciseLedger();
     },
   };
 

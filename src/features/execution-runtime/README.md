@@ -148,11 +148,26 @@ and a structural test fails the build if an ambient clock appears. No
 sweeper, no scheduler, no queue and no worker: expiry and revocation are derived
 at read time, so correctness never depends on a job having run.
 
-## No consumption model
+## No consumption model of its own
 
 No counter, no `remainingUses`, no single-use flag, no nonce ledger, no
 decrement, no destruction after exercise — and a structural test refuses the
 vocabulary so one cannot be added later without a decision and an ADR.
+
+**Since P7** that decision and ADR exist, and they put consumption **outside**
+this module: `ADR-EXERCISE-AGGREGATE-CONTROLS.md`. When a host composes
+`exerciseControl` (an `ExerciseControlGate` from
+`src/features/exercise-control-runtime`), the service asks the gate to admit —
+exercise-time authority-binding revalidation, a validated policy snapshot, an
+atomic reservation, revalidation again — re-reads the emergency control, and
+only then invokes the adapter; every exit after the reservation goes through one
+`finish(...)` helper whose disposition (`reservationDispositionFor`) is
+exhaustive over `ExecutionOutcome`: `executed` and `execution-unconfirmed`
+settle, `execution-failed` and any post-reservation withholding release. A
+refusal is the internal outcome `withheld / exercise-control`, with the
+`assessment` still `usable` and the `EXERCISE_CONTROL_*` codes carried beside it.
+This module still counts nothing and never sees the ledger. Without the gate,
+behaviour is byte-identical to before.
 
 Every accepted ADR is silent on consumption, and `ADR-ACCESS-LIFECYCLE.md` says
 the opposite for the record *about* use: usage events are "many per `grantRef` —

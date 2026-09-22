@@ -4,6 +4,29 @@ All notable changes to Soberanía Enterprise. The project follows [Semantic Vers
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-21
+
+Additive release. Repeated use of a bounded grant becomes governable: **aggregate count, aggregate amount and rolling-velocity limits**, admitted through a **durable, atomic reservation before the provider is reached**, with conservative settlement and **exercise-time revalidation of the grant's authority binding** — opt-in, path-local to bounded-grant execution, and additional narrowing only. No new endpoint, request field, status, `withheldBy` value or SDK change.
+
+### Added
+- **Exercise controls (P7) — `authorityControlledExecution.exerciseControls`.** Trusted host composition: a synchronous `policy` (required), a synchronous `revalidateAuthorityBinding` resolver (required) and an optional `ledger`. Design `docs/enterprise/AOC_EXERCISE_CONTROLS.md`; decision `docs/architecture/ADR-EXERCISE-AGGREGATE-CONTROLS.md`.
+  - **Immutable grant + separate authoritative ledger.** `BoundedGrant` gains no usage counter; consumption lives in the exercise-control ledger (`src/features/exercise-control-runtime`, durable in `src/enterprise/exercise-control-ledger`), kept apart from Governance Store evidence.
+  - **Closed limit contract.** `count` and `amount` metrics over `lifetime` or `rolling` (1 s – 1 year) windows; ≤ 32 limits; duplicate `(limitId, scopeKey)` refused; bounded `limitId` / `scopeKey`; the policy's answer is validated into a frozen snapshot on every exercise and an invalid one withholds.
+  - **Exact amounts.** Canonical decimal text, one conversion from the attempt's number, `BigInt` arithmetic; exact units, no conversion; no float accumulation and no SQL aggregate over a floating column.
+  - **Reservation before effect.** Deterministic reservation id; request, policy and binding fingerprints; `reserved` and `settled` consume, `released` does not; `execution-unconfirmed` settles; `execution-failed` and post-reservation withholdings release; a failure to finalize keeps consuming and never rewrites the outcome; no expiry, sweeper or startup cleanup; one execution identity is one attempt.
+  - **Durable SQLite ledger** (`aoc.exercise-control-ledger.schema.v1`) at `exerciseLedger.sqlitePath` / `AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH` (default `.data/exercise-ledger.sqlite`), opened only when P7 is composed and no ledger is supplied: WAL, `synchronous = FULL`, `BEGIN IMMEDIATE` admission, append-only triggers, row / rule / terminal-event / bucket-head digests validated on every counted read, unknown schema refused before mutation; closed on shutdown only when the composition opened it. An `aoc.enterprise.exercise-control` module reports its health.
+  - **Exercise-time authority-binding revalidation.** ACE grants now carry an opaque `authorityBindingDigest` (canonical SHA-256 of the binding resolved and commit-proved at issuance; the commit-boundary equality check is unchanged). With P7 composed, the current binding must match it exactly, before and after the reservation; a grant without it is withheld as unverifiable.
+  - **Gate ordering.** grant read → containment → emergency → binding #1 → policy → reservation → binding #2 → emergency re-check → adapter → settle | release, with one finalization exit whose disposition is exhaustive over `ExecutionOutcome`.
+- **`EXERCISE_CONTROL_REASON_CODES`** — nine codes, disjoint from every other vocabulary. Internal `ExecutionOutcome` gains `withheld / withheldBy: 'exercise-control'` (assessment still usable); the public result maps it to the existing `withheldBy: 'exercise'`. The governed-action evidence ledger records `withheld:exercise-control:<CODE>…` and replays it; historical rows read unchanged.
+- **`BoundedGrant.authorityBindingDigest?`** — optional and additive: pre-P7 grants keep their canonical bytes, deterministic ids and digests, and their SQLite rows reopen unchanged.
+- **Reserved `assertedContext` keys** extended with the P7 names; the same names are undeclared (rejected) intent fields.
+- **Security inventory.** `SEC-INV-070` … `SEC-INV-079` (EXERCISE-CTRL-01…10, path- or component-local); effect paths **EP-051 … EP-053** (reserve / settle / release — local authority-state writes inside the gate, `PROVEN — PATH LOCAL`), moving the headline count to eight of fifty-three; asset A-28; threat model §7.19; baseline M-6 **proven path-local for the P7-enabled path only**. SEC-INV-U06 stays unimplemented system-wide.
+- **Tests.** Domain, shared ledger contract (in-memory and SQLite), SQLite persistence / crash / corruption / schema, worker-thread concurrency races, execution-gate ordering and finalization, authority-binding and bounded-grant backward compatibility, governed-action mapping / replay / Generic HTTP outcomes / caller-quota rejection at zero Kernel, ledger, DNS and socket activity, composition, and structural boundaries.
+
+### Not included
+- Distributed or cross-host quota, reservation reconciliation, manual release, automatic abandoned-reservation recovery, exactly-once, atomic binding with an external authority store or provider, FX or unit conversion, customer-defined quota, quota administration routes, KMS/HSM, event stream (P8), model convergence (P9), XRPL, Pinata/Stripe migration.
+- **No HTTP API change:** 28 endpoints, unchanged. **No SDK change:** `@aoc-enterprise/enterprise-host-sdk` stays `1.1.0`, 5 runtime exports, 0 runtime dependencies.
+
 ## [1.4.0] — 2026-09-21
 
 Additive release. The governed execution path can now produce a **real external HTTP effect** through a pinned, SSRF-resistant Generic HTTP Execution Adapter composed by the operator — with no new endpoint, no new request field, no SDK change, and an explicit, durable "unconfirmed" outcome for effects whose completion cannot be established.

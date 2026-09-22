@@ -527,6 +527,16 @@ export type {
   EnterpriseGenericHttpPathSegment,
   EnterpriseGenericHttpValueBinding,
 } from './execution-adapters/generic-http/index.js';
+/**
+ * P7 exercise controls -- **types only**. A deployment adopts them through
+ * `createEnterprise({ authorityControlledExecution: { exerciseControls } })`.
+ * The ledger implementations, the gate and the binding bridge are deliberately
+ * not exported: nothing a published-package consumer holds can reserve,
+ * settle or release capacity, or bypass the reservation. See
+ * `docs/enterprise/AOC_EXERCISE_CONTROLS.md`.
+ */
+export type { EnterpriseExerciseControlsOptions } from './composition/composition-root.js';
+export type { ExerciseAuthorityBindingResolver } from './execution-governance/exercise-controls.js';
 export type { EnterpriseEmergencyControlOptions } from './composition/composition-root.js';
 export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';
 export type { EnterpriseGovernedActionOrchestratorOptions } from './composition/composition-root.js';

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import * as executionRuntime from '../index.js';
 import { GRANT_EXERCISE_REASON_CODE_VALUES } from '../index.js';
 import { GRANT_REASON_CODE_VALUES } from '../../grant-runtime/index.js';
+import { EXERCISE_CONTROL_REASON_CODE_VALUES } from '../../exercise-control-runtime/index.js';
 import { AOC_KERNEL_REASON_CODES } from '../../../kernel/reason-codes/reason-codes.js';
 import { AOC_KERNEL_EXERCISE_REASON_CODES } from '../../../kernel/reason-codes/exercise-reason-codes.js';
 
@@ -143,7 +144,13 @@ describe('Execution layer boundaries — it reads layer E and nothing above it',
     // no decision — consulted after the grant gate and before the provider;
     // `emergency-control-boundaries.test.ts` fails the build if that module
     // grows into anything else.
-    const allowed = ['../../grant-runtime/', '../../emergency-control-runtime/'];
+    //
+    // P7 adds a third, equally narrow: the exercise-control runtime's **gate
+    // port**, its reason vocabulary and its reservation-handle types. The
+    // service holds an `ExerciseControlGate` and nothing below it — never the
+    // reservation store — and `exercise-control-boundaries.test.ts` fails the
+    // build if that module grows a Kernel, a store of evidence or a network.
+    const allowed = ['../../grant-runtime/', '../../emergency-control-runtime/', '../../exercise-control-runtime/'];
     for (const file of PRODUCTION_SOURCES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';
@@ -315,7 +322,11 @@ describe('Execution layer boundaries — nothing dynamic, nothing ambient', () =
     }
   });
 
-  it('invents no consumption model — no counter, no remaining uses, no replay ledger', () => {
+  it('invents no consumption model of its own — no counter, no remaining uses, no replay ledger', () => {
+    // P7 defines consumption, and defines it **elsewhere**: the separate
+    // exercise-control ledger behind the gate port. This layer still counts
+    // nothing, holds no remaining-uses state and keeps no ledger; it asks the
+    // gate to admit, and tells the gate what happened.
     const forbidden = [/remainingUses/i, /\busageCount\b/i, /\buseCount\b/i, /\bsingleUse\b/i, /\boneTime\b/i, /\bconsume/i, /\bdecrement/i, /replayLedger/i];
     for (const file of PRODUCTION_SOURCES) {
       const text = codeOf(file);
@@ -346,6 +357,15 @@ describe('Execution layer boundaries — the four reason-code vocabularies are d
 
   it('no exercise code is a grant issuance reason code', () => {
     for (const code of exercise) assert.equal(issuance.includes(code), false, `${code} overlaps the issuance vocabulary`);
+  });
+
+  it('no exercise code is an aggregate exercise-control (P7) code, and vice versa', () => {
+    const control: readonly string[] = EXERCISE_CONTROL_REASON_CODE_VALUES;
+    assert.ok(control.length >= 9);
+    for (const code of exercise) assert.equal(control.includes(code), false, `${code} overlaps the exercise-control vocabulary`);
+    for (const code of control) {
+      assert.equal(authorization.includes(code) || obligations.includes(code) || issuance.includes(code) || exercise.includes(code), false, `${code} overlaps another vocabulary`);
+    }
   });
 
   it('the vocabularies are non-empty, so the disjointness assertions above are not vacuous', () => {
@@ -467,5 +487,44 @@ describe('Execution layer boundaries — the trust anchor for routed attribution
     // composition: it cannot introduce an await into the exercise path.
     assert.equal(/await\s+isExecutionAdapterRegistry/.test(text), false, 'the registry check must never be awaited');
     assert.equal(/await\s+readEmergencyControl/.test(text), false, 'the emergency read must stay synchronous');
+  });
+});
+
+describe('Execution layer boundaries — P7 reservation finalization is centralized', () => {
+  const SERVICE = 'src/features/execution-runtime/services/grant-execution-service.ts';
+
+  it('every return after a reservation can exist goes through the one finalization helper', () => {
+    const text = codeOf(SERVICE);
+    const start = text.indexOf('const finish = async');
+    const exerciseEnd = text.indexOf('function reservationDispositionFor');
+    assert.notEqual(start, -1, 'the finalization helper must exist');
+    const afterHelper = text.slice(text.indexOf('};', start) + 2, exerciseEnd);
+    const returns = [...afterHelper.matchAll(/\breturn\b\s*([^;\n]*)/g)].map((match) => match[1] ?? '');
+    // Emergency re-check, registry stop, adapter throw, unreadable result,
+    // unconfirmed, failed, executed.
+    assert.equal(returns.length, 7, `expected every post-reservation exit to be measured, found ${returns.length}`);
+    for (const value of returns) {
+      assert.ok(value.startsWith('finish('), `a post-reservation exit bypasses finalization: return ${value}`);
+    }
+  });
+
+  it('the disposition is exhaustive over ExecutionOutcome, so a new outcome cannot skip finalization silently', () => {
+    const text = codeOf(SERVICE);
+    const disposition = text.slice(text.indexOf('function reservationDispositionFor'));
+    assert.equal([...disposition.matchAll(/const unreachable: never = outcome;/g)].length, 2, 'both the status and the withholding layer are closed with a never arm');
+    for (const status of ["case 'executed'", "case 'execution-unconfirmed'", "case 'execution-failed'", "case 'withheld'", "case 'emergency-control'", "case 'exercise-control'", "case 'grant-exercise'"]) {
+      assert.ok(disposition.includes(status), status);
+    }
+    assert.ok(/case 'execution-unconfirmed':\s*return \{ kind: 'settle'/.test(disposition), 'an unconfirmed effect settles — it never returns capacity');
+  });
+
+  it('with exercise controls composed, the adapter is invoked only after admission and the emergency re-check', () => {
+    const text = codeOf(SERVICE);
+    const admit = text.indexOf('await exerciseControl.admit(');
+    const recheck = text.indexOf('const recheck = readEmergencyControl(emergencyControl, emergencyQuery)');
+    const call = text.search(/\badapter\s*\.\s*execute\s*\(/);
+    for (const index of [admit, recheck, call]) assert.notEqual(index, -1);
+    assert.ok(admit < recheck && recheck < call);
+    assert.equal([...text.matchAll(/exerciseControl\.admit\(/g)].length, 1);
   });
 });
