@@ -81,8 +81,9 @@ When a deployment composes `authorityControlledExecution.exerciseControls`,
 ACE's exercise — the step after this orchestrator's write-ahead claim — also
 requires exact-equality revalidation of the grant's authority binding, a valid
 trusted policy snapshot and an atomic, durable reservation across every
-applicable aggregate count, amount and rolling-velocity limit, revalidates the
-binding and re-reads the emergency control after the reservation, and settles
+applicable aggregate count, amount and rolling-velocity limit, re-reads and
+re-assesses the grant, revalidates the binding and re-reads the emergency
+control after the reservation, and settles
 or releases the reservation from the outcome. See
 [`AOC_EXERCISE_CONTROLS.md`](AOC_EXERCISE_CONTROLS.md).
 

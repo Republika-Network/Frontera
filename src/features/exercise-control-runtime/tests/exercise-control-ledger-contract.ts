@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   EXERCISE_CONTROL_REASON_CODES as R,
+  createExerciseControlGate,
   exerciseControlPolicyDigest,
   exerciseReservationId,
   exerciseReservationRequestDigest,
@@ -19,6 +20,10 @@ import {
  * `src/enterprise/__tests__/exercise-control-sqlite.test.ts` — so a test cannot
  * pass against the process-local ledger while proving a weaker rule than
  * production enforces.
+ *
+ * The ledger under test is opened over a clock this contract controls, because
+ * the reservation instant is the **ledger's**: sampled inside its admission
+ * critical section, never handed in by a caller.
  */
 
 export const BINDING = `sha256:${'b'.repeat(64)}`;
@@ -49,7 +54,6 @@ export const amount = (limitId: string, scopeKey: string, maximum: string, unit:
 export interface ReservationSpec {
   readonly executionId: string;
   readonly limits: readonly ExerciseControlLimit[];
-  readonly reservedAt?: string;
   readonly boundedGrantId?: string;
   readonly action?: string;
   /** Canonical decimal text and unit. */
@@ -76,7 +80,6 @@ export function reservation(spec: ReservationSpec): ExerciseReservationRequest {
     }),
     policyDigest: exerciseControlPolicyDigest(limits),
     authorityBindingDigest: spec.authorityBindingDigest ?? BINDING,
-    reservedAt: spec.reservedAt ?? T0,
     rules: limits.map((limit) => {
       if (limit.metric === 'count') return { limit, usage: '1' };
       assert.ok(spec.amount !== undefined, 'an amount rule needs an amount in the test spec');
@@ -93,9 +96,33 @@ export interface LedgerUnderTest {
 let sequence = 0;
 const nextId = (label: string): string => `exec-${label}-${(sequence += 1)}`;
 
-export function describeExerciseControlLedgerContract(name: string, open: () => Promise<LedgerUnderTest>): void {
+/** A clock a test moves by hand. The ledger under test samples it inside admission. */
+export interface ManualClock {
+  readonly now: () => string;
+  set(instant: string): void;
+  advance(seconds: number): void;
+}
+
+export function manualClock(start: string = T0): ManualClock {
+  let current = start;
+  return {
+    now: () => current,
+    set(instant) {
+      current = instant;
+    },
+    advance(seconds) {
+      current = new Date(Date.parse(current) + seconds * 1000).toISOString();
+    },
+  };
+}
+
+export function describeExerciseControlLedgerContract(name: string, open: (now: () => string) => Promise<LedgerUnderTest>): void {
+  // One clock per contract, reset to T0 for every test, read by the ledger.
+  const clock = manualClock();
+
   async function withLedger(run: (ledger: ExerciseControlLedgerPort) => Promise<void>): Promise<void> {
-    const subject = await open();
+    clock.set(T0);
+    const subject = await open(clock.now);
     try {
       await run(subject.ledger);
     } finally {
@@ -103,8 +130,11 @@ export function describeExerciseControlLedgerContract(name: string, open: () => 
     }
   }
 
-  async function reserve(ledger: ExerciseControlLedgerPort, spec: Omit<ReservationSpec, 'executionId'> & { readonly executionId?: string }) {
-    return ledger.reserve(reservation({ executionId: spec.executionId ?? nextId('r'), ...spec }));
+  /** Reserve with the ledger clock standing at `at` (T0 by default): the instant the ledger will admit at. */
+  async function reserve(ledger: ExerciseControlLedgerPort, spec: Omit<ReservationSpec, 'executionId'> & { readonly executionId?: string; readonly at?: string }) {
+    const { at: instant = T0, ...rest } = spec;
+    clock.set(instant);
+    return ledger.reserve(reservation({ executionId: spec.executionId ?? nextId('r'), ...rest }));
   }
 
   describe(`${name} — §40 aggregate count`, () => {
@@ -178,9 +208,9 @@ export function describeExerciseControlLedgerContract(name: string, open: () => 
 
     it('1–4. max 2 / 60s: t=0 and t=10 reserve, and a third at t=20 is refused', () =>
       withLedger(async (ledger) => {
-        assert.equal((await reserve(ledger, { limits: velocity, reservedAt: at(0) })).outcome, 'reserved');
-        assert.equal((await reserve(ledger, { limits: velocity, reservedAt: at(10) })).outcome, 'reserved');
-        const third = await reserve(ledger, { limits: velocity, reservedAt: at(20) });
+        assert.equal((await reserve(ledger, { limits: velocity, at: at(0) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: velocity, at: at(10) })).outcome, 'reserved');
+        const third = await reserve(ledger, { limits: velocity, at: at(20) });
         assert.equal(third.outcome, 'refused');
         assert.deepEqual(third.outcome === 'refused' ? [...third.reasonCodes] : [], [R.EXERCISE_CONTROL_LIMIT_EXCEEDED]);
       }));
@@ -188,48 +218,48 @@ export function describeExerciseControlLedgerContract(name: string, open: () => 
     it('the window edge is exact: a reservation leaves exactly `seconds` after its reservation instant', () =>
       withLedger(async (ledger) => {
         const edge = [count('edge', 'grant:e', 1, { kind: 'rolling', seconds: 60 })];
-        assert.equal((await reserve(ledger, { limits: edge, reservedAt: at(0) })).outcome, 'reserved');
-        assert.equal((await reserve(ledger, { limits: edge, reservedAt: at(59.999) })).outcome, 'refused');
-        assert.equal((await reserve(ledger, { limits: edge, reservedAt: at(60) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: edge, at: at(0) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: edge, at: at(59.999) })).outcome, 'refused');
+        assert.equal((await reserve(ledger, { limits: edge, at: at(60) })).outcome, 'reserved');
       }));
 
     it('5. at t=61 the t=0 reservation has aged out and one more is admitted', () =>
       withLedger(async (ledger) => {
-        await reserve(ledger, { limits: velocity, reservedAt: at(0) });
-        await reserve(ledger, { limits: velocity, reservedAt: at(10) });
-        assert.equal((await reserve(ledger, { limits: velocity, reservedAt: at(61) })).outcome, 'reserved');
-        assert.equal((await reserve(ledger, { limits: velocity, reservedAt: at(62) })).outcome, 'refused');
+        await reserve(ledger, { limits: velocity, at: at(0) });
+        await reserve(ledger, { limits: velocity, at: at(10) });
+        assert.equal((await reserve(ledger, { limits: velocity, at: at(61) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: velocity, at: at(62) })).outcome, 'refused');
       }));
 
     it('6. settled rows age by reservation time, not settlement time', () =>
       withLedger(async (ledger) => {
-        const early = reservation({ executionId: nextId('age'), limits: [count('age', 'grant:a', 1, { kind: 'rolling', seconds: 60 })], reservedAt: at(0) });
+        const early = reservation({ executionId: nextId('age'), limits: [count('age', 'grant:a', 1, { kind: 'rolling', seconds: 60 })] });
         await ledger.reserve(early);
         await ledger.settle({ reservationId: early.reservationId, reason: 'executed', recordedAt: at(59) });
-        assert.equal((await reserve(ledger, { limits: [count('age', 'grant:a', 1, { kind: 'rolling', seconds: 60 })], reservedAt: at(61) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: [count('age', 'grant:a', 1, { kind: 'rolling', seconds: 60 })], at: at(61) })).outcome, 'reserved');
       }));
 
     it('7. a released row does not count inside the window', () =>
       withLedger(async (ledger) => {
-        const first = reservation({ executionId: nextId('rel'), limits: velocity, reservedAt: at(0) });
+        const first = reservation({ executionId: nextId('rel'), limits: velocity });
         await ledger.reserve(first);
-        await reserve(ledger, { limits: velocity, reservedAt: at(1) });
+        await reserve(ledger, { limits: velocity, at: at(1) });
         await ledger.release({ reservationId: first.reservationId, reason: 'emergency-control', recordedAt: at(2) });
-        assert.equal((await reserve(ledger, { limits: velocity, reservedAt: at(3) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: velocity, at: at(3) })).outcome, 'reserved');
       }));
 
     it('8. a pending row counts inside the window', () =>
       withLedger(async (ledger) => {
-        await reserve(ledger, { limits: velocity, reservedAt: at(0) });
-        await reserve(ledger, { limits: velocity, reservedAt: at(1) });
-        assert.equal((await reserve(ledger, { limits: velocity, reservedAt: at(2) })).outcome, 'refused');
+        await reserve(ledger, { limits: velocity, at: at(0) });
+        await reserve(ledger, { limits: velocity, at: at(1) });
+        assert.equal((await reserve(ledger, { limits: velocity, at: at(2) })).outcome, 'refused');
       }));
 
     it('9. a reservation apparently in the future is counted conservatively — clock rollback frees nothing', () =>
       withLedger(async (ledger) => {
         const rolled = [count('rollback', 'grant:r', 1, { kind: 'rolling', seconds: 60 })];
-        assert.equal((await reserve(ledger, { limits: rolled, reservedAt: at(3600) })).outcome, 'reserved');
-        assert.equal((await reserve(ledger, { limits: rolled, reservedAt: at(0) })).outcome, 'refused', 'the clock went back an hour; the future reservation still counts');
+        assert.equal((await reserve(ledger, { limits: rolled, at: at(3600) })).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits: rolled, at: at(0) })).outcome, 'refused', 'the clock went back an hour; the future reservation still counts');
       }));
   });
 
@@ -319,7 +349,8 @@ export function describeExerciseControlLedgerContract(name: string, open: () => 
       withLedger(async (ledger) => {
         const request = reservation({ executionId: nextId('same'), limits });
         assert.equal((await ledger.reserve(request)).outcome, 'reserved');
-        const again = await ledger.reserve({ ...request, reservedAt: at(30) });
+        clock.set(at(30));
+        const again = await ledger.reserve(request);
         assert.equal(again.outcome, 'already-reserved');
         assert.equal(again.outcome === 'already-reserved' ? again.reservation.reservedAt : undefined, T0, 'the first reservation stands, never re-dated');
         // Four more fit, so the re-delivery did not consume a second unit.
@@ -365,6 +396,65 @@ export function describeExerciseControlLedgerContract(name: string, open: () => 
         await assert.rejects(ledger.reserve({ ...request, policyDigest: `sha256:${'0'.repeat(64)}` }), 'a policy digest that does not match the rules is refused');
         await assert.rejects(ledger.reserve({ ...request, rules: [{ limit: count('identity', 'grant:i', 5), usage: '2' }] }), 'a count consumes exactly one');
         assert.equal(await ledger.read(request.reservationId), undefined);
+      }));
+  });
+
+  describe(`${name} — the reservation instant is the ledger's admission instant`, () => {
+    const rolling = [count('lock-wait', 'grant:lw', 1, { kind: 'rolling', seconds: 60 })];
+
+    /**
+     * A ledger whose admission is delayed: time moves on while the caller waits
+     * for it — the SQLite `BEGIN IMMEDIATE` write-lock wait, simulated — and only
+     * then does the ledger under test run its critical section.
+     */
+    function delayed(ledger: ExerciseControlLedgerPort, waitSeconds: number): ExerciseControlLedgerPort {
+      return {
+        async reserve(request) {
+          clock.advance(waitSeconds);
+          return ledger.reserve(request);
+        },
+        settle: (input) => ledger.settle(input),
+        release: (input) => ledger.release(input),
+        read: (reservationId) => ledger.read(reservationId),
+      };
+    }
+
+    it('the returned record carries the instant the ledger sampled, and it is the one persisted', () =>
+      withLedger(async (ledger) => {
+        const request = reservation({ executionId: nextId('instant'), limits: rolling });
+        clock.set(at(5));
+        const outcome = await ledger.reserve(request);
+        assert.equal(outcome.outcome === 'reserved' ? outcome.reservation.reservedAt : undefined, at(5));
+        assert.equal((await ledger.read(request.reservationId))?.reservation.reservedAt, at(5));
+      }));
+
+    it('max=1 / 60 s through the gate: a reservation assessed at t=0 that waits 5 s to be admitted blocks until t=65, not t=60', () =>
+      withLedger(async (inner) => {
+        const gate = createExerciseControlGate({ policy: () => rolling, authorityBinding: () => BINDING, reservationLedger: delayed(inner, 5), now: clock.now });
+        const admit = (executionId: string, assessedAt: string) =>
+          gate.admit({
+            grant: { id: 'aoc.grant:contract', subject: 'agent-A', issuedAt: at(-60), expiresAt: at(3600), correlation: { requestId: 'req-1', decisionId: 'dec-1', action: 'payment', resourceScope: 'vendor/V123' }, authorityBindingDigest: BINDING },
+            attempt: { action: 'payment', resource: 'vendor/V123' },
+            executionId,
+            at: assessedAt,
+          });
+
+        // Assessed at t=0; the ledger admits at t=5, after the simulated wait.
+        clock.set(at(0));
+        const first = await admit('lock-wait-1', at(0));
+        assert.equal(first.kind, 'admitted');
+        const reservationId = first.kind === 'admitted' ? first.reservation.reservationId : '';
+        assert.equal((await inner.read(reservationId))?.reservation.reservedAt, at(5), 'the persisted instant is the ledger admission instant, not the assessment instant');
+
+        // Immediately after it completes, and for the FULL window from t=5, it blocks.
+        for (const seconds of [5, 30, 60, 64.999]) {
+          clock.set(at(seconds));
+          const blocked = await inner.reserve(reservation({ executionId: nextId('blocked'), limits: rolling }));
+          assert.equal(blocked.outcome, 'refused', `still inside the window at t=${String(seconds)}`);
+        }
+        // At the real reservation instant + window, capacity returns.
+        clock.set(at(65));
+        assert.equal((await inner.reserve(reservation({ executionId: nextId('after'), limits: rolling }))).outcome, 'reserved');
       }));
   });
 

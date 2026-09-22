@@ -314,7 +314,8 @@ exercise controls, everything above holds unchanged. A deployment that composes
 `authorityBindingDigest`, an opaque SHA-256 commitment to the binding resolved
 (and commit-proved) at issuance, and at exercise a separate, synchronous
 `revalidateAuthorityBinding` resolver must answer with a binding whose canonical
-digest is **exactly** that one — before and after the reservation. This does not
+digest is **exactly** that one — before the reservation, and after it against
+the grant as re-read from the store. This does not
 re-derive lineage or re-read the mandate for containment; it asks the host
 "is the authority this grant was issued under still exactly the one that
 holds?", and any difference — a new `authorityRef`, a shorter or longer

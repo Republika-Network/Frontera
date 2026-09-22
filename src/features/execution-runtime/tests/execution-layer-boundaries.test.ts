@@ -500,9 +500,10 @@ describe('Execution layer boundaries — P7 reservation finalization is centrali
     assert.notEqual(start, -1, 'the finalization helper must exist');
     const afterHelper = text.slice(text.indexOf('};', start) + 2, exerciseEnd);
     const returns = [...afterHelper.matchAll(/\breturn\b\s*([^;\n]*)/g)].map((match) => match[1] ?? '');
-    // Emergency re-check, registry stop, adapter throw, unreadable result,
-    // unconfirmed, failed, executed.
-    assert.equal(returns.length, 7, `expected every post-reservation exit to be measured, found ${returns.length}`);
+    // Grant read #2 withheld, binding #2 withheld, emergency re-check,
+    // registry stop, adapter throw, unreadable result, unconfirmed, failed,
+    // executed.
+    assert.equal(returns.length, 9, `expected every post-reservation exit to be measured, found ${returns.length}`);
     for (const value of returns) {
       assert.ok(value.startsWith('finish('), `a post-reservation exit bypasses finalization: return ${value}`);
     }
@@ -518,13 +519,23 @@ describe('Execution layer boundaries — P7 reservation finalization is centrali
     assert.ok(/case 'execution-unconfirmed':\s*return \{ kind: 'settle'/.test(disposition), 'an unconfirmed effect settles — it never returns capacity');
   });
 
-  it('with exercise controls composed, the adapter is invoked only after admission and the emergency re-check', () => {
+  it('with exercise controls composed, the adapter is invoked only after admission, a fresh grant read and assessment, binding #2 and the emergency re-check', () => {
     const text = codeOf(SERVICE);
     const admit = text.indexOf('await exerciseControl.admit(');
+    const reread = text.indexOf('const second = await readAndAssess();');
+    const revalidate = text.indexOf('exerciseControl.revalidate(reservation, exerciseControlInputFor(trustedGrant, exercisedAt))');
     const recheck = text.indexOf('const recheck = readEmergencyControl(emergencyControl, emergencyQuery)');
     const call = text.search(/\badapter\s*\.\s*execute\s*\(/);
-    for (const index of [admit, recheck, call]) assert.notEqual(index, -1);
-    assert.ok(admit < recheck && recheck < call);
+    for (const index of [admit, reread, revalidate, recheck, call]) assert.notEqual(index, -1);
+    assert.ok(admit < reread && reread < revalidate && revalidate < recheck && recheck < call, 'reserve → grant read #2 → binding #2 → emergency #2 → adapter');
     assert.equal([...text.matchAll(/exerciseControl\.admit\(/g)].length, 1);
+    assert.equal([...text.matchAll(/exerciseControl\.revalidate\(/g)].length, 1);
+    // Nothing awaited between the final grant read and the provider crossing:
+    // the binding and emergency checks are synchronous.
+    const tail = text.slice(reread + 'const second = await readAndAssess();'.length, call);
+    assert.equal(/\bawait\b/.test(tail.replace(/returned = await\s*$/, '')), false, 'no await between the final revalidation and the adapter');
+    // The validated action is built from the re-read grant, never a copy held from before the reservation.
+    const action = text.slice(text.indexOf('const action: ValidatedExecutionAction = {'), call);
+    assert.ok(action.includes('subject: trustedGrant.subject') && action.includes('notAfter: trustedGrant.expiresAt'));
   });
 });

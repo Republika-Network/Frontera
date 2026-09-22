@@ -12,8 +12,8 @@ import {
   type ExerciseControlPolicy,
   type ExerciseControlQuery,
 } from '../../exercise-control-runtime/index.js';
-import { BINDING, OTHER_BINDING, amount, count } from '../../exercise-control-runtime/tests/exercise-control-ledger-contract.js';
-import { createInMemoryBoundedGrantStore, type BoundedGrant } from '../../grant-runtime/index.js';
+import { BINDING, OTHER_BINDING, amount, count, manualClock } from '../../exercise-control-runtime/tests/exercise-control-ledger-contract.js';
+import { boundedGrantDigest, createInMemoryBoundedGrantStore, type BoundedGrant, type BoundedGrantReaderPort, type ReadBoundedGrantResult } from '../../grant-runtime/index.js';
 import {
   GRANT_EXERCISE_REASON_CODES,
   createExecutionAdapterRegistry,
@@ -31,8 +31,8 @@ import { buildExerciseRequest, buildTestGrant, createRecordingExecutionAdapter, 
  * everything: **was the adapter called, and what happened to the reservation?**
  *
  * ```
- * grant read -> containment -> emergency -> binding #1 -> policy -> RESERVE
- *   -> binding #2 -> emergency #2 -> adapter -> settle | release
+ * grant read #1 -> containment #1 -> emergency #1 -> binding #1 -> policy -> RESERVE
+ *   -> grant read #2 -> containment #2 -> binding #2 -> emergency #2 -> adapter -> settle | release
  * ```
  */
 
@@ -50,8 +50,13 @@ interface Faults {
   reserveReturns?: unknown;
   settleThrows?: boolean;
   releaseThrows?: boolean;
+  /** Runs before the inner ledger admits: time spent waiting for the write lock. */
+  beforeReserve?: () => void;
   duringReserve?: () => void;
 }
+
+/** What the store answers on the n-th authoritative read (1-based). `undefined` reads the real store. */
+type StoreRead = (call: number, real: () => Promise<ReadBoundedGrantResult>) => Promise<ReadBoundedGrantResult> | undefined;
 
 function instrumented(inner: ExerciseControlLedgerPort, counts: LedgerCounts, faults: Faults): ExerciseControlLedgerPort {
   return {
@@ -59,6 +64,7 @@ function instrumented(inner: ExerciseControlLedgerPort, counts: LedgerCounts, fa
       counts.reserve += 1;
       if (faults.reserveThrows === true) throw new Error('ledger unreachable');
       if (faults.reserveReturns !== undefined) return faults.reserveReturns as never;
+      faults.beforeReserve?.();
       const outcome = await inner.reserve(request);
       faults.duringReserve?.();
       return outcome;
@@ -86,43 +92,76 @@ interface WorldOptions {
   readonly faults?: Faults;
   readonly adapter?: (controls: ReturnType<typeof createInMemoryEmergencyControlStore>) => ExecutionAdapter;
   readonly composeExerciseControl?: boolean;
+  readonly storeRead?: StoreRead;
 }
 
 async function world(options: WorldOptions = {}) {
   const grant = options.grant ?? buildTestGrant({ authorityBindingDigest: BINDING });
   const store = createInMemoryBoundedGrantStore();
   assert.equal((await store.issue({ grant, commitGuard: () => ({ permitted: true, reasonCodes: [] }) })).outcome, 'issued');
-  const recording = createRecordingExecutionAdapter(options.behaviour);
+  // Every checkpoint appends here, so the order the gate runs them in is itself asserted.
+  const events: string[] = [];
+  const clock = manualClock(AT);
+  const recording = createRecordingExecutionAdapter((action) => {
+    events.push('adapter');
+    return (options.behaviour ?? (() => ({ outcome: 'completed', providerRef: 'provider-ref-1' }) as ExecutionAdapterResult))(action);
+  });
   const controls = createInMemoryEmergencyControlStore();
   const counts: LedgerCounts = { reserve: 0, settle: 0, release: 0 };
   const faults: Faults = { ...options.faults };
-  const inner = createInMemoryExerciseControlLedger();
-  const ledger = instrumented(inner, counts, faults);
+  const inner = createInMemoryExerciseControlLedger({ now: clock.now });
+  const ledger = instrumented(
+    {
+      ...inner,
+      reserve: (request) => {
+        events.push('reserve');
+        return inner.reserve(request);
+      },
+    },
+    counts,
+    faults,
+  );
   const policyQueries: ExerciseControlQuery[] = [];
   const bindingQueries: ExerciseControlQuery[] = [];
   let bindingCalls = 0;
+  let storeReads = 0;
+  const readerStore: BoundedGrantReaderPort = {
+    read: async (grantId) => {
+      storeReads += 1;
+      events.push('grant-read');
+      return (await options.storeRead?.(storeReads, () => store.read(grantId))) ?? store.read(grantId);
+    },
+  };
+  const emergencyReader = createEmergencyControlReader(controls);
   const gate = createExerciseControlGate({
     policy:
       options.policy ??
       ((query) => {
         policyQueries.push(query);
+        events.push('policy');
         return options.limits ?? [count('grant-uses', `grant:${query.boundedGrantId}`, 1)];
       }),
     authorityBinding: (query) => {
       bindingQueries.push(query);
       bindingCalls += 1;
+      events.push('binding');
       return options.binding === undefined ? BINDING : options.binding(query, bindingCalls);
     },
     reservationLedger: ledger,
-    now: () => AT,
+    now: clock.now,
   });
   const adapter = options.adapter?.(controls) ?? recording;
   const service = createGrantExecutionService({
-    store,
+    store: readerStore,
     adapter,
-    emergencyControl: createEmergencyControlReader(controls),
+    emergencyControl: {
+      read: (query) => {
+        events.push('emergency');
+        return emergencyReader.read(query);
+      },
+    },
     ...(options.composeExerciseControl === false ? {} : { exerciseControl: gate }),
-    now: () => AT,
+    now: clock.now,
   });
   const reservationIdFor = (executionId: string) => exerciseReservationId({ boundedGrantId: grant.id, executionId });
   return {
@@ -135,9 +174,12 @@ async function world(options: WorldOptions = {}) {
     ledger: inner,
     policyQueries,
     bindingQueries,
+    events,
+    clock,
     exercise: (request: GrantExerciseRequest = buildExerciseRequest(grant)): Promise<ExecutionOutcome> => service.exercise(request),
     stateOf: async (executionId = 'exec-1') => (await inner.read(reservationIdFor(executionId)))?.state,
     reasonOf: async (executionId = 'exec-1') => (await inner.read(reservationIdFor(executionId)))?.terminal?.reason,
+    reservedAtOf: async (executionId = 'exec-1') => (await inner.read(reservationIdFor(executionId)))?.reservation.reservedAt,
   };
 }
 
@@ -440,5 +482,179 @@ describe('P7 in the gate — §48 emergency interaction', () => {
     assert.equal(child?.callCount, 0);
     assert.equal(await w.stateOf(), 'released');
     assert.equal(await w.reasonOf(), 'emergency-control');
+  });
+});
+
+/** The same grant id with different content, re-sealed so its digest is internally consistent: what a second read could return. */
+function reissued(grant: BoundedGrant, change: Partial<Pick<BoundedGrant, 'expiresAt' | 'scope' | 'authorityBindingDigest'>>): BoundedGrant {
+  const { digest: _digest, ...rest } = grant;
+  const withoutDigest = { ...rest, ...change };
+  return { ...withoutDigest, digest: boundedGrantDigest(withoutDigest) };
+}
+
+function secondsAfter(instant: string, seconds: number): string {
+  return new Date(Date.parse(instant) + seconds * 1000).toISOString();
+}
+
+function grantExerciseWithheld(outcome: ExecutionOutcome): readonly string[] {
+  assert.ok(outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise', JSON.stringify(outcome));
+  assert.equal(outcome.assessment.usable, false);
+  return outcome.assessment.reasonCodes;
+}
+
+describe('P7 in the gate — the grant is re-read and re-assessed after the reservation', () => {
+  it('the final order: read #1, containment, emergency #1, binding #1, policy, reserve, read #2, binding #2, emergency #2, adapter', async () => {
+    const w = await world();
+    assert.equal((await w.exercise()).status, 'executed');
+    assert.deepEqual(w.events, ['grant-read', 'emergency', 'binding', 'policy', 'reserve', 'grant-read', 'binding', 'emergency', 'adapter']);
+  });
+
+  it('A. the grant expires while the reservation waits: read #2 sees it, the reservation is released, 0 adapter calls', async () => {
+    const expiresAt = secondsAfter(AT, 60);
+    let w: Awaited<ReturnType<typeof world>> | undefined;
+    w = await world({ grant: buildTestGrant({ authorityBindingDigest: BINDING, expiresAt }), faults: { beforeReserve: () => w?.clock.set(expiresAt) } });
+    const outcome = await w.exercise();
+    assert.deepEqual(grantExerciseWithheld(outcome), [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_EXPIRED]);
+    assert.equal(outcome.exercisedAt, expiresAt, 'the reported instant is the one the final assessment ran at');
+    assert.equal(w.counts.reserve, 1, 'the reservation was created');
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(await w.reasonOf(), 'grant-exercise');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('B. the grant is revoked while the reservation waits: read #2 sees the revocation, released, 0 adapter calls', async () => {
+    let w: Awaited<ReturnType<typeof world>> | undefined;
+    w = await world({
+      faults: {
+        duringReserve: () => {
+          void w?.store.revoke({ grantId: w.grant.id, reason: 'security-incident', revokedAt: AT, issuerRef: 'ops' });
+        },
+      },
+    });
+    const outcome = await w.exercise();
+    assert.deepEqual(grantExerciseWithheld(outcome), [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REVOKED]);
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(await w.reasonOf(), 'grant-exercise');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('C. the grant store fails on read #2: not found, released, 0 adapter calls', async () => {
+    const w = await world({
+      storeRead: (call) => (call === 2 ? Promise.reject(new Error('grant store unreachable')) : undefined),
+    });
+    const outcome = await w.exercise();
+    assert.deepEqual(grantExerciseWithheld(outcome), [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND]);
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(await w.reasonOf(), 'grant-exercise');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('C. the grant store fails on read #2 AND the release cannot be recorded: the reservation is conservatively retained', async () => {
+    const w = await world({
+      faults: { releaseThrows: true },
+      storeRead: (call) => (call === 2 ? Promise.reject(new Error('grant store unreachable')) : undefined),
+    });
+    assert.deepEqual(grantExerciseWithheld(await w.exercise()), [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND]);
+    assert.equal(await w.stateOf(), 'reserved', 'still consuming: a release that cannot be proven is not pretended');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('C. read #2 returns no grant, or a corrupt one: withheld with the grant layer codes, released, 0 adapter calls', async () => {
+    const rows: readonly (readonly [string, StoreRead, string])[] = [
+      ['no grant', (call) => (call === 2 ? Promise.resolve({}) : undefined), GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND],
+      [
+        'tampered grant',
+        (call, real) => (call === 2 ? real().then((read) => ({ ...read, ...(read.grant !== undefined ? { grant: { ...read.grant, expiresAt: '2099-01-01T00:00:00.000Z' } } : {}) })) : undefined),
+        GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_INTEGRITY_INVALID,
+      ],
+    ];
+    for (const [label, storeRead, code] of rows) {
+      const w = await world({ storeRead });
+      assert.deepEqual(grantExerciseWithheld(await w.exercise()), [code], label);
+      assert.equal(await w.stateOf(), 'released', label);
+      assert.equal(await w.reasonOf(), 'grant-exercise', label);
+      assert.equal(w.adapter.callCount, 0, label);
+    }
+  });
+
+  it('read #2 returns a grant that no longer contains the attempted action: withheld, released, 0 adapter calls', async () => {
+    let base: BoundedGrant | undefined;
+    const w = await world({
+      storeRead: (call) =>
+        call === 2 && base !== undefined ? Promise.resolve({ grant: reissued(base, { scope: { ...base.scope, amount: { kind: 'ceiling', limit: 100, unit: 'USD' } } }) }) : undefined,
+    });
+    base = w.grant;
+    assert.deepEqual(grantExerciseWithheld(await w.exercise()), [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED]);
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('D. the grant is unchanged and still contains the attempt: the final assessment is usable and the adapter runs exactly once', async () => {
+    let w: Awaited<ReturnType<typeof world>> | undefined;
+    w = await world({ faults: { beforeReserve: () => w?.clock.advance(5) } });
+    const outcome = await w.exercise();
+    assert.equal(outcome.status, 'executed');
+    assert.equal(outcome.assessment.usable, true);
+    assert.equal(outcome.exercisedAt, secondsAfter(AT, 5), 'the outcome carries the instant of the assessment that guarded the provider crossing');
+    assert.equal(await w.reservedAtOf(), secondsAfter(AT, 5), 'the reservation instant is the ledger admission instant');
+    assert.equal(w.adapter.callCount, 1);
+    assert.equal(await w.stateOf(), 'settled');
+  });
+
+  it('E. the validated action is built from read #2: its notAfter is the re-read grant horizon', async () => {
+    const later = secondsAfter(AT, 240);
+    let base: BoundedGrant | undefined;
+    const w = await world({ storeRead: (call) => (call === 2 && base !== undefined ? Promise.resolve({ grant: reissued(base, { expiresAt: later }) }) : undefined) });
+    base = w.grant;
+    assert.notEqual(w.grant.expiresAt, later);
+    assert.equal((await w.exercise()).status, 'executed');
+    assert.equal(w.adapter.calls[0]?.notAfter, later, 'not the stale horizon read before the reservation');
+    assert.equal(w.adapter.calls[0]?.subject, w.grant.subject);
+    assert.equal(w.bindingQueries[1]?.grantExpiresAt, later, 'binding #2 is asked about the re-read grant');
+  });
+
+  it('F. a binding that changes only after the reservation is caught by binding #2 — after the second grant assessment — released, 0 adapter calls', async () => {
+    const w = await world({ binding: (_query, call) => (call === 1 ? BINDING : OTHER_BINDING) });
+    assert.deepEqual(exerciseControlCodes(await w.exercise()), [X.EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED]);
+    assert.deepEqual(w.events, ['grant-read', 'emergency', 'binding', 'policy', 'reserve', 'grant-read', 'binding'], 'the second grant read precedes binding #2, and nothing follows the refusal');
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(await w.reasonOf(), 'exercise-control');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('F. a re-read grant carrying different binding provenance than the reservation was admitted under is withheld as changed', async () => {
+    let base: BoundedGrant | undefined;
+    const w = await world({
+      binding: (_query, call) => (call === 1 ? BINDING : OTHER_BINDING),
+      storeRead: (call) => (call === 2 && base !== undefined ? Promise.resolve({ grant: reissued(base, { authorityBindingDigest: OTHER_BINDING }) }) : undefined),
+    });
+    base = w.grant;
+    assert.deepEqual(exerciseControlCodes(await w.exercise()), [X.EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED]);
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('G. an emergency stop activated during the reservation: final grant and binding pass, emergency #2 catches it, released, 0 adapter calls', async () => {
+    let w: Awaited<ReturnType<typeof world>> | undefined;
+    w = await world({
+      faults: {
+        duringReserve: () => {
+          w?.controls.activate({ scope: 'actor', value: 'agent-A', issuerRef: ISSUER, declaredAt: AT });
+        },
+      },
+    });
+    const outcome = await w.exercise();
+    assert.ok(outcome.status === 'withheld' && outcome.withheldBy === 'emergency-control', JSON.stringify(outcome));
+    assert.equal(outcome.assessment.usable, true, 'the final grant assessment passed');
+    assert.deepEqual(w.events, ['grant-read', 'emergency', 'binding', 'policy', 'reserve', 'grant-read', 'binding', 'emergency']);
+    assert.equal(await w.stateOf(), 'released');
+    assert.equal(await w.reasonOf(), 'emergency-control');
+    assert.equal(w.adapter.callCount, 0);
+  });
+
+  it('without exercise controls there is exactly one grant read, as before P7', async () => {
+    const w = await world({ composeExerciseControl: false });
+    assert.equal((await w.exercise()).status, 'executed');
+    assert.deepEqual(w.events, ['grant-read', 'emergency', 'adapter']);
   });
 });

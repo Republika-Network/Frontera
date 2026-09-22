@@ -20,7 +20,7 @@ domain/
   exercise-control-ledger-port.ts    ExerciseControlLedgerPort — what every ledger must guarantee
   exercise-authority-binding.ts      exact-equality revalidation against the grant's opaque provenance digest
 services/
-  exercise-control-gate.ts           admit (binding #1 → policy → atomic reserve → binding #2) and finalize
+  exercise-control-gate.ts           admit (binding #1 → policy → atomic reserve), revalidate (binding #2, after the grant re-read), finalize
   in-memory-exercise-control-ledger.ts  process-local, NOT durable, for focused tests
 ```
 
@@ -34,7 +34,9 @@ storage. Both ledgers pass the same contract suite
 1. **The grant stays immutable.** Consumption lives here, keyed by reservation,
    never on `BoundedGrant`.
 2. **Reservation before effect.** A reservation consumes from the moment it
-   commits; `reserved` and `settled` consume, `released` does not.
+   commits; `reserved` and `settled` consume, `released` does not. The
+   reservation instant is the ledger's: sampled from its injected clock inside
+   its admission critical section, never supplied by a caller.
 3. **Unconfirmed consumes.** Only a definite no-effect result or a withholding
    after the reservation releases.
 4. **No expiry.** Nothing here ages, sweeps or releases a reservation on its own.

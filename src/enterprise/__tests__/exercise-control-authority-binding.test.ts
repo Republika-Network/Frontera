@@ -27,7 +27,7 @@ import {
   type ExerciseAuthorityBindingResolver,
   type GrantAuthorityBinding,
 } from '../execution-governance/index.js';
-import { ALLOWED_INTENT, IDENTITY, NO_TEMPORAL_BOUND, ORG, buildGovernedWorld } from './governed-action-support.js';
+import { ALLOWED_INTENT, IDENTITY, NOW, NO_TEMPORAL_BOUND, ORG, buildGovernedWorld } from './governed-action-support.js';
 
 /**
  * §22–§25, §47, §52 — the authority binding a grant was issued under becomes
@@ -105,7 +105,7 @@ describe('§25 the exercise-time bridge: host binding → canonical digest', () 
 
 describe('§24 issuance records the binding digest, and §47 exercise revalidates it exactly', () => {
   function governed(options: { readonly issuedUnder?: GrantAuthorityBinding; readonly atExercise?: ExerciseAuthorityBindingResolver } = {}) {
-    const inner = createInMemoryExerciseControlLedger();
+    const inner = createInMemoryExerciseControlLedger({ now: () => NOW });
     const reserves: string[] = [];
     const ledger = { ...inner, reserve: (request: Parameters<typeof inner.reserve>[0]) => (reserves.push(request.reservationId), inner.reserve(request)) };
     const queries: ExerciseControlQuery[] = [];

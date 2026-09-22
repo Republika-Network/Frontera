@@ -3,7 +3,8 @@ import {
   exerciseControlBucketKey,
   exerciseReservationTerminalReasonMatches,
   exerciseReservationsDescribeSameAttempt,
-  isWellFormedExerciseReservation,
+  isExerciseReservationInstant,
+  isWellFormedExerciseReservationRequest,
   type ExerciseControlActiveUsage,
   type ExerciseControlLedgerPort,
   type ExerciseControlRuleUsage,
@@ -31,12 +32,22 @@ import {
  * synchronous critical section with no `await`, pending reservations consume,
  * duplicates and conflicts never write, the one terminal event is immutable,
  * and amounts are exact decimals.
+ *
+ * The reservation instant is sampled from the injected clock **inside** that
+ * synchronous critical section, exactly as the SQLite ledger samples it inside
+ * `BEGIN IMMEDIATE`: the caller never supplies it.
  */
-export function createInMemoryExerciseControlLedger(): ExerciseControlLedgerPort {
+export interface InMemoryExerciseControlLedgerOptions {
+  /** The injected clock the reservation instant is sampled from, inside admission. Never `Date.now()`. */
+  readonly now: () => string;
+}
+
+export function createInMemoryExerciseControlLedger(options: InMemoryExerciseControlLedgerOptions): ExerciseControlLedgerPort {
+  const { now } = options;
   const reservations = new Map<string, ExerciseReservationRecord>();
   const terminals = new Map<string, ExerciseReservationTerminalEvent>();
 
-  function frozenCopy(request: ExerciseReservationRequest): ExerciseReservationRecord {
+  function frozenCopy(request: ExerciseReservationRequest, reservedAt: string): ExerciseReservationRecord {
     return Object.freeze({
       reservationId: request.reservationId,
       executionId: request.executionId,
@@ -44,7 +55,7 @@ export function createInMemoryExerciseControlLedger(): ExerciseControlLedgerPort
       requestDigest: request.requestDigest,
       policyDigest: request.policyDigest,
       authorityBindingDigest: request.authorityBindingDigest,
-      reservedAt: request.reservedAt,
+      reservedAt,
       rules: Object.freeze(
         request.rules.map((rule) =>
           Object.freeze({ limit: Object.freeze({ ...rule.limit, window: Object.freeze({ ...rule.limit.window }) }), usage: rule.usage }),
@@ -93,7 +104,11 @@ export function createInMemoryExerciseControlLedger(): ExerciseControlLedgerPort
   return {
     async reserve(request: ExerciseReservationRequest): Promise<ExerciseReservationOutcome> {
       // ---- critical section begins. No `await` below this line. ----
-      if (!isWellFormedExerciseReservation(request)) throw new TypeError('The reservation request is outside the closed contract.');
+      if (!isWellFormedExerciseReservationRequest(request)) throw new TypeError('The reservation request is outside the closed contract.');
+      // The one reservation instant: sampled here, inside the section, and
+      // used for the window threshold and the stored record alike.
+      const reservedAt = now();
+      if (!isExerciseReservationInstant(reservedAt)) throw new TypeError('The ledger clock did not answer an instant.');
       const existing = reservations.get(request.reservationId);
       if (existing !== undefined) {
         return exerciseReservationsDescribeSameAttempt(existing, request) ? { outcome: 'already-reserved', reservation: existing } : { outcome: 'conflict' };
@@ -104,9 +119,9 @@ export function createInMemoryExerciseControlLedger(): ExerciseControlLedgerPort
       for (const other of reservations.values()) {
         if (other.executionId === request.executionId) return { outcome: 'conflict' };
       }
-      const admission = assessExerciseReservationAdmission(request, activeUsageFor);
+      const admission = assessExerciseReservationAdmission(request, reservedAt, activeUsageFor);
       if (!admission.admitted) return { outcome: 'refused', reasonCodes: admission.reasonCodes, refusedBuckets: admission.refusedBuckets };
-      const record = frozenCopy(request);
+      const record = frozenCopy(request, reservedAt);
       reservations.set(record.reservationId, record);
       // ---- critical section ends. ----
       return { outcome: 'reserved', reservation: record };

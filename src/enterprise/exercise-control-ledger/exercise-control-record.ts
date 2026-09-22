@@ -66,8 +66,10 @@ export function storedReservationDigest(reservation: ExerciseReservationRecord):
 /**
  * One rule row: the reservation it belongs to, its position, the full limit it
  * was admitted under, the usage it consumes, and the reservation instant in
- * epoch milliseconds — the indexed column rolling windows are range-queried by
- * — so none of them can be edited without the digest failing.
+ * epoch milliseconds, so none of them can be edited without the digest
+ * failing. Admission verifies this digest for every row in a bucket **before**
+ * a rolling window is applied to the verified instant, so an unsealed edit of
+ * `reserved_at_ms` cannot move a row out of verification.
  */
 export function serializeStoredRule(input: { readonly reservationId: string; readonly ordinal: number; readonly rule: ExerciseControlRuleUsage; readonly reservedAtMs: number }): string {
   return [

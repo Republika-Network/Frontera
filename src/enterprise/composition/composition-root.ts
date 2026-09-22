@@ -916,7 +916,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     exerciseControlOptions === undefined
       ? undefined
       : (exerciseControlOptions.ledger ??
-        (await createSqliteExerciseControlLedger(configuration.exerciseLedger.sqlitePath, { busyTimeoutMs: configuration.persistence.busyTimeoutMs })));
+        (await createSqliteExerciseControlLedger(configuration.exerciseLedger.sqlitePath, {
+          busyTimeoutMs: configuration.persistence.busyTimeoutMs,
+          // The same clock the grant is assessed by: the ledger samples it
+          // inside BEGIN IMMEDIATE to assign the reservation instant.
+          now: kernelProviders.clock.now,
+        })));
   const exerciseLedgerOpenedHere = exerciseControlOptions !== undefined && exerciseControlOptions.ledger === undefined;
 
   // ONE emergency-control instance for the whole deployment. Every checkpoint

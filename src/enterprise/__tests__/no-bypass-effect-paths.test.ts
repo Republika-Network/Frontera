@@ -286,16 +286,17 @@ describe('NB — the grant is read, never received (SEC-INV-012)', () => {
     const action = /const action: ValidatedExecutionAction = \{([\s\S]*?)\n\s*\};/.exec(service);
     assert.ok(action?.[1] !== undefined, 'the validated action must still be assembled in one place');
     const body = action[1];
-    assert.ok(/subject:\s*grantSubject/.test(body), 'subject crossing the boundary must be the grant subject read from the store, never request.subject');
-    assert.ok(/notAfter:\s*grantExpiresAt/.test(body), 'notAfter crossing the boundary must be the grant horizon read from the store, never a caller value');
+    assert.ok(/subject:\s*trustedGrant\.subject/.test(body), 'subject crossing the boundary must be the grant subject read from the store, never request.subject');
+    assert.ok(/notAfter:\s*trustedGrant\.expiresAt/.test(body), 'notAfter crossing the boundary must be the grant horizon read from the store, never a caller value');
     assert.equal(/subject:\s*request\./.test(body), false, 'the caller may not describe the holder that reaches the adapter');
     assert.equal(/notAfter:\s*request\./.test(body), false, 'the caller may not describe the horizon that reaches the adapter');
   });
 
-  it('both store-read values are sourced from the grant the read returned', () => {
+  it('both store-read values are sourced from the grant the read returned — the latest authoritative read', () => {
     const service = codeOf('src/features/execution-runtime/services/grant-execution-service.ts');
-    assert.ok(/grantExpiresAt\s*=\s*read\.grant\.expiresAt/.test(service), 'grantExpiresAt must be read from the store result');
-    assert.ok(/grantSubject\s*=\s*read\.grant\.subject/.test(service), 'grantSubject must be read from the store result');
+    assert.ok(/grant:\s*read\.grant,/.test(service), 'the trusted grant must be the one the store read returned');
+    const assignments = [...service.matchAll(/\btrustedGrant\s*=(?!=)\s*([^;\n]+)/g)].map((match) => (match[1] ?? '').trim());
+    assert.deepEqual(assignments, ['first.grant', 'second.grant'], 'the trusted grant is only ever a store read result: read #1, then read #2 after the reservation');
   });
 });
 

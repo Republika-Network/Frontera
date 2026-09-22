@@ -93,6 +93,18 @@ export interface ExerciseControlRuleUsage {
  * implementations recompute the ones they can — the reservation id from the
  * grant and execution identity, the policy digest from the rules — so a
  * malformed request cannot be persisted as though it were a well-formed one.
+ *
+ * ## No instant
+ *
+ * A request carries **no** reservation instant, deliberately. The caller does
+ * not know when admission will happen: the SQLite ledger's `BEGIN IMMEDIATE`
+ * can wait on another writer for as long as its busy timeout, and an instant
+ * sampled before that wait would start a rolling window's lifetime early — a
+ * reservation that waited 50 s for the lock under a 60 s window would leave the
+ * window 10 s after it began consuming. The authoritative ledger samples its
+ * own injected clock **inside** its admission critical section, once, and that
+ * one instant is the admission threshold, the persisted `reservedAt` and the
+ * returned record's `reservedAt`.
  */
 export interface ExerciseReservationRequest {
   readonly reservationId: string;
@@ -102,14 +114,23 @@ export interface ExerciseReservationRequest {
   readonly policyDigest: string;
   /** The grant's own authority-binding provenance, verified equal to the current binding before this request was built. */
   readonly authorityBindingDigest: string;
-  /** The reservation instant. Rolling windows age by this, never by settlement time. */
-  readonly reservedAt: string;
   /** Sorted by `(limitId, scopeKey)`, at most one per bucket. */
   readonly rules: readonly ExerciseControlRuleUsage[];
 }
 
-/** A persisted reservation is exactly the request that was admitted, returned as stored. */
-export type ExerciseReservationRecord = ExerciseReservationRequest;
+/**
+ * A persisted reservation: exactly the request that was admitted, plus the
+ * instant the ledger admitted it at, returned as stored.
+ */
+export interface ExerciseReservationRecord extends ExerciseReservationRequest {
+  /**
+   * The reservation instant, assigned by the ledger inside its atomic admission
+   * critical section — after any write-lock wait — from its injected clock.
+   * Never supplied by a caller. Rolling windows age by this, never by
+   * settlement time.
+   */
+  readonly reservedAt: string;
+}
 
 export const EXERCISE_RESERVATION_TERMINAL_KINDS = ['settled', 'released'] as const;
 export type ExerciseReservationTerminalKind = (typeof EXERCISE_RESERVATION_TERMINAL_KINDS)[number];
@@ -166,7 +187,8 @@ export function isWellFormedExerciseDigest(value: unknown): value is string {
   return typeof value === 'string' && SHA256_DIGEST.test(value);
 }
 
-function isInstant(value: unknown): value is string {
+/** Whether a value is an instant a ledger can record a reservation at. A ledger clock that answers anything else fails admission closed. */
+export function isExerciseReservationInstant(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !Number.isNaN(Date.parse(value));
 }
 
@@ -177,21 +199,19 @@ export function isWellFormedExerciseRuleUsage(rule: ExerciseControlRuleUsage): b
 }
 
 /**
- * Whether a reservation request — or a record read back from storage — is
- * internally consistent: the id is the one its grant and execution identity
- * derive, the rules are a canonical sorted limit set, the policy digest is that
- * set's digest, every usage fits its metric, and every other field is present
- * and well formed.
+ * Whether a reservation request is internally consistent: the id is the one
+ * its grant and execution identity derive, the rules are a canonical sorted
+ * limit set, the policy digest is that set's digest, every usage fits its
+ * metric, and every other field is present and well formed.
  *
  * Total, and never repairing: anything else is `false`.
  */
-export function isWellFormedExerciseReservation(request: ExerciseReservationRequest): boolean {
+export function isWellFormedExerciseReservationRequest(request: ExerciseReservationRequest): boolean {
   try {
     if (typeof request.boundedGrantId !== 'string' || request.boundedGrantId.length === 0) return false;
     if (typeof request.executionId !== 'string' || request.executionId.length === 0) return false;
     if (request.reservationId !== exerciseReservationId({ boundedGrantId: request.boundedGrantId, executionId: request.executionId })) return false;
     if (!isWellFormedExerciseDigest(request.requestDigest) || !isWellFormedExerciseDigest(request.policyDigest) || !isWellFormedExerciseDigest(request.authorityBindingDigest)) return false;
-    if (!isInstant(request.reservedAt)) return false;
     if (!Array.isArray(request.rules)) return false;
     const limits = snapshotExerciseControlLimits(request.rules.map((rule) => rule.limit));
     if (limits === undefined) return false;
@@ -202,6 +222,15 @@ export function isWellFormedExerciseReservation(request: ExerciseReservationRequ
     }
     if (exerciseControlPolicyDigest(limits) !== request.policyDigest) return false;
     return request.rules.every(isWellFormedExerciseRuleUsage);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a record read back from storage is a well-formed request admitted at a readable instant. */
+export function isWellFormedExerciseReservation(record: ExerciseReservationRecord): boolean {
+  try {
+    return isExerciseReservationInstant(record.reservedAt) && isWellFormedExerciseReservationRequest(record);
   } catch {
     return false;
   }
@@ -263,17 +292,22 @@ export function exerciseControlRuleVerdict(rule: ExerciseControlRuleUsage, activ
 /**
  * The admission of a whole reservation: every rule within, or none admitted.
  *
+ * `reservedAt` is the instant the ledger sampled inside its own critical
+ * section — the same instant it then persists — so a rolling window is judged
+ * at the moment the reservation actually begins to consume.
+ *
  * Reports every refusing bucket, in rule order, and the reason codes in a
  * stable order — `EXERCISE_CONTROL_UNIT_MISMATCH` before
  * `EXERCISE_CONTROL_LIMIT_EXCEEDED` — so the same world yields the same answer.
  */
 export function assessExerciseReservationAdmission(
   request: ExerciseReservationRequest,
+  reservedAt: string,
   activeUsageFor: (rule: ExerciseControlRuleUsage) => readonly ExerciseControlActiveUsage[],
 ):
   | { readonly admitted: true }
   | { readonly admitted: false; readonly reasonCodes: readonly ExerciseControlReasonCode[]; readonly refusedBuckets: readonly { readonly limitId: string; readonly scopeKey: string }[] } {
-  const atMs = Date.parse(request.reservedAt);
+  const atMs = Date.parse(reservedAt);
   let mismatch = false;
   let exceeded = false;
   const refusedBuckets: { readonly limitId: string; readonly scopeKey: string }[] = [];
@@ -295,7 +329,7 @@ export function assessExerciseReservationAdmission(
   };
 }
 
-/** Whether two reservation requests describe the same attempt, under the same policy and the same binding provenance. The reservation instant is not compared: a re-delivery happens later by definition. */
+/** Whether two reservation requests describe the same attempt, under the same policy and the same binding provenance. A stored record's reservation instant is not compared: a re-delivery happens later by definition. */
 export function exerciseReservationsDescribeSameAttempt(left: ExerciseReservationRequest, right: ExerciseReservationRequest): boolean {
   return (
     left.reservationId === right.reservationId &&

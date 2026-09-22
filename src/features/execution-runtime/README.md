@@ -159,8 +159,11 @@ this module: `ADR-EXERCISE-AGGREGATE-CONTROLS.md`. When a host composes
 `exerciseControl` (an `ExerciseControlGate` from
 `src/features/exercise-control-runtime`), the service asks the gate to admit —
 exercise-time authority-binding revalidation, a validated policy snapshot, an
-atomic reservation, revalidation again — re-reads the emergency control, and
-only then invokes the adapter; every exit after the reservation goes through one
+atomic reservation — then reads the grant again from the store and re-assesses
+it at a fresh instant, asks the gate to revalidate the binding against that
+read, re-reads the emergency control, and only then invokes the adapter with an
+action built from the second read. A grant that expired or was revoked while the
+reservation waited is withheld as `grant-exercise` and the reservation released; every exit after the reservation goes through one
 `finish(...)` helper whose disposition (`reservationDispositionFor`) is
 exhaustive over `ExecutionOutcome`: `executed` and `execution-unconfirmed`
 settle, `execution-failed` and any post-reservation withholding release. A
