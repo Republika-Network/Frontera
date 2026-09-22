@@ -28,7 +28,7 @@ export default function EnrollAgentPage({ searchParams }: Props) {
           <h1 style={{ fontSize: 28, marginBottom: 16 }}>Payment required to enroll an agent.</h1>
           <p style={{ color: 'var(--text-muted)', marginBottom: 40 }}>
             Agent enrollment requires a completed purchase or valid registry access.
-            Choose a plan to get started, then return here to enroll your AI agent.
+            Choose a plan to get started, then return here to enroll your SI agent.
           </p>
           <div className="hero-actions" style={{ justifyContent: 'center' }}>
             <Link href="/pricing" className="btn btn-primary">View Pricing</Link>
@@ -48,7 +48,7 @@ export default function EnrollAgentPage({ searchParams }: Props) {
     <div className="container" style={{ paddingTop: 40, paddingBottom: 80 }}>
       <div className="page-header">
         <div className="section-label">{modeLabel}</div>
-        <h1>Enroll an AI Agent</h1>
+        <h1>Enroll an SI Agent</h1>
         <p>{modeNote}</p>
       </div>
 
