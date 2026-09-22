@@ -139,7 +139,7 @@ describe('P7 composition — §58', () => {
 
   it('C. a custom ledger is used verbatim', async () => {
     const ledgerPath = freshLedgerPath();
-    const inner = createInMemoryExerciseControlLedger();
+    const inner = createInMemoryExerciseControlLedger({ now: () => '2026-01-01T00:00:00.000Z' });
     let reserves = 0;
     const ledger: ExerciseControlLedgerPort = { ...inner, reserve: (request) => ((reserves += 1), inner.reserve(request)) };
     const { enterprise } = await compose({ ledgerPath, exerciseControls: { policy: ONE_PER_ACTOR, revalidateAuthorityBinding: () => NO_TEMPORAL_BOUND, ledger } });

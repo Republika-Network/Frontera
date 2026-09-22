@@ -67,14 +67,17 @@ criticality) and reports the ledger's readable/writable health.
 ## 3. The canonical gate, with P7
 
 ```
-authoritative grant read
-  → containment assessment            unusable → withheld / grant-exercise
-  → emergency control                 active or unreadable → withheld / emergency-control   (no reservation)
+authoritative grant read #1
+  → containment assessment #1         unusable → withheld / grant-exercise
+  → emergency control #1              active or unreadable → withheld / emergency-control   (no reservation)
   → authority-binding revalidation #1 → withheld / exercise-control                          (no reservation)
   → trusted policy snapshot           invalid → withheld / exercise-control                  (no reservation)
   → ATOMIC RESERVATION                refused / conflict / unavailable → withheld / exercise-control
+  → authoritative grant read #2
+  → containment assessment #2         expired / revoked / unreadable / corrupt / no longer covers
+     (fresh injected-clock instant)     → RELEASE, withheld / grant-exercise
   → authority-binding revalidation #2 changed → RELEASE, withheld / exercise-control
-  → emergency control re-check        stopped → RELEASE, withheld / emergency-control
+  → emergency control #2              stopped → RELEASE, withheld / emergency-control
   → adapter / registry                adapter-scoped stop → RELEASE, withheld / emergency-control
   → settle | release                  from the observed outcome
 ```
@@ -83,6 +86,22 @@ There is still exactly one route to `ExecutionAdapter.execute(...)` (plus the
 registry's child call). With P7 composed, no adapter call happens without a
 reservation. Every exit after the reservation passes through one finalization
 helper whose disposition is exhaustive over `ExecutionOutcome`.
+
+**Why the grant is read twice.** The reservation can wait on the SQLite write
+lock for up to its busy timeout. Everything that authorizes the effect is
+therefore re-established after it: the grant is read again from the
+authoritative store and re-assessed at a fresh instant of the injected clock,
+the binding is revalidated against **that** read, and the emergency control is
+re-read. A grant that expired, was revoked, became unreadable or corrupt, or no
+longer contains the attempt while the reservation waited is withheld by the
+grant layer with its own `GRANT_EXERCISE_*` reason codes (no new P7 code), and
+the reservation is released with reason `grant-exercise` — or retained, still
+consuming, if the release cannot be recorded. The validated action handed to the
+adapter is built from the second read, and the outcome reports the second
+assessment and its instant: the ones that actually guarded the provider
+crossing. The binding and emergency checks are synchronous, so nothing awaited
+sits between the last revalidation and the adapter. Without P7 composed, there
+is exactly one grant read, as before.
 
 ## 4. The limit contract
 
@@ -120,6 +139,16 @@ count; `released` does not.
 **Rolling windows** age by **reservation** time, never settlement time: a
 reservation counts while `reservedAt > at − seconds`. A reservation apparently
 in the future counts, so a clock set back frees nothing.
+
+**The reservation instant is the ledger's admission instant.** The reservation
+request carries no instant. The ledger samples its injected clock **inside**
+its atomic admission critical section — in SQLite as the first statement of the
+`BEGIN IMMEDIATE` transaction, after the write lock is held — and that one value
+is the admission threshold `at`, the persisted `reserved_at` / `reserved_at_ms`,
+every rule row's `reserved_at_ms`, and the returned record's `reservedAt`. A
+reservation that waited 5 s for the lock under a 60 s window begins its 60 s
+lifetime when it was actually admitted, not 5 s earlier. The in-memory ledger
+does the same inside its synchronous section; a custom ledger must too.
 
 **Amount.** The attempt must state an amount (`EXERCISE_CONTROL_AMOUNT_REQUIRED`)
 in exactly the limit's unit (`EXERCISE_CONTROL_UNIT_MISMATCH`); usage already
@@ -170,9 +199,17 @@ Schema `aoc.exercise-control-ledger.schema.v1`; WAL, `foreign_keys = ON`,
 | `exercise_control_terminal_events` | at most one per reservation (primary key) |
 | `exercise_control_bucket_heads` | sealed per-bucket rule-row count — a cross-check, never a source of truth |
 
-- **Admission** is `BEGIN IMMEDIATE`: the write lock is held from the first
-  usage read to `COMMIT`. Two independent connections — or worker threads —
-  racing for the last unit never both win (`exercise-control-concurrency.test.ts`).
+- **Admission** is `BEGIN IMMEDIATE`: the write lock is held from the sampling
+  of the reservation instant and the first usage read to `COMMIT`. Two
+  independent connections — or worker threads — racing for the last unit never
+  both win (`exercise-control-concurrency.test.ts`).
+- **Verify, then filter.** Admission reads every reservation the
+  `(limit_id, scope_key)` bucket index names — rolling buckets included —
+  verifies each one, and only then applies the rolling window to the
+  **verified** reservation instant. Nothing whose integrity is unverified
+  decides whether a row gets verified: a rule row whose `reserved_at_ms` is
+  edited backwards without re-sealing fails the next admission against its
+  bucket closed. This is an indexed bucket scan, not a table scan.
 - **Append-only**: triggers refuse `UPDATE` and `DELETE` on reservations, rule
   rows and terminal events, and `DELETE` on bucket heads.
 - **Validation on every read that counts**: schema version, record digest, rule
@@ -205,11 +242,13 @@ digest must equal the grant's exactly:
 | `undefined`, throw, promise, malformed or accessor-bearing binding | `EXERCISE_CONTROL_AUTHORITY_BINDING_UNVERIFIABLE` |
 | grant without provenance (pre-P7) | `…_UNVERIFIABLE` |
 
-Checked twice — before and after the reservation. **Residual TOCTOU:** this is
-not a distributed transaction. Frontera revalidates immediately before crossing
-its execution boundary; a binding can still change after the last check and
-before or during provider execution. No atomic external binding,
-linearizability, two-phase commit or exactly-once is claimed.
+Checked twice — before the reservation, and after it against the second
+authoritative grant read. **Residual TOCTOU:** this is not a distributed
+transaction. Frontera revalidates immediately before crossing its execution
+boundary; a grant, a binding or an emergency control can still change after the
+last check and before or during provider execution. No local check is atomic
+with the external provider, and no atomic external binding, linearizability,
+two-phase commit or exactly-once is claimed.
 
 **Backward compatibility.** `authorityBindingDigest` is optional in the grant
 artifact. A pre-P7 grant keeps its canonical bytes, deterministic id and digest,
@@ -218,9 +257,10 @@ not composed, and is withheld as unverifiable when P7 is composed.
 
 ## 9. Emergency control interaction
 
-Active or unreadable before the reservation → no reservation, no adapter. Activated
-during the reservation → the re-check sees it, the reservation is released, no
-adapter. An adapter-scoped stop in the registry → the authenticated
+Active or unreadable before the reservation → no reservation, no adapter.
+Activated during the reservation → the re-check, which runs after the second
+grant read and binding #2, sees it; the reservation is released, no adapter. An
+adapter-scoped stop in the registry → the authenticated
 `EmergencyControlWithheldError` is reported as `withheld / emergency-control`
 exactly as before, and the reservation is released. An emergency stop is never
 classified as an aggregate limit, a provider failure or a grant failure.
@@ -265,11 +305,10 @@ remains the only owner of historical outcome replay.
 
 - The policy and the binding resolver are **trusted** host code.
 - Process compromise, or a filesystem writer able to rewrite the ledger and
-  re-seal every digest (or delete whole reservations consistently), defeats it:
-  digests are unkeyed integrity, not authenticity; no KMS/HSM.
-- A rule row whose indexed timestamp is rewritten backwards is not read by a
-  rolling range scan (its bucket head still matches); it fails validation the
-  moment its reservation is read, finalized or counted by a lifetime bucket.
+  re-seal every relevant digest consistently (or delete whole reservations
+  together with a re-sealed bucket head), defeats it: digests are unkeyed
+  integrity, not authenticity; no KMS/HSM. A single field edited without
+  re-sealing — including a rule row's timestamp moved backwards — fails closed.
 - One SQLite file serializes one host's processes. No distributed consensus;
   separate databases on different hosts do not share quota; SQLite on a network
   filesystem that does not honour its locking is not a distributed lock.
@@ -277,7 +316,9 @@ remains the only owner of historical outcome replay.
   no exactly-once, no atomic transaction with the provider.
 - Amount input precision is bounded by the caller's JSON / JavaScript number.
 - No FX or unit conversion.
-- Stage-A scale: admission is linear in a bucket's indexed rows.
+- Stage-A scale: admission verifies every reservation a bucket has ever held,
+  rolling buckets included, so it is linear in the bucket's indexed history.
+  Integrity wins over the former timestamp-range optimization.
 
 ## 14. Out of scope
 

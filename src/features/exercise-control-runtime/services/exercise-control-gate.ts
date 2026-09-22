@@ -25,20 +25,24 @@ import {
  * **already** been proven to cover.
  *
  * ```
- * authoritative grant read -> containment -> emergency control     (the execution service)
+ * authoritative grant read #1 -> containment #1 -> emergency #1   (the execution service)
  *   -> authority-binding revalidation #1                           admit()
  *   -> trusted policy snapshot                                     admit()
  *   -> ATOMIC reservation across every applicable limit            admit()
- *   -> authority-binding revalidation #2                           admit()
+ *   -> authoritative grant read #2 -> containment #2 (fresh instant) (the execution service)
+ *   -> authority-binding revalidation #2                           revalidate()
  *   -> emergency control re-check                                  (the execution service)
  *   -> adapter                                                     (the execution service)
  *   -> settle or release                                           finalize()
  * ```
  *
- * The second revalidation exists because the reservation can wait on a write
- * lock: a binding that changed while it waited must not reach the provider. A
- * failure there releases the reservation it just made — nothing was sent, so
- * nothing was consumed.
+ * The reservation can wait on a write lock, so everything that authorizes the
+ * effect is re-established after it: the grant is read again and re-assessed
+ * at a fresh instant, the binding is revalidated against **that** read, and
+ * the emergency control is re-read. `revalidate` is synchronous — the resolver
+ * is — so no awaited P7 step sits between the last revalidation and the
+ * adapter. A failure at any of them is finalized by the caller as a release:
+ * nothing was sent, so nothing was consumed.
  *
  * ## It narrows, and it decides nothing
  *
@@ -62,7 +66,7 @@ export interface ExerciseControlGateOptions {
   readonly authorityBinding: ExerciseAuthorityBindingDigestResolver;
   /** The authoritative consumption state. Held here and handed to nothing else — never to an adapter, a policy or a resolver. */
   readonly reservationLedger: ExerciseControlLedgerPort;
-  /** The injected clock. Used for the second binding revalidation and for terminal-event instants; never `Date.now()`. */
+  /** The injected clock. Used for terminal-event instants; never `Date.now()`. The reservation instant is the ledger's, sampled inside its own critical section. */
   readonly now: () => string;
 }
 
@@ -85,17 +89,29 @@ export interface ExerciseControlAdmissionInput {
     readonly amount?: { readonly value: number; readonly unit: string };
   };
   readonly executionId: string;
-  /** The exercise instant: the one the grant was assessed at. The reservation is recorded at it. */
+  /**
+   * The exercise instant: the one the grant was assessed at. The policy and the
+   * binding resolver are asked at it. It is **not** the reservation instant —
+   * the ledger assigns that itself, inside its critical section, after any
+   * lock wait.
+   */
   readonly at: string;
 }
 
 /** An admitted reservation, as the execution service holds it between reservation and finalization. Opaque; never handed to an adapter or returned to a caller. */
 export interface ExerciseReservationHandle {
   readonly reservationId: string;
+  /** The binding provenance the reservation was admitted under. The post-reservation revalidation requires the re-read grant to carry exactly this. */
+  readonly authorityBindingDigest: string;
 }
 
 export type ExerciseControlAdmission =
   | { readonly kind: 'admitted'; readonly reservation: ExerciseReservationHandle }
+  | { readonly kind: 'withheld'; readonly reasonCodes: readonly ExerciseControlReasonCode[] };
+
+/** The post-reservation authority-binding revalidation. `withheld` is finalized by the caller as a release with reason `exercise-control`. */
+export type ExerciseControlRevalidation =
+  | { readonly kind: 'verified' }
   | { readonly kind: 'withheld'; readonly reasonCodes: readonly ExerciseControlReasonCode[] };
 
 /**
@@ -120,13 +136,21 @@ export type ExerciseReservationDisposition =
 export type ExerciseReservationFinalization = 'settled' | 'released' | 'retained';
 
 export interface ExerciseControlGate {
+  /** Binding revalidation #1, the policy snapshot and the atomic reservation. */
   admit(input: ExerciseControlAdmissionInput): Promise<ExerciseControlAdmission>;
+  /**
+   * Binding revalidation #2, after the reservation **and** after the caller's
+   * second authoritative grant read and assessment. `input` is built from that
+   * second read, at that assessment's fresh instant. Synchronous, so nothing
+   * awaited can sit between it and the adapter. Releases nothing itself.
+   */
+  revalidate(reservation: ExerciseReservationHandle, input: ExerciseControlAdmissionInput): ExerciseControlRevalidation;
   finalize(reservation: ExerciseReservationHandle, disposition: ExerciseReservationDisposition): Promise<ExerciseReservationFinalization>;
 }
 
 const R = EXERCISE_CONTROL_REASON_CODES;
 
-function withheld(...reasonCodes: readonly ExerciseControlReasonCode[]): ExerciseControlAdmission {
+function withheld(...reasonCodes: readonly ExerciseControlReasonCode[]): { readonly kind: 'withheld'; readonly reasonCodes: readonly ExerciseControlReasonCode[] } {
   return { kind: 'withheld', reasonCodes: Object.freeze([...reasonCodes]) };
 }
 
@@ -223,7 +247,9 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
       }
 
       // 4. The reservation: derived identity, canonical fingerprints, and one
-      //    atomic admission across every applicable limit.
+      //    atomic admission across every applicable limit. No instant travels
+      //    with it: the ledger assigns the reservation instant inside its own
+      //    critical section, after any write-lock wait.
       const reservationId = exerciseReservationId({ boundedGrantId: input.grant.id, executionId: input.executionId });
       const request: ExerciseReservationRequest = Object.freeze({
         reservationId,
@@ -242,7 +268,6 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
         }),
         policyDigest: exerciseControlPolicyDigest(limits),
         authorityBindingDigest,
-        reservedAt: input.at,
         rules: Object.freeze(rules),
       });
 
@@ -267,19 +292,26 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
         return codes.length > 0 ? withheld(...codes) : withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
       }
       if (kind !== 'reserved') return withheld(R.EXERCISE_CONTROL_LEDGER_UNAVAILABLE);
-      const reservation: ExerciseReservationHandle = Object.freeze({ reservationId });
+      return { kind: 'admitted', reservation: Object.freeze({ reservationId, authorityBindingDigest }) };
+    },
 
-      // 5. Exercise-time authority-binding revalidation #2, at a fresh instant.
-      //    The reservation may have waited on a write lock; a binding that
-      //    changed meanwhile releases what was just reserved and reaches no
-      //    provider.
-      const second = verifyExerciseAuthorityBinding(authorityBindingDigest, authorityBinding, queryFor(input, now()));
-      if (!second.verified) {
-        await release(reservation, 'exercise-control');
-        return withheld(second.reasonCode);
+    revalidate(reservation: ExerciseReservationHandle, input: ExerciseControlAdmissionInput): ExerciseControlRevalidation {
+      // The re-read grant must still be the one the reservation was made for:
+      // same derived identity, same binding provenance. Anything else is a
+      // reservation that no longer describes this attempt.
+      if (exerciseReservationId({ boundedGrantId: input.grant.id, executionId: input.executionId }) !== reservation.reservationId) {
+        return withheld(R.EXERCISE_CONTROL_RESERVATION_CONFLICT);
       }
-
-      return { kind: 'admitted', reservation };
+      // 5. Exercise-time authority-binding revalidation #2, against the second
+      //    authoritative grant read and at its fresh instant. The reservation
+      //    may have waited on a write lock; a binding that changed meanwhile
+      //    must not reach the provider.
+      const second = verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, queryFor(input, input.at));
+      if (!second.verified) return withheld(second.reasonCode);
+      if (input.grant.authorityBindingDigest !== reservation.authorityBindingDigest) {
+        return withheld(R.EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED);
+      }
+      return { kind: 'verified' };
     },
 
     async finalize(reservation: ExerciseReservationHandle, disposition: ExerciseReservationDisposition): Promise<ExerciseReservationFinalization> {

@@ -28,7 +28,7 @@ import { executionOutcomeReferenceId } from '../governed-action/identifiers.js';
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
-import { ALLOWED_INTENT, IDENTITY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID, EVALUATED_AT_POLICY, buildGovernedWorld } from './governed-action-support.js';
+import { ALLOWED_INTENT, IDENTITY, NOW, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID, EVALUATED_AT_POLICY, buildGovernedWorld } from './governed-action-support.js';
 import { buildTestKernelProviders } from './support.js';
 
 /**
@@ -46,7 +46,7 @@ interface Counted {
   readonly counts: { reserve: number; settle: number; release: number };
 }
 
-function counted(inner: ExerciseControlLedgerPort = createInMemoryExerciseControlLedger(), faults: { readonly reserveThrows?: boolean } = {}): Counted {
+function counted(inner: ExerciseControlLedgerPort = createInMemoryExerciseControlLedger({ now: () => NOW }), faults: { readonly reserveThrows?: boolean } = {}): Counted {
   const counts = { reserve: 0, settle: 0, release: 0 };
   return {
     inner,

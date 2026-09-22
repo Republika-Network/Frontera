@@ -7,7 +7,9 @@ import {
   exerciseControlBucketKey,
   exerciseReservationTerminalReasonMatches,
   exerciseReservationsDescribeSameAttempt,
+  isExerciseReservationInstant,
   isWellFormedExerciseReservation,
+  isWellFormedExerciseReservationRequest,
   type ExerciseControlActiveUsage,
   type ExerciseControlLedgerPort,
   type ExerciseControlLimit,
@@ -45,9 +47,10 @@ import {
  *
  * Every admission is one `BEGIN IMMEDIATE` transaction (`better-sqlite3`'s
  * `transaction(...).immediate(...)`): the database write lock is taken
- * **before** the first read, so "read active usage → test every applicable
- * limit → insert the reservation" happens with no other writer able to
- * interleave, in this process or any other process sharing the file. There is
+ * **before** the first read, so "sample the reservation instant → read active
+ * usage → test every applicable limit → insert the reservation" happens with no
+ * other writer able to interleave, in this process or any other process
+ * sharing the file. There is
  * no `SELECT`, then `await`, then `INSERT` across two transactions anywhere in
  * this file. `exercise-control-concurrency.test.ts` races independent
  * connections on one file — in worker threads, genuinely in parallel — and
@@ -74,6 +77,28 @@ import {
  * deleted from a bucket — or edited into another one — fails the bucket closed
  * rather than returning its capacity.
  *
+ * ## The reservation instant is the admission instant
+ *
+ * A request carries no instant. The injected clock is sampled **once**, as the
+ * first statement of the `BEGIN IMMEDIATE` callback — that is, after the write
+ * lock has been acquired, however long the busy timeout made it wait — and that
+ * one value is the rolling-window threshold, `reserved_at`, `reserved_at_ms`,
+ * every rule row's `reserved_at_ms`, and the returned record's `reservedAt`. A
+ * reservation therefore begins its rolling lifetime when it actually starts
+ * consuming, not when some caller began asking for it.
+ *
+ * ## Verify, then filter
+ *
+ * Admission reads **every** reservation the `(limit_id, scope_key)` bucket
+ * index names — lifetime and rolling alike — and verifies each one before any
+ * of its fields is believed. The rolling window is applied afterwards, by the
+ * pure `exerciseControlRuleVerdict`, to the *verified* reservation instant. An
+ * earlier revision range-filtered on the indexed `reserved_at_ms` column in
+ * SQL, which let a single unsealed edit of that column move a live row out of
+ * the scan and so out of verification; nothing unverified now decides whether
+ * a row gets verified. This is an indexed bucket scan — linear in the bucket's
+ * history, never a table scan.
+ *
  * ## No expiry, no sweeper, no startup cleanup
  *
  * Nothing here ages a reservation out of `reserved`. A process that crashed
@@ -93,27 +118,29 @@ import {
  * ## What this is not
  *
  * - **Not authenticity.** Digests are unkeyed; a writer able to rewrite the file
- *   and re-seal every digest, or to delete whole reservations, is trusted. The
- *   rolling-window range query reads the indexed timestamp column to find
- *   candidate rows, so a row whose timestamp was re-sealed out of the window is
- *   the same class of trusted-writer compromise. One edit is detected only
- *   late: a rule row whose indexed timestamp is rewritten *backwards* keeps its
- *   bucket's head count intact and falls outside a rolling range scan, so that
- *   admission does not read it; the rewritten row still fails validation the
- *   moment its reservation is read, settled, released, or counted by a lifetime
- *   bucket.
+ *   and re-seal every relevant digest consistently, or to delete whole
+ *   reservations together with their bucket heads re-sealed, is trusted. A
+ *   single field edited without re-sealing — including a rule row's
+ *   `reserved_at_ms` moved backwards out of a rolling window — fails the next
+ *   admission against that bucket closed.
  * - **Not distributed.** One SQLite file serializes the processes that share it
  *   on one host. Separate files on separate hosts do not share a quota, and
  *   SQLite on a network filesystem that does not honour its locking is not a
  *   distributed lock.
- * - **Not optimized for very large buckets.** Amount limits are summed exactly
- *   in `BigInt` over the active rows the bucket index returns — never with
- *   `SUM()` over a floating column — so admission is linear in a bucket's
- *   indexed rows. Stage A accepts that.
+ * - **Not optimized for very large buckets.** Every reservation a bucket has
+ *   ever held is verified on each admission against it — rolling buckets
+ *   included — and amounts are summed exactly in `BigInt`, never with `SUM()`
+ *   over a floating column, so admission is linear in a bucket's indexed
+ *   history. Stage A accepts that: integrity wins over the range optimization.
  */
 
 export interface CreateSqliteExerciseControlLedgerOptions {
-  /** Records when a row was committed. Bookkeeping only; admission reads the reservation instant it is handed, never this. */
+  /**
+   * The injected clock. Sampled once inside every admission's `BEGIN
+   * IMMEDIATE` transaction, after the write lock is held, to assign the
+   * authoritative reservation instant; also records bookkeeping instants.
+   * Defaults to the wall clock.
+   */
   readonly now?: () => string;
   readonly busyTimeoutMs?: number;
 }
@@ -380,12 +407,12 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
   const selectTerminal = db.prepare(
     `SELECT reservation_id, terminal_kind, reason, recorded_at, event_digest, schema_version FROM exercise_control_terminal_events WHERE reservation_id = ?`,
   );
-  // The two load-bearing bucket queries. Both are answered by
-  // `exercise_control_limits_by_bucket`; neither scans the table.
-  const selectBucketLifetime = db.prepare(`SELECT DISTINCT reservation_id FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ?`);
-  const selectBucketSince = db.prepare(
-    `SELECT DISTINCT reservation_id FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ? AND reserved_at_ms > ?`,
-  );
+  // The one load-bearing bucket query, answered by the
+  // `exercise_control_limits_by_bucket` prefix; never a table scan. It is
+  // deliberately **not** range-filtered on `reserved_at_ms`: that column is
+  // what a verification would prove, so it must not decide which rows are
+  // verified. The rolling window is applied after verification.
+  const selectBucket = db.prepare(`SELECT DISTINCT reservation_id FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ?`);
   const countBucket = db.prepare(`SELECT COUNT(*) AS n FROM exercise_control_reservation_limits WHERE limit_id = ? AND scope_key = ?`);
   const selectHead = db.prepare(`SELECT limit_id, scope_key, rule_row_count, head_digest, schema_version FROM exercise_control_bucket_heads WHERE limit_id = ? AND scope_key = ?`);
   const upsertHead = db.prepare(
@@ -506,6 +533,13 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
   }
 
   const runReserve = db.transaction((request: ExerciseReservationRequest): ExerciseReservationOutcome => {
+    // The authoritative reservation instant, sampled first — the write lock is
+    // already held — and used for the window threshold, every persisted copy
+    // and the returned record. Never an instant sampled before the lock wait.
+    const reservedAt = now();
+    if (!isExerciseReservationInstant(reservedAt)) throw unavailable('The exercise-control ledger clock did not answer an instant; nothing was admitted.');
+    const reservedAtMs = Date.parse(reservedAt);
+
     const existing = loadVerified(request.reservationId);
     if (existing !== undefined) {
       return exerciseReservationsDescribeSameAttempt(existing.record, request) ? { outcome: 'already-reserved', reservation: existing.record } : { outcome: 'conflict' };
@@ -516,16 +550,15 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
     if ((selectReservationIdByExecution.get(request.executionId) as { reservation_id: string } | undefined) !== undefined) return { outcome: 'conflict' };
 
     // Active usage per bucket, read inside this transaction — which already
-    // holds the write lock — and validated row by row before it counts.
+    // holds the write lock — and validated row by row before it counts. Every
+    // reservation in the bucket is verified, rolling or not; which of them
+    // fall inside a rolling window is decided afterwards, from the verified
+    // instant, by `exerciseControlRuleVerdict`.
     const verified = new Map<string, VerifiedReservation>();
     const activeUsageFor = (rule: ExerciseControlRuleUsage): readonly ExerciseControlActiveUsage[] => {
       const { limit } = rule;
       verifiedBucketRowCount(limit.limitId, limit.scopeKey);
-      const candidates = (
-        limit.window.kind === 'lifetime'
-          ? selectBucketLifetime.all(limit.limitId, limit.scopeKey)
-          : selectBucketSince.all(limit.limitId, limit.scopeKey, Date.parse(request.reservedAt) - limit.window.seconds * 1000)
-      ) as { reservation_id: string }[];
+      const candidates = selectBucket.all(limit.limitId, limit.scopeKey) as { reservation_id: string }[];
       const bucket = exerciseControlBucketKey(limit);
       const active: ExerciseControlActiveUsage[] = [];
       for (const { reservation_id: reservationId } of candidates) {
@@ -548,11 +581,10 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
       return active;
     };
 
-    const admission = assessExerciseReservationAdmission(request, activeUsageFor);
+    const admission = assessExerciseReservationAdmission(request, reservedAt, activeUsageFor);
     if (!admission.admitted) return { outcome: 'refused', reasonCodes: admission.reasonCodes, refusedBuckets: admission.refusedBuckets };
 
-    const reservedAtMs = Date.parse(request.reservedAt);
-    const committedAt = now();
+    const record: ExerciseReservationRecord = { ...request, reservedAt };
     insertReservation.run({
       reservationId: request.reservationId,
       executionId: request.executionId,
@@ -560,11 +592,11 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
       requestDigest: request.requestDigest,
       policyDigest: request.policyDigest,
       authorityBindingDigest: request.authorityBindingDigest,
-      reservedAt: request.reservedAt,
+      reservedAt,
       reservedAtMs,
       ruleCount: request.rules.length,
-      recordDigest: storedReservationDigest(request),
-      committedAt,
+      recordDigest: storedReservationDigest(record),
+      committedAt: reservedAt,
       schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
     });
     request.rules.forEach((rule, ordinal) => {
@@ -660,9 +692,9 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
 
     async reserve(request: ExerciseReservationRequest): Promise<ExerciseReservationOutcome> {
       assertOpen();
-      if (!isWellFormedExerciseReservation(request)) throw invalidInput('The reservation request is outside the closed contract.');
-      // BEGIN IMMEDIATE: the write lock is held from before the first usage
-      // read until COMMIT. Returns only after COMMIT; with `synchronous = FULL`
+      if (!isWellFormedExerciseReservationRequest(request)) throw invalidInput('The reservation request is outside the closed contract.');
+      // BEGIN IMMEDIATE: the write lock is held from before the reservation
+      // instant is sampled and the first usage read, until COMMIT. Returns only after COMMIT; with `synchronous = FULL`
       // the reservation is durable before this resolves.
       return runReserve.immediate(request);
     },

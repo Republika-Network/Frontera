@@ -32,8 +32,18 @@ import type {
  *    with no `await`.
  * 2. **All or nothing.** Every rule is admitted together, or the reservation is
  *    refused and nothing is written. No bucket is ever partially reserved.
- * 3. **Reservation consumes.** A reservation with no terminal event counts
- *    toward every bucket it names from the moment it commits.
+ * 3. **Reservation consumes, from the instant the ledger admits it.** A
+ *    reservation with no terminal event counts toward every bucket it names
+ *    from the moment it commits. The request carries no instant: the ledger
+ *    samples its own injected clock **once, inside the critical section** —
+ *    in SQLite at the top of the `BEGIN IMMEDIATE` callback, after the write
+ *    lock is held; in memory inside the synchronous section — and that one
+ *    instant is the rolling-window admission threshold, the persisted
+ *    `reservedAt` (and every derived copy of it) and the returned record's
+ *    `reservedAt`. A clock read before a lock wait would start a rolling
+ *    window's lifetime before the reservation existed. A clock that answers
+ *    something that is not an instant fails admission closed and writes
+ *    nothing. A custom implementation must give the same guarantee.
  * 4. **One identity, one attempt.** A second `reserve` for an existing
  *    reservation id never writes: it returns `already-reserved` when the
  *    request, policy and binding provenance are identical, and `conflict`
@@ -53,12 +63,18 @@ import type {
  *    that fails validation **throws**. The gate turns a throw into
  *    `EXERCISE_CONTROL_LEDGER_UNAVAILABLE`, and the adapter is not invoked. An
  *    unreadable ledger is never an empty one.
+ * 8. **Verify before filtering.** Every persisted row that could contribute to
+ *    a bucket is integrity-verified **before** any of its fields decides
+ *    whether it counts. In particular a rolling window is applied to the
+ *    *verified* reservation instant, never used to choose which rows get
+ *    verified: a field whose integrity has not been established must not be
+ *    able to exclude its own row from verification.
  *
  * This port is handed to the exercise-control gate and to nothing else. No
  * adapter, no policy and no binding resolver ever receives it.
  */
 export type ExerciseReservationOutcome =
-  /** Admitted and durably recorded. It consumes from this moment. */
+  /** Admitted and durably recorded at `reservation.reservedAt`, the instant the ledger sampled inside its critical section. It consumes from this moment. */
   | { readonly outcome: 'reserved'; readonly reservation: ExerciseReservationRecord }
   /** The same attempt was already reserved. Nothing was written; the adapter must not be invoked again. */
   | { readonly outcome: 'already-reserved'; readonly reservation: ExerciseReservationRecord }

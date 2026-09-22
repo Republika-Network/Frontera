@@ -5,7 +5,12 @@ import {
   type EmergencyControlQuery,
   type EmergencyControlReaderPort,
 } from '../../emergency-control-runtime/index.js';
-import type { ExerciseControlGate, ExerciseReservationDisposition, ExerciseReservationHandle } from '../../exercise-control-runtime/index.js';
+import type {
+  ExerciseControlAdmissionInput,
+  ExerciseControlGate,
+  ExerciseReservationDisposition,
+  ExerciseReservationHandle,
+} from '../../exercise-control-runtime/index.js';
 import type { BoundedGrant, BoundedGrantReaderPort, ReadBoundedGrantResult } from '../../grant-runtime/index.js';
 import {
   EXECUTION_FAILURE_REASONS,
@@ -121,8 +126,9 @@ export interface GrantExecutionServiceOptions {
    * and **before** the adapter:
    *
    * ```
-   * grant read -> containment -> emergency -> admit(binding #1, policy, reservation, binding #2)
-   *   -> emergency re-check -> adapter -> settle | release
+   * grant read #1 -> containment #1 -> emergency #1 -> admit(binding #1, policy, reservation)
+   *   -> grant read #2 -> containment #2 (fresh instant) -> revalidate(binding #2)
+   *   -> emergency #2 -> adapter -> settle | release
    * ```
    *
    * When composed, no adapter call happens without a reservation, and every
@@ -131,8 +137,15 @@ export interface GrantExecutionServiceOptions {
    * port contract says did not. The gate owns its ledger; this service never
    * sees it and never hands it to an adapter.
    *
-   * Omitted, nothing changes: no reservation, no second emergency read, and
-   * every existing behaviour is byte-identical.
+   * The reservation can wait on a write lock, so the grant is read and
+   * assessed again after it, at a fresh instant; the outcome carries that
+   * second assessment and instant, and the adapter is handed values from that
+   * second read. A grant that expired, was revoked or became unreadable while
+   * the reservation waited is withheld by the grant layer and the reservation
+   * is released.
+   *
+   * Omitted, nothing changes: no reservation, no second grant read, no second
+   * emergency read, and every existing behaviour is byte-identical.
    */
   readonly exerciseControl?: ExerciseControlGate;
   /** The injected clock. Expiry is derived from what this returns, never from `Date.now()` — a structural test fails the build if an ambient clock appears in this module. */
@@ -252,38 +265,80 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         executionId: request.executionId,
       });
 
-      // The awaited lookup happens first; the clock is read afterwards, and the
-      // one instant it yields is what both the assessment and the outcome
-      // carry. Sampling before the read would judge the grant at a moment that
-      // had already passed by the time the record arrived — on a slow durable
-      // store, long enough to let an expired grant reach the adapter.
-      let read: ReadBoundedGrantResult | undefined;
-      try {
-        read = await store.read(request.boundedGrantId);
-      } catch {
-        read = undefined;
-      }
-      const exercisedAt = now();
-
-      let assessment: BoundedGrantExerciseAssessment;
-      let grantExpiresAt: string | undefined;
-      let grantSubject: string | undefined;
-      let trustedGrant: BoundedGrant | undefined;
-      if (read?.grant === undefined) {
-        assessment = notFound();
-      } else {
-        grantExpiresAt = read.grant.expiresAt;
-        grantSubject = read.grant.subject;
-        trustedGrant = read.grant;
-        assessment = assessBoundedGrantExercise({
+      /**
+       * One authoritative grant read and the containment assessment over it.
+       *
+       * The awaited lookup happens first; the clock is read afterwards, and the
+       * one instant it yields is what both the assessment and the outcome
+       * carry. Sampling before the read would judge the grant at a moment that
+       * had already passed by the time the record arrived — on a slow durable
+       * store, long enough to let an expired grant reach the adapter. A store
+       * that throws is a store that cannot prove a grant covers this: "not
+       * found", never an authorization.
+       */
+      const readAndAssess = async (): Promise<{ readonly assessment: BoundedGrantExerciseAssessment; readonly grant?: BoundedGrant; readonly at: string }> => {
+        let read: ReadBoundedGrantResult | undefined;
+        try {
+          read = await store.read(request.boundedGrantId);
+        } catch {
+          read = undefined;
+        }
+        const at = now();
+        if (read?.grant === undefined) return { assessment: notFound(), at };
+        return {
+          assessment: assessBoundedGrantExercise({
+            grant: read.grant,
+            ...(read.revocation !== undefined ? { revocation: read.revocation } : {}),
+            request,
+            at,
+          }),
           grant: read.grant,
-          ...(read.revocation !== undefined ? { revocation: read.revocation } : {}),
-          request,
-          at: exercisedAt,
-        });
-      }
+          at,
+        };
+      };
 
-      if (!assessment.usable || grantExpiresAt === undefined || grantSubject === undefined || trustedGrant === undefined) {
+      // The emergency query. Every value in it is trusted: the holder came from
+      // the store, the organization and the resource were proven inside the
+      // grant's bounds. Nothing a caller described reaches it.
+      const emergencyQueryFor = (grant: BoundedGrant): EmergencyControlQuery => ({
+        ...(request.organization !== undefined ? { organizationId: request.organization } : {}),
+        actorId: grant.subject,
+        resource: request.resource,
+      });
+
+      // What the exercise-control gate is told. Every value was read from the
+      // authoritative grant or proven inside it by the assessment over it.
+      const exerciseControlInputFor = (grant: BoundedGrant, at: string): ExerciseControlAdmissionInput => ({
+        grant: {
+          id: grant.id,
+          subject: grant.subject,
+          issuedAt: grant.issuedAt,
+          expiresAt: grant.expiresAt,
+          correlation: grant.correlation,
+          ...(grant.authorityBindingDigest !== undefined ? { authorityBindingDigest: grant.authorityBindingDigest } : {}),
+        },
+        attempt: {
+          action: request.action,
+          resource: request.resource,
+          ...(request.counterparty !== undefined ? { counterparty: request.counterparty } : {}),
+          ...(request.organization !== undefined ? { organization: request.organization } : {}),
+          ...(request.amount !== undefined ? { amount: { value: request.amount.value, unit: request.amount.unit } } : {}),
+        },
+        executionId: request.executionId,
+        at,
+      });
+
+      // Authoritative grant read #1 and containment assessment #1.
+      const first = await readAndAssess();
+      // The assessment, instant and grant that guard the provider crossing.
+      // With exercise controls composed they are replaced by the second read
+      // below, so the outcome reports the assessment that actually guarded the
+      // effect and the adapter is handed values from that read.
+      let assessment = first.assessment;
+      let exercisedAt = first.at;
+      let trustedGrant = first.grant;
+
+      if (!assessment.usable || trustedGrant === undefined) {
         return { status: 'withheld', withheldBy: 'grant-exercise', assessment, correlation, exercisedAt };
       }
 
@@ -292,15 +347,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       // action that is genuinely covered by a genuinely valid grant, and
       // **before** anything is handed across the provider boundary. A stop that
       // turned on while the grant was being read is therefore still honoured.
-      //
-      // Every value in the query is trusted: the holder and the horizon came
-      // from the store, the organization and the resource were proven inside
-      // the grant's bounds. Nothing a caller described reaches it.
-      const emergencyQuery = {
-        ...(request.organization !== undefined ? { organizationId: request.organization } : {}),
-        actorId: grantSubject,
-        resource: request.resource,
-      } satisfies EmergencyControlQuery;
+      let emergencyQuery = emergencyQueryFor(trustedGrant);
       const emergency = readEmergencyControl(emergencyControl, emergencyQuery);
       if (!emergencyControlPermits(emergency)) {
         return {
@@ -319,33 +366,12 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       // Aggregate / velocity exercise controls (P7), when composed. The grant
       // covered this attempt; what is asked now is whether *repeated* use of it
       // still fits the trusted aggregate limits, and whether the authority it
-      // was issued under still stands exactly. Every value handed over was read
-      // from the authoritative grant or proven inside it by the assessment
-      // above — the same material the emergency query is built from.
+      // was issued under still stands exactly.
       let reservation: ExerciseReservationHandle | undefined;
       if (exerciseControl !== undefined) {
-        const admission = await exerciseControl.admit({
-          grant: {
-            id: trustedGrant.id,
-            subject: grantSubject,
-            issuedAt: trustedGrant.issuedAt,
-            expiresAt: grantExpiresAt,
-            correlation: trustedGrant.correlation,
-            ...(trustedGrant.authorityBindingDigest !== undefined ? { authorityBindingDigest: trustedGrant.authorityBindingDigest } : {}),
-          },
-          attempt: {
-            action: request.action,
-            resource: request.resource,
-            ...(request.counterparty !== undefined ? { counterparty: request.counterparty } : {}),
-            ...(request.organization !== undefined ? { organization: request.organization } : {}),
-            ...(request.amount !== undefined ? { amount: { value: request.amount.value, unit: request.amount.unit } } : {}),
-          },
-          executionId: request.executionId,
-          at: exercisedAt,
-        });
+        const admission = await exerciseControl.admit(exerciseControlInputFor(trustedGrant, exercisedAt));
         if (admission.kind === 'withheld') {
-          // Nothing was reserved — or what was reserved has already been
-          // released by the gate — so there is nothing to finalize.
+          // Nothing was reserved, so there is nothing to finalize.
           return {
             status: 'withheld',
             withheldBy: 'exercise-control',
@@ -375,12 +401,41 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         return outcome;
       };
 
-      // The emergency control, re-read after the reservation. The reservation
-      // may have waited on a write lock; a stop an operator activated meanwhile
-      // must still be honoured, and the reservation it interrupted is released
-      // because nothing was sent. Only when exercise controls are composed —
-      // otherwise the single read above is exactly the behaviour it always was.
-      if (reservation !== undefined) {
+      // Everything that authorizes the effect, re-established after the
+      // reservation — which may have waited on a write lock. Only when exercise
+      // controls are composed; otherwise the single read above is exactly the
+      // behaviour it always was.
+      //
+      //   authoritative grant read #2 -> containment #2 at a fresh instant
+      //     -> binding #2 -> emergency #2 -> adapter
+      //
+      // A grant that expired, was revoked, became unreadable or stopped
+      // covering the attempt while the reservation waited is withheld by the
+      // grant layer with its own reason codes, and the reservation is
+      // released. Nothing awaited follows the second read before the adapter:
+      // the binding and emergency checks are synchronous.
+      if (reservation !== undefined && exerciseControl !== undefined) {
+        const second = await readAndAssess();
+        assessment = second.assessment;
+        exercisedAt = second.at;
+        trustedGrant = second.grant;
+        if (!assessment.usable || trustedGrant === undefined) {
+          return finish({ status: 'withheld', withheldBy: 'grant-exercise', assessment, correlation, exercisedAt });
+        }
+
+        const revalidation = exerciseControl.revalidate(reservation, exerciseControlInputFor(trustedGrant, exercisedAt));
+        if (revalidation.kind === 'withheld') {
+          return finish({
+            status: 'withheld',
+            withheldBy: 'exercise-control',
+            assessment,
+            exerciseControl: { reasonCodes: revalidation.reasonCodes },
+            correlation,
+            exercisedAt,
+          });
+        }
+
+        emergencyQuery = emergencyQueryFor(trustedGrant);
         const recheck = readEmergencyControl(emergencyControl, emergencyQuery);
         if (!emergencyControlPermits(recheck)) {
           return finish({
@@ -403,13 +458,13 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       // caller describing itself differently changes nothing an adapter sees.
       const action: ValidatedExecutionAction = {
         boundedGrantId: request.boundedGrantId,
-        subject: grantSubject,
+        subject: trustedGrant.subject,
         action: request.action,
         resource: request.resource,
         ...(request.counterparty !== undefined ? { counterparty: request.counterparty } : {}),
         ...(request.organization !== undefined ? { organization: request.organization } : {}),
         ...(request.amount !== undefined ? { amount: request.amount } : {}),
-        notAfter: grantExpiresAt,
+        notAfter: trustedGrant.expiresAt,
         correlation,
       };
 

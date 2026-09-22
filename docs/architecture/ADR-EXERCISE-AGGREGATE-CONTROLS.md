@@ -52,10 +52,18 @@ Consumption is owned by the exercise-control ledger, keyed by reservation.
 With exercise controls composed, **no adapter call happens without a
 successful reservation**. The reservation is written — durably, in one atomic
 admission across every applicable limit — before the adapter is invoked, and it
-consumes capacity from the moment it commits. There is no "pending, not yet
-counted" state: a process can crash one instruction after the provider received
-the request and before anything recorded the outcome, and returning that
-capacity would let it be spent twice.
+consumes capacity from the moment it commits. "The moment it commits" is the
+ledger's own admission instant: the reservation request carries no instant, and
+the ledger samples its injected clock once, **inside** its atomic admission
+critical section (in SQLite, the first statement of the `BEGIN IMMEDIATE`
+transaction, after the write lock is acquired). That one instant is the
+rolling-window threshold, the persisted reservation instant on every row, and
+the returned record's instant, so a reservation that waited on the write lock
+begins its rolling lifetime when it was admitted, never earlier.
+
+There is no "pending, not yet counted" state: a process can crash one
+instruction after the provider received the request and before anything
+recorded the outcome, and returning that capacity would let it be spent twice.
 
 | reservation state | how it is represented | consumes? |
 | --- | --- | --- |
@@ -75,7 +83,7 @@ it" stays answerable.
 | `executed` | settle | the effect happened |
 | `execution-unconfirmed` | **settle** | the provider may have acted — never release an unconfirmed reservation |
 | `execution-failed` (incl. adapter throw, malformed result) | release | the port contract: the effect did not complete |
-| withheld after the reservation (binding re-check, emergency re-check, adapter-scoped stop in the registry) | release | no provider was reached |
+| withheld after the reservation (grant re-read and re-assessment, binding re-check, emergency re-check, adapter-scoped stop in the registry) | release | no provider was reached |
 
 A settlement or release that **cannot be recorded** leaves the reservation
 `reserved`, which still consumes. That is a safe loss of availability, never a
@@ -122,11 +130,18 @@ full. Units are compared exactly; there is no FX and no unit conversion.
 
 ### 8. Atomic, concurrency-safe admission
 
-"Read active usage → test every applicable limit → insert the reservation"
-happens inside one critical section: one `BEGIN IMMEDIATE` SQLite transaction,
-which takes the write lock before the first read, so two processes on one file
-racing for the last unit of a bucket cannot both win. All limits are admitted
-together or none is.
+"Sample the reservation instant → read active usage → test every applicable
+limit → insert the reservation" happens inside one critical section: one
+`BEGIN IMMEDIATE` SQLite transaction, which takes the write lock before the
+first read, so two processes on one file racing for the last unit of a bucket
+cannot both win. All limits are admitted together or none is.
+
+Every reservation a bucket names is integrity-verified **before** the rolling
+window is applied, and the window is applied to the *verified* reservation
+instant. The persisted timestamp is never used to choose which rows are
+verified: no field whose integrity is not yet established may exclude its own
+row from verification, so a single unsealed edit that moves a live row's
+timestamp backwards fails the bucket closed instead of freeing its capacity.
 
 ### 9. Exercise-time authority-binding revalidation against immutable provenance
 
@@ -139,6 +154,21 @@ synchronous `ExerciseAuthorityBindingResolver` answers which binding holds
 containment). It is checked twice: before the reservation, and again after it,
 because the reservation can wait on a write lock. A grant without provenance
 cannot be revalidated and is withheld when exercise controls are composed.
+
+The grant itself is re-established after the reservation too. The effect
+ordering with exercise controls composed is:
+
+```
+grant read #1 → containment #1 → emergency #1 → binding #1 → policy → RESERVE
+  → grant read #2 → containment #2 (fresh instant) → binding #2 → emergency #2 → provider
+```
+
+The second authoritative read and assessment catch a grant that expired, was
+revoked, became unreadable or corrupt, or no longer contains the attempt while
+the reservation waited; it is withheld in the existing grant-exercise vocabulary
+and the reservation is released. Binding #2 is asked about the grant from read
+#2, and the validated action is built from read #2. No local check is atomic
+with the external provider: any of them can change after the final check.
 
 The issuance commit-boundary comparison of the actual binding stays
 load-bearing; the digest is additional durable provenance, not a replacement.
@@ -174,7 +204,8 @@ networking.
   organization, per counterparty — can be bounded in count, amount and velocity.
 - Availability can be lost conservatively (a crashed or unrecordable
   finalization keeps consuming); authority is never widened by it.
-- Stage-A scale: admission is linear in a bucket's indexed rows, because exact
+- Stage-A scale: admission is linear in a bucket's indexed history — every
+  reservation it has held is verified, rolling buckets included — and exact
   amounts are summed in `BigInt` rather than by a floating aggregate.
 - One SQLite file serializes the processes sharing it on one host; separate
   files on separate hosts do not share a quota.
@@ -191,6 +222,11 @@ networking.
   floating point in an authority check; rejected in §7.
 - **Digest-only comparison at the issuance commit boundary.** Would weaken an
   existing, load-bearing field-by-field check; rejected in §9.
+- **A caller-supplied reservation instant.** Sampled before the write-lock
+  wait, it starts a rolling window early; rejected in §2.
+- **Range-filtering rolling buckets on the persisted timestamp before
+  verification.** Lets one unsealed timestamp edit hide a live row from
+  verification; rejected in §8.
 - **Synthesizing a `KernelEvaluationRequest` at exercise time to reuse the
   issuance resolver.** Invents the very input the binding is resolved from;
   rejected in favour of a separate exercise-time resolver.

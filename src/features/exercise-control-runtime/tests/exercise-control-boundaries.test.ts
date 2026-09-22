@@ -139,16 +139,40 @@ describe('Exercise control boundaries — nothing ambient, nothing that frees ca
     assert.equal(/await\s+verifyExerciseAuthorityBinding/.test(gate), false);
   });
 
-  it('the gate reserves before it returns admitted, and re-verifies the binding after the reservation', () => {
+  it('the gate reserves before it returns admitted, and re-verifies the binding in a separate, synchronous step', () => {
     const gate = codeOf(`${ROOT}/services/exercise-control-gate.ts`);
-    const first = gate.indexOf('verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest');
+    const first = gate.indexOf('verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, query)');
     const policy = gate.indexOf('snapshotExerciseControlLimits(policy(query))');
     const reserve = gate.indexOf('await ledger.reserve(request)');
-    const second = gate.indexOf('verifyExerciseAuthorityBinding(authorityBindingDigest');
     const admitted = gate.indexOf("return { kind: 'admitted'");
-    for (const index of [first, policy, reserve, second, admitted]) assert.notEqual(index, -1);
-    assert.ok(first < policy && policy < reserve && reserve < second && second < admitted, 'binding #1 → policy → reserve → binding #2 → admitted');
+    const revalidate = gate.indexOf('revalidate(reservation: ExerciseReservationHandle, input: ExerciseControlAdmissionInput): ExerciseControlRevalidation {');
+    const second = gate.indexOf('verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, queryFor(input, input.at))');
+    for (const index of [first, policy, reserve, admitted, revalidate, second]) assert.notEqual(index, -1);
+    assert.ok(first < policy && policy < reserve && reserve < admitted, 'binding #1 → policy → reserve → admitted');
+    assert.ok(admitted < revalidate && revalidate < second, 'binding #2 lives in revalidate(), after admission');
+    const revalidateBody = gate.slice(revalidate, gate.indexOf('async finalize(', revalidate));
+    assert.equal(/\bawait\b|\basync\b|ledger\./.test(revalidateBody), false, 'revalidate is synchronous and touches no ledger: nothing awaited sits between it and the adapter');
     assert.equal([...gate.matchAll(/ledger\.reserve\s*\(/g)].length, 1, 'reserve is the one admission write');
+  });
+
+  it('no caller decides the reservation instant: the request carries none, and each ledger samples its clock inside admission', () => {
+    const gate = codeOf(`${ROOT}/services/exercise-control-gate.ts`);
+    assert.equal(/reservedAt\s*:/.test(gate), false, 'the gate never builds a reservation instant');
+    const memory = codeOf(`${ROOT}/services/in-memory-exercise-control-ledger.ts`);
+    const section = memory.indexOf('async reserve(request: ExerciseReservationRequest)');
+    const sampled = memory.indexOf('const reservedAt = now();', section);
+    const assessed = memory.indexOf('assessExerciseReservationAdmission(request, reservedAt, activeUsageFor)', section);
+    const recorded = memory.indexOf('frozenCopy(request, reservedAt)', section);
+    for (const index of [section, sampled, assessed, recorded]) assert.notEqual(index, -1);
+    assert.ok(section < sampled && sampled < assessed && assessed < recorded);
+    assert.equal(/\bawait\b/.test(memory.slice(section, recorded)), false, 'sampled inside the synchronous critical section');
+    const sqlite = codeOf('src/enterprise/exercise-control-ledger/sqlite-exercise-control-ledger.ts');
+    const transaction = sqlite.indexOf('const runReserve = db.transaction((request: ExerciseReservationRequest): ExerciseReservationOutcome => {');
+    const sqliteSampled = sqlite.indexOf('const reservedAt = now();', transaction);
+    const firstRead = sqlite.indexOf('loadVerified(request.reservationId)', transaction);
+    for (const index of [transaction, sqliteSampled, firstRead]) assert.notEqual(index, -1);
+    assert.ok(transaction < sqliteSampled && sqliteSampled < firstRead, 'the first statement of the BEGIN IMMEDIATE callback samples the clock');
+    assert.equal(/request\.reservedAt/.test(sqlite) || /request\.reservedAt/.test(memory), false, 'no ledger reads a caller instant');
   });
 });
 

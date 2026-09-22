@@ -48,7 +48,9 @@ export {
   isExerciseReservationReleaseReason,
   isExerciseReservationSettleReason,
   isWellFormedExerciseDigest,
+  isExerciseReservationInstant,
   isWellFormedExerciseReservation,
+  isWellFormedExerciseReservationRequest,
   isWellFormedExerciseRuleUsage,
 } from './exercise-reservation.js';
 export type {
