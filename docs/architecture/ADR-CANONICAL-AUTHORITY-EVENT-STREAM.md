@@ -1,7 +1,7 @@
 # ADR: The canonical authority event stream (P8, Stage A)
 
 - Status: accepted
-- Phase: P8, Stage A
+- Phase: P8, Stage A (amended by the P8 independent-review hardening: §1a, §8)
 - Status of implementation: implemented in `src/enterprise/authority-event-stream`
   (event contract, identity, validation, hash chain, store port, in-memory and
   SQLite stores, projector, write-only recorder), with one write-only observer
@@ -53,15 +53,51 @@ permission, because nothing that does any of those things can reach it:
 - No authority-bearing module imports the store, the reader, the verifier, the
   projector or its health. The **only** thing lifecycle code may name is the
   write-only `AuthorityEventRecorder` interface, as a type, in exactly two files.
-- Every recorder method returns `Promise<void>`: there is no answer to read.
-- Every call site awaits the recorder inside its own catch-all and discards
-  the result, so a missing, failing or corrupt stream changes no outcome.
+- Every recorder method returns `void`: there is no answer to read, **and
+  nothing to await** (§1a).
+- Every call site reports inside its own catch-all and discards the result, so a
+  missing, failing, stuck or corrupt stream changes no outcome.
 - `authority-event-stream-boundaries.test.ts` fails the build on any of these.
 
 The existing owners keep every authoritative question: the Governance Store (the
 committed decision and the at-most-once execution claim), the bounded-grant store
 (grants, revocations), the exercise-control ledger (aggregate consumption), the
 emergency-control store (the stop).
+
+### 1a. Evidence is not on the authority path's clock either (hardening)
+
+Being unable to *decide* anything is not enough: evidence must also be unable to
+*delay* anything. The first implementation had each call site `await` the
+recorder inside a `try`/`catch`. That catches a **rejected** projection and does
+nothing at all about a **pending** one, and the independent review was right to
+call it a blocker: a store that hung would have held a committed decision before
+its grant was issued, sat between the durable write-ahead claim and the adapter
+crossing (leaving a claimed execution that can never be retried), kept a P7
+reservation consuming while `admit()` never returned — P7 has no TTL and no
+sweeper — and withheld a revocation's confirmation from its caller.
+
+So the contract is not "a promise we are careful with"; there is no promise:
+
+```
+authoritative fact -> recorder.x(fact)   [validate, build, enqueue, return]
+                                 |
+                projector  ------+--> per-stream serial queue --> store.append(...)
+```
+
+- `AuthorityEventRecorder` and `ExerciseControlObserver` methods return `void`.
+  An authority-bearing module cannot hold, await or branch on durable projection
+  because no value representing it ever reaches one.
+- Reporting does no I/O and never blocks. Even the first append of an idle
+  stream starts one microtask later, so a synchronous driver such as
+  `better-sqlite3` never runs its transaction inside the reporting call.
+- "We await it but catch errors, therefore it cannot affect the path" is removed
+  from this repository's reasoning. A pending promise disproves it.
+
+`authority-event-stream-boundaries.test.ts` fails the build on `await` of a
+recorder, observer, `report(...)` or `observe(...)`, and on any recorder method
+that is not `void`. The never-settling regressions in
+`authority-event-stream-governed-action.test.ts` (§9 of the hardening) prove the
+behaviour end to end rather than by inspection.
 
 ### 2. Why none of the existing concepts is the stream
 
@@ -129,6 +165,35 @@ claims a transition was persisted at that instant.
   (`aoc.canonical-json.v1`); there is no second canonicalization. Verification
   re-derives both ids from each event's own content.
 
+### 4a. Ordering is the projector's queue, durability is still the store's
+
+Removing the `await` must not let two appends for one stream race, so the
+projector owns ordering:
+
+- one serial chain per stream — the append for event N+1 is not invoked until
+  N's has settled, whatever an async host-supplied store does with scheduling;
+- chains are per key, so a stuck or slow stream holds only itself and another
+  lifecycle keeps projecting;
+- the queue chooses nothing about an event: sequence, previous digest,
+  `recordedAt` and the digest stay the store's, assigned inside its own
+  `BEGIN IMMEDIATE` section;
+- a chain continues past a failed step, so one lost event does not strand the
+  rest of its stream;
+- the only scheduling mechanism is a microtask hop. There is no timer, interval,
+  worker, retry scheduler or sweeper — and a failed projection is still not
+  retried (§8).
+
+A revocation is the one fact whose stream is not known when it is reported: the
+lifecycle comes from the authoritative grant. Its attribution read runs on its
+own per-grant chain and joins the stream's queue only once the correlation is
+known, so it blocks nothing and is appended after the facts already enqueued for
+that stream. Its `occurredAt` is still the revocation instant, and sequence
+remains append order.
+
+**Queue depth is visible, never load-bearing.** The projector's health carries
+`pending`; the module surfaces it. A number that stops falling is how an
+operator sees a stuck store. No authority path reads it, and none waits on it.
+
 ### 5. Ordering and integrity
 
 Per stream: sequence 1, 2, 3… assigned by the store; the first event is the
@@ -172,7 +237,8 @@ already recorded.
 ### 8. Failure semantics
 
 A projection that fails — invalid fact, conflict, corrupt stream, closed or
-unopenable store, a recorder that throws — is counted in the projector's health
+unopenable store, a recorder that throws, an append that rejects or never
+settles — is counted in the projector's health
 and reported through the `aoc.enterprise.authority-event-stream` module
 (`degraded` / `unhealthy`), an existing internal surface. The module is
 `optional` and never throws at initialization, so it can neither block startup
@@ -180,6 +246,13 @@ nor take the Host out of `ready`. It never changes a decision, grant, revocation
 reservation, routing, adapter invocation or outcome, and it adds no request or
 response field. A store that cannot be opened at startup degrades the stream, not
 the Host.
+
+Stage A does not retry or reconcile. A projection that failed is lost, and a
+projection still queued when the process stops is lost with it: the stream can
+be **shorter** than what happened, never different. Verification proves the
+integrity and order of what is present; it cannot prove semantic completeness,
+so an absent event is never evidence that its fact did not occur. The
+authoritative stores remain the record for that.
 
 ### 9. Tenancy
 

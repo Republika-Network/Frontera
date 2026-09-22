@@ -105,6 +105,27 @@ export function attempt(executionId: string, input: LifecycleIds = {}, options: 
   return eventInput(bodies({ ...input, executionId })['execution.attempt.claimed'], options);
 }
 
+/** Let scheduled microtasks and I/O callbacks run. */
+export async function tick(times = 3): Promise<void> {
+  for (let index = 0; index < times; index += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Wait until the projector's queue is idle.
+ *
+ * Projection is deliberately not awaited by anything in production, so a test
+ * that wants to read the stream has to wait for it here — and a queue that is
+ * stuck (a writer that never settles) never drains, which is exactly what the
+ * never-settling regressions assert.
+ */
+export async function drained(projection: () => { readonly pending: number }, attempts = 200): Promise<boolean> {
+  for (let index = 0; index < attempts; index += 1) {
+    if (projection().pending === 0) return true;
+    await tick(1);
+  }
+  return projection().pending === 0;
+}
+
 export async function rejectsWith(promise: Promise<unknown>, code: AuthorityEventStreamErrorCode): Promise<void> {
   await assert.rejects(promise, (error: unknown) => isAuthorityEventStreamError(error) && error.code === code, `expected ${code}`);
 }

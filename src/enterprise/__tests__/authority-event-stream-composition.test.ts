@@ -26,7 +26,7 @@ import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { AUTHORITY_EVENT_STREAM_MODULE_ID } from '../modules/authority-event-stream-module.js';
 import { ALLOWED_INTENT, EVALUATED_AT_POLICY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
-import { steppingClock } from './authority-event-stream-support.js';
+import { steppingClock, tick } from './authority-event-stream-support.js';
 import { buildTestKernelProviders } from './support.js';
 
 /**
@@ -114,6 +114,20 @@ async function moduleHealth(enterprise: AocEnterprise) {
   return (await enterprise.health()).modules?.[AUTHORITY_EVENT_STREAM_MODULE_ID];
 }
 
+/**
+ * Wait for the projection queue to go idle, read through the module's own
+ * health. Nothing in production waits for projection — a test that wants to read
+ * the stream has to, and the operator signal is the same number.
+ */
+async function projected(enterprise: AocEnterprise, attempts = 200): Promise<void> {
+  for (let index = 0; index < attempts; index += 1) {
+    const pending = Number((await moduleHealth(enterprise))?.health.details?.pending ?? 0);
+    if (pending === 0) return;
+    await tick(1);
+  }
+  assert.fail('the projection queue never drained');
+}
+
 describe('P8 composition — present exactly with governed actions', () => {
   it('without governed actions: no stream, no module, no reader, and no file is created', async () => {
     const config = configuration();
@@ -132,6 +146,7 @@ describe('P8 composition — present exactly with governed actions', () => {
     assert.deepEqual(Object.keys(reader).sort(), ['readStream', 'verifyStream'], 'no append, no health, no close');
     const result = await govern(enterprise);
     assert.equal(result.status, 'executed');
+    await projected(enterprise);
     const events = await reader.readStream(A, streamIdOf(result.requestId));
     assert.deepEqual(
       events.map((event) => event.eventType),
@@ -147,6 +162,7 @@ describe('P8 composition — present exactly with governed actions', () => {
   it('the one read surface is tenant-confined', async () => {
     const enterprise = await compose();
     const result = await govern(enterprise);
+    await projected(enterprise);
     const reader = enterprise.authorityEventStream;
     assert.ok(reader !== undefined);
     await assert.rejects(reader.readStream({ organizationId: 'org-other' }, streamIdOf(result.requestId)), (error: unknown) => isAuthorityEventStreamError(error) && error.code === 'AUTHORITY_EVENT_TENANT_VIOLATION');
@@ -160,6 +176,7 @@ describe('P8 composition — durable and owned correctly', () => {
     const config = configuration({ sqlite: dir });
     const enterprise = await compose({ configuration: config });
     const result = await govern(enterprise, 'durable-1');
+    await projected(enterprise);
     const live = await enterprise.authorityEventStream?.readStream(A, streamIdOf(result.requestId));
     await enterprise.close();
     assert.ok(existsSync(config.authorityEventStream.sqlitePath));
@@ -176,6 +193,7 @@ describe('P8 composition — durable and owned correctly', () => {
     const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock().now });
     const enterprise = await compose({ store });
     const result = await govern(enterprise);
+    await projected(enterprise);
     await enterprise.close();
     assert.equal((await store.health()).status, 'healthy', 'still open after the Host closed');
     assert.equal((await store.readStream(A, streamIdOf(result.requestId))).length, 4);
@@ -196,6 +214,7 @@ describe('P8 composition — §16 evidence never gates: unavailable or failing s
     const result = await govern(enterprise);
     assert.equal(result.status, 'executed');
     assert.equal(adapter.callCount, 1);
+    await projected(enterprise);
     const health = await moduleHealth(enterprise);
     assert.equal(health?.health.status, 'unhealthy');
     assert.ok(Number(health?.health.details?.failed) >= 4);
@@ -215,6 +234,7 @@ describe('P8 composition — §16 evidence never gates: unavailable or failing s
     assert.deepEqual(strip(a), strip(b), 'the governed result does not depend on evidence');
     assert.equal(brokenAdapter.callCount, healthyAdapter.callCount);
     assert.equal(brokenHost.isReady(), true);
+    await projected(brokenHost);
     const health = await moduleHealth(brokenHost);
     assert.equal(health?.health.status, 'degraded');
     assert.equal(health?.health.details?.lastFailureCode, 'AUTHORITY_EVENT_PROJECTION_FAILED');
@@ -279,6 +299,7 @@ describe('P8 composition — §33 no secret reaches the stream', () => {
     const wire = JSON.stringify(sent);
     assert.ok(wire.includes(PROVIDER_TOKEN) && wire.includes(HEADER_LITERAL) && wire.includes(ORIGIN_HOST), 'the provider request carried the credential, header and destination');
 
+    await projected(enterprise);
     const events: readonly AuthorityEvent[] = (await enterprise.authorityEventStream?.readStream(A, streamIdOf(result.requestId))) ?? [];
     assert.equal(events.length, 4);
     const all = strings(events);

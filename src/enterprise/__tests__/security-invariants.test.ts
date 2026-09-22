@@ -276,8 +276,8 @@ describe('SECURITY_INVARIANTS.md — P6: the Generic HTTP invariants are recorde
     assert.ok(/Distributed or cross-host quota/.test(doc), 'the distributed-quota non-claim must stay recorded');
   });
 
-  it('records SEC-INV-080 … SEC-INV-087 as EVENT-STREAM-01 … 08, each path- or component-local, and never claims authenticity or system-wide coverage', () => {
-    for (let index = 0; index < 8; index += 1) {
+  it('records SEC-INV-080 … SEC-INV-088 as EVENT-STREAM-01 … 09, each path- or component-local, and never claims authenticity or system-wide coverage', () => {
+    for (let index = 0; index < 9; index += 1) {
       const id = `SEC-INV-0${80 + index}`;
       const alias = `EVENT-STREAM-${String(index + 1).padStart(2, '0')}`;
       const row = doc.split('\n').find((line) => line.startsWith(`| ${id} (**${alias}**)`));
@@ -290,7 +290,10 @@ describe('SECURITY_INVARIANTS.md — P6: the Generic HTTP invariants are recorde
     assert.ok(row080.includes('Evidence never becomes authority'));
     const row084 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-084 ')) ?? '';
     assert.ok(row084.includes('integrity, not authenticity'), 'the digest limit travels with the tamper-evidence claim');
-    assert.ok(/A tamper-proof, authenticated or system-wide event record/.test(doc), 'the event-stream non-claim must stay recorded');
+    assert.ok(/A tamper-proof, authenticated, complete or system-wide event record/.test(doc), 'the event-stream non-claim must stay recorded');
+    const row088 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-088 ')) ?? '';
+    assert.ok(row088.includes('never settles'), 'the non-blocking invariant must name the pending-projection case it exists for');
+    assert.equal(/Promise<void>/.test(doc), false, 'the superseded "awaited promise" contract must not be described as the guarantee');
   });
 
   it('keeps SEC-INV-U03 unimplemented and never describes origin pinning as an egress firewall', () => {

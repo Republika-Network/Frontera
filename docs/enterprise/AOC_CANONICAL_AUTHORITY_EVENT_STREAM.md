@@ -17,9 +17,11 @@ and makes that lifecycle reconstructable afterwards:
 AUTHORITY / POLICY / OBLIGATIONS / GRANTS / EXECUTION  →  EVENTS  →  EVIDENCE
 ```
 
-**A canonical event may report what happened. It may never make it permissible.**
+**A canonical event may report what happened. It may never make it permissible —
+and it may never make it slower.**
 No Kernel, policy, grant, exercise, exercise-control, emergency-control, routing,
-adapter, idempotency or replay code reads the stream. Every authoritative answer
+adapter, idempotency or replay code reads the stream, and none of them **waits**
+for it: reporting a fact enqueues it and returns (§6). Every authoritative answer
 keeps its existing owner:
 
 | question | authoritative owner | P8's relation |
@@ -109,6 +111,40 @@ scheduled expiry (none exists).
   unaffected. A corrupt stream is an evidence problem: it is never read as
   permission for, or refusal of, a new action.
 
+## 3a. Reporting, and why nothing waits for it
+
+```
+authority path:   fact established -> recorder.x(fact)   [builds, enqueues, returns]
+                                        |
+projector:                              +-> per-stream serial queue -> store.append(...)
+```
+
+Every method on the recorder and on the P7 gate's observer returns `void`. There
+is no promise, so no authority path can await durable projection — the property
+an earlier revision did **not** have, because it awaited the projection inside a
+`try`/`catch`: that handles a rejection and nothing at all about a projection
+that never settles. A stuck stream would have held a decision before its grant,
+sat between the durable execution claim and the provider crossing, kept a P7
+reservation consuming while admission never returned, and withheld a
+revocation's confirmation.
+
+What the queue guarantees:
+
+| property | how |
+| --- | --- |
+| reporting never blocks | build-and-enqueue only; even the first append of an idle stream starts one microtask later, so a synchronous SQLite transaction never runs inside the reporting call |
+| one stream keeps its order | one serial chain per stream: event N+1's append is not invoked until N's has settled |
+| a stuck stream holds only itself | chains are per stream; other lifecycles keep projecting |
+| the store still owns the record | sequence, previous digest, `recordedAt` and the digest are assigned by the store inside its own critical section — the queue chooses none of them |
+| one lost event does not strand a stream | a chain continues past a failed step |
+| no background machinery | a microtask hop is the only scheduling; no timer, interval, worker, retry loop or sweeper |
+
+A revocation is reported before its lifecycle is known — the correlation comes
+from the authoritative grant — so its attribution read runs on its own chain and
+the event joins the stream's queue once resolved. It is therefore appended after
+the facts already enqueued for that stream; `occurredAt` is still the revocation
+instant.
+
 ## 4. Composition and configuration
 
 Composed automatically when `governedActionOrchestrator` is enabled; absent
@@ -148,8 +184,11 @@ initialization never throws) reports:
 | `degraded` | at least one projection failed (`failed`, `lastFailureCode` in details) |
 | `unhealthy` | the store could not be opened, is closed, or reports unhealthy |
 
-Details carry counters (`appended`, `existing`, `failed`, `outOfScope`) — never a
-path, a payload or an id. In every case governed actions behave exactly as they
+Details carry counters (`appended`, `existing`, `failed`, `outOfScope`,
+`pending`) — never a path, a payload or an id. `pending` is the queue depth: a
+number that stops falling is how a slow or stuck store shows up. It is an
+operator signal only — no authority path reads it, none waits on it, and it is
+not back-pressure. In every case governed actions behave exactly as they
 would with no stream: a failed projection cannot make an uncommitted decision
 committed or a committed one uncommitted, cannot mint or revoke a grant, cannot
 reserve, settle or release, cannot change routing or invoke an adapter again,
@@ -177,7 +216,13 @@ and cannot turn `executed`, `execution-failed`, `execution-unconfirmed` or
 
 Integrity, not authenticity (unkeyed SHA-256; whole-stream rewrite with a
 re-sealed head, or deletion of a whole stream with its head, is not detectable
-from inside the file). One SQLite file serializes one host. No global order, no
+from inside the file). **Completeness is not claimed:** Stage A does not retry or
+reconcile, so a projection that failed is lost, and one still queued when the
+process stops is lost with it — the stream can be shorter than what happened,
+never different. Verification proves the integrity and order of what is present;
+an absent event is never evidence that its fact did not occur, and the
+authoritative stores remain the record for that. One SQLite file serializes one
+host. No global order, no
 exactly-once, no WORM, no distributed consensus, no cross-region copy, no
 retention or cleanup, not in portability v1 backup/restore. Stage A coverage is
 path-local. Signatures and KMS/HSM are P12; model convergence is P9.
@@ -194,5 +239,11 @@ duplicate facts, conflicting facts; chain verified after every race),
 facts, replay, projection failure never becoming authority),
 `authority-event-stream-composition.test.ts` (composition, durability, ownership,
 degradation, tenant confinement, secret leakage through the full Host with a
-Generic HTTP adapter), `authority-event-stream-boundaries.test.ts` (the stream
-cannot authorize).
+Generic HTTP adapter), `authority-event-stream-projection.test.ts` (the queue:
+reporting returns before any append is invoked, one-at-a-time per stream in
+enqueue order, a chain that continues past a failure, a stuck stream that holds
+only itself), `authority-event-stream-governed-action.test.ts`'s never-settling
+regressions (decision, claim, reservation, revocation and outcome projections
+that never settle change no outcome, no adapter count, no ledger state and no
+replay), and `authority-event-stream-boundaries.test.ts` (the stream can neither
+authorize nor be awaited).

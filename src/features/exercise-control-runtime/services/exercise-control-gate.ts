@@ -203,12 +203,18 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
    */
   const admitted = new WeakMap<ExerciseReservationHandle, { readonly executionId: string; readonly boundedGrantId: string; readonly requestId: string; readonly decisionId: string }>();
 
-  /** Evidence only. Awaited so events keep lifecycle order; any failure is discarded and nothing here is ever read back. */
-  async function observe(observation: () => ExerciseReservationObservation | undefined): Promise<void> {
+  /**
+   * Evidence only, and never awaited: the observer enqueues and returns `void`,
+   * so a slow, stuck or hostile one cannot hold an admission between a
+   * committed reservation and the provider crossing, or a finalization between
+   * a recorded terminal event and the caller. Any synchronous throw is
+   * discarded, and nothing here is ever read back.
+   */
+  function observe(observation: () => ExerciseReservationObservation | undefined): void {
     if (observer === undefined) return;
     try {
       const built = observation();
-      if (built !== undefined) await observer.reservationObserved(built);
+      if (built !== undefined) observer.reservationObserved(built);
     } catch {
       // An observer can never change an admission, a finalization or an outcome.
     }
@@ -240,7 +246,7 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
     }
     const finalization = released.outcome === 'released' || released.outcome === 'already-released' ? 'released' : 'retained';
     // Decided above, from the ledger alone; the observation cannot move it.
-    if (finalization === 'released') await observe(() => terminalObservation(reservation, released));
+    if (finalization === 'released') observe(() => terminalObservation(reservation, released));
     return finalization;
   }
 
@@ -345,7 +351,7 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
       admitted.set(handle, facts);
       // Evidence of the admission the ledger just committed, from the record it
       // returned. Downstream of the decision above; it cannot change it.
-      await observe(() => {
+      observe(() => {
         const recorded = (outcome as { readonly reservation?: { readonly reservationId?: unknown; readonly policyDigest?: unknown; readonly authorityBindingDigest?: unknown; readonly reservedAt?: unknown } }).reservation;
         if (recorded?.reservationId !== reservationId || typeof recorded.reservedAt !== 'string' || typeof recorded.policyDigest !== 'string' || typeof recorded.authorityBindingDigest !== 'string') return undefined;
         return { kind: 'reserved', reservationId, ...facts, policyDigest: recorded.policyDigest, authorityBindingDigest: recorded.authorityBindingDigest, admittedAt: recorded.reservedAt };
@@ -383,7 +389,7 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
         return 'retained';
       }
       const finalization = settled.outcome === 'settled' || settled.outcome === 'already-settled' ? 'settled' : 'retained';
-      if (finalization === 'settled') await observe(() => terminalObservation(reservation, settled));
+      if (finalization === 'settled') observe(() => terminalObservation(reservation, settled));
       return finalization;
     },
   });

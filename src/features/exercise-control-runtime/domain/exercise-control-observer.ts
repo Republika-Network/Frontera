@@ -1,9 +1,9 @@
 import type { ExerciseReservationReleaseReason, ExerciseReservationSettleReason } from './exercise-reservation.js';
 
 /**
- * A **write-only** observation boundary for reservation facts the ledger has
- * already proved — the one way evidence learns what the exercise-control gate
- * did, without the gate learning that evidence exists.
+ * A **write-only, non-blocking** observation boundary for reservation facts the
+ * ledger has already proved — the one way evidence learns what the
+ * exercise-control gate did, without the gate learning that evidence exists.
  *
  * ## Downstream only
  *
@@ -14,13 +14,17 @@ import type { ExerciseReservationReleaseReason, ExerciseReservationSettleReason 
  * that threw: none of these is observed, because none of them is a recorded
  * reservation fact.
  *
- * ## It can change nothing
+ * ## It can change nothing, and it can delay nothing
  *
- * The method returns nothing the gate reads. The gate awaits it inside a
- * `try`/`catch` and discards both the result and any failure, so an observer
- * that throws, rejects, hangs up or lies cannot admit, withhold, release,
- * settle, or change a reservation, an outcome or a reason code. Nothing here is
- * ever consulted for admission: consumption is read only from the ledger.
+ * `reservationObserved` returns `void`: it **enqueues** an observation and
+ * returns. It never represents durable storage, so the gate has nothing to
+ * await and cannot be held by an observer that is slow, stuck or hostile. That
+ * matters because P7 reservations have no TTL and no sweeper: a gate blocked
+ * between a committed reservation and its finalization would leave capacity
+ * consumed indefinitely. An observer that throws synchronously is caught and
+ * discarded; nothing it does can admit, withhold, revalidate, settle, release,
+ * or change an outcome or a reason code. Admission still reads consumption only
+ * from the ledger.
  */
 export type ExerciseReservationObservation =
   | {
@@ -59,5 +63,6 @@ export type ExerciseReservationObservation =
     };
 
 export interface ExerciseControlObserver {
-  reservationObserved(observation: ExerciseReservationObservation): Promise<void>;
+  /** Enqueue-and-return. Never awaited by the gate, and never a durability signal. */
+  reservationObserved(observation: ExerciseReservationObservation): void;
 }

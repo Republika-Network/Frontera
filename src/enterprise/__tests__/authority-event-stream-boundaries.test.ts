@@ -7,14 +7,20 @@ import type { AuthorityEventDecisionStatus } from '../authority-event-stream/ind
 import type { KernelDecisionStatus } from '../../kernel/index.js';
 
 /**
- * §6 / §32 — the event stream cannot authorize, enforced structurally.
+ * §6 / §32 — the event stream cannot authorize, and cannot delay, enforced
+ * structurally.
  *
- * Evidence flows one way: authority → events → evidence. These rules make the
- * reverse — "read the stream to decide" — fail the build the moment someone
- * writes it: no authority-bearing module may import the stream's store, reader,
- * verifier, projector or health; the one thing lifecycle modules may name is the
- * write-only recorder, as a type; every call to it discards its result; and the
- * stream module itself imports no Kernel, no adapter, no route and no clock.
+ * Evidence flows one way: authority → events → evidence. These rules make two
+ * reverses fail the build the moment someone writes them.
+ *
+ * 1. **"Read the stream to decide."** No authority-bearing module may import the
+ *    stream's store, reader, verifier, projector or health; the one thing
+ *    lifecycle modules may name is the write-only recorder, as a type.
+ * 2. **"Wait for the evidence."** Every reporting method returns `void`, and no
+ *    authority-bearing source may `await` a recorder or observer call. The
+ *    earlier contract — a promise awaited inside a `catch` — is gone: catching a
+ *    rejection never protected the path from a projection that simply never
+ *    settled, and these scans now refuse that shape outright.
  */
 
 function walk(dir: string): string[] {
@@ -109,36 +115,71 @@ describe('P8 boundaries — §32 the event stream cannot authorize', () => {
     }
   });
 
-  it('the recorder answers nothing: every method returns Promise<void>', () => {
+  it('the recorder answers nothing and promises nothing: every method returns void, so durable projection is not awaitable', () => {
     const recorder = code('src/enterprise/authority-event-stream/recorder.ts');
     const methods = [...recorder.matchAll(/^\s+(\w+)\([^)]*\): ([^;]+);$/gm)];
     assert.ok(methods.length >= 6);
-    for (const [, name, returned] of methods) assert.equal(returned, 'Promise<void>', `${name ?? ''} returns ${returned ?? ''}`);
+    for (const [, name, returned] of methods) assert.equal(returned, 'void', `${name ?? ''} returns ${returned ?? ''}`);
+    assert.equal(/Promise<void>/.test(recorder), false, 'no method may hand back a completion promise');
     const observer = code('src/features/exercise-control-runtime/domain/exercise-control-observer.ts');
-    assert.match(observer, /reservationObserved\(observation: ExerciseReservationObservation\): Promise<void>;/);
+    assert.match(observer, /reservationObserved\(observation: ExerciseReservationObservation\): void;/);
+    assert.equal(/Promise</.test(observer), false);
+    // The projector still satisfies the recorder, so `void` is a real contract, not a comment.
+    const projector = code('src/enterprise/authority-event-stream/projector.ts');
+    assert.match(projector, /export function createAuthorityEventProjector\(options: AuthorityEventProjectorOptions\): AuthorityEventProjector \{/);
+    assert.equal(/async (decisionCommitted|grantIssued|grantRevoked|grantExpiryObserved|executionClaimed|executionOutcomeObserved|reservationObserved)\(/.test(projector), false, 'no recorder method is async');
   });
 
-  it('every call site discards the recorder: awaited as a statement inside a catch-all, never assigned, compared or branched on', () => {
+  it('every call site enqueues and moves on: reported as a statement, never awaited, assigned, compared or branched on', () => {
     const orchestrator = code('src/enterprise/governed-action/orchestrator.ts');
-    assert.ok([...orchestrator.matchAll(/await report\(/g)].length >= 6);
-    assert.equal(/(=|return|if\s*\(|\?|&&|\|\|)\s*(await\s+)?report\(/.test(orchestrator), false, 'a report result is never used');
-    assert.equal(/evidence\.\w+\(/.test(orchestrator.replace(/await fact\(evidence\)/, '')), false, 'the recorder is reached only through report()');
-    const report = orchestrator.slice(orchestrator.indexOf('async function report('), orchestrator.indexOf('function observedExpiry('));
-    assert.match(report, /try \{\s*await fact\(evidence\);\s*\} catch \{/);
+    assert.ok([...orchestrator.matchAll(/(?<!await )report\(\(recorder\)/g)].length >= 6, 'the orchestrator still reports every fact');
+    assert.equal(/await\s+report\(/.test(orchestrator), false, 'the orchestrator never awaits evidence');
+    assert.equal(/(=|return|if\s*\(|\?|&&|\|\|)\s*report\(/.test(orchestrator), false, 'a report result is never used');
+    assert.equal(/evidence\.\w+\(/.test(orchestrator.replace(/fact\(evidence\)/, '')), false, 'the recorder is reached only through report()');
+    const report = orchestrator.slice(orchestrator.indexOf('function report('), orchestrator.indexOf('function observedExpiry('));
+    assert.match(report, /try \{\s*fact\(evidence\);\s*\} catch \{/, 'report is synchronous: build, hand over, return');
+    assert.equal(/async function report\(/.test(orchestrator), false);
 
     const ace = code('src/enterprise/execution-governance/service.ts');
-    assert.match(ace, /try \{\s*await evidence\.grantRevoked\(outcome\.revocation\);\s*\} catch \{/);
+    assert.match(ace, /try \{\s*evidence\.grantRevoked\(outcome\.revocation\);\s*\} catch \{/);
+    assert.equal(/await\s+evidence\./.test(ace), false, 'a revocation never waits for its evidence');
     assert.equal([...ace.matchAll(/evidence\.\w+\(/g)].length, 1);
 
     const gate = code('src/features/exercise-control-runtime/services/exercise-control-gate.ts');
-    assert.match(gate, /try \{\s*const built = observation\(\);\s*if \(built !== undefined\) await observer\.reservationObserved\(built\);\s*\} catch \{/);
+    assert.match(gate, /try \{\s*const built = observation\(\);\s*if \(built !== undefined\) observer\.reservationObserved\(built\);\s*\} catch \{/);
+    assert.equal(/await\s+observer\./.test(gate), false, 'the gate never waits for an observation');
+    assert.equal(/await\s+observe\(/.test(gate), false);
+    assert.equal(/async function observe\(/.test(gate), false, 'observe is synchronous, so admission cannot be held by it');
     assert.equal([...gate.matchAll(/observer\.reservationObserved\(/g)].length, 1, 'reached only through observe()');
-    assert.equal(/(=|return|if\s*\()\s*(await\s+)?observe\(/.test(gate), false);
+    assert.equal(/(=|return|if\s*\()\s*observe\(/.test(gate), false);
+  });
+
+  it('no authority-bearing source awaits anything the stream hands back', () => {
+    for (const file of AUTHORITY_BEARING) {
+      const text = code(file);
+      for (const pattern of [/await\s+\w*[Rr]ecorder\./, /await\s+evidence\./, /await\s+observer\./, /await\s+report\(/, /await\s+observe\(/, /await\s+\w+\.reservationObserved\(/]) {
+        assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
+      }
+    }
+  });
+
+  it('the projector owns ordering with a per-key serial chain, and no timer, worker or sweeper', () => {
+    const projector = code('src/enterprise/authority-event-stream/projector.ts');
+    assert.match(projector, /const tails = new Map<string, Promise<void>>\(\);/);
+    assert.match(projector, /const previous = tails\.get\(key\) \?\? Promise\.resolve\(\);/, 'an idle chain still starts on a microtask, so no store work runs on the caller stack');
+    assert.match(projector, /const next = previous\.then\(run, run\);/, 'a chain continues past a failed step');
+    for (const pattern of [/setTimeout/, /setInterval/, /setImmediate/, /worker_threads/, /queueMicrotask/, /process\.nextTick/]) {
+      assert.equal(pattern.test(projector), false, `${String(pattern)} is not the scheduling mechanism`);
+    }
+    // Sequence, previous digest and recordedAt stay the store's.
+    for (const pattern of [/sequence\s*:/, /previousEventDigest\s*:/, /recordedAt\s*:/]) {
+      assert.equal(pattern.test(projector), false, `the projector must not choose ${String(pattern)}`);
+    }
   });
 
   it('observations sit after the facts they report: never before the ledger, the claim or the outcome', () => {
     const gate = code('src/features/exercise-control-runtime/services/exercise-control-gate.ts');
-    assert.ok(gate.indexOf("if (kind !== 'reserved') return withheld") < gate.indexOf("await observe(() => {"), 'reserved is observed only after the ledger said reserved');
+    assert.ok(gate.indexOf("if (kind !== 'reserved') return withheld") < gate.indexOf('observe(() => {'), 'reserved is observed only after the ledger said reserved');
     assert.ok(gate.includes('admittedAt: recorded.reservedAt'), "the reserved observation's instant is the ledger's recorded one, never a clock sample");
     assert.equal(/admittedAt:\s*now\(/.test(gate), false);
     const revalidate = gate.slice(gate.indexOf('revalidate(reservation: ExerciseReservationHandle, input: ExerciseControlAdmissionInput): ExerciseControlRevalidation {'), gate.indexOf('async finalize('));

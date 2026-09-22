@@ -13,8 +13,14 @@ import {
 
 /**
  * P8 — the gate's write-only observer: told only what the ledger proved, after
- * it proved it, and unable to change an admission, a finalization or a
- * revalidation whatever it does.
+ * it proved it, and unable to change **or delay** an admission, a finalization
+ * or a revalidation whatever it does.
+ *
+ * The delay half is the P8 hardening: `reservationObserved` returns `void`, so
+ * the gate has nothing to await. A reservation is committed and has no TTL, so a
+ * gate that could be held between the ledger's `reserved` and the provider —
+ * or between a terminal event and its caller — would leave capacity consumed
+ * indefinitely.
  */
 
 const BINDING = `sha256:${'b'.repeat(64)}`;
@@ -35,15 +41,26 @@ function recording(): ExerciseControlObserver & { readonly seen: ExerciseReserva
   const seen: ExerciseReservationObservation[] = [];
   return {
     seen,
-    async reservationObserved(observation) {
+    reservationObserved(observation) {
       seen.push(observation);
     },
   };
 }
 
 const throwing: ExerciseControlObserver = {
-  async reservationObserved() {
+  reservationObserved() {
     throw new Error('observer exploded');
+  },
+};
+
+/**
+ * The adversarial shape the hardening exists for: an observer that hands back
+ * something that never settles. The gate must not be holding anything that
+ * could await it — the return value is typed `void` and is dropped.
+ */
+const neverSettling: ExerciseControlObserver = {
+  reservationObserved() {
+    return new Promise<void>(() => {}) as unknown as void;
   },
 };
 
@@ -106,7 +123,23 @@ describe('Exercise-control observer (P8) — it can change nothing', () => {
     const baseline = await run();
     assert.deepEqual(await run(throwing), baseline);
     assert.deepEqual(await run(recording()), baseline);
+    assert.deepEqual(await run(neverSettling), baseline, 'a never-settling observer holds nothing');
     assert.equal(baseline.finalized, 'released');
     assert.equal(baseline.third, 'admitted', 'the release really returned capacity in every run');
+  });
+});
+
+describe('Exercise-control observer (P8) — it can delay nothing', () => {
+  it('admission and finalization return while a never-settling observer is outstanding', { timeout: 30_000 }, async () => {
+    const ledger = createInMemoryExerciseControlLedger({ now: () => LEDGER_AT });
+    const g = gate(neverSettling, ledger);
+    const started = Date.now();
+    const admission = await g.admit(input('exec-hang'));
+    assert.equal(admission.kind, 'admitted', 'the ledger admitted it, and the gate returned');
+    if (admission.kind !== 'admitted') return;
+    assert.equal(g.revalidate(admission.reservation, input('exec-hang')).kind, 'verified');
+    assert.equal(await g.finalize(admission.reservation, { kind: 'settle', reason: 'executed' }), 'settled');
+    assert.ok(Date.now() - started < 1_000);
+    assert.equal((await ledger.read(admission.reservation.reservationId))?.state, 'settled', 'capacity was finalized, never stranded');
   });
 });

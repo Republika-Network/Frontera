@@ -47,13 +47,16 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  *   -> execution outcome reference
  * ```
  *
- * ## Evidence, after each fact
+ * ## Evidence, after each fact — reported, never waited for
  *
  * When a deployment composes the canonical authority event stream (P8), each
  * established fact above is also *reported* — after it is established, through
- * the write-only `AuthorityEventRecorder` — and never consulted. `report()`
- * swallows every failure, so a missing, failed or corrupt stream leaves every
- * result below exactly as it would be without one.
+ * the write-only `AuthorityEventRecorder` — and never consulted. `report()` is
+ * **synchronous**: it enqueues and returns. Nothing on this path awaits durable
+ * projection, so a stream that is slow, unreachable or permanently stuck cannot
+ * delay a grant issuance, sit between the write-ahead claim and the adapter, or
+ * hold a result. A missing, failed or corrupt stream leaves every result below
+ * exactly as it would be without one.
  *
  * ## Where the operational interlock sits
  *
@@ -271,15 +274,18 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   }
 
   /**
-   * Evidence, strictly downstream. Awaited so the stream keeps lifecycle order;
-   * any failure is discarded, and nothing it could return exists to be read.
-   * A projection that fails leaves the evidence stream short — never the
-   * authority, the grant, the claim or the outcome different.
+   * Evidence, strictly downstream and strictly non-blocking. The recorder
+   * enqueues and returns `void`, so there is nothing to await here and nothing
+   * this path can be held by: order within a lifecycle is the projector's
+   * per-stream queue, not this function's control flow. A recorder that throws
+   * synchronously is discarded, and a projection that fails leaves the evidence
+   * stream short — never the authority, the grant, the claim or the outcome
+   * different.
    */
-  async function report(fact: (recorder: AuthorityEventRecorder) => Promise<void>): Promise<void> {
+  function report(fact: (recorder: AuthorityEventRecorder) => void): void {
     if (evidence === undefined) return;
     try {
-      await fact(evidence);
+      fact(evidence);
     } catch {
       // Evidence never changes an outcome that was already reached.
     }
@@ -320,7 +326,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const { decision: persisted, record } = verified;
       // The committed, re-read and verified record — every status, and every
       // replay of it, which the stream resolves to the event already recorded.
-      await report((recorder) => recorder.decisionCommitted(record));
+      report((recorder) => recorder.decisionCommitted(record));
       const decided: ResultContext = {
         ...base,
         decision: { decisionId: persisted.decisionId, evaluationId: record.evaluation.evaluationId, status: persisted.status, reasonCodes: persisted.reasonCodes },
@@ -405,7 +411,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (grant.subject !== scope.actorId || grant.correlation.requestId !== requestId || grant.correlation.decisionId !== persisted.decisionId) {
         return result({ status: 'system_error', ...decided, reasonCodes: [R.GOVERNED_ACTION_PERSISTED_DECISION_MISMATCH] });
       }
-      await report((recorder) => recorder.grantIssued(grant));
+      report((recorder) => recorder.grantIssued(grant));
 
       // Phase: evidence + claim, then exercise.
       try {
@@ -419,7 +425,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // Pre-assessment through ACE. A pure read: no provider is contacted.
       const assessment = await execution.assessExercise(exercise);
       if (!assessment.usable) {
-        if (observedExpiry(assessment)) await report((recorder) => recorder.grantExpiryObserved(grant));
+        if (observedExpiry(assessment)) report((recorder) => recorder.grantExpiryObserved(grant));
         return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: assessment.reasonCodes });
       }
 
@@ -431,7 +437,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
       }
       if (claim.kind === 'already-claimed') return replayResult(executed, claim.prior, persisted.reasonCodes);
-      await report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
+      // Enqueued, not awaited: no evidence write may sit between the durable
+      // claim and the adapter crossing.
+      report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
 
       // Exercise through ACE: the grant is re-read from the authoritative store
       // and the adapter receives a ValidatedExecutionAction only.
@@ -448,9 +456,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const unrecorded = outcomeRecorded ? [] : [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED];
       // What the runtime returned, with its certainty intact. Reported after the
       // outcome exists; the result below is built from `outcome`, never from this.
-      await report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));
+      report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));
       if (outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise' && observedExpiry(outcome.assessment)) {
-        await report((recorder) => recorder.grantExpiryObserved(grant));
+        report((recorder) => recorder.grantExpiryObserved(grant));
       }
       if (outcome.status === 'executed') {
         return result({

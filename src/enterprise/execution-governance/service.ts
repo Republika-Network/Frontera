@@ -255,10 +255,13 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
         revokedAt: input.revokedAt ?? now(),
       });
       // Evidence of the revocation the store now holds — the first one, on a
-      // repeat. After the fact, and unable to change it.
+      // repeat. Enqueued and returned from immediately: the authoritative result
+      // never waits for durable projection, so a stream that is slow or stuck
+      // cannot delay the confirmation, and the next exercise reads the
+      // revocation from the grant store regardless.
       if (evidence !== undefined && (outcome.outcome === 'revoked' || outcome.outcome === 'already-revoked')) {
         try {
-          await evidence.grantRevoked(outcome.revocation);
+          evidence.grantRevoked(outcome.revocation);
         } catch {
           // Evidence never changes a revocation that was already recorded.
         }

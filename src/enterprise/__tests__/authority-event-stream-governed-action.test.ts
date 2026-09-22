@@ -23,7 +23,7 @@ import {
   type AuthorityEventStreamWriter,
 } from '../authority-event-stream/index.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
-import type { GovernedActionResult } from '../governed-action/index.js';
+import { deriveGovernedActionRequestId, type GovernedActionResult } from '../governed-action/index.js';
 import {
   ALLOWED_INTENT,
   DENIED_ACTOR,
@@ -37,7 +37,7 @@ import {
   type GovernedWorld,
   type WorldOptions,
 } from './governed-action-support.js';
-import { steppingClock } from './authority-event-stream-support.js';
+import { drained, steppingClock, tick } from './authority-event-stream-support.js';
 
 /**
  * §30 / §31 / §34 — P8 on the real governed-action path: the real Kernel, the
@@ -76,6 +76,9 @@ function p7(options: { readonly policy?: ExerciseControlPolicy; readonly binding
 
 async function streamOf(world: StreamWorld, result: GovernedActionResult): Promise<readonly AuthorityEvent[]> {
   assert.ok(result.requestId !== undefined);
+  // Projection is never awaited by the path that produced these facts, so the
+  // test waits for the queue here — the one place where waiting is correct.
+  assert.equal(await drained(() => world.projector.health()), true, 'the projection queue drained');
   const streamId = deriveAuthorityEventStreamId({ organizationId: ORG, requestId: result.requestId });
   const verification = await world.stream.verifyStream({ organizationId: ORG }, streamId);
   assert.equal(verification.valid, true, verification.failures.join('; '));
@@ -201,7 +204,11 @@ describe('P8 governed action — §30 grant → execution outcomes', () => {
     const result = await world.governed.orchestrator.govern(IDENTITY, intent('revoked'));
     assert.equal(result.status, 'withheld');
     const events = await streamOf(world, result);
-    assert.deepEqual(types(events), ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'grant.revoked', 'execution.outcome.observed']);
+    // A revocation's lifecycle is resolved from the authoritative grant on its
+    // own queue, so it lands after the facts already enqueued for this stream;
+    // its occurredAt is still the revocation instant.
+    assert.deepEqual([...types(events)].sort(), ['execution.attempt.claimed', 'execution.outcome.observed', 'governance.decision.committed', 'grant.issued', 'grant.revoked']);
+    assert.ok(types(events).indexOf('grant.revoked') > types(events).indexOf('grant.issued'), 'a revocation is never recorded before the issuance it revokes');
     assert.deepEqual(only(events, 'grant.revoked').payload, { reason: 'security-incident' });
     assert.deepEqual(only(events, 'execution.outcome.observed').payload, { status: 'withheld', withheldBy: 'grant-exercise', reasonCodes: [G.GRANT_EXERCISE_REVOKED], outcomeRecorded: true });
     assert.equal(world.governed.adapter.callCount, 0);
@@ -216,7 +223,7 @@ describe('P8 governed action — §30 grant → execution outcomes', () => {
     assert.equal((await world.governed.ace.revokeGrant({ grantId, reason: 'policy-changed', issuerRef: 'operator:1' })).outcome, 'revoked');
     assert.equal((await world.governed.ace.revokeGrant({ grantId, reason: 'policy-changed', issuerRef: 'operator:1' })).outcome, 'already-revoked');
     const events = await streamOf(world, result);
-    assert.deepEqual(types(events).slice(-2), ['execution.outcome.observed', 'grant.revoked']);
+    assert.equal(types(events).indexOf('grant.revoked'), events.length - 1, 'the later revocation is the newest event');
     assert.equal(events.filter((event) => event.eventType === 'grant.revoked').length, 1);
     const read = await world.grants.read(grantId);
     assert.equal(only(events, 'grant.revoked').occurredAt, read.revocation?.revokedAt, 'occurredAt is the revocation the store holds');
@@ -251,7 +258,7 @@ describe('P8 governed action — §30 grant → execution outcomes', () => {
     // The same fact observed again resolves to the same event.
     const grant = (await world.grants.read(only(events, 'grant.issued').references.boundedGrantId ?? '')).grant;
     assert.ok(grant !== undefined);
-    await world.projector.grantExpiryObserved(grant);
+    world.projector.grantExpiryObserved(grant);
     assert.equal((await streamOf(world, result)).length, events.length);
   });
 
@@ -335,15 +342,16 @@ describe('P8 governed action — §19 / §30 P7 reservation facts', () => {
     world = streamWorld({ exerciseControls: p7({ ledger }) });
     const result = await world.governed.orchestrator.govern(IDENTITY, intent('p7-revoked-wait'));
     const events = await streamOf(world, result);
-    assert.deepEqual(types(events), [
+    assert.deepEqual([...types(events)].sort(), [
       'governance.decision.committed',
       'grant.issued',
-      'execution.attempt.claimed',
       'grant.revoked',
+      'execution.attempt.claimed',
       'exercise.reservation.reserved',
       'exercise.reservation.released',
       'execution.outcome.observed',
-    ]);
+    ].sort());
+    assert.ok(types(events).indexOf('exercise.reservation.released') > types(events).indexOf('exercise.reservation.reserved'), 'the reservation is released after it is reserved');
     assert.deepEqual(only(events, 'exercise.reservation.released').payload, { reason: 'grant-exercise' });
     assert.equal(P(only(events, 'execution.outcome.observed')).withheldBy, 'grant-exercise');
   });
@@ -389,6 +397,155 @@ describe('P8 governed action — §34 replay manufactures no duplicate facts', (
   });
 });
 
+/**
+ * §9 of the P8 hardening — the regressions the reviewer asked for: a projection
+ * that **never settles**.
+ *
+ * A rejected projection was always caught. A pending one is the dangerous case:
+ * if any authority path awaited durable projection, a stuck writer would hold a
+ * decision before its grant, sit between the durable execution claim and the
+ * adapter, keep a P7 reservation consuming while `admit()` never returned, or
+ * withhold a revocation's confirmation. Reporting is an enqueue, so none of that
+ * can happen — and these tests fail (by timing out) the moment it can.
+ */
+describe('P8 governed action — a never-settling projection holds nothing', () => {
+  /** A store whose appends never settle. Not a rejection: a promise that is simply never resolved. */
+  function stuckWriter(options: { readonly only?: AuthorityEvent['eventType'] } = {}): { readonly writer: AuthorityEventStreamWriter; readonly invoked: string[]; readonly store: AuthorityEventStreamStore } {
+    const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock('2026-07-01T00:00:00.000Z').now });
+    const invoked: string[] = [];
+    return {
+      store,
+      invoked,
+      writer: {
+        append(context, input) {
+          invoked.push(input.eventType);
+          if (options.only === undefined || options.only === input.eventType) return new Promise(() => {});
+          return store.append(context, input);
+        },
+      },
+    };
+  }
+
+  it('TEST A — the committed-decision projection never settles: the governed action still reaches the same outcome', { timeout: 30_000 }, async () => {
+    const stuck = stuckWriter({ only: 'governance.decision.committed' });
+    const world = streamWorld({ writer: stuck.writer });
+    const control = streamWorld();
+    const [pendingRun, controlRun] = [await world.governed.orchestrator.govern(IDENTITY, intent('stuck-decision')), await control.governed.orchestrator.govern(IDENTITY, intent('stuck-decision'))];
+    assert.equal(pendingRun.status, 'executed');
+    assert.deepEqual(pendingRun.reasonCodes, controlRun.reasonCodes);
+    assert.equal(world.governed.adapter.callCount, 1);
+    await tick();
+    assert.deepEqual(stuck.invoked, ['governance.decision.committed'], 'the stream is stuck at its first event — and the lifecycle finished anyway');
+    assert.ok(world.projector.health().pending >= 1);
+  });
+
+  it('TEST B — the claim projection never settles: the adapter is still invoked exactly once, the outcome is still recorded, and a replay is not falsely unconfirmed', { timeout: 30_000 }, async () => {
+    const stuck = stuckWriter({ only: 'execution.attempt.claimed' });
+    const world = streamWorld({ writer: stuck.writer });
+    const result = await world.governed.orchestrator.govern(IDENTITY, intent('stuck-claim'));
+    assert.equal(result.status, 'executed', JSON.stringify(result));
+    assert.equal(world.governed.adapter.callCount, 1, 'no pending evidence sat between the claim and the adapter');
+    assert.equal(result.status === 'executed' ? result.outcomeRecorded : undefined, true);
+    const record = await world.governed.rawStore.getByRequestId({ system: false, organizationId: ORG }, result.requestId ?? '');
+    assert.deepEqual(
+      record?.references.filter((reference) => reference.referenceType === 'execution_record').map((reference) => reference.externalVersion),
+      ['attempt', 'executed@test.fake-provider'],
+    );
+    const replay = await world.governed.orchestrator.govern(IDENTITY, intent('stuck-claim'));
+    assert.equal(replay.status, 'executed', 'the replay reads the recorded outcome, not "unconfirmed"');
+    assert.equal(replay.status === 'executed' ? replay.replayed : undefined, true);
+    assert.equal(world.governed.adapter.callCount, 1);
+  });
+
+  it('TEST C — the reservation projection never settles: the second grant read, the provider and settlement all still happen', { timeout: 30_000 }, async () => {
+    const ledger = createInMemoryExerciseControlLedger({ now: () => '2026-01-01T00:00:00.000Z' });
+    const stuck = stuckWriter({ only: 'exercise.reservation.reserved' });
+    const world = streamWorld({ writer: stuck.writer, exerciseControls: p7({ ledger }) });
+    const result = await world.governed.orchestrator.govern(IDENTITY, intent('stuck-reservation'));
+    assert.equal(result.status, 'executed');
+    assert.equal(world.governed.adapter.callCount, 1);
+    const grantId = (await world.governed.rawStore.getByRequestId({ system: false, organizationId: ORG }, result.requestId ?? ''))?.references.find((reference) => reference.referenceType === 'authorization_artifact')?.externalId ?? '';
+    const view = await ledger.read(exerciseReservationId({ boundedGrantId: grantId, executionId: result.executionId ?? '' }));
+    assert.equal(view?.state, 'settled', 'capacity was finalized, not left consuming behind a stuck evidence write');
+    assert.equal(view?.terminal?.reason, 'executed');
+  });
+
+  it('TEST C (release) — a post-reservation withholding still releases while its projection is stuck', { timeout: 30_000 }, async () => {
+    const ledger = createInMemoryExerciseControlLedger({ now: () => '2026-01-01T00:00:00.000Z' });
+    let calls = 0;
+    const stuck = stuckWriter({ only: 'exercise.reservation.reserved' });
+    const world = streamWorld({ writer: stuck.writer, exerciseControls: p7({ ledger, binding: () => ((calls += 1), calls === 1 ? NO_TEMPORAL_BOUND : CHANGED_BINDING) }) });
+    const result = await world.governed.orchestrator.govern(IDENTITY, intent('stuck-reservation-release'));
+    assert.deepEqual([...result.reasonCodes], [X.EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED]);
+    const grantId = (await world.governed.rawStore.getByRequestId({ system: false, organizationId: ORG }, result.requestId ?? ''))?.references.find((reference) => reference.referenceType === 'authorization_artifact')?.externalId ?? '';
+    const view = await ledger.read(exerciseReservationId({ boundedGrantId: grantId, executionId: result.executionId ?? '' }));
+    assert.equal(view?.state, 'released');
+    assert.equal(world.governed.adapter.callCount, 0);
+  });
+
+  it('TEST D — the revocation projection never settles: revokeGrant still resolves, and the next exercise is withheld by the authoritative revocation', { timeout: 30_000 }, async () => {
+    const stuck = stuckWriter();
+    const world = streamWorld({ writer: stuck.writer });
+    const first = await world.governed.orchestrator.govern(IDENTITY, intent('stuck-revocation'));
+    const grantId = (await world.governed.rawStore.getByRequestId({ system: false, organizationId: ORG }, first.requestId ?? ''))?.references.find((reference) => reference.referenceType === 'authorization_artifact')?.externalId ?? '';
+    const revoked = await world.governed.ace.revokeGrant({ grantId, reason: 'security-incident', issuerRef: 'operator:on-call' });
+    assert.equal(revoked.outcome, 'revoked', 'the authoritative result came back with projection still pending');
+    assert.equal((await world.governed.ace.revokeGrant({ grantId, reason: 'security-incident', issuerRef: 'operator:on-call' })).outcome, 'already-revoked');
+    const assessment = await world.governed.ace.assessExercise({
+      boundedGrantId: grantId,
+      subject: IDENTITY.actor.actorId,
+      action: ALLOWED_INTENT.action,
+      resource: ALLOWED_INTENT.resource,
+      organization: ORG,
+      correlation: { requestId: first.requestId ?? '', decisionId: first.decision?.decisionId ?? '', action: ALLOWED_INTENT.action, resourceScope: ALLOWED_INTENT.resource },
+      executionId: first.executionId ?? '',
+    });
+    assert.equal(assessment.usable, false);
+    assert.deepEqual([...assessment.reasonCodes], [G.GRANT_EXERCISE_REVOKED], 'revocation is read from the grant store, never from the stream');
+  });
+
+  it('TEST E — the outcome projection never settles: the result is still returned, for every certainty', { timeout: 30_000 }, async () => {
+    for (const [behaviour, status] of [
+      [() => ({ outcome: 'completed' as const, providerRef: 'ref-1' }), 'executed'],
+      [() => ({ outcome: 'failed' as const, reason: 'PROVIDER_REJECTED' as const }), 'execution_failed'],
+      [() => ({ outcome: 'unconfirmed' as const }), 'execution_unconfirmed'],
+    ] as const) {
+      const stuck = stuckWriter({ only: 'execution.outcome.observed' });
+      const world = streamWorld({ writer: stuck.writer, adapterBehaviour: behaviour });
+      const result = await world.governed.orchestrator.govern(IDENTITY, intent(`stuck-outcome-${status}`));
+      assert.equal(result.status, status);
+      assert.equal(world.governed.adapter.callCount, 1);
+      await tick();
+      assert.ok(world.projector.health().pending >= 1, 'the outcome projection is still queued');
+    }
+  });
+
+  it('a stuck lifecycle does not stop the next one from being recorded', { timeout: 30_000 }, async () => {
+    const stuck = stuckWriter({ only: 'governance.decision.committed' });
+    const store = createInMemoryAuthorityEventStreamStore({ now: steppingClock('2026-08-01T00:00:00.000Z').now });
+    let stickyRequest: string | undefined;
+    const writer: AuthorityEventStreamWriter = {
+      append(context, input) {
+        if (stickyRequest !== undefined && input.references.requestId === stickyRequest) return new Promise(() => {});
+        return store.append(context, input);
+      },
+    };
+    const world = streamWorld({ writer });
+    stickyRequest = deriveGovernedActionRequestId({ organizationId: ORG, principalId: IDENTITY.principal.principalId, idempotencyKey: 'stuck-lifecycle' });
+    const stuckResult = await world.governed.orchestrator.govern(IDENTITY, intent('stuck-lifecycle'));
+    const healthy = await world.governed.orchestrator.govern(IDENTITY, intent('healthy-lifecycle'));
+    assert.equal(stuckResult.status, 'executed');
+    assert.equal(healthy.status, 'executed');
+    await tick(10);
+    assert.deepEqual(
+      (await store.readStream({ organizationId: ORG }, deriveAuthorityEventStreamId({ organizationId: ORG, requestId: healthy.requestId ?? '' }))).map((event) => event.eventType),
+      ['governance.decision.committed', 'grant.issued', 'execution.attempt.claimed', 'execution.outcome.observed'],
+    );
+    assert.deepEqual([...(await store.readStream({ organizationId: ORG }, deriveAuthorityEventStreamId({ organizationId: ORG, requestId: stuckResult.requestId ?? '' })))], [], 'the stuck stream wrote nothing');
+    assert.equal(stuck.invoked.length, 0);
+  });
+});
+
 describe('P8 governed action — §31 a projection failure never becomes authority', () => {
   const failingWriter: AuthorityEventStreamWriter = {
     async append() {
@@ -397,7 +554,7 @@ describe('P8 governed action — §31 a projection failure never becomes authori
   };
   /** A recorder that fails at the call site itself — past the projector's own catch — on every method. */
   const throwingRecorder = new Proxy({} as AuthorityEventRecorder, {
-    get: () => async () => {
+    get: () => () => {
       throw new Error('recorder exploded');
     },
   });
@@ -515,6 +672,7 @@ describe('P8 governed action — §31 a projection failure never becomes authori
     const world = streamWorld({ writer: failingWriter });
     const result = await world.governed.orchestrator.govern(IDENTITY, intent('x-visible'));
     assert.equal(result.status, 'executed');
+    assert.equal(await drained(() => world.projector.health()), true);
     const health = world.projector.health();
     assert.equal(health.status, 'degraded');
     assert.ok(health.failed >= 4);

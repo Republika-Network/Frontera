@@ -8,7 +8,10 @@ export const AUTHORITY_EVENT_STREAM_MODULE_ID = 'aoc.enterprise.authority-event-
 
 /**
  * Reports the health of the canonical authority event stream (P8): whether its
- * store can be read and written, and whether any projection has failed.
+ * store can be read and written, whether any projection has failed, and how many
+ * enqueued projections have not settled yet (`pending` — a number that stops
+ * falling is the operator signal for a slow or stuck store; no authority path
+ * reads it, and none waits on it).
  *
  * Registered only when the Governed Action Orchestrator is composed — the one
  * lifecycle Stage A projects. This is the existing internal health surface the
@@ -50,7 +53,7 @@ export function createAuthorityEventStreamModule(input: {
     },
     async health(): Promise<EnterpriseModuleHealth> {
       const projected = projection();
-      const counters = { appended: projected.appended, existing: projected.existing, failed: projected.failed, outOfScope: projected.outOfScope };
+      const counters = { appended: projected.appended, existing: projected.existing, failed: projected.failed, outOfScope: projected.outOfScope, pending: projected.pending };
       if (store === undefined) {
         return {
           status: 'unhealthy',

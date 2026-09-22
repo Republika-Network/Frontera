@@ -330,10 +330,16 @@ terminal event's `recordedAt`, the first one on an identical repeat). A refused
 admission, a conflicting terminal event and a finalization the ledger could not
 record are not observed, because none of them is a recorded reservation fact.
 
-The observer can change nothing: `admit` and `finalize` decide from the ledger
-alone and then call it inside a catch-all that discards failure; `revalidate`
-never calls it, so nothing awaited is added between the last revalidation and the
-adapter. The canonical authority event stream it feeds is **evidence**: admission,
+The observer can change nothing **and delay nothing**: `reservationObserved`
+returns `void`, so the gate hands the observation over and continues — a slow,
+stuck or hostile observer cannot hold an admission between a committed
+reservation and the provider crossing, or a finalization between a recorded
+terminal event and its caller. That matters here more than anywhere: a
+reservation consumes from the instant it commits and P7 has no TTL and no
+sweeper, so a gate that could be blocked after `reserve` could strand capacity
+indefinitely. `admit` and `finalize` decide from the ledger alone and then report
+inside a catch-all that discards a synchronous throw; `revalidate` never reports,
+so nothing at all is added between the last revalidation and the adapter. The canonical authority event stream it feeds is **evidence**: admission,
 `activeUsageFor`, rolling windows, lifetime and amount sums are read only from
 this ledger, never reconstructed from events
 (`docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`).

@@ -12,7 +12,41 @@ import { isSafeEvidenceString } from './validation.js';
 
 /**
  * The projector: turns facts lifecycle modules report through the write-only
- * `AuthorityEventRecorder` into canonical events, and appends them.
+ * `AuthorityEventRecorder` into canonical events, **enqueues** them, and appends
+ * them afterwards — never while the caller waits.
+ *
+ * ## Enqueue now, append later
+ *
+ * ```
+ * authority path:   fact established -> recorder.x(fact)  [builds, enqueues, returns]
+ *                                        |
+ * projector:                             +-> per-stream serial queue -> store.append(...)
+ * ```
+ *
+ * Every recorder method is synchronous and returns `void`. It validates and
+ * builds a bounded event input — pure, no I/O — hands it to the queue for its
+ * stream, and returns. Durable projection happens after the caller has moved
+ * on, so a store that is slow, unreachable, closed or **permanently stuck**
+ * cannot hold a decision, a grant issuance, an execution claim, an adapter
+ * crossing, a P7 reservation or a revocation. That is the property the earlier
+ * awaited-with-a-`catch` shape did not have: a rejected projection was caught,
+ * but a projection that never settled would have held the path.
+ *
+ * ## Order is the queue's, durability is the store's
+ *
+ * One serial chain per stream: the append for event N+1 is not invoked until
+ * event N's append has settled, so an async host-supplied store cannot reorder
+ * or interleave a stream's events however it schedules. Chains are per stream,
+ * so a stuck stream holds only its own queue — another lifecycle keeps
+ * projecting. The queue chooses **nothing** about an event: sequence, previous
+ * digest, `recordedAt` and the digest remain the store's, assigned inside its
+ * own critical section.
+ *
+ * A revocation is the one fact whose stream is not known at enqueue time — the
+ * lifecycle comes from the authoritative grant. Its attribution read runs on its
+ * own per-grant chain and only then joins the stream's queue, so it is ordered
+ * after the facts already enqueued for that stream and it blocks no other
+ * projection. Its `occurredAt` is still the revocation instant.
  *
  * ## Path-local, tenant-bound
  *
@@ -24,11 +58,12 @@ import { isSafeEvidenceString } from './validation.js';
  *
  * ## It never throws, and it decides nothing
  *
- * Every method catches every failure — an invalid fact, a conflict, a corrupt
- * stream, a closed or unopenable store — counts it in `health()`, and resolves.
- * That health is an operator signal surfaced through the module registry; no
- * authorization path reads it, and no method returns anything a caller could
- * branch on.
+ * Every failure — an invalid fact, a conflict, a corrupt stream, a closed or
+ * unopenable store, a queued append that rejects — is counted in `health()` and
+ * swallowed. That health is an operator signal surfaced through the module
+ * registry; no authorization path reads it, and no method returns anything a
+ * caller could branch on. Stage A does not retry or reconcile a failed
+ * projection: the stream can be shorter than what happened, never different.
  *
  * ## What is copied, and what never is
  *
@@ -51,6 +86,13 @@ export interface AuthorityEventProjectionHealth {
   readonly failed: number;
   /** Facts outside Stage A's governed-action scope, deliberately not projected. */
   readonly outOfScope: number;
+  /**
+   * Facts enqueued whose append has not settled yet. A queue that stops
+   * draining shows up here as a number that stops falling — the operator signal
+   * for a slow or stuck store. It is never a back-pressure signal to any
+   * authority path, which does not read it and never waits on it.
+   */
+  readonly pending: number;
   readonly lastFailureCode?: AuthorityEventStreamErrorCode | 'AUTHORITY_EVENT_PROJECTION_FAILED';
 }
 
@@ -75,6 +117,7 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
   let existing = 0;
   let failed = 0;
   let outOfScope = 0;
+  let pending = 0;
   let lastFailureCode: AuthorityEventProjectionHealth['lastFailureCode'];
 
   function fail(code: AuthorityEventProjectionHealth['lastFailureCode']): void {
@@ -82,16 +125,77 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
     lastFailureCode = code;
   }
 
-  /** Builds the envelope from the body's own identities and appends it. Resolves in every case. */
-  async function project(body: Body, occurredAt: string): Promise<void> {
+  /**
+   * The tail of each serial chain, keyed by stream (and, for a revocation's
+   * attribution read, by grant). A key is dropped once its chain is idle, so a
+   * long-lived process holds one entry per in-flight lifecycle, not per
+   * lifecycle ever seen.
+   */
+  const tails = new Map<string, Promise<void>>();
+
+  /**
+   * Appends `task` to `key`'s chain and returns immediately.
+   *
+   * An idle chain starts from an already-resolved promise rather than calling
+   * `task()` inline, so **no store code ever runs on the reporting caller's
+   * stack** — not even the first append of a stream, and not even with a
+   * synchronous driver like `better-sqlite3`, whose whole transaction would
+   * otherwise execute inside the authority path's call. That deferral is the
+   * only scheduling mechanism here: one microtask hop, no timer, no interval,
+   * no worker and no background sweeper.
+   *
+   * `then(run, run)` on purpose: a chain continues whether the step before it
+   * settled or failed, so one bad append cannot silently strand the rest of a
+   * stream. A step that never settles holds **only** this key's chain, which is
+   * the point — no caller is waiting on it.
+   */
+  function chain(key: string, task: () => Promise<void>): void {
+    pending += 1;
+    const run = async (): Promise<void> => {
+      try {
+        await task();
+      } finally {
+        pending -= 1;
+      }
+    };
+    const previous = tails.get(key) ?? Promise.resolve();
+    const next = previous.then(run, run);
+    tails.set(key, next);
+    void next.then(
+      () => {
+        if (tails.get(key) === next) tails.delete(key);
+      },
+      () => {
+        if (tails.get(key) === next) tails.delete(key);
+      },
+    );
+  }
+
+  /** The one append, run from a stream's chain. Never rejects: every failure is counted and swallowed. */
+  async function append(input: AppendAuthorityEventInput): Promise<void> {
+    if (store === undefined) {
+      fail('AUTHORITY_EVENT_STREAM_UNAVAILABLE');
+      return;
+    }
+    try {
+      const result = await store.append({ organizationId }, input);
+      if (result.outcome === 'appended') appended += 1;
+      else existing += 1;
+    } catch (error) {
+      fail(isAuthorityEventStreamError(error) ? error.code : 'AUTHORITY_EVENT_PROJECTION_FAILED');
+    }
+  }
+
+  /**
+   * Builds the envelope from the body's own identities and **enqueues** it on
+   * its stream's chain. Synchronous and total: it returns after enqueueing, and
+   * every failure before that point is counted rather than raised.
+   */
+  function project(body: Body, occurredAt: string): void {
     try {
       const requestId = body.references.requestId;
       if (typeof requestId !== 'string' || !requestId.startsWith(GOVERNED_ACTION_REQUEST_PREFIX)) {
         outOfScope += 1;
-        return;
-      }
-      if (store === undefined) {
-        fail('AUTHORITY_EVENT_STREAM_UNAVAILABLE');
         return;
       }
       const sourceId = authorityEventSourceId(body);
@@ -101,9 +205,7 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
       }
       const streamId = deriveAuthorityEventStreamId({ organizationId, requestId });
       const input = { ...body, eventId: deriveAuthorityEventId({ streamId, eventType: body.eventType, sourceId }), streamId, organizationId, occurredAt } as AppendAuthorityEventInput;
-      const result = await store.append({ organizationId }, input);
-      if (result.outcome === 'appended') appended += 1;
-      else existing += 1;
+      chain(streamId, () => append(input));
     } catch (error) {
       fail(isAuthorityEventStreamError(error) ? error.code : 'AUTHORITY_EVENT_PROJECTION_FAILED');
     }
@@ -161,7 +263,7 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
   }
 
   return {
-    async decisionCommitted(record: GovernanceRecord): Promise<void> {
+    decisionCommitted(record: GovernanceRecord): void {
       try {
         // A record of another tenant is never projected into this one's stream.
         if (record.request.organizationId !== organizationId) {
@@ -169,7 +271,7 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
           return;
         }
         const { evaluation, integrity } = record;
-        await project(
+        project(
           {
             eventType: 'governance.decision.committed',
             references: { requestId: evaluation.requestId, evaluationId: evaluation.evaluationId, decisionId: evaluation.decisionId },
@@ -183,9 +285,9 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
       }
     },
 
-    async grantIssued(grant: BoundedGrant): Promise<void> {
+    grantIssued(grant: BoundedGrant): void {
       try {
-        await project(
+        project(
           {
             eventType: 'grant.issued',
             references: grantReferences(grant),
@@ -198,42 +300,55 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
       }
     },
 
-    async grantRevoked(revocation: GrantRevocation): Promise<void> {
+    grantRevoked(revocation: GrantRevocation): void {
       try {
-        // Attribution only: which lifecycle does this grant belong to? A read of
-        // the authoritative store, never a write, and never a decision.
-        const read = await grants.read(revocation.grantId);
-        const grant = read.grant;
-        if (grant === undefined || grant.id !== revocation.grantId) {
-          fail('AUTHORITY_EVENT_INPUT_INVALID');
-          return;
-        }
-        await project({ eventType: 'grant.revoked', references: grantReferences(grant), payload: { reason: revocation.reason } }, revocation.revokedAt);
+        const grantId = revocation.grantId;
+        const reason = revocation.reason;
+        const revokedAt = revocation.revokedAt;
+        // The one fact whose stream is not known at enqueue time: the lifecycle
+        // comes from the authoritative grant. The read runs on this grant's own
+        // chain — so it blocks no stream and no caller — and the event joins its
+        // stream's queue only once the correlation is known.
+        chain(`grant:${grantId}`, async () => {
+          try {
+            // Attribution only: which lifecycle does this grant belong to? A read
+            // of the authoritative store, never a write, and never a decision.
+            const read = await grants.read(grantId);
+            const grant = read.grant;
+            if (grant === undefined || grant.id !== grantId) {
+              fail('AUTHORITY_EVENT_INPUT_INVALID');
+              return;
+            }
+            project({ eventType: 'grant.revoked', references: grantReferences(grant), payload: { reason } }, revokedAt);
+          } catch (error) {
+            fail(isAuthorityEventStreamError(error) ? error.code : 'AUTHORITY_EVENT_PROJECTION_FAILED');
+          }
+        });
       } catch {
         fail('AUTHORITY_EVENT_PROJECTION_FAILED');
       }
     },
 
-    async grantExpiryObserved(grant: BoundedGrant): Promise<void> {
+    grantExpiryObserved(grant: BoundedGrant): void {
       try {
         // occurredAt is the grant's own expiry instant: expiry is a condition of
         // the clock, and that is the instant it took effect. Every later
         // observation of it is the same fact, so it resolves to one event.
-        await project({ eventType: 'grant.expiry.observed', references: grantReferences(grant), payload: { expiresAt: grant.expiresAt } }, grant.expiresAt);
+        project({ eventType: 'grant.expiry.observed', references: grantReferences(grant), payload: { expiresAt: grant.expiresAt } }, grant.expiresAt);
       } catch {
         fail('AUTHORITY_EVENT_PROJECTION_FAILED');
       }
     },
 
-    async executionClaimed(fact): Promise<void> {
+    executionClaimed(fact): void {
       try {
-        await project({ eventType: 'execution.attempt.claimed', references: executionReferences(fact), payload: {} }, fact.claimedAt);
+        project({ eventType: 'execution.attempt.claimed', references: executionReferences(fact), payload: {} }, fact.claimedAt);
       } catch {
         fail('AUTHORITY_EVENT_PROJECTION_FAILED');
       }
     },
 
-    async executionOutcomeObserved(fact): Promise<void> {
+    executionOutcomeObserved(fact): void {
       try {
         if (fact.outcome.correlation.executionId !== fact.executionId) {
           fail('AUTHORITY_EVENT_INPUT_INVALID');
@@ -242,13 +357,13 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
         // The one trusted instant the outcome carries: when the assessment that
         // guarded the provider crossing was made. No provider-completion time
         // exists, and none is invented.
-        await project({ eventType: 'execution.outcome.observed', references: executionReferences(fact), payload: outcomePayload(fact.outcome, fact.outcomeRecorded) }, fact.outcome.exercisedAt);
+        project({ eventType: 'execution.outcome.observed', references: executionReferences(fact), payload: outcomePayload(fact.outcome, fact.outcomeRecorded) }, fact.outcome.exercisedAt);
       } catch {
         fail('AUTHORITY_EVENT_PROJECTION_FAILED');
       }
     },
 
-    async reservationObserved(observation: ExerciseReservationObservation): Promise<void> {
+    reservationObserved(observation: ExerciseReservationObservation): void {
       try {
         const references: AuthorityEventReferences = {
           requestId: observation.requestId,
@@ -258,14 +373,14 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
           reservationId: observation.reservationId,
         };
         if (observation.kind === 'reserved') {
-          await project(
+          project(
             { eventType: 'exercise.reservation.reserved', references, payload: { policyDigest: observation.policyDigest, authorityBindingDigest: observation.authorityBindingDigest } },
             observation.admittedAt,
           );
         } else if (observation.kind === 'settled') {
-          await project({ eventType: 'exercise.reservation.settled', references, payload: { reason: observation.reason } }, observation.recordedAt);
+          project({ eventType: 'exercise.reservation.settled', references, payload: { reason: observation.reason } }, observation.recordedAt);
         } else {
-          await project({ eventType: 'exercise.reservation.released', references, payload: { reason: observation.reason } }, observation.recordedAt);
+          project({ eventType: 'exercise.reservation.released', references, payload: { reason: observation.reason } }, observation.recordedAt);
         }
       } catch {
         fail('AUTHORITY_EVENT_PROJECTION_FAILED');
@@ -279,6 +394,7 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
         existing,
         failed,
         outOfScope,
+        pending,
         ...(lastFailureCode !== undefined ? { lastFailureCode } : {}),
       };
     },
