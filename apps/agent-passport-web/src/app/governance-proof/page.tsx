@@ -33,7 +33,7 @@ export default async function GovernanceProofPage() {
         <h1>Proof of Governance</h1>
         <p style={{ fontSize: 20, marginBottom: 16 }}>Not an ingredient list. A governed execution decision.</p>
         <p style={{ maxWidth: 860 }}>
-          Soberanía Agent Passport does not merely describe governance. Inside a governed runtime, it can be used to decide whether an AI agent action is allowed, denied, or requires human approval.
+          Soberanía Agent Passport does not merely describe governance. Inside a governed runtime, it can be used to decide whether an SI agent action is allowed, denied, or requires human approval.
         </p>
         <div className="alert alert-info" style={{ marginTop: 20 }}>
           Runtime Guard Lite does not control the model’s internal reasoning. It controls whether a governed action is allowed to become real-world execution.
