@@ -1,7 +1,8 @@
+import { isWellFormedMonetaryAmount, type FinancialActionClassifier, type GovernedActionClass } from '../../monetary-runtime/index.js';
 import {
   EXERCISE_CONTROL_REASON_CODES,
+  EXERCISE_DECIMAL_USAGE_DIGITS,
   exerciseControlPolicyDigest,
-  exerciseDecimalFromNumber,
   exerciseReservationId,
   exerciseReservationRequestDigest,
   isExerciseControlReasonCode,
@@ -20,6 +21,7 @@ import {
   type ExerciseReservationRequest,
   type ExerciseReservationSettleReason,
   type ExerciseReservationTerminalOutcome,
+  isCanonicalExerciseDecimal,
 } from '../domain/index.js';
 
 /**
@@ -72,6 +74,13 @@ export interface ExerciseControlGateOptions {
   /** The injected clock. Used for terminal-event instants; never `Date.now()`. The reservation instant is the ledger's, sampled inside its own critical section. */
   readonly now: () => string;
   /**
+   * P9 — the host-trusted financial action classifier, the same instance the
+   * governed-action boundary classifies with. **Required**: the gate classifies
+   * the grant's own action with it, so what class an exercise is in is never a
+   * question a request answers.
+   */
+  readonly actionClassifier: FinancialActionClassifier;
+  /**
    * P8 — a write-only observer told, **after** the ledger proved it, that a
    * reservation was admitted, settled or released. Evidence only: its answer is
    * never read and its failure is swallowed, so omitting it, or composing one
@@ -96,7 +105,8 @@ export interface ExerciseControlAdmissionInput {
     readonly resource: string;
     readonly counterparty?: string;
     readonly organization?: string;
-    readonly amount?: { readonly value: number; readonly unit: string };
+    /** Canonical decimal text and asset, as the grant-exercise assessment proved it inside the grant's ceiling. */
+    readonly amount?: { readonly value: string; readonly unit: string };
   };
   readonly executionId: string;
   /**
@@ -165,7 +175,7 @@ function withheld(...reasonCodes: readonly ExerciseControlReasonCode[]): { reado
 }
 
 /** The frozen query both trusted callbacks receive. Built field by field, so nothing an input object carries beyond these fields can travel with it. */
-function queryFor(input: ExerciseControlAdmissionInput, at: string): ExerciseControlQuery {
+function queryFor(input: ExerciseControlAdmissionInput, at: string, actionClass: GovernedActionClass): ExerciseControlQuery {
   const { grant, attempt } = input;
   return Object.freeze({
     boundedGrantId: grant.id,
@@ -175,6 +185,7 @@ function queryFor(input: ExerciseControlAdmissionInput, at: string): ExerciseCon
     ...(attempt.counterparty !== undefined ? { counterparty: attempt.counterparty } : {}),
     ...(attempt.organization !== undefined ? { organization: attempt.organization } : {}),
     ...(attempt.amount !== undefined ? { amount: Object.freeze({ value: attempt.amount.value, unit: attempt.amount.unit }) } : {}),
+    actionClass,
     correlation: Object.freeze({
       requestId: grant.correlation.requestId,
       decisionId: grant.correlation.decisionId,
@@ -193,8 +204,16 @@ function isLedgerRefusalCode(code: unknown): code is ExerciseControlReasonCode {
 }
 
 export function createExerciseControlGate(options: ExerciseControlGateOptions): ExerciseControlGate {
-  const { policy, authorityBinding, reservationLedger: ledger, now } = options;
+  const { policy, authorityBinding, reservationLedger: ledger, now, actionClassifier } = options;
   const observer = options.observer;
+  if (actionClassifier === null || typeof actionClassifier !== 'object' || typeof actionClassifier.classify !== 'function') {
+    throw new TypeError('createExerciseControlGate requires the host-trusted actionClassifier; there is no default classification.');
+  }
+
+  /** The trusted class of the grant's own action. Never the attempt's, never the request's. */
+  function classOf(input: ExerciseControlAdmissionInput): GovernedActionClass {
+    return actionClassifier.classify(input.grant.correlation.action);
+  }
 
   /**
    * What the admission proved about each live reservation, for the terminal
@@ -253,7 +272,18 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
 
   return Object.freeze({
     async admit(input: ExerciseControlAdmissionInput): Promise<ExerciseControlAdmission> {
-      const query = queryFor(input, input.at);
+      const actionClass = classOf(input);
+      const query = queryFor(input, input.at, actionClass);
+
+      // 0. P9: the amount must agree with the host-trusted class of the grant's
+      //    action, and be exact canonical text. A financial exercise with no
+      //    amount, a non-financial one with an amount, or an amount that is not
+      //    canonical text consumes nothing and reaches nothing.
+      const amount = input.attempt.amount;
+      if (amount !== undefined && !(isWellFormedMonetaryAmount(amount) && isCanonicalExerciseDecimal(amount.value, EXERCISE_DECIMAL_USAGE_DIGITS))) {
+        return withheld(R.EXERCISE_CONTROL_AMOUNT_REQUIRED);
+      }
+      if ((actionClass === 'financial') !== (amount !== undefined)) return withheld(R.EXERCISE_CONTROL_ACTION_CLASS_MISMATCH);
 
       // 1. Exercise-time authority-binding revalidation #1. Before the policy,
       //    before the ledger: an authority that no longer stands exactly as it
@@ -273,12 +303,10 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
       }
       if (limits === undefined) return withheld(R.EXERCISE_CONTROL_POLICY_INVALID);
 
-      // 3. What this execution consumes of each limit. Converted from the
-      //    attempt's number to canonical decimal text exactly once; from here
-      //    on only exact arithmetic touches it.
-      const amount = input.attempt.amount;
-      const decimal = amount === undefined ? undefined : exerciseDecimalFromNumber(amount.value);
-      if (amount !== undefined && decimal === undefined) return withheld(R.EXERCISE_CONTROL_AMOUNT_REQUIRED);
+      // 3. What this execution consumes of each limit: the attempt's canonical
+      //    decimal text, as it arrived. No number conversion exists on this
+      //    path; only exact arithmetic touches it.
+      const decimal = amount?.value;
       let amountRequired = false;
       let unitMismatch = false;
       const rules: ExerciseControlRuleUsage[] = [];
@@ -371,7 +399,7 @@ export function createExerciseControlGate(options: ExerciseControlGateOptions): 
       //    authoritative grant read and at its fresh instant. The reservation
       //    may have waited on a write lock; a binding that changed meanwhile
       //    must not reach the provider.
-      const second = verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, queryFor(input, input.at));
+      const second = verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, queryFor(input, input.at, classOf(input)));
       if (!second.verified) return withheld(second.reasonCode);
       if (input.grant.authorityBindingDigest !== reservation.authorityBindingDigest) {
         return withheld(R.EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED);

@@ -78,7 +78,7 @@ describe('Characterization: a kernel with no context capability is unchanged', (
     });
 
     const base = toKernelRequest(buildDraftClosureEmailGuardInput());
-    await kernel.evaluate({ ...base, action: { ...base.action, amount: 7_500, currency: 'USD', counterpartyId: 'V123' } });
+    await kernel.evaluate({ ...base, action: { ...base.action, amount: '7500', currency: 'USD', counterpartyId: 'V123' } });
 
     assert.ok(seen.length > 0, 'the policy pack was consulted');
     for (const metadata of seen) {
@@ -100,11 +100,11 @@ describe('Characterization: a kernel with no context capability is unchanged', (
     });
 
     const base = toKernelRequest(buildDraftClosureEmailGuardInput());
-    await kernel.evaluate({ ...base, action: { ...base.action, amount: 7_500, counterpartyId: 'V123' } });
+    await kernel.evaluate({ ...base, action: { ...base.action, amount: '7500', counterpartyId: 'V123' } });
 
     // `ActionDescriptor.amount` keeps exactly the meaning it has today. The
     // capability adds a second, namespaced channel; it reinterprets nothing.
-    assert.equal(observedAmount, 7_500);
+    assert.equal(observedAmount, '7500');
     assert.equal(observedCounterparty, 'V123');
   });
 

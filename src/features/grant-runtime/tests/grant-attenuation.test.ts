@@ -79,18 +79,18 @@ const TABLES: readonly BoundTable[] = [
   {
     key: 'amount',
     shape: 'ceiling',
-    source: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+    source: { kind: 'ceiling', limit: '10000', unit: 'USD' },
     cases: [
-      { name: 'an equal ceiling', requested: { kind: 'ceiling', limit: 10_000, unit: 'USD' }, expected: 'equal' },
-      { name: 'a lower ceiling', requested: { kind: 'ceiling', limit: 5_000, unit: 'USD' }, expected: 'narrower' },
-      { name: 'a ceiling one unit below', requested: { kind: 'ceiling', limit: 9_999, unit: 'USD' }, expected: 'narrower' },
-      { name: 'a ceiling of zero', requested: { kind: 'ceiling', limit: 0, unit: 'USD' }, expected: 'narrower' },
-      { name: 'a higher ceiling', requested: { kind: 'ceiling', limit: 15_000, unit: 'USD' }, expected: 'broader' },
-      { name: 'a ceiling one unit above', requested: { kind: 'ceiling', limit: 10_001, unit: 'USD' }, expected: 'broader' },
-      { name: 'a lower ceiling in another currency', requested: { kind: 'ceiling', limit: 1, unit: 'EUR' }, expected: 'incomparable' },
-      { name: 'a negative ceiling', requested: { kind: 'ceiling', limit: -1, unit: 'USD' }, expected: 'incomparable' },
-      { name: 'a non-finite ceiling', requested: { kind: 'ceiling', limit: Number.POSITIVE_INFINITY, unit: 'USD' }, expected: 'incomparable' },
-      { name: 'a NaN ceiling', requested: { kind: 'ceiling', limit: Number.NaN, unit: 'USD' }, expected: 'incomparable' },
+      { name: 'an equal ceiling', requested: { kind: 'ceiling', limit: '10000', unit: 'USD' }, expected: 'equal' },
+      { name: 'a lower ceiling', requested: { kind: 'ceiling', limit: '5000', unit: 'USD' }, expected: 'narrower' },
+      { name: 'a ceiling one unit below', requested: { kind: 'ceiling', limit: '9999', unit: 'USD' }, expected: 'narrower' },
+      { name: 'a ceiling of zero', requested: { kind: 'ceiling', limit: '0', unit: 'USD' }, expected: 'narrower' },
+      { name: 'a higher ceiling', requested: { kind: 'ceiling', limit: '15000', unit: 'USD' }, expected: 'broader' },
+      { name: 'a ceiling one unit above', requested: { kind: 'ceiling', limit: '10001', unit: 'USD' }, expected: 'broader' },
+      { name: 'a lower ceiling in another currency', requested: { kind: 'ceiling', limit: '1', unit: 'EUR' }, expected: 'incomparable' },
+      { name: 'a negative ceiling', requested: { kind: 'ceiling', limit: '-1', unit: 'USD' }, expected: 'incomparable' },
+      { name: 'a non-finite ceiling', requested: { kind: 'ceiling', limit: 'Infinity', unit: 'USD' }, expected: 'incomparable' },
+      { name: 'a NaN ceiling', requested: { kind: 'ceiling', limit: 'NaN', unit: 'USD' }, expected: 'incomparable' },
     ],
   },
   {
@@ -152,7 +152,7 @@ describe('Attenuation matrix — LESS THAN and EQUAL permit, GREATER THAN and IN
 
 const SOURCE: GrantScope = {
   action: { kind: 'identity', value: 'payment' },
-  amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   counterparty: { kind: 'identity', value: 'V123' },
   organization: { kind: 'identity', value: 'org-1' },
   resources: { kind: 'set', values: ['record:contract'] },
@@ -168,17 +168,17 @@ describe('Attenuation across a whole scope', () => {
   });
 
   it('narrowing one axis leaves every other axis at the source bound', () => {
-    const outcome = attenuateGrantScope(SOURCE, { amount: { kind: 'ceiling', limit: 5_000, unit: 'USD' } });
+    const outcome = attenuateGrantScope(SOURCE, { amount: { kind: 'ceiling', limit: '5000', unit: 'USD' } });
     assert.equal(outcome.outcome, 'attenuated');
     if (outcome.outcome !== 'attenuated') return;
-    assert.deepEqual(outcome.scope.amount, { kind: 'ceiling', limit: 5_000, unit: 'USD' });
+    assert.deepEqual(outcome.scope.amount, { kind: 'ceiling', limit: '5000', unit: 'USD' });
     assert.deepEqual(outcome.scope.action, SOURCE.action);
     assert.deepEqual(outcome.scope.resources, SOURCE.resources);
   });
 
   it('one broadened axis refuses the whole grant, even when every other axis narrows', () => {
     const outcome = attenuateGrantScope(SOURCE, {
-      amount: { kind: 'ceiling', limit: 1, unit: 'USD' },
+      amount: { kind: 'ceiling', limit: '1', unit: 'USD' },
       resources: { kind: 'set', values: ['record:contract'] },
       counterparty: { kind: 'identity', value: 'V999' },
     });
@@ -189,7 +189,7 @@ describe('Attenuation across a whole scope', () => {
 
   it('every violated axis is reported, not only the first', () => {
     const outcome = attenuateGrantScope(SOURCE, {
-      amount: { kind: 'ceiling', limit: 99_999, unit: 'USD' },
+      amount: { kind: 'ceiling', limit: '99999', unit: 'USD' },
       counterparty: { kind: 'identity', value: 'V999' },
       resources: { kind: 'set', values: ['record:contract', 'record:somebody-elses'] },
     });
@@ -200,16 +200,16 @@ describe('Attenuation across a whole scope', () => {
 
   it('a bound on an axis the source never stated is refused, never treated as unbounded', () => {
     const partial: GrantScope = { action: { kind: 'identity', value: 'payment' } };
-    const outcome = attenuateGrantScope(partial, { amount: { kind: 'ceiling', limit: 1, unit: 'USD' } });
+    const outcome = attenuateGrantScope(partial, { amount: { kind: 'ceiling', limit: '1', unit: 'USD' } });
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
     assert.deepEqual(outcome.violations.map((violation) => violation.reasonCode), [GRANT_REASON_CODES.GRANT_BOUND_INCOMPARABLE]);
   });
 
   it('a malformed source bound refuses rather than being compared into permission', () => {
-    const broken: GrantScope = { amount: { kind: 'ceiling', limit: Number.NaN, unit: 'USD' } };
+    const broken: GrantScope = { amount: { kind: 'ceiling', limit: 'NaN', unit: 'USD' } };
     assert.equal(attenuateGrantScope(broken).outcome, 'refused');
-    assert.equal(attenuateGrantScope(broken, { amount: { kind: 'ceiling', limit: 1, unit: 'USD' } }).outcome, 'refused');
+    assert.equal(attenuateGrantScope(broken, { amount: { kind: 'ceiling', limit: '1', unit: 'USD' } }).outcome, 'refused');
   });
 
   it('a bound carrying the wrong shape for its axis is refused before comparison', () => {

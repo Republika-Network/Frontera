@@ -55,6 +55,7 @@ import { createAuthorityControlledExecutionModule } from '../modules/authority-c
 import { createExerciseControlModule } from '../modules/exercise-control-module.js';
 import { assertValidExerciseControlCallbacks, assertValidExerciseControlStore, type AuthorityControlledExerciseControls } from '../execution-governance/exercise-controls.js';
 import type { ExerciseControlLedgerPort } from '../../features/exercise-control-runtime/index.js';
+import { createFinancialActionClassifier, createMonetaryAssetRegistry, type MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
 import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
@@ -67,6 +68,7 @@ import {
   GovernedActionConfigurationError,
   createGovernedActionOrchestrator,
   type GovernedActionGrantPolicy,
+  type GovernedActionMonetaryTrust,
   type GovernedActionOrchestrator,
 } from '../governed-action/index.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
@@ -207,6 +209,20 @@ export interface CreateEnterpriseOptions {
    */
   readonly governedActionOrchestrator?: EnterpriseGovernedActionOrchestratorOptions;
   /**
+   * P9 — canonical monetary semantics: the assets this deployment recognizes
+   * (each with its trusted scale) and the actions it classifies as financial.
+   * Trusted host configuration; nothing a caller sends can extend or contradict
+   * it. See `docs/architecture/ADR-CANONICAL-MONETARY-SEMANTICS.md`.
+   *
+   * Built once, here, into one asset registry and one classifier, and the same
+   * two instances are handed to the governed-action boundary and to the P7
+   * exercise-control gate. **Omitted, nothing is financial and no asset is
+   * recognized**: every governed intent carrying an amount is refused, and no
+   * money moves through the governed spine. Malformed configuration fails
+   * `createEnterprise` with a `MonetaryConfigurationError`.
+   */
+  readonly monetary?: EnterpriseMonetaryOptions;
+  /**
    * Opt-in durable emergency control: the operational safety interlock that
    * lets an operator stop execution on the bounded-grant path.
    *
@@ -284,6 +300,14 @@ export interface EnterpriseGovernedActionOrchestratorOptions {
   readonly trustDomainId: string;
   /** **Required.** The trusted grant expiry (and optional narrowing) for each governed action. No default exists, and `undefined` withholds. */
   readonly grantPolicy: GovernedActionGrantPolicy;
+}
+
+/** What a host states about money. See `EnterpriseOptions.monetary`. */
+export interface EnterpriseMonetaryOptions {
+  /** Every asset this deployment recognizes, once each, with its maximum fractional digits. */
+  readonly assets: readonly MonetaryAssetDefinition[];
+  /** Every action identifier this deployment classifies as financial. Any other action is non-financial and may carry no amount. */
+  readonly financialActions: readonly string[];
 }
 
 /** What a host states to adopt customer identity admission. Credentials come from `configuration.authentication.apiKeys`; the binding source is always the Kernel Authority store. */
@@ -384,7 +408,7 @@ export interface EnterpriseAuthorityControlledExecutionOptions
  * consumption is forgotten on restart fails open — and closes it on shutdown.
  * Supplied, it is used verbatim and the host that supplied it closes it.
  */
-export interface EnterpriseExerciseControlsOptions extends Omit<AuthorityControlledExerciseControls, 'reservationLedger'> {
+export interface EnterpriseExerciseControlsOptions extends Omit<AuthorityControlledExerciseControls, 'reservationLedger' | 'actionClassifier'> {
   readonly ledger?: ExerciseControlLedgerPort;
 }
 
@@ -825,6 +849,14 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   // Governed actions are checked just as early, and for the same reason: the
   // canonical ordering needs every one of its prerequisites, and a deployment
   // missing any of them gets no orchestrator rather than a weaker one.
+  // P9: the trusted monetary configuration, built once and validated before any
+  // store is opened. Absent, it recognizes no asset and classifies nothing as
+  // financial — the closed direction.
+  const monetary: GovernedActionMonetaryTrust = Object.freeze({
+    assets: createMonetaryAssetRegistry(options.monetary?.assets ?? []),
+    actionClassifier: createFinancialActionClassifier({ financialActions: options.monetary?.financialActions ?? [] }),
+  });
+
   const governedActionOptions = options.governedActionOrchestrator?.enabled === true ? options.governedActionOrchestrator : undefined;
   if (governedActionOptions !== undefined) {
     if (!customerIdentityRequested) {
@@ -1089,6 +1121,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
                   policy: exerciseControlOptions.policy,
                   revalidateAuthorityBinding: exerciseControlOptions.revalidateAuthorityBinding,
                   reservationLedger: exerciseLedger,
+                  actionClassifier: monetary.actionClassifier,
                 },
               }
             : {}),
@@ -1263,6 +1296,8 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       execution: authorityControlledExecution,
       governanceStore: persistence,
       grantPolicy: governedActionOptions.grantPolicy,
+      // P9: the same registry and classifier instances the exercise gate holds.
+      monetary,
       now: kernelProviders.clock.now,
       enterpriseContext,
       events: { enabled: configuration.eventPublishing.enabled, publisher: eventPublisher, nextId: eventIdGenerator.nextId },

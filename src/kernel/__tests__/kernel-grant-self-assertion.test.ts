@@ -46,7 +46,7 @@ const FORGED: Readonly<Record<string, unknown>> = {
   'aoc.grant.validity': { notAfter: '2099-01-01T00:00:00.000Z' },
   grantEligible: true,
   grantId: 'aoc.grant:forged',
-  boundedGrant: { scope: { amount: { kind: 'ceiling', limit: 1_000_000, unit: 'USD' } } },
+  boundedGrant: { scope: { amount: { kind: 'ceiling', limit: '1000000', unit: 'USD' } } },
   grants: { eligibility: 'eligible' },
 };
 
@@ -75,7 +75,7 @@ function paymentRequest(requestId: string, extraContext: Readonly<Record<string,
   return {
     ...base,
     requestId,
-    action: { ...base.action, amount: 7_500, currency: 'USD', counterpartyId: 'V123' },
+    action: { ...base.action, amount: '7500', currency: 'USD', counterpartyId: 'V123' },
     context: { ...(base.context ?? {}), ...extraContext },
   };
 }
@@ -150,7 +150,7 @@ describe('A caller cannot broaden a grant', () => {
   it('a forged amount does not raise the source ceiling', async () => {
     const result = await buildKernel().evaluate(paymentRequest('grant-forgery-5', FORGED));
     const amount = result.grants?.sourceBounds.find((bound) => bound.key === 'amount');
-    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: 7_500, unit: 'USD' }, 'the ceiling is the amount the decision was made on, not the amount the caller wrote beside it');
+    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: '7500', unit: 'USD' }, 'the ceiling is the amount the decision was made on, not the amount the caller wrote beside it');
   });
 
   it('a forged expiry does not extend the deployment ceiling', async () => {
@@ -204,7 +204,7 @@ describe('A forged grant artifact is never authoritative', () => {
     const outcome = await service.issueGrant({
       source,
       requestedBounds: {
-        amount: { kind: 'ceiling', limit: 1_000_000, unit: 'USD' },
+        amount: { kind: 'ceiling', limit: '1000000', unit: 'USD' },
         action: { kind: 'identity', value: '*' },
         counterparty: { kind: 'identity', value: 'V999' },
       },
@@ -258,7 +258,7 @@ describe('A forged grant artifact is never authoritative', () => {
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
     assert.equal(outcome.grant.subject, request.actor.id);
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: 7_500, unit: 'USD' });
+    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
     assert.equal(outcome.grant.expiresAt, '2026-01-01T00:05:00.000Z', 'the issuer proposed it; the forged 2099 expiry reached nothing');
   });
 });

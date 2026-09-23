@@ -1,5 +1,6 @@
 import type { ExecutionFailureReason } from '../../features/execution-runtime/index.js';
 import type { RequestedGrantBounds } from '../../features/grant-runtime/index.js';
+import type { FinancialActionClassifier, MonetaryAmount, MonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import type { KernelDecisionStatus } from '../../kernel/index.js';
 
 /**
@@ -13,9 +14,19 @@ import type { KernelDecisionStatus } from '../../kernel/index.js';
  * See `docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md`.
  */
 
-/** A quantity the caller intends to move. Mapped onto the Kernel's own `action.amount`/`action.currency`, and onto the exercise amount the grant contains. */
+/**
+ * A quantity the caller intends to move, as it arrives on the wire. Mapped onto
+ * the Kernel's own `action.amount`/`action.currency`, and onto the exercise
+ * amount the grant contains.
+ *
+ * `value` is **decimal text** — `"7500"`, `"10.50"` — never a JSON number
+ * (P9): a number's precision was decided by whoever parsed it, so one is refused
+ * rather than re-spelled. `currency` is an asset identifier the deployment's
+ * trusted asset registry recognizes; the asset's scale is the registry's, and
+ * there is no field through which a caller could state one.
+ */
 export interface GovernedActionAmount {
-  readonly value: number;
+  readonly value: string;
   readonly currency: string;
 }
 
@@ -49,6 +60,36 @@ export interface GovernedActionIntent {
   readonly correlationId?: string;
   /** Required. Scoped by the orchestrator to `(organization, principal)`, so two tenants or two principals can never collide on one key. */
   readonly idempotencyKey: string;
+}
+
+/**
+ * An intent after validation **and** host-trusted classification (P9).
+ *
+ * The class is not something the intent says; it is what the deployment's
+ * financial action classifier says about `action`, and the two arms make the
+ * only legal combinations the only representable ones:
+ *
+ * - `financial` — carries exactly one exact `MonetaryAmount`, strictly
+ *   positive, canonical, in a recognized asset and within its trusted scale;
+ * - `non-financial` — carries no amount at all.
+ *
+ * A caller cannot downgrade a financial action by omitting its amount (refused),
+ * and cannot move money under a non-financial one by adding an amount (refused).
+ */
+export type ClassifiedGovernedActionIntent =
+  | (Omit<GovernedActionIntent, 'amount'> & { readonly actionClass: 'financial'; readonly amount: MonetaryAmount })
+  | (Omit<GovernedActionIntent, 'amount'> & { readonly actionClass: 'non-financial'; readonly amount?: undefined });
+
+/**
+ * The trusted monetary configuration a governed-action boundary validates
+ * against. Host composition only — built once, frozen, never extended by a
+ * request.
+ */
+export interface GovernedActionMonetaryTrust {
+  /** Which assets exist and each one's scale. An unrecognized unit is refused. */
+  readonly assets: MonetaryAssetRegistry;
+  /** Which actions are financial. An unlisted action is non-financial and may carry no amount. */
+  readonly actionClassifier: FinancialActionClassifier;
 }
 
 /**

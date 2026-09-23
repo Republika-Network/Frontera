@@ -12,6 +12,7 @@ import {
   type ExerciseControlLimit,
   type ExerciseReservationRequest,
 } from '../index.js';
+import { createFinancialActionClassifier } from '../../monetary-runtime/index.js';
 
 /**
  * The one behavioural contract every `ExerciseControlLedgerPort` must honour,
@@ -430,7 +431,7 @@ export function describeExerciseControlLedgerContract(name: string, open: (now: 
 
     it('max=1 / 60 s through the gate: a reservation assessed at t=0 that waits 5 s to be admitted blocks until t=65, not t=60', () =>
       withLedger(async (inner) => {
-        const gate = createExerciseControlGate({ policy: () => rolling, authorityBinding: () => BINDING, reservationLedger: delayed(inner, 5), now: clock.now });
+        const gate = createExerciseControlGate({ actionClassifier: createFinancialActionClassifier({ financialActions: [] }), policy: () => rolling, authorityBinding: () => BINDING, reservationLedger: delayed(inner, 5), now: clock.now });
         const admit = (executionId: string, assessedAt: string) =>
           gate.admit({
             grant: { id: 'aoc.grant:contract', subject: 'agent-A', issuedAt: at(-60), expiresAt: at(3600), correlation: { requestId: 'req-1', decisionId: 'dec-1', action: 'payment', resourceScope: 'vendor/V123' }, authorityBindingDigest: BINDING },

@@ -14,6 +14,7 @@ import {
 } from '../../features/context-resolution-runtime/index.js';
 import { AocKernel, type KernelEvaluationResult, type PolicyPackProvider } from '../../kernel/index.js';
 import { toKernelEvaluationRequest, validateGovernanceEvaluateRequestBody } from '../api/governance-evaluate-contract.js';
+import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/monetary-runtime/index.js';
 
 /**
  * The acceptance scenario for trusted context, end to end.
@@ -68,7 +69,7 @@ const DECLARATION: ContextDeclaration = {
 const VENDOR_PAYMENT_POLICY: PolicyPackProvider = {
   evaluatePolicyForEnforcement(input) {
     const resolution = input.metadata?.['aoc.context'] as ContextResolution | undefined;
-    const amountWithinLimit = typeof input.amount === 'number' && input.amount <= 10_000;
+    const amountWithinLimit = isCanonicalDecimal(input.amount) && compareCanonicalDecimals(input.amount, '10000') <= 0;
 
     if (resolution === undefined) {
       return { type: 'policy_denied', allowed: false, reasonCode: 'VENDOR_STATUS_NOT_RESOLVED', reason: 'This deployment requires resolved vendor status.' };
@@ -111,7 +112,7 @@ function buildKernel(observations: readonly ContextFactObservation[]): AocKernel
  */
 function evaluatePaymentRequest(
   observations: readonly ContextFactObservation[],
-  options: { readonly requestId: string; readonly amount?: number; readonly extraContext?: Readonly<Record<string, unknown>> },
+  options: { readonly requestId: string; readonly amount?: string; readonly extraContext?: Readonly<Record<string, unknown>> },
 ): Promise<KernelEvaluationResult> {
   const guardInput = buildDraftClosureEmailGuardInput();
   const body = validateGovernanceEvaluateRequestBody({
@@ -124,7 +125,7 @@ function evaluatePaymentRequest(
       capability: guardInput.capability,
       riskLevel: guardInput.riskLevel,
       sideEffectType: guardInput.sideEffectType,
-      amount: options.amount ?? 7_500,
+      amount: options.amount ?? '7500',
       currency: 'USD',
       counterpartyId: 'V123',
     },
@@ -183,7 +184,7 @@ describe('Acceptance scenario — A: the resolver answers, and the policy can au
   });
 
   it('the caller-supplied amount keeps its existing meaning: 12500 is above the limit and is denied', async () => {
-    const result = await evaluatePaymentRequest(RESOLVER_SAYS_APPROVED, { requestId: 'scenario-a-over', amount: 12_500 });
+    const result = await evaluatePaymentRequest(RESOLVER_SAYS_APPROVED, { requestId: 'scenario-a-over', amount: '12500' });
     assert.equal(result.status, 'denied');
   });
 });
@@ -229,7 +230,7 @@ describe('Acceptance scenario — the frozen v1 surface is unchanged', () => {
   it('the wire body carries no context field of its own — `context` is the same free-form bag it has always been', () => {
     const body = validateGovernanceEvaluateRequestBody({
       actor: { id: 'a', trustDomainId: 't' },
-      action: { type: 'payment', resourceScope: 'finance:payments', amount: 7_500 },
+      action: { type: 'payment', resourceScope: 'finance:payments', amount: '7500' },
       context: { callerNote: 'kept' },
     });
     const request = toKernelEvaluationRequest(body, { now: () => NOW }, { nextId: () => 'id' });

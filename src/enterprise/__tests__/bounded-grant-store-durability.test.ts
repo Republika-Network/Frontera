@@ -39,7 +39,7 @@ const CORRELATION: GrantCorrelation = { requestId: 'req-1', decisionId: 'dec-1',
 
 const SOURCE_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
-  amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   resources: { kind: 'set', values: ['record:contract'] },
 };
 
@@ -141,7 +141,7 @@ describe('Durable grant store — committed state survives a restart', () => {
       subject: 'actor-a',
       action: 'payment.send',
       resource: 'record:contract',
-      amount: { value: 100, unit: 'USD' },
+      amount: { value: '100', unit: 'USD' },
     });
 
     assert.equal(outcome.status, 'withheld');
@@ -293,7 +293,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
     // Widen the grant's ceiling without touching either digest — the casual
     // mutation an unkeyed digest is genuinely able to detect.
     await withRawDb(dbPath, (db) => {
-      const changes = db.prepare('UPDATE bounded_grants SET grant_json = replace(grant_json, \'"limit":10000\', \'"limit":99000\') WHERE grant_id = ?').run(grant.id).changes;
+      const changes = db.prepare('UPDATE bounded_grants SET grant_json = replace(grant_json, \'"limit":"10000"\', \'"limit":"99000"\') WHERE grant_id = ?').run(grant.id).changes;
       assert.equal(changes, 1, 'the mutation the test depends on must actually have happened');
     });
 
@@ -466,7 +466,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       subject: 'actor-a',
       action: 'payment.send',
       resource: 'record:contract',
-      amount: { value: 100, unit: 'USD' },
+      amount: { value: '100', unit: 'USD' },
     });
 
     assert.equal(outcome.status, 'withheld');
@@ -504,7 +504,7 @@ describe('Durable grant store — an unavailable store withholds, it never falls
       subject: 'actor-a',
       action: 'payment.send',
       resource: 'record:contract',
-      amount: { value: 100, unit: 'USD' },
+      amount: { value: '100', unit: 'USD' },
     });
 
     assert.equal(outcome.status, 'withheld');
@@ -610,7 +610,7 @@ describe('Durable grant store — repeated exercise stays exactly as permissive 
       subject: 'actor-a',
       action: 'payment.send',
       resource: 'record:contract',
-      amount: { value: 100, unit: 'USD' },
+      amount: { value: '100', unit: 'USD' },
     } as const;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {

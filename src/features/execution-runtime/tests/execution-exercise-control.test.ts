@@ -25,6 +25,7 @@ import {
   type ValidatedExecutionAction,
 } from '../index.js';
 import { buildExerciseRequest, buildTestGrant, createRecordingExecutionAdapter, type RecordingExecutionAdapter } from './execution-fixture.js';
+import { createFinancialActionClassifier } from '../../monetary-runtime/index.js';
 
 /**
  * P7 inside the canonical gate, measured the way this module measures
@@ -93,6 +94,8 @@ interface WorldOptions {
   readonly adapter?: (controls: ReturnType<typeof createInMemoryEmergencyControlStore>) => ExecutionAdapter;
   readonly composeExerciseControl?: boolean;
   readonly storeRead?: StoreRead;
+  /** P9: which actions the host classifies as financial. Defaults to the fixture's `payment`, whose attempts state an amount. */
+  readonly financialActions?: readonly string[];
 }
 
 async function world(options: WorldOptions = {}) {
@@ -148,6 +151,7 @@ async function world(options: WorldOptions = {}) {
       return options.binding === undefined ? BINDING : options.binding(query, bindingCalls);
     },
     reservationLedger: ledger,
+    actionClassifier: createFinancialActionClassifier({ financialActions: options.financialActions ?? ['payment'] }),
     now: clock.now,
   });
   const adapter = options.adapter?.(controls) ?? recording;
@@ -306,7 +310,7 @@ describe('P7 in the gate — aggregate refusals reach no adapter', () => {
   it('the same execution id with an altered attempt is a reservation conflict and reaches no adapter', async () => {
     const w = await world({ limits: [count('roomy', 'grant:roomy', 100)] });
     await w.exercise();
-    const altered = await w.exercise(buildExerciseRequest(w.grant, { amount: { value: 1, unit: 'USD' } }));
+    const altered = await w.exercise(buildExerciseRequest(w.grant, { amount: { value: '1', unit: 'USD' } }));
     assert.deepEqual(exerciseControlCodes(altered), [X.EXERCISE_CONTROL_RESERVATION_CONFLICT]);
     assert.equal(w.adapter.callCount, 1);
   });
@@ -342,7 +346,9 @@ describe('P7 in the gate — aggregate refusals reach no adapter', () => {
   });
 
   it('§42.7–8. an amount limit with no amount, or in another unit, withholds before any reservation', async () => {
-    const noAmount = await world({ limits: [amount('spend', 's', '100', 'USD')], grant: buildTestGrant({ authorityBindingDigest: BINDING, scope: { action: { kind: 'identity', value: 'payment' }, counterparty: { kind: 'identity', value: 'V123' }, organization: { kind: 'identity', value: 'org-acme' }, resources: { kind: 'set', values: ['vendor/V123'] } } }) });
+    // `payment` is classified non-financial here so the attempt may omit its
+    // amount and reach the P7 amount-limit rule this case pins.
+    const noAmount = await world({ financialActions: [], limits: [amount('spend', 's', '100', 'USD')], grant: buildTestGrant({ authorityBindingDigest: BINDING, scope: { action: { kind: 'identity', value: 'payment' }, counterparty: { kind: 'identity', value: 'V123' }, organization: { kind: 'identity', value: 'org-acme' }, resources: { kind: 'set', values: ['vendor/V123'] } } }) });
     assert.deepEqual(exerciseControlCodes(await noAmount.exercise(buildExerciseRequest(noAmount.grant, { omitAmount: true }))), [X.EXERCISE_CONTROL_AMOUNT_REQUIRED]);
     assert.equal(noAmount.counts.reserve, 0);
 
@@ -355,15 +361,15 @@ describe('P7 in the gate — aggregate refusals reach no adapter', () => {
   it('0.1 + 0.2 under a maximum of 0.3 executes twice, then refuses', async () => {
     const limits = [amount('spend', 'grant:cents', '0.3', 'USD')];
     const w = await world({ limits });
-    assert.equal((await w.exercise(buildExerciseRequest(w.grant, { executionId: 'e-1', amount: { value: 0.1, unit: 'USD' } }))).status, 'executed');
-    assert.equal((await w.exercise(buildExerciseRequest(w.grant, { executionId: 'e-2', amount: { value: 0.2, unit: 'USD' } }))).status, 'executed');
-    assert.deepEqual(exerciseControlCodes(await w.exercise(buildExerciseRequest(w.grant, { executionId: 'e-3', amount: { value: 0.0000001, unit: 'USD' } }))), [X.EXERCISE_CONTROL_LIMIT_EXCEEDED]);
+    assert.equal((await w.exercise(buildExerciseRequest(w.grant, { executionId: 'e-1', amount: { value: '0.1', unit: 'USD' } }))).status, 'executed');
+    assert.equal((await w.exercise(buildExerciseRequest(w.grant, { executionId: 'e-2', amount: { value: '0.2', unit: 'USD' } }))).status, 'executed');
+    assert.deepEqual(exerciseControlCodes(await w.exercise(buildExerciseRequest(w.grant, { executionId: 'e-3', amount: { value: '0.0000001', unit: 'USD' } }))), [X.EXERCISE_CONTROL_LIMIT_EXCEEDED]);
     assert.equal(w.adapter.callCount, 2);
   });
 
   it('an unusable grant is refused by the grant layer first, and P7 is never consulted', async () => {
     const w = await world();
-    const outcome = await w.exercise(buildExerciseRequest(w.grant, { amount: { value: 1_000_000, unit: 'USD' } }));
+    const outcome = await w.exercise(buildExerciseRequest(w.grant, { amount: { value: '1000000', unit: 'USD' } }));
     assert.ok(outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise');
     assert.deepEqual(outcome.assessment.reasonCodes, [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED]);
     assert.equal(w.bindingQueries.length + w.policyQueries.length + w.counts.reserve, 0, 'aggregate controls can only narrow a covered attempt, never evaluate an uncovered one');
@@ -415,8 +421,9 @@ describe('P7 in the gate — §47 exercise-time authority-binding revalidation',
     assert.equal((await w.exercise(request)).status, 'executed');
     for (const query of [...w.policyQueries, ...w.bindingQueries]) {
       assert.ok(Object.isFrozen(query) && Object.isFrozen(query.correlation));
-      assert.deepEqual(Object.keys(query).sort(), ['action', 'amount', 'at', 'boundedGrantId', 'correlation', 'counterparty', 'grantExpiresAt', 'grantIssuedAt', 'organization', 'resource', 'subject']);
+      assert.deepEqual(Object.keys(query).sort(), ['action', 'actionClass', 'amount', 'at', 'boundedGrantId', 'correlation', 'counterparty', 'grantExpiresAt', 'grantIssuedAt', 'organization', 'resource', 'subject']);
       assert.equal(query.subject, w.grant.subject, 'the holder comes from the authoritative grant');
+      assert.equal(query.actionClass, 'financial', 'the class is the host classifier\'s answer about the grant\'s action');
       assert.equal(query.grantExpiresAt, w.grant.expiresAt);
       assert.equal(query.grantIssuedAt, w.grant.issuedAt);
       assert.equal(JSON.stringify(query).includes('caller-'), false);
@@ -581,7 +588,7 @@ describe('P7 in the gate — the grant is re-read and re-assessed after the rese
     let base: BoundedGrant | undefined;
     const w = await world({
       storeRead: (call) =>
-        call === 2 && base !== undefined ? Promise.resolve({ grant: reissued(base, { scope: { ...base.scope, amount: { kind: 'ceiling', limit: 100, unit: 'USD' } } }) }) : undefined,
+        call === 2 && base !== undefined ? Promise.resolve({ grant: reissued(base, { scope: { ...base.scope, amount: { kind: 'ceiling', limit: '100', unit: 'USD' } } }) }) : undefined,
     });
     base = w.grant;
     assert.deepEqual(grantExerciseWithheld(await w.exercise()), [GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED]);

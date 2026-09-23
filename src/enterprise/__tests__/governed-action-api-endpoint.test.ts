@@ -254,9 +254,22 @@ async function fullOptions(): Promise<CreateEnterpriseOptions> {
       trustDomainId: TRUST_DOMAIN_ID,
       grantPolicy: (query) => (knobs.grantTermsUnavailable ? undefined : EVALUATED_AT_POLICY(query)),
     },
+    // P9: trusted monetary configuration. `invoice.pay` is the one action this
+    // host classifies as financial; ALLOWED_INTENT's drafting action is not.
+    monetary: { assets: [{ assetId: 'USD', scale: 2 }], financialActions: [FINANCIAL_ACTION] },
     emergencyControl: { enabled: true, store: controlStore },
   };
 }
+
+/** The host-classified financial action. The Kernel has no capability for it in this world, so it is denied — and still committed, which is all the P9 cases here need. */
+const FINANCIAL_ACTION = 'invoice.pay';
+const financial = (label: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  action: FINANCIAL_ACTION,
+  resource: ALLOWED_INTENT.resource,
+  idempotencyKey: freshKey(label),
+  amount: { value: '7500', currency: 'USD' },
+  ...extra,
+});
 
 // ---------------------------------------------------------------------------
 
@@ -537,21 +550,43 @@ describe('POST /api/governed-actions — the fully composed Host', () => {
       assert.equal(measured.commits, 1);
     });
 
-    it('17–20. counterparty, amount, assertedContext and correlationId are accepted and carried into the committed request', async () => {
-      const reply = await send(baseUrl, allowed('full', { counterparty: 'vendor:V123', amount: { value: 7500, currency: 'USD' }, correlationId: 'order-123' }), { authorization: bearer(SECRET) });
+    it('17–20. counterparty, assertedContext and correlationId are accepted and carried into the committed request', async () => {
+      const reply = await send(baseUrl, allowed('full', { counterparty: 'vendor:V123', correlationId: 'order-123' }), { authorization: bearer(SECRET) });
       assert.notEqual(reply.body['status'], 'rejected', reply.text);
       assert.equal(reply.body['correlationId'], 'order-123');
       const record = await host.server.enterprise.persistence.getByRequestId({ system: true }, String(reply.body['requestId']));
       assert.ok(record !== null);
       const payload = JSON.stringify(record.request.requestPayload);
       assert.ok(payload.includes('vendor:V123'), payload);
-      assert.ok(payload.includes('7500') && payload.includes('USD'), payload);
       assert.ok(payload.includes('passport-pmfreak'), 'asserted context reaches the Kernel as context to verify');
     });
 
+    it('P9. a financial action amount reaches the committed request as canonical decimal text and its asset — never a JSON number', async () => {
+      const reply = await send(baseUrl, financial('p9-canonical', { amount: { value: '7500.50', currency: 'USD' } }), { authorization: bearer(SECRET) });
+      assert.notEqual(reply.body['status'], 'rejected', reply.text);
+      const record = await host.server.enterprise.persistence.getByRequestId({ system: true }, String(reply.body['requestId']));
+      assert.ok(record !== null);
+      const payload = JSON.stringify(record.request.requestPayload);
+      assert.ok(payload.includes('"amount":"7500.5"'), payload);
+      assert.ok(payload.includes('"currency":"USD"'), payload);
+    });
+
     for (const [name, intent] of [
-      ['21. malformed amount', () => allowed('bad-amount', { amount: { value: -1, currency: 'USD' } })],
-      ['21b. amount with an extra field', () => allowed('bad-amount-2', { amount: { value: 1, currency: 'USD', unit: 'x' } })],
+      ['21. malformed amount', () => financial('bad-amount', { amount: { value: '-1', currency: 'USD' } })],
+      ['21b. amount with an extra field', () => financial('bad-amount-2', { amount: { value: '1', currency: 'USD', unit: 'x' } })],
+      ['P9. amount as a JSON number', () => financial('p9-number', { amount: { value: 7500, currency: 'USD' } })],
+      ['P9. amount beyond the asset’s trusted scale (never rounded)', () => financial('p9-scale', { amount: { value: '10.001', currency: 'USD' } })],
+      ['P9. amount in scientific notation', () => financial('p9-exponent', { amount: { value: '1e3', currency: 'USD' } })],
+      ['P9. amount with whitespace', () => financial('p9-space', { amount: { value: ' 10 ', currency: 'USD' } })],
+      ['P9. amount with a locale separator', () => financial('p9-locale', { amount: { value: '1,000.00', currency: 'USD' } })],
+      ['P9. empty amount', () => financial('p9-empty', { amount: { value: '', currency: 'USD' } })],
+      ['P9. unknown currency', () => financial('p9-unknown', { amount: { value: '10', currency: 'XYZ' } })],
+      ['P9. caller-supplied scale', () => financial('p9-scale-field', { amount: { value: '10.001', currency: 'USD', scale: 3 } })],
+      ['P9. zero amount for a financial action', () => financial('p9-zero', { amount: { value: '0', currency: 'USD' } })],
+      ['P9. financial action without an amount', () => ({ action: FINANCIAL_ACTION, resource: ALLOWED_INTENT.resource, idempotencyKey: freshKey('p9-missing') })],
+      ['P9. financial action with a caller classification downgrade', () => financial('p9-downgrade', { financial: false })],
+      ['P9. non-financial action carrying an amount', () => allowed('p9-upgrade', { amount: { value: '7500', currency: 'USD' } })],
+      ['P9. non-financial action with a caller classification upgrade', () => allowed('p9-forged-class', { actionClass: 'financial' })],
       ['22. missing idempotencyKey', () => ({ action: ALLOWED_INTENT.action, resource: ALLOWED_INTENT.resource })],
       ['23. blank idempotencyKey', () => allowed('blank', { idempotencyKey: '' })],
       ['23b. padded idempotencyKey', () => allowed('padded', { idempotencyKey: ' key ' })],

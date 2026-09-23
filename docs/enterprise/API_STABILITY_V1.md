@@ -283,6 +283,21 @@ route, webhook, SSE or SDK method exposes it, and the governed-action result is
 byte-identical with or without it. The frozen surface stays 28 endpoints; the
 SDK stays `1.1.0`.
 
+**P9 (unreleased) changes one request field's type on this capability-gated
+route — deliberately.** `amount.value` was a JSON number and is now decimal
+text; a number is rejected. This is the one wire change P9 makes, and it is
+breaking by necessity: a JSON number cannot be accepted exactly (its precision
+is decided by the parser before the Host sees it), so no compatibility shim is
+safe. An amount-bearing intent also requires the Host to configure `monetary`
+(assets and financial actions); without it every amount is rejected. The
+`financial`, `actionClass`, `classification`, `scale` and `assetScale` keys join
+the reserved `assertedContext` keys. No endpoint, response field, status,
+`withheldBy` value or governed-action reason code changes; one exercise-control
+reason code is added (`EXERCISE_CONTROL_ACTION_CLASS_MISMATCH`). The SDK's
+`GovernedActionAmount.value` is now `string`. `POST /api/governance/evaluate`
+is unchanged at runtime: a numeric `action.amount` is still evaluated by policy
+packs exactly as before, and that route issues no grant.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
@@ -306,7 +321,7 @@ property is rejected, never ignored):
   "action": "payment.create",
   "resource": "invoice:INV-100",
   "counterparty": "vendor:V123",
-  "amount": { "value": 7500, "currency": "USD" },
+  "amount": { "value": "7500.00", "currency": "USD" },
   "assertedContext": { "passportId": "passport-..." },
   "correlationId": "order-123",
   "idempotencyKey": "pay-invoice-INV-100-v1"
@@ -316,9 +331,20 @@ property is rejected, never ignored):
 - **Required:** `action`, `resource`, `idempotencyKey` — canonical identifiers
   (non-empty, trim-stable, no control characters, at most 256 characters).
 - **Optional:** `counterparty`, `correlationId` (canonical identifiers);
-  `amount` (`{ value: finite number >= 0, currency: canonical identifier }`,
-  nothing else); `assertedContext` (plain JSON object, at most 64 keys per
-  level, depth 8).
+  `amount` (`{ value: decimal text, currency: asset identifier }`, nothing
+  else — see "Amounts" below); `assertedContext` (plain JSON object, at most 64
+  keys per level, depth 8).
+- **Amounts (since P9).** `amount.value` is decimal **text** — `"7500"`,
+  `"10.50"` — never a JSON number: a number is `400` `rejected`, because its
+  precision is gone by the time the Host parses it. No sign, exponent,
+  separator, whitespace or leading zero; trailing fractional zeros are dropped
+  (`"10.50"` is `"10.5"`). `currency` must be an asset the Host's trusted
+  `monetary.assets` configuration recognizes, and the value may state no more
+  fractional digits than that asset's configured scale — excess precision is
+  rejected, never rounded. Whether the action moves money is the Host's
+  `monetary.financialActions` classification, never the caller's: a financial
+  action **requires** a strictly positive amount and a non-financial action
+  **may not** carry one. See `docs/architecture/ADR-CANONICAL-MONETARY-SEMANTICS.md`.
 - `assertedContext` is **asserted** evidence. It reaches the Kernel as request
   context and is verified there by the canonical context and authority
   machinery; submitting it does not make it trusted, and it never reaches an

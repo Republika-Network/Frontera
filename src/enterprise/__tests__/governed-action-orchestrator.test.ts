@@ -24,12 +24,14 @@ import {
   APPROVAL_INTENT,
   DENIED_ACTOR,
   DENIED_INTENT,
+  DRAFTING_IS_FINANCIAL,
   EVALUATED_AT_POLICY,
   IDENTITY,
   NOW,
   NO_TEMPORAL_BOUND,
   ORG,
   PMFREAK_ACTOR_ID,
+  TEST_MONETARY,
   TRUST_DOMAIN_ID,
   buildGovernedWorld,
   identityFor,
@@ -723,9 +725,10 @@ describe('Governed action — GOV-ACT-07: the ACE exercise gate still decides wh
   it('an amount beyond the grant → withheld by exercise, no adapter', async () => {
     // The trusted policy narrows the grant below the amount the caller intends.
     const world = buildGovernedWorld({
-      grantPolicy: (query) => ({ ...EVALUATED_AT_POLICY(query)!, requestedBounds: { amount: { kind: 'ceiling', limit: 100, unit: 'USD' } } }),
+      monetary: DRAFTING_IS_FINANCIAL,
+      grantPolicy: (query) => ({ ...EVALUATED_AT_POLICY(query)!, requestedBounds: { amount: { kind: 'ceiling', limit: '100', unit: 'USD' } } }),
     });
-    const result = await world.orchestrator.govern(IDENTITY, { ...ALLOWED_INTENT, amount: { value: 250, currency: 'USD' } });
+    const result = await world.orchestrator.govern(IDENTITY, { ...ALLOWED_INTENT, amount: { value: '250', currency: 'USD' } });
     assert.equal(withheldBy(result), 'exercise', JSON.stringify(result));
     assert.ok(result.reasonCodes.includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED));
     assert.equal(world.adapter.callCount, 0);
@@ -959,7 +962,7 @@ describe('Governed action — an own "__proto__" key in the asserted context is 
     const raw = contextWith({ polluted: true }, 'nested-value') as { assertedContext: Record<string, unknown> };
     assert.ok(Object.hasOwn(raw.assertedContext, '__proto__'), 'fixture: JSON.parse defines an own key');
 
-    const validation = validateGovernedActionIntent(raw);
+    const validation = validateGovernedActionIntent(raw, TEST_MONETARY);
     assert.ok(validation.valid, JSON.stringify(validation));
     const context = validation.intent.assertedContext as Record<string, unknown>;
     assert.ok(Object.hasOwn(context, '__proto__'));

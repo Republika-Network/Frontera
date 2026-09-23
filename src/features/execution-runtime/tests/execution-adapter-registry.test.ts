@@ -379,7 +379,7 @@ describe('Adapter registry — the adapter-scoped emergency control', () => {
     const grant = buildTestGrant({
       scope: {
         action: { kind: 'identity', value: 'payment' },
-        amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' },
+        amount: { kind: 'ceiling', limit: '7500', unit: 'USD' },
         counterparty: { kind: 'identity', value: 'V999' },
         organization: { kind: 'identity', value: 'org-acme' },
         resources: { kind: 'set', values: ['vendor/V123'] },

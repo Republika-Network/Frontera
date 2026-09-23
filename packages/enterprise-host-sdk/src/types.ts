@@ -77,9 +77,17 @@ export type GovernanceVerificationResult = Readonly<Record<string, unknown>> & {
 
 // -- governed actions ----------------------------------------------------------
 
-/** A quantity the caller intends to move. */
+/**
+ * A quantity the caller intends to move.
+ *
+ * `value` is **decimal text** — `"7500"`, `"10.50"` — never a JSON number: the
+ * Host refuses a number rather than guessing its precision, refuses more
+ * fractional digits than the asset allows rather than rounding, and refuses an
+ * asset it does not recognize. Whether the action moves money at all is the
+ * Host's classification, not the caller's.
+ */
 export interface GovernedActionAmount {
-  readonly value: number;
+  readonly value: string;
   readonly currency: string;
 }
 

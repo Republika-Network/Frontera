@@ -53,7 +53,7 @@ const ACTION: ValidatedExecutionAction = Object.freeze({
   resource: 'INV-1001',
   counterparty: 'V123',
   organization: 'org-datasys',
-  amount: Object.freeze({ value: 7500, unit: 'USD' }),
+  amount: Object.freeze({ value: '7500', unit: 'USD' }),
   notAfter: '2026-01-01T00:10:00.000Z',
   correlation: Object.freeze({ requestId: 'req-1', decisionId: 'dec-1', executionId: 'exec-1' }),
 });
@@ -362,7 +362,7 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
     assert.equal(header(request, 'authorization'), `Bearer ${TOKEN}`);
     assert.equal(header(request, 'content-type'), 'application/json');
     assert.equal(header(request, 'content-length'), String(Buffer.byteLength(request.body ?? '', 'utf8')));
-    assert.deepEqual(JSON.parse(request.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: 7500, currency: 'USD', organization: 'org-datasys' });
+    assert.deepEqual(JSON.parse(request.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: '7500', currency: 'USD', organization: 'org-datasys' });
   });
 
   it('1–2. the action cannot change the method or the origin: they are not action values', () => {
@@ -456,9 +456,9 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
     refusedWith('GENERIC_HTTP_CREDENTIAL_INVALID', () => plan({ credential: { kind: 'oauth', token: TOKEN } }));
   });
 
-  it('21–22. amount.value stays a JSON number and amount.unit an exact string; literals keep their JSON type', () => {
-    const request = mapped({ body: { kind: 'json-object', fields: { v: { kind: 'source', source: 'amount.value' }, u: { kind: 'source', source: 'amount.unit' }, t: { kind: 'literal', value: true }, n: { kind: 'literal', value: null }, s: { kind: 'literal', value: '7500' } } } }, { ...ACTION, amount: { value: 7500.25, unit: 'usd ' } });
-    assert.deepEqual(JSON.parse(request.body ?? ''), { v: 7500.25, u: 'usd ', t: true, n: null, s: '7500' });
+  it('21–22. amount.value is the exact canonical decimal text (P9) and amount.unit an exact string; literals keep their JSON type', () => {
+    const request = mapped({ body: { kind: 'json-object', fields: { v: { kind: 'source', source: 'amount.value' }, u: { kind: 'source', source: 'amount.unit' }, t: { kind: 'literal', value: true }, n: { kind: 'literal', value: null }, s: { kind: 'literal', value: '7500' } } } }, { ...ACTION, amount: { value: '7500.25', unit: 'usd ' } });
+    assert.deepEqual(JSON.parse(request.body ?? ''), { v: '7500.25', u: 'usd ', t: true, n: null, s: '7500' });
   });
 
   it('numbers become deterministic decimal text in path, query and header positions; booleans become true/false', () => {
@@ -466,7 +466,7 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
       path: [{ kind: 'source', source: 'amount.value' }],
       query: { flag: { kind: 'literal', value: false }, n: { kind: 'literal', value: 12 } },
       headers: { 'X-Amount': { kind: 'source', source: 'amount.value' } },
-    }, { ...ACTION, amount: { value: 0.5, unit: 'USD' } });
+    }, { ...ACTION, amount: { value: '0.5', unit: 'USD' } });
     assert.equal(request.path, '/0.5?flag=false&n=12');
     assert.equal(header(request, 'x-amount'), '0.5');
   });
@@ -1404,7 +1404,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
       assert.equal(hits[0]?.method, 'POST');
       assert.equal(hits[0]?.idem, 'exec-1');
       assert.equal(hits[0]?.authorization, `Bearer ${TOKEN}`);
-      assert.deepEqual(JSON.parse(hits[0]?.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: 7500, currency: 'USD', organization: 'org-datasys' });
+      assert.deepEqual(JSON.parse(hits[0]?.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: '7500', currency: 'USD', organization: 'org-datasys' });
       assert.equal(JSON.stringify(observation).includes(TOKEN), false, 'the response body never enters the observation');
     });
 

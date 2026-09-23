@@ -36,7 +36,7 @@ const CORRELATION: GrantCorrelation = { requestId: 'req-1', decisionId: 'dec-1',
 
 const BASE_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
-  amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   resources: { kind: 'set', values: ['record:contract'] },
 };
 
@@ -96,11 +96,11 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
     const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore(), revalidateSource: () => authoritative.read() });
     const measured = baseSource();
     // The ceiling drops below what the caller measured and is about to commit.
-    authoritative.set({ ...baseSource(), scope: { ...BASE_SCOPE, amount: { kind: 'ceiling', limit: 1_000, unit: 'USD' } } });
+    authoritative.set({ ...baseSource(), scope: { ...BASE_SCOPE, amount: { kind: 'ceiling', limit: '1000', unit: 'USD' } } });
 
     const outcome = await service.issueGrant({
       source: measured,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '7500', unit: 'USD' } },
       subject: 'actor-a',
       correlation: CORRELATION,
       issuedAt: NOW, expiresAt: HORIZON,
@@ -113,11 +113,11 @@ describe('Transaction boundary — issuance never commits from a stale eligibili
   it('a source authority that narrows but still covers the grant commits it', async () => {
     const authoritative = world();
     const service = createGrantIssuanceService({ store: createInMemoryBoundedGrantStore(), revalidateSource: () => authoritative.read() });
-    authoritative.set({ ...baseSource(), scope: { ...BASE_SCOPE, amount: { kind: 'ceiling', limit: 8_000, unit: 'USD' } } });
+    authoritative.set({ ...baseSource(), scope: { ...BASE_SCOPE, amount: { kind: 'ceiling', limit: '8000', unit: 'USD' } } });
 
     const outcome = await service.issueGrant({
       source: baseSource(),
-      requestedBounds: { amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '7500', unit: 'USD' } },
       subject: 'actor-a',
       correlation: CORRELATION,
       issuedAt: NOW, expiresAt: HORIZON,

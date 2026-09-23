@@ -46,6 +46,14 @@ export const EXERCISE_CONTROL_REASON_CODES = {
   EXERCISE_CONTROL_AUTHORITY_BINDING_UNVERIFIABLE: 'EXERCISE_CONTROL_AUTHORITY_BINDING_UNVERIFIABLE',
   /** The current authority binding is not byte-for-byte the binding the grant was issued under. Exact identity, not containment: a different reference, a shorter horizon or a changed justification all withhold. */
   EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED: 'EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED',
+  /**
+   * P9: the attempt's amount disagrees with the host-trusted class of the
+   * grant's action — a financial action attempted with no exact amount, or a
+   * non-financial action attempted with one. Classification is the host's, read
+   * from the grant's action; money never moves under an action the host did not
+   * classify as financial, and a financial action never moves an unstated amount.
+   */
+  EXERCISE_CONTROL_ACTION_CLASS_MISMATCH: 'EXERCISE_CONTROL_ACTION_CLASS_MISMATCH',
 } as const;
 
 export type ExerciseControlReasonCode = (typeof EXERCISE_CONTROL_REASON_CODES)[keyof typeof EXERCISE_CONTROL_REASON_CODES];

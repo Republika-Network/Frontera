@@ -1,3 +1,5 @@
+import { compareMonetaryAmounts, isWellFormedMonetaryAmount } from '../../monetary-runtime/index.js';
+
 /**
  * The closed, typed bound algebra layer E compares grants with.
  *
@@ -15,7 +17,7 @@
  * | --- | --- | --- |
  * | `identity` | one exact value | name the same value, and nothing else |
  * | `set` | a set of values | name any subset of it |
- * | `ceiling` | a numeric upper limit | name a limit at or below it |
+ * | `ceiling` | an exact decimal upper limit in one asset | name a limit at or below it, in the same asset |
  * | `window` | an instant nothing may outlive | name an instant at or before it |
  *
  * There is deliberately **no** expression shape, no predicate shape, no
@@ -41,10 +43,19 @@ export interface GrantSetBound {
   readonly values: readonly string[];
 }
 
-/** A numeric upper limit, with the unit it is denominated in. Units that differ are never compared; see `compareGrantBound`. */
+/**
+ * An upper limit, with the unit it is denominated in. Units that differ are
+ * never compared; see `compareGrantBound`.
+ *
+ * `limit` is canonical decimal text (`src/features/monetary-runtime`), never a
+ * number: a ceiling is authority, and a ceiling held as an IEEE-754 double is
+ * one whose exact value nobody authorized. Compared with exact `BigInt`
+ * arithmetic. A grant persisted before P9 with a numeric `limit` is not
+ * well formed under this contract and is refused — never re-spelled.
+ */
 export interface GrantCeilingBound {
   readonly kind: 'ceiling';
-  readonly limit: number;
+  readonly limit: string;
   readonly unit: string;
 }
 
@@ -107,7 +118,7 @@ export function isWellFormedGrantBound(bound: GrantBound): boolean {
       // artifact into the store under the name of an attenuation.
       return bound.values.length > 0 && bound.values.every((value) => value.length > 0);
     case 'ceiling':
-      return Number.isFinite(bound.limit) && bound.limit >= 0 && bound.unit.length > 0;
+      return isWellFormedMonetaryAmount({ value: bound.limit, unit: bound.unit });
     case 'window':
       return !Number.isNaN(Date.parse(bound.notAfter));
     default:
@@ -153,9 +164,10 @@ export function compareGrantBound(source: GrantBound, requested: GrantBound): Gr
       const child = requested as GrantCeilingBound;
       // Units are compared exactly and never converted. A conversion table is a
       // place for a rate to be wrong, and a wrong rate here widens authority.
-      if (source.unit !== child.unit) return 'incomparable';
-      if (child.limit > source.limit) return 'broader';
-      return child.limit === source.limit ? 'equal' : 'narrower';
+      const order = compareMonetaryAmounts({ value: child.limit, unit: child.unit }, { value: source.limit, unit: source.unit });
+      if (order === 'incomparable') return 'incomparable';
+      if (order > 0) return 'broader';
+      return order === 0 ? 'equal' : 'narrower';
     }
     case 'window': {
       const child = requested as GrantWindowBound;

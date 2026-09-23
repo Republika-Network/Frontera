@@ -1,3 +1,4 @@
+import { canonicalDecimalFromNumber, compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
 import type { PolicyCondition, PolicyPredicateCondition, PolicyPredicateField } from '../domain/policy-pack-condition.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
 
@@ -143,13 +144,13 @@ export class PolicyConditionEvaluator {
       case 'not_in':
         return !(Array.isArray(expected) && expected.includes(fieldValue));
       case 'greater_than':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a > b);
+        return this.compareOrdered(fieldValue, expected, (order) => order > 0);
       case 'greater_than_or_equal':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a >= b);
+        return this.compareOrdered(fieldValue, expected, (order) => order >= 0);
       case 'less_than':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a < b);
+        return this.compareOrdered(fieldValue, expected, (order) => order < 0);
       case 'less_than_or_equal':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a <= b);
+        return this.compareOrdered(fieldValue, expected, (order) => order <= 0);
       case 'exists':
         return fieldValue !== undefined && fieldValue !== null;
       case 'not_exists':
@@ -169,10 +170,25 @@ export class PolicyConditionEvaluator {
     return false;
   }
 
-  private compareNumeric(fieldValue: unknown, expected: unknown, compare: (a: number, b: number) => boolean): boolean {
+  /**
+   * An ordered comparison, exact wherever the field is a monetary quantity.
+   *
+   * A canonical decimal field (`amount`, since P9) is compared with `BigInt`
+   * arithmetic against the policy's threshold — itself canonical decimal text,
+   * or a finite number literal read as the exact decimal its author wrote
+   * (`10000` → `"10000"`). Nothing here turns the field into a number. Any
+   * other pairing of a number with a number compares as before; every other
+   * pairing does not match.
+   */
+  private compareOrdered(fieldValue: unknown, expected: unknown, accepts: (order: -1 | 0 | 1) => boolean): boolean {
+    if (isCanonicalDecimal(fieldValue)) {
+      if (typeof expected === 'number' && Number.isFinite(expected) && expected < 0) return accepts(1);
+      const threshold = typeof expected === 'number' ? canonicalDecimalFromNumber(expected) : isCanonicalDecimal(expected) ? expected : undefined;
+      return threshold !== undefined && accepts(compareCanonicalDecimals(fieldValue, threshold));
+    }
     if (typeof fieldValue !== 'number' || typeof expected !== 'number') {
       return false;
     }
-    return compare(fieldValue, expected);
+    return accepts(fieldValue < expected ? -1 : fieldValue > expected ? 1 : 0);
   }
 }

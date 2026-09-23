@@ -13,6 +13,7 @@ import {
   type GrantSourceAuthorization,
   type GrantValidityCeiling,
 } from '../../features/grant-runtime/index.js';
+import { isWellFormedMonetaryAmount } from '../../features/monetary-runtime/index.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type { GrantBoundEvaluation, GrantEvaluation, KernelEvaluationResult } from '../contracts/kernel-result.js';
 
@@ -106,9 +107,13 @@ function authorizationPermitsExercise(status: KernelEvaluationResult['status']):
  */
 function sourceScopeFor(request: KernelEvaluationRequest): GrantScope {
   const action = request.action.capability ?? request.action.type;
+  // Exact canonical text and a well-formed asset, or no ceiling at all — never
+  // a coerced one. A request whose amount is not canonical states nothing the
+  // grant layer can bound, and an exercise stating an amount against a grant
+  // with no amount bound is refused downstream.
   const amountBound: GrantBound | undefined =
-    typeof request.action.amount === 'number' && Number.isFinite(request.action.amount) && request.action.amount >= 0 && request.action.currency !== undefined
-      ? { kind: 'ceiling', limit: request.action.amount, unit: request.action.currency }
+    request.action.currency !== undefined && isWellFormedMonetaryAmount({ value: request.action.amount, unit: request.action.currency })
+      ? { kind: 'ceiling', limit: request.action.amount as string, unit: request.action.currency }
       : undefined;
 
   return {

@@ -124,7 +124,7 @@ Not sources, and refused at startup: `boundedGrantId` (internal authority plumbi
 
 - `required` defaults to **true**. A required source the action lacks (`counterparty`, `organization`, `amount`) stops the request **before any network I/O**, as `failed / ADAPTER_ERROR`. `required: false` omits the destination field.
 - Path, query and header positions: strings exact; numbers in deterministic decimal (no exponent); boolean literals `"true"`/`"false"`; a `null` literal is a configuration error.
-- JSON body: strings stay strings, `amount.value` stays a number, boolean and `null` literals keep their type. No parse, no interpolation, no merge, no nesting.
+- JSON body: strings stay strings, `amount.value` is the exact canonical decimal text it carries since P9 (`"7500.25"`, never a JSON number — see `docs/architecture/ADR-CANONICAL-MONETARY-SEMANTICS.md`), boolean and `null` literals keep their type. No parse, no interpolation, no merge, no nesting.
 - `__proto__`, `prototype` and `constructor` are refused as destination keys even from trusted configuration; the body is built on a null-prototype object.
 - The request is built fresh from the frozen plan and the action. No mutable caller or configuration object reaches the transport.
 

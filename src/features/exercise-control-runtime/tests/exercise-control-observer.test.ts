@@ -10,6 +10,7 @@ import {
   type ExerciseControlPolicy,
   type ExerciseReservationObservation,
 } from '../index.js';
+import { createFinancialActionClassifier } from '../../monetary-runtime/index.js';
 
 /**
  * P8 — the gate's write-only observer: told only what the ledger proved, after
@@ -74,7 +75,7 @@ const neverSettling: ExerciseControlObserver = {
 };
 
 function gate(observer?: ExerciseControlObserver, ledger: ExerciseControlLedgerPort = createInMemoryExerciseControlLedger({ now: () => LEDGER_AT })) {
-  return createExerciseControlGate({ policy: ONE, authorityBinding: () => BINDING, reservationLedger: ledger, now: () => '2026-04-01T00:00:09.000Z', ...(observer !== undefined ? { observer } : {}) });
+  return createExerciseControlGate({ actionClassifier: createFinancialActionClassifier({ financialActions: [] }), policy: ONE, authorityBinding: () => BINDING, reservationLedger: ledger, now: () => '2026-04-01T00:00:09.000Z', ...(observer !== undefined ? { observer } : {}) });
 }
 
 describe('Exercise-control observer (P8) — what it is told', () => {

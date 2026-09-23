@@ -23,6 +23,7 @@ import {
   isExerciseControlLedgerError,
   storedTerminalEventDigest,
 } from '../exercise-control-ledger/index.js';
+import { createFinancialActionClassifier } from '../../features/monetary-runtime/index.js';
 
 /**
  * The production exercise-control ledger: the shared port contract, then the
@@ -234,7 +235,7 @@ describe('SQLite exercise-control ledger — §51 corruption fails closed, never
     const { path, id, limits } = await seeded();
     tamper(path, [`UPDATE exercise_control_reservation_limits SET usage = '0' WHERE reservation_id = '${id}'`]);
     const ledger = await createSqliteExerciseControlLedger(path);
-    const gate = createExerciseControlGate({ policy: () => limits, authorityBinding: () => BINDING, reservationLedger: ledger, now: () => at(5) });
+    const gate = createExerciseControlGate({ actionClassifier: createFinancialActionClassifier({ financialActions: [] }), policy: () => limits, authorityBinding: () => BINDING, reservationLedger: ledger, now: () => at(5) });
     const admission = await gate.admit({
       grant: { id: 'aoc.grant:contract', subject: 'agent-A', issuedAt: at(-60), expiresAt: at(600), correlation: { requestId: 'req-1', decisionId: 'dec-1', action: 'payment', resourceScope: 'vendor/V123' }, authorityBindingDigest: BINDING },
       attempt: { action: 'payment', resource: 'vendor/V123' },
@@ -395,7 +396,7 @@ describe('SQLite exercise-control ledger — rolling admission verifies before i
     tamper(path, [`UPDATE exercise_control_reservation_limits SET reserved_at_ms = reserved_at_ms - 86400000 WHERE reservation_id = '${live.reservationId}'`]);
     clock.set(at(10));
     const ledger = await createSqliteExerciseControlLedger(path, { now: clock.now });
-    const gate = createExerciseControlGate({ policy: () => rolling, authorityBinding: () => BINDING, reservationLedger: ledger, now: clock.now });
+    const gate = createExerciseControlGate({ actionClassifier: createFinancialActionClassifier({ financialActions: [] }), policy: () => rolling, authorityBinding: () => BINDING, reservationLedger: ledger, now: clock.now });
     const admission = await gate.admit({
       grant: { id: 'aoc.grant:contract', subject: 'agent-A', issuedAt: at(-60), expiresAt: at(600), correlation: { requestId: 'req-1', decisionId: 'dec-1', action: 'payment', resourceScope: 'vendor/V123' }, authorityBindingDigest: BINDING },
       attempt: { action: 'payment', resource: 'vendor/V123' },

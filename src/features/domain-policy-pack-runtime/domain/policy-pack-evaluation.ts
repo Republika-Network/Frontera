@@ -22,7 +22,8 @@ export interface PolicyEvaluationInput {
   readonly country?: string;
   readonly industry?: string;
   readonly customerId?: string;
-  readonly amount?: number;
+  /** Canonical decimal text (`src/features/monetary-runtime`), never a number. Ordered predicates compare it exactly. */
+  readonly amount?: string;
   readonly currency?: string;
   readonly counterpartyId?: string;
   readonly dataDomains?: readonly string[];

@@ -45,7 +45,7 @@ describe('payments-basic policy pack', () => {
         action: 'transfer_funds',
         domain: 'payments',
         sideEffectType: 'financial',
-        amount: 25000,
+        amount: '25000',
         hasApprovalProof: false,
       }),
     );

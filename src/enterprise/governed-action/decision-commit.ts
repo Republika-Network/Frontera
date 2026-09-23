@@ -15,7 +15,7 @@ import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
 import { deepFreeze, toKernelEvaluationResult } from '../governance-store/store-common.js';
 import { buildGovernanceEvaluationOutcomeEvent } from '../orchestration/governance-evaluation-events.js';
-import { GOVERNED_ACTION_REASON_CODES as R, type GovernedActionIntent, type GovernedActionReasonCode } from './contracts.js';
+import { GOVERNED_ACTION_REASON_CODES as R, type ClassifiedGovernedActionIntent, type GovernedActionReasonCode } from './contracts.js';
 import { buildGovernedActionKernelRequest, type BoundActorScope } from './kernel-request.js';
 
 /**
@@ -61,7 +61,7 @@ export interface DecisionCommitterOptions {
 
 export interface DecisionCommitInput {
   readonly scope: BoundActorScope;
-  readonly intent: GovernedActionIntent;
+  readonly intent: ClassifiedGovernedActionIntent;
   readonly requestId: string;
   readonly accessContext: GovernanceStoreAccessContext;
   readonly idempotency: GovernanceIdempotencyContext;

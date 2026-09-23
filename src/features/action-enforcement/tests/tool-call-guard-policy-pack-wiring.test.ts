@@ -96,10 +96,10 @@ describe('ToolCallGuard <-> Domain Policy Pack Runtime wiring', () => {
       action: 'read_project_summary',
       resourceScope: 'project:1',
       sideEffectType: 'read',
-      policyEvaluationInput: { amount: 2500, currency: 'USD', counterpartyId: 'vendor-9' },
+      policyEvaluationInput: { amount: '2500', currency: 'USD', counterpartyId: 'vendor-9' },
       execute: () => 'done',
     });
-    assert.equal(captured?.amount, 2500);
+    assert.equal(captured?.amount, '2500');
     assert.equal(captured?.currency, 'USD');
     assert.equal(captured?.counterpartyId, 'vendor-9');
   });
