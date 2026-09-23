@@ -53,7 +53,7 @@ const ACTION: ValidatedExecutionAction = Object.freeze({
   resource: 'INV-1001',
   counterparty: 'V123',
   organization: 'org-datasys',
-  amount: Object.freeze({ value: 7500, unit: 'USD' }),
+  amount: Object.freeze({ value: '7500', unit: 'USD' }),
   notAfter: '2026-01-01T00:10:00.000Z',
   correlation: Object.freeze({ requestId: 'req-1', decisionId: 'dec-1', executionId: 'exec-1' }),
 });
@@ -456,9 +456,13 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
     refusedWith('GENERIC_HTTP_CREDENTIAL_INVALID', () => plan({ credential: { kind: 'oauth', token: TOKEN } }));
   });
 
-  it('21–22. amount.value stays a JSON number and amount.unit an exact string; literals keep their JSON type', () => {
-    const request = mapped({ body: { kind: 'json-object', fields: { v: { kind: 'source', source: 'amount.value' }, u: { kind: 'source', source: 'amount.unit' }, t: { kind: 'literal', value: true }, n: { kind: 'literal', value: null }, s: { kind: 'literal', value: '7500' } } } }, { ...ACTION, amount: { value: 7500.25, unit: 'usd ' } });
+  it('21–22. amount.value stays a JSON number — spelled exactly as its canonical text, never through a double (P9) — and amount.unit an exact string; literals keep their JSON type', () => {
+    const request = mapped({ body: { kind: 'json-object', fields: { v: { kind: 'source', source: 'amount.value' }, u: { kind: 'source', source: 'amount.unit' }, t: { kind: 'literal', value: true }, n: { kind: 'literal', value: null }, s: { kind: 'literal', value: '7500' } } } }, { ...ACTION, amount: { value: '7500.25', unit: 'usd ' } });
     assert.deepEqual(JSON.parse(request.body ?? ''), { v: 7500.25, u: 'usd ', t: true, n: null, s: '7500' });
+    assert.ok(
+      request.body?.includes('"v":7500.25'),
+      `expected exact monetary JSON number in request body; got ${request.body ?? '<undefined>'}`,
+    );
   });
 
   it('numbers become deterministic decimal text in path, query and header positions; booleans become true/false', () => {
@@ -466,7 +470,7 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
       path: [{ kind: 'source', source: 'amount.value' }],
       query: { flag: { kind: 'literal', value: false }, n: { kind: 'literal', value: 12 } },
       headers: { 'X-Amount': { kind: 'source', source: 'amount.value' } },
-    }, { ...ACTION, amount: { value: 0.5, unit: 'USD' } });
+    }, { ...ACTION, amount: { value: '0.5', unit: 'USD' } });
     assert.equal(request.path, '/0.5?flag=false&n=12');
     assert.equal(header(request, 'x-amount'), '0.5');
   });
@@ -1491,7 +1495,12 @@ describe('Generic HTTP — structural boundaries (§5, §29, §52)', () => {
     for (const file of FILES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';
-        const allowed = specifier.startsWith('./') || specifier === '../../../features/execution-runtime/index.js' || ['node:net', 'node:dns', 'node:https', 'node:http'].includes(specifier);
+        const allowed =
+          specifier.startsWith('./') ||
+          specifier === '../../../features/execution-runtime/index.js' ||
+          // P9: the pure monetary primitive, to prove amount.value is canonical text before it is spelled as a JSON number.
+          specifier === '../../../features/monetary-runtime/index.js' ||
+          ['node:net', 'node:dns', 'node:https', 'node:http'].includes(specifier);
         assert.ok(allowed, `${file} imports '${specifier}'; the adapter receives a ValidatedExecutionAction and nothing else from governance`);
       }
       const code = codeOf(file);

@@ -96,7 +96,7 @@ const RULES: readonly PolicyPackRule[] = [
     priority: 150,
     condition: all(
       predicate('sideEffectType', 'equals', 'financial'),
-      predicate('amount', 'greater_than_or_equal', 10000),
+      predicate('amount', 'greater_than_or_equal', '10000'),
       predicate('hasApprovalProof', 'not_equals', true),
     ),
     effect: {

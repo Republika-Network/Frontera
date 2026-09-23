@@ -8,6 +8,7 @@ import {
   createGrantIssuanceService,
   createInMemoryBoundedGrantStore,
   deploymentGrantValidityCeiling,
+  isWellFormedGrantScope,
   serializeBoundedGrant,
   serializeGrantScope,
   type GrantCorrelation,
@@ -23,7 +24,7 @@ const CORRELATION: GrantCorrelation = { requestId: 'req-1', decisionId: 'dec-1',
 
 const SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
-  amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   counterparty: { kind: 'identity', value: 'V123' },
   organization: { kind: 'identity', value: 'org-1' },
   resources: { kind: 'set', values: ['record:contract', 'record:invoice'] },
@@ -49,7 +50,7 @@ describe('Deterministic grant identity', () => {
       resources: { kind: 'set', values: ['record:invoice', 'record:contract'] },
       organization: { kind: 'identity', value: 'org-1' },
       counterparty: { kind: 'identity', value: 'V123' },
-      amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+      amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
       action: { kind: 'identity', value: 'payment.send' },
     };
     assert.equal(boundedGrantId({ correlation: CORRELATION, subject: 'actor-a', scope: reordered, expiresAt: HORIZON }), boundedGrantId({ correlation: CORRELATION, subject: 'actor-a', scope: SCOPE, expiresAt: HORIZON }));
@@ -59,7 +60,7 @@ describe('Deterministic grant identity', () => {
     const base = boundedGrantId({ correlation: CORRELATION, subject: 'actor-a', scope: SCOPE, expiresAt: HORIZON });
     assert.notEqual(boundedGrantId({ correlation: CORRELATION, subject: 'actor-b', scope: SCOPE, expiresAt: HORIZON }), base);
     assert.notEqual(boundedGrantId({ correlation: { ...CORRELATION, decisionId: 'dec-2' }, subject: 'actor-a', scope: SCOPE, expiresAt: HORIZON }), base);
-    assert.notEqual(boundedGrantId({ correlation: CORRELATION, subject: 'actor-a', scope: { ...SCOPE, amount: { kind: 'ceiling', limit: 9_999, unit: 'USD' } }, expiresAt: HORIZON }), base);
+    assert.notEqual(boundedGrantId({ correlation: CORRELATION, subject: 'actor-a', scope: { ...SCOPE, amount: { kind: 'ceiling', limit: '9999', unit: 'USD' } }, expiresAt: HORIZON }), base);
   });
 
   it('carries no UUID, no counter and no clock — two ids minted a day apart are identical', () => {
@@ -80,7 +81,7 @@ describe('Deterministic grant identity', () => {
   });
 
   it('attenuation is order-independent and repeatable', () => {
-    const requested = { amount: { kind: 'ceiling' as const, limit: 5_000, unit: 'USD' }, resources: { kind: 'set' as const, values: ['record:invoice', 'record:contract'] } };
+    const requested = { amount: { kind: 'ceiling' as const, limit: '5000', unit: 'USD' }, resources: { kind: 'set' as const, values: ['record:invoice', 'record:contract'] } };
     const a = attenuateGrantScope(SCOPE, requested);
     const b = attenuateGrantScope(SCOPE, { resources: requested.resources, amount: requested.amount });
     assert.deepEqual(a, b);
@@ -116,10 +117,14 @@ describe('Canonicalization — byte-compatible with aoc.canonical-json.v1', () =
     assert.equal(digest, computeDigest(JSON.parse(serializeBoundedGrant({ ...withoutDigest, digest: '' })) as unknown));
   });
 
-  it('`-0` normalizes to `0`, so two scopes meaning the same limit never digest differently', () => {
-    const negativeZero: GrantScope = { amount: { kind: 'ceiling', limit: -0, unit: 'USD' } };
-    const positiveZero: GrantScope = { amount: { kind: 'ceiling', limit: 0, unit: 'USD' } };
-    assert.equal(serializeGrantScope(negativeZero), serializeGrantScope(positiveZero));
+  it('one limit has one spelling: a non-canonical spelling is not a well-formed ceiling, so it can never digest as a second form of the same limit (P9)', () => {
+    const canonical: GrantScope = { amount: { kind: 'ceiling', limit: '10', unit: 'USD' } };
+    assert.equal(isWellFormedGrantScope(canonical), true);
+    for (const spelling of ['-0', '10.0', '010', '1e1', '+10', ' 10']) {
+      assert.equal(isWellFormedGrantScope({ amount: { kind: 'ceiling', limit: spelling, unit: 'USD' } }), false, spelling);
+    }
+    // The canonical bytes carry the limit as JSON text, never as a JSON number.
+    assert.equal(serializeGrantScope(canonical), '{"amount":{"kind":"ceiling","limit":"10","unit":"USD"}}');
   });
 });
 

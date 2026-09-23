@@ -73,11 +73,20 @@ describe('Exercise control boundaries — §5 / §57 what it imports', () => {
     assert.equal(gate.includes('Everything a caller could influence'), false);
   });
 
-  it('imports nothing outside itself except Node crypto — no Kernel, Governance Store, customer identity, Generic HTTP, provider or grant runtime', () => {
+  it('imports nothing outside itself except Node crypto and the pure monetary primitive — no Kernel, Governance Store, customer identity, Generic HTTP, provider or grant runtime', () => {
     for (const file of PRODUCTION_SOURCES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';
-        assert.ok(specifier === 'crypto' || specifier.startsWith('./') || specifier.startsWith('../domain/') || specifier.startsWith('../services/') || specifier.startsWith('./domain/') || specifier.startsWith('./services/'), `${file} imports '${specifier}'`);
+        assert.ok(
+          specifier === 'crypto' ||
+            specifier === '../../monetary-runtime/index.js' ||
+            specifier.startsWith('./') ||
+            specifier.startsWith('../domain/') ||
+            specifier.startsWith('../services/') ||
+            specifier.startsWith('./domain/') ||
+            specifier.startsWith('./services/'),
+          `${file} imports '${specifier}'`,
+        );
       }
     }
   });
@@ -128,8 +137,13 @@ describe('Exercise control boundaries — nothing ambient, nothing that frees ca
       const text = codeOf(file);
       for (const pattern of [/parseFloat\s*\(/, /Math\.round\s*\(/, /toFixed\s*\(/, /\bSUM\s*\(/i, /\bTOTAL\s*\(/i, /\bREAL\b/]) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
     }
-    const decimal = codeOf(`${ROOT}/domain/exercise-decimal.ts`);
-    assert.ok(/BigInt\(/.test(decimal), 'exact arithmetic is BigInt coefficient/scale arithmetic');
+    // P9: one exact-decimal implementation, shared. The exercise-control view
+    // delegates to it and re-implements nothing, and it is BigInt arithmetic.
+    const decimal = readFileSync(`${ROOT}/domain/exercise-decimal.ts`, 'utf8');
+    assert.ok(decimal.includes("from '../../monetary-runtime/index.js'"), 'the exercise-control decimals are the shared monetary implementation');
+    const shared = codeOf('src/features/monetary-runtime/domain/canonical-decimal.ts');
+    assert.ok(/BigInt\(/.test(shared), 'exact arithmetic is BigInt coefficient/scale arithmetic');
+    for (const pattern of [/parseFloat\s*\(/, /Math\.round\s*\(/, /toFixed\s*\(/, /Number\(\s*(?:left|right|value|text|canonical)\s*\)/]) assert.equal(pattern.test(shared), false, String(pattern));
   });
 
   it('is fully synchronous where the policy and the binding resolver are concerned: neither is ever awaited', () => {
@@ -146,7 +160,7 @@ describe('Exercise control boundaries — nothing ambient, nothing that frees ca
     const reserve = gate.indexOf('await ledger.reserve(request)');
     const admitted = gate.indexOf("return { kind: 'admitted'");
     const revalidate = gate.indexOf('revalidate(reservation: ExerciseReservationHandle, input: ExerciseControlAdmissionInput): ExerciseControlRevalidation {');
-    const second = gate.indexOf('verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, queryFor(input, input.at))');
+    const second = gate.indexOf('verifyExerciseAuthorityBinding(input.grant.authorityBindingDigest, authorityBinding, queryFor(input, input.at, classOf(input)))');
     for (const index of [first, policy, reserve, admitted, revalidate, second]) assert.notEqual(index, -1);
     assert.ok(first < policy && policy < reserve && reserve < admitted, 'binding #1 → policy → reserve → admitted');
     assert.ok(admitted < revalidate && revalidate < second, 'binding #2 lives in revalidate(), after admission');
@@ -200,7 +214,7 @@ describe('Exercise control boundaries — it cannot authorize, and nothing a cal
     const limits = readFileSync(`${ROOT}/domain/exercise-control-limits.ts`, 'utf8');
     const query = /export interface ExerciseControlQuery \{([\s\S]*?)\n\}/.exec(limits)?.[1] ?? '';
     const fields = [...query.matchAll(/^ {2}readonly (\w+)\??:/gm)].map((match) => match[1]);
-    assert.deepEqual(fields.sort(), ['action', 'amount', 'at', 'boundedGrantId', 'correlation', 'counterparty', 'grantExpiresAt', 'grantIssuedAt', 'organization', 'resource', 'subject']);
+    assert.deepEqual(fields.sort(), ['action', 'actionClass', 'amount', 'at', 'boundedGrantId', 'correlation', 'counterparty', 'grantExpiresAt', 'grantIssuedAt', 'organization', 'resource', 'subject']);
     for (const forbidden of ['assertedContext', 'intent', 'headers', 'url', 'credential', 'adapter', 'store', 'kernel']) assert.equal(query.includes(forbidden), false, forbidden);
   });
 
@@ -214,9 +228,9 @@ describe('Exercise control boundaries — it cannot authorize, and nothing a cal
 describe('Exercise control boundaries — §11 the vocabulary is its own', () => {
   const exercise: readonly string[] = EXERCISE_CONTROL_REASON_CODE_VALUES;
 
-  it('every code carries the EXERCISE_CONTROL_ prefix, and there are exactly the nine the design names', () => {
+  it('every code carries the EXERCISE_CONTROL_ prefix, and there are exactly the ten the design names (nine from P7, one from P9)', () => {
     for (const code of exercise) assert.ok(code.startsWith('EXERCISE_CONTROL_'), code);
-    assert.equal(exercise.length, 9);
+    assert.equal(exercise.length, 10);
     assert.equal(new Set(exercise).size, exercise.length);
   });
 

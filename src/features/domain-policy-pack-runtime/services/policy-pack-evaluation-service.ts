@@ -16,6 +16,7 @@ import { PolicyRiskClassifier } from './policy-risk-classifier.js';
 import { PolicyPackProofService } from './policy-pack-proof-service.js';
 import { PolicyPackLedger } from './policy-pack-ledger.js';
 import type { PolicyPackStore } from './policy-pack-store.js';
+import { isCanonicalDecimal } from '../../monetary-runtime/index.js';
 
 /**
  * Decision precedence, most to least restrictive. A rule with effect type
@@ -242,7 +243,11 @@ export class PolicyPackEvaluationService {
       !input.action ||
       !input.resourceScope ||
       !input.riskLevel ||
-      !input.requestedAt
+      !input.requestedAt ||
+      // P9: an amount is canonical decimal text or it is not an amount. A
+      // number (or any other spelling) is malformed input and fails closed —
+      // it is never compared, so a threshold rule can never be skipped by it.
+      (input.amount !== undefined && !isCanonicalDecimal(input.amount))
     );
   }
 

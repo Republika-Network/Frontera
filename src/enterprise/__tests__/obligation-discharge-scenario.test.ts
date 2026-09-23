@@ -20,6 +20,7 @@ import {
 } from '../../features/obligation-runtime/index.js';
 import { AocKernel, type KernelEnforcementResult, type PolicyPackProvider } from '../../kernel/index.js';
 import { toKernelEvaluationRequest, validateGovernanceEvaluateRequestBody } from '../api/governance-evaluate-contract.js';
+import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/monetary-runtime/index.js';
 
 /**
  * The acceptance scenario for obligation discharge, end to end, over the
@@ -80,7 +81,7 @@ const OBLIGATION_DECLARATION: ObligationDeclaration = { requirements: [{ obligat
 const VENDOR_PAYMENT_POLICY: PolicyPackProvider = {
   evaluatePolicyForEnforcement(input) {
     const resolution = input.metadata?.['aoc.context'] as ContextResolution | undefined;
-    const amountWithinLimit = typeof input.amount === 'number' && input.amount <= 10_000;
+    const amountWithinLimit = isCanonicalDecimal(input.amount) && compareCanonicalDecimals(input.amount, '10000') <= 0;
 
     if (resolution === undefined) {
       return { type: 'policy_denied', allowed: false, reasonCode: 'VENDOR_STATUS_NOT_RESOLVED', reason: 'This deployment requires resolved vendor status.' };
@@ -161,7 +162,7 @@ async function enforcePayment(options: {
       capability: guardInput.capability,
       riskLevel: guardInput.riskLevel,
       sideEffectType: guardInput.sideEffectType,
-      amount: 7_500,
+      amount: '7500',
       currency: 'USD',
       counterpartyId: 'V123',
     },
@@ -390,7 +391,7 @@ describe('Acceptance scenario — the frozen v1 surface is unchanged', () => {
   it('the wire body carries no obligation field of its own — the capability is composed, never submitted', () => {
     const body = validateGovernanceEvaluateRequestBody({
       actor: { id: 'a', trustDomainId: 't' },
-      action: { type: 'payment', resourceScope: 'finance:payments', amount: 7_500 },
+      action: { type: 'payment', resourceScope: 'finance:payments', amount: '7500' },
       context: { callerNote: 'kept' },
     });
     const request = toKernelEvaluationRequest(body, { now: () => NOW }, { nextId: () => 'id' });

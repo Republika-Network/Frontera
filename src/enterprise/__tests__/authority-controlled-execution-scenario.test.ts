@@ -38,6 +38,7 @@ import {
   type GrantAuthorityBinding,
   type GrantAuthorityBindingQuery,
 } from '../execution-governance/index.js';
+import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/monetary-runtime/index.js';
 
 /**
  * The acceptance scenario for grant-aware execution, end to end, over the
@@ -100,7 +101,7 @@ const MANDATE_BINDING: GrantAuthorityBinding = {
 const VENDOR_PAYMENT_POLICY: PolicyPackProvider = {
   evaluatePolicyForEnforcement(input) {
     const resolution = input.metadata?.['aoc.context'] as ContextResolution | undefined;
-    const amountWithinLimit = typeof input.amount === 'number' && input.amount <= 10_000;
+    const amountWithinLimit = isCanonicalDecimal(input.amount) && compareCanonicalDecimals(input.amount, '10000') <= 0;
 
     if (resolution === undefined) {
       return { type: 'policy_denied', allowed: false, reasonCode: 'VENDOR_STATUS_NOT_RESOLVED', reason: 'This deployment requires resolved vendor status.' };
@@ -125,7 +126,7 @@ const EVALUATED_ACTION = GUARD_INPUT.capability ?? GUARD_INPUT.action;
 const EVALUATED_RESOURCE = GUARD_INPUT.resourceScope;
 const EVALUATED_SUBJECT = GUARD_INPUT.actorId;
 
-function buildRequest(options: { readonly requestId: string; readonly amount?: number; readonly extraContext?: Readonly<Record<string, unknown>> }): KernelEvaluationRequest {
+function buildRequest(options: { readonly requestId: string; readonly amount?: string; readonly extraContext?: Readonly<Record<string, unknown>> }): KernelEvaluationRequest {
   const body = validateGovernanceEvaluateRequestBody({
     requestId: options.requestId,
     requestedAt: NOW,
@@ -136,7 +137,7 @@ function buildRequest(options: { readonly requestId: string; readonly amount?: n
       capability: GUARD_INPUT.capability,
       riskLevel: GUARD_INPUT.riskLevel,
       sideEffectType: GUARD_INPUT.sideEffectType,
-      amount: options.amount ?? 7_500,
+      amount: options.amount ?? '7500',
       currency: 'USD',
       counterpartyId: 'V123',
     },
@@ -212,7 +213,7 @@ function exerciseRequestFor(
     readonly action?: string;
     readonly resource?: string;
     readonly counterparty?: string;
-    readonly amount?: { readonly value: number; readonly unit: string };
+    readonly amount?: { readonly value: string; readonly unit: string };
     readonly correlation?: GrantCorrelation;
     readonly executionId?: string;
   } = {},
@@ -223,7 +224,7 @@ function exerciseRequestFor(
     action: overrides.action ?? EVALUATED_ACTION,
     resource: overrides.resource ?? EVALUATED_RESOURCE,
     counterparty: overrides.counterparty ?? 'V123',
-    amount: overrides.amount ?? { value: 7_500, unit: 'USD' },
+    amount: overrides.amount ?? { value: '7500', unit: 'USD' },
     correlation: overrides.correlation ?? correlation,
     executionId: overrides.executionId ?? 'exec-1',
   };
@@ -260,7 +261,7 @@ describe('Production composition — issuance happens only after ALLOW and a sat
     assert.deepEqual(grant.scope.action, { kind: 'identity', value: EVALUATED_ACTION });
     assert.deepEqual(grant.scope.resources, { kind: 'set', values: [EVALUATED_RESOURCE] });
     assert.deepEqual(grant.scope.counterparty, { kind: 'identity', value: 'V123' });
-    assert.deepEqual(grant.scope.amount, { kind: 'ceiling', limit: 7_500, unit: 'USD' });
+    assert.deepEqual(grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
     assert.equal(grant.expiresAt, GRANT_HORIZON, 'a proposal within every ceiling is accepted exactly as supplied');
   });
 
@@ -285,7 +286,7 @@ describe('Production composition — issuance happens only after ALLOW and a sat
   it('a DENY issues nothing, and the refusal names the authorization rather than a grant defect', async () => {
     const world = compose({ requestId: 'execution-scenario-deny' });
     // 12500 is above the policy's own threshold, so the decision itself is not ALLOW.
-    const outcome = await world.service.authorize({ request: buildRequest({ requestId: 'execution-scenario-deny', amount: 12_500 }), grantExpiresAt: GRANT_HORIZON });
+    const outcome = await world.service.authorize({ request: buildRequest({ requestId: 'execution-scenario-deny', amount: '12500' }), grantExpiresAt: GRANT_HORIZON });
 
     assert.notEqual(outcome.decision.status, 'allowed');
     assert.equal(outcome.outcome, 'grant-withheld');
@@ -497,8 +498,8 @@ describe('Production composition — exercise gates the adapter', () => {
   });
 
   const blocked: readonly { readonly name: string; readonly overrides: Parameters<typeof exerciseRequestFor>[2]; readonly code: string }[] = [
-    { name: 'B. amount expansion to 9000', overrides: { amount: { value: 9_000, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
-    { name: 'B2. amount expansion to the policy threshold 10000', overrides: { amount: { value: 10_000, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
+    { name: 'B. amount expansion to 9000', overrides: { amount: { value: '9000', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
+    { name: 'B2. amount expansion to the policy threshold 10000', overrides: { amount: { value: '10000', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
     { name: 'C. resource expansion', overrides: { resource: 'project/other' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_RESOURCE_OUT_OF_SCOPE },
     { name: 'C2. counterparty expansion', overrides: { counterparty: 'V999' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_COUNTERPARTY_OUT_OF_SCOPE },
     { name: 'D. wrong subject', overrides: { subject: 'agent-B' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_SUBJECT_MISMATCH },
@@ -551,7 +552,7 @@ describe('Production composition — exercise gates the adapter', () => {
     const grant = grantOf(outcome);
 
     const forged = {
-      ...exerciseRequestFor(grant.id, grant.correlation, { amount: { value: 10_000, unit: 'USD' } }),
+      ...exerciseRequestFor(grant.id, grant.correlation, { amount: { value: '10000', unit: 'USD' } }),
       maxAmount: 10_000,
       grant: { maxAmount: 10_000, subject: 'attacker', expiresAt: '2099-01-01T00:00:00.000Z', revoked: false, resource: '*' },
       'aoc.grant': { status: 'active' },
@@ -609,7 +610,7 @@ describe('Production composition — correlation a later Evidence phase will nee
     const { service, outcome } = await issuedWorld({ requestId: 'evidence-chain-withheld', now: () => AT_T_PLUS_5 });
     const grant = grantOf(outcome);
 
-    const executed = await service.exercise(exerciseRequestFor(grant.id, grant.correlation, { amount: { value: 9_000, unit: 'USD' }, executionId: 'exec-evidence-2' }));
+    const executed = await service.exercise(exerciseRequestFor(grant.id, grant.correlation, { amount: { value: '9000', unit: 'USD' }, executionId: 'exec-evidence-2' }));
     assert.equal(executed.status, 'withheld');
     assert.equal(executed.assessment.executionId, 'exec-evidence-2');
     assert.equal(executed.assessment.boundedGrantId, grant.id);

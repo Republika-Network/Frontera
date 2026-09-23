@@ -10,7 +10,8 @@ export type AuthorityConstraint =
   | {
       readonly type: 'max_amount';
       readonly currency: string;
-      readonly value: number;
+      /** Canonical decimal text (`src/features/monetary-runtime`), never a number (P9). Declared only: no evaluator reads this constraint today. */
+      readonly value: string;
     }
   | {
       readonly type: 'time_window';

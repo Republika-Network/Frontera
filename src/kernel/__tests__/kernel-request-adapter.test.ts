@@ -67,8 +67,8 @@ describe('toGuardActionRequestInput', () => {
   it('builds policyEvaluationInput only when a domain-policy-pack-relevant field is present', () => {
     assert.equal(toGuardActionRequestInput(BASE_REQUEST, undefined).policyEvaluationInput, undefined);
 
-    const withAmount = toGuardActionRequestInput({ ...BASE_REQUEST, action: { ...BASE_REQUEST.action, amount: 500, currency: 'USD' } }, undefined);
-    assert.deepEqual(withAmount.policyEvaluationInput, { amount: 500, currency: 'USD' });
+    const withAmount = toGuardActionRequestInput({ ...BASE_REQUEST, action: { ...BASE_REQUEST.action, amount: '500', currency: 'USD' } }, undefined);
+    assert.deepEqual(withAmount.policyEvaluationInput, { amount: '500', currency: 'USD' });
   });
 
   it('forwards principal, capability, target, and prior-proof references only when present', () => {

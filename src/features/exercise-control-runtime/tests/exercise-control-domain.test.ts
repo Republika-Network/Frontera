@@ -9,7 +9,6 @@ import {
   compareExerciseDecimals,
   exerciseControlPolicyDigest,
   exerciseControlRuleVerdict,
-  exerciseDecimalFromNumber,
   exerciseReservationId,
   exerciseReservationRequestDigest,
   isCanonicalExerciseDecimal,
@@ -19,6 +18,7 @@ import {
   type ExerciseControlQuery,
 } from '../index.js';
 import { BINDING, OTHER_BINDING, amount, count } from './exercise-control-ledger-contract.js';
+import { legacyExerciseDecimalFromNumber as exerciseDecimalFromNumber } from './legacy-usage-conversion.js';
 
 describe('Exercise control — §10 / §42 exact decimal arithmetic', () => {
   it('accepts exactly the canonical grammar', () => {
@@ -43,7 +43,7 @@ describe('Exercise control — §10 / §42 exact decimal arithmetic', () => {
     assert.equal(compareExerciseDecimals(sum, '0.3'), 0);
   });
 
-  it('5. converts an attempted number to canonical text once, expanding exponent notation', () => {
+  it('5. (pre-P9 ledger usage) the retired number conversion expanded exponent notation exactly', () => {
     assert.equal(exerciseDecimalFromNumber(0.1), '0.1');
     assert.equal(exerciseDecimalFromNumber(1e-7), '0.0000001');
     assert.equal(exerciseDecimalFromNumber(1e6), '1000000');
@@ -55,7 +55,7 @@ describe('Exercise control — §10 / §42 exact decimal arithmetic', () => {
     assert.equal(exerciseDecimalFromNumber(-0), '0');
   });
 
-  it('6. every finite non-negative number is representable, including the extremes', () => {
+  it('6. (pre-P9 ledger usage) every value the retired conversion could write fits the usage digit bound', () => {
     const tiny = exerciseDecimalFromNumber(Number.MIN_VALUE);
     assert.ok(tiny !== undefined && tiny.startsWith('0.') && tiny.endsWith('5'));
     const huge = exerciseDecimalFromNumber(Number.MAX_VALUE);

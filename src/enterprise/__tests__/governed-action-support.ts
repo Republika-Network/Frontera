@@ -25,6 +25,7 @@ import {
 import { createRecordingExecutionAdapter, type RecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import type { ExecutionAdapter, ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
 import type { EmergencyControlReaderPort } from '../../features/emergency-control-runtime/index.js';
+import { createFinancialActionClassifier, createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { AocKernel, type KernelEvaluationOptions, type KernelEvaluationRequest, type KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
@@ -46,6 +47,7 @@ import {
   type GovernedActionGrantPolicy,
   type GovernedActionOrchestrator,
   type GovernedActionOrchestratorOptions,
+  type GovernedActionMonetaryTrust,
 } from '../governed-action/index.js';
 
 /**
@@ -89,6 +91,25 @@ export const APPROVAL_INTENT = Object.freeze({
   resource: PROJECT_SCOPE,
   assertedContext: { passportId: 'passport-pmfreak', capabilityTokenId: PMFREAK_COMMUNICATION_TOKEN_ID },
   idempotencyKey: 'key-approval',
+});
+
+/** P9: the assets every test world recognizes. */
+export const TEST_ASSETS = createMonetaryAssetRegistry([
+  { assetId: 'USD', scale: 2 },
+  { assetId: 'EUR', scale: 2 },
+]);
+
+/** P9 default: nothing is financial, so no intent in the default world may carry an amount. */
+export const TEST_MONETARY: GovernedActionMonetaryTrust = Object.freeze({ assets: TEST_ASSETS, actionClassifier: createFinancialActionClassifier({ financialActions: [] }) });
+
+/**
+ * P9: a world whose host classifies the drafting action as financial — the one
+ * action the Datasys fixture's Kernel allows — so the monetary path can be
+ * driven end to end through a real allowed decision.
+ */
+export const DRAFTING_IS_FINANCIAL: GovernedActionMonetaryTrust = Object.freeze({
+  assets: TEST_ASSETS,
+  actionClassifier: createFinancialActionClassifier({ financialActions: [DRAFT_CLOSURE_EMAIL] }),
 });
 
 export const DENIED_ACTOR = UNKNOWN_AGENT_ACTOR_ID;
@@ -183,13 +204,16 @@ export interface WorldOptions {
   readonly beforeGrantIssue?: () => void;
   /** An execution adapter to compose instead of the recording one — an adapter registry, for the adapter-scoped checkpoint. */
   readonly executionAdapter?: ExecutionAdapter;
-  /** P7 exercise controls, composed onto ACE exactly as the composition root composes them. */
-  readonly exerciseControls?: AuthorityControlledExerciseControls;
+  /** P7 exercise controls, composed onto ACE exactly as the composition root composes them — with the world's own classifier, as the root supplies its one instance. */
+  readonly exerciseControls?: Omit<AuthorityControlledExerciseControls, 'actionClassifier'>;
+  /** P9 trusted monetary configuration. Defaults to `TEST_MONETARY`: USD and EUR at scale 2, and no financial action. */
+  readonly monetary?: GovernedActionMonetaryTrust;
   /** P8 write-only evidence recorder, handed to ACE and the orchestrator exactly as the composition root hands it. */
   readonly evidence?: AuthorityEventRecorder;
 }
 
 export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
+  const monetary = options.monetary ?? TEST_MONETARY;
   const log = options.log ?? createCallLog();
   const clock = options.clock ?? createManualEnforcementClock(NOW);
   const fixture = buildDatasysEnforcementFixture();
@@ -287,7 +311,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     now: () => clock.now(),
     resolveAuthorityBinding: options.resolveAuthorityBinding ?? (() => NO_TEMPORAL_BOUND),
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
-    ...(options.exerciseControls !== undefined ? { exerciseControls: options.exerciseControls } : {}),
+    ...(options.exerciseControls !== undefined ? { exerciseControls: { ...options.exerciseControls, actionClassifier: monetary.actionClassifier } } : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
   };
   const ace = createAuthorityControlledExecution(aceOptions);
@@ -320,6 +344,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     execution,
     governanceStore: store,
     grantPolicy: options.grantPolicy ?? EVALUATED_AT_POLICY,
+    monetary,
     now: () => clock.now(),
     enterpriseContext: () => ({ enterpriseVersion: 'test', lifecycleState: 'ready', modules: [], environment: 'test' }),
     events: { enabled: true, publisher, nextId: (prefix) => `${prefix}-${(eventCounter += 1)}` },

@@ -54,7 +54,7 @@ export const TEST_EXPIRES_AT = '2026-01-01T12:10:00.000Z';
 
 export const TEST_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment' },
-  amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '7500', unit: 'USD' },
   counterparty: { kind: 'identity', value: 'V123' },
   organization: { kind: 'identity', value: 'org-acme' },
   resources: { kind: 'set', values: ['vendor/V123'] },
@@ -99,7 +99,7 @@ export interface ExerciseRequestOverrides {
   readonly resource?: string;
   readonly counterparty?: string;
   readonly organization?: string;
-  readonly amount?: { readonly value: number; readonly unit: string };
+  readonly amount?: { readonly value: string; readonly unit: string };
   readonly correlation?: GrantCorrelation;
   readonly executionId?: string;
   readonly omitCounterparty?: boolean;
@@ -110,7 +110,7 @@ export interface ExerciseRequestOverrides {
 export function buildExerciseRequest(grant: BoundedGrant, overrides: ExerciseRequestOverrides = {}): GrantExerciseRequest {
   const counterparty = overrides.counterparty ?? 'V123';
   const organization = overrides.organization ?? 'org-acme';
-  const amount = overrides.amount ?? { value: 7_500, unit: 'USD' };
+  const amount = overrides.amount ?? { value: '7500', unit: 'USD' };
   return {
     boundedGrantId: overrides.boundedGrantId ?? grant.id,
     subject: overrides.subject ?? 'agent-A',

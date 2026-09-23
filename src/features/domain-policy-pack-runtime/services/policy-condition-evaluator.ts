@@ -1,3 +1,4 @@
+import { compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
 import type { PolicyCondition, PolicyPredicateCondition, PolicyPredicateField } from '../domain/policy-pack-condition.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
 
@@ -143,13 +144,13 @@ export class PolicyConditionEvaluator {
       case 'not_in':
         return !(Array.isArray(expected) && expected.includes(fieldValue));
       case 'greater_than':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a > b);
+        return this.compareOrdered(fieldValue, expected, (order) => order > 0);
       case 'greater_than_or_equal':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a >= b);
+        return this.compareOrdered(fieldValue, expected, (order) => order >= 0);
       case 'less_than':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a < b);
+        return this.compareOrdered(fieldValue, expected, (order) => order < 0);
       case 'less_than_or_equal':
-        return this.compareNumeric(fieldValue, expected, (a, b) => a <= b);
+        return this.compareOrdered(fieldValue, expected, (order) => order <= 0);
       case 'exists':
         return fieldValue !== undefined && fieldValue !== null;
       case 'not_exists':
@@ -169,10 +170,26 @@ export class PolicyConditionEvaluator {
     return false;
   }
 
-  private compareNumeric(fieldValue: unknown, expected: unknown, compare: (a: number, b: number) => boolean): boolean {
+  /**
+   * An ordered comparison, exact wherever either side is a monetary quantity.
+   *
+   * P9: a canonical decimal field (`amount`) is compared with `BigInt`
+   * arithmetic against a threshold that is **itself** canonical decimal text —
+   * `"10000"`, never `10000`. A number threshold against a monetary field, or a
+   * monetary threshold against a number field, does not match: a JavaScript
+   * number's precision was decided before the pack was read, and nothing here
+   * re-spells one. `PolicyPackValidator` refuses such a pack
+   * (`INVALID_MONETARY_THRESHOLD`) and `PolicyPackEvaluationService` refuses a
+   * non-canonical input amount (`invalid_input`), so this row is a backstop.
+   * Two non-monetary numbers compare as before.
+   */
+  private compareOrdered(fieldValue: unknown, expected: unknown, accepts: (order: -1 | 0 | 1) => boolean): boolean {
+    if (isCanonicalDecimal(fieldValue) || isCanonicalDecimal(expected)) {
+      return isCanonicalDecimal(fieldValue) && isCanonicalDecimal(expected) && accepts(compareCanonicalDecimals(fieldValue, expected));
+    }
     if (typeof fieldValue !== 'number' || typeof expected !== 'number') {
       return false;
     }
-    return compare(fieldValue, expected);
+    return accepts(fieldValue < expected ? -1 : fieldValue > expected ? 1 : 0);
   }
 }

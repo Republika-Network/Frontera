@@ -150,7 +150,7 @@ describe('Execution layer boundaries — it reads layer E and nothing above it',
     // service holds an `ExerciseControlGate` and nothing below it — never the
     // reservation store — and `exercise-control-boundaries.test.ts` fails the
     // build if that module grows a Kernel, a store of evidence or a network.
-    const allowed = ['../../grant-runtime/', '../../emergency-control-runtime/', '../../exercise-control-runtime/'];
+    const allowed = ['../../grant-runtime/', '../../emergency-control-runtime/', '../../exercise-control-runtime/', '../../monetary-runtime/'];
     for (const file of PRODUCTION_SOURCES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';

@@ -59,7 +59,7 @@ function buildKernel(options: { readonly discharges?: readonly ObligationDischar
 
 function paymentRequest(requestId: string) {
   const base = toKernelRequest(buildDraftClosureEmailGuardInput());
-  return { ...base, requestId, action: { ...base.action, amount: 7_500, currency: 'USD', counterpartyId: 'V123' } };
+  return { ...base, requestId, action: { ...base.action, amount: '7500', currency: 'USD', counterpartyId: 'V123' } };
 }
 
 describe('evaluate() reports grant eligibility and never a grant', () => {
@@ -78,7 +78,7 @@ describe('evaluate() reports grant eligibility and never a grant', () => {
     assert.deepEqual(bounds.map((bound) => bound.key), ['action', 'amount', 'counterparty', 'resources']);
     assert.deepEqual(
       bounds.find((bound) => bound.key === 'amount'),
-      { key: 'amount', kind: 'ceiling', limit: 7_500, unit: 'USD' },
+      { key: 'amount', kind: 'ceiling', limit: '7500', unit: 'USD' },
     );
     assert.deepEqual(
       bounds.find((bound) => bound.key === 'counterparty'),

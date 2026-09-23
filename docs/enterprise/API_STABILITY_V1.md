@@ -283,6 +283,30 @@ route, webhook, SSE or SDK method exposes it, and the governed-action result is
 byte-identical with or without it. The frozen surface stays 28 endpoints; the
 SDK stays `1.1.0`.
 
+**P9 (unreleased) adds no endpoint, no request field, no response field, no
+status and no `withheldBy` value, and keeps every v1 request spelling.**
+`amount.value` may be written, as in v1, as a JSON number — or, additively, as
+decimal text. Either way the Host reads it **exactly**: for this route and for
+`action.amount` on `POST /api/governance/evaluate` the body is parsed with the
+platform's JSON source-text access, so the characters the client wrote become
+canonical decimal text without ever passing through an IEEE-754 double
+(`9007199254740993` stays `9007199254740993`; `7.5e3` is `7500`). The SDK's
+`GovernedActionAmount.value` widens additively to `string | number`. What P9
+adds is **validation of the amount against host configuration**: the currency
+must be an asset the Host's `monetary.assets` recognizes, the value may not
+exceed that asset's scale (refused, never rounded), and only an action the
+Host's `monetary.financialActions` lists may carry an amount (and must) — each a
+`400` `rejected` / `GOVERNED_ACTION_INTENT_INVALID`, the status and code the
+route has always used for an invalid intent. A deployment adopting P9 states its
+assets and financial actions; without them no amount is valid. `financial`,
+`actionClass`, `classification`, `scale` and `assetScale` join the reserved
+`assertedContext` keys; one exercise-control reason code is added
+(`EXERCISE_CONTROL_ACTION_CLASS_MISMATCH`, reported on the existing
+`withheld` / `withheldBy: "exercise"`). The only form that has no exact meaning —
+an in-process `AocEnterprise.governAction` call handing over an already-parsed
+JavaScript number, for which no source text exists — is refused. The frozen
+surface stays 28 endpoints.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
@@ -306,7 +330,7 @@ property is rejected, never ignored):
   "action": "payment.create",
   "resource": "invoice:INV-100",
   "counterparty": "vendor:V123",
-  "amount": { "value": 7500, "currency": "USD" },
+  "amount": { "value": 7500.00, "currency": "USD" },
   "assertedContext": { "passportId": "passport-..." },
   "correlationId": "order-123",
   "idempotencyKey": "pay-invoice-INV-100-v1"
@@ -316,9 +340,21 @@ property is rejected, never ignored):
 - **Required:** `action`, `resource`, `idempotencyKey` — canonical identifiers
   (non-empty, trim-stable, no control characters, at most 256 characters).
 - **Optional:** `counterparty`, `correlationId` (canonical identifiers);
-  `amount` (`{ value: finite number >= 0, currency: canonical identifier }`,
-  nothing else); `assertedContext` (plain JSON object, at most 64 keys per
-  level, depth 8).
+  `amount` (`{ value: JSON number or decimal text, currency: asset identifier }`,
+  nothing else — see "Amounts" below); `assertedContext` (plain JSON object, at most 64
+  keys per level, depth 8).
+- **Amounts (exact since P9).** `amount.value` is a non-negative JSON number
+  (the v1 form — read from its exact source characters, never re-parsed through
+  a double) or decimal **text** (`"7500"`, `"10.50"`: no sign, exponent,
+  separator, whitespace or leading zero). Both become the same canonical decimal
+  text; trailing fractional zeros are dropped (`7500.50` and `"7500.50"` are
+  `"7500.5"`), so the two spellings of one amount are one request. `currency` must be an asset the Host's trusted
+  `monetary.assets` configuration recognizes, and the value may state no more
+  fractional digits than that asset's configured scale — excess precision is
+  rejected, never rounded. Whether the action moves money is the Host's
+  `monetary.financialActions` classification, never the caller's: a financial
+  action **requires** a strictly positive amount and a non-financial action
+  **may not** carry one. See `docs/architecture/ADR-CANONICAL-MONETARY-SEMANTICS.md`.
 - `assertedContext` is **asserted** evidence. It reaches the Kernel as request
   context and is verified there by the canonical context and authority
   machinery; submitting it does not make it trusted, and it never reaches an

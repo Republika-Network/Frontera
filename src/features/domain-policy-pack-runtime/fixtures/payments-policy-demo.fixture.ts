@@ -28,7 +28,7 @@ export function buildHighValueFinancialSideEffectInput(overrides: Partial<Policy
     action: 'transfer_funds',
     domain: 'payments',
     sideEffectType: 'financial',
-    amount: 25000,
+    amount: '25000',
     currency: 'USD',
     hasApprovalProof: false,
     ...overrides,

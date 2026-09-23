@@ -112,7 +112,7 @@ describe('Characterization: a kernel with no grant capability is unchanged', () 
     });
 
     const base = toKernelRequest(buildDraftClosureEmailGuardInput());
-    await kernel.evaluate({ ...base, action: { ...base.action, amount: 7_500, currency: 'USD' } });
+    await kernel.evaluate({ ...base, action: { ...base.action, amount: '7500', currency: 'USD' } });
 
     assert.ok(seen.length > 0, 'the policy pack was consulted');
     for (const metadata of seen) {

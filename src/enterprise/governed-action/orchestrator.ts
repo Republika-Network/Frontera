@@ -18,10 +18,12 @@ import {
   type GovernedActionDecisionRef,
   type GovernedActionGrantPolicy,
   type GovernedActionGrantTerms,
+  type GovernedActionMonetaryTrust,
   type GovernedActionResult,
   type GovernedActionWithheldBy,
 } from './contracts.js';
 import { createDecisionCommitter, type VerifiedDecision } from './decision-commit.js';
+import { GovernedActionConfigurationError } from './errors.js';
 import { EXECUTION_UNCONFIRMED_OUTCOME, createExecutionLedger, type PriorExecution } from './execution-ledger.js';
 import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId, governedActionIdempotencyScope } from './identifiers.js';
 import { validateGovernedActionIntent } from './intent.js';
@@ -104,6 +106,13 @@ export interface GovernedActionOrchestratorOptions {
   readonly execution: Pick<AuthorityControlledExecutionService, 'assessExercise' | 'exercise'>;
   readonly governanceStore: GovernanceStore;
   readonly grantPolicy: GovernedActionGrantPolicy;
+  /**
+   * P9 — the trusted asset registry and financial action classifier every
+   * intent is validated against. **Required.** The same classifier instance is
+   * handed to the exercise-control gate, so the class an intent is admitted
+   * under and the class its exercise is controlled under are one answer.
+   */
+  readonly monetary: GovernedActionMonetaryTrust;
   readonly now: () => string;
   readonly enterpriseContext: () => GovernanceEnterpriseContext;
   readonly events: {
@@ -222,7 +231,15 @@ function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: 
  * outcome onto a `GovernedActionResult`.
  */
 export function createGovernedActionOrchestrator(options: GovernedActionOrchestratorOptions): GovernedActionOrchestrator {
-  const { organizationId: servedOrganizationId, issuance, execution, governanceStore: store, grantPolicy, now } = options;
+  const { organizationId: servedOrganizationId, issuance, execution, governanceStore: store, grantPolicy, monetary, now } = options;
+  if (
+    monetary === null ||
+    typeof monetary !== 'object' ||
+    typeof monetary.assets?.resolve !== 'function' ||
+    typeof monetary.actionClassifier?.classify !== 'function'
+  ) {
+    throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed actions require the trusted monetary configuration: an asset registry and a financial action classifier.');
+  }
   const hostRevalidateSource = options.revalidateSource;
   const emergencyControl = options.emergencyControl;
   const evidence = options.evidence;
@@ -305,7 +322,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // Identity: trusted, read, never widened. Intent: untrusted, validated closed.
       const scope = boundScopeOf(identity, servedOrganizationId);
       if (scope === undefined) return result({ status: 'rejected', reasonCodes: [R.GOVERNED_ACTION_IDENTITY_INVALID] });
-      const validation = validateGovernedActionIntent(rawIntent);
+      const validation = validateGovernedActionIntent(rawIntent, monetary);
       if (!validation.valid) return result({ status: 'rejected', reasonCodes: [R.GOVERNED_ACTION_INTENT_INVALID] });
       const intent = validation.intent;
 

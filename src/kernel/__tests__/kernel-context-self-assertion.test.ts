@@ -101,7 +101,7 @@ describe('Self-assertion â€” the reserved namespace is stripped from the callerâ
       },
     };
     const base = forgedRequest();
-    const withAmount: KernelEvaluationRequest = { ...base, action: { ...base.action, amount: 7_500 } };
+    const withAmount: KernelEvaluationRequest = { ...base, action: { ...base.action, amount: '7500' } };
 
     await buildKernel({ policyPackProvider: recordMetadata }).evaluate(withAmount);
     await buildKernel({ policyPackProvider: recordMetadata, declaration: TRUSTED_VENDOR, observations: [{ key: 'vendor.status', value: 'approved', sourceId: ERP.id, observedAt: NOW }] }).evaluate({

@@ -36,7 +36,17 @@ export interface ActionDescriptor {
   readonly resourceScope: string;
   readonly riskLevel?: ExecutionRiskLevel;
   readonly sideEffectType?: SideEffectType;
-  readonly amount?: number;
+  /**
+   * The monetary quantity this action moves, as **canonical decimal text**
+   * (`src/features/monetary-runtime`): `"7500"`, `"0.3"`, never `7500` or
+   * `"7500.00"`. Denominated in `currency`, an asset identifier.
+   *
+   * Text, not a number, since P9: a bounded grant's ceiling is derived from this
+   * value, so an IEEE-754 double here would make the authority a rounding of
+   * what was asked for. A value that is not canonical decimal text states no
+   * amount the grant layer can bound, and no ceiling is derived from it.
+   */
+  readonly amount?: string;
   readonly currency?: string;
   readonly counterpartyId?: string;
   readonly dataDomains?: readonly string[];

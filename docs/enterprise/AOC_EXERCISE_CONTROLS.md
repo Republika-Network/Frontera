@@ -155,9 +155,18 @@ in exactly the limit's unit (`EXERCISE_CONTROL_UNIT_MISMATCH`); usage already
 recorded in a bucket under a different unit or metric is never converted and
 refuses the bucket (`EXERCISE_CONTROL_UNIT_MISMATCH`). Canonical decimal text:
 `0`, or `[1-9][0-9]*` optionally followed by `.[0-9]*[1-9]` — no sign, exponent,
-leading zero or trailing fractional zero; maxima ≤ 128 digits. The attempt's
-JavaScript number is converted once (`1e-7 → 0.0000001`, `0.1 → 0.1`); every
-sum is `BigInt`. `0.1 + 0.2` under `0.3` is exactly full.
+leading zero or trailing fractional zero; maxima ≤ 128 digits. Since P9 the
+attempt's amount arrives as that text from the governed-action boundary and is
+never converted from a number; an amount that is not canonical text withholds
+(`EXERCISE_CONTROL_AMOUNT_REQUIRED`). Every sum is `BigInt`, in the one shared
+implementation (`src/features/monetary-runtime`). `0.1 + 0.2` under `0.3` is
+exactly full.
+
+**Financial class (P9).** The gate classifies the **grant's** action with the
+host's financial action classifier — the same instance the governed-action
+boundary uses — and hands the answer to the policy as `query.actionClass`. A
+financial exercise with no amount, or a non-financial exercise with one, is
+withheld before any reservation (`EXERCISE_CONTROL_ACTION_CLASS_MISMATCH`).
 
 **All or nothing.** Every applicable limit is admitted together inside one
 transaction, or the reservation is refused and nothing is written.
@@ -314,7 +323,9 @@ remains the only owner of historical outcome replay.
   filesystem that does not honour its locking is not a distributed lock.
 - No reservation reconciliation, no automatic abandoned-reservation recovery,
   no exactly-once, no atomic transaction with the provider.
-- Amount input precision is bounded by the caller's JSON / JavaScript number.
+- Amount input precision is exact since P9 (canonical decimal text end to end);
+  usage recorded before P9 was converted from a JavaScript number and is read as
+  recorded.
 - No FX or unit conversion.
 - Stage-A scale: admission verifies every reservation a bucket has ever held,
   rolling buckets included, so it is linear in the bucket's indexed history.

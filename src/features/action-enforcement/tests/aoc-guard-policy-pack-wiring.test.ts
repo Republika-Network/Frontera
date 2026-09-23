@@ -50,9 +50,9 @@ describe('AocGuard <-> Domain Policy Pack Runtime wiring', () => {
         return { type: 'policy_allowed', allowed: true, reasonCode: 'OK', reason: 'ok' };
       },
     });
-    guard.preflight(guardInput({ policyEvaluationInput: { domain: 'payments', amount: 5000, currency: 'USD' } }));
+    guard.preflight(guardInput({ policyEvaluationInput: { domain: 'payments', amount: '5000', currency: 'USD' } }));
     assert.equal(captured?.domain, 'payments');
-    assert.equal(captured?.amount, 5000);
+    assert.equal(captured?.amount, '5000');
     assert.equal(captured?.currency, 'USD');
   });
 

@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 
+import type { GovernedActionClass } from '../../monetary-runtime/index.js';
+
 import { EXERCISE_DECIMAL_MAXIMUM_DIGITS, isCanonicalExerciseDecimal } from './exercise-decimal.js';
 
 /**
@@ -106,7 +108,16 @@ export interface ExerciseControlQuery {
   readonly resource: string;
   readonly counterparty?: string;
   readonly organization?: string;
-  readonly amount?: { readonly value: number; readonly unit: string };
+  /** Canonical decimal text (`src/features/monetary-runtime`) and its asset. Never a number. */
+  readonly amount?: { readonly value: string; readonly unit: string };
+  /**
+   * P9: the host-trusted class of the grant's action, from the classifier the
+   * deployment composed — never from the request. A policy may key amount
+   * limits on it; by the time a query is built the gate has already proven that
+   * a `financial` exercise states an exact amount and a `non-financial` one
+   * states none.
+   */
+  readonly actionClass: GovernedActionClass;
   readonly correlation: {
     readonly requestId: string;
     readonly decisionId: string;

@@ -92,10 +92,10 @@ describe('PolicyPackEnforcementService', () => {
     let captured: EnforcementPolicyPackEvaluationInput | undefined;
     const service = new PolicyPackEnforcementService(createEnforcementRuntimeContext(NOW), stubIntegration(allowedResult(), (input) => (captured = input)));
     service.evaluatePolicyPackForRequest(
-      buildRequest({ policyEvaluationInput: { amount: 5000, currency: 'USD', counterpartyId: 'vendor-1', dataDomains: ['pii'] } }),
+      buildRequest({ policyEvaluationInput: { amount: '5000', currency: 'USD', counterpartyId: 'vendor-1', dataDomains: ['pii'] } }),
       NOW,
     );
-    assert.equal(captured?.amount, 5000);
+    assert.equal(captured?.amount, '5000');
     assert.equal(captured?.currency, 'USD');
     assert.equal(captured?.counterpartyId, 'vendor-1');
     assert.deepEqual(captured?.dataDomains, ['pii']);

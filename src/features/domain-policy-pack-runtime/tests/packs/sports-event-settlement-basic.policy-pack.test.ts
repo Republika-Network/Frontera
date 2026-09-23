@@ -15,7 +15,7 @@ describe('sports-event-settlement-basic policy pack', () => {
         hasApprovalProof: true,
         hasRequiredEvidence: false,
         jurisdiction: 'demo-jurisdiction-a',
-        amount: 1000,
+        amount: '1000',
       }),
     );
 
@@ -36,7 +36,7 @@ describe('sports-event-settlement-basic policy pack', () => {
         hasApprovalProof: true,
         hasRequiredEvidence: true,
         jurisdiction: 'demo-jurisdiction-a',
-        amount: 1000,
+        amount: '1000',
       }),
     );
 
@@ -56,7 +56,7 @@ describe('sports-event-settlement-basic policy pack', () => {
         hasApprovalProof: false,
         hasRequiredEvidence: true,
         jurisdiction: 'demo-jurisdiction-a',
-        amount: 5000,
+        amount: '5000',
       }),
     );
 
@@ -77,7 +77,7 @@ describe('sports-event-settlement-basic policy pack', () => {
         hasApprovalProof: true,
         hasRequiredEvidence: true,
         jurisdiction: 'some-unsupported-jurisdiction',
-        amount: 1000,
+        amount: '1000',
       }),
     );
 
@@ -96,7 +96,7 @@ describe('sports-event-settlement-basic policy pack', () => {
         hasAuthorityProof: true,
         hasApprovalProof: true,
         hasRequiredEvidence: true,
-        amount: 1000,
+        amount: '1000',
       }),
     );
 

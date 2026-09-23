@@ -8,7 +8,7 @@ export function buildSettleEventPaymentInput(overrides: Partial<PolicyEvaluation
     domain: 'sports_event_settlement',
     counterpartyId: 'counterparty-demo-league',
     jurisdiction: 'demo-jurisdiction-a',
-    amount: 1000,
+    amount: '1000',
     currency: 'USD',
     hasAuthorityProof: true,
     hasApprovalProof: true,

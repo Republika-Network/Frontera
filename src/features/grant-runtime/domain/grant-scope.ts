@@ -116,9 +116,9 @@ function serializeBound(bound: GrantBound): string {
     case 'set':
       return `{"kind":"set","values":[${bound.values.map((value) => JSON.stringify(value)).join(',')}]}`;
     case 'ceiling':
-      // `-0` normalizes to `0`, matching `aoc.canonical-json.v1`, so two scopes
-      // that mean the same limit never digest differently.
-      return `{"kind":"ceiling","limit":${JSON.stringify(bound.limit === 0 ? 0 : bound.limit)},"unit":${JSON.stringify(bound.unit)}}`;
+      // `limit` is canonical decimal text, so one quantity has one spelling and
+      // two scopes that mean the same limit never digest differently.
+      return `{"kind":"ceiling","limit":${JSON.stringify(bound.limit)},"unit":${JSON.stringify(bound.unit)}}`;
     case 'window':
       return `{"kind":"window","notAfter":${JSON.stringify(bound.notAfter)}}`;
     default:

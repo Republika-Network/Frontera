@@ -25,7 +25,7 @@ const CORRELATION: GrantCorrelation = { requestId: 'req-1', decisionId: 'dec-1',
 
 const SOURCE_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
-  amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   resources: { kind: 'set', values: ['record:contract'] },
 };
 
@@ -146,7 +146,7 @@ describe('Revocation — deterministic, idempotent, and never a rewrite of histo
 describe('Tamper evidence', () => {
   it('a grant whose fields were edited after issuance no longer matches its digest and is unusable', async () => {
     const { grant } = await issued();
-    const tampered: BoundedGrant = { ...grant, scope: { ...grant.scope, amount: { kind: 'ceiling', limit: 1_000_000, unit: 'USD' } } };
+    const tampered: BoundedGrant = { ...grant, scope: { ...grant.scope, amount: { kind: 'ceiling', limit: '1000000', unit: 'USD' } } };
     const assessment = assessGrantExercise({ grant: tampered, at: NOW });
     assert.equal(assessment.eligibility, 'unusable');
     assert.equal(assessment.reasonCodes.includes(GRANT_REASON_CODES.GRANT_CORRELATION_INVALID), true);

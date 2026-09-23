@@ -1,5 +1,6 @@
+import { isPositiveMonetaryAmount, parseMonetaryAmount, type MonetaryAmount } from '../../features/monetary-runtime/index.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/index.js';
-import type { GovernedActionAmount, GovernedActionIntent } from './contracts.js';
+import type { ClassifiedGovernedActionIntent, GovernedActionMonetaryTrust } from './contracts.js';
 
 /**
  * Canonicalizes an untrusted governed-action intent, or refuses it.
@@ -15,9 +16,17 @@ import type { GovernedActionAmount, GovernedActionIntent } from './contracts.js'
  * The result is a fresh, frozen object built from the declared fields only, so
  * no reference to the caller's object — or to anything hanging off it — is
  * carried into the Kernel request.
+ *
+ * **Classified, not trusted to classify itself (P9).** Whether the action is
+ * financial is the host's `actionClassifier`'s answer about `action`; there is
+ * no intent field for it, and a `financial`/`actionClass`/`scale` key is an
+ * undeclared property like any other. A financial action must carry an exact
+ * amount — decimal text, strictly positive, in an asset the host's registry
+ * recognizes, within that asset's trusted scale — and a non-financial action
+ * must carry none.
  */
 export type GovernedActionIntentValidation =
-  | { readonly valid: true; readonly intent: GovernedActionIntent }
+  | { readonly valid: true; readonly intent: ClassifiedGovernedActionIntent }
   | { readonly valid: false; readonly violations: readonly string[] };
 
 const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'assertedContext', 'correlationId', 'idempotencyKey']);
@@ -74,6 +83,14 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   'reservation',
   'reservationId',
   'authorityBindingDigest',
+  // P9: the financial class and an asset's scale are trusted host
+  // configuration. A caller can neither state nor contradict them — not at the
+  // top level (undeclared keys are refused already) and not here.
+  'financial',
+  'actionClass',
+  'classification',
+  'scale',
+  'assetScale',
 ];
 
 const MAX_CONTEXT_DEPTH = 8;
@@ -119,22 +136,33 @@ function copyContextValue(value: unknown): unknown {
   return value;
 }
 
-function validateAmount(value: unknown, violations: string[]): GovernedActionAmount | undefined {
+function validateAmount(value: unknown, trust: GovernedActionMonetaryTrust, violations: string[]): MonetaryAmount | undefined {
   if (!isPlainObject(value)) {
     violations.push('amount must be an object with value and currency.');
     return undefined;
   }
   const extra = Object.keys(value).filter((key) => key !== 'value' && key !== 'currency');
-  if (extra.length > 0) violations.push(`amount carries undeclared properties: ${extra.join(', ')}.`);
-  const amountValue = value['value'];
-  const currency = value['currency'];
-  if (typeof amountValue !== 'number' || !Number.isFinite(amountValue) || amountValue < 0) violations.push('amount.value must be a finite, non-negative number.');
-  if (!isCanonicalCustomerIdentifier(currency)) violations.push('amount.currency must be a canonical identifier.');
-  if (extra.length > 0 || typeof amountValue !== 'number' || !Number.isFinite(amountValue) || amountValue < 0 || !isCanonicalCustomerIdentifier(currency)) return undefined;
-  return Object.freeze({ value: amountValue, currency });
+  if (extra.length > 0) {
+    violations.push(`amount carries undeclared properties: ${extra.join(', ')}.`);
+    return undefined;
+  }
+  const parsed = parseMonetaryAmount({ value: value['value'], unit: value['currency'] }, trust.assets);
+  if (!parsed.valid) {
+    violations.push(AMOUNT_VIOLATION_MESSAGES[parsed.violation]);
+    return undefined;
+  }
+  return parsed.amount;
 }
 
-export function validateGovernedActionIntent(raw: unknown): GovernedActionIntentValidation {
+/** Explicit, and free of anything internal: no scale, no registry contents, no stack. */
+const AMOUNT_VIOLATION_MESSAGES = {
+  MONETARY_VALUE_NOT_TEXT: 'amount.value must be decimal text, not a number.',
+  MONETARY_VALUE_MALFORMED: 'amount.value must be a plain non-negative decimal: digits, an optional fractional part, no sign, exponent, separator, whitespace or leading zero.',
+  MONETARY_UNIT_UNKNOWN: 'amount.currency is not an asset this deployment recognizes.',
+  MONETARY_SCALE_EXCEEDED: 'amount.value states more fractional digits than amount.currency allows; it is refused, never rounded.',
+} as const;
+
+export function validateGovernedActionIntent(raw: unknown, trust: GovernedActionMonetaryTrust): GovernedActionIntentValidation {
   if (!isPlainObject(raw)) return { valid: false, violations: ['The intent must be a plain object.'] };
 
   const violations: string[] = [];
@@ -149,7 +177,14 @@ export function validateGovernedActionIntent(raw: unknown): GovernedActionIntent
   if (counterparty !== undefined && !isCanonicalCustomerIdentifier(counterparty)) violations.push('counterparty must be a canonical identifier.');
   if (correlationId !== undefined && !isCanonicalCustomerIdentifier(correlationId)) violations.push('correlationId must be a canonical identifier.');
 
-  const canonicalAmount = amount === undefined ? undefined : validateAmount(amount, violations);
+  const canonicalAmount = amount === undefined ? undefined : validateAmount(amount, trust, violations);
+
+  // The class is the host's answer about `action`, never the intent's. It is
+  // read only once the action is known to be a canonical identifier.
+  const actionClass = isCanonicalCustomerIdentifier(action) ? trust.actionClassifier.classify(action) : 'non-financial';
+  if (actionClass === 'financial' && amount === undefined) violations.push('This action moves money and requires an amount.');
+  if (actionClass === 'financial' && canonicalAmount !== undefined && !isPositiveMonetaryAmount(canonicalAmount)) violations.push('amount.value must be greater than zero.');
+  if (actionClass === 'non-financial' && amount !== undefined) violations.push('This action does not move money and may not carry an amount.');
 
   let canonicalContext: Readonly<Record<string, unknown>> | undefined;
   if (assertedContext !== undefined) {
@@ -164,16 +199,15 @@ export function validateGovernedActionIntent(raw: unknown): GovernedActionIntent
 
   if (violations.length > 0) return { valid: false, violations };
 
-  return {
-    valid: true,
-    intent: Object.freeze({
-      action: action as string,
-      resource: resource as string,
-      idempotencyKey: idempotencyKey as string,
-      ...(counterparty !== undefined ? { counterparty: counterparty as string } : {}),
-      ...(canonicalAmount !== undefined ? { amount: canonicalAmount } : {}),
-      ...(canonicalContext !== undefined ? { assertedContext: canonicalContext } : {}),
-      ...(correlationId !== undefined ? { correlationId: correlationId as string } : {}),
-    }),
+  const common = {
+    action: action as string,
+    resource: resource as string,
+    idempotencyKey: idempotencyKey as string,
+    ...(counterparty !== undefined ? { counterparty: counterparty as string } : {}),
+    ...(canonicalContext !== undefined ? { assertedContext: canonicalContext } : {}),
+    ...(correlationId !== undefined ? { correlationId: correlationId as string } : {}),
   };
+  const intent: ClassifiedGovernedActionIntent =
+    actionClass === 'financial' && canonicalAmount !== undefined ? { ...common, actionClass, amount: canonicalAmount } : { ...common, actionClass: 'non-financial' };
+  return { valid: true, intent: Object.freeze(intent) };
 }

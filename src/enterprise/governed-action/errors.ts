@@ -7,7 +7,7 @@ export type GovernedActionConfigurationErrorCode =
   | 'GOVERNED_ACTION_KERNEL_NOT_PROVABLY_GRANT_AWARE'
   /** The Governance Store handed to this Host cannot append, re-read, verify and reference decisions. */
   | 'GOVERNED_ACTION_GOVERNANCE_STORE_UNAVAILABLE'
-  /** The trust domain or grant policy the host supplied is missing or malformed. */
+  /** The trust domain, grant policy or monetary configuration (asset registry, financial actions) the host supplied is missing or malformed. */
   | 'GOVERNED_ACTION_CONFIGURATION_INVALID';
 
 /**

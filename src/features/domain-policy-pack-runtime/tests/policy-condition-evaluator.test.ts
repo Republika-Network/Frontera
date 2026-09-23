@@ -15,7 +15,7 @@ function buildInput(overrides: Partial<PolicyEvaluationInput> = {}): PolicyEvalu
     resourceScope: 'scope-1',
     riskLevel: 'low',
     requestedAt: NOW,
-    amount: 100,
+    amount: '100',
     dataDomains: ['pii'],
     ...overrides,
   };
@@ -73,27 +73,27 @@ describe('PolicyConditionEvaluator', () => {
   });
 
   it('9. evaluates greater_than', () => {
-    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'greater_than', value: 50 };
+    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'greater_than', value: '50' };
     assert.equal(evaluator.evaluate(condition, buildInput()).matched, true);
-    assert.equal(evaluator.evaluate(condition, buildInput({ amount: 50 })).matched, false);
+    assert.equal(evaluator.evaluate(condition, buildInput({ amount: '50' })).matched, false);
   });
 
   it('10. evaluates greater_than_or_equal', () => {
-    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'greater_than_or_equal', value: 100 };
+    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'greater_than_or_equal', value: '100' };
     assert.equal(evaluator.evaluate(condition, buildInput()).matched, true);
-    assert.equal(evaluator.evaluate(condition, buildInput({ amount: 99 })).matched, false);
+    assert.equal(evaluator.evaluate(condition, buildInput({ amount: '99' })).matched, false);
   });
 
   it('11. evaluates less_than', () => {
-    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'less_than', value: 200 };
+    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'less_than', value: '200' };
     assert.equal(evaluator.evaluate(condition, buildInput()).matched, true);
-    assert.equal(evaluator.evaluate(condition, buildInput({ amount: 200 })).matched, false);
+    assert.equal(evaluator.evaluate(condition, buildInput({ amount: '200' })).matched, false);
   });
 
   it('12. evaluates less_than_or_equal', () => {
-    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'less_than_or_equal', value: 100 };
+    const condition: PolicyCondition = { type: 'predicate', field: 'amount', operator: 'less_than_or_equal', value: '100' };
     assert.equal(evaluator.evaluate(condition, buildInput()).matched, true);
-    assert.equal(evaluator.evaluate(condition, buildInput({ amount: 101 })).matched, false);
+    assert.equal(evaluator.evaluate(condition, buildInput({ amount: '101' })).matched, false);
   });
 
   it('13. evaluates exists', () => {
@@ -114,11 +114,11 @@ describe('PolicyConditionEvaluator', () => {
       operator: 'all',
       conditions: [
         { type: 'predicate', field: 'action', operator: 'equals', value: 'approve_payment' },
-        { type: 'predicate', field: 'amount', operator: 'greater_than', value: 50 },
+        { type: 'predicate', field: 'amount', operator: 'greater_than', value: '50' },
       ],
     };
     assert.equal(evaluator.evaluate(condition, buildInput()).matched, true);
-    assert.equal(evaluator.evaluate(condition, buildInput({ amount: 1 })).matched, false);
+    assert.equal(evaluator.evaluate(condition, buildInput({ amount: '1' })).matched, false);
   });
 
   it('16. evaluates any group', () => {
@@ -127,11 +127,11 @@ describe('PolicyConditionEvaluator', () => {
       operator: 'any',
       conditions: [
         { type: 'predicate', field: 'action', operator: 'equals', value: 'nonexistent' },
-        { type: 'predicate', field: 'amount', operator: 'greater_than', value: 50 },
+        { type: 'predicate', field: 'amount', operator: 'greater_than', value: '50' },
       ],
     };
     assert.equal(evaluator.evaluate(condition, buildInput()).matched, true);
-    assert.equal(evaluator.evaluate(condition, buildInput({ amount: 1 })).matched, false);
+    assert.equal(evaluator.evaluate(condition, buildInput({ amount: '1' })).matched, false);
   });
 
   it('17. evaluates not group', () => {

@@ -7,6 +7,7 @@ import {
   type ExerciseControlObserver,
   type ExerciseControlPolicy,
 } from '../../features/exercise-control-runtime/index.js';
+import type { FinancialActionClassifier } from '../../features/monetary-runtime/index.js';
 import {
   GRANT_BOUNDED_AUTHORITY_KINDS,
   GRANT_UNBOUNDED_AUTHORITY_SOURCE_KINDS,
@@ -69,6 +70,12 @@ export interface AuthorityControlledExerciseControls {
   readonly revalidateAuthorityBinding: ExerciseAuthorityBindingResolver;
   /** **Required here.** The authoritative consumption state. The Enterprise composition root builds the durable SQLite implementation when a host supplies none. */
   readonly reservationLedger: ExerciseControlLedgerPort;
+  /**
+   * **Required here.** P9's host-trusted financial action classifier. The gate
+   * classifies the grant's own action with it; the Enterprise composition root
+   * supplies the one instance the governed-action boundary also classifies with.
+   */
+  readonly actionClassifier: FinancialActionClassifier;
 }
 
 function readOwn(source: object, key: string): unknown {
@@ -158,6 +165,7 @@ export function createAuthorityControlledExerciseControlGate(controls: Authority
     policy: controls.policy,
     authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding),
     reservationLedger: controls.reservationLedger,
+    actionClassifier: controls.actionClassifier,
     now,
     // P8: evidence of what the ledger proved. Composition-supplied, never a
     // host exercise-control option, and never read by admission.

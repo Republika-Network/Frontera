@@ -252,7 +252,7 @@ export function buildSettleEventPaymentRequiresEvidenceInput(overrides: Partial<
     sideEffectType: 'financial',
     riskLevel: 'critical',
     metadata: { passportId: 'passport-pmfreak', capabilityTokenId: PMFREAK_EVENT_SETTLEMENT_TOKEN_ID },
-    policyEvaluationInput: { domain: 'sports_event_settlement', counterpartyId: 'event-counterparty-1', amount: 1000, currency: 'USD' },
+    policyEvaluationInput: { domain: 'sports_event_settlement', counterpartyId: 'event-counterparty-1', amount: '1000', currency: 'USD' },
     ...overrides,
   };
 }

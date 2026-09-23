@@ -301,7 +301,8 @@ interface GovernedActionIntent {
   action: string;                 // → action.type, grant action bound
   resource: string;               // → action.resourceScope, grant resources bound
   counterparty?: string;          // → action.counterpartyId, grant counterparty bound
-  amount?: { value; currency };   // → action.amount/currency, grant amount ceiling
+  amount?: { value; currency };   // P9: decimal text + registry asset → canonical action.amount/currency, grant amount ceiling
+                                  //     required for a host-classified financial action, refused for any other
   assertedContext?: object;       // → request.context (verified by the Kernel, never reaches an adapter)
   correlationId?: string;
   idempotencyKey: string;         // required; scoped to (organization, principal)

@@ -1,4 +1,5 @@
 import type { GrantCorrelation } from '../../grant-runtime/index.js';
+import { isWellFormedMonetaryAmount, type MonetaryAmount } from '../../monetary-runtime/index.js';
 
 /**
  * One attempt to exercise one already-issued bounded grant.
@@ -88,14 +89,12 @@ export interface GrantExerciseRequest {
  * have no unassessed channel across the execution boundary at all.
  */
 
-export interface GrantExerciseAmount {
-  readonly value: number;
-  readonly unit: string;
-}
+/** A `MonetaryAmount` (`src/features/monetary-runtime`): canonical decimal text and an asset identifier. Never a number. */
+export type GrantExerciseAmount = MonetaryAmount;
 
-/** Whether an amount is a quantity at all. A non-finite, negative or unit-less amount is refused rather than compared. */
+/** Whether an amount is a quantity at all. Anything but canonical decimal text in a well-formed asset — a number included — is refused rather than compared. */
 export function isWellFormedGrantExerciseAmount(amount: GrantExerciseAmount): boolean {
-  return Number.isFinite(amount.value) && amount.value >= 0 && amount.unit.length > 0;
+  return isWellFormedMonetaryAmount(amount);
 }
 
 /**

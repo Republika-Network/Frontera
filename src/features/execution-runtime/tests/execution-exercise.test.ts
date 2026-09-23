@@ -82,7 +82,7 @@ describe('Exercise — a valid grant, a valid action', () => {
 
   it('a narrower amount succeeds — the ceiling is a ceiling, not an obligation to spend it', async () => {
     const { exercise, adapter } = await world();
-    const outcome = await exercise({ amount: { value: 1_000, unit: 'USD' } });
+    const outcome = await exercise({ amount: { value: '1000', unit: 'USD' } });
 
     assert.equal(outcome.status, 'executed');
     assert.equal(adapter.callCount, 1);
@@ -90,7 +90,7 @@ describe('Exercise — a valid grant, a valid action', () => {
 
   it('the exact ceiling succeeds — attenuation permits equal, and Model A makes 7500 the evaluated amount', async () => {
     const { exercise } = await world();
-    assert.equal((await exercise({ amount: { value: 7_500, unit: 'USD' } })).status, 'executed');
+    assert.equal((await exercise({ amount: { value: '7500', unit: 'USD' } })).status, 'executed');
   });
 
   it('repeated exercise of the same valid grant is permitted, and nothing is consumed', async () => {
@@ -127,9 +127,9 @@ describe('Exercise — every refusal withholds the adapter', () => {
     { name: 'wildcard resource', overrides: { resource: '*' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_RESOURCE_OUT_OF_SCOPE },
     { name: 'wrong counterparty', overrides: { counterparty: 'V999' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_COUNTERPARTY_OUT_OF_SCOPE },
     { name: 'wrong organization', overrides: { organization: 'org-attacker' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_ORGANIZATION_OUT_OF_SCOPE },
-    { name: 'amount above the ceiling', overrides: { amount: { value: 9_000, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
-    { name: 'amount at the policy threshold rather than the evaluated amount', overrides: { amount: { value: 10_000, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
-    { name: 'amount in a different unit', overrides: { amount: { value: 10, unit: 'EUR' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
+    { name: 'amount above the ceiling', overrides: { amount: { value: '9000', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
+    { name: 'amount at the policy threshold rather than the evaluated amount', overrides: { amount: { value: '10000', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
+    { name: 'amount in a different unit', overrides: { amount: { value: '10', unit: 'EUR' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
     { name: 'no amount where the grant states a ceiling', overrides: { omitAmount: true }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED },
     { name: 'no counterparty where the grant bounds one', overrides: { omitCounterparty: true }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_COUNTERPARTY_OUT_OF_SCOPE },
     { name: 'wrong request correlation', overrides: { correlation: { ...TEST_CORRELATION, requestId: 'req-other' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_CORRELATION_INVALID },
@@ -138,8 +138,12 @@ describe('Exercise — every refusal withholds the adapter', () => {
     { name: 'blank grant id', overrides: { boundedGrantId: '' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_NOT_FOUND },
     { name: 'blank subject', overrides: { subject: '' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
     { name: 'blank execution id', overrides: { executionId: '' }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
-    { name: 'negative amount', overrides: { amount: { value: -1, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
-    { name: 'non-finite amount', overrides: { amount: { value: Number.POSITIVE_INFINITY, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
+    { name: 'negative amount', overrides: { amount: { value: '-1', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
+    { name: 'non-finite amount', overrides: { amount: { value: 'Infinity', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
+    // P9: an amount reaching the exercise gate as a number, or as a
+    // non-canonical spelling, is malformed — never re-spelled and compared.
+    { name: 'a JavaScript-number amount', overrides: { amount: { value: 7500 as unknown as string, unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
+    { name: 'a non-canonical amount spelling', overrides: { amount: { value: '7500.00', unit: 'USD' } }, code: GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_REQUEST_MALFORMED },
   ];
 
   for (const testCase of cases) {
@@ -189,14 +193,14 @@ describe('Exercise — every refusal withholds the adapter', () => {
     const trusted = buildTestGrant();
     // The privileged-writer case the digest is honest about: a grant whose
     // fields were edited after issuance no longer matches its own digest.
-    const tampered: BoundedGrant = { ...trusted, scope: { ...trusted.scope, amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' } } };
+    const tampered: BoundedGrant = { ...trusted, scope: { ...trusted.scope, amount: { kind: 'ceiling', limit: '10000', unit: 'USD' } } };
     const store = createInMemoryBoundedGrantStore();
     await store.issue({ grant: tampered, commitGuard: () => ({ permitted: true, reasonCodes: [] }) });
 
     const adapter = createRecordingExecutionAdapter();
     const service = createGrantExecutionService({ store, adapter, now: () => AT_T_PLUS_5 });
 
-    const outcome = await service.exercise(buildExerciseRequest(tampered, { amount: { value: 10_000, unit: 'USD' } }));
+    const outcome = await service.exercise(buildExerciseRequest(tampered, { amount: { value: '10000', unit: 'USD' } }));
     assert.equal(outcome.status, 'withheld');
     assert.ok(withheldCodes(outcome).includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_INTEGRITY_INVALID));
     assert.equal(adapter.callCount, 0, 'a widened ceiling never becomes authority — the grant is refused entirely');
@@ -259,11 +263,11 @@ describe('Exercise — the adapter receives a validated action and nothing more'
 
   it('receives the attempted amount, never the grant’s broader ceiling', async () => {
     const { exercise, adapter } = await world();
-    await exercise({ amount: { value: 1_000, unit: 'USD' } });
+    await exercise({ amount: { value: '1000', unit: 'USD' } });
 
     const call = adapter.calls[0];
     assert.ok(call !== undefined);
-    assert.deepEqual(call.amount, { value: 1_000, unit: 'USD' }, 'the adapter acts on what was attempted and proven, not on the widest thing it could have been');
+    assert.deepEqual(call.amount, { value: '1000', unit: 'USD' }, 'the adapter acts on what was attempted and proven, not on the widest thing it could have been');
   });
 
   it('carries the correlation a later Evidence phase needs', async () => {
@@ -444,7 +448,7 @@ describe('Exercise — a grant that bounds no optional axis', () => {
     const adapter = createRecordingExecutionAdapter();
     const service = createGrantExecutionService({ store, adapter, now: () => AT_T_PLUS_5 });
 
-    const outcome = await service.exercise(buildExerciseRequest(grant, { omitCounterparty: true, omitOrganization: true, amount: { value: 1, unit: 'USD' } }));
+    const outcome = await service.exercise(buildExerciseRequest(grant, { omitCounterparty: true, omitOrganization: true, amount: { value: '1', unit: 'USD' } }));
     assert.equal(outcome.status, 'withheld');
     assert.ok(withheldCodes(outcome).includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED));
     assert.equal(adapter.callCount, 0);

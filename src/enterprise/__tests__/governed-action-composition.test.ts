@@ -250,6 +250,10 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       // result (`authority-event-stream-boundaries.test.ts` pins that). The
       // store, reader, verifier and projector are not reachable from here.
       '../authority-event-stream/recorder.js',
+      // P9: the pure monetary primitive — the trusted asset registry, the
+      // financial action classifier and the single amount ingress. Pure data
+      // and logic with no imports of its own (`monetary-boundaries.test.ts`).
+      '../../features/monetary-runtime/index.js',
       '../../kernel/index.js',
       '../customer-identity/index.js',
       '../events/enterprise-events.js',

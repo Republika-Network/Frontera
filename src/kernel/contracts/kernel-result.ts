@@ -367,7 +367,8 @@ export interface GrantBoundEvaluation {
   /** Present for a `set` bound, sorted and de-duplicated. */
   readonly values?: readonly string[];
   /** Present for a `ceiling` bound. */
-  readonly limit?: number;
+  /** Canonical decimal text for a `ceiling` bound (P9). Never a number. */
+  readonly limit?: string;
   /** Present for a `ceiling` bound. */
   readonly unit?: string;
   /** Present for a `window` bound. */

@@ -1,7 +1,7 @@
 import type { KernelEvaluationRequest } from '../../kernel/index.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/index.js';
-import type { GovernedActionIntent } from './contracts.js';
+import type { ClassifiedGovernedActionIntent } from './contracts.js';
 
 /**
  * The identity → Kernel-request trust boundary.
@@ -37,7 +37,7 @@ export function boundScopeOf(identity: BoundCustomerIdentity, servedOrganization
 /** The Kernel request, built on the server from the bound scope, the host's trust domain and the validated intent. */
 export function buildGovernedActionKernelRequest(input: {
   readonly scope: BoundActorScope;
-  readonly intent: GovernedActionIntent;
+  readonly intent: ClassifiedGovernedActionIntent;
   readonly trustDomainId: string;
   readonly requestId: string;
   readonly requestedAt: string;
@@ -51,7 +51,8 @@ export function buildGovernedActionKernelRequest(input: {
       type: intent.action,
       resourceScope: intent.resource,
       ...(intent.counterparty !== undefined ? { counterpartyId: intent.counterparty } : {}),
-      ...(intent.amount !== undefined ? { amount: intent.amount.value, currency: intent.amount.currency } : {}),
+      // Canonical decimal text and asset, exactly as the monetary boundary produced them.
+      ...(intent.amount !== undefined ? { amount: intent.amount.value, currency: intent.amount.unit } : {}),
     },
     ...(intent.assertedContext !== undefined ? { context: intent.assertedContext } : {}),
     requestedAt: input.requestedAt,

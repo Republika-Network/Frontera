@@ -42,7 +42,7 @@ const CORRELATION: GrantCorrelation = { requestId: 'req-1', decisionId: 'dec-1',
 
 const SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
-  amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '7500', unit: 'USD' },
   resources: { kind: 'set', values: ['record:contract'] },
 };
 

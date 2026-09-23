@@ -27,10 +27,20 @@ import {
   validateReassessRequestBody,
   validateSignalRequestBody,
 } from '../api/assurance-contract.js';
+import { GOVERNANCE_EVALUATE_AMOUNT_LOCATION, GOVERNED_ACTION_AMOUNT_LOCATION, parseJsonWithExactMonetaryNumber } from '../api/exact-monetary-json.js';
+
+/** P9: v1 monetary JSON numbers are read from their exact source text, never through IEEE-754. */
+const parseGovernedActionBody = (text: string): unknown => parseJsonWithExactMonetaryNumber(text, GOVERNED_ACTION_AMOUNT_LOCATION);
+const parseGovernanceEvaluateBody = (text: string): unknown => parseJsonWithExactMonetaryNumber(text, GOVERNANCE_EVALUATE_AMOUNT_LOCATION);
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB -- generous for a governance-evaluation payload, small enough to bound memory per request.
 
-function readRequestBody(req: IncomingMessage): Promise<unknown> {
+/**
+ * Reads and parses a JSON body. `parse` defaults to `JSON.parse`; the two routes
+ * that carry a monetary JSON number pass a parser that keeps that number's exact
+ * source text (`api/exact-monetary-json.ts`, P9).
+ */
+function readRequestBody(req: IncomingMessage, parse: (text: string) => unknown = JSON.parse): Promise<unknown> {
   return new Promise((resolvePromise, rejectPromise) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
@@ -50,7 +60,7 @@ function readRequestBody(req: IncomingMessage): Promise<unknown> {
         return;
       }
       try {
-        resolvePromise(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        resolvePromise(parse(Buffer.concat(chunks).toString('utf8')));
       } catch {
         rejectPromise(new EnterpriseHttpError(400, 'INVALID_REQUEST', 'Request body must be valid JSON.'));
       }
@@ -137,7 +147,7 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
       if (method === 'POST' && url.pathname === '/api/governance/evaluate') {
         const idempotencyKeyHeader = req.headers['idempotency-key'];
         const idempotencyKey = Array.isArray(idempotencyKeyHeader) ? idempotencyKeyHeader[0] : idempotencyKeyHeader;
-        readRequestBody(req)
+        readRequestBody(req, parseGovernanceEvaluateBody)
           .then((rawBody) =>
             enterprise.evaluate(rawBody, {
               ...(req.headers.authorization !== undefined ? { authorizationHeader: req.headers.authorization } : {}),
@@ -159,7 +169,7 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         const governAction =
           enterprise.customerIdentityAdmission !== undefined && enterprise.governedActionOrchestrator !== undefined ? enterprise.governAction : undefined;
         if (governAction !== undefined) {
-          readRequestBody(req)
+          readRequestBody(req, parseGovernedActionBody)
             .then((rawBody) => governAction(rawBody, req.headers.authorization !== undefined ? { authorizationHeader: req.headers.authorization } : {}))
             .then((outcome) => writeJson(res, outcome.httpStatus, outcome.body))
             .catch(fail);

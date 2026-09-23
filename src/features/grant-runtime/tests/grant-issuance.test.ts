@@ -26,7 +26,7 @@ const CORRELATION: GrantCorrelation = {
 
 const SOURCE_SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'payment.send' },
-  amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' },
+  amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   counterparty: { kind: 'identity', value: 'V123' },
   resources: { kind: 'set', values: ['record:contract'] },
 };
@@ -98,7 +98,7 @@ describe('Grant eligibility — ALLOW does not mean a grant exists', () => {
   });
 
   it('a source missing a mandatory scope bound is ineligible — there is nothing to attenuate from', () => {
-    const noScope = source({ scope: { amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' } } });
+    const noScope = source({ scope: { amount: { kind: 'ceiling', limit: '10000', unit: 'USD' } } });
     assert.deepEqual(assessGrantEligibility(noScope).reasonCodes, [GRANT_REASON_CODES.GRANT_SOURCE_BOUNDS_INCOMPLETE]);
   });
 });
@@ -116,20 +116,20 @@ describe('Issuance — the eight checks ahead of a grant', () => {
   it('issues a grant for narrower bounds on several axes at once', async () => {
     const outcome = await issue({
       requestedBounds: {
-        amount: { kind: 'ceiling', limit: 5_000, unit: 'USD' },
+        amount: { kind: 'ceiling', limit: '5000', unit: 'USD' },
         resources: { kind: 'set', values: ['record:contract'] },
       },
       expiresAt: '2026-01-01T12:02:00.000Z',
     });
     assert.equal(outcome.outcome, 'issued');
     if (outcome.outcome !== 'issued') return;
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: 5_000, unit: 'USD' });
+    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '5000', unit: 'USD' });
     assert.equal(outcome.grant.expiresAt, '2026-01-01T12:02:00.000Z');
     assert.equal(grantScopeIsWithin(SOURCE_SCOPE, outcome.grant.scope), true);
   });
 
   it('refuses an amount expansion and issues nothing', async () => {
-    const outcome = await issue({ requestedBounds: { amount: { kind: 'ceiling', limit: 15_000, unit: 'USD' } } });
+    const outcome = await issue({ requestedBounds: { amount: { kind: 'ceiling', limit: '15000', unit: 'USD' } } });
     assert.equal(outcome.outcome, 'refused');
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
   });
@@ -175,7 +175,7 @@ describe('Issuance — the eight checks ahead of a grant', () => {
   });
 
   it('refuses when the authorization did not permit exercise, whatever bounds are requested', async () => {
-    const outcome = await issue({ source: source({ authorizationPermitsExercise: false }), requestedBounds: { amount: { kind: 'ceiling', limit: 1, unit: 'USD' } } });
+    const outcome = await issue({ source: source({ authorizationPermitsExercise: false }), requestedBounds: { amount: { kind: 'ceiling', limit: '1', unit: 'USD' } } });
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_AUTHORIZATION_NOT_PERMITTED]);
   });
 
@@ -193,7 +193,7 @@ describe('Issuance — the eight checks ahead of a grant', () => {
     const service = createGrantIssuanceService({ store });
     const refused = await service.issueGrant({
       source: source(),
-      requestedBounds: { amount: { kind: 'ceiling', limit: 15_000, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '15000', unit: 'USD' } },
       subject: 'actor-a',
       correlation: CORRELATION,
       issuedAt: NOW,

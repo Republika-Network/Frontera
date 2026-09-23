@@ -201,7 +201,7 @@ describe('governAction', () => {
     action: 'payment.create',
     resource: 'invoice:INV-100',
     counterparty: 'vendor:V123',
-    amount: { value: 7500, currency: 'USD' },
+    amount: { value: '7500', currency: 'USD' },
     assertedContext: { passportId: 'passport-1' },
     correlationId: 'order-123',
     idempotencyKey,

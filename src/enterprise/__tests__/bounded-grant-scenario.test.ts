@@ -31,6 +31,7 @@ import {
 import { AocKernel, type KernelEvaluationResult, type PolicyPackProvider } from '../../kernel/index.js';
 import { KernelGrantCapability, deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
 import { toKernelEvaluationRequest, validateGovernanceEvaluateRequestBody } from '../api/governance-evaluate-contract.js';
+import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/monetary-runtime/index.js';
 
 /**
  * The acceptance scenario for bounded grants, end to end, over the trusted
@@ -98,7 +99,7 @@ const CALLER_FORGES_A_GRANT: Readonly<Record<string, unknown>> = {
 const VENDOR_PAYMENT_POLICY: PolicyPackProvider = {
   evaluatePolicyForEnforcement(input) {
     const resolution = input.metadata?.['aoc.context'] as ContextResolution | undefined;
-    const amountWithinLimit = typeof input.amount === 'number' && input.amount <= 10_000;
+    const amountWithinLimit = isCanonicalDecimal(input.amount) && compareCanonicalDecimals(input.amount, '10000') <= 0;
 
     if (resolution === undefined) {
       return { type: 'policy_denied', allowed: false, reasonCode: 'VENDOR_STATUS_NOT_RESOLVED', reason: 'This deployment requires resolved vendor status.' };
@@ -150,7 +151,7 @@ function evaluatePayment(options: {
       capability: guardInput.capability,
       riskLevel: guardInput.riskLevel,
       sideEffectType: guardInput.sideEffectType,
-      amount: 7_500,
+      amount: '7500',
       currency: 'USD',
       counterpartyId: 'V123',
     },
@@ -261,12 +262,12 @@ describe('Acceptance B — obligation verified: ALLOW, ELIGIBLE, GRANT ISSUED', 
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-b-issue',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '7500', unit: 'USD' } },
       expiresAt: '2026-01-01T12:05:00.000Z',
     });
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: 7_500, unit: 'USD' });
+    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
     assert.deepEqual(outcome.grant.scope.counterparty, { kind: 'identity', value: 'V123' });
     assert.equal(outcome.grant.expiresAt, '2026-01-01T12:05:00.000Z');
     assert.equal(outcome.grant.issuedAt, NOW);
@@ -296,7 +297,7 @@ describe('Acceptance C — amount expansion: NO GRANT, decision remains ALLOW', 
     const { evaluated, outcome } = await issueFor({
       requestId: 'grant-scenario-c',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 15_000, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '15000', unit: 'USD' } },
     });
 
     assert.equal(outcome.outcome, 'refused');
@@ -309,7 +310,7 @@ describe('Acceptance C — amount expansion: NO GRANT, decision remains ALLOW', 
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-c-policy-limit',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 10_000, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '10000', unit: 'USD' } },
     });
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_SCOPE_BROADENING]);
   });
@@ -329,14 +330,14 @@ describe('Model A amount semantics — the grant is authority over the evaluated
    * nothing about a 9000 action nobody evaluated, so the grant cannot infer
    * reusable authority up to the rule's threshold.
    */
-  const CASES: readonly { readonly limit: number; readonly expected: 'issued' | 'refused'; readonly why: string }[] = [
-    { limit: 7_500, expected: 'issued', why: 'equal to the evaluated amount' },
-    { limit: 5_000, expected: 'issued', why: 'a narrowing of it' },
-    { limit: 1, expected: 'issued', why: 'a much smaller narrowing' },
-    { limit: 7_501, expected: 'refused', why: 'one unit above what was evaluated' },
-    { limit: 9_000, expected: 'refused', why: 'below the policy threshold but above the evaluated amount' },
-    { limit: 10_000, expected: 'refused', why: 'exactly the policy threshold, which is not a bound the decision recorded' },
-    { limit: 15_000, expected: 'refused', why: 'above both' },
+  const CASES: readonly { readonly limit: string; readonly expected: 'issued' | 'refused'; readonly why: string }[] = [
+    { limit: '7500', expected: 'issued', why: 'equal to the evaluated amount' },
+    { limit: '5000', expected: 'issued', why: 'a narrowing of it' },
+    { limit: '1', expected: 'issued', why: 'a much smaller narrowing' },
+    { limit: '7501', expected: 'refused', why: 'one unit above what was evaluated' },
+    { limit: '9000', expected: 'refused', why: 'below the policy threshold but above the evaluated amount' },
+    { limit: '10000', expected: 'refused', why: 'exactly the policy threshold, which is not a bound the decision recorded' },
+    { limit: '15000', expected: 'refused', why: 'above both' },
   ];
 
   for (const testCase of CASES) {
@@ -358,7 +359,7 @@ describe('Model A amount semantics — the grant is authority over the evaluated
     const { evaluated } = await issueFor({ requestId: 'grant-scenario-model-a-threshold', discharges: FINANCE_APPROVED });
 
     const amount = evaluated.result.grants?.sourceBounds.find((bound) => bound.key === 'amount');
-    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: 7_500, unit: 'USD' });
+    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: '7500', unit: 'USD' });
     assert.equal(
       JSON.stringify(evaluated.result.grants).includes('10000'),
       false,
@@ -373,7 +374,7 @@ describe('Model A amount semantics — the grant is authority over the evaluated
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-model-a-second-action',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 9_000, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '9000', unit: 'USD' } },
     });
     assert.equal(outcome.outcome, 'refused');
   });
@@ -426,7 +427,7 @@ describe('Acceptance F — equal bounds: VALID', () => {
       discharges: FINANCE_APPROVED,
       requestedBounds: {
         action: { kind: 'identity', value: buildDraftClosureEmailGuardInput().capability ?? buildDraftClosureEmailGuardInput().action },
-        amount: { kind: 'ceiling', limit: 7_500, unit: 'USD' },
+        amount: { kind: 'ceiling', limit: '7500', unit: 'USD' },
         counterparty: { kind: 'identity', value: 'V123' },
         resources: { kind: 'set', values: [buildDraftClosureEmailGuardInput().resourceScope] },
       },
@@ -444,7 +445,7 @@ describe('Acceptance F — equal bounds: VALID', () => {
 
     const sourceBounds = evaluated.result.grants?.sourceBounds ?? [];
     assert.equal(outcome.grant.scope.amount?.kind, 'ceiling');
-    assert.equal(sourceBounds.find((bound) => bound.key === 'amount')?.limit, 7_500);
+    assert.equal(sourceBounds.find((bound) => bound.key === 'amount')?.limit, '7500');
     assert.equal(outcome.grant.expiresAt, HORIZON);
     assert.deepEqual(evaluated.result.grants?.validityCeilings, [{ source: 'deployment', notAfter: HORIZON }]);
   });
@@ -455,12 +456,12 @@ describe('Acceptance G — narrower bounds: VALID', () => {
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-g',
       discharges: FINANCE_APPROVED,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 5_000, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '5000', unit: 'USD' } },
       expiresAt: '2026-01-01T12:02:00.000Z',
     });
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: 5_000, unit: 'USD' });
+    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '5000', unit: 'USD' });
     assert.equal(outcome.grant.expiresAt, '2026-01-01T12:02:00.000Z');
     assert.deepEqual(
       outcome.bounds.filter((bound) => bound.narrowingRequested).map((bound) => [bound.key, bound.comparison]),
@@ -484,7 +485,7 @@ describe('Acceptance H — policy DENY: INELIGIBLE, no grant', () => {
       requestId: 'grant-scenario-h-issue',
       contextObservations: RESOLVER_SAYS_BLOCKED,
       discharges: FINANCE_APPROVED,
-      requestedBounds: { amount: { kind: 'ceiling', limit: 1, unit: 'USD' } },
+      requestedBounds: { amount: { kind: 'ceiling', limit: '1', unit: 'USD' } },
     });
     assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_AUTHORIZATION_NOT_PERMITTED]);
   });
@@ -503,7 +504,7 @@ describe('Acceptance I — caller-forged grant: ignored, never authoritative', (
     if (outcome.outcome !== 'issued') throw new Error('expected an issued grant');
 
     assert.notEqual(outcome.grant.subject, 'attacker');
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: 7_500, unit: 'USD' });
+    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
     assert.equal(outcome.grant.expiresAt, HORIZON);
   });
 

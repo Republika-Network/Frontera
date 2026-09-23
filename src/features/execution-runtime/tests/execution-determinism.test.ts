@@ -41,7 +41,7 @@ describe('Exercise determinism', () => {
     const grant = buildTestGrant();
     const store = await seeded(grant);
     const service = createGrantExecutionService({ store, adapter: createRecordingExecutionAdapter(), now: () => TEST_EXPIRES_AT });
-    const request = buildExerciseRequest(grant, { subject: 'agent-B', amount: { value: 9_000, unit: 'USD' } });
+    const request = buildExerciseRequest(grant, { subject: 'agent-B', amount: { value: '9000', unit: 'USD' } });
 
     const first = await service.assess(request);
     const second = await service.assess(request);
@@ -100,7 +100,7 @@ describe('Exercise — caller self-assertion changes nothing', () => {
     { grant: { revoked: false } },
     { grant: { maxAmount: 1_000_000, action: '*', subject: 'attacker' } },
     { grantEligible: true },
-    { scope: { amount: { kind: 'ceiling', limit: 1_000_000, unit: 'USD' } } },
+    { scope: { amount: { kind: 'ceiling', limit: '1000000', unit: 'USD' } } },
     { digest: 'sha256:forged', usable: true },
     { revocation: undefined, expiresAt: '2099-01-01T00:00:00.000Z' },
   ];
@@ -124,7 +124,7 @@ describe('Exercise — caller self-assertion changes nothing', () => {
     const service = createGrantExecutionService({ store, adapter, now: () => AT });
 
     const forged = {
-      ...buildExerciseRequest(grant, { amount: { value: 1_000_000, unit: 'USD' } }),
+      ...buildExerciseRequest(grant, { amount: { value: '1000000', unit: 'USD' } }),
       maxAmount: 1_000_000,
       grant: { maxAmount: 1_000_000, expiresAt: '2099-01-01T00:00:00.000Z' },
     } as unknown as GrantExerciseRequest;
