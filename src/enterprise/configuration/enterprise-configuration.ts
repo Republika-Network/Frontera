@@ -167,6 +167,22 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the exercise-control ledger. */
     readonly sqlitePath: string;
   };
+  /**
+   * The canonical authority event stream (P8): durable, hash-chained evidence
+   * of the governed-action / bounded-grant lifecycle.
+   *
+   * Read **only** when governed actions are composed and the host supplies no
+   * stream store of its own; used when `persistence.provider === 'sqlite'`
+   * (the process-local store is selected otherwise, and is not durable). Its
+   * own file: evidence is backed up, restored and retained on its own terms,
+   * and is never co-located with authority state. A file that cannot be opened
+   * degrades the stream's module and records nothing — it never refuses or
+   * permits an action. See `docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`.
+   */
+  readonly authorityEventStream: {
+    /** SQLite path for the canonical authority event stream. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -274,6 +290,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     exerciseLedger: {
       sqlitePath: env.AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH ?? '.data/exercise-ledger.sqlite',
+    },
+    authorityEventStream: {
+      sqlitePath: env.AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH ?? '.data/authority-event-stream.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

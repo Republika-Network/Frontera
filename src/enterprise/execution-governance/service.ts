@@ -17,6 +17,7 @@ import {
 } from '../../features/execution-runtime/index.js';
 import type { KernelEvaluationResult } from '../../kernel/index.js';
 import type { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
+import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
 import {
   type AuthorityControlledAuthorizationInput,
   type AuthorityControlledAuthorizationOutcome,
@@ -158,6 +159,17 @@ export interface AuthorityControlledExecutionOptions {
    * ledger, and every existing behaviour is byte-identical.
    */
   readonly exerciseControls?: AuthorityControlledExerciseControls;
+  /**
+   * P8 — the canonical authority event stream's **write-only** recorder, when
+   * the composition root composed one. Never a host option.
+   *
+   * Told, after the authoritative store or ledger proved it, that a grant was
+   * revoked or that a P7 reservation was admitted, settled or released. It
+   * returns nothing and every call is wrapped, so omitting it — or composing
+   * one that fails — changes no revocation, reservation, finalization or
+   * outcome.
+   */
+  readonly evidence?: AuthorityEventRecorder;
 }
 
 export interface AuthorityControlledExecutionService {
@@ -188,7 +200,8 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
   const emergencyControl = options.emergencyControl;
   // Composed once, and refused here — at composition — when the block cannot
   // work: no policy, no exercise-time resolver, or a ledger that is not a ledger.
-  const exerciseControl = options.exerciseControls === undefined ? undefined : createAuthorityControlledExerciseControlGate(options.exerciseControls, now);
+  const evidence = options.evidence;
+  const exerciseControl = options.exerciseControls === undefined ? undefined : createAuthorityControlledExerciseControlGate(options.exerciseControls, now, evidence);
 
   const execution = createGrantExecutionService({
     store: grantStore,
@@ -231,16 +244,31 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
       return execution.exercise(request);
     },
 
-    revokeGrant(input: RevokeBoundedGrantRequest): Promise<RevokeBoundedGrantResult> {
+    async revokeGrant(input: RevokeBoundedGrantRequest): Promise<RevokeBoundedGrantResult> {
       // Revocation touches no source authorization, so it needs no
       // revalidation: a grant is revoked on its own identity, and the store's
       // own idempotency is what makes a second revocation return the first.
-      return createGrantIssuanceService({ store: grantStore }).revokeGrant({
+      const outcome = await createGrantIssuanceService({ store: grantStore }).revokeGrant({
         grantId: input.grantId,
         reason: input.reason,
         issuerRef: input.issuerRef,
         revokedAt: input.revokedAt ?? now(),
       });
+      // Evidence of the revocation the store now holds — the first one, on a
+      // repeat. Enqueued and returned from immediately: the authoritative result
+      // never waits for durable projection, so an asynchronous append that is
+      // slow or stuck cannot withhold the confirmation, and the next exercise
+      // reads the revocation from the grant store regardless. The projector
+      // resolves which lifecycle this grant belongs to on its own queue, in
+      // report order.
+      if (evidence !== undefined && (outcome.outcome === 'revoked' || outcome.outcome === 'already-revoked')) {
+        try {
+          evidence.grantRevoked(outcome.revocation);
+        } catch {
+          // Evidence never changes a revocation that was already recorded.
+        }
+      }
+      return outcome;
     },
   };
 }

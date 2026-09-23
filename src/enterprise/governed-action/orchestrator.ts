@@ -4,7 +4,8 @@ import {
   type EmergencyControlReaderPort,
 } from '../../features/emergency-control-runtime/index.js';
 import { GRANT_REASON_CODES, grantCorrelationMatches, type GrantCorrelation, type GrantSourceAuthorization } from '../../features/grant-runtime/index.js';
-import type { ExecutionOutcome, GrantExerciseRequest } from '../../features/execution-runtime/index.js';
+import { GRANT_EXERCISE_REASON_CODES, type BoundedGrantExerciseAssessment, type ExecutionOutcome, type GrantExerciseRequest } from '../../features/execution-runtime/index.js';
+import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import type { EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import { isExecutionGovernanceError, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
@@ -45,6 +46,19 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  *   -> ACE exercise -> ExecutionAdapter           ValidatedExecutionAction only
  *   -> execution outcome reference
  * ```
+ *
+ * ## Evidence, after each fact — reported, never waited for
+ *
+ * When a deployment composes the canonical authority event stream (P8), each
+ * established fact above is also *reported* — after it is established, through
+ * the write-only `AuthorityEventRecorder` — and never consulted. `report()` is
+ * **synchronous**: it enqueues and returns. Nothing on this path awaits durable
+ * projection, so an asynchronous append that is slow, unreachable or
+ * permanently stuck cannot hold a grant issuance, sit between the write-ahead
+ * claim and the adapter, or hold a result. (Control flow only: the projector
+ * shares this event loop, so a synchronous store can still add latency.) A
+ * missing, failed or corrupt stream leaves every result below exactly as it
+ * would be without one.
  *
  * ## Where the operational interlock sits
  *
@@ -118,6 +132,17 @@ export interface GovernedActionOrchestratorOptions {
    * Read-only by type: this orchestrator cannot activate or release a control.
    */
   readonly emergencyControl?: EmergencyControlReaderPort;
+  /**
+   * P8 — the canonical authority event stream's **write-only** recorder, when
+   * the deployment composed one.
+   *
+   * Called only after the fact it reports is established — the decision
+   * committed and re-verified, the grant returned by issuance, the claim
+   * appended, the outcome returned — and never read: every method returns
+   * nothing, and every call is wrapped so that its failure cannot change a
+   * result. Omitting it changes nothing.
+   */
+  readonly evidence?: AuthorityEventRecorder;
 }
 
 export interface GovernedActionOrchestrator {
@@ -200,6 +225,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   const { organizationId: servedOrganizationId, issuance, execution, governanceStore: store, grantPolicy, now } = options;
   const hostRevalidateSource = options.revalidateSource;
   const emergencyControl = options.emergencyControl;
+  const evidence = options.evidence;
   const committer = createDecisionCommitter({
     store,
     issuance,
@@ -249,6 +275,29 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     };
   }
 
+  /**
+   * Evidence, strictly downstream and strictly non-blocking. The recorder
+   * enqueues and returns `void`, so there is nothing to await here and nothing
+   * this path can be held by: order within a lifecycle is the projector's
+   * per-stream queue, not this function's control flow. A recorder that throws
+   * synchronously is discarded, and a projection that fails leaves the evidence
+   * stream short — never the authority, the grant, the claim or the outcome
+   * different.
+   */
+  function report(fact: (recorder: AuthorityEventRecorder) => void): void {
+    if (evidence === undefined) return;
+    try {
+      fact(evidence);
+    } catch {
+      // Evidence never changes an outcome that was already reached.
+    }
+  }
+
+  /** Expiry is observed, never scheduled: reported only when an assessment of this grant actually found it. */
+  function observedExpiry(assessment: BoundedGrantExerciseAssessment): boolean {
+    return assessment.reasonCodes.includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_EXPIRED);
+  }
+
   return Object.freeze({
     organizationId: servedOrganizationId,
 
@@ -277,6 +326,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (committed.kind === 'stopped') return result({ status: committed.status, ...base, reasonCodes: [committed.reasonCode] });
       const verified = committed.verified;
       const { decision: persisted, record } = verified;
+      // The committed, re-read and verified record — every status, and every
+      // replay of it, which the stream resolves to the event already recorded.
+      report((recorder) => recorder.decisionCommitted(record));
       const decided: ResultContext = {
         ...base,
         decision: { decisionId: persisted.decisionId, evaluationId: record.evaluation.evaluationId, status: persisted.status, reasonCodes: persisted.reasonCodes },
@@ -361,6 +413,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (grant.subject !== scope.actorId || grant.correlation.requestId !== requestId || grant.correlation.decisionId !== persisted.decisionId) {
         return result({ status: 'system_error', ...decided, reasonCodes: [R.GOVERNED_ACTION_PERSISTED_DECISION_MISMATCH] });
       }
+      report((recorder) => recorder.grantIssued(grant));
 
       // Phase: evidence + claim, then exercise.
       try {
@@ -373,7 +426,10 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
 
       // Pre-assessment through ACE. A pure read: no provider is contacted.
       const assessment = await execution.assessExercise(exercise);
-      if (!assessment.usable) return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: assessment.reasonCodes });
+      if (!assessment.usable) {
+        if (observedExpiry(assessment)) report((recorder) => recorder.grantExpiryObserved(grant));
+        return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: assessment.reasonCodes });
+      }
 
       // Write-ahead claim, BEFORE the adapter. It can only prevent an invocation.
       let claim;
@@ -383,6 +439,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
       }
       if (claim.kind === 'already-claimed') return replayResult(executed, claim.prior, persisted.reasonCodes);
+      // Enqueued, not awaited: no evidence write may sit between the durable
+      // claim and the adapter crossing.
+      report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
 
       // Exercise through ACE: the grant is re-read from the authoritative store
       // and the adapter receives a ValidatedExecutionAction only.
@@ -397,6 +456,12 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // Outcome evidence. A failure to record it never rewrites what happened.
       const outcomeRecorded = await ledger.recordOutcome(evaluationId, executionId, outcome);
       const unrecorded = outcomeRecorded ? [] : [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED];
+      // What the runtime returned, with its certainty intact. Reported after the
+      // outcome exists; the result below is built from `outcome`, never from this.
+      report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));
+      if (outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise' && observedExpiry(outcome.assessment)) {
+        report((recorder) => recorder.grantExpiryObserved(grant));
+      }
       if (outcome.status === 'executed') {
         return result({
           status: 'executed',

@@ -113,6 +113,38 @@ What changes here, and what does not:
   `exerciseControls`, `aggregateControls` and `authorityBindingDigest` are
   undeclared intent fields, and reserved `assertedContext` keys.
 
+## Canonical authority event stream (P8)
+
+When governed actions are composed, the composition root also composes the
+canonical authority event stream and hands the orchestrator (and ACE) its
+**write-only** `AuthorityEventRecorder`
+(`docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`). The orchestrator
+reports through one local `report()` helper that is **synchronous**: it hands the
+fact over and returns. Every recorder method returns `void`, so no step below
+waits for durable projection — in particular no projection may sit between the
+write-ahead claim and the adapter crossing. (Control flow only: projection still
+runs in this process and on this event loop, so a synchronous or slow store can
+add latency — see `AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md` §3a.) What it
+reports:
+
+- the committed decision — after commit **and** re-read + verification, for
+  every status, and on every replay (which resolves to the event already
+  recorded);
+- the issued grant — after issuance returned it and it matched the persisted
+  decision;
+- an observed expiry — when the pre-assessment, or the recorded exercise
+  outcome, carries `GRANT_EXERCISE_EXPIRED`;
+- the write-ahead claim — only when this call appended it, at the claim row's
+  own instant;
+- the execution outcome — after the runtime returned it and the outcome
+  reference was attempted, with `outcomeRecorded` beside it.
+
+Nothing here reads the stream, and nothing here awaits it. The replay guard is
+still the attempt reference; the result is still built from the committed record
+and the `ExecutionOutcome`; a projection that fails, or one that never settles —
+including a recorder that throws synchronously — changes no status, reason code,
+grant, claim or adapter call. The public result gains no field.
+
 
 ## Canonical lifecycle
 
@@ -138,6 +170,13 @@ BoundCustomerIdentity + GovernedActionIntent
      execution_record "attempt" reference — WRITE-AHEAD, at most once per executionId
      ACE exercise          — re-reads the grant; adapter gets a ValidatedExecutionAction
  14  execution_record outcome reference; customer-safe result
+
+ P8 evidence (write-only, enqueued after each fact, never read, never awaited):
+     after 8  → governance.decision.committed
+     after 12 → grant.issued
+     after 13 → execution.attempt.claimed (this call's claim only)
+     inside ACE exercise (P7) → exercise.reservation.reserved / .settled / .released
+     after 14 → execution.outcome.observed  (+ grant.expiry.observed when observed)
 ```
 
 ## The persist-before-grant invariant

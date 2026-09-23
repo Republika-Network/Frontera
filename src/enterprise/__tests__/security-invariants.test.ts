@@ -276,6 +276,66 @@ describe('SECURITY_INVARIANTS.md — P6: the Generic HTTP invariants are recorde
     assert.ok(/Distributed or cross-host quota/.test(doc), 'the distributed-quota non-claim must stay recorded');
   });
 
+  it('records SEC-INV-080 … SEC-INV-088 as EVENT-STREAM-01 … 09, each path- or component-local, and never claims authenticity or system-wide coverage', () => {
+    for (let index = 0; index < 9; index += 1) {
+      const id = `SEC-INV-0${80 + index}`;
+      const alias = `EVENT-STREAM-${String(index + 1).padStart(2, '0')}`;
+      const row = doc.split('\n').find((line) => line.startsWith(`| ${id} (**${alias}**)`));
+      assert.ok(row !== undefined, `${id} must be recorded as ${alias}`);
+      assert.ok(/PATH-LOCAL|COMPONENT-LOCAL/.test(row), `${id} must be scoped`);
+      assert.equal(/SYSTEM-WIDE/.test(row), false, `${id} must not be system-wide`);
+      assert.equal(/tamper-proof|non-repudiab|cryptographically authenticated|exactly-once delivery/i.test(row.replace(/not authenticity/g, '')), false, `${id} must not overclaim`);
+    }
+    const row080 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-080 ')) ?? '';
+    assert.ok(row080.includes('Evidence never becomes authority'));
+    const row084 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-084 ')) ?? '';
+    assert.ok(row084.includes('integrity, not authenticity'), 'the digest limit travels with the tamper-evidence claim');
+    assert.ok(/A tamper-proof, authenticated, complete or system-wide event record/.test(doc), 'the event-stream non-claim must stay recorded');
+    const row088 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-088 ')) ?? '';
+    assert.ok(row088.includes('never settles'), 'the non-blocking invariant must name the pending-projection case it exists for');
+    assert.equal(/Promise<void>/.test(doc), false, 'the superseded "awaited promise" contract must not be described as the guarantee');
+  });
+
+  /**
+   * The P8 claim is "authority control flow never awaits durable evidence
+   * projection" — **not** "P8 can never add process latency". Projection shares
+   * the process and the event loop, and a synchronous store (`better-sqlite3`'s
+   * append, lock wait and `fsync` included) occupies it. Earlier drafts said
+   * "delays none" / "cannot weaken or delay"; this pins the correction so it
+   * cannot drift back. Scoped to the P8 rows and the P8 documents named below —
+   * no repository-wide prose policing.
+   */
+  it('SEC-INV-088 and the P8 documents state the latency limit, and none of them claims projection can never delay', () => {
+    const row088 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-088 ')) ?? '';
+    assert.ok(row088.length > 0);
+    assert.ok(/not latency or thread isolation/i.test(row088), 'SEC-INV-088 must scope itself to control flow');
+    assert.ok(/event loop/i.test(row088) && /latency/i.test(row088), 'SEC-INV-088 must say projection shares the loop and may add latency');
+
+    const P8_CLAIM_SOURCES = [
+      INVARIANTS_DOC,
+      'docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md',
+      'docs/security/THREAT_MODEL_V1.md',
+      'docs/architecture/ADR-CANONICAL-AUTHORITY-EVENT-STREAM.md',
+      'docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md',
+      'docs/enterprise/AOC_GOVERNED_ACTION_ORCHESTRATOR.md',
+      'docs/enterprise/AOC_EXERCISE_CONTROLS.md',
+      'src/features/exercise-control-runtime/tests/exercise-control-observer.test.ts',
+    ];
+    const STALE_ABSOLUTES = [/delays none/i, /can delay nothing/i, /cannot weaken or delay/i, /never make it slower/i, /off the authority path's clock/i];
+    for (const source of P8_CLAIM_SOURCES) {
+      assert.ok(existsSync(source), `${source} must exist`);
+      const text = readFileSync(source, 'utf8');
+      for (const stale of STALE_ABSOLUTES) assert.equal(stale.test(text), false, `${source} repeats a superseded absolute: ${String(stale)}`);
+    }
+
+    // The A-29 asset row carries the same pair of statements.
+    const assets = readFileSync('docs/security/TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md', 'utf8');
+    const a29 = assets.split('\n').find((line) => line.startsWith('| **A-29**')) ?? '';
+    assert.ok(a29.length > 0, 'A-29 must remain in the asset inventory');
+    assert.ok(/never awaits durable projection/i.test(a29), 'A-29 must keep the control-flow claim');
+    assert.ok(/latency/i.test(a29), 'A-29 must keep the latency limit beside it');
+  });
+
   it('keeps SEC-INV-U03 unimplemented and never describes origin pinning as an egress firewall', () => {
     const u03 = doc.split('\n').find((line) => line.startsWith('| SEC-INV-U03 |'));
     assert.ok(u03 !== undefined);

@@ -27,6 +27,7 @@ import type { ExecutionAdapter, ExecutionAdapterResult, ValidatedExecutionAction
 import type { EmergencyControlReaderPort } from '../../features/emergency-control-runtime/index.js';
 import { AocKernel, type KernelEvaluationOptions, type KernelEvaluationRequest, type KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
+import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import { createInProcessEventPublisher, type EnterpriseEvent } from '../events/enterprise-events.js';
 import {
@@ -184,6 +185,8 @@ export interface WorldOptions {
   readonly executionAdapter?: ExecutionAdapter;
   /** P7 exercise controls, composed onto ACE exactly as the composition root composes them. */
   readonly exerciseControls?: AuthorityControlledExerciseControls;
+  /** P8 write-only evidence recorder, handed to ACE and the orchestrator exactly as the composition root hands it. */
+  readonly evidence?: AuthorityEventRecorder;
 }
 
 export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
@@ -285,6 +288,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     resolveAuthorityBinding: options.resolveAuthorityBinding ?? (() => NO_TEMPORAL_BOUND),
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
     ...(options.exerciseControls !== undefined ? { exerciseControls: options.exerciseControls } : {}),
+    ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
   };
   const ace = createAuthorityControlledExecution(aceOptions);
 
@@ -321,6 +325,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     events: { enabled: true, publisher, nextId: (prefix) => `${prefix}-${(eventCounter += 1)}` },
     traceLevel: 'basic',
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
+    ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
     ...(hostRevalidate !== undefined
       ? {
           revalidateSource: (correlation: GrantCorrelation) => {

@@ -243,6 +243,13 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       // reservation store and never reserves, settles or releases —
       // `exercise-control-boundaries.test.ts` pins that.
       '../../features/exercise-control-runtime/index.js',
+      // P8: the canonical authority event stream's **write-only** recorder,
+      // type-only. The orchestrator reports facts after it has established
+      // them and never reads the stream — every recorder method returns
+      // `Promise<void>` and every call is wrapped so its failure changes no
+      // result (`authority-event-stream-boundaries.test.ts` pins that). The
+      // store, reader, verifier and projector are not reachable from here.
+      '../authority-event-stream/recorder.js',
       '../../kernel/index.js',
       '../customer-identity/index.js',
       '../events/enterprise-events.js',

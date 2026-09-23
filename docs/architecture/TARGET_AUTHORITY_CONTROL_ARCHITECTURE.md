@@ -188,6 +188,14 @@ downstream; a failure to project evidence must never change an outcome that was
 already reached. (It may of course *block execution* via an existing evidence
 requirement — that is B and D acting, not F.)
 
+*Since P8 (Stage A):* the governed-action / bounded-grant lifecycle is also
+recorded as a **canonical authority event stream** — durable, append-only,
+hash-chained, tenant-confined, one stream per governed-action request — strictly
+after each fact is established in A–E's own stores, through a write-only
+recorder whose failure changes nothing. It is F in the sense above and nothing
+more: no layer reads it to decide, and it is path-local, not a system-wide event
+record. See `ADR-CANONICAL-AUTHORITY-EVENT-STREAM.md`.
+
 ### G — Intelligence
 
 **Question:** what should a human or an operator *understand* about all of the

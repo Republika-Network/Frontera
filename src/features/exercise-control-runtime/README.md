@@ -47,6 +47,11 @@ storage. Both ledgers pass the same contract suite
 7. **Trusted inputs only.** The policy and the binding resolver are host code
    and receive only what the authoritative grant holds or the grant-exercise
    assessment already proved. Nothing a caller sends reaches them.
+8. **Observed, never consulted (P8).** An optional, write-only
+   `ExerciseControlObserver` is told of a reservation, settlement or release
+   only after the ledger returned it. The gate discards its answer and its
+   failure, never calls it from `revalidate`, and never reads anything back:
+   admission is decided from the ledger alone.
 
 `tests/exercise-control-boundaries.test.ts` fails the build if the module grows
 a Kernel, a Governance Store, a network client, an ambient clock, a timer, a

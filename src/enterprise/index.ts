@@ -540,6 +540,30 @@ export type { ExerciseAuthorityBindingResolver } from './execution-governance/ex
 export type { EnterpriseEmergencyControlOptions } from './composition/composition-root.js';
 export type { EnterpriseCustomerIdentityAdmissionOptions } from './composition/composition-root.js';
 export type { EnterpriseGovernedActionOrchestratorOptions } from './composition/composition-root.js';
+/**
+ * P8 canonical authority event stream -- **types only**. The stream is composed
+ * with governed actions; a host may supply its own store through
+ * `createEnterprise({ authorityEventStream: { store } })` and reads through
+ * `AocEnterprise.authorityEventStream`. The stores, the projector, the recorder
+ * and the verifier are deliberately not exported as values: nothing a
+ * published-package consumer holds can append to, rewrite or impersonate the
+ * stream. See `docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`.
+ */
+export type { EnterpriseAuthorityEventStreamOptions } from './composition/composition-root.js';
+export type {
+  AuthorityEvent,
+  AuthorityEventReferences,
+  AuthorityEventStreamAccessContext,
+  AuthorityEventStreamHead,
+  AuthorityEventStreamReader,
+  AuthorityEventStreamStore,
+  AuthorityEventStreamStoreHealth,
+  AuthorityEventStreamVerification,
+  AuthorityEventType,
+  AppendAuthorityEventInput,
+  AppendAuthorityEventResult,
+  AuthorityEventStreamErrorCode,
+} from './authority-event-stream/index.js';
 
 /**
  * Customer-plane identity admission -- type-only, for the same reason the

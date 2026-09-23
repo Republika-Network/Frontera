@@ -58,6 +58,11 @@ import type { ExerciseControlLedgerPort } from '../../features/exercise-control-
 import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
+import { createAuthorityEventStreamModule } from '../modules/authority-event-stream-module.js';
+import { createAuthorityEventProjector, type AuthorityEventProjector } from '../authority-event-stream/projector.js';
+import type { AuthorityEventStreamReader, AuthorityEventStreamStore } from '../authority-event-stream/stream-store.js';
+import { createInMemoryAuthorityEventStreamStore } from '../authority-event-stream/in-memory-authority-event-stream-store.js';
+import { createSqliteAuthorityEventStreamStore } from '../authority-event-stream/sqlite-authority-event-stream-store.js';
 import {
   GovernedActionConfigurationError,
   createGovernedActionOrchestrator,
@@ -223,6 +228,30 @@ export interface CreateEnterpriseOptions {
    * in-process host code. See `docs/enterprise/AOC_EMERGENCY_CONTROL.md`.
    */
   readonly emergencyControl?: EnterpriseEmergencyControlOptions;
+  /**
+   * P8 — the canonical authority event stream, when governed actions are
+   * composed. **Evidence only.**
+   *
+   * The stream is composed automatically with `governedActionOrchestrator` —
+   * the one lifecycle Stage A projects — and not otherwise. This block only
+   * lets a host hand in a store it opened and owns (never closed from here).
+   * Omitted, the composition root selects one the way it selects every other
+   * store: durable SQLite at `authorityEventStream.sqlitePath` when
+   * `persistence.provider === 'sqlite'`, process-local otherwise.
+   *
+   * Nothing on any authorization path is handed the store: lifecycle modules
+   * get the write-only recorder, and trusted in-process operator code gets the
+   * read-only `AocEnterprise.authorityEventStream`. A store that cannot be
+   * opened, or that fails, makes the stream's module unhealthy or degraded and
+   * changes no decision, grant, reservation, routing or outcome.
+   */
+  readonly authorityEventStream?: EnterpriseAuthorityEventStreamOptions;
+}
+
+/** What a host may state about the canonical authority event stream (P8). Its store only; the stream itself is composed with governed actions. */
+export interface EnterpriseAuthorityEventStreamOptions {
+  /** A store the **host** opened and owns. Used verbatim and never closed from here. */
+  readonly store?: AuthorityEventStreamStore;
 }
 
 /**
@@ -510,6 +539,18 @@ export interface AocEnterprise {
    * checks to satisfy.
    */
   readonly emergencyControlAdministration?: EmergencyControlStorePort;
+  /**
+   * P8 — the **read-only** surface over the canonical authority event stream,
+   * present only when governed actions are composed and a stream store is
+   * available.
+   *
+   * For trusted in-process operator and audit code. Tenant-scoped on every call,
+   * verify-first (a corrupt stream is reported, never returned as a prefix), and
+   * without any append, update or delete. It is not part of any caller path: no
+   * HTTP route reaches it, the SDK has no method for it, and nothing that
+   * decides, issues, exercises, admits, routes or replays is handed it.
+   */
+  readonly authorityEventStream?: AuthorityEventStreamReader;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -630,6 +671,32 @@ async function buildEmergencyControlStore(configuration: EnterpriseConfiguration
     return createSqliteEmergencyControlStore(configuration.emergencyControl.sqlitePath, { busyTimeoutMs: configuration.persistence.busyTimeoutMs });
   }
   return createInMemoryEmergencyControlStore();
+}
+
+/**
+ * The authority event stream store, when the host did not supply one: the same
+ * selection rule as every other store — durable SQLite under
+ * `persistence.provider === 'sqlite'`, process-local (not durable) otherwise.
+ * Unlike an authority store, a failure to open it is caught by the caller and
+ * degrades the stream rather than the Host: evidence is never a prerequisite.
+ */
+async function buildAuthorityEventStreamStore(configuration: EnterpriseConfiguration, now: () => string): Promise<AuthorityEventStreamStore> {
+  if (configuration.persistence.provider === 'sqlite') {
+    return createSqliteAuthorityEventStreamStore(configuration.authorityEventStream.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+  }
+  return createInMemoryAuthorityEventStreamStore({ now });
+}
+
+/**
+ * A fresh two-method object over the store: `append`, `health` and `close` are
+ * unreachable from it even by a cast, exactly as the emergency-control reader
+ * narrows its store.
+ */
+function createAuthorityEventStreamReader(store: AuthorityEventStreamStore): AuthorityEventStreamReader {
+  return Object.freeze({
+    readStream: (context: Parameters<AuthorityEventStreamReader['readStream']>[0], streamId: string) => store.readStream(context, streamId),
+    verifyStream: (context: Parameters<AuthorityEventStreamReader['verifyStream']>[0], streamId: string) => store.verifyStream(context, streamId),
+  });
 }
 
 /** A dedicated id source for Enterprise-internal bookkeeping (event ids, boot id) -- independent of the Kernel's own `idGenerator`, so Enterprise bookkeeping never perturbs the Kernel's internal id sequence. */
@@ -924,6 +991,31 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         })));
   const exerciseLedgerOpenedHere = exerciseControlOptions !== undefined && exerciseControlOptions.ledger === undefined;
 
+  // P8: the canonical authority event stream, composed with governed actions
+  // only. Evidence, so an unopenable store is *not* a startup failure: the
+  // projector runs over no store, records every failure, and the module reports
+  // unhealthy — while decisions, grants and effects proceed exactly as without
+  // a stream. A host-supplied store is used verbatim and never closed here.
+  let authorityEventStore: AuthorityEventStreamStore | undefined;
+  let authorityEventStoreOpenFailure: Error | undefined;
+  if (governedActionOptions !== undefined) {
+    if (options.authorityEventStream?.store !== undefined) {
+      authorityEventStore = options.authorityEventStream.store;
+    } else {
+      try {
+        authorityEventStore = await buildAuthorityEventStreamStore(configuration, kernelProviders.clock.now);
+      } catch (error) {
+        authorityEventStoreOpenFailure = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+  }
+  const authorityEventStoreOpenedHere = authorityEventStore !== undefined && options.authorityEventStream?.store === undefined;
+  // The write-only projector: the one object lifecycle modules are handed.
+  const authorityEvents: AuthorityEventProjector | undefined =
+    governedActionOptions === undefined || grantStore === undefined || customerIdentityAdmission === undefined
+      ? undefined
+      : createAuthorityEventProjector({ organizationId: customerIdentityAdmission.organizationId, store: authorityEventStore, grants: grantStore });
+
   // ONE emergency-control instance for the whole deployment. Every checkpoint
   // below reads this object: the orchestrator's admission check, the grant
   // store's synchronous commit guard, the exercise gate, and the adapter
@@ -1000,6 +1092,8 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
                 },
               }
             : {}),
+          // P8: write-only evidence of revocations and reservation facts.
+          ...(authorityEvents !== undefined ? { evidence: authorityEvents } : {}),
           now: kernelProviders.clock.now,
         };
   const authorityControlledExecution: AuthorityControlledExecutionService | undefined =
@@ -1049,6 +1143,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
 
   /** The same ownership discipline for the exercise-control ledger: closed only when this composition root opened it. */
+  /** The same ownership discipline for the authority event stream store: closed only when this composition root opened it. */
+  async function closeComposedAuthorityEventStore(): Promise<void> {
+    if (!authorityEventStoreOpenedHere || authorityEventStore === undefined) return;
+    await authorityEventStore.close();
+  }
+
   async function closeComposedExerciseLedger(): Promise<void> {
     if (!exerciseLedgerOpenedHere || exerciseLedger === undefined) return;
     const closable = exerciseLedger as Partial<{ close: () => Promise<void> }>;
@@ -1099,6 +1199,16 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
   if (governedActionOptions !== undefined) {
     registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now));
+    if (authorityEvents !== undefined) {
+      registry.register(
+        createAuthorityEventStreamModule({
+          store: authorityEventStore,
+          ...(authorityEventStoreOpenFailure !== undefined ? { openFailure: authorityEventStoreOpenFailure } : {}),
+          projection: () => authorityEvents.health(),
+          now: kernelProviders.clock.now,
+        }),
+      );
+    }
   }
   registry.register(createAgentPassportModule(passportStore, kernelProviders.clock.now, configuration.passport.required));
   registry.register(createAssuranceModule(assuranceStore, assuranceFrameworkRegistry, kernelProviders.clock.now, configuration.assurance.required));
@@ -1161,6 +1271,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       // The same instance ACE's commit guard, the exercise gate and the adapter
       // registry read.
       ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+      // P8: write-only. The orchestrator reports facts it has established; it
+      // never reads the stream, and a failed report changes no result.
+      ...(authorityEvents !== undefined ? { evidence: authorityEvents } : {}),
     });
   }
 
@@ -1235,6 +1348,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         }
       : {}),
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
+    ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
     eventPublisher,
     telemetry,
     logger,
@@ -1284,6 +1398,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedGrantStore();
       await closeComposedEmergencyControlStore();
       await closeComposedExerciseLedger();
+      await closeComposedAuthorityEventStore();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -1292,6 +1407,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedGrantStore();
       await closeComposedEmergencyControlStore();
       await closeComposedExerciseLedger();
+      await closeComposedAuthorityEventStore();
     },
   };
 

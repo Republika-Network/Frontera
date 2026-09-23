@@ -273,6 +273,16 @@ by the P7 names (`limit`, `quota`, `budget`, `window`, `reservationId`,
 there and are now rejected rather than ignored. The frozen surface stays 28
 endpoints; the SDK stays `1.1.0`.
 
+**1.6.0 (P8) adds no endpoint, no request field, no response field, no status,
+no reason code and no `withheldBy` value.** When governed actions are composed,
+the Host also records each governed action's lifecycle as a canonical authority
+event stream (`AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`) — internal evidence,
+readable only by trusted in-process code through
+`AocEnterprise.authorityEventStream`, and never read by anything that decides. No
+route, webhook, SSE or SDK method exposes it, and the governed-action result is
+byte-identical with or without it. The frozen surface stays 28 endpoints; the
+SDK stays `1.1.0`.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
