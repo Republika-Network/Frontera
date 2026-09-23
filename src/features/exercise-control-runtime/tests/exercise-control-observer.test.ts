@@ -13,14 +13,21 @@ import {
 
 /**
  * P8 — the gate's write-only observer: told only what the ledger proved, after
- * it proved it, and unable to change **or delay** an admission, a finalization
- * or a revalidation whatever it does.
+ * it proved it, unable to change an admission, a finalization or a revalidation
+ * whatever it does, and **never awaited** by the gate.
  *
- * The delay half is the P8 hardening: `reservationObserved` returns `void`, so
- * the gate has nothing to await. A reservation is committed and has no TTL, so a
- * gate that could be held between the ledger's `reserved` and the provider —
+ * The second half is the P8 hardening: `reservationObserved` returns `void`, so
+ * the gate has nothing to await and durable projection can never become a
+ * control-flow dependency of it. A reservation is committed and has no TTL, so a
+ * gate that could be *held* between the ledger's `reserved` and the provider —
  * or between a terminal event and its caller — would leave capacity consumed
  * indefinitely.
+ *
+ * What these tests do **not** claim: latency isolation. The observer runs in
+ * this process on this event loop, so an observer that blocks synchronously
+ * still occupies it. What is proven is that no asynchronous completion — not
+ * even one that never settles — is on the gate's control-flow path
+ * (SEC-INV-088).
  */
 
 const BINDING = `sha256:${'b'.repeat(64)}`;
@@ -56,7 +63,9 @@ const throwing: ExerciseControlObserver = {
 /**
  * The adversarial shape the hardening exists for: an observer that hands back
  * something that never settles. The gate must not be holding anything that
- * could await it — the return value is typed `void` and is dropped.
+ * could await it — the return value is typed `void` and is dropped. (A
+ * synchronously blocking observer is a different matter and is not claimed
+ * against: it is trusted host code, as every composed port is.)
  */
 const neverSettling: ExerciseControlObserver = {
   reservationObserved() {
@@ -123,14 +132,14 @@ describe('Exercise-control observer (P8) — it can change nothing', () => {
     const baseline = await run();
     assert.deepEqual(await run(throwing), baseline);
     assert.deepEqual(await run(recording()), baseline);
-    assert.deepEqual(await run(neverSettling), baseline, 'a never-settling observer holds nothing');
+    assert.deepEqual(await run(neverSettling), baseline, 'a never-settling observation is not on the gate\'s control-flow path');
     assert.equal(baseline.finalized, 'released');
     assert.equal(baseline.third, 'admitted', 'the release really returned capacity in every run');
   });
 });
 
-describe('Exercise-control observer (P8) — it can delay nothing', () => {
-  it('admission and finalization return while a never-settling observer is outstanding', { timeout: 30_000 }, async () => {
+describe('Exercise-control observer (P8) — the gate never awaits durable projection', () => {
+  it('admission and finalization return while a never-settling observation is outstanding', { timeout: 30_000 }, async () => {
     const ledger = createInMemoryExerciseControlLedger({ now: () => LEDGER_AT });
     const g = gate(neverSettling, ledger);
     const started = Date.now();
