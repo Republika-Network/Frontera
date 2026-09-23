@@ -60,6 +60,16 @@ describe('Monetary runtime boundaries (P9)', () => {
     }
   });
 
+  it('exports no conversion from a JavaScript number into monetary text (P9 closure)', async () => {
+    const surface = await import('../index.js');
+    for (const name of Object.keys(surface)) assert.equal(/FromNumber$/i.test(name), false, `${name} would reintroduce a number ingress`);
+    for (const file of PRODUCTION_SOURCES) {
+      const text = codeOf(file);
+      assert.equal(/\(\s*\w+\s*:\s*number\b/.test(text) && /export function \w*[Ff]romNumber/.test(text), false, file);
+      assert.equal(/String\(\s*value\b/.test(text), false, `${file}: spelling a number is the precision path P9 removed`);
+    }
+  });
+
   it('reaches no clock, network, filesystem or process, and constructs no code', () => {
     for (const file of PRODUCTION_SOURCES) {
       const text = codeOf(file);

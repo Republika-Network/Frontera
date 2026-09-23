@@ -571,10 +571,53 @@ describe('POST /api/governed-actions — the fully composed Host', () => {
       assert.ok(payload.includes('"currency":"USD"'), payload);
     });
 
+    // P9 — v1 wire compatibility, exact. A client may still write the amount as
+    // a JSON number; the route reads that number's exact source characters
+    // (never an IEEE-754 re-parse), so the committed request holds precisely
+    // what was sent.
+    for (const [name, rawAmount, committed] of [
+      ['a v1 JSON number', '7500', '7500'],
+      ['a v1 JSON number with trailing zeros', '7500.50', '7500.5'],
+      ['a v1 JSON number in exponent form', '7.5e3', '7500'],
+      ['a v1 JSON number beyond 2^53 — exact, where JSON.parse would round it', '9007199254740993.01', '9007199254740993.01'],
+    ] as const) {
+      it(`P9. ${name} is accepted and committed as exactly ${committed}`, async () => {
+        const key = freshKey(`p9-v1-${committed}`);
+        const raw = `{"action":${JSON.stringify(FINANCIAL_ACTION)},"resource":${JSON.stringify(ALLOWED_INTENT.resource)},"idempotencyKey":${JSON.stringify(key)},"amount":{"value":${rawAmount},"currency":"USD"}}`;
+        const reply = await send(baseUrl, undefined, { authorization: bearer(SECRET), raw });
+        assert.notEqual(reply.body['status'], 'rejected', reply.text);
+        const record = await host.server.enterprise.persistence.getByRequestId({ system: true }, String(reply.body['requestId']));
+        assert.ok(record !== null);
+        const payload = JSON.stringify(record.request.requestPayload);
+        assert.ok(payload.includes(`"amount":"${committed}"`), payload);
+      });
+    }
+
+    it('P9. the same logical v1 request as a JSON number and as decimal text is one request (idempotent replay, no conflict)', async () => {
+      const key = freshKey('p9-v1-equivalence');
+      const asNumber = `{"action":${JSON.stringify(FINANCIAL_ACTION)},"resource":${JSON.stringify(ALLOWED_INTENT.resource)},"idempotencyKey":${JSON.stringify(key)},"amount":{"value":9007199254740993,"currency":"USD"}}`;
+      const first = await send(baseUrl, undefined, { authorization: bearer(SECRET), raw: asNumber });
+      const second = await send(baseUrl, { action: FINANCIAL_ACTION, resource: ALLOWED_INTENT.resource, idempotencyKey: key, amount: { value: '9007199254740993', currency: 'USD' } }, { authorization: bearer(SECRET) });
+      assert.notEqual(first.body['status'], 'rejected', first.text);
+      assert.equal(second.body['requestId'], first.body['requestId']);
+      assert.notEqual(second.body['status'], 'rejected', second.text);
+    });
+
+    it('P9. a JSON number that JSON.parse would collapse is not collapsed: 9007199254740993 and 9007199254740992 are different requests', async () => {
+      const key = freshKey('p9-v1-collapse');
+      const body = (value: string) => `{"action":${JSON.stringify(FINANCIAL_ACTION)},"resource":${JSON.stringify(ALLOWED_INTENT.resource)},"idempotencyKey":${JSON.stringify(key)},"amount":{"value":${value},"currency":"USD"}}`;
+      const first = await send(baseUrl, undefined, { authorization: bearer(SECRET), raw: body('9007199254740993') });
+      const second = await send(baseUrl, undefined, { authorization: bearer(SECRET), raw: body('9007199254740992') });
+      assert.notEqual(first.body['status'], 'rejected', first.text);
+      assert.equal(second.status, 409, 'a different amount under the same key is an idempotency conflict — the two were never merged by a double');
+      assert.deepEqual(second.body['reasonCodes'], [GOVERNED_ACTION_REASON_CODES.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT]);
+    });
+
     for (const [name, intent] of [
       ['21. malformed amount', () => financial('bad-amount', { amount: { value: '-1', currency: 'USD' } })],
       ['21b. amount with an extra field', () => financial('bad-amount-2', { amount: { value: '1', currency: 'USD', unit: 'x' } })],
-      ['P9. amount as a JSON number', () => financial('p9-number', { amount: { value: 7500, currency: 'USD' } })],
+      ['P9. a negative JSON number (never a quantity)', () => financial('p9-negative-number', { amount: { value: -7500, currency: 'USD' } })],
+      ['P9. a JSON number beyond the asset’s trusted scale (never rounded)', () => financial('p9-number-scale', { amount: { value: 10.001, currency: 'USD' } })],
       ['P9. amount beyond the asset’s trusted scale (never rounded)', () => financial('p9-scale', { amount: { value: '10.001', currency: 'USD' } })],
       ['P9. amount in scientific notation', () => financial('p9-exponent', { amount: { value: '1e3', currency: 'USD' } })],
       ['P9. amount with whitespace', () => financial('p9-space', { amount: { value: ' 10 ', currency: 'USD' } })],

@@ -362,7 +362,7 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
     assert.equal(header(request, 'authorization'), `Bearer ${TOKEN}`);
     assert.equal(header(request, 'content-type'), 'application/json');
     assert.equal(header(request, 'content-length'), String(Buffer.byteLength(request.body ?? '', 'utf8')));
-    assert.deepEqual(JSON.parse(request.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: '7500', currency: 'USD', organization: 'org-datasys' });
+    assert.deepEqual(JSON.parse(request.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: 7500, currency: 'USD', organization: 'org-datasys' });
   });
 
   it('1–2. the action cannot change the method or the origin: they are not action values', () => {
@@ -456,9 +456,10 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
     refusedWith('GENERIC_HTTP_CREDENTIAL_INVALID', () => plan({ credential: { kind: 'oauth', token: TOKEN } }));
   });
 
-  it('21–22. amount.value is the exact canonical decimal text (P9) and amount.unit an exact string; literals keep their JSON type', () => {
+  it('21–22. amount.value stays a JSON number — spelled exactly as its canonical text, never through a double (P9) — and amount.unit an exact string; literals keep their JSON type', () => {
     const request = mapped({ body: { kind: 'json-object', fields: { v: { kind: 'source', source: 'amount.value' }, u: { kind: 'source', source: 'amount.unit' }, t: { kind: 'literal', value: true }, n: { kind: 'literal', value: null }, s: { kind: 'literal', value: '7500' } } } }, { ...ACTION, amount: { value: '7500.25', unit: 'usd ' } });
-    assert.deepEqual(JSON.parse(request.body ?? ''), { v: '7500.25', u: 'usd ', t: true, n: null, s: '7500' });
+    assert.deepEqual(JSON.parse(request.body ?? ''), { v: 7500.25, u: 'usd ', t: true, n: null, s: '7500' });
+    assert.ok(request.body?.includes('"v":7500.25'), request.body);
   });
 
   it('numbers become deterministic decimal text in path, query and header positions; booleans become true/false', () => {
@@ -1404,7 +1405,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
       assert.equal(hits[0]?.method, 'POST');
       assert.equal(hits[0]?.idem, 'exec-1');
       assert.equal(hits[0]?.authorization, `Bearer ${TOKEN}`);
-      assert.deepEqual(JSON.parse(hits[0]?.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: '7500', currency: 'USD', organization: 'org-datasys' });
+      assert.deepEqual(JSON.parse(hits[0]?.body ?? ''), { invoiceId: 'INV-1001', vendorId: 'V123', amount: 7500, currency: 'USD', organization: 'org-datasys' });
       assert.equal(JSON.stringify(observation).includes(TOKEN), false, 'the response body never enters the observation');
     });
 
@@ -1491,7 +1492,12 @@ describe('Generic HTTP — structural boundaries (§5, §29, §52)', () => {
     for (const file of FILES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';
-        const allowed = specifier.startsWith('./') || specifier === '../../../features/execution-runtime/index.js' || ['node:net', 'node:dns', 'node:https', 'node:http'].includes(specifier);
+        const allowed =
+          specifier.startsWith('./') ||
+          specifier === '../../../features/execution-runtime/index.js' ||
+          // P9: the pure monetary primitive, to prove amount.value is canonical text before it is spelled as a JSON number.
+          specifier === '../../../features/monetary-runtime/index.js' ||
+          ['node:net', 'node:dns', 'node:https', 'node:http'].includes(specifier);
         assert.ok(allowed, `${file} imports '${specifier}'; the adapter receives a ValidatedExecutionAction and nothing else from governance`);
       }
       const code = codeOf(file);

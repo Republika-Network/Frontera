@@ -139,9 +139,8 @@ intent.amount { value: "7500.50", currency: "USD" }
 The Kernel derives a grant ceiling only from a well-formed canonical amount; a
 grant ceiling or exercise amount that is not canonical text is malformed and
 refuses. The policy-pack condition evaluator compares a canonical `amount`
-exactly against its threshold (a number literal is read as the decimal its
-author wrote: `10000` → `"10000"`). The Generic HTTP adapter emits
-`amount.value` as that text.
+exactly against a canonical-text threshold (§9). The Generic HTTP adapter emits
+`amount.value` as a JSON number token spelled exactly as that text (§8).
 
 ### 6. P7 consumes the classification
 
@@ -184,22 +183,58 @@ Rollback: a pre-P9 binary reading a P9 grant sees a string ceiling, which its
 `Number.isFinite` check refuses — the grant covers no amount (fail closed). No
 record needs to be rewritten in either direction.
 
-### 8. Compatibility
+### 8. Compatibility — the frozen v1 wire is kept, exactly
 
-- **`POST /api/governed-actions` (capability-gated) — deliberate breaking change
-  to one request field's type.** `amount.value` must be decimal text. There is no
-  safe compatibility shim: by the time the Host sees a JSON number its
-  precision is gone, and accepting it would be the silent rounding P9 exists to
-  forbid. The SDK's `GovernedActionAmount.value` is now `string`. An
-  amount-bearing intent also requires the Host to configure `monetary`.
-- **`POST /api/governance/evaluate` (frozen v1) — unchanged at runtime.** A numeric
-  `action.amount` is still evaluated by policy packs as before (the evaluator's
-  number–number path is kept); this route issues no grant, and the Kernel derives
-  no ceiling from a non-canonical amount. A canonical-text amount is compared
-  exactly.
-- The TypeScript types `ActionDescriptor.amount`, `GrantCeilingBound.limit`,
+`docs/enterprise/API_STABILITY_V1.md` §1 freezes v1: no breaking changes within
+v1.x, additive changes only, breaking changes only behind a `/v2` path prefix
+(none exists), and no security-exception mechanism. The v1 wire lets a client
+write a monetary amount as a JSON number. P9 keeps that — without letting a
+double into the trusted domain:
+
+- **Exact at the protocol boundary.** `POST /api/governed-actions`
+  (`amount.value`) and `POST /api/governance/evaluate` (`action.amount`) parse
+  their bodies with the platform's JSON source-text access (ECMAScript 2025
+  `JSON.parse` reviver `context.source`, standard in the Node 22 this Host
+  requires — not a custom parser, not a dependency;
+  `src/enterprise/api/exact-monetary-json.ts`). The characters the client wrote
+  become canonical text through `canonicalDecimalFromJsonNumberLexeme` —
+  exponent applied by moving the point in the digit string — so `9007199254740993`
+  is exact and `7.5e3` is `7500`. Decimal text is accepted additively. A lexeme
+  that names no non-negative quantity (`-5`), or a runtime without source text,
+  leaves a JavaScript number, which every monetary consumer refuses.
+- **What remains a number is refused, not converted.** An in-process caller
+  handing `AocEnterprise.governAction` an already-parsed JavaScript number has no
+  source text to be exact about; the intent validator refuses it. On the evaluate
+  path the Kernel derives no grant ceiling from a non-canonical amount, and the
+  policy-pack evaluation service answers `invalid_input` (fail closed:
+  `policy_denied`) rather than compare one.
+- **New validation is host configuration, on existing statuses.** Asset
+  recognition, trusted scale and the financial classification can refuse an
+  intent the pre-P9 Host accepted; each is `400` `rejected` /
+  `GOVERNED_ACTION_INTENT_INVALID`, the status and code the route always used
+  for an invalid intent, and each follows from what the deployment configures.
+  No representation of v1 input could avoid it: any path to the Kernel must
+  satisfy the same P9 invariants.
+- **SDK.** `GovernedActionAmount.value` widens additively to `string | number`.
+- **Generic HTTP adapter.** Its P6 body contract — `amount.value` a JSON
+  number — is kept: the token is written with `JSON.rawJSON` from the canonical
+  text, byte for byte, never through a double.
+- **TypeScript.** `ActionDescriptor.amount`, `GrantCeilingBound.limit`,
   `GrantBoundEvaluation.limit`, `GrantExerciseAmount.value` and the policy-pack
-  `amount` fields are now `string`.
+  `amount` fields are `string`. These are internal feature/Kernel contracts, not
+  the HTTP freeze.
+
+### 9. Policy-pack thresholds are canonical text
+
+A trusted host value is still monetary data, and trust does not restore bits a
+double has already lost. A policy predicate on `amount` states its threshold as
+canonical decimal text (`predicate('amount', 'greater_than_or_equal', '10000')`);
+`PolicyPackValidator` refuses a number, a non-canonical spelling or a
+non-comparison operator on `amount` (`INVALID_MONETARY_THRESHOLD`), so such a pack
+cannot be registered; the condition evaluator compares text with text only; and
+no production function converts a number into monetary text — the retired
+conversion survives only as P7 test support describing how pre-P9 ledger usage
+was written.
 
 ## Invariants
 
@@ -225,16 +260,13 @@ XRPL (P18); containment (P19); KMS/HSM (P20); behavioural intelligence (P21).
 
 ## Follow-ups recorded by P9
 
-- **P10.** Policy-pack thresholds remain host-authored number literals, read
-  exactly; authority-sourced ceilings should be canonical text from the start.
-  `authority-graph`'s declared-but-unevaluated `max_amount` constraint carries a
-  `number` and is not on the spine.
+- **P10.** Authority-sourced ceilings should be canonical text from the start,
+  as policy-pack thresholds now are. `authority-graph`'s `max_amount` constraint
+  is typed as canonical text since the P9 closure; it is declared but no
+  evaluator reads it, so enforcing it is P10's.
 - **P13/P14.** A rail adapter must encode `amount.value` for its provider (for
   example minor units for Stripe) from the canonical text and the asset's
-  trusted scale — never through a float. The Generic HTTP adapter now emits the
-  text verbatim.
-- **Frozen evaluate route.** Whether `POST /api/governance/evaluate` should reject
-  a numeric `action.amount` is a v2 question.
+  trusted scale — never through a float.
 - **Trusted context facts** (`aoc.context`, layer C) carry arbitrary JSON values,
   numbers included; a resolver reporting a monetary fact should report text.
 - **`collateralization-mandate`** keeps its own `{ minorUnits: safe integer,

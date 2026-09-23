@@ -2,7 +2,7 @@ export {
   MONETARY_DECIMAL_MAXIMUM_DIGITS,
   MONETARY_DECIMAL_MAXIMUM_TEXT_LENGTH,
   addCanonicalDecimals,
-  canonicalDecimalFromNumber,
+  canonicalDecimalFromJsonNumberLexeme,
   canonicalDecimalScale,
   canonicalizeDecimalText,
   compareCanonicalDecimals,

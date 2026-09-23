@@ -80,14 +80,17 @@ export type GovernanceVerificationResult = Readonly<Record<string, unknown>> & {
 /**
  * A quantity the caller intends to move.
  *
- * `value` is **decimal text** — `"7500"`, `"10.50"` — never a JSON number: the
- * Host refuses a number rather than guessing its precision, refuses more
- * fractional digits than the asset allows rather than rounding, and refuses an
- * asset it does not recognize. Whether the action moves money at all is the
- * Host's classification, not the caller's.
+ * Prefer **decimal text** for `value` — `"7500"`, `"10.50"`. A `number` is still
+ * accepted (the v1 wire): the Host reads the exact characters of the JSON number
+ * this client sends, never an IEEE-754 re-parse of them. But a JavaScript number
+ * has already lost precision **in this program** for values such as
+ * `9007199254740993` or `0.1 + 0.2`, and the Host can only honour what was
+ * sent. The Host refuses more fractional digits than the asset allows rather
+ * than rounding, and refuses an asset it does not recognize. Whether the action
+ * moves money at all is the Host's classification, not the caller's.
  */
 export interface GovernedActionAmount {
-  readonly value: string;
+  readonly value: string | number;
   readonly currency: string;
 }
 

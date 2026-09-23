@@ -19,7 +19,8 @@ export const SPORTS_EVENT_SETTLEMENT_BASIC_POLICY_PACK: RegisterPolicyPackParams
 };
 
 const SUPPORTED_DEMO_JURISDICTIONS = ['demo-jurisdiction-a', 'demo-jurisdiction-b'];
-const SETTLEMENT_APPROVAL_THRESHOLD = 5000;
+/** Canonical decimal text (P9): a monetary threshold is never a JavaScript number. */
+const SETTLEMENT_APPROVAL_THRESHOLD = '5000';
 
 const SOURCES: readonly PolicyPackSource[] = [
   {

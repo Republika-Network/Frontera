@@ -1,4 +1,4 @@
-import { addCanonicalDecimals, canonicalDecimalFromNumber, compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
+import { addCanonicalDecimals, compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
 
 /**
  * Exact, non-negative decimal quantities for aggregate amount limits.
@@ -66,14 +66,4 @@ export function addExerciseDecimals(left: string, right: string): string {
 /** `-1`, `0` or `1` as `left` is below, equal to or above `right`, exactly. */
 export function compareExerciseDecimals(left: string, right: string): -1 | 0 | 1 {
   return compareCanonicalDecimals(left, right);
-}
-
-/**
- * The canonical decimal text of a finite, non-negative JavaScript number, or
- * `undefined` when there is none. Retained for callers that hold a number by
- * their own contract; **the exercise-control gate no longer calls it**, because
- * an attempted amount is canonical text before it reaches this module.
- */
-export function exerciseDecimalFromNumber(value: number): string | undefined {
-  return canonicalDecimalFromNumber(value, EXERCISE_DECIMAL_USAGE_DIGITS);
 }

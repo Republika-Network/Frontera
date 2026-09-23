@@ -6,7 +6,6 @@ export {
   EXERCISE_DECIMAL_USAGE_DIGITS,
   addExerciseDecimals,
   compareExerciseDecimals,
-  exerciseDecimalFromNumber,
   isCanonicalExerciseDecimal,
 } from './exercise-decimal.js';
 

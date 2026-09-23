@@ -1,6 +1,7 @@
 import type { ValidatedExecutionAction } from '../../../features/execution-runtime/index.js';
 import { GENERIC_HTTP_LIMITS as LIMITS, type EnterpriseGenericHttpActionSource, type EnterpriseGenericHttpMethod } from './contracts.js';
 import { decimalString, type GenericHttpPlan, type GenericHttpPlanBinding } from './configuration.js';
+import { isCanonicalDecimal } from '../../../features/monetary-runtime/index.js';
 
 /**
  * The pure translation: frozen plan + `ValidatedExecutionAction` → one complete
@@ -85,11 +86,27 @@ function textFor(binding: GenericHttpPlanBinding, action: ValidatedExecutionActi
   return value;
 }
 
-/** JSON form for a body position. Strings stay strings, numbers stay numbers, literals keep their type. `undefined` means "omit". */
-function jsonFor(binding: GenericHttpPlanBinding, action: ValidatedExecutionAction): string | number | boolean | null | undefined {
+/** `JSON.rawJSON` (ECMAScript 2025, standard in the Node 22 this Host requires): a JSON number token spelled exactly as given. */
+const rawJson = (JSON as unknown as { readonly rawJSON?: (text: string) => object }).rawJSON;
+
+/**
+ * The monetary amount as a JSON **number** token whose digits are exactly the
+ * canonical decimal text (P9) — `"9007199254740993.01"` goes out as
+ * `9007199254740993.01`, byte for byte. The number shape is the P6 contract;
+ * the value never passes through an IEEE-754 double on the way. Anything that is
+ * not canonical text, or a runtime without `JSON.rawJSON`, cannot be built.
+ */
+function exactJsonNumber(value: string | number): object {
+  if (typeof value !== 'string' || !isCanonicalDecimal(value) || rawJson === undefined) return unbuildable();
+  return rawJson(value);
+}
+
+/** JSON form for a body position. Strings stay strings, `amount.value` is an exact JSON number, literals keep their type. `undefined` means "omit". */
+function jsonFor(binding: GenericHttpPlanBinding, action: ValidatedExecutionAction): string | number | boolean | null | object | undefined {
   if (binding.kind === 'literal') return binding.value;
   const value = readSource(action, binding.source);
   if (value === undefined) return binding.required ? unbuildable() : undefined;
+  if (binding.source === 'amount.value') return exactJsonNumber(value);
   return value;
 }
 
@@ -136,7 +153,7 @@ export function mapGenericHttpRequest(plan: GenericHttpPlan, action: ValidatedEx
     if (plan.body !== undefined) {
       // Null prototype: a destination key can never reach a prototype, and the
       // plan already refused `__proto__`, `prototype` and `constructor`.
-      const object = Object.create(null) as Record<string, string | number | boolean | null>;
+      const object = Object.create(null) as Record<string, string | number | boolean | null | object>;
       for (const [key, binding] of plan.body) {
         const value = jsonFor(binding, action);
         if (value === undefined) continue;

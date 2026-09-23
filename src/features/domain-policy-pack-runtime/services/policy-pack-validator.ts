@@ -1,8 +1,35 @@
 import type { PolicyPack } from '../domain/policy-pack.js';
 import type { PolicyPackVersion } from '../domain/policy-pack-version.js';
 import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
-import type { PolicyCondition } from '../domain/policy-pack-condition.js';
+import type { PolicyCondition, PolicyPredicateCondition } from '../domain/policy-pack-condition.js';
 import { PolicyPackValidationError } from '../runtime/policy-pack-runtime-errors.js';
+import { isCanonicalDecimal } from '../../monetary-runtime/index.js';
+
+/**
+ * P9: the only predicates on `amount` a pack may state, and what they compare
+ * against. A threshold is canonical decimal text (`src/features/monetary-runtime`)
+ * — never a JavaScript number, whose precision is decided before the pack is
+ * ever read — so `amount >= "9007199254740993"` means exactly that.
+ */
+function isMonetaryPredicateValue(condition: PolicyPredicateCondition): boolean {
+  switch (condition.operator) {
+    case 'exists':
+    case 'not_exists':
+      return condition.value === undefined;
+    case 'equals':
+    case 'not_equals':
+    case 'greater_than':
+    case 'greater_than_or_equal':
+    case 'less_than':
+    case 'less_than_or_equal':
+      return isCanonicalDecimal(condition.value);
+    case 'in':
+    case 'not_in':
+      return Array.isArray(condition.value) && condition.value.length > 0 && condition.value.every((entry) => isCanonicalDecimal(entry));
+    default:
+      return false;
+  }
+}
 
 export interface PolicyPackValidationIssue {
   readonly code: string;
@@ -130,6 +157,12 @@ export class PolicyPackValidator {
         condition.metadataPath === undefined
       ) {
         issues.push({ code: 'INVALID_PREDICATE', message: `Rule ${ruleId} has a predicate on ${condition.field} missing a value.` });
+      }
+      if (condition.field === 'amount' && !isMonetaryPredicateValue(condition)) {
+        issues.push({
+          code: 'INVALID_MONETARY_THRESHOLD',
+          message: `Rule ${ruleId} compares amount against something other than canonical decimal text (e.g. "10000", "123.45"). A monetary threshold is never a number.`,
+        });
       }
       return;
     }

@@ -19,9 +19,12 @@ import type { KernelDecisionStatus } from '../../kernel/index.js';
  * the Kernel's own `action.amount`/`action.currency`, and onto the exercise
  * amount the grant contains.
  *
- * `value` is **decimal text** — `"7500"`, `"10.50"` — never a JSON number
- * (P9): a number's precision was decided by whoever parsed it, so one is refused
- * rather than re-spelled. `currency` is an asset identifier the deployment's
+ * `value` is **decimal text** — `"7500"`, `"10.50"` — by the time it reaches
+ * this contract (P9). On the v1 HTTP wire a client may still write a JSON
+ * number: the route reads that number's exact source characters and hands this
+ * contract their canonical text (`api/exact-monetary-json.ts`). A JavaScript
+ * `number` arriving here — from an in-process caller, where no source text
+ * exists — is refused rather than re-spelled. `currency` is an asset identifier the deployment's
  * trusted asset registry recognizes; the asset's scale is the registry's, and
  * there is no field through which a caller could state one.
  */

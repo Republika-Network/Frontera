@@ -25,7 +25,7 @@ import { createFinancialActionClassifier } from '../../features/monetary-runtime
 import { createSqliteBoundedGrantStore } from '../bounded-grant-store/index.js';
 import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
-import { GOVERNED_ACTION_REASON_CODES as R, validateGovernedActionIntent } from '../governed-action/index.js';
+import { GOVERNED_ACTION_REASON_CODES as R, deriveGovernedActionRequestId, governedActionIdempotencyScope, validateGovernedActionIntent } from '../governed-action/index.js';
 import { buildGovernedActionKernelRequest } from '../governed-action/kernel-request.js';
 import {
   ALLOWED_INTENT,
@@ -33,6 +33,7 @@ import {
   IDENTITY,
   NOW,
   NO_TEMPORAL_BOUND,
+  ORG,
   PMFREAK_ACTOR_ID,
   TEST_MONETARY,
   buildGovernedWorld,
@@ -338,5 +339,47 @@ describe('P9 persistence — exact round trip, and pre-P9 numeric ceilings refus
       assert.equal(assessment.usable, false, value);
       assert.ok(assessment.reasonCodes.includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED), value);
     }
+  });
+});
+
+describe('P9 persistence — a pre-P9 Governance Record with a numeric amount is never rewritten and never replayed as text', () => {
+  it('replaying its idempotency key with the canonical amount is an idempotency conflict: no Kernel run, no grant, no adapter, record untouched', async () => {
+    const world = buildGovernedWorld({ monetary: DRAFTING_IS_FINANCIAL });
+    // A real committed decision to borrow a genuine Kernel result shape from.
+    const seed = await world.orchestrator.govern(IDENTITY, fresh({ ...FINANCIAL_INTENT }));
+    assert.equal(seed.status, 'executed', JSON.stringify(seed));
+    const [seedRequest] = world.kernelRequests;
+    const [seedResult] = world.kernelResults;
+    assert.ok(seedRequest !== undefined && seedResult !== undefined);
+
+    // Plant the record exactly as a pre-P9 Host committed it: the amount a JSON number.
+    const principalId = IDENTITY.principal.principalId;
+    const legacyKey = 'p9-legacy-record';
+    const requestId = deriveGovernedActionRequestId({ organizationId: ORG, principalId, idempotencyKey: legacyKey });
+    const legacyRequest = { ...seedRequest, requestId, action: { ...seedRequest.action, amount: 250 as unknown as string } };
+    const accessContext = { system: false, organizationId: ORG, actorId: PMFREAK_ACTOR_ID } as const;
+    await world.rawStore.appendEvaluation({
+      request: legacyRequest,
+      result: { ...seedResult, requestId, decisionId: 'pre-p9-decision-1' },
+      receivedAt: NOW,
+      enterpriseContext: { enterpriseVersion: 'pre-p9', lifecycleState: 'ready', modules: [], environment: 'test' },
+      events: [],
+      idempotency: { idempotencyKey: legacyKey, scope: governedActionIdempotencyScope({ organizationId: ORG, principalId }) },
+      accessContext,
+    });
+    const before = await world.rawStore.getByRequestId(accessContext, requestId);
+    assert.ok(before !== null);
+
+    const kernelCalls = world.kernelRequests.length;
+    const adapterCalls = world.adapter.callCount;
+    const replay = await world.orchestrator.govern(IDENTITY, { ...FINANCIAL_INTENT, idempotencyKey: legacyKey });
+    assert.equal(replay.status, 'rejected', JSON.stringify(replay));
+    assert.deepEqual([...replay.reasonCodes], [R.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT]);
+    assert.equal(world.kernelRequests.length, kernelCalls, 'the Kernel was not re-run');
+    assert.equal(world.adapter.callCount, adapterCalls, 'no second effect');
+
+    const after = await world.rawStore.getByRequestId(accessContext, requestId);
+    assert.deepEqual(after, before, 'the historical record is untouched');
+    assert.equal((after?.request.requestPayload as { action?: { amount?: unknown } } | undefined)?.action?.amount, 250, 'its amount is still the number it was committed as — never re-spelled');
   });
 });

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   MONETARY_DECIMAL_MAXIMUM_DIGITS,
   addCanonicalDecimals,
-  canonicalDecimalFromNumber,
+  canonicalDecimalFromJsonNumberLexeme,
   canonicalDecimalScale,
   canonicalizeDecimalText,
   compareCanonicalDecimals,
@@ -144,16 +144,43 @@ describe('P9 canonical decimals — exact comparison and addition (no IEEE-754)'
   });
 });
 
-describe('P9 canonical decimals — a trusted numeric literal, read as its author wrote it', () => {
-  it('reads a policy literal exactly, expanding exponents by string manipulation', () => {
-    assert.equal(canonicalDecimalFromNumber(10000), '10000');
-    assert.equal(canonicalDecimalFromNumber(0.1), '0.1');
-    assert.equal(canonicalDecimalFromNumber(1e-7), '0.0000001');
-    assert.equal(canonicalDecimalFromNumber(1e21), '1000000000000000000000');
-    assert.equal(canonicalDecimalFromNumber(-0), '0');
+describe('P9 canonical decimals — a JSON number lexeme, as the client wrote it (never via `number`)', () => {
+  for (const [lexeme, canonical] of [
+    ['7500', '7500'],
+    ['7500.00', '7500'],
+    ['0.1', '0.1'],
+    ['9007199254740993', '9007199254740993'],
+    ['9007199254740993.010', '9007199254740993.01'],
+    ['123456789012345678901234567890.123456789', '123456789012345678901234567890.123456789'],
+    ['1e3', '1000'],
+    ['1E3', '1000'],
+    ['1.5e3', '1500'],
+    ['1.5e+3', '1500'],
+    ['15e-1', '1.5'],
+    ['1e-7', '0.0000001'],
+    ['0.000001e0', '0.000001'],
+    ['0e5', '0'],
+    ['-0', '0'],
+    ['-0.0', '0'],
+  ] as const) {
+    it(`${JSON.stringify(lexeme)} is exactly ${JSON.stringify(canonical)}`, () => {
+      assert.equal(canonicalDecimalFromJsonNumberLexeme(lexeme), canonical);
+    });
+  }
+
+  it('the lexeme beyond 2^53 is exact where the parsed number is not', () => {
+    const lexeme = '9007199254740993';
+    assert.equal(String(JSON.parse(lexeme)), '9007199254740992', 'the hazard is real');
+    assert.equal(canonicalDecimalFromJsonNumberLexeme(lexeme), '9007199254740993');
   });
 
-  it('has no canonical form for a negative or non-finite number', () => {
-    for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) assert.equal(canonicalDecimalFromNumber(value), undefined);
+  for (const lexeme of ['-1', '-0.01', '01', '1.', '.5', '+1', '1e', '1e99999', '1e+9999', 'NaN', 'Infinity', ' 1', '1 ', '0x10', '1_000', '', '"1"']) {
+    it(`${JSON.stringify(lexeme)} is refused`, () => {
+      assert.equal(canonicalDecimalFromJsonNumberLexeme(lexeme), undefined);
+    });
+  }
+
+  it('refuses a JavaScript number outright — it is not a lexeme', () => {
+    for (const value of [0, 1, 7500, 0.1, 9007199254740993]) assert.equal(canonicalDecimalFromJsonNumberLexeme(value), undefined);
   });
 });

@@ -140,30 +140,47 @@ export function compareCanonicalDecimals(left: string, right: string): -1 | 0 | 
   return aligned.left < aligned.right ? -1 : aligned.left > aligned.right ? 1 : 0;
 }
 
+/** A JSON number exactly as it was written on the wire (RFC 8259 §6). */
+const JSON_NUMBER_LEXEME = /^(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]{1,4}))?$/;
+
 /**
- * The canonical decimal text of a finite, non-negative JavaScript number, or
- * `undefined` when there is none.
+ * The canonical decimal text of a **JSON number lexeme** — the characters a
+ * client actually wrote, captured by the protocol boundary before any IEEE-754
+ * parse — or `undefined` when it names no non-negative quantity.
  *
- * **Not a monetary ingress.** An amount never enters the trusted domain as a
- * number; this exists for values that are numbers *by their own contract* and
- * are authored by trusted configuration — a policy pack's literal threshold
- * (`amount >= 10000`), whose exact meaning is the decimal its author wrote.
- * Converted from `String(value)` — the shortest spelling that round-trips to the
- * same double — with exponent notation expanded by string manipulation rather
- * than by arithmetic, so nothing is rounded on the way. `-0` is `0`. `NaN`,
- * `±Infinity` and negatives have no canonical form and yield `undefined`.
+ * Text in, text out: the exponent is applied by moving the decimal point in the
+ * digit string, never by arithmetic, so `"9007199254740993.010"` is
+ * `"9007199254740993.01"` and `"1.5e3"` is `"1500"` exactly. The result goes
+ * through `canonicalizeDecimalText`, so there is still one canonicalizer. A
+ * negative lexeme has no canonical form (`"-0"` is zero), an exponent of more
+ * than four digits is refused before any expansion, and anything that is not a
+ * JSON number — a JavaScript number included — is refused.
+ *
+ * This is the one place a v1 wire amount written as a JSON number can become
+ * monetary data, and it never goes through `number` on the way.
  */
-export function canonicalDecimalFromNumber(value: number, maximumDigits: number = MONETARY_DECIMAL_MAXIMUM_DIGITS): string | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
-  const spelled = String(value === 0 ? 0 : value);
-  const match = /^([0-9]+)(?:\.([0-9]+))?(?:e([+-][0-9]+))?$/.exec(spelled);
+export function canonicalDecimalFromJsonNumberLexeme(lexeme: unknown): string | undefined {
+  if (typeof lexeme !== 'string' || lexeme.length === 0 || lexeme.length > MONETARY_DECIMAL_MAXIMUM_TEXT_LENGTH) return undefined;
+  const match = JSON_NUMBER_LEXEME.exec(lexeme);
   if (match === null) return undefined;
-  const integer = match[1] ?? '';
-  const fraction = match[2] ?? '';
-  const exponent = Number(match[3] ?? '0');
-  const scale = fraction.length - exponent;
-  const coefficient = BigInt(`${integer}${fraction}`);
-  const exact: ExactDecimal = scale >= 0 ? { coefficient, scale } : { coefficient: coefficient * 10n ** BigInt(-scale), scale: 0 };
-  const text = format(exact);
-  return isCanonicalDecimal(text, maximumDigits) ? text : undefined;
+  const negative = match[1] === '-';
+  const integer = match[2] ?? '0';
+  const fraction = match[3] ?? '';
+  const exponentText = match[4] ?? '0';
+  const exponentDigits = exponentText.replace(/^[+-]/, '');
+  const exponentMagnitude = Number(exponentDigits);
+  const exponent = exponentText.startsWith('-') ? -exponentMagnitude : exponentMagnitude;
+  const digits = `${integer}${fraction}`;
+  const point = integer.length + exponent;
+  if (point > MONETARY_DECIMAL_MAXIMUM_TEXT_LENGTH || point < -MONETARY_DECIMAL_MAXIMUM_TEXT_LENGTH) return undefined;
+  let plain: string;
+  if (point <= 0) plain = `0.${'0'.repeat(-point)}${digits}`;
+  else if (point >= digits.length) plain = `${digits}${'0'.repeat(point - digits.length)}`;
+  else plain = `${digits.slice(0, point)}.${digits.slice(point)}`;
+  const [whole = '0', rest] = plain.split('.');
+  const trimmedWhole = whole.replace(/^0+(?=[0-9])/, '');
+  const canonical = canonicalizeDecimalText(rest === undefined ? trimmedWhole : `${trimmedWhole}.${rest}`);
+  if (canonical === undefined) return undefined;
+  if (negative) return canonical === '0' ? '0' : undefined;
+  return canonical;
 }

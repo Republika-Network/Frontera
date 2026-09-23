@@ -1,4 +1,4 @@
-import { canonicalDecimalFromNumber, compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
+import { compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
 import type { PolicyCondition, PolicyPredicateCondition, PolicyPredicateField } from '../domain/policy-pack-condition.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
 
@@ -171,20 +171,21 @@ export class PolicyConditionEvaluator {
   }
 
   /**
-   * An ordered comparison, exact wherever the field is a monetary quantity.
+   * An ordered comparison, exact wherever either side is a monetary quantity.
    *
-   * A canonical decimal field (`amount`, since P9) is compared with `BigInt`
-   * arithmetic against the policy's threshold — itself canonical decimal text,
-   * or a finite number literal read as the exact decimal its author wrote
-   * (`10000` → `"10000"`). Nothing here turns the field into a number. Any
-   * other pairing of a number with a number compares as before; every other
-   * pairing does not match.
+   * P9: a canonical decimal field (`amount`) is compared with `BigInt`
+   * arithmetic against a threshold that is **itself** canonical decimal text —
+   * `"10000"`, never `10000`. A number threshold against a monetary field, or a
+   * monetary threshold against a number field, does not match: a JavaScript
+   * number's precision was decided before the pack was read, and nothing here
+   * re-spells one. `PolicyPackValidator` refuses such a pack
+   * (`INVALID_MONETARY_THRESHOLD`) and `PolicyPackEvaluationService` refuses a
+   * non-canonical input amount (`invalid_input`), so this row is a backstop.
+   * Two non-monetary numbers compare as before.
    */
   private compareOrdered(fieldValue: unknown, expected: unknown, accepts: (order: -1 | 0 | 1) => boolean): boolean {
-    if (isCanonicalDecimal(fieldValue)) {
-      if (typeof expected === 'number' && Number.isFinite(expected) && expected < 0) return accepts(1);
-      const threshold = typeof expected === 'number' ? canonicalDecimalFromNumber(expected) : isCanonicalDecimal(expected) ? expected : undefined;
-      return threshold !== undefined && accepts(compareCanonicalDecimals(fieldValue, threshold));
+    if (isCanonicalDecimal(fieldValue) || isCanonicalDecimal(expected)) {
+      return isCanonicalDecimal(fieldValue) && isCanonicalDecimal(expected) && accepts(compareCanonicalDecimals(fieldValue, expected));
     }
     if (typeof fieldValue !== 'number' || typeof expected !== 'number') {
       return false;
