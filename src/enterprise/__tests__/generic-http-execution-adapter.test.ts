@@ -459,7 +459,10 @@ describe('Generic HTTP — request mapping (§38 rows 1–31)', () => {
   it('21–22. amount.value stays a JSON number — spelled exactly as its canonical text, never through a double (P9) — and amount.unit an exact string; literals keep their JSON type', () => {
     const request = mapped({ body: { kind: 'json-object', fields: { v: { kind: 'source', source: 'amount.value' }, u: { kind: 'source', source: 'amount.unit' }, t: { kind: 'literal', value: true }, n: { kind: 'literal', value: null }, s: { kind: 'literal', value: '7500' } } } }, { ...ACTION, amount: { value: '7500.25', unit: 'usd ' } });
     assert.deepEqual(JSON.parse(request.body ?? ''), { v: 7500.25, u: 'usd ', t: true, n: null, s: '7500' });
-    assert.ok(request.body?.includes('"v":7500.25'), request.body);
+    assert.ok(
+      request.body?.includes('"v":7500.25'),
+      `expected exact monetary JSON number in request body; got ${request.body ?? '<undefined>'}`,
+    );
   });
 
   it('numbers become deterministic decimal text in path, query and header positions; booleans become true/false', () => {
