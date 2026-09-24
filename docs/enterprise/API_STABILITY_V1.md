@@ -364,6 +364,24 @@ the existing contract and only when a deployment enables it:
 No resolution authority id, resolution digest, reservation or budget
 correction is ever part of a response. The SDK needs no change.
 
+**P13 (unreleased) adds no endpoint, no request field, no response field, no
+status, no reason code and no `withheldBy` value.** An optional, host-composed
+MPP challenge adapter (`docs/architecture/ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md`)
+turns a merchant's `402` `Payment` challenge into an ordinary governed action for
+a stable business operation; it is reachable only by trusted in-process code
+(`AocEnterprise.mppChallengePayments`, `AocEnterprise.mppChallengeContexts`) and
+calls the same orchestrator this route does. The frozen surface stays 28
+endpoints, the governed-action request body is unchanged (`businessOperationId`,
+`mppChallenge` and every other P13 name are undeclared properties, refused as
+they always were), and the SDK needs no change. One wire-visible consequence,
+inside the existing contract:
+
+- `businessOperationId`, `challenge`, `challengeId`, `mppChallenge`,
+  `mppMethod`, `mppIntent`, `mppRealm`, `paymentChallenge`,
+  `paymentCredential` and `merchantRealm` join the reserved `assertedContext`
+  keys (`400` `rejected` / `GOVERNED_ACTION_INTENT_INVALID`). A caller can never
+  present a challenge or name a business operation through this route.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.

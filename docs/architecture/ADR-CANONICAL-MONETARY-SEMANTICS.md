@@ -264,9 +264,12 @@ XRPL (P18); containment (P19); KMS/HSM (P20); behavioural intelligence (P21).
   as policy-pack thresholds now are. `authority-graph`'s `max_amount` constraint
   is typed as canonical text since the P9 closure; it is declared but no
   evaluator reads it, so enforcing it is P10's.
-- **P13/P14.** A rail adapter must encode `amount.value` for its provider (for
-  example minor units for Stripe) from the canonical text and the asset's
-  trusted scale — never through a float.
+- **P13/P14.** An MPP method normalizer (P13) must map a method's base units
+  and currency to canonical text in a registry asset through a trusted mapping,
+  never a guess (`ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md` §5). A rail
+  adapter (P14) must encode `amount.value` for its provider (for example minor
+  units for Stripe) from the canonical text and the asset's trusted scale —
+  never through a float.
 - **Trusted context facts** (`aoc.context`, layer C) carry arbitrary JSON values,
   numbers included; a resolver reporting a monetary fact should report text.
 - **`collateralization-mandate`** keeps its own `{ minorUnits: safe integer,

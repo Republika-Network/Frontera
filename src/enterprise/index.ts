@@ -631,6 +631,48 @@ export type {
 } from './execution-resolution-store/index.js';
 
 /**
+ * P13 MPP challenge adaptation and business-level idempotency -- **types
+ * only**. A host enables it through `createEnterprise({ mppChallengePayments:
+ * { enabled: true, methods, selectChallenge, resolveCounterparty } })`,
+ * implements `MppChallengeMethodNormalizer` for its own trusted payment
+ * methods, submits merchant 402 challenges through the trusted in-process
+ * `AocEnterprise.mppChallengePayments` and reads the P14 handoff through
+ * `AocEnterprise.mppChallengeContexts`. No parser, store or service is exported
+ * as a value, and no route or SDK method exists. See
+ * `docs/architecture/ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md`.
+ */
+export type { EnterpriseMppChallengePaymentOptions } from './composition/composition-root.js';
+export type {
+  MppChallengeContextReader,
+  MppChallengeFields,
+  MppChallengeMethodNormalizer,
+  MppChallengePaymentRequest,
+  MppChallengePaymentResult,
+  MppChallengePaymentService,
+  MppChallengeRefusal,
+  MppChallengeSelectionContext,
+  MppChallengeSelector,
+  MppCounterpartyResolutionContext,
+  MppCounterpartyResolver,
+  MppJsonValue,
+  MppNormalizedCharge,
+  ParsedMppPaymentChallenge,
+  ProtectedMppRequest,
+  SupportedMppChallenge,
+  VerifiedMppChallengeContext,
+} from './mpp-challenge/index.js';
+export type {
+  MppBusinessOperationAccessContext,
+  MppBusinessOperationRecord,
+  MppBusinessOperationState,
+  MppBusinessOperationStore,
+  MppBusinessOperationStoreErrorCode,
+  MppBusinessOperationStoreHealth,
+  MppChallengeInstanceRecord,
+  MppGovernedRequestState,
+} from './mpp-business-operation-store/index.js';
+
+/**
  * Customer-plane identity admission -- type-only, for the same reason the
  * execution composition below is. A deployment adopts it through
  * `createEnterprise({ customerIdentityAdmission: { enabled: true } })`; the

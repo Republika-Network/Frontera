@@ -83,6 +83,14 @@ import { createExecutionResolutionBinder } from '../execution-reconciliation/bin
 import type { ExecutionReconciliationService } from '../execution-reconciliation/contracts.js';
 import { ExecutionReconciliationConfigurationError } from '../execution-reconciliation/errors.js';
 import { createExecutionReconciliationService } from '../execution-reconciliation/service.js';
+import { createMppBusinessOperationModule } from '../modules/mpp-business-operation-module.js';
+import type { MppBusinessOperationStore } from '../mpp-business-operation-store/operation-store.js';
+import { createInMemoryMppBusinessOperationStore } from '../mpp-business-operation-store/in-memory-mpp-business-operation-store.js';
+import { createSqliteMppBusinessOperationStore } from '../mpp-business-operation-store/sqlite-mpp-business-operation-store.js';
+import { MppChallengeConfigurationError, snapshotMppChallengeComposition, type MppChallengeComposition } from '../mpp-challenge/composition.js';
+import { createMppChallengeContextReader } from '../mpp-challenge/context-reader.js';
+import type { MppChallengeContextReader, MppChallengeMethodNormalizer, MppChallengePaymentService, MppChallengeSelector, MppCounterpartyResolver } from '../mpp-challenge/contracts.js';
+import { createMppChallengePaymentService } from '../mpp-challenge/service.js';
 import { createExecutionLedger, executionClaimRecorded } from '../governed-action/execution-ledger.js';
 import type { ExerciseControlReconciliationPort } from '../../features/exercise-control-runtime/index.js';
 import {
@@ -325,6 +333,42 @@ export interface CreateEnterpriseOptions {
    * `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
    */
   readonly executionReconciliation?: EnterpriseExecutionReconciliationOptions;
+  /**
+   * P13 — MPP challenge adaptation and business-level idempotency.
+   * **Optional.** Omitted, or `enabled` anything but `true`, nothing changes.
+   *
+   * Enabled, it requires governed actions and composes:
+   *
+   * - the host's trusted **method normalizers** (one per `method/charge`),
+   *   **challenge selector** and **counterparty resolver**, validated and
+   *   snapshotted here, once — no dynamic registration, no first-wins;
+   * - the MPP business-operation store (its own SQLite file at
+   *   `mppBusinessOperation.sqlitePath` under `persistence.provider = 'sqlite'`,
+   *   process-local otherwise; a host may supply one it owns);
+   * - the trusted in-process surfaces `AocEnterprise.mppChallengePayments`
+   *   (challenge → durable business operation → `governedActionOrchestrator.govern`)
+   *   and `AocEnterprise.mppChallengeContexts` (read-only, by governed request id —
+   *   the P14 handoff).
+   *
+   * It is an ingress transformation, not an effect path: every payment still
+   * runs Kernel → committed decision → grant → P7 → claim → adapter. No HTTP
+   * route, SDK method, status or wire field is added, and no credential is
+   * built. See `docs/architecture/ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md`.
+   */
+  readonly mppChallengePayments?: EnterpriseMppChallengePaymentOptions;
+}
+
+/** What a host states to enable P13 MPP challenge payments. Trusted host composition; never caller input. */
+export interface EnterpriseMppChallengePaymentOptions {
+  readonly enabled: boolean;
+  /** Trusted method normalizers, at least one; each `methodId/intent` unique. Snapshotted at composition. */
+  readonly methods: readonly MppChallengeMethodNormalizer[];
+  /** Trusted, synchronous choice among usable challenges. There is no default and no first-wins. */
+  readonly selectChallenge: MppChallengeSelector;
+  /** Trusted, synchronous mapping from a method's merchant reference to the Frontera counterparty. */
+  readonly resolveCounterparty: MppCounterpartyResolver;
+  /** A store the **host** opened and owns. Used verbatim and never closed from here. */
+  readonly store?: MppBusinessOperationStore;
 }
 
 /** What a host states to enable P12 execution reconciliation. Trusted host composition; never caller input. */
@@ -683,6 +727,22 @@ export interface AocEnterprise {
    * `AocEnterprise` should be handed the evaluation surface rather than this.
    */
   readonly executionReconciliation?: ExecutionReconciliationService;
+  /**
+   * P13 — the trusted in-process **MPP challenge-payment** surface, present
+   * only when `mppChallengePayments` is enabled. Trusted host code hands it a
+   * `BoundCustomerIdentity` and a merchant's 402 challenge(s); it validates,
+   * durably binds the challenge to a stable business operation, and calls
+   * `governedActionOrchestrator.govern()` with an ordinary governed intent.
+   * It decides nothing, builds no credential and calls no provider. No HTTP
+   * route or SDK method reaches it.
+   */
+  readonly mppChallengePayments?: MppChallengePaymentService;
+  /**
+   * P13 — the **read-only** challenge-context surface (the P14 handoff): the
+   * verified business operation and latest accepted challenge for a governed
+   * request id, tenant-scoped. Reading it is not authority.
+   */
+  readonly mppChallengeContexts?: MppChallengeContextReader;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -844,6 +904,19 @@ async function buildExecutionResolutionStore(configuration: EnterpriseConfigurat
     return createSqliteExecutionResolutionStore(configuration.executionResolution.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
   }
   return createInMemoryExecutionResolutionStore({ now });
+}
+
+/**
+ * The MPP business-operation store (P13), when the host did not supply one:
+ * durable SQLite under `persistence.provider === 'sqlite'`, process-local (not
+ * durable) otherwise. A failure to open it is a startup failure: with MPP
+ * challenge payments enabled, no operation may reach governance undurably.
+ */
+async function buildMppBusinessOperationStore(configuration: EnterpriseConfiguration, now: () => string): Promise<MppBusinessOperationStore> {
+  if (configuration.persistence.provider === 'sqlite') {
+    return createSqliteMppBusinessOperationStore(configuration.mppBusinessOperation.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+  }
+  return createInMemoryMppBusinessOperationStore({ now });
 }
 
 /** A fresh one-method object over the resolution store: `bind`, `recordResolution`, `health` and `close` are unreachable from it even by a cast. */
@@ -1049,6 +1122,18 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     resolutionAuthorities = snapshotResolutionAuthorities(options.executionReconciliation.authorities, options.executionReconciliation.selectAuthority, 'executionReconciliation');
   }
 
+  // P13: MPP challenge payments, validated and snapshotted before any store is
+  // opened. Normalizers, selector and counterparty resolver are read here,
+  // once; nothing later registers, discovers or swaps one.
+  let mppComposition: MppChallengeComposition | undefined;
+  if (options.mppChallengePayments?.enabled === true) {
+    if (governedActionOptions === undefined) {
+      throw new MppChallengeConfigurationError('mppChallengePayments requires governedActionOrchestrator: a machine payment is a governed action, and there is no other path.');
+    }
+    const mpp = options.mppChallengePayments;
+    mppComposition = snapshotMppChallengeComposition(mpp.methods, mpp.selectChallenge, mpp.resolveCounterparty, 'mppChallengePayments');
+  }
+
   // P0-PKG-07: the durable authority path. Explicitly-supplied
   // `kernelProviders` still win outright -- that is how the Kernel's own
   // characterization suite injects a seeded world, and how an embedder
@@ -1223,6 +1308,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   const executionResolutionStore: ExecutionResolutionStore | undefined =
     resolutionAuthorities === undefined ? undefined : (options.executionReconciliation?.store ?? (await buildExecutionResolutionStore(configuration, kernelProviders.clock.now)));
   const executionResolutionStoreOpenedHere = executionResolutionStore !== undefined && options.executionReconciliation?.store === undefined;
+  // P13: the MPP business-operation store, only when MPP challenge payments are
+  // enabled. Load-bearing before governance, so a store that cannot be opened
+  // fails startup here — never a silent fallback to memory.
+  const mppBusinessOperationStore: MppBusinessOperationStore | undefined =
+    mppComposition === undefined ? undefined : (options.mppChallengePayments?.store ?? (await buildMppBusinessOperationStore(configuration, kernelProviders.clock.now)));
+  const mppBusinessOperationStoreOpenedHere = mppBusinessOperationStore !== undefined && options.mppChallengePayments?.store === undefined;
   // The write-only projector: the one object lifecycle modules are handed.
   const authorityEvents: AuthorityEventProjector | undefined =
     governedActionOptions === undefined || grantStore === undefined || customerIdentityAdmission === undefined
@@ -1392,6 +1483,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     await executionResolutionStore.close();
   }
 
+  /** The same ownership discipline for the MPP business-operation store: closed only when this composition root opened it. */
+  async function closeComposedMppBusinessOperationStore(): Promise<void> {
+    if (!mppBusinessOperationStoreOpenedHere || mppBusinessOperationStore === undefined) return;
+    await mppBusinessOperationStore.close();
+  }
+
   async function closeComposedExerciseLedger(): Promise<void> {
     if (!exerciseLedgerOpenedHere || exerciseLedger === undefined) return;
     const closable = exerciseLedger as Partial<{ close: () => Promise<void> }>;
@@ -1445,6 +1542,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     if (executionOutcomeStore !== undefined) registry.register(createExecutionOutcomeModule(executionOutcomeStore, kernelProviders.clock.now));
     if (executionResolutionStore !== undefined && resolutionAuthorities !== undefined) {
       registry.register(createExecutionResolutionModule(executionResolutionStore, resolutionAuthorities.authorities.size, kernelProviders.clock.now));
+    }
+    if (mppBusinessOperationStore !== undefined && mppComposition !== undefined) {
+      registry.register(createMppBusinessOperationModule(mppBusinessOperationStore, mppComposition.normalizers.size, kernelProviders.clock.now));
     }
     if (authorityEvents !== undefined) {
       registry.register(
@@ -1571,6 +1671,25 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
           now: kernelProviders.clock.now,
         });
 
+  // P13: the MPP challenge-payment service. It holds the orchestrator's
+  // `govern` (the one path to an effect), the business-operation writer, the
+  // snapshotted normalizers and the same P9 registry and classifier — and no
+  // Kernel, grant store, P7 ledger, P11/P12 writer or execution adapter.
+  const mppChallengePayments: MppChallengePaymentService | undefined =
+    governedActionOrchestrator === undefined || mppBusinessOperationStore === undefined || mppComposition === undefined
+      ? undefined
+      : createMppChallengePaymentService({
+          orchestrator: governedActionOrchestrator,
+          store: { record: (context, input) => mppBusinessOperationStore.record(context, input) },
+          composition: mppComposition,
+          monetary,
+          now: kernelProviders.clock.now,
+        });
+  const mppChallengeContexts: MppChallengeContextReader | undefined =
+    mppChallengePayments === undefined || mppBusinessOperationStore === undefined
+      ? undefined
+      : createMppChallengeContextReader({ readByGovernedRequestId: (context, requestId) => mppBusinessOperationStore.readByGovernedRequestId(context, requestId) });
+
   const governanceReads = createGovernanceReadService(persistence, configuration, telemetry);
   const evidence = createEvidenceService({
     governanceStore: persistence,
@@ -1646,6 +1765,8 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
     ...(executionResolutionStore !== undefined ? { executionResolutions: createExecutionResolutionReader(executionResolutionStore) } : {}),
     ...(executionReconciliation !== undefined ? { executionReconciliation } : {}),
+    ...(mppChallengePayments !== undefined ? { mppChallengePayments } : {}),
+    ...(mppChallengeContexts !== undefined ? { mppChallengeContexts } : {}),
     eventPublisher,
     telemetry,
     logger,
@@ -1698,6 +1819,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedAuthorityEventStore();
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
+      await closeComposedMppBusinessOperationStore();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -1709,6 +1831,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedAuthorityEventStore();
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
+      await closeComposedMppBusinessOperationStore();
     },
   };
 

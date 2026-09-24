@@ -411,6 +411,15 @@ decision before it exists.
   issuance. It is answered from the record before grant terms, the authority
   binding, source revalidation or issuance run, because those describe what
   may happen *now* and must not rewrite what already happened.
+- Since P13, business-level idempotency sits **above** this layer, not in it.
+  When `mppChallengePayments` is composed, trusted in-process code submits a
+  merchant's MPP `Payment` challenge for a caller-named business operation;
+  P13 durably records the operation and challenge, then calls `govern()` with
+  an ordinary intent whose `idempotencyKey` is derived from
+  `(org, principal, businessOperationId)` and never from the challenge. A
+  refreshed challenge therefore presents the byte-identical intent and replays
+  here, before the Kernel. Nothing in this orchestrator knows MPP. See
+  `docs/architecture/ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md`.
 
 ## Execution correlation and the write-ahead record
 
