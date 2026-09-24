@@ -214,6 +214,21 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the execution resolution store. */
     readonly sqlitePath: string;
   };
+  /**
+   * P13 — the MPP business-operation store: each logical MPP purchase, its
+   * immutable challenge history, and the governed request it maps to.
+   *
+   * Read **only** when `mppChallengePayments` is enabled and the host supplies
+   * no store of its own; used when `persistence.provider === 'sqlite'` (the
+   * process-local store otherwise, which does **not** survive a restart — and
+   * so gives no business idempotency across one). Its own file. A file that
+   * cannot be opened fails startup. See
+   * `docs/architecture/ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md`.
+   */
+  readonly mppBusinessOperation: {
+    /** SQLite path for the MPP business-operation store. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -330,6 +345,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     executionResolution: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',
+    },
+    mppBusinessOperation: {
+      sqlitePath: env.AOC_ENTERPRISE_MPP_BUSINESS_OPERATION_SQLITE_PATH ?? '.data/mpp-business-operations.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

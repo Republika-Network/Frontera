@@ -315,6 +315,7 @@ keys.
 
 Not exactly-once: it closes uncertainty only when a trusted authority can later prove what
 happened. Not a retry: a proven non-completion returns capacity and nothing else — the claim
-stays, the execution id is never re-run, no grant is re-issued (business-level retry is P13). No
+stays, the execution id is never re-run, no grant is re-issued (a deliberate second payment is a
+new P13 business operation; P13 defines no retry). No
 reservation TTL, no timeout-as-evidence, no polling, no receipts, settlement, Stripe, MPP, XRPL,
 KMS or HSM.

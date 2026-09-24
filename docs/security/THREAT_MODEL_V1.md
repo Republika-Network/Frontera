@@ -281,6 +281,29 @@ P12 lets a host-composed, trusted **resolution authority** later establish wheth
 | **Timeout as evidence / forced answers** | No TTL, poll, sweeper or timer; `unresolved` writes nothing | An execution may stay unresolved — and its capacity consumed — forever |
 | **Generic providerRef dereference (SSRF)** | P12 core never parses, fetches or templates a `providerRef`; no status-URL configuration exists | — |
 
+### 7.23 MPP challenge adaptation and business-level idempotency (added by P13)
+
+P13 lets trusted in-process host code hand Frontera a merchant's `402` MPP `Payment` challenge(s); Frontera validates them, durably binds the selected challenge to a caller-named **business operation**, and governs one ordinary governed action for it (`docs/architecture/ADR-MPP-CHALLENGE-AND-BUSINESS-IDEMPOTENCY.md`). Client-side only; no route, no credential, no network call, no new effect path. Optional composition.
+
+| Threat | Control | Residual |
+| --- | --- | --- |
+| **Challenge-id-as-idempotency confusion** — a new challenge `id` per 402 read as a new purchase | The governed key derives from (organization, principal, `businessOperationId`) only; challenge `id`, `expires`, `opaque` never reach it (SEC-INV-123) | A caller minting a fresh `businessOperationId` per retry defeats business idempotency by its own choice |
+| **Challenge-refresh double charge** | A refresh appends a challenge instance and presents the byte-identical intent; Governance replays before the Kernel; the write-ahead claim holds; P12 non-completion never re-runs the claimed execution (SEC-INV-131) | — |
+| **Same operation, changed price / asset / merchant / resource / body** | Business semantic digest; a different digest is a conflict before governance, never an overwrite (SEC-INV-124) | — |
+| **Body substitution** | A body-bearing request needs a matching RFC 9530 challenge digest against the trusted body digest; the body digest is part of the semantics (SEC-INV-129) | The network layer's digest is trusted |
+| **Realm substitution** | The challenge realm must equal the trusted expected realm when known; realm is never authority or a counterparty | Without an expected realm, the realm is only resolver context |
+| **Method downgrade / unsupported rail** | Only composed `methodId/charge` normalizers are candidates; other intents (`authorize`, `subscription`) are unsupported; the trusted selector chooses | The selector's policy is trusted host code (SEC-TRUST-010) |
+| **First-challenge-wins ambiguity** | The selector is asked even for one candidate and must name exactly one; throws, promises, unknown or duplicated ids refuse (SEC-INV-134) | — |
+| **Duplicate auth params / parser smuggling** | RFC 9110 tokenizer, never a comma split; duplicated known parameters invalidate the challenge; unknown parameters dropped unread (SEC-INV-135) | — |
+| **Malformed base64url / JCS ambiguity / prototype pollution** | Strict base64url round trip, fatal UTF-8, JCS round trip, no `__proto__`/`constructor`/`prototype` names; decoded data is frozen and never re-encoded | — |
+| **Oversized challenge DoS** | Every size bounded before allocation: field values, challenges, parameters, decoded bytes, depth and members | — |
+| **Merchant-supplied amount, currency or recipient read as authority** | A trusted normalizer maps currency and base units to exact P9 money; a trusted resolver maps the recipient to a counterparty; the Kernel, P10 and P7 still decide (SEC-INV-126, SEC-INV-128) | A wrong normalizer or resolver proposes wrong terms, which are then governed, not detected (SEC-TRUST-010) |
+| **Caller self-asserted business identity through the wrong surface** | No route or SDK method; P13 words refused at the governed-action top level and reserved in `assertedContext` (SEC-INV-137) | — |
+| **Credential leakage into the challenge store** | The store has no credential, authorization, secret, token or signature column and a closed contract; P13 reads no customer `Authorization` value (SEC-INV-133) | — |
+| **Cross-tenant business-operation collision** | Keyed by organization and principal; tenant-scoped reads; the P14 reader is keyed by organization and governed request id only | — |
+| **Store corruption read as "no previous operation"** | Verify-first reads of every row; corrupt state refuses reads and writes (SEC-INV-136); the governed request id is deterministic, so even an undetected loss replays the same governed request | Consistent re-seal (P20); a lost memory store after restart |
+| **Challenge authenticity** | Not claimed: the merchant verifies its own binding when P14 presents a credential | A forged challenge can propose a purchase; it is still governed and bounded |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.

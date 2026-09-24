@@ -136,6 +136,22 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   'finalOutcome',
   'confirmedCompleted',
   'confirmedNotCompleted',
+  // P13: MPP challenges and business operations are trusted in-process state,
+  // established only through `AocEnterprise.mppChallengePayments` and owned by
+  // the MPP business-operation store. A caller can neither name a business
+  // operation, present a challenge, spell a payment method, intent or realm,
+  // nor hand over a payment credential — not here, and not at the top level,
+  // where undeclared keys are refused already.
+  'businessOperationId',
+  'challenge',
+  'challengeId',
+  'mppChallenge',
+  'mppMethod',
+  'mppIntent',
+  'mppRealm',
+  'paymentChallenge',
+  'paymentCredential',
+  'merchantRealm',
 ];
 
 const MAX_CONTEXT_DEPTH = 8;
