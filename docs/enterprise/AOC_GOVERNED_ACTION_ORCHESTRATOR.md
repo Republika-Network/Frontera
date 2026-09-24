@@ -113,6 +113,28 @@ What changes here, and what does not:
   `exerciseControls`, `aggregateControls` and `authorityBindingDigest` are
   undeclared intent fields, and reserved `assertedContext` keys.
 
+## Authority-sourced payment ceilings (P10)
+
+A host-classified financial action is issued a grant only under **durable
+monetary authority** on the authority lineage the decision itself was proven
+against (the Kernel Authority Store's `max_amount` and `spending_limit`).
+
+- The requested amount is compared against the authority's per-execution
+  ceiling, never used as one. The grant's ceiling is the authority's.
+- A request above the ceiling, or a financial action whose authority cannot be
+  established, returns `withheld` / `authority-binding` with a
+  `FINANCIAL_AUTHORITY_*` code. There is no grant, no reservation and no adapter
+  call. The committed Kernel decision is reported unchanged, `allowed`
+  included.
+- The authority is re-resolved inside the commit guard, and by P7 before and
+  after the reservation. The authority's spending limits are enforced by P7.
+- A caller can name none of it. `max_amount`, `paymentCeiling`, `ceiling`,
+  `spendingLimit`, `spendingLimits`, `spending_limit`, `budgetId`, `remaining`,
+  `financialAuthority`, `authorityLimit`, `authorityRef` and `constraints` join
+  P7's reserved `assertedContext` keys.
+
+See `docs/architecture/ADR-AUTHORITY-SOURCED-PAYMENT-CEILINGS.md`.
+
 ## Canonical authority event stream (P8)
 
 When governed actions are composed, the composition root also composes the
@@ -301,7 +323,7 @@ interface GovernedActionIntent {
   action: string;                 // → action.type, grant action bound
   resource: string;               // → action.resourceScope, grant resources bound
   counterparty?: string;          // → action.counterpartyId, grant counterparty bound
-  amount?: { value; currency };   // P9: decimal text + registry asset → canonical action.amount/currency, grant amount ceiling
+  amount?: { value; currency };   // P9: decimal text + registry asset → canonical action.amount/currency — the proposed effect; P10: compared against, never the source of, the authority ceiling
                                   //     required for a host-classified financial action, refused for any other
   assertedContext?: object;       // → request.context (verified by the Kernel, never reaches an adapter)
   correlationId?: string;
@@ -453,6 +475,9 @@ orchestration is the owner, and it is asserted disjoint from the Kernel,
 | Authorization reference append fails | `system_error` | issued | no |
 | Execution claim append fails | `system_error` | issued | no |
 | Grant revoked or expired before exercise | `withheld` / `exercise` | issued | no |
+| P10: financial authority unresolved, or request above its ceiling | `withheld` / `authority-binding` / `FINANCIAL_AUTHORITY_*` | no | no |
+| P10: financial authority changed inside the commit window | `withheld` / `authority-binding` / `FINANCIAL_AUTHORITY_*` | no | no |
+| P10: financial authority revoked or changed after issuance | `withheld` / `exercise` / `EXERCISE_CONTROL_AUTHORITY_BINDING_*` | issued | no |
 | Adapter fails or throws | `execution_failed` | issued | once |
 | Adapter reports `unconfirmed` (P6) | `execution_unconfirmed` / `…_OUTCOME_UNCONFIRMED`, recorded | issued | once |
 | Outcome reference append fails | outcome reported, `outcomeRecorded: false` | issued | once |

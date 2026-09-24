@@ -1,5 +1,6 @@
 import { grantCorrelationMatches, isWellFormedGrantCorrelation, type GrantCorrelation } from './grant-correlation.js';
-import { isWellFormedGrantScope, serializeGrantScope, statedGrantBoundKeys, type GrantBoundKey, type GrantScope } from './grant-scope.js';
+import { compareGrantBound, isWellFormedGrantBound, type GrantCeilingBound } from './grant-bound.js';
+import { canonicalGrantScope, isWellFormedGrantScope, serializeGrantScope, statedGrantBoundKeys, type GrantBoundKey, type GrantScope } from './grant-scope.js';
 import type { GrantValidityCeiling } from './grant-validity.js';
 
 /**
@@ -178,4 +179,34 @@ export function withGrantValidityCeiling(source: GrantSourceAuthorization, ceili
 /** Whether a correlation names the same authorization this source describes. */
 export function grantSourceMatchesCorrelation(source: GrantSourceAuthorization, correlation: GrantCorrelation): boolean {
   return grantCorrelationMatches(source.correlation, correlation);
+}
+
+/**
+ * P10 — adds an **authority-sourced** amount ceiling to a source authorization.
+ *
+ * The Kernel adapter projects no amount bound: the amount a request states is
+ * the effect it proposes, and a ceiling derived from it would be a request
+ * authorizing itself. The composition root that can see durable monetary
+ * authority adds the ceiling here — the same "Kernel projection + authority
+ * known by composition" route `withGrantValidityCeiling` takes for time.
+ *
+ * Narrowing only. When the source already states an amount ceiling, the
+ * result is the narrower of the two; when that existing ceiling is in another
+ * asset — or either ceiling is malformed — the answer is `undefined`, which a
+ * caller treats as an authority it cannot establish. Returns a new value; the
+ * source handed in is never mutated.
+ */
+export function withGrantAmountCeiling(source: GrantSourceAuthorization, ceiling: GrantCeilingBound): GrantSourceAuthorization | undefined {
+  if (ceiling.kind !== 'ceiling' || !isWellFormedGrantBound(ceiling)) return undefined;
+  const existing = source.scope.amount;
+  let amount: GrantCeilingBound = ceiling;
+  if (existing !== undefined) {
+    if (existing.kind !== 'ceiling') return undefined;
+    const comparison = compareGrantBound(existing, ceiling);
+    if (comparison === 'incomparable') return undefined;
+    // `broader` means the authority ceiling exceeds what the source already
+    // bounded, so the existing, narrower ceiling stands.
+    if (comparison === 'broader') amount = existing;
+  }
+  return { ...source, scope: canonicalGrantScope({ ...source.scope, amount }) };
 }

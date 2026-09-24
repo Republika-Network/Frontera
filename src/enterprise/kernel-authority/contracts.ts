@@ -27,7 +27,7 @@
  * re-deciding, which is precisely what it must not do.
  */
 
-import type { AuthorityActorType } from '../../features/authority-graph/domain/authority-grant.js';
+import type { AuthorityActorType, AuthorityConstraint } from '../../features/authority-graph/domain/authority-grant.js';
 import type { ActorType } from '../../features/recognition-runtime/domain/actor.js';
 import type { ApprovalRequirement, EvidenceRequirement, RiskLevel } from '../../features/recognition-runtime/domain/capability-token.js';
 import type { PassportType } from '../../features/recognition-runtime/domain/passport.js';
@@ -194,6 +194,22 @@ export interface ProvisionRootIssuerInput {
   readonly actorId: string;
 }
 
+/**
+ * P10 — the monetary authority constraints the durable store carries: a
+ * per-execution ceiling (`max_amount`) and aggregate spending limits
+ * (`spending_limit`), in the Authority Graph's own vocabulary rather than a
+ * restated copy of it.
+ *
+ * Only these two kinds are accepted on the durable provisioning surface. The
+ * Authority Graph declares others (`time_window`, `data_boundary`, …) that no
+ * evaluator enforces, and persisting a constraint that nothing enforces would
+ * record authority that *reads* narrower than it behaves. Values are canonical
+ * decimal text; an asset's scale is never stated here — it is the trusted
+ * `MonetaryAssetRegistry`'s alone. See `monetary-constraints.ts` and
+ * `docs/architecture/ADR-AUTHORITY-SOURCED-PAYMENT-CEILINGS.md`.
+ */
+export type KernelAuthorityMonetaryConstraint = Extract<AuthorityConstraint, { readonly type: 'max_amount' | 'spending_limit' }>;
+
 export interface ProvisionAuthorityGrantInput {
   readonly authorityGrantId: string;
   readonly issuerActorId: string;
@@ -209,6 +225,13 @@ export interface ProvisionAuthorityGrantInput {
   readonly nonDelegableActions?: readonly string[];
   readonly expiresAt?: string;
   readonly parentGrantId?: string;
+  /**
+   * P10 — monetary authority. Persisted in the event payload (so it is covered
+   * by the event digest and chain), replayed into the Authority Graph on
+   * hydration, and validated on append and again on hydration: a constraint
+   * that disappeared on the round trip would widen authority.
+   */
+  readonly constraints?: readonly KernelAuthorityMonetaryConstraint[];
 }
 
 export interface ProvisionDelegationGrantInput {
@@ -225,6 +248,8 @@ export interface ProvisionDelegationGrantInput {
   readonly canRedelegate?: boolean;
   readonly nonDelegableActions?: readonly string[];
   readonly expiresAt?: string;
+  /** P10 — additional monetary constraints on the delegate. They can only add restrictions: every constraint on the source lineage still applies. */
+  readonly constraints?: readonly KernelAuthorityMonetaryConstraint[];
 }
 
 /** Discriminated union of everything an operator can provision. The `kind` is the record's own kind — the store never infers it from payload shape. */

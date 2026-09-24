@@ -147,10 +147,10 @@ describe('A caller cannot self-issue a grant', () => {
 });
 
 describe('A caller cannot broaden a grant', () => {
-  it('a forged amount does not raise the source ceiling', async () => {
+  it('a forged amount creates no source ceiling — and neither does the requested amount (P10)', async () => {
     const result = await buildKernel().evaluate(paymentRequest('grant-forgery-5', FORGED));
     const amount = result.grants?.sourceBounds.find((bound) => bound.key === 'amount');
-    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: '7500', unit: 'USD' }, 'the ceiling is the amount the decision was made on, not the amount the caller wrote beside it');
+    assert.equal(amount, undefined, 'a source amount ceiling is durable authority, never the 7500 the request proposed nor the 1000000 the caller wrote beside it');
   });
 
   it('a forged expiry does not extend the deployment ceiling', async () => {
@@ -216,7 +216,10 @@ describe('A forged grant artifact is never authoritative', () => {
 
     assert.equal(outcome.outcome, 'refused');
     if (outcome.outcome !== 'refused') return;
-    assert.deepEqual([...outcome.reasonCodes].sort(), ['GRANT_BOUND_INCOMPARABLE', 'GRANT_SCOPE_BROADENING']);
+    // P10: the source states no amount bound (a ceiling is durable authority,
+    // never the request's), so a requested amount has no parent to be proven
+    // inside and is incomparable — refused just as closed as broadening was.
+    assert.deepEqual([...outcome.reasonCodes].sort(), ['GRANT_BOUND_INCOMPARABLE']);
     assert.deepEqual(outcome.violations.map((violation) => violation.key), ['action', 'amount', 'counterparty']);
   });
 
@@ -258,7 +261,7 @@ describe('A forged grant artifact is never authoritative', () => {
 
     if (outcome.outcome !== 'issued') throw new Error(`expected an issued grant, got ${outcome.outcome}`);
     assert.equal(outcome.grant.subject, request.actor.id);
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
+    assert.equal(outcome.grant.scope.amount, undefined, 'P10: with no authority ceiling attached the grant carries no amount axis at all — it cannot move money');
     assert.equal(outcome.grant.expiresAt, '2026-01-01T00:05:00.000Z', 'the issuer proposed it; the forged 2099 expiry reached nothing');
   });
 });

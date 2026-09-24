@@ -4,6 +4,32 @@ All notable changes to Soberanía Enterprise. The project follows [Semantic Vers
 
 ## [Unreleased]
 
+### Changed — P10 authority-sourced payment ceilings and durable spending limits
+- **The amount an actor asks to spend is no longer the source of the amount it is authorized to spend.** The Kernel grant projection (`sourceScopeFor`) no longer states an amount bound. The pre-P10 "Model A", where the grant source ceiling was the request's own amount, is retired. Decision `docs/architecture/ADR-AUTHORITY-SOURCED-PAYMENT-CEILINGS.md`; invariants SEC-INV-094 … SEC-INV-101.
+  - **Durable monetary authority in the existing Kernel Authority Store.** `ProvisionAuthorityGrantInput.constraints` and `ProvisionDelegationGrantInput.constraints` (additive, optional) carry the Authority Graph's existing `max_amount` (now enforced) and a new `spending_limit` (`limitId`, `currency`, `maximum`, `window: lifetime | rolling`). Constraints are:
+    - validated on append by both stores, at provisioning against the trusted asset registry, and on hydration (malformed → the world fails closed);
+    - covered by the existing event digest;
+    - replayed into the Authority Graph unchanged.
+
+    No new store, table or schema version.
+  - **Issuance.** For a host-classified financial action, the issuance core:
+    1. resolves the monetary authority on the lineage proven by the decision's own `AuthorityProof`;
+    2. proves the requested amount does not exceed the ceiling (otherwise `financial-authority-withheld` / `FINANCIAL_AUTHORITY_CEILING_EXCEEDED`, with no grant, reservation or adapter call);
+    3. attaches the authority's ceiling (`withGrantAmountCeiling`);
+    4. re-resolves the authority inside the synchronous commit guard;
+    5. commits to it in `authorityBindingDigest` (`grantAuthorityProvenanceDigest`).
+
+    Publicly this is `withheld` / `authority-binding` with a new `FINANCIAL_AUTHORITY_*` reason code; the wire union is unchanged. The Kernel decision is never rewritten.
+  - **P7.** For a financial exercise, the authority's `spending_limit`s are appended to the host policy's answer under stable authority-anchored buckets and admitted in the same atomic reservation. A colliding host bucket is `EXERCISE_CONTROL_POLICY_INVALID`. Exercise-time binding revalidation also recomputes the financial authority, so revoked, narrowed or replaced authority withholds before any reservation. P7's settle, release and window semantics are unchanged.
+  - **Composition.** `createEnterprise` wires the resolver (`createKernelFinancialAuthorityResolver`) over the hydrated authority world when governed actions and exercise controls are both composed. `financialAuthority` is not a host option. New reserved `assertedContext` keys: `max_amount`, `paymentCeiling`, `ceiling`, `spendingLimit`, `spendingLimits`, `spending_limit`, `budgetId`, `remaining`, `financialAuthority`, `authorityLimit`, `authorityRef`, `constraints`.
+  - **Behavioural change.** A financial action now needs:
+    - provisioned `max_amount` and `spending_limit` on the actor's authority lineage;
+    - composed P7 exercise controls;
+    - an actor whose recognition consults the Authority Graph (agents, or actors acting for a principal).
+
+    Otherwise it is withheld at issuance. Pre-P10 financial grants (binding-only provenance) are withheld at exercise until they expire; non-financial grants are byte-identical to before.
+  - **No new endpoint, SDK method, schema version or migration.**
+
 ### Changed — P9 canonical monetary semantics (v1 wire kept, exactly)
 - **Money is exact text with an explicit asset on the governed financial-action spine.** New pure module `src/features/monetary-runtime`: one canonical decimal form and its `BigInt` compare/add (P7's `exercise-decimal.ts` now delegates to it — one implementation), a frozen trusted asset registry (`{ assetId, scale }`, no aliases, namespaced identifiers such as `xrpl:USD/rIssuer`), the single amount ingress `parseMonetaryAmount`, and the host-trusted `FinancialActionClassifier`. Decision `docs/architecture/ADR-CANONICAL-MONETARY-SEMANTICS.md`; invariants SEC-INV-089 … SEC-INV-093.
   - **The v1 wire is kept, exactly.** `POST /api/governed-actions` (`amount.value`) and `POST /api/governance/evaluate` (`action.amount`) still accept a JSON number — now read from its exact source characters via the platform's JSON source-text access (`src/enterprise/api/exact-monetary-json.ts`), never through a double — and additively accept decimal text. Excess precision for the asset's trusted scale is rejected, never rounded; an unknown asset is rejected (existing `400` / `GOVERNED_ACTION_INTENT_INVALID`). SDK `GovernedActionAmount.value` widens additively to `string | number`. An already-parsed JavaScript number handed in-process to `AocEnterprise.governAction` has no source text and is refused.

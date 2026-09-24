@@ -75,10 +75,14 @@ describe('evaluate() reports grant eligibility and never a grant', () => {
     const result = await buildKernel().evaluate(paymentRequest('grant-eligibility-2'));
 
     const bounds = result.grants?.sourceBounds ?? [];
-    assert.deepEqual(bounds.map((bound) => bound.key), ['action', 'amount', 'counterparty', 'resources']);
-    assert.deepEqual(
+    // P10: no amount bound. The request's 7500 is the effect it proposes, not
+    // a ceiling; the per-execution ceiling is durable authority the Kernel
+    // cannot see, attached by the composition that can.
+    assert.deepEqual(bounds.map((bound) => bound.key), ['action', 'counterparty', 'resources']);
+    assert.equal(
       bounds.find((bound) => bound.key === 'amount'),
-      { key: 'amount', kind: 'ceiling', limit: '7500', unit: 'USD' },
+      undefined,
+      'the requested amount never becomes the source ceiling of its own grant',
     );
     assert.deepEqual(
       bounds.find((bound) => bound.key === 'counterparty'),

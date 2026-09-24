@@ -18,6 +18,7 @@ import type {
   ProvisionTrustDomainInput,
 } from './contracts.js';
 import { KernelAuthorityError } from './errors.js';
+import { validateKernelAuthorityMonetaryConstraints } from './monetary-constraints.js';
 
 export interface KernelAuthorityHydrationContext {
   readonly now: () => string;
@@ -172,6 +173,14 @@ function orderByDependency(records: readonly KernelAuthorityRecord[]): readonly 
 }
 
 function applyProvisioned(record: KernelAuthorityRecord, recognition: AocRecognitionRuntime, authority: AuthorityGraphRuntime): void {
+  // P10: re-proven at hydration, not only at append. A record that reached the
+  // log by any other route must not replay into usable monetary authority; the
+  // whole world fails closed instead, exactly as for an engine-refused record.
+  try {
+    validateKernelAuthorityMonetaryConstraints(record.entityKind, record.payload, `Kernel Authority record '${record.entityKind}:${record.entityId}' in organization '${record.organizationId}'`);
+  } catch (error) {
+    throw new KernelAuthorityError('KERNEL_AUTHORITY_INTEGRITY_FAILED', error instanceof Error ? error.message : String(error), { entityKind: record.entityKind, entityId: record.entityId });
+  }
   try {
     switch (record.entityKind) {
       case 'actor': {
@@ -256,6 +265,8 @@ function applyProvisioned(record: KernelAuthorityRecord, recognition: AocRecogni
           ...(input.nonDelegableActions !== undefined ? { nonDelegableActions: input.nonDelegableActions } : {}),
           ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
           ...(input.parentGrantId !== undefined ? { parentGrantId: input.parentGrantId } : {}),
+          // P10: monetary authority survives the round trip exactly as provisioned.
+          ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
         });
         return;
       }
@@ -275,6 +286,7 @@ function applyProvisioned(record: KernelAuthorityRecord, recognition: AocRecogni
           ...(input.canRedelegate !== undefined ? { canRedelegate: input.canRedelegate } : {}),
           ...(input.nonDelegableActions !== undefined ? { nonDelegableActions: input.nonDelegableActions } : {}),
           ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+          ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
         });
         return;
       }

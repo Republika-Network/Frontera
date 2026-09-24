@@ -6,17 +6,30 @@ import {
   type EmergencyControlReaderPort,
 } from '../../features/emergency-control-runtime/index.js';
 import {
+  assessGrantEligibility,
   createGrantIssuanceService,
+  withGrantAmountCeiling,
   withGrantValidityCeiling,
   type BoundedGrantStorePort,
   type GrantCorrelation,
   type GrantSourceAuthorization,
   type RequestedGrantBounds,
 } from '../../features/grant-runtime/index.js';
+import { compareMonetaryAmounts, type FinancialActionClassifier } from '../../features/monetary-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability, deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
-import { grantAuthorityBindingDigest, grantValidityCeilingsFor, isWellFormedGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
+import { grantValidityCeilingsFor, isWellFormedGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
 import { ExecutionGovernanceError } from './errors.js';
+import {
+  FINANCIAL_AUTHORITY_REASON_CODES,
+  financialAuthorityDigest,
+  grantAuthorityProvenanceDigest,
+  resolveFinancialAuthority,
+  type AuthorityControlledFinancialAuthority,
+  type FinancialAuthority,
+  type FinancialAuthorityQuery,
+  type FinancialAuthorityReasonCode,
+} from './financial-authority.js';
 import {
   AUTHORITY_BINDING_REASON_CODES,
   type AuthorityControlledAuthorizationOutcome,
@@ -72,6 +85,20 @@ export interface AuthorityControlledIssuanceCoreOptions {
    * Omitted, nothing about issuance changes.
    */
   readonly emergencyControl?: EmergencyControlReaderPort;
+  /**
+   * P10 — the host-trusted financial action classifier. Read from the P7 block
+   * when this core is composed from the same options object ACE is, so the class
+   * an action is issued under and the class its exercise is controlled under are
+   * one answer. Absent, nothing is financial here — and, with no amount bound
+   * projected by the Kernel any more, no grant this core issues can carry money.
+   */
+  readonly exerciseControls?: { readonly actionClassifier: FinancialActionClassifier };
+  /**
+   * P10 — the trusted, synchronous monetary authority resolver. A financial
+   * action with no resolver composed is withheld: unknown authority is never
+   * unlimited authority.
+   */
+  readonly financialAuthority?: AuthorityControlledFinancialAuthority;
 }
 
 export interface IssueFromDecisionInput {
@@ -151,9 +178,72 @@ function emergencyQueryFor(request: KernelEvaluationRequest): EmergencyControlQu
   };
 }
 
+/** The financial-authority query for an evaluated request, from trusted material only: the Kernel-bound actor, the correlation's action and resource, the evaluated organization and the request's own asset. */
+function financialQueryFor(
+  request: KernelEvaluationRequest,
+  correlation: GrantCorrelation,
+  phase: FinancialAuthorityQuery['phase'],
+  at: string,
+  asset: string,
+  authorityDecisionId: string | undefined,
+): FinancialAuthorityQuery {
+  return {
+    phase,
+    subject: request.actor.id,
+    action: correlation.action,
+    resourceScope: correlation.resourceScope,
+    ...(request.organization !== undefined ? { organizationId: request.organization.id } : {}),
+    asset,
+    at,
+    ...(authorityDecisionId !== undefined ? { authorityDecisionId } : {}),
+  };
+}
+
+type FinancialMeasurement =
+  | { readonly kind: 'non-financial' }
+  | { readonly kind: 'financial'; readonly authority: FinancialAuthority; readonly asset: string }
+  | { readonly kind: 'withheld'; readonly reasonCodes: readonly FinancialAuthorityReasonCode[] };
+
 export function createAuthorityControlledIssuanceCore(options: AuthorityControlledIssuanceCoreOptions): AuthorityControlledIssuanceCore {
   const { kernel, grantCapability, grantStore, now, resolveAuthorityBinding } = options;
   const emergencyControl = options.emergencyControl;
+  const actionClassifier = options.exerciseControls?.actionClassifier;
+  const financialResolver = options.financialAuthority?.resolve;
+
+  /**
+   * P10, issuance half. For a host-classified financial action: resolve the
+   * durable monetary authority on the lineage the recognition layer reported
+   * for **this** decision, and prove the requested effect fits its
+   * per-execution ceiling exactly. The request's amount is compared against
+   * authority here; it never becomes authority.
+   */
+  function measureFinancialAuthority(request: KernelEvaluationRequest, decision: KernelEvaluationResult, measured: GrantSourceAuthorization): FinancialMeasurement {
+    if (actionClassifier === undefined || actionClassifier.classify(measured.correlation.action) !== 'financial') return { kind: 'non-financial' };
+    // A decision that does not permit exercise, or whose blocking obligations
+    // stand, is refused by the grant layer in its own truthful vocabulary; no
+    // monetary authority is consulted for an authorization nobody may exercise.
+    if (assessGrantEligibility(measured).eligibility !== 'eligible') return { kind: 'non-financial' };
+    const amount = request.action.amount;
+    const asset = request.action.currency;
+    if (typeof amount !== 'string' || typeof asset !== 'string') {
+      return { kind: 'withheld', reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_AMOUNT_REQUIRED] };
+    }
+    const resolution = resolveFinancialAuthority(
+      financialResolver,
+      financialQueryFor(request, measured.correlation, 'issuance', now(), asset, decision.authority?.decisionId),
+    );
+    if (!resolution.resolved) return { kind: 'withheld', reasonCodes: [resolution.reasonCode] };
+    const order = compareMonetaryAmounts({ value: amount, unit: asset }, resolution.authority.ceiling);
+    if (order === 'incomparable') return { kind: 'withheld', reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_ASSET_MISMATCH] };
+    if (order > 0) return { kind: 'withheld', reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_CEILING_EXCEEDED] };
+    return { kind: 'financial', authority: resolution.authority, asset };
+  }
+
+  /** The source with the authority-sourced amount bound attached, or `undefined` when it cannot be attached safely. */
+  function withFinancialCeiling(source: GrantSourceAuthorization, authority: FinancialAuthority | undefined): GrantSourceAuthorization | undefined {
+    if (authority === undefined) return source;
+    return withGrantAmountCeiling(source, { kind: 'ceiling', limit: authority.ceiling.value, unit: authority.ceiling.unit });
+  }
 
   /**
    * One issuance service per authorization, so the commit guard closes directly
@@ -171,6 +261,8 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
     measuredBinding: GrantAuthorityBinding,
     revalidateSource: IssueFromDecisionInput['revalidateSource'],
     captureEmergencyRefusal: (assessment: EmergencyControlAssessment) => void,
+    measuredFinancial: { readonly authority: FinancialAuthority; readonly asset: string } | undefined,
+    captureFinancialRefusal: (reasonCode: FinancialAuthorityReasonCode) => void,
   ) {
     return createGrantIssuanceService({
       store: grantStore,
@@ -231,7 +323,34 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         if (!grantAuthorityBindingsMatch(measuredBinding, binding)) {
           return undefined;
         }
-        return withAuthorityCeilings(base, binding);
+        // P10: the monetary authority is re-resolved here too, synchronously,
+        // from the live authority projection — and must be *exactly* the
+        // authority measured at issuance. A ceiling narrowed, a limit changed,
+        // a lineage revoked or replaced since the measurement refuses the
+        // commit; the grant is never committed under a stale 1000 that is now
+        // 100, or under an authority that no longer stands.
+        let current = base;
+        if (measuredFinancial !== undefined) {
+          const again = resolveFinancialAuthority(
+            financialResolver,
+            financialQueryFor(request, correlation, 'commit', now(), measuredFinancial.asset, undefined),
+          );
+          if (!again.resolved) {
+            captureFinancialRefusal(again.reasonCode);
+            return undefined;
+          }
+          if (financialAuthorityDigest(again.authority) !== financialAuthorityDigest(measuredFinancial.authority)) {
+            captureFinancialRefusal(FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_CHANGED);
+            return undefined;
+          }
+          const bounded = withFinancialCeiling(base, again.authority);
+          if (bounded === undefined) {
+            captureFinancialRefusal(FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_ASSET_MISMATCH);
+            return undefined;
+          }
+          current = bounded;
+        }
+        return withAuthorityCeilings(current, binding);
       },
     });
   }
@@ -300,8 +419,31 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         emergencyRefusal = assessment;
       };
 
-      const source = withAuthorityCeilings(measured, binding);
-      const issued = await issuanceFor(request, measured, binding, input.revalidateSource, captureEmergencyRefusal).issueGrant({
+      // P10: financial actions carry an authority-sourced amount ceiling, or no
+      // grant. The historical decision is untouched either way.
+      const financial = measureFinancialAuthority(request, decision, measured);
+      if (financial.kind === 'withheld') return { outcome: 'financial-authority-withheld', decision, reasonCodes: financial.reasonCodes };
+      const financialAuthority = financial.kind === 'financial' ? financial.authority : undefined;
+      const withAmount = withFinancialCeiling(measured, financialAuthority);
+      if (withAmount === undefined) {
+        return { outcome: 'financial-authority-withheld', decision, reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_ASSET_MISMATCH] };
+      }
+
+      let financialRefusal: FinancialAuthorityReasonCode | undefined;
+      const captureFinancialRefusal = (reasonCode: FinancialAuthorityReasonCode): void => {
+        financialRefusal = reasonCode;
+      };
+
+      const source = withAuthorityCeilings(withAmount, binding);
+      const issued = await issuanceFor(
+        request,
+        measured,
+        binding,
+        input.revalidateSource,
+        captureEmergencyRefusal,
+        financial.kind === 'financial' ? { authority: financial.authority, asset: financial.asset } : undefined,
+        captureFinancialRefusal,
+      ).issueGrant({
         source,
         ...(input.requestedBounds !== undefined ? { requestedBounds: input.requestedBounds } : {}),
         // The holder is the subject the authorization was evaluated for. There
@@ -316,7 +458,12 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         // the guard still re-resolves the binding and compares it field by
         // field, and refuses on any difference, so the digest recorded here is
         // always the digest of a binding that held at commit.
-        authorityBindingDigest: grantAuthorityBindingDigest(binding),
+        //
+        // P10: for a financial action the commitment also covers the monetary
+        // authority that supplied the ceiling and the aggregate limits, so
+        // exercise-time revalidation withholds the moment that authority
+        // changes. For every other action it is byte-identical to before.
+        authorityBindingDigest: grantAuthorityProvenanceDigest(binding, financialAuthority),
       });
 
       if (issued.outcome === 'refused') {
@@ -331,6 +478,9 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
             reasonCodes: emergencyRefusal.reasonCodes,
             matchedScopes: emergencyRefusal.state === 'blocked' ? emergencyRefusal.matchedScopes : [],
           };
+        }
+        if (financialRefusal !== undefined) {
+          return { outcome: 'financial-authority-withheld', decision, reasonCodes: [financialRefusal] };
         }
         return {
           outcome: 'grant-withheld',
@@ -348,6 +498,7 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         issuance: issued.outcome,
         authorityBinding: binding,
         ...(issued.effectiveValidityCeiling !== undefined ? { effectiveValidityCeiling: issued.effectiveValidityCeiling } : {}),
+        ...(financialAuthority !== undefined ? { financialAuthority } : {}),
       };
     },
   };

@@ -13,7 +13,9 @@ import {
   type ProvisionRootIssuerInput,
   type ProvisionTrustDomainInput,
 } from './contracts.js';
+import type { MonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { KernelAuthorityError } from './errors.js';
+import { assertKernelAuthorityMonetaryConstraintsWithinRegistry } from './monetary-constraints.js';
 import type { KernelAuthorityStore } from './kernel-authority-store.js';
 
 /**
@@ -123,12 +125,24 @@ export interface CreateKernelAuthorityProvisioningServiceOptions {
    * through a partially-applied mutation.
    */
   readonly onCommitted?: () => Promise<void>;
+  /**
+   * P10 — the deployment's trusted asset registry. When supplied, monetary
+   * authority constraints are refused at provisioning unless every asset they
+   * name is recognized and every value fits that asset's trusted scale, so an
+   * obvious configuration fault never waits for a live payment to surface.
+   * (Resolution re-checks regardless, and fails closed.)
+   */
+  readonly monetaryAssets?: MonetaryAssetRegistry;
 }
 
 export function createKernelAuthorityProvisioningService(
   options: CreateKernelAuthorityProvisioningServiceOptions,
 ): KernelAuthorityProvisioningService {
-  const { store, organizationId, onCommitted } = options;
+  const { store, organizationId, onCommitted, monetaryAssets } = options;
+
+  function checkMonetary(constraints: ProvisionAuthorityGrantInput['constraints']): void {
+    if (monetaryAssets !== undefined) assertKernelAuthorityMonetaryConstraintsWithinRegistry(constraints, monetaryAssets);
+  }
 
   async function append(
     context: KernelAuthorityAccessContext,
@@ -193,11 +207,13 @@ export function createKernelAuthorityProvisioningService(
       );
     },
 
-    provisionAuthorityGrant(context, input, provisioningOptions) {
+    async provisionAuthorityGrant(context, input, provisioningOptions) {
+      checkMonetary(input.constraints);
       return append(context, 'authority-grant', input.authorityGrantId, 'KernelAuthorityEntityProvisioned', normalize({ ...input }), provisioningOptions);
     },
 
-    provisionDelegationGrant(context, input, provisioningOptions) {
+    async provisionDelegationGrant(context, input, provisioningOptions) {
+      checkMonetary(input.constraints);
       return append(context, 'delegation-grant', input.delegationGrantId, 'KernelAuthorityEntityProvisioned', normalize({ ...input }), provisioningOptions);
     },
 

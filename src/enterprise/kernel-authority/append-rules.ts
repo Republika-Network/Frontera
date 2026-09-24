@@ -1,5 +1,6 @@
 import type { AppendKernelAuthorityEventInput, KernelAuthorityEvent, KernelAuthorityRecord } from './contracts.js';
 import { KernelAuthorityError } from './errors.js';
+import { validateKernelAuthorityMonetaryConstraints } from './monetary-constraints.js';
 import { computeKernelAuthorityPayloadDigest, isKernelAuthorityEntityKind, reconstructKernelAuthorityRecord } from './kernel-authority-store.js';
 
 /**
@@ -44,6 +45,11 @@ export function validateKernelAuthorityAppendInput(input: AppendKernelAuthorityE
   }
   if (input.payload === null || typeof input.payload !== 'object') {
     throw new KernelAuthorityError('KERNEL_AUTHORITY_VALIDATION_ERROR', 'A Kernel Authority event payload must be an object.');
+  }
+  // P10: monetary authority is validated where it enters the durable log, by
+  // both implementations, whoever the caller is.
+  if (input.eventType === 'KernelAuthorityEntityProvisioned') {
+    validateKernelAuthorityMonetaryConstraints(input.entityKind, input.payload, `Kernel Authority entity '${input.entityKind}:${input.entityId}'`);
   }
 }
 

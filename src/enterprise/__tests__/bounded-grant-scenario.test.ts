@@ -22,6 +22,7 @@ import {
   GRANT_REASON_CODES,
   createGrantIssuanceService,
   createInMemoryBoundedGrantStore,
+  withGrantAmountCeiling,
   withGrantValidityCeiling,
   type BoundedGrantStorePort,
   type GrantIssuanceOutcome,
@@ -42,7 +43,8 @@ import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/mon
  * TRUSTED CONTEXT           vendor.status = approved
  * POLICY                    ALLOW only when amount <= 10000 AND trusted vendor.status == approved
  * OBLIGATION                finance.approval, blocking
- * SOURCE AUTHORIZATION      action = payment, vendor = V123, maxAmount = 7500
+ * DURABLE AUTHORITY         per-execution ceiling = 8000 USD (provisioned, independent of the request)
+ * SOURCE AUTHORIZATION      action = payment, vendor = V123, maxAmount = 8000 (the authority's)
  * ISSUER-PROPOSED VALIDITY  expiresAt, contained by the deployment cap at T+10m
  * ```
  *
@@ -61,18 +63,26 @@ import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/mon
  * signer and no external adapter here, deliberately: what is being proved is
  * attenuation and the trust boundary, not a connector.
  *
- * ## One departure from the brief's stated source bounds, and why
+ * ## Where the source amount ceiling comes from (P10)
  *
- * The brief writes the source ceiling as `maxAmount = 10000` — the *policy's*
- * limit. The source ceiling this architecture can derive is `7500`, the amount
- * the decision was actually made on. The difference matters and the narrower
- * value is the correct one: the policy's `<= 10000` is a rule, not a bound the
- * decision recorded, and no decision record in this repository carries a
- * rule's threshold. Granting up to 10000 off a decision taken about 7500 would
- * be granting authority over an amount nothing ever evaluated, which is the
- * broadening this whole phase refuses. Case F therefore reads "equal bounds =
- * 7500", and case C's rejected expansion is anything above it — including
- * 10000, which is asserted explicitly below.
+ * Three different numbers, and only one of them is authority:
+ *
+ * ```
+ * requested amount    7500    the effect this payment proposes        (the request)
+ * policy threshold   10000    ALLOW when amount <= 10000              (a rule)
+ * authority ceiling   8000    the most one payment may move           (durable authority)
+ * ```
+ *
+ * Before P10 the Kernel projected the *requested* amount as the source
+ * ceiling — a request authorizing itself. It now projects no amount bound at
+ * all, and the composition that can see durable monetary authority attaches
+ * the authority's ceiling with `withGrantAmountCeiling` (in production, the
+ * Kernel Authority Store's `max_amount`, resolved on the decision's own
+ * authority lineage — see `authority-payment-ceilings.test.ts`). This suite
+ * attaches it directly, because what it proves is layer E's containment:
+ * requested bounds at or below 8000 issue, anything above — including the
+ * policy's 10000 — is broadening, and a decision with no authority ceiling
+ * attached carries no amount axis a requested bound could narrow.
  */
 
 const NOW = '2026-01-01T12:00:00.000Z';
@@ -181,6 +191,9 @@ const FINANCE_APPROVED = (correlation: ReturnType<typeof correlationFor>): reado
   { obligationType: 'finance.approval', correlation, sourceId: FINANCE_APPROVALS.id, outcome: 'discharged', observedAt: '2026-01-01T11:30:00.000Z', subjectId: 'cfo@example.test', reference: 'AP-771' },
 ];
 
+/** The durably provisioned per-execution authority ceiling this scenario's issuer attaches — deliberately neither the request's 7500 nor the policy's 10000. */
+const AUTHORITY_CEILING = { kind: 'ceiling', limit: '8000', unit: 'USD' } as const;
+
 interface IssuedWorld {
   readonly evaluated: EvaluatedPayment;
   readonly service: GrantIssuanceService;
@@ -198,6 +211,8 @@ async function issueFor(options: {
   readonly contextObservations?: readonly ContextFactObservation[];
   readonly discharges?: (correlation: ReturnType<typeof correlationFor>) => readonly ObligationDischargeObservation[];
   readonly extraContext?: Readonly<Record<string, unknown>>;
+  /** `null` issues from the bare Kernel projection, with no authority ceiling attached. */
+  readonly authorityCeiling?: null;
 }): Promise<IssuedWorld> {
   const evaluated = await evaluatePayment({
     requestId: options.requestId,
@@ -206,7 +221,9 @@ async function issueFor(options: {
     ...(options.extraContext !== undefined ? { extraContext: options.extraContext } : {}),
   });
 
-  const source = deriveGrantSourceAuthorization(GRANT_CAPABILITY, evaluated.request, evaluated.result);
+  const projected = deriveGrantSourceAuthorization(GRANT_CAPABILITY, evaluated.request, evaluated.result);
+  const source = options.authorityCeiling === null ? projected : withGrantAmountCeiling(projected, AUTHORITY_CEILING);
+  if (source === undefined) throw new Error('the authority ceiling could not be attached');
   const store = createInMemoryBoundedGrantStore();
   const service = createGrantIssuanceService({ store, revalidateSource: () => source });
   const outcome = await service.issueGrant({
@@ -258,7 +275,7 @@ describe('Acceptance B — obligation verified: ALLOW, ELIGIBLE, GRANT ISSUED', 
     assert.equal(result.grants?.eligibility, 'eligible');
   });
 
-  it('a grant narrowed to maxAmount 7500 and validUntil T+5m is issued', async () => {
+  it('a grant narrowed from the 8000 authority ceiling to maxAmount 7500 and validUntil T+5m is issued', async () => {
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-b-issue',
       discharges: FINANCE_APPROVED,
@@ -293,7 +310,7 @@ describe('Acceptance B — obligation verified: ALLOW, ELIGIBLE, GRANT ISSUED', 
 });
 
 describe('Acceptance C — amount expansion: NO GRANT, decision remains ALLOW', () => {
-  it('a requested ceiling above the source ceiling issues nothing', async () => {
+  it('a requested ceiling above the authority ceiling issues nothing', async () => {
     const { evaluated, outcome } = await issueFor({
       requestId: 'grant-scenario-c',
       discharges: FINANCE_APPROVED,
@@ -306,7 +323,7 @@ describe('Acceptance C — amount expansion: NO GRANT, decision remains ALLOW', 
     assert.equal(evaluated.result.grants?.eligibility, 'eligible', 'the authorization was and remains grant-eligible; this particular grant was not');
   });
 
-  it("the policy's own 10000 limit is not a bound the decision recorded, so a 10000 grant is refused too", async () => {
+  it("the policy's own 10000 limit is not authority, so a 10000 grant is refused too", async () => {
     const { outcome } = await issueFor({
       requestId: 'grant-scenario-c-policy-limit',
       discharges: FINANCE_APPROVED,
@@ -316,34 +333,33 @@ describe('Acceptance C — amount expansion: NO GRANT, decision remains ALLOW', 
   });
 });
 
-describe('Model A amount semantics — the grant is authority over the evaluated action', () => {
+describe('P10 amount semantics — the grant is bounded by authority, never by the request or the policy', () => {
   /**
    * ```
-   * request amount   = 7500
-   * policy threshold = ALLOW when amount <= 10000
-   * source ceiling   = 7500      NOT 10000
+   * request amount    = 7500    the proposed effect
+   * policy threshold  = ALLOW when amount <= 10000
+   * authority ceiling = 8000    NOT 7500, NOT 10000
    * ```
    *
-   * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4, "What 'the evaluated
-   * scope' means". The decision proves that *this* action, at *this* amount,
-   * under *this* context, with *these* obligations, was authorized. It proves
-   * nothing about a 9000 action nobody evaluated, so the grant cannot infer
-   * reusable authority up to the rule's threshold.
+   * The decision proves *this* action at *this* amount was authorized; the
+   * authority ceiling says how much one payment under this authority may ever
+   * move. Neither the request nor the rule's threshold becomes a ceiling.
    */
   const CASES: readonly { readonly limit: string; readonly expected: 'issued' | 'refused'; readonly why: string }[] = [
-    { limit: '7500', expected: 'issued', why: 'equal to the evaluated amount' },
+    { limit: '8000', expected: 'issued', why: 'equal to the authority ceiling' },
+    { limit: '7500', expected: 'issued', why: 'the requested amount — a narrowing a trusted issuer may choose, never the default' },
     { limit: '5000', expected: 'issued', why: 'a narrowing of it' },
     { limit: '1', expected: 'issued', why: 'a much smaller narrowing' },
-    { limit: '7501', expected: 'refused', why: 'one unit above what was evaluated' },
-    { limit: '9000', expected: 'refused', why: 'below the policy threshold but above the evaluated amount' },
-    { limit: '10000', expected: 'refused', why: 'exactly the policy threshold, which is not a bound the decision recorded' },
+    { limit: '8000.01', expected: 'refused', why: 'one cent above the authority ceiling' },
+    { limit: '9000', expected: 'refused', why: 'below the policy threshold but above the authority ceiling' },
+    { limit: '10000', expected: 'refused', why: 'exactly the policy threshold, which is a rule and not authority' },
     { limit: '15000', expected: 'refused', why: 'above both' },
   ];
 
   for (const testCase of CASES) {
     it(`a requested ceiling of ${testCase.limit} is ${testCase.expected} — ${testCase.why}`, async () => {
       const { outcome } = await issueFor({
-        requestId: `grant-scenario-model-a-${testCase.limit}`,
+        requestId: `grant-scenario-p10-${testCase.limit}`,
         discharges: FINANCE_APPROVED,
         requestedBounds: { amount: { kind: 'ceiling', limit: testCase.limit, unit: 'USD' } },
       });
@@ -355,24 +371,32 @@ describe('Model A amount semantics — the grant is authority over the evaluated
     });
   }
 
-  it('the policy threshold never reaches the grant derivation path at all', async () => {
-    const { evaluated } = await issueFor({ requestId: 'grant-scenario-model-a-threshold', discharges: FINANCE_APPROVED });
+  it('neither the requested amount nor the policy threshold reaches the grant derivation path', async () => {
+    const { evaluated } = await issueFor({ requestId: 'grant-scenario-p10-threshold', discharges: FINANCE_APPROVED });
 
-    const amount = evaluated.result.grants?.sourceBounds.find((bound) => bound.key === 'amount');
-    assert.deepEqual(amount, { key: 'amount', kind: 'ceiling', limit: '7500', unit: 'USD' });
     assert.equal(
-      JSON.stringify(evaluated.result.grants).includes('10000'),
+      evaluated.result.grants?.sourceBounds.some((bound) => bound.key === 'amount'),
       false,
-      "nothing carries a rule's threshold out of policy evaluation, so the grant layer never sees one",
+      'the Kernel projects no amount bound: the request cannot be the source of its own ceiling',
     );
+    assert.equal(JSON.stringify(evaluated.result.grants).includes('10000'), false, "nothing carries a rule's threshold out of policy evaluation");
+    assert.equal(JSON.stringify(evaluated.result.grants).includes('7500'), false, 'nothing carries the requested amount into the grant source');
   });
 
-  it('a second, larger action is a new authorization — not something this grant can be stretched to cover', async () => {
-    // The same actor, the same vendor, a different amount. It gets its own
-    // request, its own decision and its own grant; the 7500 grant is not an
-    // envelope it can be drawn against.
+  it('without an authority ceiling there is no amount axis, so no requested bound can create one', async () => {
     const { outcome } = await issueFor({
-      requestId: 'grant-scenario-model-a-second-action',
+      requestId: 'grant-scenario-p10-no-authority',
+      discharges: FINANCE_APPROVED,
+      authorityCeiling: null,
+      requestedBounds: { amount: { kind: 'ceiling', limit: '7500', unit: 'USD' } },
+    });
+    assert.equal(outcome.outcome, 'refused');
+    assert.deepEqual(refusalCodes(outcome), [GRANT_REASON_CODES.GRANT_BOUND_INCOMPARABLE]);
+  });
+
+  it('a second, larger action cannot stretch a grant past the authority ceiling', async () => {
+    const { outcome } = await issueFor({
+      requestId: 'grant-scenario-p10-second-action',
       discharges: FINANCE_APPROVED,
       requestedBounds: { amount: { kind: 'ceiling', limit: '9000', unit: 'USD' } },
     });
@@ -427,7 +451,7 @@ describe('Acceptance F — equal bounds: VALID', () => {
       discharges: FINANCE_APPROVED,
       requestedBounds: {
         action: { kind: 'identity', value: buildDraftClosureEmailGuardInput().capability ?? buildDraftClosureEmailGuardInput().action },
-        amount: { kind: 'ceiling', limit: '7500', unit: 'USD' },
+        amount: AUTHORITY_CEILING,
         counterparty: { kind: 'identity', value: 'V123' },
         resources: { kind: 'set', values: [buildDraftClosureEmailGuardInput().resourceScope] },
       },
@@ -444,8 +468,8 @@ describe('Acceptance F — equal bounds: VALID', () => {
     if (outcome.outcome !== 'issued') throw new Error('expected an issued grant');
 
     const sourceBounds = evaluated.result.grants?.sourceBounds ?? [];
-    assert.equal(outcome.grant.scope.amount?.kind, 'ceiling');
-    assert.equal(sourceBounds.find((bound) => bound.key === 'amount')?.limit, '7500');
+    assert.deepEqual(outcome.grant.scope.amount, AUTHORITY_CEILING, 'the grant inherits the authority ceiling, not the requested 7500');
+    assert.equal(sourceBounds.find((bound) => bound.key === 'amount'), undefined, 'the Kernel projection carries no amount bound');
     assert.equal(outcome.grant.expiresAt, HORIZON);
     assert.deepEqual(evaluated.result.grants?.validityCeilings, [{ source: 'deployment', notAfter: HORIZON }]);
   });
@@ -504,7 +528,7 @@ describe('Acceptance I — caller-forged grant: ignored, never authoritative', (
     if (outcome.outcome !== 'issued') throw new Error('expected an issued grant');
 
     assert.notEqual(outcome.grant.subject, 'attacker');
-    assert.deepEqual(outcome.grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
+    assert.deepEqual(outcome.grant.scope.amount, AUTHORITY_CEILING);
     assert.equal(outcome.grant.expiresAt, HORIZON);
   });
 

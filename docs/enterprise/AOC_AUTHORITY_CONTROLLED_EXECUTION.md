@@ -190,23 +190,36 @@ build the service without answering the question. At runtime:
 The binding vocabulary is its own constant with its own type, disjoint from the
 policy, obligation, issuance and exercise vocabularies — asserted, not claimed.
 
-## 6. Model A is unchanged
+## 6. Amount semantics — the ceiling is authority (P10)
 
 ```
-request amount    = 7500
-policy threshold  = ALLOW when amount <= 10000
-grant ceiling     = 7500          NOT 10000
+request amount     = 25          the proposed effect
+policy threshold   = ALLOW when amount <= 10000     a rule, never a ceiling
+authority ceiling  = 100         durable `max_amount` on the authority lineage
+grant ceiling      = 100         NOT 25, NOT 10000
 ```
 
-A grant may attenuate that 7500 — 5000 and 7500 are both valid — and may not
-infer authority up to 10000. At **exercise** time the same rule holds: an
-attempt at 9000 or 10000 under a 7500 grant is refused with
-`GRANT_EXERCISE_AMOUNT_EXCEEDED` and the adapter is not called, even though the
-rule that allowed the request reads `<= 10000`. A 9000 action requires a new
-authorization evaluation.
+Until P10 ("Model A") the grant's source ceiling was the amount the request
+stated. The Kernel projection now states **no amount bound**. For a
+host-classified financial action, the issuance core resolves the durable
+monetary authority on the decision's own authority lineage (the Kernel
+Authority Store's `max_amount` / `spending_limit`), proves
+`requested ≤ ceiling` exactly, and attaches the authority's ceiling. A request
+above the ceiling gets no grant (`financial-authority-withheld`,
+`FINANCIAL_AUTHORITY_CEILING_EXCEEDED`), so no reservation is made and no
+adapter is called. The grant inherits the authority ceiling. A trusted issuer
+may narrow it (`requestedBounds.amount`, e.g. 50) and may never broaden it.
 
-Nothing here turns a grant into a reusable policy envelope. That artifact exists
-and is called a **mandate**.
+At **exercise** time the rule still holds: an attempt above the grant ceiling
+is refused with `GRANT_EXERCISE_AMOUNT_EXCEEDED` and the adapter is not called.
+The financial authority is re-resolved inside the commit guard and again by P7
+before and after the reservation, and the authority's durable spending limits
+are enforced through P7's one atomic reservation.
+
+A financial action with no resolvable monetary authority, or composed without
+`exerciseControls` + `financialAuthority`, is withheld at issuance. See
+`docs/architecture/ADR-AUTHORITY-SOURCED-PAYMENT-CEILINGS.md` and
+SEC-INV-094 … SEC-INV-101.
 
 ## 7. Exercise-time validation
 

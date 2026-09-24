@@ -127,6 +127,44 @@ A deployment that composes through `createEnterprise()` gets the same service on
 `enterprise.kernelAuthorityProvisioning`, already scoped to the configured
 organization and already wired to re-hydrate the live world after each write.
 
+### Monetary authority (P10)
+
+An authority grant, and a delegation grant, may carry **monetary authority**:
+a per-execution ceiling and durable aggregate spending limits, in canonical
+decimal text.
+
+```ts
+await operator.provisionAuthorityGrant(OPERATOR, {
+  // ...the grant's identity, issuer, subject, capability, actions, scopes...
+  constraints: [
+    { type: 'max_amount', currency: 'USD', value: '100' },
+    { type: 'spending_limit', limitId: 'lifetime', currency: 'USD', maximum: '1000', window: { kind: 'lifetime' } },
+    { type: 'spending_limit', limitId: 'daily', currency: 'USD', maximum: '500', window: { kind: 'rolling', seconds: 86400 } },
+  ],
+});
+```
+
+These constraints follow the same record lifecycle as the rest of the payload:
+
+- They live in the event payload, so the event digest and chain cover them.
+- They are validated on every append, whichever surface wrote them, and again
+  on every hydration.
+- They replay into the Authority Graph unchanged.
+- A malformed one fails the world closed rather than hydrating.
+
+Two rules differ from ordinary fields:
+
+- **Scale.** An asset's scale is never stated here. It comes from the
+  deployment's `monetary.assets` registry, which the composition root hands to
+  this provisioning service, so an unknown asset or excess precision is refused
+  at provisioning.
+- **Changing a limit.** Constraints on a live record cannot be edited. Revoke
+  the record and provision a new id.
+
+Consumption is never stored here; it lives in the P7 exercise-control ledger.
+Governed financial actions resolve this authority on the decision's own
+lineage; see `docs/architecture/ADR-AUTHORITY-SOURCED-PAYMENT-CEILINGS.md`.
+
 ### Idempotent retries
 
 Provisioning is safe to retry:

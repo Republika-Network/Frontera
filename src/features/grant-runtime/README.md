@@ -137,26 +137,27 @@ no user-supplied predicate. A requested `'*'` against a source `'payment'` is
 simply a different identity value, and it is refused for that reason rather than
 by a wildcard rule someone has to remember to write.
 
-### The source ceiling is what was evaluated, not what a rule permits
+### The source amount ceiling is authority — never the request, never a rule (P10)
 
-Worth stating plainly, because it is where the brief's worked example and this
-implementation differ. For a request of `amount = 7500` under a policy reading
-`amount <= 10000`, the source ceiling is **7500**, not 10000.
+For a request of `amount = 7500` under a policy reading `amount <= 10000`, the
+source amount ceiling is **neither** 7500 **nor** 10000.
 
-The policy's `10000` is a *rule*, not a bound the decision recorded, and no
-decision record in this repository carries a rule's threshold —
-`EnterpriseAccessDecision`, `GovernanceEvaluationRecord` and
-`KernelEvaluationResult` all carry what was evaluated and none carries what a
-condition compared it against. Granting up to 10000 off a decision taken about
-7500 would grant authority over an amount nothing ever evaluated, which is
-exactly the broadening this layer refuses. The acceptance scenario asserts a
-10000 grant is rejected for that reason.
+The policy's `10000` is a *rule*, not authority: no decision record carries a
+rule's threshold, and granting up to it would grant authority over amounts
+nothing evaluated. Until P10 the Kernel adapter projected the request's own
+7500 as the ceiling. That was a request authorizing itself, and it is gone:
+`deriveGrantSourceAuthorization` states **no amount bound**.
 
-Note what reading the request's own `amount` as a *ceiling* is and is not. It is
-not a re-reading of the request as fact — layer C exists precisely because a
-caller's claim is not evidence about the world. It is the different question of
-what the decision covered, and the answer to that is, by construction, the input
-the decision was given. A grant at or below it is inside what was authorized.
+A per-execution ceiling is durable authority, which this layer cannot see. The
+composition root that can see it attaches it with `withGrantAmountCeiling`, the
+monetary counterpart of `withGrantValidityCeiling`. The attachment is
+narrowing-only: an existing ceiling in the same asset keeps the narrower of the
+two, and one in another asset is `undefined`. From there the attenuation rules
+are the ones above: a requested ceiling at or below it issues, anything above
+is `GRANT_SCOPE_BROADENING`. With no ceiling attached there is no amount axis,
+so a requested amount bound is `GRANT_BOUND_INCOMPARABLE` and a grant without
+one can never move money. See
+`docs/architecture/ADR-AUTHORITY-SOURCED-PAYMENT-CEILINGS.md`.
 
 ## Subject semantics — no delegation
 
