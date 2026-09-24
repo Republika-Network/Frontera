@@ -564,6 +564,33 @@ export type {
   AppendAuthorityEventResult,
   AuthorityEventStreamErrorCode,
 } from './authority-event-stream/index.js';
+/**
+ * P11 durable execution outcomes -- **types only**. The store is composed with
+ * governed actions; a host may supply its own through
+ * `createEnterprise({ executionOutcomes: { store } })` and reads through
+ * `AocEnterprise.executionOutcomes`. The implementations are deliberately not
+ * exported as values: nothing a published-package consumer holds can prepare,
+ * record or rewrite an execution outcome. See
+ * `docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`.
+ */
+export type { EnterpriseExecutionOutcomeOptions } from './composition/composition-root.js';
+export type {
+  ExecutionAttemptAmount,
+  ExecutionAttemptRecord,
+  ExecutionOutcomeAccessContext,
+  ExecutionOutcomeReader,
+  ExecutionOutcomeRecord,
+  ExecutionOutcomeStore,
+  ExecutionOutcomeStoreErrorCode,
+  ExecutionOutcomeStoreHealth,
+  ExecutionTerminalObservation,
+  ExecutionTerminalRecord,
+  ExecutionWithholdingLayer,
+  PrepareExecutionAttemptInput,
+  PrepareExecutionAttemptResult,
+  RecordExecutionTerminalInput,
+  RecordExecutionTerminalResult,
+} from './execution-outcome-store/index.js';
 
 /**
  * Customer-plane identity admission -- type-only, for the same reason the

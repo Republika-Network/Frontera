@@ -69,6 +69,7 @@ function configuration(options: { readonly sqlite?: string } = {}): EnterpriseCo
           AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(dir, 'assurance.sqlite'),
           AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: join(dir, 'grants.sqlite'),
           AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH: join(dir, 'events', 'authority-event-stream.sqlite'),
+          AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: join(dir, 'execution-outcomes.sqlite'),
         }),
   });
   return { ...base, authentication: { apiKeys: KEYS } };

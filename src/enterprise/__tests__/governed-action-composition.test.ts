@@ -259,6 +259,13 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       '../events/enterprise-events.js',
       '../execution-governance/index.js',
       '../execution-governance/issuance-core.js',
+      // P11: the execution outcome store's record types and its narrow
+      // prepare / record / read port, type-only. The orchestrator is handed the
+      // port by the composition root; it never opens, closes or constructs a
+      // store, and nothing it reads there can permit a new effect
+      // (`execution-outcome-boundaries.test.ts`).
+      '../execution-outcome-store/contracts.js',
+      '../execution-outcome-store/outcome-store.js',
       '../governance-store/contracts.js',
       '../governance-store/errors.js',
       '../governance-store/governance-store.js',

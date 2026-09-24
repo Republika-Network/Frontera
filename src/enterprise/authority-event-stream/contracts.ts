@@ -169,7 +169,7 @@ export interface ExecutionOutcomeObservedPayload {
   readonly routedBy?: string;
   /** The adapter's provider-neutral handle. Evidence and correlation only: never dereferenced, never executable, never proof of execution. */
   readonly providerRef?: string;
-  /** Whether the Governance Store outcome reference was written. Reported beside the outcome, never instead of it. */
+  /** Whether the canonical P11 initial observation is durable (the execution outcome store). Reported beside the outcome, never instead of it. */
   readonly outcomeRecorded: boolean;
 }
 

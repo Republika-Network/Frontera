@@ -17,3 +17,8 @@ export type {
 } from './execution-adapter-port.js';
 
 export type { ExecutionOutcome } from './execution-outcome.js';
+
+export { PROVIDER_EFFECT_CERTAINTIES, executionStatusOfCertainty, isProviderEffectCertainty, providerEffectCertaintyOf } from './provider-certainty.js';
+export type { ProviderEffectCertainty, ProviderEffectCertaintyByStatus, ProviderObservedExecutionStatus } from './provider-certainty.js';
+
+export { PROVIDER_REFERENCE_MAXIMUM_LENGTH, isRecordableProviderRef } from './provider-reference.js';

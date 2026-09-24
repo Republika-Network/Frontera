@@ -124,10 +124,21 @@ export const EXECUTION_FAILURE_REASON_VALUES: readonly ExecutionFailureReason[] 
  *
  * `unconfirmed` is that case: the adapter **did** contact the provider, and
  * whether the effect occurred is not known. It carries no `reason`, because it
- * is not a failure, and no `providerRef`, because nothing was confirmed. It is
- * never a denial, never a withholding, and never an authorization outcome:
- * authority was sufficient and was exercised; only the provider's answer was
- * lost. Reconciling it is out of band — nothing in this runtime retries it.
+ * is not a failure. It is never a denial, never a withholding, and never an
+ * authorization outcome: authority was sufficient and was exercised; only the
+ * provider's answer was lost. Reconciling it is out of band — nothing in this
+ * runtime retries it.
+ *
+ * ## `providerRef` is a handle, never proof (P11)
+ *
+ * Any of the three may carry the provider's opaque reference when the provider
+ * actually supplied one: a `202 Accepted` with a job id is still `unconfirmed`,
+ * and a definitive rejection with a request id is still `failed`. The
+ * reference exists so a later reconciliation (P12) has a provider-side handle
+ * to ask about; its presence never changes the outcome, and an adapter must
+ * never fabricate one for a request that never reached the provider. Only a
+ * reference `isRecordableProviderRef` accepts is carried past the execution
+ * service.
  *
  * `PROVIDER_UNAVAILABLE` is correspondingly narrow: a failure proven to have
  * occurred **before** the request could reach the provider. "I did not get a
@@ -135,8 +146,8 @@ export const EXECUTION_FAILURE_REASON_VALUES: readonly ExecutionFailureReason[] 
  */
 export type ExecutionAdapterResult =
   | { readonly outcome: 'completed'; readonly providerRef?: string; readonly adapterId?: string }
-  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly detail?: string; readonly adapterId?: string }
-  | { readonly outcome: 'unconfirmed'; readonly detail?: string; readonly adapterId?: string };
+  | { readonly outcome: 'failed'; readonly reason: ExecutionFailureReason; readonly providerRef?: string; readonly detail?: string; readonly adapterId?: string }
+  | { readonly outcome: 'unconfirmed'; readonly providerRef?: string; readonly detail?: string; readonly adapterId?: string };
 
 /**
  * An adapter's returned value, copied into a fresh, plain
@@ -167,7 +178,7 @@ export type ExecutionAdapterResult =
  * Each field is read **exactly once**, and only primitives from the closed
  * vocabulary are copied: `outcome` of `'completed'`, `'failed'` or
  * `'unconfirmed'`; a string
- * `providerRef`, `detail` or `adapterId` where present; a `reason` from
+ * `providerRef` (on any of the three), `detail` or `adapterId` where present; a `reason` from
  * `EXECUTION_FAILURE_REASON_VALUES`. Anything else — a non-object, an unknown
  * outcome, a non-string reference, a reason outside the vocabulary — is a
  * result that broke the port's contract, and the answer is `undefined`, never
@@ -185,26 +196,35 @@ export function readExecutionAdapterResult(value: unknown): ExecutionAdapterResu
   if (adapterId !== undefined && typeof adapterId !== 'string') return undefined;
   const attribution = adapterId !== undefined ? { adapterId } : {};
 
+  // Read once, for every arm. On `completed` a non-string reference breaks the
+  // contract exactly as it always did. On `failed` and `unconfirmed` — where a
+  // reference is a P11 addition — a non-string one is simply not carried: it
+  // must never turn an effect that may have happened into a malformed result
+  // (`ADAPTER_ERROR`, which releases capacity), nor a definitive answer into
+  // anything else.
+  const providerRef: unknown = source['providerRef'];
+  const reference = typeof providerRef === 'string' ? { providerRef } : {};
+
   if (outcome === 'completed') {
-    const providerRef = source['providerRef'];
     if (providerRef !== undefined && typeof providerRef !== 'string') return undefined;
-    return Object.freeze({ outcome: 'completed', ...(providerRef !== undefined ? { providerRef } : {}), ...attribution });
+    return Object.freeze({ outcome: 'completed', ...reference, ...attribution });
   }
   if (outcome === 'failed') {
     const reason = source['reason'];
     const detail = source['detail'];
     if (!EXECUTION_FAILURE_REASON_VALUES.includes(reason as ExecutionFailureReason)) return undefined;
     if (detail !== undefined && typeof detail !== 'string') return undefined;
-    return Object.freeze({ outcome: 'failed', reason: reason as ExecutionFailureReason, ...(detail !== undefined ? { detail } : {}), ...attribution });
+    return Object.freeze({ outcome: 'failed', reason: reason as ExecutionFailureReason, ...reference, ...(detail !== undefined ? { detail } : {}), ...attribution });
   }
   if (outcome === 'unconfirmed') {
     // Read exactly as the failure arm reads `detail`: once, primitive only. A
-    // `reason` or `providerRef` beside it is not read at all — an unconfirmed
-    // effect has neither, and nothing an adapter attaches can turn it into a
-    // failure or a completion here.
+    // `reason` beside it is not read at all — an unconfirmed effect has none,
+    // and nothing an adapter attaches can turn it into a failure or a
+    // completion here. A `providerRef` is carried as the handle it is, and
+    // leaves the outcome unconfirmed.
     const detail = source['detail'];
     if (detail !== undefined && typeof detail !== 'string') return undefined;
-    return Object.freeze({ outcome: 'unconfirmed', ...(detail !== undefined ? { detail } : {}), ...attribution });
+    return Object.freeze({ outcome: 'unconfirmed', ...reference, ...(detail !== undefined ? { detail } : {}), ...attribution });
   }
   return undefined;
 }

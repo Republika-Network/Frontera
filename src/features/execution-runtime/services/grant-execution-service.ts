@@ -17,6 +17,7 @@ import {
   GRANT_EXERCISE_REASON_CODES,
   adapterErrorDetail,
   assessBoundedGrantExercise,
+  isRecordableProviderRef,
   readExecutionAdapterResult,
   type BoundedGrantExerciseAssessment,
   type ExecutionAdapter,
@@ -487,6 +488,15 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           ? { adapterId: composedAdapterId }
           : { adapterId: result.adapterId, routedBy: composedAdapterId };
 
+      // The provider's reference, carried only when it is one this platform
+      // will record (`isRecordableProviderRef`): bounded, printable, and shaped
+      // like no credential or destination. Anything else is omitted, never
+      // truncated or redacted — and its absence changes nothing else about the
+      // outcome. Applied here, for every adapter, because after P11 the
+      // reference is durable.
+      const referenceOf = (result: { readonly providerRef?: string }): { readonly providerRef?: string } =>
+        isRecordableProviderRef(result.providerRef) ? { providerRef: result.providerRef } : {};
+
       let returned: unknown;
       try {
         returned = await adapter.execute(action);
@@ -569,6 +579,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           assessment,
           correlation,
           ...performedBy(result),
+          ...referenceOf(result),
           ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
         });
@@ -581,6 +592,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
           correlation,
           ...performedBy(result),
           reason: result.reason,
+          ...referenceOf(result),
           ...(result.detail !== undefined ? { detail: result.detail } : {}),
           exercisedAt,
         });
@@ -591,7 +603,7 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         assessment,
         correlation,
         ...performedBy(result),
-        ...(result.providerRef !== undefined ? { providerRef: result.providerRef } : {}),
+        ...referenceOf(result),
         exercisedAt,
       });
     },

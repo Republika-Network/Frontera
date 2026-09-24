@@ -34,6 +34,8 @@ import {
   TEST_MONETARY,
   TRUST_DOMAIN_ID,
   buildGovernedWorld,
+  faultyOutcomes,
+  preP11History,
   monetaryAuthority,
   identityFor,
   type GovernedWorld,
@@ -437,8 +439,21 @@ describe('Governed action — GOV-ACT-02: no durable decision, no authority, no 
     assert.equal(JSON.stringify(result).includes('socket hang up'), false, 'provider detail is not echoed to the consumer');
   });
 
-  it('the post-effect evidence write fails → the effect is still reported as executed, flagged unrecorded', async () => {
+  it('P11 — the Governance outcome summary fails → the canonical observation stands: recorded, and replayed as executed with its providerRef', async () => {
     const world = buildGovernedWorld({ storeFault: { appendOutcomeReference: true } });
+    const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(result.status, 'executed');
+    assert.equal(result.status === 'executed' ? result.outcomeRecorded : undefined, true, 'outcomeRecorded is the canonical P11 observation, not the summary row');
+    assert.equal(result.reasonCodes.includes(R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED), false);
+    const retry = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+    assert.equal(retry.status, 'executed');
+    assert.equal(retry.status === 'executed' ? retry.replayed : undefined, true);
+    assert.equal(retry.status === 'executed' ? retry.providerRef : undefined, 'provider-ref-1');
+    assert.equal(world.adapter.callCount, 1);
+  });
+
+  it('the post-effect canonical outcome write fails → the effect is still reported as executed, flagged unrecorded', async () => {
+    const world = buildGovernedWorld({ executionOutcomes: faultyOutcomes({ recordTerminal: true }) });
     const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
     assert.equal(result.status, 'executed', 'an effect that happened is never reported as one that did not');
     assert.ok(result.status === 'executed');
@@ -872,6 +887,8 @@ describe('Governed action — a withheld exercise keeps its reasons on replay', 
   it('a recorded withheld row that does not decode exactly is never reported as a withheld refusal', async () => {
     // The attempt is claimed, then the exercise port fails: an attempt with no outcome.
     const allowedWorld = buildGovernedWorld({
+      // Legacy rows are forged below: model history written before P11, which has no P11 record.
+      executionOutcomes: preP11History(),
       beforeExercise: async () => {
         throw new Error('the exercise port is unreachable');
       },
@@ -906,6 +923,8 @@ describe('Governed action — a withheld exercise keeps its reasons on replay', 
       'withheld:',
     ].entries()) {
       const world = buildGovernedWorld({
+        // Legacy rows are forged below: model history written before P11, which has no P11 record.
+        executionOutcomes: preP11History(),
         beforeExercise: async () => {
           throw new Error('the exercise port is unreachable');
         },
@@ -931,6 +950,8 @@ describe('Governed action — a withheld exercise keeps its reasons on replay', 
 
   it('the Prompt 3 unlayered form still replays, as the only layer that could have written it', async () => {
     const world = buildGovernedWorld({
+      // Legacy rows are forged below: model history written before P11, which has no P11 record.
+      executionOutcomes: preP11History(),
       beforeExercise: async () => {
         throw new Error('the exercise port is unreachable');
       },
@@ -1098,6 +1119,8 @@ describe('Governed action — P6: an adapter-reported unconfirmed effect is reco
       ' execution-unconfirmed',
     ].entries()) {
       const world = buildGovernedWorld({
+        // Legacy rows are forged below: model history written before P11, which has no P11 record.
+        executionOutcomes: preP11History(),
         beforeExercise: async () => {
           throw new Error('the exercise port is unreachable');
         },
@@ -1123,6 +1146,8 @@ describe('Governed action — P6: an adapter-reported unconfirmed effect is reco
 
   it('the canonical form with an attribution suffix replays as OUTCOME_UNCONFIRMED', async () => {
     const world = buildGovernedWorld({
+      // Legacy rows are forged below: model history written before P11, which has no P11 record.
+      executionOutcomes: preP11History(),
       beforeExercise: async () => {
         throw new Error('the exercise port is unreachable');
       },
@@ -1144,7 +1169,7 @@ describe('Governed action — P6: an adapter-reported unconfirmed effect is reco
   });
 
   it('an unconfirmed outcome whose row cannot be written is still unconfirmed, flagged unrecorded, and never retried', async () => {
-    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed' }), storeFault: { appendOutcomeReference: true } });
+    const world = buildGovernedWorld({ adapterBehaviour: () => ({ outcome: 'unconfirmed' }), executionOutcomes: faultyOutcomes({ recordTerminal: true }) });
     const result = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
     assert.equal(result.status, 'execution_unconfirmed');
     assert.deepEqual([...result.reasonCodes], [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED]);

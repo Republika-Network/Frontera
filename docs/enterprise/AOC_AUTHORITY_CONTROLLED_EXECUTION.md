@@ -463,9 +463,27 @@ Omitting it leaves every behaviour on this page byte-identical. See
 ExecutionOutcome =
   | { status: 'executed';              assessment, correlation, adapterId, routedBy?, providerRef?, exercisedAt }
   | { status: 'withheld';              withheldBy: 'grant-exercise' | 'emergency-control', assessment, correlation, exercisedAt }
-  | { status: 'execution-failed';      assessment, correlation, adapterId, routedBy?, reason, detail?, exercisedAt }
-  | { status: 'execution-unconfirmed'; assessment, correlation, adapterId, routedBy?, detail?, exercisedAt }   // P6
+  | { status: 'execution-failed';      assessment, correlation, adapterId, routedBy?, reason, providerRef?, detail?, exercisedAt }   // providerRef: P11
+  | { status: 'execution-unconfirmed'; assessment, correlation, adapterId, routedBy?, providerRef?, detail?, exercisedAt }        // P6; providerRef: P11
 ```
+
+**P11 — provider certainty and references.** Each effect-bearing status maps to
+exactly one provider-neutral certainty (`providerEffectCertaintyOf`):
+`executed` → `confirmed-completed`, `execution-failed` →
+`confirmed-not-completed`, `execution-unconfirmed` → `unconfirmed`. A withheld
+outcome has no certainty, because no provider spoke. Any of the three may carry
+the provider's opaque `providerRef`, and only when `isRecordableProviderRef`
+accepts it (bounded printable ASCII, shaped like no credential, JWT, PEM block,
+URL, cookie or authorization header). The reference is a correlation handle and
+never proof: it never changes the status. The governed-action path records the
+certainty, attribution and reference durably (see
+`docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`); this runtime itself holds
+no outcome store.
+
+`exercisedAt` is the instant the guarding assessment was made, sampled
+**before** the adapter was called. It is not the instant the provider answered.
+P11 records its own `observedAt`, sampled from the injected clock after the
+outcome returned.
 
 `execution-unconfirmed` (P6) is the provider-neutral answer to "the provider was
 contacted and whether the effect happened is not known" — a connection lost

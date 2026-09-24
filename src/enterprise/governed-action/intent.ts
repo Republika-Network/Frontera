@@ -107,6 +107,18 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   'authorityLimit',
   'authorityRef',
   'constraints',
+  // P11: provider certainty and execution outcomes are observed by the
+  // execution runtime from the adapter's normalized result — never reported by
+  // a caller. A caller can neither state a provider reference, a provider
+  // status, a certainty nor an execution outcome — not here, and not at the top
+  // level, where undeclared keys are refused already.
+  'providerRef',
+  'providerStatus',
+  'providerCertainty',
+  'certainty',
+  'executionOutcome',
+  'executionStatus',
+  'outcomeRecorded',
 ];
 
 const MAX_CONTEXT_DEPTH = 8;

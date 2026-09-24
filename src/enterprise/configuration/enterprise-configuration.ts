@@ -183,6 +183,21 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the canonical authority event stream. */
     readonly sqlitePath: string;
   };
+  /**
+   * P11 — the durable execution outcome store: the exact prepared context and
+   * the initial provider observation of every governed execution.
+   *
+   * Read **only** when governed actions are composed and the host supplies no
+   * store of its own; used when `persistence.provider === 'sqlite'` (the
+   * process-local store is selected otherwise, and does **not** survive a
+   * restart). Its own file. Unlike the evidence stream, a file that cannot be
+   * opened fails startup: governed executions never run without durable
+   * preparation. See `docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`.
+   */
+  readonly executionOutcome: {
+    /** SQLite path for the execution outcome store. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -293,6 +308,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     authorityEventStream: {
       sqlitePath: env.AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH ?? '.data/authority-event-stream.sqlite',
+    },
+    executionOutcome: {
+      sqlitePath: env.AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH ?? '.data/execution-outcomes.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

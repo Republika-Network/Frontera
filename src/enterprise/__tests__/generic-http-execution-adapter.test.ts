@@ -742,13 +742,15 @@ describe('Generic HTTP — one attempt, no redirect, no retry (§40)', () => {
     assert.equal(JSON.stringify(result).includes(TOKEN), false);
   });
 
-  it('16. providerRef is evidence: it is returned as a string and never dereferenced', async () => {
+  it('16. providerRef is evidence: it is never dereferenced — and since P11 a URL-shaped value is not carried at all', async () => {
     const runtime = fakeRuntime({ observe: () => ({ kind: 'response', status: 200, providerRefValues: ['https://evil.example/follow-me'] }) });
     const result = await executeWith(runtime);
-    assert.equal(result.outcome, 'completed');
-    assert.equal(result.outcome === 'completed' ? result.providerRef : undefined, 'https://evil.example/follow-me');
+    assert.equal(result.outcome, 'completed', 'the reference never moves the outcome');
+    assert.equal('providerRef' in result, false, 'a destination is never a durable reference');
     assert.equal(runtime.sent.length, 1);
     assert.equal(runtime.resolved.length, 1);
+    const plain = await executeWith(fakeRuntime({ observe: () => ({ kind: 'response', status: 200, providerRefValues: ['pay_123'] }) }));
+    assert.equal(plain.outcome === 'completed' ? plain.providerRef : undefined, 'pay_123');
   });
 
   it('the core source contains exactly one send and one resolve, and no loop around them', () => {
@@ -846,10 +848,49 @@ describe('Generic HTTP — confirmed / failed / unconfirmed (§41)', () => {
     assert.deepEqual({ ...withoutHeader }, { outcome: 'completed' });
   });
 
-  it('a 4xx or 5xx never carries a providerRef, and no status depends on anything but the status', async () => {
-    for (const status of [400, 500]) {
-      const result = await executeWith(fakeRuntime({ observe: () => ({ kind: 'response', status, providerRefValues: ['ref'] }) }));
-      assert.equal('providerRef' in result, false);
+  it('P11 — a provider that answered keeps its reference on every status, and no status depends on anything but the status', async () => {
+    for (const [status, outcome] of [
+      [200, 'completed'],
+      [201, 'completed'],
+      [202, 'unconfirmed'],
+      [303, 'unconfirmed'],
+      [400, 'failed'],
+      [408, 'unconfirmed'],
+      [409, 'failed'],
+      [500, 'unconfirmed'],
+      [503, 'unconfirmed'],
+    ] as const) {
+      const result = await executeWith(fakeRuntime({ observe: () => ({ kind: 'response', status, providerRefValues: [`request-${String(status)}`] }) }));
+      assert.equal(result.outcome, outcome, `${String(status)} is classified by its status alone`);
+      assert.equal('providerRef' in result ? result.providerRef : undefined, `request-${String(status)}`, `${String(status)} keeps the provider's handle`);
+      if (status === 500) assert.equal('reason' in result, false, 'a 5xx is never PROVIDER_UNAVAILABLE: the provider may have committed first');
+      if (status === 400) assert.equal(result.outcome === 'failed' ? result.reason : undefined, EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED);
+    }
+  });
+
+  it('P11 §145 — 202 Accepted with a job id is unconfirmed with that id, never completed', async () => {
+    const result = await executeWith(fakeRuntime({ observe: () => ({ kind: 'response', status: 202, providerRefValues: ['job-123'] }) }));
+    assert.deepEqual({ ...result }, { outcome: 'unconfirmed', detail: result.outcome === 'unconfirmed' ? result.detail : undefined, providerRef: 'job-123' });
+  });
+
+  it('P11 §147 / §148 — no response means no reference: nothing sent, or nothing heard back', async () => {
+    const notSent = await executeWith(fakeRuntime({ observe: () => ({ kind: 'not-sent' }) }));
+    assert.equal(notSent.outcome === 'failed' ? notSent.reason : undefined, EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE);
+    assert.equal('providerRef' in notSent, false);
+    const reset = await executeWith(fakeRuntime({ observe: () => ({ kind: 'unconfirmed' }) }));
+    assert.equal(reset.outcome, 'unconfirmed', 'a socket reset after send stays unconfirmed');
+    assert.equal('providerRef' in reset, false);
+    const thrown = await executeWith(fakeRuntime({ sendThrows: true }));
+    assert.equal(thrown.outcome, 'unconfirmed');
+    assert.equal('providerRef' in thrown, false);
+  });
+
+  it('P11 — a reference shaped like a credential, cookie, JWT or URL is never carried, on any status', async () => {
+    for (const status of [200, 202, 400, 500]) {
+      for (const value of ['Bearer abcdefgh', 'Basic dXNlcjpwYXNzd29yZA==', 'eyJhbGciOi.eyJzdWIiOi', 'session=1; cookie=abc', 'https://x.example/', 'authorization: y']) {
+        const result = await executeWith(fakeRuntime({ observe: () => ({ kind: 'response', status, providerRefValues: [value] }) }));
+        assert.equal('providerRef' in result, false, `${String(status)} ${value}`);
+      }
     }
   });
 

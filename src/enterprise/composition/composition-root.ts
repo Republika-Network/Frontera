@@ -65,6 +65,10 @@ import { createAuthorityEventProjector, type AuthorityEventProjector } from '../
 import type { AuthorityEventStreamReader, AuthorityEventStreamStore } from '../authority-event-stream/stream-store.js';
 import { createInMemoryAuthorityEventStreamStore } from '../authority-event-stream/in-memory-authority-event-stream-store.js';
 import { createSqliteAuthorityEventStreamStore } from '../authority-event-stream/sqlite-authority-event-stream-store.js';
+import { createExecutionOutcomeModule } from '../modules/execution-outcome-module.js';
+import type { ExecutionOutcomeReader, ExecutionOutcomeStore } from '../execution-outcome-store/outcome-store.js';
+import { createInMemoryExecutionOutcomeStore } from '../execution-outcome-store/in-memory-execution-outcome-store.js';
+import { createSqliteExecutionOutcomeStore } from '../execution-outcome-store/sqlite-execution-outcome-store.js';
 import {
   GovernedActionConfigurationError,
   createGovernedActionOrchestrator,
@@ -263,6 +267,28 @@ export interface CreateEnterpriseOptions {
    * changes no decision, grant, reservation, routing or outcome.
    */
   readonly authorityEventStream?: EnterpriseAuthorityEventStreamOptions;
+  /**
+   * P11 — the durable execution outcome store, composed **automatically** with
+   * `governedActionOrchestrator`: there is no switch that runs governed
+   * executions without it. This block only lets a host hand in a store it
+   * opened and owns (never closed from here). Omitted, the composition root
+   * selects one the way it selects every other store: durable SQLite at
+   * `executionOutcome.sqlitePath` when `persistence.provider === 'sqlite'`,
+   * process-local (not durable) otherwise. A store that cannot be opened fails
+   * startup.
+   *
+   * The orchestrator is handed the narrow prepare / record / read port; trusted
+   * in-process operator code gets the read-only
+   * `AocEnterprise.executionOutcomes`. Nothing that decides, issues, admits or
+   * routes is handed either.
+   */
+  readonly executionOutcomes?: EnterpriseExecutionOutcomeOptions;
+}
+
+/** What a host may state about the durable execution outcome store (P11). Its store only; the store itself is composed with governed actions. */
+export interface EnterpriseExecutionOutcomeOptions {
+  /** A store the **host** opened and owns. Used verbatim and never closed from here. */
+  readonly store?: ExecutionOutcomeStore;
 }
 
 /** What a host may state about the canonical authority event stream (P8). Its store only; the stream itself is composed with governed actions. */
@@ -576,6 +602,17 @@ export interface AocEnterprise {
    * decides, issues, exercises, admits, routes or replays is handed it.
    */
   readonly authorityEventStream?: AuthorityEventStreamReader;
+  /**
+   * P11 — the **read-only** surface over the durable execution outcome store,
+   * present only when governed actions are composed.
+   *
+   * For trusted in-process operator and audit code (and, later,
+   * reconciliation): the exact prepared context and the initial observation of
+   * an execution, tenant-scoped on every call and verified before it is
+   * returned. No prepare, no record, no update, no delete. No HTTP route, SDK
+   * method or authorization path reaches it.
+   */
+  readonly executionOutcomes?: ExecutionOutcomeReader;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -710,6 +747,24 @@ async function buildAuthorityEventStreamStore(configuration: EnterpriseConfigura
     return createSqliteAuthorityEventStreamStore(configuration.authorityEventStream.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
   }
   return createInMemoryAuthorityEventStreamStore({ now });
+}
+
+/**
+ * The execution outcome store, when the host did not supply one: durable SQLite
+ * under `persistence.provider === 'sqlite'`, process-local (not durable)
+ * otherwise. Unlike the evidence stream, a failure to open it is a startup
+ * failure: no governed execution may run without durable preparation.
+ */
+async function buildExecutionOutcomeStore(configuration: EnterpriseConfiguration, now: () => string): Promise<ExecutionOutcomeStore> {
+  if (configuration.persistence.provider === 'sqlite') {
+    return createSqliteExecutionOutcomeStore(configuration.executionOutcome.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+  }
+  return createInMemoryExecutionOutcomeStore({ now });
+}
+
+/** A fresh one-method object over the store: `prepareAttempt`, `recordTerminal`, `health` and `close` are unreachable from it even by a cast. */
+function createExecutionOutcomeReader(store: ExecutionOutcomeStore): ExecutionOutcomeReader {
+  return Object.freeze({ read: (context: Parameters<ExecutionOutcomeReader['read']>[0], executionId: string) => store.read(context, executionId) });
 }
 
 /**
@@ -1046,6 +1101,14 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     }
   }
   const authorityEventStoreOpenedHere = authorityEventStore !== undefined && options.authorityEventStream?.store === undefined;
+
+  // P11: the durable execution outcome store, composed with governed actions
+  // and never without them. Load-bearing — a governed execution is refused
+  // before its claim when it cannot be prepared — so a store that cannot be
+  // opened fails startup here rather than one action at a time.
+  const executionOutcomeStore: ExecutionOutcomeStore | undefined =
+    governedActionOptions === undefined ? undefined : (options.executionOutcomes?.store ?? (await buildExecutionOutcomeStore(configuration, kernelProviders.clock.now)));
+  const executionOutcomeStoreOpenedHere = executionOutcomeStore !== undefined && options.executionOutcomes?.store === undefined;
   // The write-only projector: the one object lifecycle modules are handed.
   const authorityEvents: AuthorityEventProjector | undefined =
     governedActionOptions === undefined || grantStore === undefined || customerIdentityAdmission === undefined
@@ -1203,6 +1266,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     await authorityEventStore.close();
   }
 
+  /** The same ownership discipline for the execution outcome store: closed only when this composition root opened it. */
+  async function closeComposedExecutionOutcomeStore(): Promise<void> {
+    if (!executionOutcomeStoreOpenedHere || executionOutcomeStore === undefined) return;
+    await executionOutcomeStore.close();
+  }
+
   async function closeComposedExerciseLedger(): Promise<void> {
     if (!exerciseLedgerOpenedHere || exerciseLedger === undefined) return;
     const closable = exerciseLedger as Partial<{ close: () => Promise<void> }>;
@@ -1253,6 +1322,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
   if (governedActionOptions !== undefined) {
     registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now));
+    if (executionOutcomeStore !== undefined) registry.register(createExecutionOutcomeModule(executionOutcomeStore, kernelProviders.clock.now));
     if (authorityEvents !== undefined) {
       registry.register(
         createAuthorityEventStreamModule({
@@ -1306,7 +1376,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
 
   let governedActionOrchestrator: GovernedActionOrchestrator | undefined;
   if (governedActionOptions !== undefined) {
-    if (customerIdentityAdmission === undefined || authorityControlledExecution === undefined || authorityControlledExecutionOptions === undefined) {
+    if (customerIdentityAdmission === undefined || authorityControlledExecution === undefined || authorityControlledExecutionOptions === undefined || executionOutcomeStore === undefined) {
       // Unreachable after the checks above; kept so a future refactor that breaks them fails closed.
       throw new GovernedActionConfigurationError('GOVERNED_ACTION_EXECUTION_REQUIRED', 'Governed actions require customer identity admission and Authority-Controlled Execution.');
     }
@@ -1330,6 +1400,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       // P8: write-only. The orchestrator reports facts it has established; it
       // never reads the stream, and a failed report changes no result.
       ...(authorityEvents !== undefined ? { evidence: authorityEvents } : {}),
+      // P11: the narrow prepare / record / read port — never `health` or `close`.
+      executionOutcomes: {
+        prepareAttempt: (context, input) => executionOutcomeStore.prepareAttempt(context, input),
+        recordTerminal: (context, input) => executionOutcomeStore.recordTerminal(context, input),
+        read: (context, executionId) => executionOutcomeStore.read(context, executionId),
+      },
     });
   }
 
@@ -1405,6 +1481,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       : {}),
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
+    ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
     eventPublisher,
     telemetry,
     logger,
@@ -1455,6 +1532,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedEmergencyControlStore();
       await closeComposedExerciseLedger();
       await closeComposedAuthorityEventStore();
+      await closeComposedExecutionOutcomeStore();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -1464,6 +1542,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedEmergencyControlStore();
       await closeComposedExerciseLedger();
       await closeComposedAuthorityEventStore();
+      await closeComposedExecutionOutcomeStore();
     },
   };
 

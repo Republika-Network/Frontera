@@ -10,6 +10,7 @@ import {
 } from '../../features/emergency-control-runtime/index.js';
 import { createRecordingExecutionAdapter, type RecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import type { ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
+import { createInMemoryExecutionOutcomeStore, type ExecutionOutcomeStore } from '../execution-outcome-store/index.js';
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import { createEnterpriseRequestListener } from '../adapters/node-http-adapter.js';
@@ -101,6 +102,8 @@ interface Knobs {
   authorityBindingUnresolved: boolean;
   issuedGrantsVanish: boolean;
   outcomeReferenceFails: boolean;
+  /** P11: the canonical initial observation cannot be recorded. */
+  outcomeRecordFails: boolean;
   controlUnreadable: boolean;
   adapter: 'completed' | 'rejected' | 'throws';
 }
@@ -112,6 +115,7 @@ const DEFAULT_KNOBS: Knobs = {
   authorityBindingUnresolved: false,
   issuedGrantsVanish: false,
   outcomeReferenceFails: false,
+  outcomeRecordFails: false,
   controlUnreadable: false,
   adapter: 'completed',
 };
@@ -190,6 +194,22 @@ function instrumentedGovernanceStore(): GovernanceStore {
   });
 }
 
+/** P11: the durable execution outcome store, host-supplied so a test can make the initial observation unrecordable. */
+function instrumentedOutcomeStore(): ExecutionOutcomeStore {
+  const raw = createInMemoryExecutionOutcomeStore({ now: () => new Date().toISOString() });
+  return {
+    providerKind: raw.providerKind,
+    prepareAttempt: (context, input) => raw.prepareAttempt(context, input),
+    recordTerminal: async (context, input) => {
+      if (knobs.outcomeRecordFails) throw new Error('injected execution outcome store failure');
+      return raw.recordTerminal(context, input);
+    },
+    read: (context, executionId) => raw.read(context, executionId),
+    health: () => raw.health(),
+    close: () => raw.close(),
+  };
+}
+
 function instrumentedGrantStore(): BoundedGrantStorePort {
   const raw = createInMemoryBoundedGrantStore();
   return {
@@ -258,6 +278,7 @@ async function fullOptions(): Promise<CreateEnterpriseOptions> {
     // host classifies as financial; ALLOWED_INTENT's drafting action is not.
     monetary: { assets: [{ assetId: 'USD', scale: 2 }], financialActions: [FINANCIAL_ACTION] },
     emergencyControl: { enabled: true, store: controlStore },
+    executionOutcomes: { store: instrumentedOutcomeStore() },
   };
 }
 
@@ -840,13 +861,13 @@ describe('POST /api/governed-actions — the fully composed Host', () => {
 
     it('39. already attempted, outcome not on record → 409 execution_unconfirmed; the adapter is not called again', async () => {
       const intent = allowed('unconfirmed');
-      knobs.outcomeReferenceFails = true;
+      knobs.outcomeRecordFails = true;
       const first = await measure(() => send(baseUrl, intent, { authorization: bearer(SECRET) }));
       const firstBody = assertDomainBody(first.value, 'executed');
       assert.equal(firstBody.status === 'executed' ? firstBody.outcomeRecorded : undefined, false);
       assert.equal(first.provider, 1);
 
-      knobs.outcomeReferenceFails = false;
+      knobs.outcomeRecordFails = false;
       const retry = await measure(() => send(baseUrl, intent, { authorization: bearer(SECRET) }));
       assert.equal(retry.value.status, 409, retry.value.text);
       assertDomainBody(retry.value, 'execution_unconfirmed');
@@ -855,6 +876,21 @@ describe('POST /api/governed-actions — the fully composed Host', () => {
   });
 
   describe('idempotency — the intent’s own idempotencyKey, scoped to (organization, principal)', () => {
+    it('P11 — a lost Governance outcome summary leaves the canonical outcome recorded: the retry replays executed, with its providerRef', async () => {
+      const intent = allowed('summary-lost');
+      knobs.outcomeReferenceFails = true;
+      const first = await measure(() => send(baseUrl, intent, { authorization: bearer(SECRET) }));
+      const firstBody = assertDomainBody(first.value, 'executed');
+      assert.equal(firstBody.status === 'executed' ? firstBody.outcomeRecorded : undefined, true, 'outcomeRecorded is the canonical P11 observation');
+      knobs.outcomeReferenceFails = false;
+      const retry = await measure(() => send(baseUrl, intent, { authorization: bearer(SECRET) }));
+      const retryBody = assertDomainBody(retry.value, 'executed');
+      assert.equal(retry.value.status, 200);
+      assert.equal(retryBody.status === 'executed' ? retryBody.replayed : undefined, true);
+      assert.equal(retryBody.status === 'executed' ? retryBody.providerRef : undefined, firstBody.status === 'executed' ? firstBody.providerRef : 'missing');
+      assert.equal(retry.provider, 0);
+    });
+
     it('40. identical retry replays the recorded result; one external call in total', async () => {
       const intent = allowed('replay');
       const first = await measure(() => send(baseUrl, intent, { authorization: bearer(SECRET) }));

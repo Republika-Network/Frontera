@@ -210,6 +210,37 @@ provider that refuses becomes `PROVIDER_REJECTED`. Neither is an authorization
 outcome: `execution-failed` is a distinct status from `withheld` so a provider
 outage is never reported as an authority problem.
 
+### Provider certainty (P11)
+
+`failed` is **definitive**: it says the effect did not complete. An adapter must
+never return it because it failed to get a clean answer; that is `unconfirmed`.
+The three results map one-to-one onto a provider-neutral certainty
+(`provider-certainty.ts`): `completed` → `confirmed-completed`, `failed` →
+`confirmed-not-completed`, `unconfirmed` → `unconfirmed`. There is no fourth
+value and no score. A withholding has no certainty at all.
+
+The v1 throw contract is unchanged: a throw is the adapter violating its port,
+and it becomes `ADAPTER_ERROR` (which releases a P7 reservation). So **an
+adapter must not throw after it may have crossed its external side-effect
+boundary**; from that point it must return `unconfirmed`. The audit of the
+production adapters:
+
+| Adapter | Can it throw after the side-effect boundary? |
+| --- | --- |
+| Generic HTTP (`src/enterprise/execution-adapters/generic-http`) | No. Everything before the send returns a definitive `failed`. A send that throws, or any loss after `secureConnect`, is `unconfirmed`, and an outer catch turns anything unforeseen into `unconfirmed`. |
+| Execution adapter registry | Only as its children do. It converts a child throw to `ADAPTER_ERROR` with attribution, and it raises only its own pre-routing emergency-control signal. |
+| Host-supplied adapters | Bound by this contract. One that throws after an effect violates the port, and its throw is recorded as the failure it claims to be. |
+
+`providerRef` may accompany any of the three results as an opaque handle, and
+never changes the certainty. `GrantExecutionService` carries it onto the outcome
+only when `isRecordableProviderRef` accepts it (`provider-reference.ts`: bounded
+printable ASCII, shaped like no credential, JWT, PEM block, URL, cookie or
+authorization header). On `failed` and `unconfirmed`, a non-string reference is
+dropped rather than invalidating the result, so it can never turn an effect that
+may have happened into `ADAPTER_ERROR`. This module holds no outcome store. The
+governed-action path records outcomes durably
+(`docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`).
+
 ## Provider-neutral, and no chain
 
 No ledger, wallet, mnemonic, private key, signed transaction, sequence number,

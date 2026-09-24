@@ -158,12 +158,14 @@ reports:
   outcome, carries `GRANT_EXERCISE_EXPIRED`;
 - the write-ahead claim — only when this call appended it, at the claim row's
   own instant;
-- the execution outcome — after the runtime returned it and the outcome
-  reference was attempted, with `outcomeRecorded` beside it.
+- the execution outcome — after the runtime returned it, the P11 initial
+  observation was attempted and its Governance summary written, with
+  `outcomeRecorded` (the canonical observation is durable) beside it.
 
 Nothing here reads the stream, and nothing here awaits it. The replay guard is
-still the attempt reference; the result is still built from the committed record
-and the `ExecutionOutcome`; a projection that fails, or one that never settles —
+still the attempt reference; replay reads the P11 execution outcome store, never
+the stream; the result is still built from the committed record and the
+`ExecutionOutcome`; a projection that fails, or one that never settles —
 including a recorder that throws synchronously — changes no status, reason code,
 grant, claim or adapter call. The public result gains no field.
 
@@ -189,9 +191,12 @@ BoundCustomerIdentity + GovernedActionIntent
  12  issue bounded grant   — from the PERSISTED decision (ACE issuance core)
      authorization_artifact reference (evidence)
  13  ACE assessExercise    — pure read
+     P11 prepare attempt   — exact amount + asset + correlation, durable, idempotent, BEFORE the claim
      execution_record "attempt" reference — WRITE-AHEAD, at most once per executionId
-     ACE exercise          — re-reads the grant; adapter gets a ValidatedExecutionAction
- 14  execution_record outcome reference; customer-safe result
+     ACE exercise          — re-reads the grant; adapter gets a ValidatedExecutionAction; P7 finalized inside
+ 14  P11 initial observation — provider certainty (or withholding layer), immutable
+     execution_record outcome reference — compact summary, digest = the observation's
+     customer-safe result
 
  P8 evidence (write-only, enqueued after each fact, never read, never awaited):
      after 8  → governance.decision.committed
@@ -200,6 +205,32 @@ BoundCustomerIdentity + GovernedActionIntent
      inside ACE exercise (P7) → exercise.reservation.reserved / .settled / .released
      after 14 → execution.outcome.observed  (+ grant.expiry.observed when observed)
 ```
+
+## Durable outcomes (P11)
+
+Every governed execution is recorded in the **execution outcome store**
+(`src/enterprise/execution-outcome-store/`, see
+`docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`):
+
+- **attempt**, prepared before the claim: tenant, evaluation / request /
+  decision / grant / execution ids (references only), action, and the exact
+  amount and asset the adapter receives. Preparation is idempotent and says
+  "prepared", never "attempted". A preparation that fails stops the request
+  before the claim (`system_error` / `GOVERNED_ACTION_EXECUTION_CLAIM_FAILED`),
+  so nothing is stranded.
+- **initial observation**, after the runtime returned: `confirmed-completed`,
+  `confirmed-not-completed` or `unconfirmed`, with the trusted adapter
+  attribution, an optional recordable `providerRef` and the closed failure
+  reason. Or the layer that withheld the effect, with its own codes. It is
+  immutable. A different observation for the same execution is a conflict,
+  never an overwrite.
+
+`outcomeRecorded` now means "the canonical observation is durable". A lost
+Governance summary row no longer unrecords an outcome, and no summary row is
+written for an observation that did not commit. Replay prefers the P11 record,
+and falls back to the legacy summary only for executions that have no P11 record
+(pre-P11 history). An unreadable or corrupt P11 record replays as
+`…_ALREADY_ATTEMPTED`, never optimistically.
 
 ## The persist-before-grant invariant
 
@@ -235,7 +266,7 @@ The orchestrator is split along its trust boundaries and lifecycle phases:
 | --- | --- |
 | `kernel-request.ts` | Identity → Kernel request. Reads the four identity fields and builds the request. |
 | `decision-commit.ts` | Idempotency → Kernel → `appendEvaluation` → re-read/`verify` → reconstruct → bind. It is the **only** producer of a `VerifiedDecision`, and that type has no transient-decision field. |
-| `execution-ledger.ts` | Every Governance reference write: the authorization artifact, the write-ahead claim and the outcome. |
+| `execution-ledger.ts` | Every Governance reference write: the authorization artifact, the write-ahead claim and the outcome summary (P11: after the canonical observation, by its digest). |
 | `orchestrator.ts` | The order between phases: status gate, grant terms, `issueFromDecision(persisted)`, exercise, and result mapping. |
 
 A structural test pins the call sites. Only `decision-commit.ts` calls
@@ -393,7 +424,11 @@ Governance references are the evidence trail:
 | --- | --- | --- | --- |
 | The issued grant | `authorization_artifact` | grant id | — (the grant digest goes in `digest`) |
 | Write-ahead claim | `execution_record` | execution id | `attempt` |
-| Outcome | `execution_record` | execution id | `executed` \| `withheld:<layer>:<CODE>,…` \| `execution-failed:<reason>` \| `execution-unconfirmed` (P6), each effect-bearing form suffixed `@<adapterId>` when recordable |
+| Outcome summary | `execution_record` | execution id | `executed` \| `withheld:<layer>:<CODE>,…` \| `execution-failed:<reason>` \| `execution-unconfirmed` (P6), each effect-bearing form suffixed `@<adapterId>` when recordable. Since P11 its `digest` is the P11 observation digest, and it is written only after that observation committed |
+
+The outcome row is **not** the canonical durable outcome of a P11 execution;
+the execution outcome store is. The row remains the replay source for
+executions recorded before P11.
 
 Reference ids are deterministic, and the Governance Store refuses a second
 append of the same reference id. So the `attempt` row is a durable
@@ -422,9 +457,9 @@ authoritative bounded-grant store and nothing else. A forged
   call leaves an execution that never ran, and a crash after the adapter call
   and before the outcome row leaves one whose effect is unknown. Both are
   reported as `execution_unconfirmed` (`GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED`)
-  and are **never retried automatically**. They need reconciliation, which is
-  later work. The providerRef of a replayed execution is not recorded, so it is
-  not returned on replay.
+  and are **never retried automatically**. They need reconciliation (P12).
+  Since P11 both keep their exact prepared monetary context, and a replayed
+  `executed` returns the `providerRef` its observation recorded.
 - **P6: an adapter-reported unconfirmed effect is recorded, not lost.** When the
   adapter itself reports `unconfirmed` (the provider was contacted and the
   result is unknown), the outcome row is the canonical
@@ -480,7 +515,9 @@ orchestration is the owner, and it is asserted disjoint from the Kernel,
 | P10: financial authority revoked or changed after issuance | `withheld` / `exercise` / `EXERCISE_CONTROL_AUTHORITY_BINDING_*` | issued | no |
 | Adapter fails or throws | `execution_failed` | issued | once |
 | Adapter reports `unconfirmed` (P6) | `execution_unconfirmed` / `…_OUTCOME_UNCONFIRMED`, recorded | issued | once |
-| Outcome reference append fails | outcome reported, `outcomeRecorded: false` | issued | once |
+| P11 attempt preparation fails | `system_error` / `…_CLAIM_FAILED`, no claim | issued | no |
+| P11 observation write fails | outcome reported, `outcomeRecorded: false`, `…_OUTCOME_UNRECORDED`; replay `…_ALREADY_ATTEMPTED` | issued | once |
+| Outcome summary append fails (P11 observation durable) | outcome reported, `outcomeRecorded: true`; replay from P11 | issued | once |
 
 ## Composition
 
@@ -543,7 +580,7 @@ entries.
   recorded as `execution-unconfirmed@<adapterId>`) and lets an operator map
   `correlation.executionId` into a provider idempotency header; neither is
   exactly-once, and nothing reconciles an unconfirmed effect yet.
-- Recording `providerRef` for replay.
+- ~~Recording `providerRef` for replay.~~ Done in P11 (execution outcome store).
 - Host-supplied execution Kernels, which need a provable grant-awareness check.
 - The `workflow` intent axis, which needs a design decision first.
 - **Known residual: request-id squatting is a denial of service only.** The

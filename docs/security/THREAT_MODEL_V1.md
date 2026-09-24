@@ -248,6 +248,21 @@ P8 records the governed-action / bounded-grant lifecycle as a durable, append-on
 | **Secret leakage into evidence** — customer credential, provider credential, headers, destination, provider response, asserted context | Closed per-type contract; only server-derived ids, digests, closed vocabularies, instants, adapter ids and a bounded `providerRef` are copied; credential-, JWT-, PEM-, URL-, cookie- and authorization-shaped values are refused by the store and omitted by the projector; tested through the full Host with a Generic HTTP adapter. | Pattern-based refusal cannot recognize a secret embedded in an otherwise opaque identifier; the load-bearing control is that the projector copies no caller or provider free text. |
 | **Blurred execution certainty** — "unconfirmed" recorded as failed or executed | The outcome payload restates `ExecutionOutcome.status` verbatim with its layer and codes; the store refuses shapes that mix statuses. | — |
 
+### 7.21 Durable monetary outcomes and provider certainty (added by P11)
+
+P11 records every governed execution's exact prepared context before its provider crossing and its initial provider observation once obtained, in an immutable, tenant-confined, integrity-verified store (`docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`). It adds no effect path.
+
+| Threat | Control | Residual |
+| --- | --- | --- |
+| **Lost provider certainty** — a confirmed success unreconstructable after restart | The observation is written durably after the runtime returns (`synchronous = FULL`); replay reads it; the Governance summary is written only after it | The external effect and the local commit are never atomic: a crash between them leaves a claim with no observation (`…_ALREADY_ATTEMPTED`) — owned by P12 |
+| **Uncertainty rewritten as failure** — invites a retry of an effect that may have happened | One certainty vocabulary derived from the status; an unconfirmed observation conflicts with any later one; a malformed reference on `unconfirmed` is dropped, never `ADAPTER_ERROR`; P7 settles unconfirmed | — |
+| **Self-reported success** — a caller supplying `providerRef`, a status or a certainty | Closed intent; P11 self-report vocabulary reserved in `assertedContext`; only the runtime's normalized outcome is recorded | — |
+| **Forged attribution / adapter-controlled objects in the record** | Attribution only from the authenticated registry or the composed adapter; results normalized by `readExecutionAdapterResult`, copied again into plain frozen data | — |
+| **Secret or destination in a durable reference** | `isRecordableProviderRef` for every adapter and again in the store; Generic HTTP credential-echo filter; no `detail`, body, header or URL persisted | A provider that encodes a secret before echoing it |
+| **Corrupted record replayed as success** | Every read re-validates the closed contract and recomputes both digests; failure → `…_ALREADY_ATTEMPTED`, no fallback, no adapter | Consistent re-seal of a row and its digest (P20) |
+| **Outcome store becoming authority** | No authority-bearing module imports it; one read, inside replay of an already-claimed identity | — |
+| **Stranding on preparation failure** | Preparation precedes the claim and is idempotent; its failure writes no claim | A changed host grant policy between a crash and its retry can conflict the attempt (fail-closed; a new idempotency key proceeds) |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.
