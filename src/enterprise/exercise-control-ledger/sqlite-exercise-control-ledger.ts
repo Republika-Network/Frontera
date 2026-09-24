@@ -5,7 +5,13 @@ import {
   EXERCISE_RESERVATION_TERMINAL_KINDS,
   assessExerciseReservationAdmission,
   exerciseControlBucketKey,
+  exerciseReservationConsumes,
+  exerciseReservationResolutionConsistent,
+  exerciseReservationResolutionMatches,
   exerciseReservationTerminalReasonMatches,
+  isExerciseReservationResolution,
+  isWellFormedExerciseDigest,
+  isWellFormedExerciseReservationResolutionInput,
   exerciseReservationsDescribeSameAttempt,
   isExerciseReservationInstant,
   isWellFormedExerciseReservation,
@@ -13,12 +19,16 @@ import {
   type ExerciseControlActiveUsage,
   type ExerciseControlLedgerPort,
   type ExerciseControlLimit,
+  type ExerciseControlReconciliationPort,
   type ExerciseControlRuleUsage,
   type ExerciseControlWindow,
   type ExerciseReservationOutcome,
   type ExerciseReservationRecord,
   type ExerciseReservationRelease,
   type ExerciseReservationRequest,
+  type ExerciseReservationResolutionEvent,
+  type ExerciseReservationResolutionInput,
+  type ExerciseReservationResolutionOutcome,
   type ExerciseReservationSettlement,
   type ExerciseReservationTerminalEvent,
   type ExerciseReservationTerminalKind,
@@ -31,6 +41,7 @@ import {
   EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
   storedBucketHeadDigest,
   storedReservationDigest,
+  storedResolutionEventDigest,
   storedRuleDigest,
   storedTerminalEventDigest,
 } from './exercise-control-record.js';
@@ -63,6 +74,15 @@ import {
  * exercise_control_reservation_limits   one row per applicable limit, with its usage
  * exercise_control_terminal_events      at most one row per reservation: settled | released
  * ```
+ *
+ * A fifth table, `exercise_control_reservation_resolutions` (P12), holds at
+ * most one immutable resolution row per reservation, written only by the P12
+ * reconciliation service after a canonical resolution is durable, and bound to
+ * that resolution's digest. It never replaces the terminal event: a
+ * reservation "settled because execution was unconfirmed" stays exactly that,
+ * and the resolution beside it says what was learned later. A verified
+ * `confirmed-not-completed` resolution stops the whole reservation consuming
+ * in every bucket it names; `confirmed-completed` changes nothing.
  *
  * There is no status column. A reservation with no terminal event is
  * `reserved`; the terminal event's own kind is the rest. The primary key on
@@ -104,7 +124,8 @@ import {
  * Nothing here ages a reservation out of `reserved`. A process that crashed
  * after reserving leaves a reservation that keeps consuming — indefinitely for
  * a lifetime limit, until it leaves the window for a rolling one — and opening
- * the ledger again changes nothing about it. Reconciliation is future work.
+ * the ledger again changes nothing about it. Only a verified P12 resolution
+ * row can stop it consuming — never time, never a restart, never a request.
  *
  * ## Fail closed, never repair
  *
@@ -154,7 +175,7 @@ export interface ExerciseControlLedgerHealth {
 }
 
 /** The durable ledger, plus the lifecycle surface a host needs. The gate is handed only `ExerciseControlLedgerPort`. */
-export interface DurableExerciseControlLedger extends ExerciseControlLedgerPort {
+export interface DurableExerciseControlLedger extends ExerciseControlLedgerPort, ExerciseControlReconciliationPort {
   readonly providerKind: 'sqlite';
   health(): Promise<ExerciseControlLedgerHealth>;
   close(): Promise<void>;
@@ -220,6 +241,17 @@ const SCHEMA_V1 = `
     schema_version TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS exercise_control_reservation_resolutions (
+    reservation_id TEXT PRIMARY KEY REFERENCES exercise_control_reservations (reservation_id),
+    execution_id TEXT NOT NULL,
+    resolution_digest TEXT NOT NULL,
+    resolution TEXT NOT NULL CHECK (resolution IN ('confirmed-completed', 'confirmed-not-completed')),
+    recorded_at TEXT NOT NULL,
+    event_digest TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    schema_version TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS exercise_control_bucket_heads (
     limit_id TEXT NOT NULL,
     scope_key TEXT NOT NULL,
@@ -251,6 +283,12 @@ const SCHEMA_V1 = `
   CREATE TRIGGER IF NOT EXISTS exercise_control_terminal_events_append_only_delete
     BEFORE DELETE ON exercise_control_terminal_events
     BEGIN SELECT RAISE(ABORT, 'exercise-control terminal events are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_resolutions_append_only_update
+    BEFORE UPDATE ON exercise_control_reservation_resolutions
+    BEGIN SELECT RAISE(ABORT, 'exercise-control reservation resolutions are append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS exercise_control_resolutions_append_only_delete
+    BEFORE DELETE ON exercise_control_reservation_resolutions
+    BEGIN SELECT RAISE(ABORT, 'exercise-control reservation resolutions are append-only'); END;
 `;
 
 interface ReservationRow {
@@ -292,9 +330,20 @@ interface TerminalRow {
   readonly schema_version: string;
 }
 
+interface ResolutionRow {
+  readonly reservation_id: string;
+  readonly execution_id: string;
+  readonly resolution_digest: string;
+  readonly resolution: string;
+  readonly recorded_at: string;
+  readonly event_digest: string;
+  readonly schema_version: string;
+}
+
 interface VerifiedReservation {
   readonly record: ExerciseReservationRecord;
   readonly terminal?: ExerciseReservationTerminalEvent;
+  readonly resolution?: ExerciseReservationResolutionEvent;
 }
 
 function corrupt(reservationId: string, what: string): ExerciseControlLedgerError {
@@ -429,6 +478,13 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
        (reservation_id, ordinal, limit_id, scope_key, metric, maximum, unit, window_kind, window_seconds, usage, reserved_at_ms, rule_digest, schema_version)
      VALUES (@reservationId, @ordinal, @limitId, @scopeKey, @metric, @maximum, @unit, @windowKind, @windowSeconds, @usage, @reservedAtMs, @ruleDigest, @schemaVersion)`,
   );
+  const selectResolution = db.prepare(
+    `SELECT reservation_id, execution_id, resolution_digest, resolution, recorded_at, event_digest, schema_version FROM exercise_control_reservation_resolutions WHERE reservation_id = ?`,
+  );
+  const insertResolution = db.prepare(
+    `INSERT INTO exercise_control_reservation_resolutions (reservation_id, execution_id, resolution_digest, resolution, recorded_at, event_digest, committed_at, schema_version)
+     VALUES (@reservationId, @executionId, @resolutionDigest, @resolution, @recordedAt, @eventDigest, @committedAt, @schemaVersion)`,
+  );
   const insertTerminal = db.prepare(
     `INSERT INTO exercise_control_terminal_events (reservation_id, terminal_kind, reason, recorded_at, event_digest, committed_at, schema_version)
      VALUES (@reservationId, @terminalKind, @reason, @recordedAt, @eventDigest, @committedAt, @schemaVersion)`,
@@ -469,9 +525,10 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
   function loadVerified(reservationId: string): VerifiedReservation | undefined {
     const row = selectReservation.get(reservationId) as ReservationRow | undefined;
     const terminalRow = selectTerminal.get(reservationId) as TerminalRow | undefined;
+    const resolutionRow = selectResolution.get(reservationId) as ResolutionRow | undefined;
     if (row === undefined) {
       // Under the foreign keys an orphan can only be tampering.
-      if (terminalRow !== undefined || (selectRules.all(reservationId) as RuleRow[]).length > 0) throw corrupt(reservationId, 'rows exist for a reservation that does not');
+      if (terminalRow !== undefined || resolutionRow !== undefined || (selectRules.all(reservationId) as RuleRow[]).length > 0) throw corrupt(reservationId, 'rows exist for a reservation that does not');
       return undefined;
     }
     if (row.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(reservationId, 'unrecognized reservation schema version');
@@ -508,7 +565,28 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
     // swapped under a re-sealed digest still fails here.
     if (!isWellFormedExerciseReservation(record)) throw corrupt(reservationId, 'the reservation is not internally consistent');
 
-    if (terminalRow === undefined) return { record };
+    // P12: the resolution row is verified **before** anything reads its
+    // answer. A row whose digest does not recompute — an edited answer, an
+    // edited resolution digest, a row re-pointed at another reservation — is
+    // corrupt, and the whole bucket fails closed: a tampered field can never
+    // exclude its own reservation from consumption.
+    let resolution: ExerciseReservationResolutionEvent | undefined;
+    if (resolutionRow !== undefined) {
+      if (resolutionRow.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(reservationId, 'unrecognized resolution schema version');
+      if (!isExerciseReservationResolution(resolutionRow.resolution) || !isWellFormedExerciseDigest(resolutionRow.resolution_digest)) throw corrupt(reservationId, 'the resolution is outside the closed vocabulary');
+      if (resolutionRow.execution_id !== row.execution_id) throw corrupt(reservationId, 'the resolution names another execution');
+      resolution = {
+        reservationId,
+        executionId: resolutionRow.execution_id,
+        resolutionDigest: resolutionRow.resolution_digest,
+        resolution: resolutionRow.resolution,
+        recordedAt: resolutionRow.recorded_at,
+      };
+      if (storedResolutionEventDigest(resolution) !== resolutionRow.event_digest) throw corrupt(reservationId, 'resolution digest mismatch');
+    }
+    const withResolution = resolution !== undefined ? { resolution } : {};
+
+    if (terminalRow === undefined) return { record, ...withResolution };
     if (terminalRow.schema_version !== EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION) throw corrupt(reservationId, 'unrecognized terminal-event schema version');
     if (!isTerminalKind(terminalRow.terminal_kind) || !exerciseReservationTerminalReasonMatches(terminalRow.terminal_kind, terminalRow.reason)) {
       throw corrupt(reservationId, 'the terminal event is outside the closed vocabulary');
@@ -520,7 +598,7 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
       recordedAt: terminalRow.recorded_at,
     };
     if (storedTerminalEventDigest(terminal) !== terminalRow.event_digest) throw corrupt(reservationId, 'terminal-event digest mismatch');
-    return { record, terminal };
+    return { record, terminal, ...withResolution };
   }
 
   /** After inserting one rule row: the head must record exactly one fewer row than the bucket now holds. */
@@ -568,7 +646,8 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
           if (entry === undefined) throw corrupt(reservationId, 'a rule row names a reservation that does not exist');
           verified.set(reservationId, entry);
         }
-        if (entry.terminal?.kind === 'released') continue;
+        // Verified above — terminal and resolution alike — before either decides.
+        if (!exerciseReservationConsumes(entry.terminal, entry.resolution)) continue;
         const recorded = entry.record.rules.find((candidate) => exerciseControlBucketKey(candidate.limit) === bucket);
         if (recorded === undefined) throw corrupt(reservationId, 'the bucket index names a reservation that holds no such rule');
         active.push({
@@ -661,6 +740,32 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
     },
   );
 
+  /**
+   * P12: one resolution row, decided inside `BEGIN IMMEDIATE` — the same
+   * database and the same write lock as admission — so a reservation that
+   * stops consuming here and a new admission competing for that capacity are
+   * serialized: the admission either sees the row or runs before it exists.
+   */
+  const runResolution = db.transaction((input: ExerciseReservationResolutionInput): ExerciseReservationResolutionOutcome => {
+    const current = loadVerified(input.reservationId);
+    if (current === undefined || current.record.executionId !== input.executionId) return { outcome: 'not-found' };
+    if (current.resolution !== undefined) {
+      return exerciseReservationResolutionMatches(current.resolution, input) ? { outcome: 'already-applied', event: current.resolution } : { outcome: 'conflict', event: current.resolution };
+    }
+    if (!exerciseReservationResolutionConsistent(current.terminal, input.resolution, input.basis)) return { outcome: 'inconsistent' };
+    const event: ExerciseReservationResolutionEvent = {
+      reservationId: input.reservationId,
+      executionId: input.executionId,
+      resolutionDigest: input.resolutionDigest,
+      resolution: input.resolution,
+      recordedAt: input.recordedAt,
+    };
+    insertResolution.run({ ...event, eventDigest: storedResolutionEventDigest(event), committedAt: now(), schemaVersion: EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION });
+    const written = loadVerified(input.reservationId);
+    if (written?.resolution === undefined) throw corrupt(input.reservationId, 'the resolution could not be read back');
+    return { outcome: 'applied', event: written.resolution };
+  });
+
   const runRead = db.transaction((reservationId: string): ExerciseReservationView | undefined => {
     const current = loadVerified(reservationId);
     if (current === undefined) return undefined;
@@ -668,6 +773,7 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
       reservation: current.record,
       state: current.terminal === undefined ? 'reserved' : current.terminal.kind,
       ...(current.terminal !== undefined ? { terminal: current.terminal } : {}),
+      ...(current.resolution !== undefined ? { resolution: current.resolution } : {}),
     };
   });
 
@@ -710,6 +816,12 @@ export async function createSqliteExerciseControlLedger(dbPath: string, options:
     async read(reservationId: string): Promise<ExerciseReservationView | undefined> {
       assertOpen();
       return runRead(reservationId);
+    },
+
+    async reconcileResolution(input: ExerciseReservationResolutionInput): Promise<ExerciseReservationResolutionOutcome> {
+      assertOpen();
+      if (!isWellFormedExerciseReservationResolutionInput(input)) throw invalidInput('The reservation resolution is outside the closed contract.');
+      return runResolution.immediate(input);
     },
 
     async health(): Promise<ExerciseControlLedgerHealth> {

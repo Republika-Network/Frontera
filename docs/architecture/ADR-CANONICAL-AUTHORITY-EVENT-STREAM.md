@@ -231,7 +231,7 @@ refusal of a duplicate position. Triggers refuse `UPDATE`/`DELETE` on events and
 **Integrity, not authenticity.** Unkeyed SHA-256: a writer who can rewrite a
 whole stream and re-seal it (or delete a stream with its head) is not detected
 from inside the file. Signatures, KMS/HSM and an external anchor are later work
-(P12).
+(P20).
 
 ### 6. `occurredAt` and `recordedAt`
 
@@ -309,7 +309,7 @@ Worker-thread or process isolation for projection (Stage A accepts shared-loop
 latency; see §1a); a generic bus; Kafka, NATS, Redis Streams, SSE, WebSocket or
 webhooks; a public
 read API; cross-tenant or global ordering; cross-region replication; distributed
-consensus; exactly-once; WORM storage; signatures, KMS/HSM (P12); behavioural or
+consensus; exactly-once; WORM storage; signatures, KMS/HSM (P20); behavioural or
 risk intelligence; system-wide coverage beyond the governed-action lifecycle;
 retention, TTL or cleanup; portability v1 backup of the stream file; model
 convergence with `EnterpriseUsageEvent` / `EnterpriseEvidenceCorrelation` (P9);

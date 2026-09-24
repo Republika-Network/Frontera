@@ -55,3 +55,12 @@ export function executionAttemptReferenceId(executionId: string): string {
 export function executionOutcomeReferenceId(executionId: string): string {
   return `aoc.gar.ref:${digest(['aoc.governed-action.execution-outcome-ref.v1', executionId])}`;
 }
+
+/**
+ * P12 — the Governance evidence reference for a definitive resolution. A
+ * distinct derivation from the P11 outcome reference, so a resolution can never
+ * occupy, overwrite or be mistaken for the initial outcome summary.
+ */
+export function executionResolutionReferenceId(executionId: string): string {
+  return `aoc.gar.ref:${digest(['aoc.governed-action.execution-resolution-ref.v1', executionId])}`;
+}

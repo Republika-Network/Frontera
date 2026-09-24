@@ -16,10 +16,12 @@ export {
   EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION,
   serializeStoredBucketHead,
   serializeStoredReservation,
+  serializeStoredResolutionEvent,
   serializeStoredRule,
   serializeStoredTerminalEvent,
   storedBucketHeadDigest,
   storedReservationDigest,
+  storedResolutionEventDigest,
   storedRuleDigest,
   storedTerminalEventDigest,
 } from './exercise-control-record.js';

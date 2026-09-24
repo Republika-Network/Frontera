@@ -333,6 +333,37 @@ authorization header is no longer returned: it is omitted, and the status is
 unchanged. `execution_failed` and `execution_unconfirmed` keep their v1 shapes.
 The references P11 keeps for them are internal. The SDK needs no change.
 
+**P12 (unreleased) adds no endpoint, no request field, no response field, no
+status, no reason code and no `withheldBy` value.** An optional, host-composed
+execution reconciliation (`docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`)
+lets a trusted resolution authority later establish whether an execution the
+first observation left uncertain completed; it is reachable only by trusted
+in-process code (`AocEnterprise.executionReconciliation`,
+`AocEnterprise.executionResolutions`). Wire-visible consequences, all inside
+the existing contract and only when a deployment enables it:
+
+- A **replayed** result for an execution that was `execution_unconfirmed` may
+  now be `executed` (with `providerRef`) or `execution_failed` (with one of the
+  existing four `failure` values) once a definitive resolution is on record.
+  Nothing is re-executed to learn it, and replay never contacts a provider.
+- `outcomeRecorded` keeps its type and shape. Its truthful meaning widens:
+  `true` means the result replayed here is backed by a canonical durable
+  execution fact — the P11 initial observation **or** a P12 definitive
+  resolution.
+- A new governed execution whose resolution authority cannot be durably bound
+  is the existing `system_error` / `GOVERNED_ACTION_EXECUTION_CLAIM_FAILED`,
+  before any claim or provider call — the same answer as a failed P11
+  preparation, and equally safe to retry.
+- `resolution`, `resolved`, `reconciled`, `reconciliation`,
+  `resolutionAuthority`, `resolutionAuthorityId`, `providerResolution`,
+  `providerOutcome`, `finalOutcome`, `confirmedCompleted` and
+  `confirmedNotCompleted` join the reserved `assertedContext` keys (`400`
+  `rejected` / `GOVERNED_ACTION_INTENT_INVALID`). A caller can never report a
+  resolution.
+
+No resolution authority id, resolution digest, reservation or budget
+correction is ever part of a response. The SDK needs no change.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.

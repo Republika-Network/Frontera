@@ -593,6 +593,44 @@ export type {
 } from './execution-outcome-store/index.js';
 
 /**
+ * P12 execution reconciliation and resolution authority -- **types only**. A
+ * host enables it through `createEnterprise({ executionReconciliation: {
+ * enabled: true, authorities, selectAuthority } })`, implements the
+ * `ExecutionResolutionAuthority` port for its own provider, reconciles through
+ * the trusted in-process `AocEnterprise.executionReconciliation` and reads
+ * through `AocEnterprise.executionResolutions`. No store, service or binder is
+ * exported as a value. See
+ * `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
+ */
+export type { EnterpriseExecutionReconciliationOptions } from './composition/composition-root.js';
+export type {
+  ExecutionReconciliationCapacity,
+  ExecutionReconciliationRequest,
+  ExecutionReconciliationResult,
+  ExecutionReconciliationService,
+  ExecutionResolutionAdoptionRequest,
+  ExecutionResolutionAdoptionResult,
+  ExecutionResolutionAuthority,
+  ExecutionResolutionAuthorityResult,
+  ExecutionResolutionAuthoritySelector,
+  ExecutionResolutionQuery,
+  ExecutionResolutionQueryAmount,
+  ExecutionResolutionSelectionContext,
+} from './execution-reconciliation/index.js';
+export type {
+  ExecutionResolutionAccessContext,
+  ExecutionResolutionBinding,
+  ExecutionResolutionBindingOrigin,
+  ExecutionResolutionCertainty,
+  ExecutionResolutionReader,
+  ExecutionResolutionRecord,
+  ExecutionResolutionState,
+  ExecutionResolutionStore,
+  ExecutionResolutionStoreErrorCode,
+  ExecutionResolutionStoreHealth,
+} from './execution-resolution-store/index.js';
+
+/**
  * Customer-plane identity admission -- type-only, for the same reason the
  * execution composition below is. A deployment adopts it through
  * `createEnterprise({ customerIdentityAdmission: { enabled: true } })`; the

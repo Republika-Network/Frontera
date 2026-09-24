@@ -1,17 +1,25 @@
 import {
   assessExerciseReservationAdmission,
   exerciseControlBucketKey,
+  exerciseReservationConsumes,
+  exerciseReservationResolutionConsistent,
+  exerciseReservationResolutionMatches,
+  isWellFormedExerciseReservationResolutionInput,
   exerciseReservationTerminalReasonMatches,
   exerciseReservationsDescribeSameAttempt,
   isExerciseReservationInstant,
   isWellFormedExerciseReservationRequest,
   type ExerciseControlActiveUsage,
   type ExerciseControlLedgerPort,
+  type ExerciseControlReconciliationPort,
   type ExerciseControlRuleUsage,
   type ExerciseReservationOutcome,
   type ExerciseReservationRecord,
   type ExerciseReservationRelease,
   type ExerciseReservationRequest,
+  type ExerciseReservationResolutionEvent,
+  type ExerciseReservationResolutionInput,
+  type ExerciseReservationResolutionOutcome,
   type ExerciseReservationSettlement,
   type ExerciseReservationTerminalEvent,
   type ExerciseReservationTerminalKind,
@@ -36,16 +44,22 @@ import {
  * The reservation instant is sampled from the injected clock **inside** that
  * synchronous critical section, exactly as the SQLite ledger samples it inside
  * `BEGIN IMMEDIATE`: the caller never supplies it.
+ *
+ * It also implements the P12 `ExerciseControlReconciliationPort` with the
+ * SQLite ledger's semantics: one resolution row per reservation, checked
+ * against the terminal history inside the same synchronous section, and a
+ * not-completed resolution that stops the whole reservation consuming.
  */
 export interface InMemoryExerciseControlLedgerOptions {
   /** The injected clock the reservation instant is sampled from, inside admission. Never `Date.now()`. */
   readonly now: () => string;
 }
 
-export function createInMemoryExerciseControlLedger(options: InMemoryExerciseControlLedgerOptions): ExerciseControlLedgerPort {
+export function createInMemoryExerciseControlLedger(options: InMemoryExerciseControlLedgerOptions): ExerciseControlLedgerPort & ExerciseControlReconciliationPort {
   const { now } = options;
   const reservations = new Map<string, ExerciseReservationRecord>();
   const terminals = new Map<string, ExerciseReservationTerminalEvent>();
+  const resolutions = new Map<string, ExerciseReservationResolutionEvent>();
 
   function frozenCopy(request: ExerciseReservationRequest, reservedAt: string): ExerciseReservationRecord {
     return Object.freeze({
@@ -64,12 +78,12 @@ export function createInMemoryExerciseControlLedger(options: InMemoryExerciseCon
     }) as ExerciseReservationRecord;
   }
 
-  /** Active usage for one bucket: every reservation that names it and has not been released. Settled and still-reserved both count. */
+  /** Active usage for one bucket: every reservation that names it and still consumes — not released, and not resolved `confirmed-not-completed`. */
   function activeUsageFor(rule: ExerciseControlRuleUsage): readonly ExerciseControlActiveUsage[] {
     const bucket = exerciseControlBucketKey(rule.limit);
     const active: ExerciseControlActiveUsage[] = [];
     for (const reservation of reservations.values()) {
-      if (terminals.get(reservation.reservationId)?.kind === 'released') continue;
+      if (!exerciseReservationConsumes(terminals.get(reservation.reservationId), resolutions.get(reservation.reservationId))) continue;
       const recorded = reservation.rules.find((entry) => exerciseControlBucketKey(entry.limit) === bucket);
       if (recorded === undefined) continue;
       active.push({
@@ -139,7 +153,33 @@ export function createInMemoryExerciseControlLedger(options: InMemoryExerciseCon
       const reservation = reservations.get(reservationId);
       if (reservation === undefined) return undefined;
       const event = terminals.get(reservationId);
-      return { reservation, state: event === undefined ? 'reserved' : event.kind, ...(event !== undefined ? { terminal: event } : {}) };
+      const resolution = resolutions.get(reservationId);
+      return {
+        reservation,
+        state: event === undefined ? 'reserved' : event.kind,
+        ...(event !== undefined ? { terminal: event } : {}),
+        ...(resolution !== undefined ? { resolution } : {}),
+      };
+    },
+
+    async reconcileResolution(input: ExerciseReservationResolutionInput): Promise<ExerciseReservationResolutionOutcome> {
+      // ---- critical section begins. No `await` below this line. ----
+      if (!isWellFormedExerciseReservationResolutionInput(input)) throw new TypeError('The reservation resolution is outside the closed contract.');
+      const reservation = reservations.get(input.reservationId);
+      if (reservation === undefined || reservation.executionId !== input.executionId) return { outcome: 'not-found' };
+      const existing = resolutions.get(input.reservationId);
+      if (existing !== undefined) return exerciseReservationResolutionMatches(existing, input) ? { outcome: 'already-applied', event: existing } : { outcome: 'conflict', event: existing };
+      if (!exerciseReservationResolutionConsistent(terminals.get(input.reservationId), input.resolution, input.basis)) return { outcome: 'inconsistent' };
+      const event: ExerciseReservationResolutionEvent = Object.freeze({
+        reservationId: input.reservationId,
+        executionId: input.executionId,
+        resolutionDigest: input.resolutionDigest,
+        resolution: input.resolution,
+        recordedAt: input.recordedAt,
+      });
+      resolutions.set(input.reservationId, event);
+      // ---- critical section ends. ----
+      return { outcome: 'applied', event };
     },
   };
 }

@@ -4,7 +4,7 @@ import type { BoundedGrant } from '../../features/grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODE_VALUES, isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
-import { authorizationReferenceId, executionAttemptReferenceId, executionOutcomeReferenceId } from './identifiers.js';
+import { authorizationReferenceId, executionAttemptReferenceId, executionOutcomeReferenceId, executionResolutionReferenceId } from './identifiers.js';
 
 /**
  * Evidence writing for a governed action: which authorization artifact a
@@ -194,6 +194,22 @@ function decodeWithheldOutcome(recorded: string): { readonly layer: WithholdingL
  */
 export type ExecutionClaim = { readonly kind: 'claimed'; readonly claimedAt: string } | { readonly kind: 'already-claimed'; readonly prior: PriorExecution };
 
+/**
+ * Whether a committed record holds the write-ahead claim for an execution
+ * identity — the one definition, used by replay and by P12 reconciliation
+ * alike. There is no second "attempted" flag anywhere.
+ */
+export function executionClaimRecorded(record: GovernanceRecord, executionId: string): boolean {
+  return record.references.some((entry) => entry.referenceId === executionAttemptReferenceId(executionId) && entry.externalId === executionId);
+}
+
+/** P12 — what the Governance resolution reference records: the definitive answer, compactly. Evidence; never read to decide. */
+export interface ExecutionResolutionSummary {
+  readonly certainty: 'confirmed-completed' | 'confirmed-not-completed';
+  readonly failure?: string;
+  readonly resolutionDigest: string;
+}
+
 export interface ExecutionLedger {
   /** Append the `authorization_artifact` reference for an issued grant. Idempotent on retry. Throws when it cannot be proven written. */
   recordAuthorization(evaluationId: string, grant: BoundedGrant): Promise<void>;
@@ -213,6 +229,15 @@ export interface ExecutionLedger {
    * remain the replay source for their executions.
    */
   recordOutcome(evaluationId: string, executionId: string, outcome: ExecutionOutcome, observationDigest: string): Promise<boolean>;
+  /**
+   * P12 — record the compact evidence of a definitive resolution, under its own
+   * deterministic reference id: never the P11 outcome summary's, which stays
+   * exactly as written. Written only after the canonical resolution committed
+   * (and after the P7 correction was attempted), and its `digest` is the
+   * resolution digest. Returns `false` when it could not be written; nothing
+   * reads it back to decide anything.
+   */
+  recordResolution(evaluationId: string, executionId: string, resolution: ExecutionResolutionSummary): Promise<boolean>;
 }
 
 export function createExecutionLedger(store: GovernanceStore, accessContext: GovernanceStoreAccessContext, now: () => string): ExecutionLedger {
@@ -234,7 +259,7 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
   }
 
   function prior(record: GovernanceRecord, executionId: string): PriorExecution {
-    const attempted = record.references.some((entry) => entry.referenceId === executionAttemptReferenceId(executionId) && entry.externalId === executionId);
+    const attempted = executionClaimRecorded(record, executionId);
     const outcome = record.references.find((entry) => entry.referenceId === executionOutcomeReferenceId(executionId) && entry.externalId === executionId);
     const recorded = outcome?.externalVersion;
     if (recorded === undefined) return { attempted };
@@ -313,6 +338,24 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
           externalId: executionId,
           externalVersion: recordedAs,
           digest: observationDigest,
+          createdAt: now(),
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async recordResolution(evaluationId, executionId, resolution) {
+      const recordedAs = resolution.certainty === 'confirmed-completed' ? 'resolved:confirmed-completed' : `resolved:confirmed-not-completed:${resolution.failure ?? ''}`;
+      try {
+        await appendOnce({
+          referenceId: executionResolutionReferenceId(executionId),
+          evaluationId,
+          referenceType: 'execution_record',
+          externalId: executionId,
+          externalVersion: recordedAs,
+          digest: resolution.resolutionDigest,
           createdAt: now(),
         });
         return true;

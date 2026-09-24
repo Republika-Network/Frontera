@@ -119,6 +119,23 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   'executionOutcome',
   'executionStatus',
   'outcomeRecorded',
+  // P12: a resolution is established only by the execution's durably bound,
+  // host-trusted resolution authority, through the trusted in-process
+  // reconciliation service. A caller can neither state a resolution, name or
+  // impersonate a resolution authority, nor report a final provider outcome —
+  // not here, and not at the top level, where undeclared keys are refused
+  // already.
+  'resolution',
+  'resolved',
+  'reconciled',
+  'reconciliation',
+  'resolutionAuthority',
+  'resolutionAuthorityId',
+  'providerResolution',
+  'providerOutcome',
+  'finalOutcome',
+  'confirmedCompleted',
+  'confirmedNotCompleted',
 ];
 
 const MAX_CONTEXT_DEPTH = 8;

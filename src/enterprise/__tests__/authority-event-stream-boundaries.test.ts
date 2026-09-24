@@ -230,10 +230,14 @@ describe('P8 boundaries — §32 the event stream cannot authorize', () => {
     }
   });
 
-  it('the composition root hands the projector to ACE and the orchestrator only — never to a Kernel, an adapter, a store or a policy', () => {
+  it('the composition root hands the projector to ACE, the orchestrator and (P12) the reconciliation service only — never to a Kernel, an adapter, a store or a policy', () => {
     const root = code('src/enterprise/composition/composition-root.ts');
     const handed = [...root.matchAll(/evidence: authorityEvents/g)].length;
-    assert.equal(handed, 2);
+    // ACE, the orchestrator, and the P12 reconciliation service — which types
+    // it as the separate write-only `ExecutionResolutionEvidenceRecorder`.
+    assert.equal(handed, 3);
+    const service = code('src/enterprise/execution-reconciliation/service.ts');
+    assert.match(service, /readonly evidence\?: ExecutionResolutionEvidenceRecorder;/);
     for (const kernel of root.matchAll(/createAocKernel\(\{[\s\S]*?\}\)/g)) assert.equal(kernel[0].includes('authorityEvent'), false);
     for (const registry of root.matchAll(/createExecutionAdapterRegistry\(\{[\s\S]*?\}\)/g)) assert.equal(registry[0].includes('authorityEvent'), false);
   });

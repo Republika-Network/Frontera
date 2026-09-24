@@ -57,3 +57,44 @@ export interface AuthorityEventRecorder extends ExerciseControlObserver {
   /** The execution runtime returned this outcome for this execution identity. `outcomeRecorded` says whether the Governance Store outcome reference was written. */
   executionOutcomeObserved(fact: { readonly evaluationId: string; readonly executionId: string; readonly grant: BoundedGrant; readonly outcome: ExecutionOutcome; readonly outcomeRecorded: boolean }): void;
 }
+
+/**
+ * P12 — the write-only, non-blocking boundary through which the trusted
+ * reconciliation service reports facts it has **already** established: a
+ * definitive resolution durable in the execution resolution store, and the
+ * P7 resolution row the ledger recorded for it.
+ *
+ * Separate from `AuthorityEventRecorder` on purpose: nothing on the governed
+ * action path can report a resolution, and reconciliation is handed this
+ * interface and nothing more. Every method enqueues and returns `void`; the
+ * facts are plain values — no store record, no provider answer — and the stream
+ * is never read back by reconciliation or by replay.
+ */
+export interface ExecutionResolutionEvidenceRecorder {
+  /** A definitive P12 resolution is durable. A new event; `execution.outcome.observed` stays exactly as recorded. */
+  executionOutcomeResolved(fact: {
+    readonly requestId: string;
+    readonly evaluationId: string;
+    readonly decisionId: string;
+    readonly boundedGrantId: string;
+    readonly executionId: string;
+    readonly authorityId: string;
+    readonly certainty: 'confirmed-completed' | 'confirmed-not-completed';
+    readonly failure?: string;
+    readonly providerRef?: string;
+    readonly resolutionDigest: string;
+    /** The resolution store's own commit instant. */
+    readonly recordedAt: string;
+  }): void;
+  /** The P7 ledger recorded the resolution row for this reservation. It reports the correction; it does not perform it. */
+  reservationReconciled(fact: {
+    readonly requestId: string;
+    readonly decisionId: string;
+    readonly boundedGrantId: string;
+    readonly executionId: string;
+    readonly reservationId: string;
+    readonly resolution: 'confirmed-completed' | 'confirmed-not-completed';
+    readonly resolutionDigest: string;
+    readonly recordedAt: string;
+  }): void;
+}

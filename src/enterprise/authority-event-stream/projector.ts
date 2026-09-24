@@ -2,11 +2,11 @@ import type { ExerciseReservationObservation } from '../../features/exercise-con
 import { isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { BoundedGrant, BoundedGrantReaderPort, GrantRevocation } from '../../features/grant-runtime/index.js';
 import type { GovernanceRecord } from '../governance-store/contracts.js';
-import type { AppendAuthorityEventInput, AuthorityEventBody, AuthorityEventReferences, ExecutionOutcomeObservedPayload } from './contracts.js';
+import type { AppendAuthorityEventInput, AuthorityEventBody, AuthorityEventReferences, ExecutionOutcomeObservedPayload, ExecutionOutcomeResolvedPayload } from './contracts.js';
 import { isAuthorityEventStreamError, type AuthorityEventStreamErrorCode } from './errors.js';
 import { authorityEventSourceId } from './event-chain.js';
 import { deriveAuthorityEventId, deriveAuthorityEventStreamId } from './identifiers.js';
-import type { AuthorityEventRecorder } from './recorder.js';
+import type { AuthorityEventRecorder, ExecutionResolutionEvidenceRecorder } from './recorder.js';
 import type { AuthorityEventStreamWriter } from './stream-store.js';
 import { isSafeEvidenceString } from './validation.js';
 
@@ -120,7 +120,7 @@ export interface AuthorityEventProjectionHealth {
   readonly lastFailureCode?: AuthorityEventStreamErrorCode | 'AUTHORITY_EVENT_PROJECTION_FAILED';
 }
 
-export interface AuthorityEventProjector extends AuthorityEventRecorder {
+export interface AuthorityEventProjector extends AuthorityEventRecorder, ExecutionResolutionEvidenceRecorder {
   health(): AuthorityEventProjectionHealth;
 }
 
@@ -440,6 +440,43 @@ export function createAuthorityEventProjector(options: AuthorityEventProjectorOp
         } else {
           project({ eventType: 'exercise.reservation.released', references, payload: { reason: observation.reason } }, observation.recordedAt);
         }
+      } catch {
+        fail('AUTHORITY_EVENT_PROJECTION_FAILED');
+      }
+    },
+
+    executionOutcomeResolved(fact): void {
+      try {
+        project(
+          {
+            eventType: 'execution.outcome.resolved',
+            references: { requestId: fact.requestId, evaluationId: fact.evaluationId, decisionId: fact.decisionId, boundedGrantId: fact.boundedGrantId, executionId: fact.executionId },
+            payload: {
+              certainty: fact.certainty,
+              ...(fact.certainty === 'confirmed-not-completed' && fact.failure !== undefined ? { failure: fact.failure as NonNullable<ExecutionOutcomeResolvedPayload['failure']> } : {}),
+              authorityId: fact.authorityId,
+              ...(fact.providerRef !== undefined && isSafeEvidenceString(fact.providerRef) ? { providerRef: fact.providerRef } : {}),
+              resolutionDigest: fact.resolutionDigest,
+            },
+          },
+          // When the resolution became a durable fact.
+          fact.recordedAt,
+        );
+      } catch {
+        fail('AUTHORITY_EVENT_PROJECTION_FAILED');
+      }
+    },
+
+    reservationReconciled(fact): void {
+      try {
+        project(
+          {
+            eventType: 'exercise.reservation.reconciled',
+            references: { requestId: fact.requestId, decisionId: fact.decisionId, boundedGrantId: fact.boundedGrantId, executionId: fact.executionId, reservationId: fact.reservationId },
+            payload: { resolution: fact.resolution, resolutionDigest: fact.resolutionDigest },
+          },
+          fact.recordedAt,
+        );
       } catch {
         fail('AUTHORITY_EVENT_PROJECTION_FAILED');
       }

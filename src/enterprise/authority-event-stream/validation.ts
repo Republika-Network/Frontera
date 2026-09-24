@@ -75,6 +75,7 @@ const FAILURE_REASONS: ReadonlySet<string> = new Set(EXECUTION_FAILURE_REASON_VA
 const REVOCATION_REASONS: ReadonlySet<string> = new Set(GRANT_REVOCATION_REASONS);
 const SETTLE_REASONS: ReadonlySet<string> = new Set(EXERCISE_RESERVATION_SETTLE_REASONS);
 const RELEASE_REASONS: ReadonlySet<string> = new Set(EXERCISE_RESERVATION_RELEASE_REASONS);
+const RESOLUTION_CERTAINTIES: ReadonlySet<string> = new Set(['confirmed-completed', 'confirmed-not-completed']);
 
 type Check = (value: unknown) => boolean;
 
@@ -88,6 +89,7 @@ const oneOf =
 const adapterId: Check = (value) => typeof value === 'string' && isRecordableExecutionAdapterId(value);
 const providerRef: Check = (value) => isSafeEvidenceString(value, MAX_PROVIDER_REF_LENGTH);
 const boolean: Check = (value) => typeof value === 'boolean';
+const opaqueId: Check = (value) => isOpaqueEventIdentifier(value);
 
 interface PayloadSchema {
   readonly required: Readonly<Record<string, Check>>;
@@ -139,6 +141,17 @@ const SCHEMAS: Readonly<Record<AuthorityEventType, EventSchema>> = Object.freeze
       required: { status: oneOf(EXECUTION_STATUSES), reasonCodes, outcomeRecorded: boolean },
       optional: { withheldBy: oneOf(WITHHOLDING_LAYERS), failure: oneOf(FAILURE_REASONS), adapterId, routedBy: adapterId, providerRef },
     },
+  },
+  'execution.outcome.resolved': {
+    references: ['requestId', 'evaluationId', 'decisionId', 'boundedGrantId', 'executionId'],
+    payload: {
+      required: { certainty: oneOf(RESOLUTION_CERTAINTIES), authorityId: opaqueId, resolutionDigest: digest },
+      optional: { failure: oneOf(FAILURE_REASONS), providerRef },
+    },
+  },
+  'exercise.reservation.reconciled': {
+    references: ['requestId', 'decisionId', 'boundedGrantId', 'executionId', 'reservationId'],
+    payload: { required: { resolution: oneOf(RESOLUTION_CERTAINTIES), resolutionDigest: digest }, optional: {} },
   },
 });
 
@@ -201,6 +214,8 @@ export function authorityEventInputViolation(input: unknown): string | undefined
   for (const [key, check] of Object.entries(schema.payload.required)) if (!check(payload[key])) return `missing or malformed payload field '${key}'`;
   for (const [key, check] of Object.entries(schema.payload.optional)) if (payload[key] !== undefined && !check(payload[key])) return `malformed payload field '${key}'`;
   if (input.eventType === 'execution.outcome.observed' && !outcomeShapeHolds(payload)) return 'the outcome payload blurs the execution certainty rules';
+  // A resolved completion never carries a failure; a resolved non-completion always does.
+  if (input.eventType === 'execution.outcome.resolved' && (payload.certainty === 'confirmed-not-completed') !== (payload.failure !== undefined)) return 'the resolution payload blurs the certainty rules';
 
   if (!everyString(input, (text) => !CONTROL.test(text) && UNSAFE_VALUE_PATTERNS.every((pattern) => !pattern.test(text)))) return 'a value is shaped like a credential, a destination or a header';
   return undefined;

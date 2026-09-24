@@ -115,6 +115,14 @@ describe('P11 boundaries — who may hold it', () => {
     'src/enterprise/modules/execution-outcome-module.ts',
     // Type-only re-exports for a host that supplies its own store.
     'src/enterprise/index.ts',
+    // P12: the pre-claim binder reads the prepared attempt record's type; the
+    // reconciliation service reads the verified record through the read-only
+    // reader it is handed and classifies its errors. Neither prepares or
+    // records anything (`execution-reconciliation-boundaries.test.ts`).
+    'src/enterprise/execution-reconciliation/binder.ts',
+    'src/enterprise/execution-reconciliation/service.ts',
+    // P12: the resolution store reuses P11's identifier and instant primitives verbatim.
+    'src/enterprise/execution-resolution-store/validation.ts',
   ]);
 
   it('no other production module imports the execution outcome store', () => {

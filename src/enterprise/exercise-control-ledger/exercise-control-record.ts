@@ -4,6 +4,7 @@ import {
   serializeExerciseControlLimit,
   type ExerciseControlRuleUsage,
   type ExerciseReservationRecord,
+  type ExerciseReservationResolutionEvent,
   type ExerciseReservationTerminalEvent,
 } from '../../features/exercise-control-runtime/index.js';
 
@@ -111,6 +112,34 @@ export function serializeStoredTerminalEvent(event: ExerciseReservationTerminalE
 
 export function storedTerminalEventDigest(event: ExerciseReservationTerminalEvent): string {
   return digestOf(serializeStoredTerminalEvent(event));
+}
+
+/**
+ * P12 — the one resolution row a reservation may have, beside (never instead
+ * of) its terminal event. Its digest covers the P12 resolution digest it
+ * follows, so an edited answer, an edited resolution binding or a row moved
+ * to another reservation fails verification before it can stop anything
+ * consuming.
+ */
+export function serializeStoredResolutionEvent(event: ExerciseReservationResolutionEvent): string {
+  return [
+    '{',
+    [
+      `"executionId":${JSON.stringify(event.executionId)}`,
+      `"format":${JSON.stringify(EXERCISE_CONTROL_LEDGER_RECORD_FORMAT)}`,
+      '"kind":"resolution"',
+      `"recordedAt":${JSON.stringify(event.recordedAt)}`,
+      `"reservationId":${JSON.stringify(event.reservationId)}`,
+      `"resolution":${JSON.stringify(event.resolution)}`,
+      `"resolutionDigest":${JSON.stringify(event.resolutionDigest)}`,
+      `"schemaVersion":${JSON.stringify(EXERCISE_CONTROL_LEDGER_SCHEMA_VERSION)}`,
+    ].join(','),
+    '}',
+  ].join('');
+}
+
+export function storedResolutionEventDigest(event: ExerciseReservationResolutionEvent): string {
+  return digestOf(serializeStoredResolutionEvent(event));
 }
 
 /**

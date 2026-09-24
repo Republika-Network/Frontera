@@ -198,6 +198,22 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the execution outcome store. */
     readonly sqlitePath: string;
   };
+  /**
+   * P12 — the execution resolution store: which trusted resolution authority
+   * may resolve each governed execution, and what it later established.
+   *
+   * Read **only** when `executionReconciliation` is enabled and the host
+   * supplies no store of its own; used when `persistence.provider === 'sqlite'`
+   * (the process-local store otherwise, which does **not** survive a restart).
+   * Its own file — never the P11 file. A file that cannot be opened fails
+   * startup: with reconciliation enabled, no governed execution runs without a
+   * durable binding. See
+   * `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
+   */
+  readonly executionResolution: {
+    /** SQLite path for the execution resolution store. */
+    readonly sqlitePath: string;
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -311,6 +327,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     executionOutcome: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH ?? '.data/execution-outcomes.sqlite',
+    },
+    executionResolution: {
+      sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',
     },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',

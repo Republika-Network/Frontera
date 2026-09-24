@@ -61,6 +61,8 @@ export const AUTHORITY_EVENT_STREAM_STORE_SCHEMA_VERSION = 'aoc.authority-event-
  * | `exercise.reservation.settled` | the P7 ledger recorded the settlement |
  * | `exercise.reservation.released` | the P7 ledger recorded the release |
  * | `execution.outcome.observed` | the execution runtime returned this `ExecutionOutcome` |
+ * | `execution.outcome.resolved` | P12: a definitive resolution is durable in the execution resolution store — a **new** fact; the observed event is never rewritten |
+ * | `exercise.reservation.reconciled` | P12: the P7 ledger recorded the resolution row for this reservation |
  */
 export const AUTHORITY_EVENT_TYPES = [
   'governance.decision.committed',
@@ -72,6 +74,8 @@ export const AUTHORITY_EVENT_TYPES = [
   'exercise.reservation.settled',
   'exercise.reservation.released',
   'execution.outcome.observed',
+  'execution.outcome.resolved',
+  'exercise.reservation.reconciled',
 ] as const;
 
 export type AuthorityEventType = (typeof AUTHORITY_EVENT_TYPES)[number];
@@ -173,6 +177,22 @@ export interface ExecutionOutcomeObservedPayload {
   readonly outcomeRecorded: boolean;
 }
 
+/** P12 — a definitive resolution. Closed: no provider body, no detail, no amount. */
+export interface ExecutionOutcomeResolvedPayload {
+  readonly certainty: 'confirmed-completed' | 'confirmed-not-completed';
+  /** Present exactly when `certainty` is `confirmed-not-completed`. */
+  readonly failure?: ExecutionFailureReason;
+  readonly authorityId: string;
+  readonly providerRef?: string;
+  readonly resolutionDigest: string;
+}
+
+/** P12 — the P7 resolution row. It reports the correction; it does not perform it. */
+export interface ReservationReconciledPayload {
+  readonly resolution: 'confirmed-completed' | 'confirmed-not-completed';
+  readonly resolutionDigest: string;
+}
+
 /** The type-specific half of an event: which fact, about which artifacts. */
 export type AuthorityEventBody =
   | { readonly eventType: 'governance.decision.committed'; readonly references: AuthorityEventReferences; readonly payload: DecisionCommittedPayload }
@@ -183,7 +203,9 @@ export type AuthorityEventBody =
   | { readonly eventType: 'exercise.reservation.reserved'; readonly references: AuthorityEventReferences; readonly payload: ReservationReservedPayload }
   | { readonly eventType: 'exercise.reservation.settled'; readonly references: AuthorityEventReferences; readonly payload: ReservationSettledPayload }
   | { readonly eventType: 'exercise.reservation.released'; readonly references: AuthorityEventReferences; readonly payload: ReservationReleasedPayload }
-  | { readonly eventType: 'execution.outcome.observed'; readonly references: AuthorityEventReferences; readonly payload: ExecutionOutcomeObservedPayload };
+  | { readonly eventType: 'execution.outcome.observed'; readonly references: AuthorityEventReferences; readonly payload: ExecutionOutcomeObservedPayload }
+  | { readonly eventType: 'execution.outcome.resolved'; readonly references: AuthorityEventReferences; readonly payload: ExecutionOutcomeResolvedPayload }
+  | { readonly eventType: 'exercise.reservation.reconciled'; readonly references: AuthorityEventReferences; readonly payload: ReservationReconciledPayload };
 
 /**
  * What a projector hands the store: one immutable source fact. Everything the

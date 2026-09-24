@@ -113,10 +113,12 @@ export function authorityEventSourceId(body: AuthorityEventBody): string | undef
       return references.boundedGrantId;
     case 'execution.attempt.claimed':
     case 'execution.outcome.observed':
+    case 'execution.outcome.resolved':
       return references.executionId;
     case 'exercise.reservation.reserved':
     case 'exercise.reservation.settled':
     case 'exercise.reservation.released':
+    case 'exercise.reservation.reconciled':
       return references.reservationId;
     default: {
       const unreachable: never = body;
