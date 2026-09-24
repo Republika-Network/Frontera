@@ -422,6 +422,15 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (authorization.outcome === 'emergency-control-withheld') {
         return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: authorization.reasonCodes });
       }
+      // P10: a financial action whose durable monetary authority could not be
+      // established — or whose requested amount exceeds it. The Kernel decision
+      // stands exactly as committed; no grant exists, so no reservation and no
+      // adapter call can follow. Publicly it is an authority-binding
+      // withholding (the wire union is unchanged), carrying the
+      // FINANCIAL_AUTHORITY_* code that explains it.
+      if (authorization.outcome === 'financial-authority-withheld') {
+        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+      }
       if (authorization.outcome === 'grant-withheld') {
         const withheldBy: GovernedActionWithheldBy = authorization.reasonCodes.includes(GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED) ? 'obligations' : 'grant';
         return result({ status: 'withheld', withheldBy, ...decided, reasonCodes: authorization.reasonCodes });

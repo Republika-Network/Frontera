@@ -26,6 +26,8 @@ import {
 } from './contracts.js';
 import { createAuthorityControlledIssuanceCore } from './issuance-core.js';
 import { createAuthorityControlledExerciseControlGate, type AuthorityControlledExerciseControls } from './exercise-controls.js';
+import { ExecutionGovernanceError } from './errors.js';
+import type { AuthorityControlledFinancialAuthority } from './financial-authority.js';
 
 /**
  * The first production composition of the authority-control pipeline onto a
@@ -160,6 +162,23 @@ export interface AuthorityControlledExecutionOptions {
    */
   readonly exerciseControls?: AuthorityControlledExerciseControls;
   /**
+   * P10 — authority-sourced payment ceilings and durable spending limits.
+   *
+   * The trusted, synchronous resolver of the monetary authority behind a
+   * host-classified financial action (classified by
+   * `exerciseControls.actionClassifier`). Consulted at issuance — the grant's
+   * amount ceiling is the authority's, never the request's, and a request above
+   * it gets no grant — inside the commit guard, and at exercise, where it
+   * revalidates provenance and adds the authority's durable spending limits to
+   * the P7 admission.
+   *
+   * **Requires `exerciseControls`**: durable aggregate limits are enforced by
+   * P7's reservation, and a financial authority whose aggregate limits nothing
+   * enforces would be an unlimited one. Omitted, every financial action is
+   * withheld at issuance (`FINANCIAL_AUTHORITY_UNRESOLVED`).
+   */
+  readonly financialAuthority?: AuthorityControlledFinancialAuthority;
+  /**
    * P8 — the canonical authority event stream's **write-only** recorder, when
    * the composition root composed one. Never a host option.
    *
@@ -201,7 +220,21 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
   // Composed once, and refused here — at composition — when the block cannot
   // work: no policy, no exercise-time resolver, or a ledger that is not a ledger.
   const evidence = options.evidence;
-  const exerciseControl = options.exerciseControls === undefined ? undefined : createAuthorityControlledExerciseControlGate(options.exerciseControls, now, evidence);
+  const financialAuthority = options.financialAuthority;
+  if (financialAuthority !== undefined && (typeof financialAuthority !== 'object' || typeof financialAuthority.resolve !== 'function' || options.exerciseControls === undefined)) {
+    throw new ExecutionGovernanceError(
+      'EXECUTION_EXERCISE_CONTROLS_INVALID',
+      'financialAuthority requires a synchronous resolve() and composed exerciseControls: durable spending limits are enforced by the exercise-control reservation, and financial authority nothing enforces would be unlimited.',
+    );
+  }
+  const exerciseControl =
+    options.exerciseControls === undefined
+      ? undefined
+      : createAuthorityControlledExerciseControlGate(
+          { ...options.exerciseControls, ...(financialAuthority !== undefined ? { financialAuthority: financialAuthority.resolve } : {}) },
+          now,
+          evidence,
+        );
 
   const execution = createGrantExecutionService({
     store: grantStore,
@@ -222,6 +255,8 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
     now,
     resolveAuthorityBinding,
     ...(emergencyControl !== undefined ? { emergencyControl } : {}),
+    ...(options.exerciseControls !== undefined ? { exerciseControls: { actionClassifier: options.exerciseControls.actionClassifier } } : {}),
+    ...(financialAuthority !== undefined ? { financialAuthority } : {}),
   });
 
   return {

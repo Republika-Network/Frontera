@@ -25,6 +25,8 @@ import {
 import { createRecordingExecutionAdapter, type RecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import type { ExecutionAdapter, ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
 import type { EmergencyControlReaderPort } from '../../features/emergency-control-runtime/index.js';
+import { createInMemoryExerciseControlLedger } from '../../features/exercise-control-runtime/index.js';
+import type { AuthorityConstraint } from '../../features/authority-graph/domain/authority-grant.js';
 import { createFinancialActionClassifier, createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { AocKernel, type KernelEvaluationOptions, type KernelEvaluationRequest, type KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
@@ -40,6 +42,8 @@ import {
 } from '../execution-governance/index.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import type { AuthorityControlledExerciseControls } from '../execution-governance/exercise-controls.js';
+import type { FinancialAuthorityResolver } from '../execution-governance/financial-authority.js';
+import { createKernelFinancialAuthorityResolver } from '../kernel-authority/financial-authority-resolver.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import {
@@ -210,6 +214,27 @@ export interface WorldOptions {
   readonly monetary?: GovernedActionMonetaryTrust;
   /** P8 write-only evidence recorder, handed to ACE and the orchestrator exactly as the composition root hands it. */
   readonly evidence?: AuthorityEventRecorder;
+  /**
+   * P10 — durable monetary authority on the fixture's own authority lineage
+   * (Victor's grant, delegated to PMFreak), resolved by the real Kernel
+   * Authority financial resolver over the fixture's Authority Graph, with P7
+   * composed to enforce the aggregate limits (an in-memory ledger and no host
+   * limits unless `exerciseControls` is supplied).
+   *
+   * `constraints` are attached to the lineage's source authority grant.
+   * Omitted, a financial action has no monetary authority and is withheld.
+   */
+  readonly financialAuthority?: { readonly constraints: readonly AuthorityConstraint[] } | { readonly resolver: FinancialAuthorityResolver };
+}
+
+/** P10 — a generous durable monetary authority for suites whose subject is not payment ceilings themselves. */
+export function monetaryAuthority(ceiling: string, lifetimeMaximum = '1000000000000000000', currency = 'USD'): { readonly constraints: readonly AuthorityConstraint[] } {
+  return {
+    constraints: [
+      { type: 'max_amount', currency, value: ceiling },
+      { type: 'spending_limit', limitId: 'lifetime', currency, maximum: lifetimeMaximum, window: { kind: 'lifetime' } },
+    ],
+  };
 }
 
 export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
@@ -217,6 +242,31 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
   const log = options.log ?? createCallLog();
   const clock = options.clock ?? createManualEnforcementClock(NOW);
   const fixture = buildDatasysEnforcementFixture();
+  let financialAuthority: FinancialAuthorityResolver | undefined;
+  if (options.financialAuthority !== undefined) {
+    if ('resolver' in options.financialAuthority) {
+      financialAuthority = options.financialAuthority.resolver;
+    } else {
+      // The lineage recognition proves for PMFreak's drafting action: its
+      // delegation, and the source grant it derives from. The constraints go on
+      // the source grant, so the delegate is bound by them without repeating them.
+      const chain = fixture.authorityRuntime.resolveAuthorityChain({ id: 'harness', actorId: PMFREAK_ACTOR_ID, trustDomainId: TRUST_DOMAIN_ID, action: DRAFT_CLOSURE_EMAIL, resourceScope: PROJECT_SCOPE, requestedAt: NOW });
+      const source = chain.grants[0];
+      if (source === undefined) throw new Error('the fixture has no authority lineage for the drafting action');
+      fixture.authorityRuntime.store.putGrant({ ...source, constraints: options.financialAuthority.constraints });
+      financialAuthority = createKernelFinancialAuthorityResolver({
+        organizationId: options.organizationId ?? ORG,
+        trustDomainId: TRUST_DOMAIN_ID,
+        assets: monetary.assets,
+        authority: () => fixture.authorityRuntime,
+      });
+    }
+  }
+  const exerciseControls =
+    options.exerciseControls ??
+    (financialAuthority !== undefined
+      ? { policy: () => [], revalidateAuthorityBinding: () => NO_TEMPORAL_BOUND, reservationLedger: createInMemoryExerciseControlLedger({ now: () => clock.now() }) }
+      : undefined);
   const grantCapability = new KernelGrantCapability({ declaration: {} });
   const realKernel = new AocKernel({
     recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
@@ -311,7 +361,8 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     now: () => clock.now(),
     resolveAuthorityBinding: options.resolveAuthorityBinding ?? (() => NO_TEMPORAL_BOUND),
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
-    ...(options.exerciseControls !== undefined ? { exerciseControls: { ...options.exerciseControls, actionClassifier: monetary.actionClassifier } } : {}),
+    ...(exerciseControls !== undefined ? { exerciseControls: { ...exerciseControls, actionClassifier: monetary.actionClassifier } } : {}),
+    ...(financialAuthority !== undefined ? { financialAuthority: { resolve: financialAuthority } } : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
   };
   const ace = createAuthorityControlledExecution(aceOptions);

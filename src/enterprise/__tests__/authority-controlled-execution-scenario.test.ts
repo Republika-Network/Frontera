@@ -25,6 +25,7 @@ import {
   type GrantCorrelation,
 } from '../../features/grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODES, type ExecutionOutcome, type GrantExerciseRequest } from '../../features/execution-runtime/index.js';
+import { createInMemoryExerciseControlLedger } from '../../features/exercise-control-runtime/index.js';
 import { createRecordingExecutionAdapter, type RecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import { AocKernel, type KernelEvaluationRequest, type PolicyPackProvider } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
@@ -38,7 +39,8 @@ import {
   type GrantAuthorityBinding,
   type GrantAuthorityBindingQuery,
 } from '../execution-governance/index.js';
-import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/monetary-runtime/index.js';
+import { compareCanonicalDecimals, createFinancialActionClassifier, isCanonicalDecimal } from '../../features/monetary-runtime/index.js';
+import { FINANCIAL_AUTHORITY_REASON_CODES, type FinancialAuthority, type FinancialAuthorityResolver } from '../execution-governance/financial-authority.js';
 
 /**
  * The acceptance scenario for grant-aware execution, end to end, over the
@@ -55,8 +57,8 @@ import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/mon
  * ISSUER         proposes expiresAt = T+10m
  * GRANT          subject agent-A, action = the evaluated capability,
  *                resource = the evaluated scope, vendor = V123,
- *                maxAmount = 7500, expiresAt = T+10m
- * CEILING        authority, T+30m
+ *                maxAmount = 8000 (the authority's), expiresAt = T+10m
+ * CEILING        authority, T+30m; per-execution monetary authority 8000 USD
  * ```
  *
  * The request enters through the frozen v1 adaptation chain — the same
@@ -67,12 +69,19 @@ import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/mon
  * is that **nothing reaches a provider without a grant that covers it**, not
  * that a particular provider works.
  *
- * ## Model A is unchanged
+ * ## P10: the amount ceiling is authority, not the request and not the policy
  *
- * The source ceiling is `7500` — the amount the decision was made on — and not
- * the policy's `10000`. Case B asserts that the policy threshold is never
- * reusable authority: an attempt at 9000 or 10000 is refused even though the
- * rule that allowed the request reads `<= 10000`.
+ * The source ceiling is `8000` — the per-execution ceiling of the authority
+ * this action stands on, resolved through the composition's trusted
+ * financial-authority port — and neither the request's `7500` nor the
+ * policy's `10000`. The action is host-classified as financial, so the
+ * composition also carries P7 exercise controls, which enforce the
+ * authority's aggregate limits. Case B asserts that neither the policy
+ * threshold nor anything above the authority ceiling is reusable authority:
+ * an attempt at 9000 or 10000 is refused even though the rule that allowed the
+ * request reads `<= 10000`. (The durable Kernel Authority Store resolver
+ * behind that port is exercised end to end in
+ * `authority-payment-ceilings.test.ts`.)
  */
 
 const NOW = '2026-01-01T12:00:00.000Z';
@@ -123,6 +132,23 @@ const VENDOR_PAYMENT_POLICY: PolicyPackProvider = {
 
 const GUARD_INPUT = buildDraftClosureEmailGuardInput();
 const EVALUATED_ACTION = GUARD_INPUT.capability ?? GUARD_INPUT.action;
+
+/** The durable monetary authority this scenario's action stands on — independent of the request's 7500 and of the policy's 10000. */
+const AUTHORITY_CEILING = '8000';
+
+/** The trusted financial-authority port, answering exactly what the durable resolver would for this lineage. */
+const SCENARIO_FINANCIAL_AUTHORITY: FinancialAuthorityResolver = (query) => {
+  if (query.asset !== 'USD') return { resolved: false, reasonCode: FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_ASSET_MISMATCH };
+  const authority: FinancialAuthority = {
+    organizationId: 'org-execution-scenario',
+    trustDomainId: GUARD_INPUT.trustDomainId,
+    subject: query.subject,
+    lineage: [`authority-grant:${MANDATE_REF}`],
+    ceiling: { value: AUTHORITY_CEILING, unit: 'USD' },
+    spendingLimits: [{ limitId: 'authority:scenario-lifetime', scopeKey: 'scenario-authority', maximum: '1000000', unit: 'USD', window: { kind: 'lifetime' } }],
+  };
+  return { resolved: true, authority };
+};
 const EVALUATED_RESOURCE = GUARD_INPUT.resourceScope;
 const EVALUATED_SUBJECT = GUARD_INPUT.actorId;
 
@@ -200,6 +226,16 @@ function compose(options: {
     executionAdapter: adapter,
     now: options.now ?? (() => NOW),
     resolveAuthorityBinding: options.resolveAuthorityBinding ?? (() => MANDATE_BINDING),
+    // P10: a financial action needs its aggregate limits enforced, so the
+    // composition carries P7 — with no host limits of its own — and the trusted
+    // financial-authority port.
+    exerciseControls: {
+      policy: () => [],
+      revalidateAuthorityBinding: () => MANDATE_BINDING,
+      reservationLedger: createInMemoryExerciseControlLedger({ now: options.now ?? (() => NOW) }),
+      actionClassifier: createFinancialActionClassifier({ financialActions: [EVALUATED_ACTION] }),
+    },
+    financialAuthority: { resolve: SCENARIO_FINANCIAL_AUTHORITY },
   });
 
   return { service, adapter, store };
@@ -252,7 +288,7 @@ function blockedCodes(outcome: ExecutionOutcome): readonly string[] {
 // ---------------------------------------------------------------------------
 
 describe('Production composition — issuance happens only after ALLOW and a satisfied blocking obligation', () => {
-  it('issues a grant bounded to the evaluated action, resource, vendor and amount', async () => {
+  it("issues a grant bounded to the evaluated action, resource and vendor, and to the authority's amount ceiling", async () => {
     const { outcome } = await issuedWorld();
     const grant = grantOf(outcome);
 
@@ -261,7 +297,7 @@ describe('Production composition — issuance happens only after ALLOW and a sat
     assert.deepEqual(grant.scope.action, { kind: 'identity', value: EVALUATED_ACTION });
     assert.deepEqual(grant.scope.resources, { kind: 'set', values: [EVALUATED_RESOURCE] });
     assert.deepEqual(grant.scope.counterparty, { kind: 'identity', value: 'V123' });
-    assert.deepEqual(grant.scope.amount, { kind: 'ceiling', limit: '7500', unit: 'USD' });
+    assert.deepEqual(grant.scope.amount, { kind: 'ceiling', limit: AUTHORITY_CEILING, unit: 'USD' }, 'the ceiling is the authority’s 8000 — never the requested 7500');
     assert.equal(grant.expiresAt, GRANT_HORIZON, 'a proposal within every ceiling is accepted exactly as supplied');
   });
 
@@ -547,7 +583,7 @@ describe('Production composition — exercise gates the adapter', () => {
     assert.equal(outcome.decision.status, 'allowed');
   });
 
-  it('G. a caller presenting forged grant fields changes nothing — the trusted 7500 stands', async () => {
+  it('G. a caller presenting forged grant fields changes nothing — the trusted 8000 authority ceiling stands', async () => {
     const { service, adapter, outcome } = await issuedWorld({ requestId: 'exercise-forged', now: () => AT_T_PLUS_5 });
     const grant = grantOf(outcome);
 

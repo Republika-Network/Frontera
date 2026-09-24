@@ -357,6 +357,38 @@ so nothing at all is added between the last revalidation and the adapter. The ca
 this ledger, never reconstructed from events
 (`docs/enterprise/AOC_CANONICAL_AUTHORITY_EVENT_STREAM.md`).
 
+## 14a. Durable authority spending limits (P10)
+
+For a host-classified **financial** exercise, the gate's policy is the host
+policy *plus* every durable `spending_limit` on the exercise's authority
+lineage, as resolved from the Kernel Authority Store by the trusted
+financial-authority resolver:
+
+```text
+effective limits = hostPolicy(query)  ++  authority spending limits   → one snapshot → one reserve()
+limitId          = "authority:<limitId>"
+scopeKey         = ["aoc.kernel-authority.spending-limit.v1", organization, entityKind, entityId, currency]
+```
+
+- **Mandatory and additive.** The host policy is never asked about the
+  authority limits and cannot omit, replace or loosen one. A host limit on the
+  same `(limitId, scopeKey)` refuses the whole policy
+  (`EXERCISE_CONTROL_POLICY_INVALID`).
+- **Stable buckets.** The bucket is anchored to the authority record, the
+  organization and the asset. It never depends on the request, decision,
+  grant, execution or process, so new grants and restarts share it, and two
+  authorities or two assets never do.
+- **Exact.** The limit's `maximum` is the provisioned canonical text,
+  unchanged.
+- **Provenance.** A financial grant's `authorityBindingDigest` also commits to
+  the financial authority. Binding revalidation #1 and #2 recompute it from the
+  authority that holds *now*. Revoked, expired or re-lineaged authority is
+  `EXERCISE_CONTROL_AUTHORITY_BINDING_UNVERIFIABLE`; changed authority is
+  `EXERCISE_CONTROL_AUTHORITY_BINDING_CHANGED`. Either way the effect is
+  withheld before any reservation. A pre-P10 financial grant can never match.
+- **Unchanged semantics.** Settle, release, no TTL, no sweeper, no reset, and
+  rolling windows by reservation instant: nothing here changes them.
+
 ## 15. Out of scope
 
 Model convergence (P9), XRPL adapter or signer,

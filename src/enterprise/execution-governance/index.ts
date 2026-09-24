@@ -27,6 +27,25 @@ export type {
   GrantAuthorityBindingResolver,
 } from './contracts.js';
 
+export {
+  FINANCIAL_AUTHORITY_FORMAT,
+  FINANCIAL_AUTHORITY_REASON_CODES,
+  FINANCIAL_AUTHORITY_REASON_CODE_VALUES,
+  GRANT_AUTHORITY_PROVENANCE_FORMAT,
+  financialAuthorityDigest,
+  grantAuthorityProvenanceDigest,
+  serializeFinancialAuthority,
+} from './financial-authority.js';
+export type {
+  AuthorityControlledFinancialAuthority,
+  FinancialAuthority,
+  FinancialAuthorityQuery,
+  FinancialAuthorityReasonCode,
+  FinancialAuthorityResolution,
+  FinancialAuthorityResolver,
+  FinancialSpendingLimit,
+} from './financial-authority.js';
+
 export { assertValidExerciseControlCallbacks, assertValidExerciseControlStore, exerciseAuthorityBindingDigestResolver } from './exercise-controls.js';
 export type { AuthorityControlledExerciseControls, ExerciseAuthorityBindingResolver } from './exercise-controls.js';
 

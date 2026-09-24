@@ -34,6 +34,7 @@ import {
   TEST_MONETARY,
   TRUST_DOMAIN_ID,
   buildGovernedWorld,
+  monetaryAuthority,
   identityFor,
   type GovernedWorld,
 } from './governed-action-support.js';
@@ -723,9 +724,11 @@ describe('Governed action — GOV-ACT-07: the ACE exercise gate still decides wh
   });
 
   it('an amount beyond the grant → withheld by exercise, no adapter', async () => {
-    // The trusted policy narrows the grant below the amount the caller intends.
+    // The trusted policy narrows the grant below the amount the caller intends
+    // — beneath the durable authority ceiling (P10), which alone would allow it.
     const world = buildGovernedWorld({
       monetary: DRAFTING_IS_FINANCIAL,
+      financialAuthority: monetaryAuthority('1000'),
       grantPolicy: (query) => ({ ...EVALUATED_AT_POLICY(query)!, requestedBounds: { amount: { kind: 'ceiling', limit: '100', unit: 'USD' } } }),
     });
     const result = await world.orchestrator.govern(IDENTITY, { ...ALLOWED_INTENT, amount: { value: '250', currency: 'USD' } });

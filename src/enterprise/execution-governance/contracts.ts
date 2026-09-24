@@ -2,6 +2,7 @@ import type { EmergencyControlReasonCode, EmergencyControlScopeMatch } from '../
 import type { BoundedGrant, GrantCorrelation, GrantReasonCode, GrantValidityCeiling, RequestedGrantBounds } from '../../features/grant-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import type { GrantAuthorityBinding } from './authority-binding.js';
+import type { FinancialAuthority, FinancialAuthorityReasonCode } from './financial-authority.js';
 
 /**
  * The Kernel surface this composition needs, named structurally so it depends
@@ -102,6 +103,8 @@ export type AuthorityControlledAuthorizationOutcome =
       readonly effectiveValidityCeiling?: GrantValidityCeiling;
       /** `already-issued` when the deterministic identity already stood. The existing grant is returned unchanged, never re-dated. */
       readonly issuance: 'issued' | 'already-issued';
+      /** P10: for a host-classified financial action, the durable monetary authority the grant's ceiling and aggregate limits were sourced from. Absent for a non-financial action. */
+      readonly financialAuthority?: FinancialAuthority;
     }
   | {
       /** Layer E refused. The authorization is untouched — an `allowed` decision here is the normal, intended combination. */
@@ -116,6 +119,19 @@ export type AuthorityControlledAuthorizationOutcome =
       readonly outcome: 'authority-binding-unresolved';
       readonly decision: KernelEvaluationResult;
       readonly reasonCodes: readonly AuthorityBindingReasonCode[];
+    }
+  | {
+      /**
+       * P10: the action is host-classified as financial and its monetary
+       * authority could not be established — no lineage, no ceiling, no
+       * aggregate limit, a malformed or mismatched asset, a request above the
+       * ceiling, or an authority that changed before the commit. No grant
+       * exists. The decision is carried unchanged: an `allowed` decision here
+       * is truthful, and nothing in this outcome is a policy denial.
+       */
+      readonly outcome: 'financial-authority-withheld';
+      readonly decision: KernelEvaluationResult;
+      readonly reasonCodes: readonly FinancialAuthorityReasonCode[];
     }
   | {
       /**

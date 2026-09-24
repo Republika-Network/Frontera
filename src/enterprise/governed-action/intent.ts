@@ -91,6 +91,22 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   'classification',
   'scale',
   'assetScale',
+  // P10: payment ceilings and durable spending limits are authority state,
+  // provisioned by an operator into the Kernel Authority Store. A caller can
+  // neither state, raise, select nor suggest one — not here, and not at the
+  // top level, where undeclared keys are refused already.
+  'max_amount',
+  'paymentCeiling',
+  'ceiling',
+  'spendingLimit',
+  'spendingLimits',
+  'spending_limit',
+  'budgetId',
+  'remaining',
+  'financialAuthority',
+  'authorityLimit',
+  'authorityRef',
+  'constraints',
 ];
 
 const MAX_CONTEXT_DEPTH = 8;

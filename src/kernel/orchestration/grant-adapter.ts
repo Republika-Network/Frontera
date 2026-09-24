@@ -4,7 +4,6 @@ import {
   assertValidGrantDeclaration,
   deploymentGrantValidityCeiling,
   statedGrantBoundKeys,
-  type GrantBound,
   type GrantBoundKey,
   type GrantCorrelation,
   type GrantDeclaration,
@@ -13,7 +12,6 @@ import {
   type GrantSourceAuthorization,
   type GrantValidityCeiling,
 } from '../../features/grant-runtime/index.js';
-import { isWellFormedMonetaryAmount } from '../../features/monetary-runtime/index.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type { GrantBoundEvaluation, GrantEvaluation, KernelEvaluationResult } from '../contracts/kernel-result.js';
 
@@ -93,32 +91,31 @@ function authorizationPermitsExercise(status: KernelEvaluationResult['status']):
  *
  * Every value here is one the decision was *made on*: the action that was
  * evaluated, the resource scope that was evaluated, the counterparty that was
- * evaluated, the tenant it was scoped to, the quantity that was evaluated, and
- * the horizon operator configuration allows off it. That is what makes them a
- * safe ceiling even though the request carried some of them: the policy
- * concluded what it concluded *about these values*, so a grant at or below them
- * is inside what was authorized, and a grant above them describes something
- * that was never evaluated.
+ * evaluated and the tenant it was scoped to. That is what makes them a safe
+ * ceiling even though the request carried some of them: the policy concluded
+ * what it concluded *about these values*, so a grant at or below them is inside
+ * what was authorized, and a grant above them describes something that was
+ * never evaluated.
  *
- * It is emphatically **not** a re-reading of the request as fact. Layer C
- * exists precisely because a caller's claim is not evidence of the world; this
- * is the different question of what the decision covered, and the answer to
- * that is, by construction, the input the decision was given.
+ * ## Why there is no amount bound here (P10)
+ *
+ * Until P10 this projection also set `amount = { ceiling: request.action.amount }`
+ * — the amount a request proposed became the ceiling of the grant derived from
+ * it. That is a request authorizing itself, and it is gone. The amount the
+ * decision evaluated is the *proposed effect*; a policy threshold the decision
+ * applied to it is a rule, not a spending authority; and the per-execution
+ * ceiling is **authority**, which lives in the durable Kernel Authority world
+ * this layer cannot see. The composition root that can see it adds an
+ * authority-sourced ceiling through `withGrantAmountCeiling`, exactly as it
+ * adds an authority validity ceiling through `withGrantValidityCeiling`, and a
+ * financial action whose monetary authority cannot be established gets no
+ * grant. `kernel-grant-no-request-ceiling.test.ts` fails the build if the
+ * request's amount ever flows back into this scope.
  */
 function sourceScopeFor(request: KernelEvaluationRequest): GrantScope {
   const action = request.action.capability ?? request.action.type;
-  // Exact canonical text and a well-formed asset, or no ceiling at all — never
-  // a coerced one. A request whose amount is not canonical states nothing the
-  // grant layer can bound, and an exercise stating an amount against a grant
-  // with no amount bound is refused downstream.
-  const amountBound: GrantBound | undefined =
-    request.action.currency !== undefined && isWellFormedMonetaryAmount({ value: request.action.amount, unit: request.action.currency })
-      ? { kind: 'ceiling', limit: request.action.amount as string, unit: request.action.currency }
-      : undefined;
-
   return {
     ...(action.length > 0 ? { action: { kind: 'identity' as const, value: action } } : {}),
-    ...(amountBound !== undefined ? { amount: amountBound } : {}),
     ...(request.action.counterpartyId !== undefined ? { counterparty: { kind: 'identity' as const, value: request.action.counterpartyId } } : {}),
     ...(request.organization?.id !== undefined ? { organization: { kind: 'identity' as const, value: request.organization.id } } : {}),
     ...(request.action.resourceScope.length > 0 ? { resources: { kind: 'set' as const, values: [request.action.resourceScope] } } : {}),

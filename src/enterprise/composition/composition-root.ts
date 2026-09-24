@@ -27,6 +27,7 @@ import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memor
 import { createSqliteKernelAuthorityStore } from '../kernel-authority/sqlite-kernel-authority-store.js';
 import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import { createDurableKernelWorld, type DurableKernelWorld } from '../kernel-authority/durable-kernel-providers.js';
+import { createKernelFinancialAuthorityResolver } from '../kernel-authority/financial-authority-resolver.js';
 import { createKernelAuthorityProvisioningService, type KernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { createKernelAuthorityModule, createUnavailableKernelAuthorityModule } from '../modules/kernel-authority-module.js';
 import { createEnterpriseLogger, type EnterpriseLogger } from '../telemetry/enterprise-logger.js';
@@ -326,7 +327,7 @@ export interface EnterpriseCustomerIdentityAdmissionOptions {
  * question.
  */
 export interface EnterpriseAuthorityControlledExecutionOptions
-  extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore' | 'executionAdapter' | 'emergencyControl' | 'exerciseControls'> {
+  extends Omit<AuthorityControlledExecutionOptions, 'kernel' | 'now' | 'grantStore' | 'executionAdapter' | 'emergencyControl' | 'exerciseControls' | 'financialAuthority'> {
   /**
    * One provider adapter, when this deployment has one.
    *
@@ -941,6 +942,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
           store: kernelAuthorityStore,
           organizationId: configuration.kernelAuthority.organizationId,
           ...(durableKernelWorld !== undefined ? { onCommitted: () => durableKernelWorld.service.reload() } : {}),
+          // P10: obvious monetary-authority faults (an unknown asset, a value
+          // beyond its trusted scale) are refused when provisioned.
+          monetaryAssets: monetary.assets,
         });
 
   // The read half, narrowed further: customer admission is handed a
@@ -1122,6 +1126,23 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
                   revalidateAuthorityBinding: exerciseControlOptions.revalidateAuthorityBinding,
                   reservationLedger: exerciseLedger,
                   actionClassifier: monetary.actionClassifier,
+                },
+              }
+            : {}),
+          // P10: authority-sourced payment ceilings and durable spending limits,
+          // resolved from the same hydrated authority world the Kernel decides
+          // against, for the trust domain governed actions are evaluated in.
+          // Composed only together with P7, which enforces the aggregate
+          // limits; without it every financial action is withheld at issuance.
+          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined && governedActionOptions !== undefined
+            ? {
+                financialAuthority: {
+                  resolve: createKernelFinancialAuthorityResolver({
+                    organizationId: configuration.kernelAuthority.organizationId,
+                    trustDomainId: governedActionOptions.trustDomainId,
+                    assets: monetary.assets,
+                    authority: () => kernelProviders.authorityRuntime,
+                  }),
                 },
               }
             : {}),

@@ -37,6 +37,7 @@ import {
   PMFREAK_ACTOR_ID,
   TEST_MONETARY,
   buildGovernedWorld,
+  monetaryAuthority,
 } from './governed-action-support.js';
 
 /**
@@ -64,7 +65,8 @@ const fresh = (intent: Record<string, unknown>): Record<string, unknown> => ({ .
 
 describe('P9 classification — the host decides whether an action is financial, and a caller cannot say otherwise', () => {
   it('a trusted financial action with an exact amount executes, and the adapter receives canonical text', async () => {
-    const world = buildGovernedWorld({ monetary: DRAFTING_IS_FINANCIAL });
+    // P10: a financial action executes only under durable monetary authority.
+    const world = buildGovernedWorld({ monetary: DRAFTING_IS_FINANCIAL, financialAuthority: monetaryAuthority('1000') });
     const result = await world.orchestrator.govern(IDENTITY, fresh({ ...FINANCIAL_INTENT, amount: { value: '250.00', currency: 'USD' } }));
     assert.equal(result.status, 'executed', JSON.stringify(result));
     assert.deepEqual(world.adapter.calls[0]?.amount, { value: '250', unit: 'USD' });
@@ -157,6 +159,9 @@ describe('P9 precision — exact from the wire to the adapter, with no number an
       const world = buildGovernedWorld({
         monetary: DRAFTING_IS_FINANCIAL,
         exerciseControls: { policy: spendLimit, revalidateAuthorityBinding: () => NO_TEMPORAL_BOUND, reservationLedger: ledger },
+        // P10: the authority's own ceiling is a value beyond 2^53 as well, so
+        // the durable authority → grant ceiling path is exact too.
+        financialAuthority: monetaryAuthority(BEYOND_DOUBLE, '100000000000000000'),
       });
 
       const result = await world.orchestrator.govern(IDENTITY, fresh({ ...FINANCIAL_INTENT, amount: { value: `${BEYOND_DOUBLE}0`, currency: 'USD' } }));
@@ -183,9 +188,14 @@ describe('P9 precision — exact from the wire to the adapter, with no number an
       const view = await reopened.read(exerciseReservationId({ boundedGrantId: issued.grant.id, executionId: String(result.executionId) }));
       assert.ok(view !== undefined);
       assert.equal(view.state, 'settled');
+      // One rule for the host limit and one for the authority's durable
+      // lifetime limit, admitted together — each consuming the exact text.
       assert.deepEqual(
-        view.reservation.rules.map((rule) => rule.usage),
-        [BEYOND_DOUBLE],
+        view.reservation.rules.map((rule) => [rule.limit.limitId, rule.usage]),
+        [
+          ['authority:lifetime', BEYOND_DOUBLE],
+          ['spend', BEYOND_DOUBLE],
+        ],
       );
       await reopened.close();
     } finally {
@@ -209,6 +219,7 @@ describe('P9 precision — exact from the wire to the adapter, with no number an
   it('an amount above the grant ceiling by the smallest representable unit is refused exactly', async () => {
     const world = buildGovernedWorld({
       monetary: DRAFTING_IS_FINANCIAL,
+      financialAuthority: monetaryAuthority('100000000000000000'),
       grantPolicy: (query) => ({ grantExpiresAt: new Date(Date.parse(query.evaluatedAt) + 60_000).toISOString(), requestedBounds: { amount: { kind: 'ceiling', limit: '9007199254740993', unit: 'USD' } } }),
     });
     const result = await world.orchestrator.govern(IDENTITY, fresh({ ...FINANCIAL_INTENT, amount: { value: BEYOND_DOUBLE, currency: 'USD' } }));
@@ -344,7 +355,7 @@ describe('P9 persistence — exact round trip, and pre-P9 numeric ceilings refus
 
 describe('P9 persistence — a pre-P9 Governance Record with a numeric amount is never rewritten and never replayed as text', () => {
   it('replaying its idempotency key with the canonical amount is an idempotency conflict: no Kernel run, no grant, no adapter, record untouched', async () => {
-    const world = buildGovernedWorld({ monetary: DRAFTING_IS_FINANCIAL });
+    const world = buildGovernedWorld({ monetary: DRAFTING_IS_FINANCIAL, financialAuthority: monetaryAuthority('100000') });
     // A real committed decision to borrow a genuine Kernel result shape from.
     const seed = await world.orchestrator.govern(IDENTITY, fresh({ ...FINANCIAL_INTENT }));
     assert.equal(seed.status, 'executed', JSON.stringify(seed));

@@ -36,6 +36,7 @@ export type { GrantCorrelation } from './grant-correlation.js';
 
 export {
   MANDATORY_GRANT_BOUND_KEYS,
+  withGrantAmountCeiling,
   withGrantValidityCeiling,
   grantSourceMatchesCorrelation,
   isDerivableGrantSource,

@@ -6,6 +6,7 @@ import {
   type ExerciseControlLedgerPort,
   type ExerciseControlObserver,
   type ExerciseControlPolicy,
+  type ExerciseControlQuery,
 } from '../../features/exercise-control-runtime/index.js';
 import type { FinancialActionClassifier } from '../../features/monetary-runtime/index.js';
 import {
@@ -18,6 +19,14 @@ import {
   type GrantUnboundedAuthoritySourceKind,
 } from './authority-binding.js';
 import { ExecutionGovernanceError } from './errors.js';
+import {
+  FINANCIAL_AUTHORITY_REASON_CODES,
+  financialAuthorityExerciseLimits,
+  grantAuthorityProvenanceDigest,
+  resolveFinancialAuthority,
+  type FinancialAuthorityResolution,
+  type FinancialAuthorityResolver,
+} from './financial-authority.js';
 
 /**
  * Aggregate / velocity exercise controls and exercise-time authority-binding
@@ -76,6 +85,13 @@ export interface AuthorityControlledExerciseControls {
    * supplies the one instance the governed-action boundary also classifies with.
    */
   readonly actionClassifier: FinancialActionClassifier;
+  /**
+   * P10 — the trusted monetary authority resolver, supplied by the composition
+   * (never a host exercise-control option). For a financial exercise it is
+   * consulted for exercise-time provenance revalidation and for the durable
+   * spending limits added to the policy's answer.
+   */
+  readonly financialAuthority?: FinancialAuthorityResolver;
 }
 
 function readOwn(source: object, key: string): unknown {
@@ -122,7 +138,7 @@ function snapshotBinding(returned: unknown): GrantAuthorityBinding | undefined {
  * well-formed binding becomes its canonical digest, which the runtime compares
  * to the grant's.
  */
-export function exerciseAuthorityBindingDigestResolver(resolver: ExerciseAuthorityBindingResolver): ExerciseAuthorityBindingDigestResolver {
+export function exerciseAuthorityBindingDigestResolver(resolver: ExerciseAuthorityBindingResolver, financialAuthority?: FinancialAuthorityResolver): ExerciseAuthorityBindingDigestResolver {
   return (query) => {
     let binding: GrantAuthorityBinding | undefined;
     try {
@@ -130,7 +146,58 @@ export function exerciseAuthorityBindingDigestResolver(resolver: ExerciseAuthori
     } catch {
       return undefined;
     }
-    return binding === undefined ? undefined : grantAuthorityBindingDigest(binding);
+    if (binding === undefined) return undefined;
+    // P10: a financial grant's provenance also commits to the monetary
+    // authority it was issued under. That authority is re-resolved from the
+    // live authority projection *now*; unresolvable (revoked, expired,
+    // re-lineaged, no resolver) is UNVERIFIABLE, and any difference is CHANGED
+    // — both before the policy and before any capacity is reserved.
+    if (query.actionClass === 'financial') {
+      const financial = exerciseFinancialAuthority(financialAuthority, query);
+      return financial.resolved ? grantAuthorityProvenanceDigest(binding, financial.authority) : undefined;
+    }
+    return grantAuthorityBindingDigest(binding);
+  };
+}
+
+/** The monetary authority behind one exercise, asked from trusted query fields only: the grant's holder, the grant's own correlation and the attempt's proven asset. */
+function exerciseFinancialAuthority(resolver: FinancialAuthorityResolver | undefined, query: ExerciseControlQuery): FinancialAuthorityResolution {
+  if (query.amount === undefined) return { resolved: false, reasonCode: FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_AMOUNT_REQUIRED };
+  return resolveFinancialAuthority(resolver, {
+    phase: 'exercise',
+    subject: query.subject,
+    action: query.correlation.action,
+    resourceScope: query.correlation.resourceScope,
+    ...(query.organization !== undefined ? { organizationId: query.organization } : {}),
+    asset: query.amount.unit,
+    at: query.at,
+  });
+}
+
+/**
+ * P10 — the effective P7 policy for one exercise: the host's limits **plus**
+ * every durable spending limit on the authority lineage, for a financial
+ * action.
+ *
+ * Authority limits are mandatory and additive. The host policy is called
+ * first and its answer is extended, never consulted about the authority
+ * limits, so no host callback — however it is written — can omit, replace or
+ * loosen one. Both sets enter the gate's one validated snapshot and therefore
+ * one atomic reservation. A host limit that collides with an authority limit on
+ * `(limitId, scopeKey)` makes the snapshot refuse the whole answer
+ * (`EXERCISE_CONTROL_POLICY_INVALID`): which maximum was meant is not a
+ * question to answer by picking one. An unresolvable financial authority
+ * throws, which the gate reports the same way — although binding revalidation,
+ * which runs first, has already withheld it.
+ */
+export function financialAuthorityExercisePolicy(hostPolicy: ExerciseControlPolicy, financialAuthority: FinancialAuthorityResolver | undefined): ExerciseControlPolicy {
+  return (query) => {
+    const host = hostPolicy(query);
+    if (query.actionClass !== 'financial') return host;
+    const financial = exerciseFinancialAuthority(financialAuthority, query);
+    if (!financial.resolved) throw new ExecutionGovernanceError('EXECUTION_EXERCISE_CONTROLS_INVALID', 'The monetary authority behind this financial exercise cannot be established.');
+    if (!Array.isArray(host)) return host;
+    return [...(host as readonly unknown[]), ...financialAuthorityExerciseLimits(financial.authority)] as unknown as ReturnType<ExerciseControlPolicy>;
   };
 }
 
@@ -162,8 +229,8 @@ export function createAuthorityControlledExerciseControlGate(controls: Authority
   assertValidExerciseControlCallbacks(controls, 'exerciseControls');
   assertValidExerciseControlStore(controls.reservationLedger, 'exerciseControls.reservationLedger');
   return createExerciseControlGate({
-    policy: controls.policy,
-    authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding),
+    policy: financialAuthorityExercisePolicy(controls.policy, controls.financialAuthority),
+    authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding, controls.financialAuthority),
     reservationLedger: controls.reservationLedger,
     actionClassifier: controls.actionClassifier,
     now,
