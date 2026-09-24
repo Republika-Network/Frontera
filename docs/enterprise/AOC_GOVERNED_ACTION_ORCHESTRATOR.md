@@ -460,6 +460,16 @@ authoritative bounded-grant store and nothing else. A forged
   and are **never retried automatically**. They need reconciliation (P12).
   Since P11 both keep their exact prepared monetary context, and a replayed
   `executed` returns the `providerRef` its observation recorded.
+  Since P12, when `executionReconciliation` is composed, each new execution is
+  durably bound to one trusted resolution authority after P11 preparation and
+  before the claim (a binding that cannot be made durable stops the request as
+  `system_error` / `GOVERNED_ACTION_EXECUTION_CLAIM_FAILED`, before the claim);
+  a trusted operator may later call
+  `AocEnterprise.executionReconciliation.reconcile()` so that authority can
+  establish whether the effect completed. A verified definitive resolution then
+  replays as `executed` or `execution_failed` (`replayed: true`,
+  `outcomeRecorded: true`). Replay itself never asks the authority or the
+  provider. See `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
 - **P6: an adapter-reported unconfirmed effect is recorded, not lost.** When the
   adapter itself reports `unconfirmed` (the provider was contacted and the
   result is unknown), the outcome row is the canonical

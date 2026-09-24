@@ -321,8 +321,16 @@ remains the only owner of historical outcome replay.
 - One SQLite file serializes one host's processes. No distributed consensus;
   separate databases on different hosts do not share quota; SQLite on a network
   filesystem that does not honour its locking is not a distributed lock.
-- No reservation reconciliation, no automatic abandoned-reservation recovery,
-  no exactly-once, no atomic transaction with the provider.
+- No automatic abandoned-reservation recovery, no exactly-once, no atomic
+  transaction with the provider. *Since P12:* when execution reconciliation is
+  composed, a reservation whose effect a trusted resolution authority later
+  proves did not complete gets one more immutable row
+  (`exercise_control_reservation_resolutions`, bound to the P12 resolution
+  digest) that stops it consuming in every bucket at once; its original
+  terminal event is never rewritten, and a completed resolution never creates
+  capacity. Only the P12 reconciliation service can write that row, through a
+  one-method capability the exercise gate does not have. See
+  `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md` §8.
 - Amount input precision is exact since P9 (canonical decimal text end to end);
   usage recorded before P9 was converted from a JavaScript number and is read as
   recorded.
@@ -393,7 +401,7 @@ scopeKey         = ["aoc.kernel-authority.spending-limit.v1", organization, enti
 
 Model convergence (P9), XRPL adapter or signer,
 KMS/HSM, process sandbox, network namespace, egress firewall, distributed quota
-(Redis, etcd, consensus, cross-region), reconciliation, manual release API,
+(Redis, etcd, consensus, cross-region), automatic reconciliation (P12's is explicit and trusted), manual release API,
 stale-reservation cleanup, provider polling, exactly-once, FX or unit
 conversion, dynamic provider limits, customer-defined quota, quota routes,
 risk/behaviour AI, Live Data Rail, Pinata or Stripe migration.

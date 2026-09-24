@@ -76,6 +76,25 @@ export type {
   ExerciseReservationTerminalOutcome,
 } from './exercise-control-ledger-port.js';
 
+export {
+  EXERCISE_RESERVATION_RESOLUTIONS,
+  EXERCISE_RESERVATION_RESOLUTION_BASES,
+  exerciseReservationConsumes,
+  exerciseReservationResolutionConsistent,
+  exerciseReservationResolutionMatches,
+  isExerciseReservationResolution,
+  isExerciseReservationResolutionBasis,
+  isWellFormedExerciseReservationResolutionInput,
+} from './exercise-reservation-resolution.js';
+export type {
+  ExerciseControlReconciliationPort,
+  ExerciseReservationResolution,
+  ExerciseReservationResolutionBasis,
+  ExerciseReservationResolutionEvent,
+  ExerciseReservationResolutionInput,
+  ExerciseReservationResolutionOutcome,
+} from './exercise-reservation-resolution.js';
+
 export { verifyExerciseAuthorityBinding } from './exercise-authority-binding.js';
 export type {
   ExerciseAuthorityBindingDigestResolver,

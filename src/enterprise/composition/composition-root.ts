@@ -69,6 +69,22 @@ import { createExecutionOutcomeModule } from '../modules/execution-outcome-modul
 import type { ExecutionOutcomeReader, ExecutionOutcomeStore } from '../execution-outcome-store/outcome-store.js';
 import { createInMemoryExecutionOutcomeStore } from '../execution-outcome-store/in-memory-execution-outcome-store.js';
 import { createSqliteExecutionOutcomeStore } from '../execution-outcome-store/sqlite-execution-outcome-store.js';
+import { createExecutionResolutionModule } from '../modules/execution-resolution-module.js';
+import type { ExecutionResolutionReader, ExecutionResolutionStore } from '../execution-resolution-store/resolution-store.js';
+import { createInMemoryExecutionResolutionStore } from '../execution-resolution-store/in-memory-execution-resolution-store.js';
+import { createSqliteExecutionResolutionStore } from '../execution-resolution-store/sqlite-execution-resolution-store.js';
+import {
+  snapshotResolutionAuthorities,
+  type ExecutionResolutionAuthority,
+  type ExecutionResolutionAuthoritySelector,
+  type ResolutionAuthorityComposition,
+} from '../execution-reconciliation/authority.js';
+import { createExecutionResolutionBinder } from '../execution-reconciliation/binder.js';
+import type { ExecutionReconciliationService } from '../execution-reconciliation/contracts.js';
+import { ExecutionReconciliationConfigurationError } from '../execution-reconciliation/errors.js';
+import { createExecutionReconciliationService } from '../execution-reconciliation/service.js';
+import { createExecutionLedger, executionClaimRecorded } from '../governed-action/execution-ledger.js';
+import type { ExerciseControlReconciliationPort } from '../../features/exercise-control-runtime/index.js';
 import {
   GovernedActionConfigurationError,
   createGovernedActionOrchestrator,
@@ -283,6 +299,43 @@ export interface CreateEnterpriseOptions {
    * routes is handed either.
    */
   readonly executionOutcomes?: EnterpriseExecutionOutcomeOptions;
+  /**
+   * P12 — execution reconciliation and resolution authority. **Optional.**
+   * Omitted, or `enabled` anything but `true`, governed executions behave
+   * exactly as under P11.
+   *
+   * Enabled, it requires governed actions and composes:
+   *
+   * - the host's trusted **resolution authorities** and **selector**,
+   *   validated and snapshotted here, once — unique recordable ids, a
+   *   synchronous selector, no discovery per request;
+   * - a durable **binding** of every new governed execution to one authority,
+   *   written after P11 preparation and **before** the write-ahead claim — an
+   *   execution that cannot be bound never reaches its claim or its provider;
+   * - the execution resolution store (its own SQLite file at
+   *   `executionResolution.sqlitePath` under `persistence.provider = 'sqlite'`,
+   *   process-local otherwise; a host may supply one it owns);
+   * - resolved **replay**: an execution P11 left uncertain replays a verified
+   *   definitive resolution through the existing statuses. Replay reads; it
+   *   never asks an authority;
+   * - the trusted in-process surfaces `AocEnterprise.executionReconciliation`
+   *   (reconcile, adopt) and `AocEnterprise.executionResolutions` (read-only).
+   *
+   * No HTTP route, SDK method, status or wire field is added. See
+   * `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
+   */
+  readonly executionReconciliation?: EnterpriseExecutionReconciliationOptions;
+}
+
+/** What a host states to enable P12 execution reconciliation. Trusted host composition; never caller input. */
+export interface EnterpriseExecutionReconciliationOptions {
+  readonly enabled: boolean;
+  /** The trusted resolution authorities. At least one; every `authorityId` unique and recordable. Snapshotted at composition. */
+  readonly authorities: readonly ExecutionResolutionAuthority[];
+  /** Trusted, synchronous selection of the authority bound to a new execution. There is no default and no fallback. */
+  readonly selectAuthority: ExecutionResolutionAuthoritySelector;
+  /** A store the **host** opened and owns. Used verbatim and never closed from here. */
+  readonly store?: ExecutionResolutionStore;
 }
 
 /** What a host may state about the durable execution outcome store (P11). Its store only; the store itself is composed with governed actions. */
@@ -613,6 +666,23 @@ export interface AocEnterprise {
    * method or authorization path reaches it.
    */
   readonly executionOutcomes?: ExecutionOutcomeReader;
+  /**
+   * P12 — the **read-only** surface over the execution resolution store,
+   * present only when execution reconciliation is enabled: an execution's
+   * resolution-authority binding and its definitive resolution, tenant-scoped
+   * and verified before they are returned. No bind, no record, no delete.
+   */
+  readonly executionResolutions?: ExecutionResolutionReader;
+  /**
+   * P12 — the trusted in-process **reconciliation** surface, present only when
+   * execution reconciliation is enabled. It may ask an execution's bound
+   * resolution authority what happened, record the definitive answer, and
+   * apply it to P7 capacity; it never executes, resubmits or retries anything.
+   * Not part of any caller path: no HTTP route, no SDK method, and nothing the
+   * governed-action path holds reaches it. An application handed an
+   * `AocEnterprise` should be handed the evaluation surface rather than this.
+   */
+  readonly executionReconciliation?: ExecutionReconciliationService;
   readonly eventPublisher: EnterpriseEventPublisher;
   readonly telemetry: EnterpriseTelemetry;
   readonly logger: EnterpriseLogger;
@@ -760,6 +830,33 @@ async function buildExecutionOutcomeStore(configuration: EnterpriseConfiguration
     return createSqliteExecutionOutcomeStore(configuration.executionOutcome.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
   }
   return createInMemoryExecutionOutcomeStore({ now });
+}
+
+/**
+ * The execution resolution store (P12), when the host did not supply one:
+ * durable SQLite under `persistence.provider === 'sqlite'`, process-local (not
+ * durable) otherwise. A failure to open it is a startup failure: with
+ * reconciliation enabled, no governed execution may run without a durable
+ * binding, so there is no silent in-memory fallback.
+ */
+async function buildExecutionResolutionStore(configuration: EnterpriseConfiguration, now: () => string): Promise<ExecutionResolutionStore> {
+  if (configuration.persistence.provider === 'sqlite') {
+    return createSqliteExecutionResolutionStore(configuration.executionResolution.sqlitePath, { now, busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+  }
+  return createInMemoryExecutionResolutionStore({ now });
+}
+
+/** A fresh one-method object over the resolution store: `bind`, `recordResolution`, `health` and `close` are unreachable from it even by a cast. */
+function createExecutionResolutionReader(store: ExecutionResolutionStore): ExecutionResolutionReader {
+  return Object.freeze({ read: (context: Parameters<ExecutionResolutionReader['read']>[0], executionId: string) => store.read(context, executionId) });
+}
+
+/** P7's one reconciliation capability, as a fresh one-method object — reserve, settle, release and read are unreachable from it even by a cast. `undefined` when the ledger offers none. */
+function createExerciseReconciliationCapability(ledger: ExerciseControlLedgerPort | undefined): ExerciseControlReconciliationPort | undefined {
+  const candidate = ledger as Partial<ExerciseControlReconciliationPort> | undefined;
+  if (candidate === undefined || typeof candidate.reconcileResolution !== 'function') return undefined;
+  const reconcileResolution = candidate.reconcileResolution.bind(ledger);
+  return Object.freeze({ reconcileResolution: (input: Parameters<ExerciseControlReconciliationPort['reconcileResolution']>[0]) => reconcileResolution(input) });
 }
 
 /** A fresh one-method object over the store: `prepareAttempt`, `recordTerminal`, `health` and `close` are unreachable from it even by a cast. */
@@ -941,6 +1038,17 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     }
   }
 
+  // P12: execution reconciliation, validated and snapshotted before any store
+  // is opened. The authorities and the selector are read here, once; nothing
+  // later discovers, adds or swaps one.
+  let resolutionAuthorities: ResolutionAuthorityComposition | undefined;
+  if (options.executionReconciliation?.enabled === true) {
+    if (governedActionOptions === undefined) {
+      throw new ExecutionReconciliationConfigurationError('executionReconciliation requires governedActionOrchestrator: there are no governed executions to reconcile without it.');
+    }
+    resolutionAuthorities = snapshotResolutionAuthorities(options.executionReconciliation.authorities, options.executionReconciliation.selectAuthority, 'executionReconciliation');
+  }
+
   // P0-PKG-07: the durable authority path. Explicitly-supplied
   // `kernelProviders` still win outright -- that is how the Kernel's own
   // characterization suite injects a seeded world, and how an embedder
@@ -1109,6 +1217,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   const executionOutcomeStore: ExecutionOutcomeStore | undefined =
     governedActionOptions === undefined ? undefined : (options.executionOutcomes?.store ?? (await buildExecutionOutcomeStore(configuration, kernelProviders.clock.now)));
   const executionOutcomeStoreOpenedHere = executionOutcomeStore !== undefined && options.executionOutcomes?.store === undefined;
+  // P12: the execution resolution store, only when reconciliation is enabled.
+  // Load-bearing before the claim, so a store that cannot be opened fails
+  // startup here — never a silent fallback to memory.
+  const executionResolutionStore: ExecutionResolutionStore | undefined =
+    resolutionAuthorities === undefined ? undefined : (options.executionReconciliation?.store ?? (await buildExecutionResolutionStore(configuration, kernelProviders.clock.now)));
+  const executionResolutionStoreOpenedHere = executionResolutionStore !== undefined && options.executionReconciliation?.store === undefined;
   // The write-only projector: the one object lifecycle modules are handed.
   const authorityEvents: AuthorityEventProjector | undefined =
     governedActionOptions === undefined || grantStore === undefined || customerIdentityAdmission === undefined
@@ -1272,6 +1386,12 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     await executionOutcomeStore.close();
   }
 
+  /** The same ownership discipline for the execution resolution store: closed only when this composition root opened it. */
+  async function closeComposedExecutionResolutionStore(): Promise<void> {
+    if (!executionResolutionStoreOpenedHere || executionResolutionStore === undefined) return;
+    await executionResolutionStore.close();
+  }
+
   async function closeComposedExerciseLedger(): Promise<void> {
     if (!exerciseLedgerOpenedHere || exerciseLedger === undefined) return;
     const closable = exerciseLedger as Partial<{ close: () => Promise<void> }>;
@@ -1323,6 +1443,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   if (governedActionOptions !== undefined) {
     registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now));
     if (executionOutcomeStore !== undefined) registry.register(createExecutionOutcomeModule(executionOutcomeStore, kernelProviders.clock.now));
+    if (executionResolutionStore !== undefined && resolutionAuthorities !== undefined) {
+      registry.register(createExecutionResolutionModule(executionResolutionStore, resolutionAuthorities.authorities.size, kernelProviders.clock.now));
+    }
     if (authorityEvents !== undefined) {
       registry.register(
         createAuthorityEventStreamModule({
@@ -1406,8 +1529,47 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         recordTerminal: (context, input) => executionOutcomeStore.recordTerminal(context, input),
         read: (context, executionId) => executionOutcomeStore.read(context, executionId),
       },
+      // P12: a binder and a read-only reader — never an authority, never the
+      // reconciliation service. Customer replay can read a resolution; it can
+      // never ask for one.
+      ...(executionResolutionStore !== undefined && resolutionAuthorities !== undefined
+        ? {
+            executionResolution: {
+              binder: createExecutionResolutionBinder({ store: executionResolutionStore, composition: resolutionAuthorities, now: kernelProviders.clock.now }),
+              reader: createExecutionResolutionReader(executionResolutionStore),
+            },
+          }
+        : {}),
     });
   }
+
+  // P12: the trusted reconciliation service. It reads P11 through the
+  // read-only reader, verifies the existing Governance write-ahead claim,
+  // holds the resolution store, the snapshotted authorities and P7's one
+  // reconciliation capability — and no execution adapter, exercise gate,
+  // grant writer or Kernel.
+  const exerciseReconciliation = createExerciseReconciliationCapability(exerciseLedger);
+  const executionReconciliation: ExecutionReconciliationService | undefined =
+    executionResolutionStore === undefined || resolutionAuthorities === undefined || executionOutcomeStore === undefined
+      ? undefined
+      : createExecutionReconciliationService({
+          outcomes: createExecutionOutcomeReader(executionOutcomeStore),
+          resolutions: executionResolutionStore,
+          composition: resolutionAuthorities,
+          claimed: async (scope, evaluationId, executionId) => {
+            const record = await persistence.getByEvaluationId({ system: false, organizationId: scope.organizationId }, evaluationId);
+            return record !== null && record.request.organizationId === scope.organizationId && executionClaimRecorded(record, executionId);
+          },
+          ...(exerciseReconciliation !== undefined ? { capacity: exerciseReconciliation } : {}),
+          governanceEvidence: (scope, evaluationId, executionId, resolution) =>
+            createExecutionLedger(persistence, { system: false, organizationId: scope.organizationId }, kernelProviders.clock.now).recordResolution(evaluationId, executionId, {
+              certainty: resolution.certainty,
+              ...(resolution.failure !== undefined ? { failure: resolution.failure } : {}),
+              resolutionDigest: resolution.resolutionDigest,
+            }),
+          ...(authorityEvents !== undefined ? { evidence: authorityEvents } : {}),
+          now: kernelProviders.clock.now,
+        });
 
   const governanceReads = createGovernanceReadService(persistence, configuration, telemetry);
   const evidence = createEvidenceService({
@@ -1482,6 +1644,8 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
     ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
+    ...(executionResolutionStore !== undefined ? { executionResolutions: createExecutionResolutionReader(executionResolutionStore) } : {}),
+    ...(executionReconciliation !== undefined ? { executionReconciliation } : {}),
     eventPublisher,
     telemetry,
     logger,
@@ -1533,6 +1697,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedExerciseLedger();
       await closeComposedAuthorityEventStore();
       await closeComposedExecutionOutcomeStore();
+      await closeComposedExecutionResolutionStore();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -1543,6 +1708,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       await closeComposedExerciseLedger();
       await closeComposedAuthorityEventStore();
       await closeComposedExecutionOutcomeStore();
+      await closeComposedExecutionResolutionStore();
     },
   };
 

@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 
 import { EXERCISE_CONTROL_REASON_CODES, type ExerciseControlReasonCode } from './exercise-control-reason-codes.js';
+import type { ExerciseReservationResolutionEvent } from './exercise-reservation-resolution.js';
 import {
   exerciseControlBucketKey,
   exerciseControlPolicyDigest,
@@ -179,6 +180,13 @@ export interface ExerciseReservationView {
   readonly reservation: ExerciseReservationRecord;
   readonly state: ExerciseReservationState;
   readonly terminal?: ExerciseReservationTerminalEvent;
+  /**
+   * P12 — the later definitive resolution recorded beside the terminal event,
+   * when one exists. `state` is unchanged by it: it is what the runtime
+   * recorded at the time. Whether the reservation still consumes is
+   * `exerciseReservationConsumes(terminal, resolution)`.
+   */
+  readonly resolution?: ExerciseReservationResolutionEvent;
 }
 
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;

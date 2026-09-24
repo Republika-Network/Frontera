@@ -266,6 +266,14 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       // (`execution-outcome-boundaries.test.ts`).
       '../execution-outcome-store/contracts.js',
       '../execution-outcome-store/outcome-store.js',
+      // P12: the resolution record type, the read-only reader and the
+      // pre-claim binder, type-only. The orchestrator holds no resolution
+      // authority and no reconciliation service, so replay can read a
+      // resolution and can never ask for one
+      // (`execution-reconciliation-boundaries.test.ts`).
+      '../execution-resolution-store/contracts.js',
+      '../execution-resolution-store/resolution-store.js',
+      '../execution-reconciliation/binder.js',
       '../governance-store/contracts.js',
       '../governance-store/errors.js',
       '../governance-store/governance-store.js',

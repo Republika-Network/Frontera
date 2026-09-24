@@ -247,6 +247,11 @@ No timers, TTLs or sweepers: a missing observation stays missing.
 
 ## 13. Handed to P12
 
+*Resolved by P12* (`ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md` §1): the first three
+states are eligible for trusted reconciliation through the execution's durably bound resolution
+authority; a record that fails verification is never reconciled. This store is unchanged by P12 —
+a resolution is a separate fact in a separate store.
+
 - A claim exists and no observation exists (the attempt context is readable).
 - The observation's certainty is `unconfirmed`, with a `providerRef` available.
 - The observation's certainty is `unconfirmed`, with no `providerRef`.

@@ -251,7 +251,7 @@ authoritative stores remain the record for that. One SQLite file serializes one
 host. No global order, no
 exactly-once, no WORM, no distributed consensus, no cross-region copy, no
 retention or cleanup, not in portability v1 backup/restore. Stage A coverage is
-path-local. Signatures and KMS/HSM are P12; model convergence is P9.
+path-local. Signatures and KMS/HSM are P20; model convergence is P9.
 
 ## 9. Tests
 

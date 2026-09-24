@@ -18,6 +18,9 @@ import type { EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import { isExecutionGovernanceError, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
 import type { ExecutionOutcomeAccessContext, ExecutionTerminalObservation, ExecutionTerminalRecord } from '../execution-outcome-store/contracts.js';
 import type { ExecutionOutcomePort } from '../execution-outcome-store/outcome-store.js';
+import type { ExecutionResolutionRecord } from '../execution-resolution-store/contracts.js';
+import type { ExecutionResolutionReader } from '../execution-resolution-store/resolution-store.js';
+import type { ExecutionResolutionBinder } from '../execution-reconciliation/binder.js';
 import type { AuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import type { GovernanceEnterpriseContext, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
@@ -54,6 +57,7 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  *   -> authorization_artifact reference           evidence, never authority
  *   -> exercise pre-assessment (ACE)
  *   -> P11 attempt preparation                    the exact execution context, durable, BEFORE the claim
+ *   -> P12 resolution-authority binding           when reconciliation is enabled: durable, BEFORE the claim
  *   -> execution_record write-ahead claim         durable, at most once per execution id
  *   -> ACE exercise -> ExecutionAdapter           ValidatedExecutionAction only; P7 finalized inside
  *   -> P11 terminal observation                   the initial provider certainty, immutable
@@ -78,6 +82,19 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  * No local commit is atomic with an external effect. A claim with no
  * observation stays "attempted, outcome not on record", is never retried, and
  * belongs to reconciliation (P12), which nothing here performs.
+ *
+ * ## Resolved replay (P12)
+ *
+ * When reconciliation is enabled, a new execution is bound to its trusted
+ * resolution authority after preparation and before the claim; a binding that
+ * cannot be made durable stops the request exactly as a failed preparation
+ * does. Replay of an execution P11 left uncertain (no observation, or
+ * `unconfirmed`) first reads the P12 store: a verified definitive resolution
+ * replays as `executed` or `execution_failed`. Replay **reads**; it never asks
+ * a resolution authority, never contacts a provider, and a P12 store that
+ * cannot prove its answer leaves the replay exactly as P11 alone would answer
+ * it — still unconfirmed, never optimistic. A definitive P11 observation is
+ * never consulted against P12 at all.
  *
  * ## Evidence, after each fact — reported, never waited for
  *
@@ -194,6 +211,19 @@ export interface GovernedActionOrchestratorOptions {
    * already forbids.
    */
   readonly executionOutcomes: ExecutionOutcomePort;
+  /**
+   * P12 — present only when the deployment enabled execution reconciliation.
+   *
+   * `binder` durably binds a new execution to its trusted resolution authority
+   * before the claim; `reader` lets replay of an uncertain execution find a
+   * definitive resolution. Neither can resolve anything: the orchestrator holds
+   * no resolution authority and no reconciliation service, so ordinary
+   * customer replay can never query a provider.
+   */
+  readonly executionResolution?: {
+    readonly binder: ExecutionResolutionBinder;
+    readonly reader: ExecutionResolutionReader;
+  };
 }
 
 export interface GovernedActionOrchestrator {
@@ -279,6 +309,21 @@ function replayObservation(context: ResultContext, observation: ExecutionTermina
       return unreachable;
     }
   }
+}
+
+/**
+ * A verified P12 definitive resolution, replayed through the existing v1
+ * statuses. `providerRef`: the resolution's when it learned one, otherwise the
+ * P11 observation's — both stay intact in their own immutable records.
+ */
+function replayResolution(context: ResultContext, resolution: ExecutionResolutionRecord, observedProviderRef: string | undefined, decisionReasonCodes: readonly string[]): GovernedActionResult {
+  if (resolution.certainty === 'confirmed-completed') {
+    const providerRef = resolution.providerRef ?? observedProviderRef;
+    return result({ status: 'executed', ...context, reasonCodes: decisionReasonCodes, ...(providerRef !== undefined ? { providerRef } : {}), replayed: true, outcomeRecorded: true });
+  }
+  const failure = resolution.failure;
+  if (failure === undefined) return unresolvedResult(context);
+  return result({ status: 'execution_failed', ...context, failure, reasonCodes: [failure], replayed: true, outcomeRecorded: true });
 }
 
 /** Attempted, and no initial observation can be established: a crash between claim and observation, or a record that cannot be read or verified. Never retried. */
@@ -380,6 +425,16 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   ) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed actions require a durable execution outcome store: no execution runs without its exact context durably prepared.');
   }
+  const executionResolution = options.executionResolution;
+  if (
+    executionResolution !== undefined &&
+    (executionResolution === null ||
+      typeof executionResolution !== 'object' ||
+      typeof executionResolution.binder?.bindBeforeClaim !== 'function' ||
+      typeof executionResolution.reader?.read !== 'function')
+  ) {
+    throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Execution reconciliation, when enabled, requires a resolution-authority binder and a resolution reader.');
+  }
   const hostRevalidateSource = options.revalidateSource;
   const emergencyControl = options.emergencyControl;
   const evidence = options.evidence;
@@ -466,8 +521,27 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       return unresolvedResult(context);
     }
     if (durable === undefined) return replayResult(context, prior, decisionReasonCodes);
-    if (durable.terminal === undefined) return unresolvedResult(context);
-    return replayObservation(context, durable.terminal.observation, decisionReasonCodes);
+    const observation = durable.terminal?.observation;
+    // P12 precedence, only for what P11 left uncertain. A definitive P11
+    // observation or a withholding is answered by P11 alone, whatever the
+    // optional resolution store would say or fail to say.
+    const uncertain = observation === undefined || (observation.kind === 'provider' && observation.certainty === 'unconfirmed');
+    if (uncertain && executionResolution !== undefined) {
+      let resolution: ExecutionResolutionRecord | undefined;
+      try {
+        resolution = (await executionResolution.reader.read(outcomeScope, executionId))?.resolution;
+      } catch {
+        // Unreadable or corrupt: never an answer, never a fallback to anything
+        // optimistic. P11's own uncertain answer below stands.
+        resolution = undefined;
+      }
+      // Believed only when it resolves exactly this attempt and exactly this uncertainty.
+      if (resolution !== undefined && resolution.attemptDigest === durable.attempt.attemptDigest && resolution.basisObservationDigest === durable.terminal?.observationDigest) {
+        return replayResolution(context, resolution, observation?.kind === 'provider' ? observation.providerRef : undefined, decisionReasonCodes);
+      }
+    }
+    if (observation === undefined) return unresolvedResult(context);
+    return replayObservation(context, observation, decisionReasonCodes);
   }
 
   /** Expiry is observed, never scheduled: reported only when an assessment of this grant actually found it. */
@@ -629,8 +703,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // written stops here — no claim, no adapter, nothing stranded — and is
       // reported in the narrowest existing vocabulary: the write-ahead
       // execution record could not be established.
+      let prepared;
       try {
-        await executionOutcomes.prepareAttempt(outcomeScope, {
+        prepared = await executionOutcomes.prepareAttempt(outcomeScope, {
           organizationId: scope.organizationId,
           executionId,
           evaluationId,
@@ -643,6 +718,21 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         });
       } catch {
         return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
+      }
+
+      // P12, when enabled: the trusted resolution authority that may later
+      // resolve this exact attempt, bound durably BEFORE the claim — so no
+      // effect runs that reconciliation already knows it could not resolve,
+      // and a crash after the claim never has to guess who may. Same posture
+      // as a failed preparation: nothing claimed, no adapter, safe to retry.
+      if (executionResolution !== undefined) {
+        let bound = false;
+        try {
+          bound = await executionResolution.binder.bindBeforeClaim(prepared.attempt);
+        } catch {
+          bound = false;
+        }
+        if (!bound) return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
       }
 
       // Write-ahead claim, BEFORE the adapter. It can only prevent an invocation.

@@ -93,6 +93,12 @@ export function bodies(input: LifecycleIds = {}): Readonly<Record<AuthorityEvent
       references: execution,
       payload: { status: 'executed', reasonCodes: [], adapterId: 'test.adapter', providerRef: 'provider-ref-1', outcomeRecorded: true },
     },
+    'execution.outcome.resolved': {
+      eventType: 'execution.outcome.resolved',
+      references: execution,
+      payload: { certainty: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED', authorityId: 'test.resolver', resolutionDigest: DIGEST_A },
+    },
+    'exercise.reservation.reconciled': { eventType: 'exercise.reservation.reconciled', references: reservation, payload: { resolution: 'confirmed-not-completed', resolutionDigest: DIGEST_A } },
   };
 }
 

@@ -580,12 +580,13 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Eight of fifty-three effect paths are under bounded-grant control.'),
+      DOC.includes('Eight of fifty-five effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
         'and P6 added EP-050, the Generic HTTP adapter\'s outbound call below that same path — which is why both numbers moved by one each time, and only for those paths. ' +
-        'P7 added EP-051 … EP-053, the exercise-control reserve / settle / release writes reachable only inside the bounded-grant gate — local authority-state writes, not provider effects — so both moved by three.',
+        'P7 added EP-051 … EP-053, the exercise-control reserve / settle / release writes reachable only inside the bounded-grant gate — local authority-state writes, not provider effects — so both moved by three. ' +
+        'P12 added EP-054 (a host resolution authority\'s status query) and EP-055 (the P7 resolution row), both deployment-gated trusted in-process paths outside the bounded-grant gate, so only the denominator moved, by two.',
     );
   });
 

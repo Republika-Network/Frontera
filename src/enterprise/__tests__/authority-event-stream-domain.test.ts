@@ -53,7 +53,7 @@ function edit(event: AuthorityEvent, change: Record<string, unknown>): Authority
 }
 
 describe('Authority event domain — §7 the closed vocabulary', () => {
-  it('is exactly the nine lifecycle facts Stage A projects', () => {
+  it('is exactly the nine lifecycle facts Stage A projects, plus the two P12 resolution facts', () => {
     assert.deepEqual([...AUTHORITY_EVENT_TYPES], [
       'governance.decision.committed',
       'grant.issued',
@@ -64,6 +64,8 @@ describe('Authority event domain — §7 the closed vocabulary', () => {
       'exercise.reservation.settled',
       'exercise.reservation.released',
       'execution.outcome.observed',
+      'execution.outcome.resolved',
+      'exercise.reservation.reconciled',
     ]);
     for (const type of AUTHORITY_EVENT_TYPES) assert.equal(isAuthorityEventType(type), true);
   });
