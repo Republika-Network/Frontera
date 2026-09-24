@@ -45,6 +45,7 @@ import type { AuthorityControlledExerciseControls } from '../execution-governanc
 import type { FinancialAuthorityResolver } from '../execution-governance/financial-authority.js';
 import { createKernelFinancialAuthorityResolver } from '../kernel-authority/financial-authority-resolver.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
+import { createInMemoryExecutionOutcomeStore, type ExecutionOutcomeStore } from '../execution-outcome-store/index.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import {
   createGovernedActionOrchestrator,
@@ -166,6 +167,8 @@ export interface GovernedWorld {
   readonly events: EnterpriseEvent[];
   readonly clock: ReturnType<typeof createManualEnforcementClock>;
   readonly grantCapability: KernelGrantCapability;
+  /** P11 — the durable execution outcome store the orchestrator prepares and records into. */
+  readonly outcomes: ExecutionOutcomeStore;
 }
 
 export interface WorldOptions {
@@ -225,6 +228,8 @@ export interface WorldOptions {
    * Omitted, a financial action has no monetary authority and is withheld.
    */
   readonly financialAuthority?: { readonly constraints: readonly AuthorityConstraint[] } | { readonly resolver: FinancialAuthorityResolver };
+  /** P11 — the execution outcome store. Defaults to a fresh in-memory one; hand the same store to a second world to model a restart. */
+  readonly executionOutcomes?: ExecutionOutcomeStore;
 }
 
 /** P10 — a generous durable monetary authority for suites whose subject is not payment ceilings themselves. */
@@ -234,6 +239,46 @@ export function monetaryAuthority(ceiling: string, lifetimeMaximum = '1000000000
       { type: 'max_amount', currency, value: ceiling },
       { type: 'spending_limit', limitId: 'lifetime', currency, maximum: lifetimeMaximum, window: { kind: 'lifetime' } },
     ],
+  };
+}
+
+/**
+ * P11 — history written **before** P11: the execution outcome store holds no
+ * record for any execution, so replay falls back to the Governance Store's
+ * compact outcome reference exactly as it did before P11. Writes succeed (so
+ * the live path runs unchanged) into a store nothing ever reads back — which is
+ * precisely what a pre-P11 execution looks like to a P11 Host.
+ */
+export function preP11History(now: () => string = () => NOW): ExecutionOutcomeStore {
+  const scratch = createInMemoryExecutionOutcomeStore({ now });
+  return {
+    providerKind: 'memory',
+    prepareAttempt: (context, input) => scratch.prepareAttempt(context, input),
+    recordTerminal: (context, input) => scratch.recordTerminal(context, input),
+    read: async () => undefined,
+    health: () => scratch.health(),
+    close: () => scratch.close(),
+  };
+}
+
+/** P11 — an execution outcome store whose named operations throw, over a real in-memory one. */
+export function faultyOutcomes(faults: { readonly prepareAttempt?: true; readonly recordTerminal?: true; readonly read?: true }, inner: ExecutionOutcomeStore = createInMemoryExecutionOutcomeStore({ now: () => NOW })): ExecutionOutcomeStore {
+  return {
+    providerKind: inner.providerKind,
+    prepareAttempt: async (context, input) => {
+      if (faults.prepareAttempt === true) throw new Error('injected prepareAttempt failure');
+      return inner.prepareAttempt(context, input);
+    },
+    recordTerminal: async (context, input) => {
+      if (faults.recordTerminal === true) throw new Error('injected recordTerminal failure');
+      return inner.recordTerminal(context, input);
+    },
+    read: async (context, executionId) => {
+      if (faults.read === true) throw new Error('injected read failure');
+      return inner.read(context, executionId);
+    },
+    health: () => inner.health(),
+    close: () => inner.close(),
   };
 }
 
@@ -388,6 +433,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
   const revalidatedSources: (GrantSourceAuthorization | undefined)[] = [];
   const hostRevalidate = options.revalidateSource;
 
+  const outcomes = options.executionOutcomes ?? createInMemoryExecutionOutcomeStore({ now: () => clock.now() });
   const orchestrator = createGovernedActionOrchestrator({
     organizationId: options.organizationId ?? ORG,
     trustDomainId: TRUST_DOMAIN_ID,
@@ -400,6 +446,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     enterpriseContext: () => ({ enterpriseVersion: 'test', lifecycleState: 'ready', modules: [], environment: 'test' }),
     events: { enabled: true, publisher, nextId: (prefix) => `${prefix}-${(eventCounter += 1)}` },
     traceLevel: 'basic',
+    executionOutcomes: outcomes,
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
     ...(hostRevalidate !== undefined
@@ -413,7 +460,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
       : {}),
   });
 
-  const world: GovernedWorld = { orchestrator, ace, store, rawStore, grantStore, adapter, log, kernelRequests, kernelResults, revalidatedSources, accessContexts, issueOutcomes, events, clock, grantCapability };
+  const world: GovernedWorld = { orchestrator, ace, store, rawStore, grantStore, adapter, log, kernelRequests, kernelResults, revalidatedSources, accessContexts, issueOutcomes, events, clock, grantCapability, outcomes };
   return world;
 }
 

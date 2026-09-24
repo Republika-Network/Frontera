@@ -4,11 +4,20 @@ import {
   type EmergencyControlReaderPort,
 } from '../../features/emergency-control-runtime/index.js';
 import { GRANT_REASON_CODES, grantCorrelationMatches, type GrantCorrelation, type GrantSourceAuthorization } from '../../features/grant-runtime/index.js';
-import { GRANT_EXERCISE_REASON_CODES, type BoundedGrantExerciseAssessment, type ExecutionOutcome, type GrantExerciseRequest } from '../../features/execution-runtime/index.js';
+import {
+  GRANT_EXERCISE_REASON_CODES,
+  isRecordableExecutionAdapterId,
+  providerEffectCertaintyOf,
+  type BoundedGrantExerciseAssessment,
+  type ExecutionOutcome,
+  type GrantExerciseRequest,
+} from '../../features/execution-runtime/index.js';
 import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import type { EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import { isExecutionGovernanceError, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
+import type { ExecutionOutcomeAccessContext, ExecutionTerminalObservation, ExecutionTerminalRecord } from '../execution-outcome-store/contracts.js';
+import type { ExecutionOutcomePort } from '../execution-outcome-store/outcome-store.js';
 import type { AuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import type { GovernanceEnterpriseContext, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
@@ -44,10 +53,31 @@ import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
  *   -> bounded grant (ACE issuance core)          binding re-resolved at commit
  *   -> authorization_artifact reference           evidence, never authority
  *   -> exercise pre-assessment (ACE)
+ *   -> P11 attempt preparation                    the exact execution context, durable, BEFORE the claim
  *   -> execution_record write-ahead claim         durable, at most once per execution id
- *   -> ACE exercise -> ExecutionAdapter           ValidatedExecutionAction only
- *   -> execution outcome reference
+ *   -> ACE exercise -> ExecutionAdapter           ValidatedExecutionAction only; P7 finalized inside
+ *   -> P11 terminal observation                   the initial provider certainty, immutable
+ *   -> execution outcome reference                compact summary of the P11 observation, by digest
  * ```
+ *
+ * ## Durable outcomes (P11)
+ *
+ * No adapter is invoked unless the exact execution context — tenant,
+ * correlation, action and the exact amount and asset the adapter will receive —
+ * was first durably prepared in the execution outcome store. Preparation comes
+ * **before** the write-ahead claim, and is idempotent, so a crash between the
+ * two leaves a request that is still safe to retry: "prepared" says nothing
+ * about a provider, and the claim remains the only fact that an attempt became
+ * load-bearing. After the adapter, the runtime's outcome is recorded as one
+ * immutable initial observation: `confirmed-completed`,
+ * `confirmed-not-completed` or `unconfirmed` for the provider, or the layer
+ * that withheld it. Replay of a claimed execution reads that observation —
+ * never P8, never process memory, never the provider — and falls back to the
+ * pre-P11 outcome reference only for executions that have no P11 record.
+ *
+ * No local commit is atomic with an external effect. A claim with no
+ * observation stays "attempted, outcome not on record", is never retried, and
+ * belongs to reconciliation (P12), which nothing here performs.
  *
  * ## Evidence, after each fact — reported, never waited for
  *
@@ -152,6 +182,18 @@ export interface GovernedActionOrchestratorOptions {
    * result. Omitting it changes nothing.
    */
   readonly evidence?: AuthorityEventRecorder;
+  /**
+   * P11 — the durable execution outcome store's narrow port: prepare an
+   * attempt, record its initial observation, read both back. **Required**: a
+   * governed execution never runs without its exact context durably prepared,
+   * and the composition root always composes one with this orchestrator.
+   *
+   * Read only to answer what an execution identity already did. Nothing read
+   * from it can permit a new effect: its only behavioural use is replay of the
+   * same execution identity, whose second invocation the write-ahead claim
+   * already forbids.
+   */
+  readonly executionOutcomes: ExecutionOutcomePort;
 }
 
 export interface GovernedActionOrchestrator {
@@ -203,6 +245,94 @@ function replayResult(context: ResultContext, prior: PriorExecution, decisionRea
   return result({ status: 'execution_unconfirmed', ...context, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
 }
 
+/**
+ * A P11 initial observation, replayed as exactly what it recorded.
+ *
+ * Certainty first: `confirmed-completed` is `executed` (with the provider
+ * reference it was recorded with), `confirmed-not-completed` is
+ * `execution_failed` with its recorded reason, and `unconfirmed` stays
+ * unconfirmed with its own reason code — never a failure. A withholding is the
+ * layer that withheld it, in its own vocabulary, exactly as the legacy replay
+ * reports one.
+ */
+function replayObservation(context: ResultContext, observation: ExecutionTerminalObservation, decisionReasonCodes: readonly string[]): GovernedActionResult {
+  if (observation.kind === 'withheld') {
+    const withheldBy: GovernedActionWithheldBy = observation.withheldBy === 'emergency-control' ? 'emergency-control' : 'exercise';
+    return result({ status: 'withheld', withheldBy, ...context, reasonCodes: [...observation.reasonCodes] });
+  }
+  switch (observation.certainty) {
+    case 'confirmed-completed':
+      return result({
+        status: 'executed',
+        ...context,
+        reasonCodes: decisionReasonCodes,
+        ...(observation.providerRef !== undefined ? { providerRef: observation.providerRef } : {}),
+        replayed: true,
+        outcomeRecorded: true,
+      });
+    case 'confirmed-not-completed':
+      return result({ status: 'execution_failed', ...context, failure: observation.failure, reasonCodes: [observation.failure], replayed: true, outcomeRecorded: true });
+    case 'unconfirmed':
+      return result({ status: 'execution_unconfirmed', ...context, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED] });
+    default: {
+      const unreachable: never = observation;
+      return unreachable;
+    }
+  }
+}
+
+/** Attempted, and no initial observation can be established: a crash between claim and observation, or a record that cannot be read or verified. Never retried. */
+function unresolvedResult(context: ResultContext): GovernedActionResult {
+  return result({ status: 'execution_unconfirmed', ...context, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
+}
+
+/**
+ * The runtime's outcome as the one initial observation P11 records, or
+ * `undefined` when it cannot be recorded exactly.
+ *
+ * Every value is the trusted runtime's: the certainty derived from the status
+ * (never stored beside it), the attribution `GrantExecutionService`
+ * authenticated, the reference it already filtered, the failure from the closed
+ * vocabulary, the withholding layer's own codes. No `detail`, no amount, no
+ * correlation — the amount and correlation are the prepared attempt's. An
+ * attribution that is not a recordable identity (a directly composed adapter
+ * with an exotic id) cannot be recorded exactly, and is not recorded
+ * approximately either: the execution then stays "attempted, outcome not on
+ * record". A routing boundary that is not recordable is omitted, as the
+ * evidence stream omits it.
+ */
+function observationOf(outcome: ExecutionOutcome, observedAt: string): ExecutionTerminalObservation | undefined {
+  if (outcome.status === 'withheld') {
+    switch (outcome.withheldBy) {
+      case 'emergency-control':
+        return { kind: 'withheld', withheldBy: 'emergency-control', reasonCodes: [...outcome.emergencyControl.reasonCodes], observedAt };
+      case 'exercise-control':
+        return { kind: 'withheld', withheldBy: 'exercise-control', reasonCodes: [...outcome.exerciseControl.reasonCodes], observedAt };
+      case 'grant-exercise':
+        return { kind: 'withheld', withheldBy: 'grant-exercise', reasonCodes: [...outcome.assessment.reasonCodes], observedAt };
+      default: {
+        const unreachable: never = outcome;
+        return unreachable;
+      }
+    }
+  }
+  if (!isRecordableExecutionAdapterId(outcome.adapterId)) return undefined;
+  const attribution = { adapterId: outcome.adapterId, ...(outcome.routedBy !== undefined && isRecordableExecutionAdapterId(outcome.routedBy) ? { routedBy: outcome.routedBy } : {}) };
+  const reference = outcome.providerRef !== undefined ? { providerRef: outcome.providerRef } : {};
+  switch (outcome.status) {
+    case 'executed':
+      return { kind: 'provider', certainty: providerEffectCertaintyOf(outcome.status), ...attribution, ...reference, observedAt };
+    case 'execution-failed':
+      return { kind: 'provider', certainty: providerEffectCertaintyOf(outcome.status), ...attribution, ...reference, failure: outcome.reason, observedAt };
+    case 'execution-unconfirmed':
+      return { kind: 'provider', certainty: providerEffectCertaintyOf(outcome.status), ...attribution, ...reference, observedAt };
+    default: {
+      const unreachable: never = outcome;
+      return unreachable;
+    }
+  }
+}
+
 /** The exercise request, built from the verified request and the grant — never from the caller's object. */
 function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: { readonly id: string; readonly correlation: GrantCorrelation }, executionId: string): GrantExerciseRequest {
   const { request } = verified;
@@ -239,6 +369,16 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     typeof monetary.actionClassifier?.classify !== 'function'
   ) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed actions require the trusted monetary configuration: an asset registry and a financial action classifier.');
+  }
+  const executionOutcomes = options.executionOutcomes;
+  if (
+    executionOutcomes === null ||
+    typeof executionOutcomes !== 'object' ||
+    typeof executionOutcomes.prepareAttempt !== 'function' ||
+    typeof executionOutcomes.recordTerminal !== 'function' ||
+    typeof executionOutcomes.read !== 'function'
+  ) {
+    throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed actions require a durable execution outcome store: no execution runs without its exact context durably prepared.');
   }
   const hostRevalidateSource = options.revalidateSource;
   const emergencyControl = options.emergencyControl;
@@ -310,6 +450,26 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     }
   }
 
+  /**
+   * Replay of a claimed execution identity. The canonical P11 record decides
+   * whenever one exists; the pre-P11 outcome reference decides only for an
+   * execution that has none. A record that cannot be read or verified is never
+   * interpreted optimistically — and never falls back to anything else — it is
+   * "attempted, outcome not on record". No adapter, no provider and no P8
+   * event is consulted.
+   */
+  async function replayExecution(outcomeScope: ExecutionOutcomeAccessContext, context: ResultContext, executionId: string, prior: PriorExecution, decisionReasonCodes: readonly string[]): Promise<GovernedActionResult> {
+    let durable;
+    try {
+      durable = await executionOutcomes.read(outcomeScope, executionId);
+    } catch {
+      return unresolvedResult(context);
+    }
+    if (durable === undefined) return replayResult(context, prior, decisionReasonCodes);
+    if (durable.terminal === undefined) return unresolvedResult(context);
+    return replayObservation(context, durable.terminal.observation, decisionReasonCodes);
+  }
+
   /** Expiry is observed, never scheduled: reported only when an assessment of this grant actually found it. */
   function observedExpiry(assessment: BoundedGrantExerciseAssessment): boolean {
     return assessment.reasonCodes.includes(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_EXPIRED);
@@ -330,6 +490,8 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // runs under — the bound organization and its actor, never a system context.
       const requestId = deriveGovernedActionRequestId({ organizationId: scope.organizationId, principalId: scope.principalId, idempotencyKey: intent.idempotencyKey });
       const accessContext: GovernanceStoreAccessContext = { system: false, organizationId: scope.organizationId, actorId: scope.actorId };
+      // The same tenant scope for the execution outcome store. It has no system escape at all.
+      const outcomeScope: ExecutionOutcomeAccessContext = { organizationId: scope.organizationId };
       const base: ResultContext = { requestId, ...(intent.correlationId !== undefined ? { correlationId: intent.correlationId } : {}) };
 
       // Phase: commit + verify. Nothing below runs without a VerifiedDecision.
@@ -367,7 +529,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const executionId = deriveGovernedActionExecutionId({ requestId, decisionId: persisted.decisionId });
       const executed: ResultContext = { ...decided, executionId };
       const known = ledger.prior(record, executionId);
-      if (known.attempted) return replayResult(executed, known, persisted.reasonCodes);
+      if (known.attempted) return replayExecution(outcomeScope, executed, executionId, known, persisted.reasonCodes);
 
       // Phase: emergency-control admission. Deliberately **after** replay and
       // **before** grantPolicy.
@@ -457,6 +619,32 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: assessment.reasonCodes });
       }
 
+      // P11 preparation, BEFORE the claim and therefore before any adapter: the
+      // exact context this execution will run under, from trusted values only —
+      // the committed decision's identifiers, the issued grant's id, and the
+      // exercise request's action and amount, which `GrantExecutionService`
+      // hands to the adapter verbatim as `ValidatedExecutionAction.amount`.
+      // Idempotent: a request that crashed after preparing and before claiming
+      // finds its own attempt on retry. A preparation that cannot be proven
+      // written stops here — no claim, no adapter, nothing stranded — and is
+      // reported in the narrowest existing vocabulary: the write-ahead
+      // execution record could not be established.
+      try {
+        await executionOutcomes.prepareAttempt(outcomeScope, {
+          organizationId: scope.organizationId,
+          executionId,
+          evaluationId,
+          requestId,
+          decisionId: persisted.decisionId,
+          boundedGrantId: grant.id,
+          action: exercise.action,
+          ...(exercise.amount !== undefined ? { amount: { value: exercise.amount.value, unit: exercise.amount.unit } } : {}),
+          preparedAt: now(),
+        });
+      } catch {
+        return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
+      }
+
       // Write-ahead claim, BEFORE the adapter. It can only prevent an invocation.
       let claim;
       try {
@@ -464,7 +652,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       } catch {
         return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
       }
-      if (claim.kind === 'already-claimed') return replayResult(executed, claim.prior, persisted.reasonCodes);
+      if (claim.kind === 'already-claimed') return replayExecution(outcomeScope, executed, executionId, claim.prior, persisted.reasonCodes);
       // Enqueued, not awaited: no evidence write may sit between the durable
       // claim and the adapter crossing.
       report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
@@ -479,9 +667,28 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
       }
 
-      // Outcome evidence. A failure to record it never rewrites what happened.
-      const outcomeRecorded = await ledger.recordOutcome(evaluationId, executionId, outcome);
+      // P11: the initial observation, sampled from the injected clock after the
+      // runtime returned — after the adapter's result was normalized and P7
+      // finalized — and recorded once, immutably. A failure to record it never
+      // rewrites what happened: the result below is still built from `outcome`,
+      // P7's settle or release already stands, and nothing is retried. It only
+      // means a later replay cannot reconstruct this answer, and says so.
+      let terminal: ExecutionTerminalRecord | undefined;
+      const observation = observationOf(outcome, now());
+      if (observation !== undefined) {
+        try {
+          terminal = (await executionOutcomes.recordTerminal(outcomeScope, { organizationId: scope.organizationId, executionId, observation })).terminal;
+        } catch {
+          terminal = undefined;
+        }
+      }
+      // `outcomeRecorded` is the canonical fact: the initial observation is durable.
+      const outcomeRecorded = terminal !== undefined;
       const unrecorded = outcomeRecorded ? [] : [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED];
+      // The compact Governance summary, only after the canonical observation
+      // exists, pointing at it by digest. Evidence: its failure leaves the
+      // canonical record, the result and the replay exactly as they are.
+      if (terminal !== undefined) await ledger.recordOutcome(evaluationId, executionId, outcome, terminal.observationDigest);
       // What the runtime returned, with its certainty intact. Reported after the
       // outcome exists; the result below is built from `outcome`, never from this.
       report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));

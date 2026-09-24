@@ -222,7 +222,7 @@ describe('Emergency control composition — store ownership and durability selec
     const enterprise = await track(
       createEnterprise(
         await options({
-          configuration: { ...configuration(), persistence: { ...configuration().persistence, provider: 'sqlite', sqlitePath: join(workDir, 'gov.sqlite') }, emergencyControl: { sqlitePath: join(workDir, 'composed.sqlite') } },
+          configuration: { ...configuration(), persistence: { ...configuration().persistence, provider: 'sqlite', sqlitePath: join(workDir, 'gov.sqlite') }, emergencyControl: { sqlitePath: join(workDir, 'composed.sqlite') }, executionOutcome: { sqlitePath: join(workDir, 'execution-outcomes.sqlite') } },
           emergencyControl: { enabled: true },
         }),
       ),

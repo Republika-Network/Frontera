@@ -369,10 +369,22 @@ export function createExecutionAdapterRegistry(options: ExecutionAdapterRegistry
       // An unconfirmed effect keeps its own outcome and gains the same
       // registry-owned attribution as the other two: which provider may have
       // acted is exactly what an operator reconciling it needs to know.
+      // A reference rides along on every arm and changes none of them.
       if (normalized.outcome === 'unconfirmed') {
-        return { outcome: 'unconfirmed', ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
+        return {
+          outcome: 'unconfirmed',
+          ...(normalized.providerRef !== undefined ? { providerRef: normalized.providerRef } : {}),
+          ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}),
+          adapterId: member.adapterId,
+        };
       }
-      return { outcome: 'failed', reason: normalized.reason, ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}), adapterId: member.adapterId };
+      return {
+        outcome: 'failed',
+        reason: normalized.reason,
+        ...(normalized.providerRef !== undefined ? { providerRef: normalized.providerRef } : {}),
+        ...(normalized.detail !== undefined ? { detail: normalized.detail } : {}),
+        adapterId: member.adapterId,
+      };
     },
   });
 

@@ -1047,9 +1047,52 @@ describe('P6 — an unconfirmed provider effect is its own outcome, normalized a
     assert.equal(readExecutionAdapterResult({ outcome: 'Unconfirmed' }), undefined, 'the vocabulary is exact');
   });
 
-  it('an unconfirmed result never carries a reason or a providerRef, whatever the adapter attached', () => {
+  it('an unconfirmed result never carries a reason, whatever the adapter attached; a providerRef rides along and changes nothing (P11)', () => {
     const read = readExecutionAdapterResult({ outcome: 'unconfirmed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, providerRef: 'ref' });
-    assert.deepEqual({ ...read }, { outcome: 'unconfirmed' });
+    assert.deepEqual({ ...read }, { outcome: 'unconfirmed', providerRef: 'ref' });
+    assert.equal(read?.outcome, 'unconfirmed', 'a reference is a handle, never proof: the effect stays unconfirmed');
+  });
+
+  it('P11 — a malformed providerRef on an unconfirmed or failed result is dropped, never turning the outcome into ADAPTER_ERROR', () => {
+    for (const providerRef of [42, {}, null, ['a']]) {
+      assert.deepEqual({ ...readExecutionAdapterResult({ outcome: 'unconfirmed', providerRef }) }, { outcome: 'unconfirmed' }, 'an effect that may have happened stays unconfirmed');
+      assert.deepEqual({ ...readExecutionAdapterResult({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, providerRef }) }, { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED });
+    }
+    assert.equal(readExecutionAdapterResult({ outcome: 'completed', providerRef: 42 }), undefined, 'the completed arm keeps its v1 contract');
+    assert.deepEqual({ ...readExecutionAdapterResult({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, providerRef: 'req-1' }) }, { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, providerRef: 'req-1' });
+  });
+
+  it('P11 — a providerRef getter or trap runs once inside the caller’s catch and can neither escape nor survive into the outcome', async () => {
+    let reads = 0;
+    const counting: Record<string, unknown> = { outcome: 'unconfirmed' };
+    Object.defineProperty(counting, 'providerRef', { enumerable: true, get: () => ((reads += 1), 'job-1') });
+    const read = readExecutionAdapterResult(counting);
+    assert.equal(reads, 1, 'read exactly once');
+    assert.deepEqual({ ...read }, { outcome: 'unconfirmed', providerRef: 'job-1' });
+    assert.equal(Object.getOwnPropertyDescriptor(read, 'providerRef')?.get, undefined, 'a plain data property, not the adapter getter');
+    const throwing: Record<string, unknown> = { outcome: 'completed' };
+    Object.defineProperty(throwing, 'providerRef', { enumerable: true, get: () => { throw new Error('getter'); } });
+    for (const outcome of [await exerciseComposed(returning(throwing, 'direct')), await exerciseThrough(routed(returning(throwing)))]) {
+      assert.equal(outcome.status, 'execution-failed');
+      assert.equal(outcome.status === 'execution-failed' ? outcome.reason : undefined, EXECUTION_FAILURE_REASONS.ADAPTER_ERROR);
+    }
+  });
+
+  it('P11 — the execution service carries only a recordable providerRef, on every provider arm', async () => {
+    for (const [result, status] of [
+      [{ outcome: 'completed', providerRef: 'https://provider.example/pay/1' }, 'executed'],
+      [{ outcome: 'unconfirmed', providerRef: 'Bearer secret-token' }, 'execution-unconfirmed'],
+      [{ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, providerRef: 'x'.repeat(513) }, 'execution-failed'],
+    ] as const) {
+      for (const outcome of [await exerciseComposed(returning(result, 'direct')), await exerciseThrough(routed(returning(result)))]) {
+        assert.equal(outcome.status, status, 'an unsafe reference is omitted; the outcome is unchanged');
+        assert.equal('providerRef' in outcome, false);
+      }
+    }
+    for (const outcome of [await exerciseComposed(returning({ outcome: 'unconfirmed', providerRef: 'job-9' }, 'direct')), await exerciseThrough(routed(returning({ outcome: 'unconfirmed', providerRef: 'job-9' })))]) {
+      assert.equal(outcome.status, 'execution-unconfirmed');
+      assert.equal(outcome.status === 'execution-unconfirmed' ? outcome.providerRef : undefined, 'job-9');
+    }
   });
 
   it('a hostile getter on outcome or detail throws inside the caller’s catch, never through it', async () => {

@@ -175,7 +175,9 @@ Operator configuration only: a bearer token (`Authorization: Bearer …`) or one
 
 The response body is **not** read, parsed, logged or copied anywhere. The moment the final status and headers arrive, the response and request are destroyed, so nothing keeps streaming after `execute()` resolves. Completion is decided by the final status alone; no provider text can move it.
 
-`providerRef` comes only from the one configured response header: exactly one value, 1–512 printable characters. Duplicates are omitted, never joined; malformed values are omitted. It is evidence and correlation only — never a URL to follow, an authority, a grant, an adapter id or a routing instruction.
+`providerRef` comes only from the one configured response header: exactly one value, 1–512 printable ASCII characters, and accepted by the execution runtime's provider-neutral `isRecordableProviderRef` (no bearer or basic credential, JWT, PEM block, URL, cookie pair or authorization header, so a redirect `Location` copied into the header is never a reference). Duplicates are omitted, never joined; malformed or unsafe values are omitted. It is evidence and correlation only — never a URL to follow, an authority, a grant, an adapter id or a routing instruction.
+
+**P11: kept on every actual response.** Since P11 the reference is kept whenever the provider actually answered with a final status — on a completion, on a definitive rejection (`failed / PROVIDER_REJECTED`) and on an unconfirmed `202` / `3xx` / `408` / `5xx`, where it is the handle a later reconciliation needs. The status alone still decides the outcome, and the reference never moves it. When no response exists (nothing was built, DNS failed, the connection or TLS failed before transmission, or the connection was lost after the send), no reference is fabricated. The governed-action path records it durably in the execution outcome store (`ADR-DURABLE-MONETARY-OUTCOMES.md`). On the v1 wire it remains a field of `executed` only.
 
 **`providerRef` is untrusted provider-controlled input.** A provider can echo what it received — including the credential this adapter sent — into the reference header, and the reference is copied outward into the governed-action result. So the adapter keeps, internally and snapshotted at composition, the literal secrets its credential puts on the wire (for a bearer credential both the raw token and `Bearer <token>`; for a header credential the exact configured value), and a reference candidate that **contains** any of them — exact, case-sensitive substring match — is **omitted outright**: not redacted, hashed, logged, recorded or reported. The outcome is unchanged (a 200 stays `completed`, without `providerRef`). A provider therefore cannot reflect the configured secret back through `providerRef`. The guarantee is **literal** non-disclosure of the configured secret. Because a header credential may contain no SP or HTAB (§3), HTTP's own OWS stripping cannot make the value the provider receives differ from the value the filter matches. A provider that otherwise transforms or encodes the credential before echoing it is not detectable here.
 
@@ -186,8 +188,8 @@ P6 adds a third, provider-neutral adapter outcome:
 ```ts
 type ExecutionAdapterResult =
   | { outcome: 'completed'; providerRef?; adapterId? }
-  | { outcome: 'failed'; reason; detail?; adapterId? }
-  | { outcome: 'unconfirmed'; detail?; adapterId? };   // P6
+  | { outcome: 'failed'; reason; providerRef?; detail?; adapterId? }       // providerRef: P11
+  | { outcome: 'unconfirmed'; providerRef?; detail?; adapterId? };         // P6; providerRef: P11
 ```
 
 and a matching `ExecutionOutcome` status, `execution-unconfirmed` (assessment, correlation, performing `adapterId`, `routedBy` when routed, `exercisedAt`, bounded `detail`). `readExecutionAdapterResult` normalizes it — read once, primitives only, hostile getters and Proxy traps caught by the caller — and the registry overwrites its attribution from its snapshotted membership, exactly as for the other two.
@@ -211,7 +213,7 @@ None of these changes the Kernel's decision, and none means "denied".
 
 **Governed-action result.** An immediate unconfirmed outcome is the existing `status: 'execution_unconfirmed'` (HTTP 409, shape unchanged) with the new reason code `GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED`. The existing `GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED` keeps meaning "an attempt row exists and no outcome was ever recorded" (a crash between claim and outcome). The two are distinct internally and in reason codes; a caller sees the same status for both.
 
-**Ledger.** An unconfirmed outcome is recorded as the canonical `execution-unconfirmed@<adapterId>` — never overloaded onto `execution-failed`, never left as a missing row. Replay of that row returns `execution_unconfirmed` / `…_OUTCOME_UNCONFIRMED` without invoking the adapter. A malformed or tampered variant decodes as nothing: it replays as `…_ALREADY_ATTEMPTED`, never as executed or failed, and never permits a second effect. The write-ahead claim still precedes every adapter invocation; no ledger row can authorize anything.
+**Ledger.** Since P11 the canonical record of an unconfirmed outcome is the execution outcome store's initial observation (`certainty: 'unconfirmed'`, attribution, and the reference when one was returned). The Governance summary row below is written after it, pointing at it by digest. An unconfirmed outcome's summary is the canonical `execution-unconfirmed@<adapterId>` — never overloaded onto `execution-failed`, never left as a missing row. Replay of that row returns `execution_unconfirmed` / `…_OUTCOME_UNCONFIRMED` without invoking the adapter. A malformed or tampered variant decodes as nothing: it replays as `…_ALREADY_ATTEMPTED`, never as executed or failed, and never permits a second effect. The write-ahead claim still precedes every adapter invocation; no ledger row can authorize anything.
 
 ## 12. Exactly-once: what P6 does and does not provide
 

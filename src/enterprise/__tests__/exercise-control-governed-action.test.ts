@@ -28,7 +28,7 @@ import { executionOutcomeReferenceId } from '../governed-action/identifiers.js';
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
-import { ALLOWED_INTENT, IDENTITY, NOW, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID, EVALUATED_AT_POLICY, buildGovernedWorld } from './governed-action-support.js';
+import { ALLOWED_INTENT, IDENTITY, NOW, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID, EVALUATED_AT_POLICY, buildGovernedWorld, preP11History } from './governed-action-support.js';
 import { buildTestKernelProviders } from './support.js';
 
 /**
@@ -182,6 +182,8 @@ describe('P7 governed action — §49 public mapping and evidence', () => {
 describe('P7 governed action — §13 evidence rows stay closed per layer', () => {
   async function replayOf(row: string, key: string) {
     const governed = buildGovernedWorld({
+      // Legacy rows are forged below: model history written before P11, which has no P11 record.
+      executionOutcomes: preP11History(),
       beforeExercise: async () => {
         throw new Error('the exercise port is unreachable');
       },

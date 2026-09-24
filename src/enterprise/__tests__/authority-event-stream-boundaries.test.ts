@@ -211,7 +211,10 @@ describe('P8 boundaries — §32 the event stream cannot authorize', () => {
       'claim = await ledger.claim(',
       'recorder.executionClaimed(',
       'outcome = await execution.exercise(exercise)',
-      'const outcomeRecorded = await ledger.recordOutcome(',
+      // P11: the canonical initial observation commits first, then its
+      // Governance summary, and only then is the evidence event reported.
+      'await executionOutcomes.recordTerminal(',
+      'await ledger.recordOutcome(',
       'recorder.executionOutcomeObserved(',
     ].map((needle) => orchestrator.indexOf(needle));
     for (const index of order) assert.notEqual(index, -1);

@@ -1,4 +1,4 @@
-import { EXECUTION_FAILURE_REASONS, type ExecutionAdapter, type ExecutionAdapterResult, type ValidatedExecutionAction } from '../../../features/execution-runtime/index.js';
+import { EXECUTION_FAILURE_REASONS, isRecordableProviderRef, type ExecutionAdapter, type ExecutionAdapterResult, type ValidatedExecutionAction } from '../../../features/execution-runtime/index.js';
 import { GENERIC_HTTP_LIMITS as LIMITS, type EnterpriseGenericHttpExecutionAdapterOptions } from './contracts.js';
 import { snapshotGenericHttpOptions, type GenericHttpPlan } from './configuration.js';
 import { NODE_GENERIC_HTTP_RUNTIME, type GenericHttpNetworkRuntime, type GenericHttpTransportObservation } from './node-https-transport.js';
@@ -42,6 +42,10 @@ import { mapGenericHttpRequest } from './request-mapper.js';
  * | 408, 5xx, or any other non-classifiable status | `unconfirmed` |
  * | other 4xx | `failed` / `PROVIDER_REJECTED` |
  *
+ * A safe configured `providerRefHeader` value is kept on every row that has a
+ * final status — completed, rejected and unconfirmed alike — and on no row
+ * without one. It is a correlation handle and never changes the row.
+ *
  * `PROVIDER_UNAVAILABLE` means *proven not to have reached the provider*. A
  * provider that answered 500 may have committed the effect first, so 500 is
  * `unconfirmed`, never "unavailable". Every `detail` is a fixed phrase: no DNS
@@ -58,11 +62,15 @@ const DETAIL = Object.freeze({
   rejected: 'Generic HTTP provider rejected the request.',
 });
 
-const PROVIDER_REF_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
-
 /**
  * Exactly one bounded, printable value — or nothing. Duplicates are omitted,
  * never joined.
+ *
+ * The provider-neutral rule is the execution runtime's `isRecordableProviderRef`
+ * (bounded printable ASCII, and shaped like no bearer or basic credential, JWT,
+ * PEM block, URL, cookie or authorization header — so a redirect `Location`
+ * copied into the header is never a reference). This adapter adds what only it
+ * can check: the configured credential.
  *
  * The value is **untrusted provider-controlled input**. A provider can echo
  * whatever it received — including the credential this adapter sent — into the
@@ -76,7 +84,7 @@ const PROVIDER_REF_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
 function providerRefFrom(values: readonly string[], credentialSecrets: readonly string[]): string | undefined {
   if (values.length !== 1) return undefined;
   const value = values[0];
-  if (value === undefined || value.length === 0 || value.length > LIMITS.maxProviderRefLength || !PROVIDER_REF_VALUE.test(value)) return undefined;
+  if (value === undefined || value.length > LIMITS.maxProviderRefLength || !isRecordableProviderRef(value)) return undefined;
   if (credentialSecrets.some((secret) => secret.length > 0 && value.includes(secret))) return undefined;
   return value;
 }
@@ -113,10 +121,16 @@ function fromObservation(observation: GenericHttpTransportObservation, credentia
     case 'unconfirmed':
       return { outcome: 'unconfirmed', detail: DETAIL.unconfirmed };
     case 'response': {
+      // A final status arrived, so the provider genuinely answered, and the
+      // configured reference header — when it holds one safe value — is kept on
+      // whatever the status means: a completion, a definitive rejection, or an
+      // unconfirmed 202 / 3xx / 408 / 5xx, where it is the handle a later
+      // reconciliation needs. The status alone decides the outcome; the
+      // reference never moves it. Every arm above this one — nothing sent, or
+      // nothing heard back — has no response and therefore no reference.
       const classified = classifyGenericHttpStatus(observation.status);
-      if (classified.outcome !== 'completed') return classified;
       const providerRef = providerRefFrom(observation.providerRefValues, credentialSecrets);
-      return providerRef !== undefined ? { outcome: 'completed', providerRef } : { outcome: 'completed' };
+      return providerRef !== undefined ? { ...classified, providerRef } : classified;
     }
   }
 }

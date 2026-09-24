@@ -66,6 +66,17 @@ nothing here claims system-wide coverage.
 `providerRef` is evidence and correlation only — never dereferenced, never
 executable, never proof that anything executed.
 
+**P11.** The canonical durable record of an execution's outcome is the
+**execution outcome store** (`ADR-DURABLE-MONETARY-OUTCOMES.md`), not this
+stream. The event is enqueued only after the P11 initial observation was
+attempted and its Governance summary written, and `outcomeRecorded` now means
+"the canonical P11 observation is durable". The event payload is unchanged: it
+still carries `providerRef` on `executed` only. The references P11 keeps for
+failed and unconfirmed effects live in the outcome store, not here. The stream
+is still never read to replay, reconstruct or reconcile an outcome, and a
+projection that fails, rejects or never settles leaves the P11 record, the
+result and the replay exactly as they are.
+
 ### Typical streams
 
 ```

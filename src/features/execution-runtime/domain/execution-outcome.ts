@@ -32,7 +32,7 @@ export type ExecutionOutcome =
       readonly status: 'executed';
       readonly assessment: BoundedGrantExerciseAssessment;
       readonly correlation: ValidatedExecutionCorrelation;
-      /** The adapter's provider-neutral handle on what it did, when it supplied one. */
+      /** The adapter's provider-neutral handle on what it did, when it supplied a recordable one. A handle, never proof. */
       readonly providerRef?: string;
       /**
        * The adapter that **performed** the effect.
@@ -140,6 +140,8 @@ export type ExecutionOutcome =
       /** The composite that selected it, present only when routing occurred. */
       readonly routedBy?: string;
       readonly reason: ExecutionFailureReason;
+      /** The provider's opaque reference for the request it refused, when it supplied a recordable one. It does not make the failure any less definitive. */
+      readonly providerRef?: string;
       readonly detail?: string;
       readonly exercisedAt: string;
     }
@@ -166,6 +168,13 @@ export type ExecutionOutcome =
       readonly adapterId: string;
       /** The composite that selected it, present only when routing occurred. */
       readonly routedBy?: string;
+      /**
+       * The provider's opaque reference — a job id on a `202 Accepted`, a
+       * request id on a `5xx` — when it supplied a recordable one. It leaves
+       * the effect exactly as unconfirmed as it was; it is the handle a later
+       * reconciliation can ask about, and nothing here asks.
+       */
+      readonly providerRef?: string;
       /** A bounded, static phrase the adapter chose. Never a provider body, never a secret. */
       readonly detail?: string;
       readonly exercisedAt: string;

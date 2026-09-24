@@ -158,7 +158,12 @@ export const GOVERNED_ACTION_REASON_CODES = {
   GOVERNED_ACTION_AUTHORIZATION_EVIDENCE_FAILED: 'GOVERNED_ACTION_AUTHORIZATION_EVIDENCE_FAILED',
   /** The write-ahead execution record could not be appended. The adapter was not invoked. */
   GOVERNED_ACTION_EXECUTION_CLAIM_FAILED: 'GOVERNED_ACTION_EXECUTION_CLAIM_FAILED',
-  /** This execution identity was already attempted and its outcome is not on record. The adapter is not invoked again; the attempt needs reconciliation. */
+  /**
+   * This execution identity was already attempted and no initial outcome can be
+   * established for it — none was recorded (a crash between the write-ahead
+   * claim and the observation), or the record cannot be read or verified. The
+   * adapter is not invoked again; the attempt needs reconciliation (P12).
+   */
   GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED: 'GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED',
   /**
    * The adapter ran and **reported** that the provider was contacted but the
@@ -170,7 +175,7 @@ export const GOVERNED_ACTION_REASON_CODES = {
    * reconciliation, which nothing in Frontera performs.
    */
   GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED: 'GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED',
-  /** The adapter ran, but the outcome record could not be appended. Reported beside the outcome — never instead of it. */
+  /** The adapter ran, but its canonical durable outcome (the P11 initial observation) could not be recorded. Reported beside the outcome — never instead of it; a later replay reports the attempt as `…_ALREADY_ATTEMPTED`. */
   GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED: 'GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED',
 } as const;
 

@@ -12,6 +12,16 @@ import { authorizationReferenceId, executionAttemptReferenceId, executionOutcome
  * it, and what that attempt did.
  *
  * Every row is a Governance Store reference — **evidence, never authority**.
+ *
+ * ## Since P11
+ *
+ * The `attempt` row is unchanged: the write-ahead claim, and the only
+ * at-most-once guard. The outcome row is no longer the canonical durable
+ * outcome of a new execution — the execution outcome store holds that, with
+ * its exact amount, certainty, attribution and provider reference — and is
+ * written only after the canonical observation committed, as its compact
+ * summary. For executions recorded before P11, which have no canonical record,
+ * this row remains exactly what replay reads.
  * The one behavioural use of a row is negative: an existing `attempt` row for
  * an execution identity *prevents* a second adapter invocation. Nothing here
  * can permit one; the exercise gate reads the authoritative bounded-grant
@@ -191,8 +201,18 @@ export interface ExecutionLedger {
   prior(record: GovernanceRecord, executionId: string): PriorExecution;
   /** The write-ahead claim, BEFORE the adapter. Throws when the claim cannot be proven either way — the caller must not invoke the adapter. */
   claim(evaluationId: string, executionId: string): Promise<ExecutionClaim>;
-  /** Record the outcome. Returns `false` when it could not be written; the outcome itself is never rewritten. */
-  recordOutcome(evaluationId: string, executionId: string, outcome: ExecutionOutcome): Promise<boolean>;
+  /**
+   * Record the outcome **summary**. Returns `false` when it could not be
+   * written; the outcome itself is never rewritten.
+   *
+   * Since P11 this row is the compact evidence summary of the canonical
+   * durable observation in the execution outcome store, written only after
+   * that observation committed, and its `digest` is that observation's
+   * digest — so governance evidence can never claim a terminal outcome the
+   * canonical store does not hold. Rows written before P11 carry no digest and
+   * remain the replay source for their executions.
+   */
+  recordOutcome(evaluationId: string, executionId: string, outcome: ExecutionOutcome, observationDigest: string): Promise<boolean>;
 }
 
 export function createExecutionLedger(store: GovernanceStore, accessContext: GovernanceStoreAccessContext, now: () => string): ExecutionLedger {
@@ -268,7 +288,7 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
       return { kind: 'already-claimed', prior: latest === null ? { attempted: true } : prior(latest, executionId) };
     },
 
-    async recordOutcome(evaluationId, executionId, outcome) {
+    async recordOutcome(evaluationId, executionId, outcome, observationDigest) {
       const recordedAs =
         outcome.status === 'executed'
           ? withAdapter('executed', outcome.adapterId)
@@ -292,6 +312,7 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
           referenceType: 'execution_record',
           externalId: executionId,
           externalVersion: recordedAs,
+          digest: observationDigest,
           createdAt: now(),
         });
         return true;

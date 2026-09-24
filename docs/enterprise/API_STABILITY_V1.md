@@ -307,6 +307,32 @@ an in-process `AocEnterprise.governAction` call handing over an already-parsed
 JavaScript number, for which no source text exists — is refused. The frozen
 surface stays 28 endpoints.
 
+**P11 (unreleased) adds no endpoint, no request field, no response field, no
+status, no reason code and no `withheldBy` value.** Every governed execution's
+exact context and initial provider observation become durable in an internal
+execution outcome store (`docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md`),
+readable only by trusted in-process code through `AocEnterprise.executionOutcomes`.
+Three wire-visible consequences follow, all inside the existing contract:
+
+- A **replayed** `executed` result now carries the `providerRef` its original
+  observation recorded, through the existing optional field. Before P11,
+  replay omitted it.
+- `outcomeRecorded` keeps its shape. It now means the canonical outcome
+  observation is durable, so a lost Governance summary row alone no longer
+  reports `false`. A replay whose canonical record cannot be read or verified is
+  the existing `execution_unconfirmed` / `GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED`.
+  A preparation that cannot be written before the claim is the existing
+  `system_error` / `GOVERNED_ACTION_EXECUTION_CLAIM_FAILED`.
+- `providerRef`, `providerStatus`, `providerCertainty`, `certainty`,
+  `executionOutcome`, `executionStatus` and `outcomeRecorded` join the reserved
+  `assertedContext` keys (`400` `rejected` / `GOVERNED_ACTION_INTENT_INVALID`). A
+  caller can never report a provider result.
+
+A `providerRef` shaped like a credential, JWT, PEM block, URL, cookie or
+authorization header is no longer returned: it is omitted, and the status is
+unchanged. `execution_failed` and `execution_unconfirmed` keep their v1 shapes.
+The references P11 keeps for them are internal. The SDK needs no change.
+
 **Mounting (capability-gated).** The route exists only when the Host composes
 **both** `customerIdentityAdmission` and `governedActionOrchestrator`. Otherwise
 it behaves exactly like an unmounted route: `404 NOT_FOUND`, no fallback.
