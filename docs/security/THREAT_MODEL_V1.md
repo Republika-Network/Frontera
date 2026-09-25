@@ -191,11 +191,27 @@ Each persisted grant and revocation now carries a detached **Ed25519** signature
 | **Private signing key theft** | **NOT ADDRESSED** | The key is resident in application process memory, loaded from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`. AA-001, asset A-32. External key custody — **deferred** |
 | **Process compromise** | **NOT ADDRESSED** | Implies the above. Cryptography does not help here |
 | **Trusted key registry replacement** | **NOT ADDRESSED** | Configuration is a trusted input; whoever writes it decides what is believed. AA-002, asset A-33 |
-| **Snapshot rollback** | **NOT ADDRESSED** | Every artifact in an older snapshot is validly signed, revocations included. Signatures authenticate, they do not timestamp. GS-002 / AA-003 — unchanged, and §7.17's rollback row still applies |
+| **Snapshot rollback** | **NOT ADDRESSED** (narrowed by CORE-01, §7.16c) | Every artifact in an older snapshot is validly signed, revocations included. Signatures authenticate, they do not timestamp. GS-002 / AA-003, and §7.17's rollback row still applies |
 | **A malicious but authorized signer** | **NOT ADDRESSED** | A holder of a trusted key can mint authority that is, by construction, authentic. Authenticity is not authorization |
 | Signer unavailable during **revocation** | **PARTIALLY BLOCKED** | Fails closed and loudly, but the revocation is not recorded and the grant stays exercisable. A genuine availability/security tradeoff, recorded as AA-004 rather than hidden |
 
 **Conditional on configuration, and narrower than it sounds.** This covers the **durable** bounded-grant store only. The in-memory store is unsigned — its integrity is the process's integrity, which is the honest ceiling for a medium inside the trust boundary. No other authority artifact in the repository is covered: Agent Passport still signs with HMAC, where verification and minting are the same capability, and §8's accepted risks about that are unchanged.
+
+### 7.16c Bounded-grant revocation-state integrity (added by CORE-01)
+
+Scoped to the same store. Canonical detail: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §26; invariants SEC-INV-124 and SEC-INV-125.
+
+**The resolved attack (MASTER-00 finding, reproduced by CORE-01 before the fix).**
+
+| | |
+|---|---|
+| **Attacker capability** | Can open the bounded-grant SQLite file and run any SQL: drop triggers, update, delete and insert rows, recompute any unkeyed digest. Cannot sign under a trusted authority key, change code, change the trusted-key configuration, or control the process |
+| **Attack steps** | 1. A grant is issued and signed. 2. A signed revocation is recorded; the grant reads revoked. 3. The attacker deletes the `bounded_grant_revocations` row. 4. The attacker sets `bounded_grants.revocation_digest = NULL`. No unkeyed digest needs recomputing: the grant row is now byte-identical to its pre-revocation state |
+| **Previous behaviour** | The authoritative read returned the grant as live, and `GrantExecutionService.exercise` returned `executed` with the adapter called once (`revocation-state-integrity.test.ts`, run against `a0a0e3b`) |
+| **New behaviour** | Every authoritative read first verifies a signed revocation-state commitment `{storeId, sequence, revocationSetDigest}` and checks the revocation rows present are exactly the ones it covers. The deletion leaves rows the signed commitment does not describe → `BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT`; the exercise path withholds and the adapter is not called. Rewriting the commitment's unkeyed fields fails its signature; splicing another store's genuine commitment fails the store binding on the grant signature; re-signing with an untrusted key fails as an unknown key |
+| **Residual risk** | **Full historical rollback.** A writer who captured the complete earlier signed state (commitment and rows) and restores it is detected by a process that already verified the newer state, but **not** across a restart: using the file alone, "never revoked" and "restored to before the revocation" look the same. Old commitment bytes may also survive in SQLite WAL frames or free pages. → **CORE-07** (external freshness / anchoring). Also unchanged: key theft / process compromise (AA-001 → CORE-02), key-configuration control (AA-002), and a malicious in-process host, which can bypass the composition check (SEC-INV-125 boundary). New but intended: tampering with revocation state makes every read refuse, a fail-closed denial of service (AA-007) |
+
+**Composition downgrade.** A Host configured for durable persistence now refuses a host-supplied grant store that is not the authenticated durable store (the in-memory store, a shape-compatible object, or a wrapper), with `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED`. This guards composition mistakes, not a malicious host.
 
 ### 7.17 Automated backup/restore tooling (`backup:v1`/`restore:v1`)
 
