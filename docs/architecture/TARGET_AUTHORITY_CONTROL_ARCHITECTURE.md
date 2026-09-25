@@ -1,5 +1,10 @@
 # Target Architecture: Frontera as an Authority-Control Platform
 
+> **Historical — superseded as active roadmap (MASTER-00, 2026-09-25).** The layer model (A–G)
+> remains the architectural reference for the CORE track. The §8 "Phase 0–12" sequence and the
+> "no implementation has been performed" status are no longer current. The authoritative baseline,
+> roadmap and milestones are in `docs/architecture/FRONTERA-MASTER-PLAN.md`. Preserved for provenance.
+
 - Status: proposed — **no implementation has been performed**
 - Prerequisite reading: `CURRENT_STATE_AUTHORITY_CONTROL.md`
 - Decided by: `ADR-AUTHORITY-CONTROL-LAYERING.md`,

@@ -482,7 +482,7 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | J | Replace the trusted public key config | **NOT ADDRESSED** | config is a trusted input; an attacker who controls it controls trust. AA-002 |
 | K | Steal the private signing key | **NOT ADDRESSED** | cryptography cannot help. AA-001 → external key custody (deferred) |
 | L | Read the private key from process memory | **NOT ADDRESSED** | it is resident there. AA-001 → external key custody (deferred) |
-| M | DB-only write access | **BLOCKED** | the central test |
+| M | DB-only write access | **BLOCKED — except un-revocation (see MASTER-00 correction below)** | the central test |
 | N | DB + config write access | **NOT ADDRESSED** | equivalent to J + M |
 | O | An old signing key is compromised | **PARTIALLY BLOCKED** | remove it from the verification set; artifacts it signed become unreadable (§13.1). No per-key revocation list |
 | P | Rotation removes a historical verifier too early | **DEPLOYMENT-DEPENDENT** | fails closed (unreadable), never open. Documented, tested |
@@ -496,6 +496,13 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | X | Signing failure during issuance | **BLOCKED** | no grant, no row |
 | Y | Signing failure during revocation | **PARTIALLY BLOCKED** | fails closed but withholds the revocation. AA-004, §19.2 |
 | Z | Signer latency racing commitGuard | **BLOCKED** | guard runs after signing, inside the transaction, before commit. §14.1 |
+
+> **MASTER-00 correction (2026-09-25).** Threat M is not fully blocked. The grant row's
+> `revocation_digest` pointer is not covered by any signature, so a database-only writer who deletes
+> the `bounded_grant_revocations` row **and** sets `bounded_grants.revocation_digest = NULL` makes a
+> revoked grant read as live (`currentRevocation`, `sqlite-bounded-grant-store.ts`). The durability
+> tests exercise each half of that tamper separately, never together. Tracked as **CORE-01** in
+> `docs/architecture/FRONTERA-MASTER-PLAN.md`; the GS-001 row in §22 is qualified the same way.
 
 ## 21. Residual Risks
 
@@ -518,7 +525,7 @@ AA-001 … AA-006 above. Each is supported by the implementation, not anticipate
 
 | ID | Was | Now |
 |---|---|---|
-| **GS-001** — a privileged writer can re-seal unkeyed digests | OPEN | **CLOSED for a database-only writer.** A writer with write access to the database file, and no access to a signing key, can no longer produce usable authority — proven by the central test. **Still open** for a writer who also holds the signing key or can write the key configuration (AA-001, AA-002) |
+| **GS-001** — a privileged writer can re-seal unkeyed digests | OPEN | **CLOSED for a database-only writer, except un-revocation (MASTER-00 correction above; CORE-01).** A writer with write access to the database file, and no access to a signing key, can no longer produce usable authority — proven by the central test. **Still open** for a writer who also holds the signing key or can write the key configuration (AA-001, AA-002) |
 | **GS-002** — snapshot rollback can restore revoked authority | OPEN | **STILL OPEN — NOT ADDRESSED.** Signatures authenticate, they do not timestamp. Restated as AA-003 |
 | **GS-003** — durable store available but not default | OPEN | unchanged; Prompt 17 |
 | **GS-004** — revocation records carried no integrity | CLOSED (integrity) | now also **authenticated**, at the same strength as grants |
