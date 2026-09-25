@@ -3,7 +3,8 @@
 - Status: canonical. This is the authoritative statement of how bounded grants and their revocations are persisted, what that persistence guarantees, and where the guarantee stops.
 - Established by: Security & Containment Architecture track, **Prompt 4**.
 - Owns: **NB-009**.
-- Companion documents: `NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` (canonical: the effect-path inventory and the no-bypass proof this store is the root of), `SECURITY_INVARIANTS.md` (canonical: what Frontera claims), `TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md`, `THREAT_MODEL_V1.md`, `SECURITY_CONTAINMENT_BASELINE_AUDIT.md`.
+- Companion documents: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` (canonical: **Prompt 5** — the cryptographic authenticity attached beside the digests described here; read it for anything about signatures, keys or rotation), `NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` (canonical: the effect-path inventory and the no-bypass proof this store is the root of), `SECURITY_INVARIANTS.md` (canonical: what Frontera claims), `TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md`, `THREAT_MODEL_V1.md`, `SECURITY_CONTAINMENT_BASELINE_AUDIT.md`.
+- **Amended by Prompt 5.** The schema is now `aoc.bounded-grant-store.schema.v2` and both tables carry four `NOT NULL` signature columns. This document's persistence *semantics* are unchanged — the amendments are marked inline and confined to §8, §9, §10.3, §20 and §22.
 - Implementation: `src/enterprise/bounded-grant-store/`, `src/features/grant-runtime/domain/grant-store-port.ts`, `src/features/grant-runtime/services/in-memory-bounded-grant-store.ts`.
 
 ---
@@ -114,7 +115,7 @@ Classification vocabulary: **BLOCKED** (the store prevents it), **PARTIALLY BLOC
 | E | Database / file corruption | PARTIALLY BLOCKED | Detected on every authoritative read (record digest, artifact digest, canonical round-trip, schema version) and refused. **Detection, not prevention**: the store cannot stop the bytes from being changed |
 | F | Manual row modification by an operator | PARTIALLY BLOCKED | Same as E. A casual edit is caught. See G/H for the difference that matters |
 | G | Attacker modifies a grant but **not** its digest | BLOCKED | `verifiedGrant` refuses. Tested: `grant-corrupt`, `grant-noncanonical`, `revocation-corrupt`, `revocation-vocabulary` |
-| H | Attacker modifies a grant **and recomputes the unkeyed digest** | **NOT ADDRESSED** | The digest is unkeyed by design. A writer who can re-seal defeats every integrity check here. This is SEC-TRUST-002, GS-001, and **Prompt 5's** problem, not this one's |
+| H | Attacker modifies a grant **and recomputes the unkeyed digest** | **NOT ADDRESSED HERE — BLOCKED BY PROMPT 5** | The digest is unkeyed by design, so a writer who can re-seal defeats every integrity check *in this document*. Prompt 5 attached a detached signature beside each digest: a database-only writer who recomputes every unkeyed digest can no longer produce usable authority (`AUTHORITY_ARTIFACT_AUTHENTICITY.md` §20 row C). Still not addressed for a writer who also holds the signing key (AA-001) |
 | I | Attacker **deletes** the revocation row | BLOCKED (as a partial write) | The grant row still references it. The mismatch is inconsistent authority state and the read **refuses** — the grant becomes unreadable rather than exercisable. Tested: `revocation-deleted` |
 | J | Attacker clears the grant's reference but leaves the revocation row | BLOCKED | Symmetric to I. Tested: `pointer-cleared` |
 | K | Attacker deletes the **grant** row | BLOCKED (fails closed) | No grant → `GRANT_EXERCISE_NOT_FOUND` → no adapter call. Deleting a grant only removes authority. With the revocation row orphaned, the read refuses outright. Tested: `orphan-revocation` |
@@ -211,7 +212,14 @@ CREATE TABLE bounded_grants (
   grant_digest      TEXT NOT NULL,   -- sha256: over the record envelope
   revocation_digest TEXT,            -- NULL until revoked; see §9
   committed_at      TEXT NOT NULL,   -- bookkeeping; no decision reads it
-  schema_version    TEXT NOT NULL
+  schema_version    TEXT NOT NULL,
+  -- Prompt 5. NOT NULL, so the database itself refuses to hold an unsigned
+  -- authority row: "forgot to sign" is a write that fails, not a row that
+  -- reads as authority.
+  signature_algorithm TEXT NOT NULL,
+  signing_key_id      TEXT NOT NULL,  -- a CLAIM, resolved against trusted config
+  signature           TEXT NOT NULL,  -- base64url Ed25519, detached
+  signature_version   TEXT NOT NULL
 );
 ```
 
@@ -231,11 +239,18 @@ CREATE TABLE bounded_grant_revocations (
   issuer_ref        TEXT NOT NULL,
   revocation_digest TEXT NOT NULL,
   committed_at      TEXT NOT NULL,
-  schema_version    TEXT NOT NULL
+  schema_version    TEXT NOT NULL,
+  -- Prompt 5. Identical shape and identical strength to the grant's.
+  signature_algorithm TEXT NOT NULL,
+  signing_key_id      TEXT NOT NULL,
+  signature           TEXT NOT NULL,
+  signature_version   TEXT NOT NULL
 );
 ```
 
-**A revocation is authority state, not audit metadata**, and the schema says so three times: `NOT NULL` on its digest, `PRIMARY KEY` on the grant id, and a foreign key to the grant it governs.
+**A revocation is authority state, not audit metadata**, and the schema says so four times: `NOT NULL` on its digest, `PRIMARY KEY` on the grant id, a foreign key to the grant it governs, and — since Prompt 5 — a signature at the same strength as the grant's. A deployment where the grant is signed and the revocation is not would make the revocation the cheaper record to forge, and forging a revocation *away* is how authority comes back.
+
+**Schema version.** Adding these columns took the store from `aoc.bounded-grant-store.schema.v1` to `.v2`. A v1 database is **refused at open** by the existing version guard, which runs before `CREATE TABLE IF NOT EXISTS` and so does not mutate what it refuses. Unsigned rows are never reinterpreted as signed, and are never auto-signed under the current key — see `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §18 for why that migration must never be automatic.
 
 ### 9.1 The two-record cross-check
 
@@ -264,6 +279,8 @@ A grant does **not** become exercisable because a revocation record cannot be pa
 | Layer | Mechanism | Verified |
 |---|---|---|
 | Record envelope (grant) | `storedGrantRecordDigest` — unkeyed SHA-256 over format + id + schema version + canonical grant | On **every** authoritative read |
+| **Signature (grant)** | **Ed25519 over the domain-separated record envelope, against the trusted key registry (Prompt 5, §10.3)** | **On every authoritative read** |
+| **Signature (revocation)** | **Ed25519 under a distinct signing domain (Prompt 5, §10.3)** | **On every authoritative read** |
 | Artifact (grant) | `boundedGrantDigestMatches` — the grant's own `digest` field | On every authoritative read **and** again at assessment |
 | Canonical form (grant) | `serializeBoundedGrant(parsed) === grant_json` | On every authoritative read |
 | Identity (grant) | `grant.id === row.grant_id` | On every authoritative read |
@@ -281,11 +298,28 @@ The envelope digest and the artifact digest are both checked because they detect
 - These digests are **unkeyed**. Anyone who can write a record can recompute its digest.
 - They are **not signatures**. They carry no non-repudiation and no independent verifiability.
 - They prove nothing about *who* wrote a record.
-- Nothing about this store may be described as tamper-proof.
+- Nothing about *these digests* may be described as tamper-proof.
 
-What they do prove: a record whose bytes differ from the bytes that were digested is detected and refused, rather than used. That is real and it is worth having — it is also the ceiling.
+What they do prove: a record whose bytes differ from the bytes that were digested is detected and refused, rather than used. That is real and it is worth having — it is also the ceiling of an unkeyed mechanism.
 
-The attachment point for Prompt 5 is already precise: a detached signature over `serializeStoredGrantRecord`'s and `serializeStoredRevocationRecord`'s output, in a column beside each record. §23.
+### 10.3 What Prompt 5 added beside them
+
+Prompt 5 attached the key boundary at exactly the point this section anticipated. Each persisted record now also carries a **detached Ed25519 signature** over the same canonical bytes (`serializeStoredGrantRecord` / `serializeStoredRevocationRecord`), under an artifact-specific signing domain, in four columns beside each digest — verified inside `verifiedGrant`, `verifiedRevocation` and `currentRevocation`, the three call sites named in §23.
+
+The two mechanisms are **both** retained, and in this order: digests first, signature second.
+
+| | Unkeyed digest | Signature |
+|---|---|---|
+| Detects | corruption, partial writes, casual mutation | a writer who recomputed the digests |
+| Needs a key to check | no | public key only |
+| Proves who wrote it | no | yes — a trusted authority key vouched for these bytes |
+| Failure code | `BOUNDED_GRANT_STORE_STATE_CORRUPT` | `BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED` |
+
+Digests are checked first deliberately: they are cheap, need no key, and distinguish "the disk moved" from "no trusted key vouches for this" — two conditions that call for opposite operator responses.
+
+**The verifier holds public material only**, so the reading path can check authority it cannot mint. The signing key is reached only from `issue` and `revoke`.
+
+The scope of the claim has not widened: this is the **durable** store. And the signing key is, in this release, **resident in application process memory** — so "a writer who can re-seal defeats every check" is now false only for a writer who cannot reach that key. See `AUTHORITY_ARTIFACT_AUTHENTICITY.md`, particularly §21 (AA-001) and §24.
 
 ## 11. Transaction Semantics
 
@@ -468,6 +502,7 @@ Owners: **Prompt 5** may strengthen authenticity in a way that makes an external
 - **Existing mitigation:** casual and accidental mutation is detected and refused; the canonical round-trip closes normalization; the two-record cross-check closes partial deletion.
 - **Remediation in this prompt:** integrity extended to revocations, verified on every authoritative read, fail-closed, no silent repair. **The keying gap is not closed.**
 - **Residual risk:** R-GS-01. **Future owner: Prompt 5.**
+- **Disposition after Prompt 5: CLOSED for a database-only writer.** A detached Ed25519 signature over the same canonical bytes is verified on every authoritative read against a composition-supplied trusted public key. A writer with write access to the database file, and no access to a signing key, can alter a record and recompute every unkeyed digest and still produce nothing the read path will return — proven by the central test in `authority-artifact-authenticity.test.ts`. **Still OPEN** for a writer who also holds the signing key or can rewrite the key configuration: the key is process-resident in this release (AA-001) and the registry is deployment-controlled (AA-002). See `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §22.
 
 ### GS-002 — Snapshot rollback can restore revoked authority
 
@@ -477,6 +512,7 @@ Owners: **Prompt 5** may strengthen authenticity in a way that makes an external
 - **Existing mitigation:** none in code. Operational only.
 - **Remediation in this prompt:** **none.** Documented honestly rather than papered over.
 - **Residual risk:** R-GS-02. **Future owner: Prompt 5 (anchor) / Prompt 17 (restore governance).**
+- **Disposition after Prompt 5: STILL OPEN — NOT ADDRESSED.** Signatures authenticate, they do not timestamp. Every artifact in a restored snapshot is validly signed, including grants whose revocations were rolled back with them, so a signature check passes exactly as a digest check did. Restated as AA-003. No anchor was added; none is claimed.
 
 ### GS-003 — The durable store is available but is not the default for every deployment
 
@@ -527,8 +563,8 @@ Every one of claims 1–5 is PATH-LOCAL to bounded-grant exercise, issuance and 
 
 | Claim | Why it is false or unproven |
 |---|---|
-| "The grant store is tamper-proof." | The digests are unkeyed. A writer who can re-seal defeats every check (GS-001) |
-| "Grants are cryptographically signed / authenticated." | There is no signature anywhere in `src/`. SEC-INV-U01 remains ASPIRATIONAL-UNIMPLEMENTED |
+| "The grant store is tamper-proof." | Still false. Prompt 5 blocks a *database-only* writer; an attacker holding the signing key or the key configuration forges freely (AA-001, AA-002) |
+| "Grants are cryptographically signed / authenticated." | **True as of Prompt 5, for the durable store only** — `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §23. It was false when this document was written, and it remains false for the in-memory store and for every other authority artifact in the repository. SEC-INV-U01 is now PARTIALLY IMPLEMENTED, not satisfied: the signing key is process-readable |
 | "A privileged host or DBA cannot modify authority." | They can. D-GS1, D-GS3, R-GS-03, R-GS-04 |
 | "Rollback of an old database snapshot cannot restore old authority." | It can. §17, GS-002. **Not proven, not implemented** |
 | "All Frontera authority is now durable." | False. Recognition state, approvals, capability-token revocation, the policy pack registry and `emergencyDeny` all remain in-process. Only the bounded-grant store changed |
@@ -539,6 +575,8 @@ Every one of claims 1–5 is PATH-LOCAL to bounded-grant exercise, issuance and 
 | "Digest verification is signature verification." | It is not. §10.2 |
 
 ## 23. Inputs to Prompt 5
+
+> **Consumed.** Prompt 5 is implemented; see `AUTHORITY_ARTIFACT_AUTHENTICITY.md`. The attachment point below was followed as written — a detached signature over the same two canonical serializations, in columns beside each digest, verified in the same three helpers, with no change to the control flow. The table is retained as the record of what was handed over. The row "what must **not** change about store semantics" was honoured in full and is re-verified by the 28 unmodified durability tests.
 
 **Prompt 5 — Introduce Cryptographic Authenticity for Authority Artifacts.**
 

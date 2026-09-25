@@ -10,7 +10,7 @@ import type {
 } from '../domain/index.js';
 import { GRANT_REASON_CODES, isGrantRevocationReason } from '../domain/index.js';
 
-export const BOUNDED_GRANT_STORE_SCHEMA_VERSION = 'aoc.bounded-grant-store.schema.v1';
+export const BOUNDED_GRANT_STORE_SCHEMA_VERSION = 'aoc.bounded-grant-store.schema.v2';
 
 /**
  * The authoritative grant store for the vertical slice.

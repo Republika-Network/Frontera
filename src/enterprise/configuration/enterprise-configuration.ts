@@ -110,6 +110,48 @@ export interface EnterpriseConfiguration {
     /** SQLite path for the bounded-grant store when `persistence.provider === 'sqlite'`. */
     readonly sqlitePath: string;
   };
+  /**
+   * The cryptographic authenticity boundary for authority artifacts.
+   *
+   * Read only when a host composes `authorityControlledExecution` **and** the
+   * durable bounded-grant store is selected. It is deliberately not a feature
+   * flag: there is no `enabled` field, because a boolean that switched signature
+   * verification off would be a permanent downgrade seam, and the one thing this
+   * configuration must not offer is a supported way to run durable authority
+   * unsigned. Keys are either configured, or the durable store is refused at
+   * composition. See `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §12.
+   */
+  readonly authorityAuthenticity: {
+    /** Which configured key signs new artifacts. Must also appear in `verificationKeys`, or composition refuses. */
+    readonly activeSigningKeyId: string | undefined;
+    /**
+     * PKCS#8 PEM for the active signing key. **Secret.**
+     *
+     * Redacted from `PublicEnterpriseConfiguration` exactly as `apiKeys` are,
+     * and a security test pins that it never appears there. It is also, today,
+     * a private key resident in application process memory — recorded as AA-001
+     * and owned by Prompt 6, which replaces this field with a handle to an
+     * external signing boundary.
+     */
+    readonly signingKeyPem: string | undefined;
+    /**
+     * The trusted verification set: every key whose signatures this deployment
+     * will accept, including historical keys that signed still-live artifacts.
+     *
+     * Public material, so it is safe on the public configuration surface. The
+     * set is the root of trust — an artifact naming a key id absent from here is
+     * refused, and an artifact's own claim about its key is never consulted for
+     * material. Removing an entry makes every artifact signed by it unreadable;
+     * §13 of the security document states why that is a key-trust operation and
+     * not a revocation.
+     */
+    readonly verificationKeys: readonly {
+      readonly keyId: string;
+      readonly algorithm: string;
+      /** SPKI PEM. */
+      readonly publicKeyPem: string;
+    }[];
+  };
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -122,6 +164,36 @@ export interface EnterpriseConfiguration {
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return value === '1' || value.toLowerCase() === 'true';
+}
+
+/**
+ * Parses the trusted authority verification set from its JSON environment
+ * variable.
+ *
+ * Malformed input yields an **empty** set, never a partial one. A set that
+ * silently dropped the entries it could not parse would be a deployment that
+ * believes it trusts three keys while trusting two, and the artifacts signed by
+ * the third would fail closed at exercise time rather than at startup. Empty is
+ * refused by the verifier at composition, which is where a configuration
+ * problem should surface.
+ */
+function parseAuthorityVerificationKeys(value: string | undefined): readonly { readonly keyId: string; readonly algorithm: string; readonly publicKeyPem: string }[] {
+  if (value === undefined || value.trim().length === 0) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const entries: { readonly keyId: string; readonly algorithm: string; readonly publicKeyPem: string }[] = [];
+  for (const candidate of parsed) {
+    if (typeof candidate !== 'object' || candidate === null) return [];
+    const entry = candidate as Record<string, unknown>;
+    if (typeof entry.keyId !== 'string' || typeof entry.algorithm !== 'string' || typeof entry.publicKeyPem !== 'string') return [];
+    entries.push({ keyId: entry.keyId, algorithm: entry.algorithm, publicKeyPem: entry.publicKeyPem });
+  }
+  return entries;
 }
 
 /** Parses a positive-integer millisecond timeout, falling back to `fallback` for anything missing, non-numeric, zero, or negative -- an unreasonable value is never silently allowed to disable a timeout. */
@@ -212,6 +284,11 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     boundedGrant: {
       sqlitePath: env.AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH ?? '.data/bounded-grants.sqlite',
     },
+    authorityAuthenticity: {
+      activeSigningKeyId: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID,
+      signingKeyPem: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM,
+      verificationKeys: parseAuthorityVerificationKeys(env.AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS),
+    },
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',
       required: parseBoolean(env.AOC_ENTERPRISE_ASSURANCE_REQUIRED, false),
@@ -226,12 +303,29 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
  * flags, timeouts) with `authentication.apiKeys` replaced by a non-secret
  * count and per-key organization scoping. Never carries `EnterpriseApiKey.key`.
  */
-export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authentication'> & {
+export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authentication' | 'authorityAuthenticity'> & {
   readonly authentication: {
     readonly requireAuthentication: boolean;
     readonly apiKeyCount: number;
     /** Non-secret: which configured keys are organization-scoped, in configured order. Never the key values themselves. */
     readonly apiKeyOrganizationScopes: readonly (string | undefined)[];
+  };
+  /**
+   * The authenticity boundary, minus the one field that must never leave the
+   * composition root.
+   *
+   * The signing key is **absent from this type**, not merely omitted at runtime:
+   * there is no property on the public configuration a private authority signing
+   * key could be assigned to, so a future edit that tried to pass one through
+   * would not compile. The verification keys stay — they are public material by
+   * construction, and a deployment that can see which key ids it trusts can
+   * diagnose a rotation without being handed the ability to sign.
+   */
+  readonly authorityAuthenticity: {
+    readonly activeSigningKeyId: string | undefined;
+    /** Whether a signing key is configured at all. A boolean, never the key. */
+    readonly signingKeyConfigured: boolean;
+    readonly verificationKeys: readonly { readonly keyId: string; readonly algorithm: string; readonly publicKeyPem: string }[];
   };
 };
 
@@ -243,13 +337,21 @@ export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authe
  * `composition-root.ts`'s `getInternalEnterpriseConfiguration`).
  */
 export function toPublicEnterpriseConfiguration(config: EnterpriseConfiguration): PublicEnterpriseConfiguration {
-  const { authentication, ...rest } = config;
+  // `authorityAuthenticity` is destructured out alongside `authentication` so
+  // the private signing key is removed by *construction* rather than by an
+  // overwrite that a later spread could undo.
+  const { authentication, authorityAuthenticity, ...rest } = config;
   return {
     ...rest,
     authentication: {
       requireAuthentication: config.features.requireAuthentication,
       apiKeyCount: authentication.apiKeys.length,
       apiKeyOrganizationScopes: authentication.apiKeys.map((apiKey) => apiKey.organizationId),
+    },
+    authorityAuthenticity: {
+      activeSigningKeyId: authorityAuthenticity.activeSigningKeyId,
+      signingKeyConfigured: authorityAuthenticity.signingKeyPem !== undefined,
+      verificationKeys: authorityAuthenticity.verificationKeys,
     },
   };
 }

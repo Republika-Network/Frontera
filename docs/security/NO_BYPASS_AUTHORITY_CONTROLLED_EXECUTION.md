@@ -4,8 +4,9 @@
 - Produced by: Security & Containment Architecture track, Prompt 3.
 - Base: `main` @ `ad3322a` (Prompt 0, 1, 2, 2.5 and 2.6 artifacts all present and merged).
 - Method: read from current source. Every prior prompt's effect claim was re-verified rather than assumed; four are corrected below.
-- Companion documents: `SECURITY_INVARIANTS.md` (canonical: what is guaranteed, at what scope), `TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` (canonical: trust domains, TCB, privileged assets), `AGENT_PASSPORT_WEB_THREAT_MODEL.md` (the SaaS surface), `THREAT_MODEL_V1.md`, `../../SECURITY_CONTAINMENT_BASELINE_AUDIT.md`.
+- Companion documents: `SECURITY_INVARIANTS.md` (canonical: what is guaranteed, at what scope), `TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` (canonical: trust domains, TCB, privileged assets), `AUTHORITATIVE_GRANT_STORE.md` (canonical: how the store EP-011 reads is persisted), `AUTHORITY_ARTIFACT_AUTHENTICITY.md` (canonical: the cryptographic authenticity of what that store returns), `AGENT_PASSPORT_WEB_THREAT_MODEL.md` (the SaaS surface), `THREAT_MODEL_V1.md`, `../../SECURITY_CONTAINMENT_BASELINE_AUDIT.md`.
 - Production behaviour changed by this document: **none.** Documentation and structural tests only.
+- **Unchanged by Prompts 4 and 5.** Both hardened the store EP-011 reads from; neither altered the proof, its ordering, or its scope. The single annotation those prompts earn is in §EP-011 below: the authoritative state the proof chains against is now durable, and — on the durable path — cryptographically authenticated. The classification is still **PROVEN — PATH LOCAL**, and it is still path-local for exactly the reasons it always was.
 
 ---
 
@@ -869,16 +870,18 @@ One row per effect path group. Every EP in §5 is covered.
 ### EP-011 — Bounded-grant exercise ⭐
 - **CLAIM:** no `ExecutionAdapter` is invoked unless the authoritative grant, re-read at that instant, covers the exact assessed action; every value crossing the boundary was either proven inside a bound or read from the trusted grant.
 - **EVIDENCE:** §6.2, fourteen rows. `grant-execution-service.ts:154,158,176,184-194,198`; `grant-exercise-assessment.ts:110-158`; `execution-exercise.test.ts` counts adapter invocations (`callCount === 0` on every refusal row, `=== 1` on the valid row); single-call-site checks in `security-invariants.test.ts` and, repository-wide, in `no-bypass-effect-paths.test.ts`.
-- **CLASSIFICATION:** **PROVEN — PATH LOCAL.**
-- **SCOPE:** the bounded-grant exercise path only. Not `enforce()`, not Sovereign Access, not Content Protection, not any application code calling a provider directly.
-- **EXCEPTIONS:** §6.4 — per-attempt not aggregate; adapter is trusted code; store is in-memory by default; the kill switch does not reach it.
+- **CLASSIFICATION:** **PROVEN — PATH LOCAL.** Unchanged by Prompts 4 and 5.
+- **WHAT PROMPTS 4 AND 5 CHANGED, AND WHAT THEY DID NOT:** the proof is a chain of checks against **one store**, and both prompts hardened that root without touching a link in the chain. Prompt 4 made the state durable and integrity-verified; Prompt 5 made it **cryptographically authenticated when the durable store is configured** — the authoritative read now also verifies a detached Ed25519 signature against a trusted public key before returning any authority state, and a database writer who recomputes every unkeyed digest can no longer produce a grant this path will act on. The re-read is still per-attempt, there is still no cache, the caller still supplies only an id, and the adapter is still invoked from exactly one site, after the assessment. Verification is synchronous and runs **inside** the read, so no step was added between the read that decides and the adapter call. **The claim is not widened:** this says the state the proof consumes is more trustworthy, not that more of the repository is covered.
+- **SCOPE:** the bounded-grant exercise path only. Not `enforce()`, not Sovereign Access, not Content Protection, not any application code calling a provider directly. The authenticity property above is narrower still — the **durable** store only.
+- **EXCEPTIONS:** §6.4 — per-attempt not aggregate; adapter is trusted code; store is in-memory by default; the kill switch does not reach it. And since Prompt 5: the authority signing key is resident in this process, so in-process code can still mint authority this path will accept (AA-001).
 - **BYPASS CONDITIONS:** the host's own reference to the adapter it constructed (§7.4).
 - **DEPLOYMENT ASSUMPTIONS:** D-A3, D-A4, D-A8.
 
 ### EP-012, EP-013 — Bounded-grant issuance and revocation
 - **CLAIM:** issuance checks run inside the store's commit boundary — the guard is synchronous *by type*, so no `await` can interleave between the read that decides and the write that records; any change to the authority binding between measurement and commit refuses, by **equality** rather than containment; an issued grant is equal to or narrower than the authority it derives from on every axis.
 - **EVIDENCE:** `grant-store-port.ts` `commitGuard: () => GrantCommitPrecondition`; `in-memory-bounded-grant-store.ts` critical section with no `await`; `execution-governance/service.ts:197-234`; `grantScopeIsWithin`; `grant-transaction-boundary.test.ts`, `grant-attenuation.test.ts`.
-- **CLASSIFICATION:** **PROVEN — PATH LOCAL.**
+- **CLASSIFICATION:** **PROVEN — PATH LOCAL.** Unchanged by Prompts 4 and 5.
+- **PROMPT 5 NOTE — the commit boundary survived signing.** Signing an artifact takes time, and a signer call cannot run inside a synchronous SQLite transaction. The durable store therefore signs **before** the transaction opens and still calls `commitGuard` **inside** it, after the signing, immediately before the insert — so the window the signer introduces is re-checked at its far end. The guard's type is unchanged (still synchronous, so no `await` can interleave), and a test asserts the `sign → guard` ordering directly. On revocation, a signer failure refuses rather than writing an unsigned record, which preserves "the first committed revocation stands" and adds an availability dependency recorded as AA-004.
 - **EXCEPTIONS:** `resolveAuthorityBinding` is host-supplied; it fails closed when it returns `undefined` or a malformed binding.
 - **BYPASS CONDITIONS:** in-process code holding the store reference.
 - **DEPLOYMENT ASSUMPTIONS:** D-A4, D-A8.

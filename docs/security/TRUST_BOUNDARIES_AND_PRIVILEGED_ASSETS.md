@@ -129,7 +129,7 @@ Cloud infrastructure is **not** assumed hardened. `infrastructure/terraform`, `i
 
 | Asset | Location | Holder | Writer | Reader | Impact if compromised |
 |---|---|---|---|---|---|
-| **A-01** Bounded grants + revocations | SQLite when configured, otherwise in-memory | D-06 (file: D-06a) | `GrantIssuanceService`, `revokeGrant` | exercise gate | Forge execution authority. **Updated by Prompt 4:** revocations are now first-class, integrity-protected authority state rather than an undigested `Map` entry, and a revocation cannot be the half lost to a crash or restart (SEC-INV-035/036/037). Snapshot rollback remains unaddressed (GS-002) |
+| **A-01** Bounded grants + revocations | SQLite when configured, otherwise in-memory | D-06 (file: D-06a) | `GrantIssuanceService`, `revokeGrant` | exercise gate | Forge execution authority. **Updated by Prompt 4:** revocations are now first-class, integrity-protected authority state rather than an undigested `Map` entry, and a revocation cannot be the half lost to a crash or restart (SEC-INV-035/036/037). **Updated by Prompt 5:** on the durable path each record also carries a detached Ed25519 signature verified on every authoritative read, so **write access to D-06a alone is no longer sufficient to forge authority** (SEC-INV-039, GS-001 closed for a database-only writer). Now compromisable via A-27 or A-28 instead. Snapshot rollback remains unaddressed (GS-002 / AA-003) |
 | **A-02** Governed authority / reservations / encumbrances | SQLite | D-07 | authority-store transitions | Kernel authority step | Fabricate the authority an action draws on |
 | **A-03** Governance records + hash chain | SQLite | D-08 | evaluate commit | read service, evidence | Destroy verifiable-governance claim |
 | **A-04** Recognition capability tokens | in-process `Map` | D-09 | `revokeCapabilityToken`, `suspendCapabilityToken` | recognition verifier | Revocation not durable; restart may resurrect authority |
@@ -155,8 +155,25 @@ Cloud infrastructure is **not** assumed hardened. `infrastructure/terraform`, `i
 | **A-24** Composition root | code | D-19 | build | startup | Chooses every provider — a swapped store is undetectable at runtime |
 | **A-25** Release manifest + pinned checksums | `release/RELEASE_MANIFEST.json` | D-21 | release process | `check-release-integrity` | Supply-chain anchor; `dist/src/index.js` is pinned by SHA-256 |
 | **A-26** CI workflows | `.github/workflows/**` | D-21 | repo writers | GitHub | Build/test integrity; see TB-007 |
+| **A-27** `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` — the authority signing **private** key (Ed25519, PKCS#8) | env ⇒ **application process memory** | D-17 ⇒ D-06 | operator | the signer only, inside `issue` / `revoke` | **Mint bounded grants and revocations that verify perfectly.** The strongest authority-forging asset introduced by Prompt 5, and the reason AA-001 is HIGH. Unlike A-13/A-14 this is genuinely asymmetric, so a verifier holding only A-28 cannot mint — but the process holding this one can. Prompt 6 removes it from process memory |
+| **A-28** `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS` — the trusted verification registry (public keys + key ids) | env ⇒ frozen in-process registry | D-17 ⇒ D-06 | operator | durable store read path | **Not a secret — but the root of trust.** A writer who can replace it installs their own key and makes their own artifacts authentic (AA-002). Removing an entry makes every artifact signed by that key unreadable — a key-trust decision, **not** a revocation (§13.1 of `AUTHORITY_ARTIFACT_AUTHENTICITY.md`) |
 
 Public keys are not treated as secrets. `AOC_ISSUER_PUBLIC_KEY_PEM` is called out separately in §9 because, under an HMAC scheme, it is **metadata that cannot verify anything** — a trust-anchor shaped value with no trust-anchor function.
+
+**A-28 is the opposite case, and the contrast is the point.** It is also public material, and it genuinely does verify: the bounded-grant signatures are asymmetric, so the public half is sufficient to check authority and insufficient to mint it. That is why integrity of A-28 matters for *availability and trust* (replace it and you control what is believed) while confidentiality of it does not matter at all. A-13/A-14, being HMAC secrets, have the reverse profile and no verifier/signer separation to speak of.
+
+### 6.1 The signer / verifier split (Prompt 5)
+
+Prompt 5 introduced a capability boundary *inside* D-06, expressed as two types rather than as a convention:
+
+| | Holds | Reachable from | Can mint authority | Can check authority |
+|---|---|---|---|---|
+| `AuthorityArtifactSigner` | A-27 | `issue`, `revoke` | **yes** | no |
+| `AuthorityArtifactVerifier` | A-28 | the authoritative read path | no | **yes** |
+
+Neither interface extends the other; `createPrivateKey` appears in exactly one production file (the signer), pinned by a structural test. The exercise path receives neither — it is handed `BoundedGrantReaderPort`, whose only member is `read`.
+
+**The limit of that split, stated plainly.** It is a boundary between *types and call sites*, not between *processes*. Both halves are constructed by the same composition root and live in the same process, so a process-level attacker holds A-27 regardless of which interface was handed where. What the split buys today is that a database-only writer cannot forge, and that no code on the read path can be made to sign without a type error. What it does **not** buy is protection from anything that can read this process's memory. Prompt 6 is what turns the type boundary into a process boundary.
 
 ---
 
@@ -166,8 +183,8 @@ Every production path that creates, changes, narrows, revokes or extends authori
 
 | Writer | Mutates | Caller authn/authz | Externally reachable? | Durable? | Audit | If compromised |
 |---|---|---|---|---|---|---|
-| `GrantIssuanceService.issueGrant` | A-01 | In-process host only; commit guard re-proves eligibility inside the store transaction (SEC-INV-016) | **No route** (SEC-INV-027) | **Yes when the durable store is configured**, otherwise no | Grant carries `sourceDigest`, correlation; the persisted record carries its own envelope digest | Mint arbitrary bounded grants |
-| `AuthorityControlledExecutionService.revokeGrant` | A-01 | In-process host only | **No route** | **Yes when the durable store is configured**, at durability equal to the grant's by construction (SEC-INV-035) | Integrity-protected revocation record, cross-referenced from the grant row | Suppress revocation — now requires rewriting **both** records consistently (SEC-INV-037), which an unkeyed digest still permits (GS-001) |
+| `GrantIssuanceService.issueGrant` | A-01 | In-process host only; commit guard re-proves eligibility inside the store transaction (SEC-INV-016) | **No route** (SEC-INV-027) | **Yes when the durable store is configured**, otherwise no | Grant carries `sourceDigest`, correlation; the persisted record carries its own envelope digest **and, on the durable path, a detached signature naming the key that produced it** | Mint arbitrary bounded grants. Requires A-27 to produce ones the durable read path will accept |
+| `AuthorityControlledExecutionService.revokeGrant` | A-01 | In-process host only | **No route** | **Yes when the durable store is configured**, at durability equal to the grant's by construction (SEC-INV-035) — **and now dependent on signer availability: a revocation that cannot be signed is refused, never written unsigned (AA-004)** | Integrity-protected **and signed** revocation record, cross-referenced from the grant row | Suppress revocation — requires rewriting **both** records consistently (SEC-INV-037) **and producing a valid signature for each (SEC-INV-039)**, so an unkeyed re-seal no longer suffices. GS-001 closed for a database-only writer; A-27 still defeats it |
 | Governed-authority transitions | A-02 | In-process; capacity conservation + digest re-seal inside the store transaction | **No route** | Yes | Chained `transition_digest` | Fabricate authority positions |
 | `KernelAuthorityProvisioningService` | A-02 (durable) | Requires `context.system === true` **and** an operator context (`provisioning-service.ts:51-60`) | **No route** — operator surface | Yes | Append-only event chain, terminal revocation | Enrol arbitrary actors |
 | `PolicyPackRegistry.savePack` / `saveVersion` / `activatePolicyPackVersion` | A-05 | **None. No caller identity parameter exists** (`policy-pack-registry.ts:81,121,129`) | **No route** — protected only by not being exposed | In-process | Activation event | Rewrite decision rules |

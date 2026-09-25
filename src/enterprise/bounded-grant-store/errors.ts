@@ -30,7 +30,24 @@ export type BoundedGrantStoreErrorCode =
   /** The authoritative store cannot be opened, has been closed, or is recorded under a schema version this runtime does not implement. Never a reason to fall back to another source of grants. */
   | 'BOUNDED_GRANT_STORE_UNAVAILABLE'
   /** Persisted authority state failed integrity validation, or the grant and revocation records disagree. The store refuses to answer rather than answering from state it cannot validate. */
-  | 'BOUNDED_GRANT_STORE_STATE_CORRUPT';
+  | 'BOUNDED_GRANT_STORE_STATE_CORRUPT'
+  /**
+   * Persisted authority state carries no signature this deployment trusts:
+   * missing, malformed, invalid, under an unknown key, or under an unsupported
+   * algorithm or artifact version.
+   *
+   * Separate from `STATE_CORRUPT` because the two call for opposite responses.
+   * Corruption says the bytes moved and the fix is to restore them. This says
+   * the bytes may be exactly what somebody meant to write, and that somebody
+   * could not produce a signature over them — so the fix is to find out who
+   * wrote them, or to discover that a key was rotated out of the trusted set
+   * while records signed by it were still live. Reporting a forgery attempt as a
+   * disk fault would send an operator looking in the wrong place.
+   *
+   * Like every other code here, this is thrown, never returned, and the layer
+   * above turns it into "no grant" — the closed direction.
+   */
+  | 'BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED';
 
 export class BoundedGrantStoreError extends Error {
   constructor(
