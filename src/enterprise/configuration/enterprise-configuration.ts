@@ -233,9 +233,9 @@ export interface EnterpriseConfiguration {
      *
      * Redacted from `PublicEnterpriseConfiguration` exactly as `apiKeys` are,
      * and a security test pins that it never appears there. It is also, today,
-     * a private key resident in application process memory — recorded as AA-001
-     * and owned by Prompt 6, which replaces this field with a handle to an
-     * external signing boundary.
+     * a private key resident in application process memory — recorded as AA-001.
+     * External key custody, which would replace this field with a handle to an
+     * external signing boundary, remains deferred.
      */
     readonly signingKeyPem: string | undefined;
     /**

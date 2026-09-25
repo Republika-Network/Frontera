@@ -87,8 +87,8 @@ import {
  *
  * Two limits stated here rather than left to be inferred. The signing key is
  * **resident in this process's memory** in the current composition, so anything
- * that can read process memory can mint authority that verifies — AA-001, which
- * Prompt 6 owns. And a signature says a trusted key vouched for these bytes; it
+ * that can read process memory can mint authority that verifies — AA-001;
+ * external key custody (KMS/HSM) remains deferred. And a signature says a trusted key vouched for these bytes; it
  * says nothing about whether the *policy* that produced them was legitimate,
  * and nothing about a wholesale rollback to an earlier, validly-signed snapshot
  * (GS-002). `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` states both.
@@ -544,13 +544,6 @@ export async function createSqliteBoundedGrantStore(
   }
 
   /**
-   * The committing half of issuance. Everything here is synchronous and inside
-   * one transaction; the signature it persists was produced **before** the
-   * transaction opened, and `commitGuard` runs after that signing and
-   * immediately before the write. See `issue` below for why that order is the
-   * whole point.
-   */
-  /**
    * Runs a signer call and turns any failure into a refusal to proceed.
    *
    * Every path out of here that is not a signature is a throw. There is no
@@ -568,6 +561,13 @@ export async function createSqliteBoundedGrantStore(
     }
   }
 
+  /**
+   * The committing half of issuance. Everything here is synchronous and inside
+   * one transaction; the signature it persists was produced **before** the
+   * transaction opened, and `commitGuard` runs after that signing and
+   * immediately before the write. See `issue` below for why that order is the
+   * whole point.
+   */
   const runIssue = db.transaction((input: IssueBoundedGrantInput, signature: AuthoritySignature): IssueBoundedGrantOutcome => {
     const existingRow = selectGrant.get(input.grant.id) as GrantRow | undefined;
     if (existingRow !== undefined) {
@@ -689,7 +689,8 @@ export async function createSqliteBoundedGrantStore(
      *
      * The order is the security property, not an implementation detail. Signing
      * may take time — today it is an in-process Ed25519 call, but the interface
-     * is `async` precisely so Prompt 6 can put a KMS round-trip here — and a
+     * is `async` precisely so a deferred external signer (KMS/HSM) can put a
+     * network round-trip here — and a
      * signer call cannot happen *inside* the transaction, because
      * `better-sqlite3` transactions are synchronous and holding one open across
      * a network call would make the availability of a signing service into the
@@ -739,9 +740,9 @@ export async function createSqliteBoundedGrantStore(
      * The cost is real and is recorded as **AA-004**: signer availability is now
      * on the critical path of the emergency operation. `docs/security/
      * AUTHORITY_ARTIFACT_AUTHENTICITY.md` §19.2 states it, and it is an input to
-     * Prompt 6 — an external signing boundary makes this dependency a network
-     * dependency, which is worse, and is something that prompt must design for
-     * rather than discover.
+     * the deferred external key-custody work — an external signing boundary
+     * makes this dependency a network dependency, which is worse, and is
+     * something that work must design for rather than discover.
      */
     async revoke(input: RevokeBoundedGrantInput): Promise<RevokeBoundedGrantOutcome> {
       assertOpen();

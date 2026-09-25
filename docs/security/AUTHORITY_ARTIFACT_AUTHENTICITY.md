@@ -1,8 +1,9 @@
 # Authority Artifact Authenticity
 
-- **Track:** Security & Containment Architecture, Prompt 5.
+- **Track:** Security & Containment Architecture. Authored as the historical security-track **Prompt 5** (commit `03c1eb2`) and forward-ported onto current main as **PRE-00**.
+- **Numbering:** "Prompt N" in this document is the legacy security-hardening prompt series — the same labels `SECURITY_INVARIANTS.md` and `AUTHORITATIVE_GRANT_STORE.md` use — kept as provenance, not as the active roadmap. Work described here as *deferred* (notably external key custody) has no owner assigned by this document.
 - **Scope:** the authority artifacts the bounded-grant execution path trusts — `BoundedGrant` and `GrantRevocation` — and nothing else.
-- **Status:** implemented for the durable bounded-grant store. Signing key **process-resident** (AA-001); Prompt 6 owns that boundary.
+- **Status:** implemented for the durable bounded-grant store. Signing key **process-resident** (AA-001); external key custody (KMS/HSM) remains deferred.
 - **Predecessor:** `AUTHORITATIVE_GRANT_STORE.md` (Prompt 4).
 
 ---
@@ -149,7 +150,7 @@ AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required 
 
 **Rejected:** RSA (no existing key-management boundary requires it; larger keys, more parameters, more ways to misuse). HMAC (§10.4). Anything deprecated.
 
-**Honest note for Prompt 6:** Ed25519 support is not universal across managed KMS providers — some offer only ECDSA (P-256/384/521) and RSA for asymmetric signing. The algorithm registry (§30 of the prompt; `SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS` in source) is closed and versioned precisely so a second entry can be added as deliberate code-and-configuration work if the chosen provider requires it. Adding one is not automatic and there is no negotiation, no fallback and no try-until-one-verifies.
+**Honest note for the deferred external key-custody work:** Ed25519 support is not universal across managed KMS providers — some offer only ECDSA (P-256/384/521) and RSA for asymmetric signing. The algorithm registry (§30 of the historical prompt; `SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS` in source) is closed and versioned precisely so a second entry can be added as deliberate code-and-configuration work if the chosen provider requires it. Adding one is not automatic and there is no negotiation, no fallback and no try-until-one-verifies.
 
 ## 7. Signature Envelope
 
@@ -177,6 +178,8 @@ revocation: "frontera:authority-artifact:grant-revocation:v1\n" + serializeStore
 ```
 
 There is exactly **one** function producing each — signing and verification call the same one, so the two sides cannot drift.
+
+**Forward-port note (PRE-00).** Since this mechanism was first written, current main added two things to a grant's canonical form: the optional `authorityBindingDigest` provenance field (P7) and exact decimal-string monetary ceilings (P9). Both are emitted by `serializeBoundedGrant`, which `serializeStoredGrantRecord` embeds, so both are inside the signed bytes with no change to the signing format. A test mutates each and asserts the signature no longer verifies. The canonical format and both domain prefixes are unchanged from the historical implementation.
 
 ### 8.2 Why the record envelope rather than the artifact alone
 
@@ -232,7 +235,7 @@ interface AuthorityArtifactSigner {
 
 ### 10.2 Why `async`
 
-Nothing about in-process Ed25519 needs to be asynchronous. The interface is `Promise`-returning so that (a) Prompt 6 can substitute a KMS/HSM call without changing a call site, and (b) — more importantly — every caller is *already written* to tolerate a signer that takes time. §14.1 explains why that makes the commit ordering safe rather than merely convenient.
+Nothing about in-process Ed25519 needs to be asynchronous. The interface is `Promise`-returning so that (a) deferred external key custody can substitute a KMS/HSM call without changing a call site, and (b) — more importantly — every caller is *already written* to tolerate a signer that takes time. §14.1 explains why that makes the commit ordering safe rather than merely convenient.
 
 ### 10.3 The implementation, named honestly
 
@@ -407,6 +410,8 @@ There is **no** branch that skips verification, no legacy path, and no flag. A s
 
 Schema version **`aoc.bounded-grant-store.schema.v2`** (was `.v1`).
 
+The bump is still the correct next version on current main: between the historical branch point and the forward-port, main never changed the bounded-grant store's schema version — P7's `authorityBindingDigest` lives inside `grant_json` and needed no column. Nothing newer was downgraded or replaced.
+
 Both tables gain four `NOT NULL` columns:
 
 ```sql
@@ -427,6 +432,8 @@ No column invites a sweeper and none is a free-form authority payload (GS-INV-01
 This is the pre-production disposition the prompt prefers, and it is the right one here: the durable store shipped in Prompt 4, is opt-in (`persistence.provider === 'sqlite'`), and any database written by it contains grants issued under a store that has since changed schema version.
 
 **Legacy records are never auto-signed.** That is the one migration that must never be automatic: signing whatever a database happens to contain, under the current key, would convert arbitrary prior content into authority this deployment cryptographically vouches for — and would erase the provenance that makes the signature mean anything. If a deployment needs to carry v1 data forward, that is explicit, operator-controlled work, and it is not implemented here.
+
+**Operational consequence.** A deployment that already runs the durable store (`persistence.provider === 'sqlite'`) will find its existing `bounded-grants.sqlite` refused at open after upgrading, with `BOUNDED_GRANT_STORE_UNAVAILABLE`. That is intended. The operator must decide what happens to the authority it holds — typically re-issue through the normal issuance path under the new key, into a fresh file — and must not "fix" it by signing the old rows. Nothing in this repository modifies an existing database to make it open.
 
 ## 19. Failure Semantics
 
@@ -457,7 +464,7 @@ The revocation case is stated plainly because it is a genuine availability/secur
 2. Report success without persisting — tells an operator authority has been withdrawn when it has not.
 3. Fail loudly.
 
-Only (3) is honest. **Signer availability is therefore now on the critical path of the emergency operation.** Recorded as **AA-004**, and an explicit input to Prompt 6: an external signing boundary makes this a *network* dependency, which is strictly worse, and is something that prompt must design for rather than discover.
+Only (3) is honest. **Signer availability is therefore now on the critical path of the emergency operation.** Recorded as **AA-004**, and an explicit input to the deferred external key-custody work: an external signing boundary makes this a *network* dependency, which is strictly worse, and is something that prompt must design for rather than discover.
 
 ## 20. Threat Model
 
@@ -473,8 +480,8 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | H | Change the algorithm field | **BLOCKED** | closed registry; must match the registry's entry for that key |
 | I | Change keyId to an unknown one | **BLOCKED** | fails closed; no fallback to another trusted key |
 | J | Replace the trusted public key config | **NOT ADDRESSED** | config is a trusted input; an attacker who controls it controls trust. AA-002 |
-| K | Steal the private signing key | **NOT ADDRESSED** | cryptography cannot help. AA-001 → Prompt 6 |
-| L | Read the private key from process memory | **NOT ADDRESSED** | it is resident there. AA-001 → Prompt 6 |
+| K | Steal the private signing key | **NOT ADDRESSED** | cryptography cannot help. AA-001 → external key custody (deferred) |
+| L | Read the private key from process memory | **NOT ADDRESSED** | it is resident there. AA-001 → external key custody (deferred) |
 | M | DB-only write access | **BLOCKED** | the central test |
 | N | DB + config write access | **NOT ADDRESSED** | equivalent to J + M |
 | O | An old signing key is compromised | **PARTIALLY BLOCKED** | remove it from the verification set; artifacts it signed become unreadable (§13.1). No per-key revocation list |
@@ -494,12 +501,12 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 
 | ID | Severity | Risk | Owner |
 |---|---|---|---|
-| **AA-001** | **HIGH** | The authority signing private key is **resident in application process memory**, loaded from configuration. Anything that can read this process — a memory disclosure, a debugger, a core dump, a malicious dependency — can mint authority that verifies perfectly | **Prompt 6** |
-| **AA-002** | MEDIUM | The trusted verification registry is deployment-controlled configuration. An attacker who can write it can install their own key and make their own artifacts authentic. Host/config compromise defeats this boundary | deployment; Prompt 6 narrows it |
+| **AA-001** | **HIGH** | The authority signing private key is **resident in application process memory**, loaded from configuration. Anything that can read this process — a memory disclosure, a debugger, a core dump, a malicious dependency — can mint authority that verifies perfectly | external key custody (deferred) |
+| **AA-002** | MEDIUM | The trusted verification registry is deployment-controlled configuration. An attacker who can write it can install their own key and make their own artifacts authentic. Host/config compromise defeats this boundary | deployment; external key custody (deferred) narrows it |
 | **AA-003** | MEDIUM | Signatures carry no freshness. A wholesale rollback to an earlier snapshot restores artifacts that are all validly signed, including grants whose revocations are rolled back with them. Same shape as **GS-002** | external anchor; unowned |
-| **AA-004** | MEDIUM | Signer availability is required to **revoke**. A signer outage cannot withdraw authority and correctly refuses to pretend it did (§19.2) | Prompt 6 / Prompt 12 |
-| **AA-005** | LOW | Every issuance and revocation attempt invokes the signer, including ones subsequently refused. Free today; a metered or rate-limited external signer makes it a cost | Prompt 6 |
-| **AA-006** | LOW | One algorithm is registered. Adding a second is deliberate work — correct, but it means a provider that cannot do Ed25519 requires a code change, not configuration | Prompt 6 |
+| **AA-004** | MEDIUM | Signer availability is required to **revoke**. A signer outage cannot withdraw authority and correctly refuses to pretend it did (§19.2) | deferred — external key custody; durable kill-switch convergence (legacy labels Prompt 6 / Prompt 12) |
+| **AA-005** | LOW | Every issuance and revocation attempt invokes the signer, including ones subsequently refused. Free today; a metered or rate-limited external signer makes it a cost | external key custody (deferred) |
+| **AA-006** | LOW | One algorithm is registered. Adding a second is deliberate work — correct, but it means a provider that cannot do Ed25519 requires a code change, not configuration | external key custody (deferred) |
 
 ## 22. Findings
 
@@ -543,15 +550,15 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 | "Rollback cannot resurrect old authority" | it can. Signatures carry no freshness (AA-003 / GS-002) |
 | "The signing key cannot be stolen" | it is in process memory, loaded from configuration |
 | "Cryptographic authenticity proves the policy was legitimate" | it proves a trusted key vouched for these bytes. NB-008 is untouched |
-| "The application process cannot access signing material" | **false today.** This becomes sayable only after Prompt 6 |
+| "The application process cannot access signing material" | **false today.** This becomes sayable only once external key custody lands (deferred) |
 | "Frontera uses KMS/HSM" | no KMS or HSM is implemented |
 | "All Frontera authority artifacts are signed" | this covers the bounded-grant path only. Agent Passport still uses HMAC (§10.4) |
 | "Signatures replace the digests" | both are checked; they detect different things |
 | "Key rotation revokes grants" | key-trust removal and revocation are different operations (§13.1) |
 
-## 25. Inputs to Prompt 6
+## 25. Inputs to deferred external key custody
 
-**Prompt 6 — Replace Process-Resident Signing Secrets with KMS/HSM Boundaries.**
+**Deferred work — replace process-resident signing secrets with KMS/HSM boundaries** (legacy label: security Prompt 6). This document assigns it no owner; it is recorded here so that whoever takes it inherits the constraints below.
 
 | Question | Answer |
 |---|---|

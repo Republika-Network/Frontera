@@ -22,9 +22,11 @@ import {
  * `boundedGrantDigest` and the Governance Store's `computeDigest` already are.
  * A writer able to rewrite a record can recompute its digest and re-seal it,
  * and nothing here prevents that. It is not a signature, it carries no
- * non-repudiation, and no claim in this repository may call it one. Attaching a
- * key boundary is Prompt 5's work; `docs/security/AUTHORITATIVE_GRANT_STORE.md`
- * §10 and §23 say precisely where it attaches.
+ * non-repudiation, and no claim in this repository may call it one.
+ * Authenticity is a separate mechanism kept beside it: a detached Ed25519
+ * signature over the same canonical bytes, under an artifact-specific signing
+ * domain (`../authority-authenticity/`,
+ * `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md`).
  *
  * ## Why an envelope rather than the artifact's own digest
  *

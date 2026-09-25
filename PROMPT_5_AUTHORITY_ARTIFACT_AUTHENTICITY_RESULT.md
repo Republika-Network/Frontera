@@ -1,5 +1,7 @@
 # Prompt 5 — Introduce Cryptographic Authenticity for Authority Artifacts — Result
 
+> **Historical record.** This is the result report written when the change was first implemented, against `main` @ `30b627a`, like `PROMPT_1` … `PROMPT_4`. It was carried onto current main by the **PRE-00 forward-port**, and it is kept as it was written apart from identifier corrections. Its branch names, test counts, and "Prompt 6" handoff describe that moment, not the active roadmap: external key custody remains **deferred** with no owner assigned here. Forward-port corrections: the invariant is **SEC-INV-123** (not SEC-INV-039), and the signing-key and verification-registry assets are **A-32 / A-33** (not A-27 / A-28), because current main already assigns those ids. For the current mechanism, read `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md`.
+
 - Track: Security & Containment Architecture, Prompt 5.
 - Canonical artifact: `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md`.
 - Base: `main` @ `30b627a` (Prompts 0, 1, 2, 2.5, 2.6, 3 and 4 all merged).

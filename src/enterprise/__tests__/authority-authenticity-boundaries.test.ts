@@ -22,6 +22,26 @@ const AUTHENTICITY_ROOT = 'src/enterprise/authority-authenticity';
 const GRANT_STORE_ROOT = 'src/enterprise/bounded-grant-store';
 const EXECUTION_RUNTIME_ROOT = 'src/features/execution-runtime';
 const GRANT_RUNTIME_ROOT = 'src/features/grant-runtime';
+/**
+ * Governed-execution subsystems on current main that post-date the historical
+ * authenticity change: exercise controls, monetary classification, emergency
+ * control, outcomes, reconciliation, resolution, adapters, governed actions,
+ * the authority event stream and the issuance/execution service itself. The
+ * signer lives sealed inside the durable store; none of these may name it.
+ */
+const GOVERNED_EXECUTION_ROOTS = [
+  'src/features/exercise-control-runtime',
+  'src/features/monetary-runtime',
+  'src/features/emergency-control-runtime',
+  'src/enterprise/execution-governance',
+  'src/enterprise/execution-adapters',
+  'src/enterprise/execution-outcome-store',
+  'src/enterprise/execution-reconciliation',
+  'src/enterprise/execution-resolution-store',
+  'src/enterprise/exercise-control-ledger',
+  'src/enterprise/governed-action',
+  'src/enterprise/authority-event-stream',
+] as const;
 
 function sourceFiles(dir: string, includeTests = false): readonly string[] {
   if (!existsSync(dir)) return [];
@@ -86,6 +106,25 @@ describe('Authority authenticity — signing capability never reaches the exerci
         assert.equal(pattern.test(code), false, `${file} must not reach signing capability (${pattern})`);
       }
     }
+  });
+
+  it('no governed-execution subsystem added since the historical change reaches signing capability either', () => {
+    // Forward-port coverage. These consume, exercise, pay against or reconcile
+    // authority; none of them may be able to mint it. `node:crypto` is not
+    // forbidden here, because several legitimately compute unkeyed digests —
+    // what is forbidden is every name through which a private authority key
+    // or a signer could arrive.
+    const forbidden = /AuthorityArtifactSigner|createSoftwareAuthorityArtifactSigner|signGrant|signRevocation|signingKeyPem|privateKeyPem|createPrivateKey|authority-authenticity/;
+    let measured = 0;
+    for (const root of GOVERNED_EXECUTION_ROOTS) {
+      const files = sourceFiles(root);
+      assert.ok(files.length > 0, `expected production sources under ${root}`);
+      for (const file of files) {
+        measured += 1;
+        assert.equal(forbidden.test(codeOf(file)), false, `${file} must not reach signing capability`);
+      }
+    }
+    assert.ok(measured >= 50, `expected to measure the governed-execution subsystems, measured ${measured} files`);
   });
 
   it('the grant runtime — layer E — holds no signer and no key material either', () => {

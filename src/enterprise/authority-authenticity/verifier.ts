@@ -33,7 +33,7 @@ import {
  *
  * ## Why verification is synchronous
  *
- * Signing is `async` so an external signing boundary (Prompt 6's KMS/HSM) can
+ * Signing is `async` so an external signing boundary (deferred KMS/HSM custody) can
  * drop in without changing a call site. Verification is deliberately *not*:
  * Ed25519 verification is local, fast and needs no network, and the
  * authoritative read it runs inside is one synchronous `better-sqlite3`

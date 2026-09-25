@@ -342,6 +342,20 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
     }
   });
 
+  it('the P7 authority-binding provenance is inside the signed bytes — added, removed or altered, it breaks verification', async () => {
+    // Forward-port coverage: `authorityBindingDigest` post-dates the historical
+    // signing format and reaches the signature only because
+    // `serializeBoundedGrant` emits it. This pins that it does.
+    const plain = grantFixture('aoc.grant:x');
+    const provenanced: BoundedGrant = { ...plain, authorityBindingDigest: `sha256:${'a'.repeat(64)}` };
+    const plainSignature = await signer.signGrant(plain);
+    const provenancedSignature = await signer.signGrant(provenanced);
+    assert.equal(verifier.verifyGrant(provenanced, provenancedSignature).verified, true);
+    assert.equal(verifier.verifyGrant(provenanced, plainSignature).verified, false, 'provenance added after signing must not verify');
+    assert.equal(verifier.verifyGrant(plain, provenancedSignature).verified, false, 'provenance stripped after signing must not verify');
+    assert.equal(verifier.verifyGrant({ ...provenanced, authorityBindingDigest: `sha256:${'b'.repeat(64)}` }, provenancedSignature).verified, false, 'altered provenance must not verify');
+  });
+
   it('changing the keyId in the envelope breaks verification', async () => {
     const grant = grantFixture('aoc.grant:x');
     const signature = await signer.signGrant(grant);

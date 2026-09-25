@@ -188,9 +188,9 @@ Each persisted grant and revocation now carries a detached **Ed25519** signature
 
 | Threat | Status | Note |
 |---|---|---|
-| **Private signing key theft** | **NOT ADDRESSED** | The key is resident in application process memory, loaded from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`. AA-001, asset A-27. **Prompt 6** |
+| **Private signing key theft** | **NOT ADDRESSED** | The key is resident in application process memory, loaded from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`. AA-001, asset A-32. External key custody — **deferred** |
 | **Process compromise** | **NOT ADDRESSED** | Implies the above. Cryptography does not help here |
-| **Trusted key registry replacement** | **NOT ADDRESSED** | Configuration is a trusted input; whoever writes it decides what is believed. AA-002, asset A-28 |
+| **Trusted key registry replacement** | **NOT ADDRESSED** | Configuration is a trusted input; whoever writes it decides what is believed. AA-002, asset A-33 |
 | **Snapshot rollback** | **NOT ADDRESSED** | Every artifact in an older snapshot is validly signed, revocations included. Signatures authenticate, they do not timestamp. GS-002 / AA-003 — unchanged, and §7.17's rollback row still applies |
 | **A malicious but authorized signer** | **NOT ADDRESSED** | A holder of a trusted key can mint authority that is, by construction, authentic. Authenticity is not authorization |
 | Signer unavailable during **revocation** | **PARTIALLY BLOCKED** | Fails closed and loudly, but the revocation is not recorded and the grant stays exercisable. A genuine availability/security tradeoff, recorded as AA-004 rather than hidden |

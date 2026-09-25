@@ -30,8 +30,8 @@ import {
  * ## Asynchronous on purpose
  *
  * Nothing about Ed25519 in-process needs to be `async`. The signature is
- * `Promise`-returning anyway so that Prompt 6 can replace the implementation
- * below with a KMS/HSM call without changing a single call site, and — more
+ * `Promise`-returning anyway so that deferred external key custody can replace
+ * the implementation below with a KMS/HSM call without changing a single call site, and — more
  * importantly — so that every caller is *already written* to tolerate a signer
  * that takes time. That is what makes the ordering in the durable store safe to
  * keep: signing happens **before** the transaction opens, and the commit guard
@@ -46,9 +46,9 @@ import {
  * repository may describe it as one. Anything that can read this process's
  * memory can read the key and mint authority that verifies perfectly — recorded
  * as **AA-001** in `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §21, and
- * the exact residual risk Prompt 6 owns.
+ * the exact residual risk that deferred external key custody must close.
  *
- * What it *does* buy, today, is the property Prompt 4 could not have: a writer
+ * What it *does* buy, today, is the property unkeyed digests alone could not: a writer
  * with access to the database file — a DBA, a backup, a restored snapshot, a
  * replica — can rewrite a record and recompute every unkeyed digest, and still
  * cannot produce authority the read path will accept.
