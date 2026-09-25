@@ -4,7 +4,7 @@
   architecture baseline, roadmap and milestones.
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
-- **Last status change:** CORE-01 → VERIFIED on branch `fix/core-01-revocation-integrity` (from `main` @ `a0a0e3b`), 2026-09-25. NEXT → PROD-01 (§14).
+- **Last status change:** PROD-01 → VERIFIED on branch `feat/prod-01-secure-production-host` (from `main` @ `4490648`), 2026-09-25. NEXT → CTRL-01 (§14).
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -124,25 +124,28 @@ Status vocabulary:
 | **ABSENT** | Nothing |
 | **SUPERSEDED** | Replaced by a newer mechanism |
 
-"Opt-in" matters. The default configuration is `persistence.provider = 'memory'`
-(`src/enterprise/configuration/enterprise-configuration.ts:343`), and the shipped
-host composes none of the governed-action spine.
+"Opt-in" matters for **embedders**: `createEnterprise()` still defaults to
+`persistence.provider = 'memory'` and composes none of the governed-action
+spine unless asked. Since PROD-01 the **shipped host** (`npm run start:enterprise`
+→ `bootEnterpriseHost()`) composes it under the secure profile or refuses to
+start; "VERIFIED (opt-in)" rows below that are composed there say so. The
+wiring inventory is §3.8.
 
 ### 3.1 CORE — authority and governance
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Customer principal binding (API key → principal → subject → Kernel-Authority actor) | VERIFIED (opt-in) | `src/enterprise/customer-identity/admission-service.ts:124-147`; `customer-identity-admission*.test.ts` |
+| Customer principal binding (API key → principal → subject → Kernel-Authority actor) | VERIFIED (opt-in); **wired on the shipped secure Host** (PROD-01) | `src/enterprise/customer-identity/admission-service.ts:124-147`; `customer-identity-admission*.test.ts`; `enterprise-host.test.ts` |
 | Kernel decision + Governance Store commit/re-read | VERIFIED | `src/kernel/AocKernel.ts`; `governed-action/decision-commit.ts` |
 | Durable Kernel-Authority world (actors, capabilities, delegations, constraints) | VERIFIED | `src/enterprise/kernel-authority/*`; `kernel-authority-*.test.ts` |
 | Bounded grants (attenuation-only) | VERIFIED | `src/features/grant-runtime/domain/grant-attenuation.ts:162`; `grant-attenuation.test.ts`, `bounded-grant-scenario.test.ts` |
 | Durable grant store with digests (Prompt 4) | VERIFIED (sqlite only) | `src/enterprise/bounded-grant-store/sqlite-bounded-grant-store.ts`; `bounded-grant-store-durability.test.ts` |
 | Grant expiry (checked at exercise, never scheduled) | VERIFIED | `governed-action/orchestrator.ts:547` |
 | Revocation (durable, signed) | **VERIFIED (sqlite only)** — revocation-state integrity closed by CORE-01 | `sqlite-bounded-grant-store.ts` (`verifiedRevocationState`); `revocation-state-integrity.test.ts`. Still in-process only, with no API (CTRL-01). Cross-restart rollback open (CORE-07) |
-| **Authority artifact authenticity (PRE-00 + CORE-01)** | **VERIFIED (sqlite only), not default-wired** | §3.7. Shipped host does not compose it (PROD-01); key process-resident (CORE-02) |
+| **Authority artifact authenticity (PRE-00 + CORE-01)** | **VERIFIED; required on the shipped secure Host** (PROD-01) | §3.7. The secure Host refuses to bind unless its grant store is `authenticated-durable` and its revocation state verifies. Embedding default still `memory`; key process-resident (CORE-02) |
 | No-bypass execution (single adapter call site) | VERIFIED, path-local | `no-bypass-effect-paths.test.ts`, `security-invariants.test.ts`. 3 of 46 effect paths are grant-controlled; the rest are excepted or separate models (`docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`) |
-| Emergency control / kill switch (P4) | VERIFIED (opt-in) | `composition-root.ts:1326-1336`; `emergency-control-*.test.ts`. Operator surface is in-process only |
-| Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in) | `composition-root.ts:1266-1278`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
+| Emergency control / kill switch (P4) | VERIFIED (opt-in); durable and composed on the shipped secure Host | `composition-root.ts`; `emergency-control-*.test.ts`. Operator surface is in-process only (CTRL-01) |
+| Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in); composed (required) on the shipped secure Host, with no host-imposed limits — the authority's own (P10) apply | `composition-root.ts`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
 | Authority-sourced payment ceilings (P10) | VERIFIED (requires P7) | `kernel-authority/monetary-constraints.ts:75-91`; `authority-payment-ceilings*.test.ts` |
 | Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts:1245`). No durable policy store, no default pack, unauthenticated registry writes (NB-008) |
 | Delegation lineage | **PARTIAL** | Enforced at decision when the actor is an agent. Re-resolved at issue, commit and exercise **only for financial actions** (`kernel-authority/financial-authority-resolver.ts`). Non-financial revalidation is a host callback |
@@ -160,13 +163,13 @@ host composes none of the governed-action spine.
 
 | Capability | Status | Evidence |
 |---|---|---|
-| `POST /api/governed-actions` + SDK 1.1 (P5) | VERIFIED (opt-in) | `adapters/node-http-adapter.ts:168`; `governed-action-api-endpoint.test.ts` |
+| `POST /api/governed-actions` + SDK 1.1 (P5) | VERIFIED (opt-in); **mounted on the shipped secure Host** | `adapters/node-http-adapter.ts`; `governed-action-api-endpoint.test.ts`; `enterprise-host.test.ts` (end to end through the bootstrap) |
 | Orchestrator gate order (P3) | VERIFIED | `orchestrator.ts:555-741`; `governed-action-orchestrator.test.ts` (75 tests) |
 | Adapter registry + routing (P4) | VERIFIED | `execution-adapter-registry.ts` |
 | Generic HTTP adapter (P6, Stage A) | VERIFIED | `execution-adapters/generic-http/`; 109 tests. One attempt, SSRF-hardened, static in-process credential |
 | Server-derived identities (`requestId = H(org, principal, idempotencyKey)`, `executionId = H(requestId, decisionId)`) | VERIFIED | `governed-action/identifiers.ts:25,42` |
 | Write-ahead claim, at most once | VERIFIED | `execution-ledger.ts:295-313` |
-| Durable outcomes with provider certainty (P11) | VERIFIED (opt-in) | `execution-outcome-store/*`; `durable-monetary-outcomes*.test.ts` |
+| Durable outcomes with provider certainty (P11) | VERIFIED (opt-in); required on the shipped secure Host | `execution-outcome-store/*`; `durable-monetary-outcomes*.test.ts` |
 | Reconciliation + resolution authority (P12) | VERIFIED (port); no resolver implementation ships | `execution-reconciliation/*`, `execution-resolution-store/*`; `execution-reconciliation-e2e.test.ts` |
 | Retries | ABSENT by design | An unconfirmed execution replays as `…_ALREADY_ATTEMPTED`; it is never re-sent |
 | `providerRef` as identity | Not used (correct) | `provider-reference.ts` treats it as a handle, never as proof |
@@ -227,7 +230,7 @@ host composes none of the governed-action spine.
 | Item | Status |
 |---|---|
 | Enterprise API | Health, evaluate, governed-actions, governance reads, evidence, assurance, passports. **No** routes for grants, revocation, approvals, emergency control, authority provisioning, organizations, users or the event stream |
-| Authentication | Static bearer API keys, optionally org-scoped. Auth is **off by default** (SC-001). No humans, RBAC or SSO in the enterprise runtime |
+| Authentication | Static bearer API keys, optionally org-scoped; customer principals configured in the governed-action file. **Required by the shipped secure Host** (SEC-INV-126); off only in the explicit development profile, and then loopback-only (SEC-INV-127). Embedding default still off (SC-001). No humans, RBAC or SSO in the enterprise runtime |
 | `src/features/aoc-control-plane` (React panels) | LIBRARY-ONLY; rendered by no app |
 | `packages/control-plane` | SUPERSEDED / orphan |
 | `control-plane-sdk`, `tenant-governance`, `org-boundary` | DOCUMENTED ONLY |
@@ -240,6 +243,7 @@ host composes none of the governed-action spine.
 | Item | Status |
 |---|---|
 | `backup:v1` / `restore:v1` | Cover **4** stores (governance, agent-passport, assurance, kernel-authority; `scripts/portability/lib-portability.mjs`) |
+| Shipped host | **VERIFIED (PROD-01).** `npm run start:enterprise` → `bootEnterpriseHost()`: strict configuration, secure profile, governed spine composed, posture + health gate before listen, atomic startup, graceful shutdown (`AOC_ENTERPRISE_HOST.md` §"Secure production host") |
 | Stores not backed up | 6 durable stores: bounded-grants, emergency-controls, exercise-ledger, authority-event-stream, execution-outcomes, execution-resolutions (`enterprise-configuration.ts:389-404`). Also the mandate stores and the agent-passport-web database. A restore **loses active grants, revocations, spend ledgers and the audit trail** |
 | Deployment guide, runbooks | Exist as prose only. No IaC |
 
@@ -307,7 +311,9 @@ MASTER-00 record.
      database-only writer". Both overclaim.
    - The durability tests exercise each half of this tamper separately, never both together.
    - This violates invariant 4.
-2. **Not wired by default.**
+2. **Not wired by default.** *(Resolved for the shipped host by PROD-01: the
+   secure profile requires `sqlite` and composes authority-controlled
+   execution; embedders keep the `memory` default.)*
    - Signing exists only when `persistence.provider === 'sqlite'` and the host
      composes `authorityControlledExecution`. The default provider is `memory`.
    - The shipped host (`scripts/run-enterprise-host.mjs`) composes neither.
@@ -328,6 +334,32 @@ MASTER-00 record.
    - AA-006: only one algorithm is registered.
 
 ---
+
+### 3.8 PROD-01: implemented-but-not-wired inventory
+
+**FACT** (2026-09-25). What the shipped secure Host (`bootEnterpriseHost()`,
+`AOC_ENTERPRISE_ENV=production|staging`) actually composes.
+
+| Capability | Classification | Note |
+|---|---|---|
+| Principal binding (customer admission) | WIRED INTO PRODUCTION HOST | Principals from the governed-action file; keys by env-var name |
+| Bounded grants | WIRED INTO PRODUCTION HOST | Lifetime from the file, 1 … 3600 s |
+| Authenticated durable authority store (CORE-01) | WIRED INTO PRODUCTION HOST | Required; verified before bind and on every `/ready` |
+| Revocation (bounded grant) | WIRED; operation EMBEDDING-ONLY | `authorityControlledExecution.revokeGrant`, in-process (CTRL-01) |
+| Revocation (Kernel Authority) | WIRED; operation EMBEDDING-ONLY | `kernelAuthorityProvisioning.revoke`, in-process (CTRL-01) |
+| Kill switch (P4) | WIRED INTO PRODUCTION HOST | Durable store; activation in-process only (CTRL-01) |
+| Monetary / exercise controls (P7, P9, P10) | WIRED INTO PRODUCTION HOST | No host-imposed aggregate policy; authority-sourced limits apply |
+| Authority event stream (P8) | WIRED INTO PRODUCTION HOST | Optional by design; no read route |
+| Execution outcomes (P11) | WIRED INTO PRODUCTION HOST | Required |
+| Reconciliation (P12) | NOT WIRED (intentional) | No resolution-authority implementation ships (PAY-03/04) |
+| Governed-action API | WIRED INTO PRODUCTION HOST | `POST /api/governed-actions` |
+| Generic HTTP adapter (P6) | WIRED INTO PRODUCTION HOST | Only as configured in the file; routed by action |
+| Policy packs | NOT WIRED | No durable policy store; unauthenticated registry writes (CORE-03, NB-008) |
+| Obligations | NOT WIRED | CORE-04 |
+| Trusted context | NOT WIRED | CORE-04 |
+| Approvals | NOT WIRED | `approval_required` stays withheld (CORE-05) |
+| Mandates (`packages/*-mandate`, `*-governance`) | EMBEDDING-ONLY / LIBRARY-ONLY | Not composed, not HTTP-exposed (CREDIT) |
+| Evidence bundle store | WIRED, in-memory | Not durable on any Host (ASSURE) |
 
 ## 4. Architecture Layers
 
@@ -466,7 +498,7 @@ as a roadmap mechanism (§15).
 | Prompt 2 / 2.5 / 2.6: Trust boundaries; passport-web threat model; checkout credential fix | CORE / CTRL | VERIFIED | |
 | Prompt 3: No-bypass execution | CORE | VERIFIED, path-local | 3/46 effect paths under grant control |
 | Prompt 4: Authoritative grant store | CORE | VERIFIED (sqlite) | Not the default provider |
-| Prompt 5 / PRE-00: Authority artifact authenticity | CORE | VERIFIED (sqlite) after CORE-01 | Un-revocation hole closed by CORE-01; not default-wired → PROD-01 |
+| Prompt 5 / PRE-00: Authority artifact authenticity | CORE | VERIFIED after CORE-01; required on the shipped Host (PROD-01) | Un-revocation hole closed by CORE-01 |
 | Prompt 6: KMS/HSM for signing secrets | CORE | PLANNED | → CORE-02 |
 | Prompt 7 / 9 / 16: Sandbox, secretless, escape model | PROD | DEFERRED | No agent-execution process exists |
 | Prompt 8: Workload identity | PROD | DEFERRED | Deployment guidance only |
@@ -476,7 +508,7 @@ as a roadmap mechanism (§15).
 | Prompt 13 / P21: Behavioural abuse detection / intelligence | ASSURE | DEFERRED | → ASSURE-04; must stay outside the authorization path |
 | Prompt 14: Self-modification protection | CORE | PARTIAL | Policy-pack writes carry no caller identity (NB-008) → CORE-03 |
 | Prompt 15: Tamper-evident evidence | ASSURE | PARTIAL | Integrity yes, authenticity no → ASSURE-02 |
-| Prompt 17 / P17: Deployment topology / store-set durability | PROD | PLANNED | → PROD-01, PROD-02 |
+| Prompt 17 / P17: Deployment topology / store-set durability | PROD | PARTIAL | Host topology VERIFIED by PROD-01 (NB-005, GS-003 closed for the shipped Host); store-set backup → PROD-02 |
 | Prompt 18 / 19: Adversarial suite; rogue-agent scenarios | ASSURE | PARTIAL | → CORE-06 qualification, ASSURE-03 |
 | Prompt 20: Customer-controlled signer contract | PAY / CORE | PLANNED | → CORE-02 (authority keys), PAY-03 (transaction signing) |
 | Prompt 21 / 22 / 23 / 24: Posture, readiness gate, pentest prep, certification | PROD | PLANNED / DEFERRED | → PROD-03, PROD-04 |
@@ -877,8 +909,8 @@ CORE obligations and generalized bound kinds, not payment fields.
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
-| Depends on | CORE-01 (hard), PROD-01 (soft) |
+| Status | **NEXT** |
+| Depends on | CORE-01 (hard) — VERIFIED, PROD-01 (soft) — VERIFIED |
 | Purpose | HTTP surfaces for what is in-process only today: Kernel-Authority provisioning, grant revocation, emergency control, grant/decision reads |
 | Exit criteria | No pilot operation requires source code or direct DB edits |
 | Parallel | Yes, with CORE-03/04 |
@@ -932,10 +964,13 @@ CORE obligations and generalized bound kinds, not payment fields.
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** |
+| Status | **VERIFIED** (2026-09-25, branch `feat/prod-01-secure-production-host`) |
 | Depends on | CORE-01 (hard) — VERIFIED |
 | Purpose | The shipped host composes the governed-action spine with durable stores, authenticity, P7, and auth on (SC-001, GS-003) |
 | Exit criteria | `npm run start:enterprise`, with documented config, runs governed actions with signed grants. Insecure config refuses to boot |
+| Delivered | One canonical bootstrap, `bootEnterpriseHost()` (`src/enterprise/host/`); the launcher only delegates and prints posture. Strict environment parsing (`validateEnterpriseEnvironment`) and a closed-schema governed-action file (`AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`) whose secrets are env-var references. Secure profile (`production`/`staging`) refuses: non-`sqlite`, auth off or credential-less, no governed-action file, disabled/optional Kernel Authority, no signing key. Any profile refuses an unauthenticated non-loopback bind; default bind `127.0.0.1`. Composes existing capabilities only (customer admission, grant-aware Kernel over durable Kernel Authority, authenticated grant store, P7 + P10, durable P4, P8, P11, Generic HTTP via the trusted registry). Composition root: signing keys resolved before any store opens; atomic startup; governed spine registrable `required`; `/health` `posture`. Post-composition posture + health gate before `listen()` (a tampered revocation state refuses the start); `/ready` requires health not `unhealthy`; idempotent close. SEC-INV-126 … 128; NB-005, GS-003 closed for the shipped Host |
+| Evidence | `enterprise-host.test.ts` (42) and `tests/enterprise-host-launcher.test.mjs` (4): reproduction of the pre-PROD-01 gap, end-to-end governed action over SQLite with a signed grant, denial/no-bypass, Generic HTTP reached only after authorization (no request sent), revocation (Kernel Authority and bounded grant, including a CORE-01 tamper refusing restart and failing `/ready` at runtime), restart durability, 23 configuration refusals, atomic startup and shutdown without leaked handles. Twelve deliberate-violation experiments each failed the expected tests. Typecheck, lint, build, workspace tests green; root suite green except the pre-existing CRLF working-copy artifact in `structural-boundaries.test.ts` (64/64 against the committed LF tree) |
+| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04); the grant lifetime (≤ 1 h) is the bound meanwhile. Approvals withheld (CORE-05). Policy packs not wired (CORE-03 / NB-008). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
 | Parallel | Yes, with CORE-02/03 |
 
 **PROD-02: Complete Backup / Restore Coverage**
@@ -1006,7 +1041,7 @@ All of the following must be true:
    - Snapshot rollback is at least *detected* (CORE-07), or formally accepted as a deployment control with a documented operational mitigation.
 2. **Authority authenticity is on by default.**
    - Durable grants are signed.
-   - An unsigned substitute is refused (CORE-01, PROD-01).
+   - An unsigned substitute is refused (CORE-01, PROD-01). **Done** (2026-09-25): durable grants are signed and required on the shipped secure Host.
 3. **External signer boundary.** Authority keys are not required to be process-resident (CORE-02).
 4. **One generic envelope.**
    - It expresses non-money parameters and non-money bounds (CORE-03).
@@ -1041,7 +1076,7 @@ source code or database state.
 Requires:
 
 - **Core:** GOVERNANCE CORE STABLE items 1, 2, 4, 5, 7 and 8. Item 3 is recommended but not required when the pilot's threat model accepts it in writing.
-- **Host:** PROD-01 (bootable, secure-default host) and PROD-02 (complete backup/restore).
+- **Host:** PROD-01 (bootable, secure-default host) — **done** 2026-09-25 — and PROD-02 (complete backup/restore).
 - **Control plane:** CTRL-01 … CTRL-04, which cover organization setup, agent registration, authority assignment, limits/policies, approvals, activity and evidence via API + web.
 - **Assurance:** ASSURE-01 (trace).
 - **Operations:** PROD-03 (runbooks, observability minimum, readiness gate).
@@ -1121,47 +1156,48 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 ## 14. Current NEXT Item
 
-**NEXT: PROD-01 — Production Host Composition & Secure Defaults**
+**NEXT: CTRL-01 — Authority Administration API**
 
-**Previous NEXT:** CORE-01 — **VERIFIED** 2026-09-25 (§9).
+**Previous NEXT:** PROD-01 — **VERIFIED** 2026-09-25 (§9). Before it, CORE-01 —
+VERIFIED 2026-09-25.
 
-**Why it is next (evidence from CORE-01, not position in the list):**
+**Why it is next (evidence from PROD-01, not position in the list):**
 
-- After CORE-01, four items have their hard dependencies satisfied: CORE-02,
-  CORE-03 (soft), PROD-01 and CTRL-01 (soft on PROD-01). Exactly one is NEXT.
-- **CORE-01's guarantee is inert on the shipped host.** Every property CORE-01
-  and PRE-00 verified holds only under `persistence.provider === 'sqlite'`
-  with `authorityControlledExecution` composed. The shipped host
-  (`scripts/run-enterprise-host.mjs`) composes neither (§3.7 item 2), and the
-  default `memory` persistence still accepts any grant store (SEC-INV-125's
-  stated boundary). PROD-01 is the item that turns a verified capability into
-  a deployed property. GOVERNANCE CORE STABLE item 2 ("authenticity on by
-  default, unsigned substitute refused") names CORE-01 **and** PROD-01.
-- **PROD-01 is pilot-critical; CORE-02 is not** (§11.5 lists CORE-02 as
-  desirable unless a pilot's threat model requires it). CORE-02 remains
-  unblocked and may run in parallel.
-- **CORE-01 produced concrete PROD-01 inputs:** the v3 store is incompatible
-  with v1/v2 files by design, so a secure-default host needs a documented
-  fresh-store/re-issuance procedure and key configuration that refuses to
-  boot when absent; genesis signing means a new durable store cannot even be
-  created without the signer.
-- **It unlocks the most:** CTRL-01 (soft dependency, and the revocation API
-  should land on a host that composes the signed store), CORE-06 (hard
-  dependency), PROD-02 (soft).
-- CORE-03 is the longest chain to CORE PROVEN (PAY/CREDIT), and remains the
-  recommended parallel stream. It does not depend on PROD-01.
+- After PROD-01, the unblocked candidates are CTRL-01 (hard dependency
+  CORE-01 and soft dependency PROD-01, both met), CORE-02, CORE-03,
+  PROD-02 and ASSURE-01. Exactly one is NEXT.
+- **The shipped Host now governs actions, but nobody can operate it without
+  code.** PROD-01's inventory (§3.8) shows every authority *operation* is
+  in-process only: provisioning actors, trust domains, grants and
+  delegations; revoking Kernel Authority; revoking a bounded grant;
+  activating an emergency stop. The PROD-01 tests had to call
+  `kernelAuthorityProvisioning` and `authorityControlledExecution.revokeGrant`
+  directly. A deployment whose revocation and kill switch require writing
+  code is not safe to operate in an incident — the security value of
+  CORE-01 and P4 is unreachable by the operator who needs it.
+- **It is on the critical path to PILOT READY**, which requires CTRL-01 …
+  CTRL-04; CTRL-02 … 04 hard-depend on CTRL-01. §12 names
+  "PROD-01 → CTRL-01" as one stream.
+- **It now lands on the right Host.** The Master Plan made PROD-01 a soft
+  prerequisite so the revocation API would sit on a host that composes the
+  signed store; that host now exists.
+- PROD-02 (backup of the six governed-action stores) is also pilot-critical
+  and may run in parallel; CORE-03 remains the longest chain to CORE PROVEN
+  and the recommended parallel stream; CORE-02 remains desirable, not
+  pilot-critical (§11.5).
 
 **Prerequisites already satisfied:**
 
-- CORE-01 (hard): signed store, revocation-state integrity, composition refusal
-  of unauthenticated injected stores.
-- Configuration parsing and fail-closed key-boundary composition (PRE-00),
-  now tested on every branch.
+- CORE-01 (hard): signed revocation state, fail-closed durable reads.
+- PROD-01 (soft): a secure Host with authentication required, the durable
+  Kernel Authority world, the signed grant store and durable emergency
+  control composed, and an honest `/health` posture.
 
-**Out of scope for PROD-01:**
+**Out of scope for CTRL-01:**
 
-- KMS/HSM (CORE-02), rollback anchoring (CORE-07), backup/restore coverage
-  (PROD-02), any PAY, CREDIT or CTRL work.
+- Human operator identity and RBAC (CTRL-02), web UI (CTRL-03), approvals
+  (CORE-05, CTRL-04), KMS/HSM (CORE-02), backup (PROD-02), any PAY or
+  CREDIT work.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
