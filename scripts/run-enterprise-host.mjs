@@ -14,33 +14,45 @@ function describe(error) {
 }
 
 let host;
+let stopRequested = false;
+
+function shutdown() {
+  host.close().then(
+    () => process.exit(0),
+    (error) => {
+      console.error(`Frontera Enterprise Host shutdown failed ${describe(error)}`);
+      process.exit(1);
+    },
+  );
+}
+
+// Installed before boot: a signal that arrives while the Host is starting is
+// honoured once boot settles — stores are closed, never abandoned mid-start —
+// instead of killing the process with the default action.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    if (stopRequested) return;
+    stopRequested = true;
+    if (host !== undefined) shutdown();
+  });
+}
+
 try {
   host = await bootEnterpriseHost();
-  const { host: address, port } = await host.listen();
-  const p = host.posture;
-  console.log(`Frontera Enterprise Host listening on http://${address}:${port}`);
-  console.log(
-    `posture: environment=${p.environment} persistence=${p.persistence} authentication=${p.authentication} governedActions=${p.governedActions} authorityStore=${p.authorityStore} executionAdapters=${p.executionAdapters}`,
-  );
-  if (p.persistence === 'ephemeral') {
-    console.log('WARNING: ephemeral in-memory state (development only). Every grant, revocation and ledger entry is lost when this process exits.');
+  if (stopRequested) {
+    shutdown();
+  } else {
+    const { host: address, port } = await host.listen();
+    const p = host.posture;
+    console.log(`Frontera Enterprise Host listening on http://${address}:${port}`);
+    console.log(
+      `posture: environment=${p.environment} persistence=${p.persistence} authentication=${p.authentication} governedActions=${p.governedActions} authorityStore=${p.authorityStore} executionAdapters=${p.executionAdapters}`,
+    );
+    if (p.persistence === 'ephemeral') {
+      console.log('WARNING: ephemeral in-memory state (development only). Every grant, revocation and ledger entry is lost when this process exits.');
+    }
   }
 } catch (error) {
   console.error(`Frontera Enterprise Host refused to start ${describe(error)}`);
   process.exit(1);
-}
-
-let stopping = false;
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    if (stopping) return;
-    stopping = true;
-    host.close().then(
-      () => process.exit(0),
-      (error) => {
-        console.error(`Frontera Enterprise Host shutdown failed ${describe(error)}`);
-        process.exit(1);
-      },
-    );
-  });
 }
