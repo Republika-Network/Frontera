@@ -16,7 +16,8 @@ import {
 } from '../../features/grant-runtime/index.js';
 import { createGrantExecutionService } from '../../features/execution-runtime/index.js';
 import { createRecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
-import { createSqliteBoundedGrantStore, type DurableBoundedGrantStore } from '../bounded-grant-store/index.js';
+import { type DurableBoundedGrantStore } from '../bounded-grant-store/index.js';
+import { openDurableStore } from './authority-authenticity-fixture.js';
 import { isBoundedGrantStoreError } from '../bounded-grant-store/errors.js';
 
 /**
@@ -95,11 +96,11 @@ describe('Durable grant store — committed state survives a restart', () => {
   it('a committed issuance is readable from a freshly opened store (GS-INV-001)', async () => {
     const dbPath = tempDbPath('issue-survives');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const read = await second.read(grant.id);
     assert.deepEqual(read.grant, grant, 'the grant that comes back must be the grant that was written, field for field');
     assert.equal(read.revocation, undefined);
@@ -109,13 +110,13 @@ describe('Durable grant store — committed state survives a restart', () => {
   it('a committed revocation survives a restart — the half that must never be lost (GS-INV-003, GS-INV-005)', async () => {
     const dbPath = tempDbPath('revoke-survives');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     const revoked = await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     assert.equal(revoked.outcome, 'revoked');
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const read = await second.read(grant.id);
     assert.ok(read.grant !== undefined, 'the grant itself is still there');
     assert.deepEqual(read.revocation, { grantId: grant.id, revokedAt: BEFORE_HORIZON, reason: 'security-incident', issuerRef: 'operator-a' });
@@ -125,12 +126,12 @@ describe('Durable grant store — committed state survives a restart', () => {
   it('a restart never increases authority: a revoked grant is still unusable to the execution path (GS-INV-014)', async () => {
     const dbPath = tempDbPath('restart-monotonic');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'administrator-revoked', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const adapter = createRecordingExecutionAdapter();
     const execution = createGrantExecutionService({ store: second, adapter, now: () => BEFORE_HORIZON });
 
@@ -152,12 +153,12 @@ describe('Durable grant store — committed state survives a restart', () => {
   it('the revocation is idempotent across a restart — the first one stands (GS-INV-010)', async () => {
     const dbPath = tempDbPath('revoke-idempotent');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const again = await second.revoke({ grantId: grant.id, reason: 'policy-changed', revokedAt: HORIZON, issuerRef: 'operator-b' });
     assert.equal(again.outcome, 'already-revoked');
     assert.equal(again.outcome === 'already-revoked' ? again.revocation.reason : undefined, 'security-incident', 'a later call is not new information about when a grant stopped being exercisable');
@@ -168,11 +169,11 @@ describe('Durable grant store — committed state survives a restart', () => {
   it('a re-delivered issuance across a restart resolves to the existing grant rather than a second one', async () => {
     const dbPath = tempDbPath('duplicate-issue');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const repeat = await createGrantIssuanceService({ store: second }).issueGrant({
       source: SOURCE,
       subject: 'actor-a',
@@ -191,12 +192,12 @@ describe('Durable grant store — committed state survives a restart', () => {
   it('a grant revoked before re-issuance is precluded, and stays precluded across a restart', async () => {
     const dbPath = tempDbPath('revoked-preclusion');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const repeat = await createGrantIssuanceService({ store: second }).issueGrant({
       source: SOURCE,
       subject: 'actor-a',
@@ -218,7 +219,7 @@ describe('Durable grant store — nothing is acknowledged before it is committed
   it('a refused commit guard writes no grant, and the refusal is not a partial issuance (GS-INV-013)', async () => {
     const dbPath = tempDbPath('guard-refused');
 
-    const store = await createSqliteBoundedGrantStore(dbPath);
+    const store = await openDurableStore(dbPath);
     const outcome = await createGrantIssuanceService({
       store,
       revalidateSource: () => undefined,
@@ -233,7 +234,7 @@ describe('Durable grant store — nothing is acknowledged before it is committed
   it('a commit guard that throws leaves the database untouched — the transaction rolls back', async () => {
     const dbPath = tempDbPath('guard-throws');
 
-    const store = await createSqliteBoundedGrantStore(dbPath);
+    const store = await openDurableStore(dbPath);
     const grant = await issueInto(store);
     await store.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
 
@@ -256,7 +257,7 @@ describe('Durable grant store — nothing is acknowledged before it is committed
   it('revocation is never reported as successful without a committed record', async () => {
     const dbPath = tempDbPath('revoke-commit');
 
-    const store = await createSqliteBoundedGrantStore(dbPath);
+    const store = await openDurableStore(dbPath);
     const grant = await issueInto(store);
     const outcome = await store.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     assert.equal(outcome.outcome, 'revoked');
@@ -270,7 +271,7 @@ describe('Durable grant store — nothing is acknowledged before it is committed
 
   it('revoking a grant that does not exist is refused, not silently recorded', async () => {
     const dbPath = tempDbPath('revoke-unknown');
-    const store = await createSqliteBoundedGrantStore(dbPath);
+    const store = await openDurableStore(dbPath);
 
     const outcome = await store.revoke({ grantId: 'aoc.grant:nothing', reason: 'security-incident', revokedAt: NOW, issuerRef: 'operator-a' });
     assert.equal(outcome.outcome, 'refused');
@@ -286,7 +287,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('a mutated grant record is refused, never repaired (GS-INV-007, GS-INV-011)', async () => {
     const dbPath = tempDbPath('grant-corrupt');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.close();
 
@@ -297,7 +298,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       assert.equal(changes, 1, 'the mutation the test depends on must actually have happened');
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -305,7 +306,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('a grant record whose bytes are not canonical is refused rather than normalized', async () => {
     const dbPath = tempDbPath('grant-noncanonical');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.close();
 
@@ -316,7 +317,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare('UPDATE bounded_grants SET grant_json = ? WHERE grant_id = ?').run(`${row.grant_json} `, grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -324,7 +325,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('a mutated revocation record is refused — the grant does not become usable again (GS-INV-009)', async () => {
     const dbPath = tempDbPath('revocation-corrupt');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
@@ -333,7 +334,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare(`UPDATE bounded_grant_revocations SET reason = 'expired' WHERE grant_id = ?`).run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -341,7 +342,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('a revocation carrying a reason outside the closed vocabulary is refused', async () => {
     const dbPath = tempDbPath('revocation-vocabulary');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
@@ -350,7 +351,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare(`UPDATE bounded_grant_revocations SET reason = 'because-i-said-so' WHERE grant_id = ?`).run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -358,7 +359,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('DELETING the revocation row does not restore authority — the grant stops being readable (GS-INV-006)', async () => {
     const dbPath = tempDbPath('revocation-deleted');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
@@ -367,7 +368,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare('DELETE FROM bounded_grant_revocations WHERE grant_id = ?').run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(
       () => second.read(grant.id),
       assertCorrupt,
@@ -378,7 +379,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('CLEARING the grant’s reference to its revocation does not restore authority either', async () => {
     const dbPath = tempDbPath('pointer-cleared');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
@@ -387,7 +388,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare('UPDATE bounded_grants SET revocation_digest = NULL WHERE grant_id = ?').run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -395,7 +396,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('a revocation record for a grant that does not exist is refused rather than ignored', async () => {
     const dbPath = tempDbPath('orphan-revocation');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
@@ -405,7 +406,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare('DELETE FROM bounded_grants WHERE grant_id = ?').run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -413,7 +414,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('a record written under an unrecognized schema version is refused, never reinterpreted (GS-INV-011)', async () => {
     const dbPath = tempDbPath('row-schema');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.close();
 
@@ -421,7 +422,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare(`UPDATE bounded_grants SET schema_version = 'aoc.bounded-grant-store.schema.v9' WHERE grant_id = ?`).run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     await assert.rejects(() => second.read(grant.id), assertCorrupt);
     await second.close();
   });
@@ -436,7 +437,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
     });
 
     await assert.rejects(
-      () => createSqliteBoundedGrantStore(dbPath),
+      () => openDurableStore(dbPath),
       (error: unknown) => isBoundedGrantStoreError(error) && error.code === 'BOUNDED_GRANT_STORE_UNAVAILABLE',
     );
 
@@ -449,7 +450,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
   it('an exercise against corrupt state withholds rather than raising — the execution path reads a throw as “no grant”', async () => {
     const dbPath = tempDbPath('exercise-corrupt');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
     await first.close();
@@ -457,7 +458,7 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare('DELETE FROM bounded_grant_revocations WHERE grant_id = ?').run(grant.id);
     });
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const adapter = createRecordingExecutionAdapter();
     const outcome = await createGrantExecutionService({ store: second, adapter, now: () => BEFORE_HORIZON }).exercise({
       boundedGrantId: grant.id,
@@ -479,7 +480,7 @@ describe('Durable grant store — an unavailable store withholds, it never falls
   it('a closed store refuses every operation rather than answering from anywhere else (GS-INV-004)', async () => {
     const dbPath = tempDbPath('closed');
 
-    const store = await createSqliteBoundedGrantStore(dbPath);
+    const store = await openDurableStore(dbPath);
     const grant = await issueInto(store);
     await store.close();
 
@@ -492,7 +493,7 @@ describe('Durable grant store — an unavailable store withholds, it never falls
   it('an exercise against an unavailable store withholds, and the adapter is not called (GS-INV-007)', async () => {
     const dbPath = tempDbPath('unavailable-exercise');
 
-    const store = await createSqliteBoundedGrantStore(dbPath);
+    const store = await openDurableStore(dbPath);
     const grant = await issueInto(store);
     await store.close();
 
@@ -512,7 +513,7 @@ describe('Durable grant store — an unavailable store withholds, it never falls
   });
 
   it('reports itself unhealthy once closed', async () => {
-    const store = await createSqliteBoundedGrantStore(tempDbPath('health'));
+    const store = await openDurableStore(tempDbPath('health'));
     assert.equal((await store.health()).status, 'healthy');
     await store.close();
     assert.equal((await store.health()).status, 'unhealthy');
@@ -526,7 +527,7 @@ describe('Durable grant store — the same contract as the in-memory store', () 
    * shows up here rather than in production.
    */
   async function bothStores(): Promise<readonly { readonly label: string; readonly store: BoundedGrantStorePort; readonly close: () => Promise<void> }[]> {
-    const durable: DurableBoundedGrantStore = await createSqliteBoundedGrantStore(tempDbPath('parity'));
+    const durable: DurableBoundedGrantStore = await openDurableStore(tempDbPath('parity'));
     return [
       { label: 'in-memory', store: createInMemoryBoundedGrantStore(), close: async () => {} },
       { label: 'sqlite', store: durable, close: () => durable.close() },
@@ -596,11 +597,11 @@ describe('Durable grant store — repeated exercise stays exactly as permissive 
   it('a usable grant may still be exercised repeatedly, and durability changes nothing about that (NB-006)', async () => {
     const dbPath = tempDbPath('repeated-exercise');
 
-    const first = await createSqliteBoundedGrantStore(dbPath);
+    const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
     await first.close();
 
-    const second = await createSqliteBoundedGrantStore(dbPath);
+    const second = await openDurableStore(dbPath);
     const adapter = createRecordingExecutionAdapter();
     const execution = createGrantExecutionService({ store: second, adapter, now: () => BEFORE_HORIZON });
     const request = {

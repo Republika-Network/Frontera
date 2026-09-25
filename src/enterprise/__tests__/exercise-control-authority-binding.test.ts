@@ -18,7 +18,8 @@ import {
   type BoundedGrant,
 } from '../../features/grant-runtime/index.js';
 import { TEST_CORRELATION, TEST_EXPIRES_AT, TEST_SCOPE, buildTestGrant } from '../../features/execution-runtime/tests/execution-fixture.js';
-import { createSqliteBoundedGrantStore, isBoundedGrantStoreError } from '../bounded-grant-store/index.js';
+import { isBoundedGrantStoreError } from '../bounded-grant-store/index.js';
+import { openDurableStore } from './authority-authenticity-fixture.js';
 import {
   GRANT_AUTHORITY_BINDING_FORMAT,
   exerciseAuthorityBindingDigestResolver,
@@ -250,7 +251,7 @@ describe('§23 / §52 bounded-grant backward compatibility', () => {
     const directory = mkdtempSync(join(tmpdir(), 'aoc-grant-compat-'));
     directories.push(directory);
     const path = join(directory, 'bounded-grants.sqlite');
-    const store = await createSqliteBoundedGrantStore(path);
+    const store = await openDurableStore(path);
     assert.equal((await store.issue({ grant, commitGuard: () => ({ permitted: true, reasonCodes: [] }) })).outcome, 'issued');
     await store.close();
     return path;
@@ -262,7 +263,7 @@ describe('§23 / §52 bounded-grant backward compatibility', () => {
     const row = db.prepare(`SELECT grant_json FROM bounded_grants WHERE grant_id = ?`).get(legacy.id) as { grant_json: string };
     db.close();
     assert.equal(row.grant_json.includes('authorityBindingDigest'), false, 'the stored bytes are the pre-P7 bytes');
-    const reopened = await createSqliteBoundedGrantStore(path);
+    const reopened = await openDurableStore(path);
     const read = await reopened.read(legacy.id);
     assert.deepEqual(read.grant, legacy);
     await reopened.close();
@@ -270,7 +271,7 @@ describe('§23 / §52 bounded-grant backward compatibility', () => {
 
   it('a P7 SQLite grant row round-trips its provenance, and a stored row with it removed or altered fails closed', async () => {
     const path = await storeWith(provenanced);
-    const reopened = await createSqliteBoundedGrantStore(path);
+    const reopened = await openDurableStore(path);
     assert.equal((await reopened.read(provenanced.id)).grant?.authorityBindingDigest, provenanced.authorityBindingDigest);
     await reopened.close();
 
@@ -284,7 +285,7 @@ describe('§23 / §52 bounded-grant backward compatibility', () => {
       const row = db.prepare(`SELECT grant_json FROM bounded_grants WHERE grant_id = ?`).get(provenanced.id) as { grant_json: string };
       db.prepare(`UPDATE bounded_grants SET grant_json = ? WHERE grant_id = ?`).run(edit(row.grant_json), provenanced.id);
       db.close();
-      const store = await createSqliteBoundedGrantStore(copy);
+      const store = await openDurableStore(copy);
       await assert.rejects(store.read(provenanced.id), (error: unknown) => isBoundedGrantStoreError(error) && error.code === 'BOUNDED_GRANT_STORE_STATE_CORRUPT');
       await store.close();
     }

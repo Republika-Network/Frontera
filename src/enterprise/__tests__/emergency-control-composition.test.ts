@@ -23,6 +23,7 @@ import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { EVALUATED_AT_POLICY, ALLOWED_INTENT, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
 import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js';
+import { AUTHORITY_KEY_A, trustedKeyOf } from './authority-authenticity-fixture.js';
 
 /**
  * Composition: **one** interlock instance, opt-in, fail-closed, host-owned when
@@ -222,7 +223,7 @@ describe('Emergency control composition — store ownership and durability selec
     const enterprise = await track(
       createEnterprise(
         await options({
-          configuration: { ...configuration(), persistence: { ...configuration().persistence, provider: 'sqlite', sqlitePath: join(workDir, 'gov.sqlite') }, emergencyControl: { sqlitePath: join(workDir, 'composed.sqlite') }, executionOutcome: { sqlitePath: join(workDir, 'execution-outcomes.sqlite') } },
+          configuration: { ...configuration(), persistence: { ...configuration().persistence, provider: 'sqlite', sqlitePath: join(workDir, 'gov.sqlite') }, emergencyControl: { sqlitePath: join(workDir, 'composed.sqlite') }, executionOutcome: { sqlitePath: join(workDir, 'execution-outcomes.sqlite') }, boundedGrant: { sqlitePath: join(workDir, 'grants.sqlite') }, authorityAuthenticity: { activeSigningKeyId: AUTHORITY_KEY_A.keyId, signingKeyPem: AUTHORITY_KEY_A.privateKeyPem, verificationKeys: [trustedKeyOf(AUTHORITY_KEY_A)] } },
           emergencyControl: { enabled: true },
         }),
       ),

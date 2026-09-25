@@ -22,7 +22,7 @@ import {
   type GrantScope,
 } from '../../features/grant-runtime/index.js';
 import { createFinancialActionClassifier } from '../../features/monetary-runtime/index.js';
-import { createSqliteBoundedGrantStore } from '../bounded-grant-store/index.js';
+import { openDurableStore } from './authority-authenticity-fixture.js';
 import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
 import { GOVERNED_ACTION_REASON_CODES as R, deriveGovernedActionRequestId, governedActionIdempotencyScope, validateGovernedActionIntent } from '../governed-action/index.js';
@@ -318,10 +318,10 @@ describe('P9 persistence — exact round trip, and pre-P9 numeric ceilings refus
 
   async function writeThenReopen(grant: BoundedGrant, name: string): Promise<BoundedGrant | undefined> {
     const path = join(workDir, `${name}.sqlite`);
-    const first = await createSqliteBoundedGrantStore(path);
+    const first = await openDurableStore(path);
     assert.equal((await first.issue({ grant, commitGuard: () => ({ permitted: true, reasonCodes: [] }) })).outcome, 'issued');
     await first.close();
-    const second = await createSqliteBoundedGrantStore(path);
+    const second = await openDurableStore(path);
     const read = await second.read(grant.id);
     await second.close();
     return read.grant;
