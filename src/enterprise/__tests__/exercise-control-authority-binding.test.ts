@@ -19,7 +19,7 @@ import {
 } from '../../features/grant-runtime/index.js';
 import { TEST_CORRELATION, TEST_EXPIRES_AT, TEST_SCOPE, buildTestGrant } from '../../features/execution-runtime/tests/execution-fixture.js';
 import { isBoundedGrantStoreError } from '../bounded-grant-store/index.js';
-import { openDurableStore } from './authority-authenticity-fixture.js';
+import { dropAuthorityStoreTriggers, openDurableStore } from './authority-authenticity-fixture.js';
 import {
   GRANT_AUTHORITY_BINDING_FORMAT,
   exerciseAuthorityBindingDigestResolver,
@@ -282,6 +282,8 @@ describe('§23 / §52 bounded-grant backward compatibility', () => {
     ]) {
       const copy = await storeWith(provenanced);
       const db = new Database(copy);
+      // A database writer can drop the store's defense-in-depth triggers (CORE-01); the refusal below must come from verification.
+      dropAuthorityStoreTriggers(db);
       const row = db.prepare(`SELECT grant_json FROM bounded_grants WHERE grant_id = ?`).get(provenanced.id) as { grant_json: string };
       db.prepare(`UPDATE bounded_grants SET grant_json = ? WHERE grant_id = ?`).run(edit(row.grant_json), provenanced.id);
       db.close();

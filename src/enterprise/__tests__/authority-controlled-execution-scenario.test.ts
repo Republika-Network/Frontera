@@ -624,6 +624,46 @@ describe('Production composition — exercise gates the adapter', () => {
   });
 });
 
+describe('Production composition — CORE-01: a durably revoked grant stays unusable after a database-only un-revocation', () => {
+  it('authorize → revoke → delete the revocation and clear its pointer in SQLite → the production service still withholds', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { default: Database } = await import('better-sqlite3');
+    const { dropAuthorityStoreTriggers, openDurableStore } = await import('./authority-authenticity-fixture.js');
+
+    const dir = mkdtempSync(join(tmpdir(), 'aoc-core01-scenario-'));
+    try {
+      const dbPath = join(dir, 'bounded-grants.sqlite');
+      const durable = await openDurableStore(dbPath);
+      const { service, adapter, outcome } = await issuedWorld({ requestId: 'core01-unrevoke', now: () => AT_T_PLUS_5, store: durable });
+      const grant = grantOf(outcome);
+      assert.equal((await service.revokeGrant({ grantId: grant.id, reason: 'security-incident', issuerRef: 'ops@example.test' })).outcome, 'revoked');
+      assert.equal((await service.exercise(exerciseRequestFor(grant.id, grant.correlation))).status, 'withheld');
+      await durable.close();
+
+      // The database-only writer: no signing key, full SQL access.
+      const db = new Database(dbPath);
+      dropAuthorityStoreTriggers(db);
+      db.prepare('DELETE FROM bounded_grant_revocations WHERE grant_id = ?').run(grant.id);
+      db.prepare('UPDATE bounded_grants SET revocation_digest = NULL WHERE grant_id = ?').run(grant.id);
+      db.close();
+
+      // A restarted Host composed over the tampered file, through the same
+      // production service, with a fresh adapter that would record any call.
+      const reopened = await openDurableStore(dbPath);
+      const restarted = compose({ requestId: 'core01-unrevoke', now: () => AT_T_PLUS_5, store: reopened });
+      const executed = await restarted.service.exercise(exerciseRequestFor(grant.id, grant.correlation, { executionId: 'exec-after-tamper' }));
+      assert.equal(executed.status, 'withheld', 'a revoked grant must not execute after a database-only un-revocation');
+      assert.equal(restarted.adapter.callCount, 0, 'nothing may reach the provider');
+      assert.equal(adapter.callCount, 0);
+      await reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Production composition — correlation a later Evidence phase will need', () => {
   it('the chain request → decision → grant → exercise → execution result is reconstructible', async () => {
     const { service, adapter, outcome } = await issuedWorld({ requestId: 'evidence-chain', now: () => AT_T_PLUS_5 });

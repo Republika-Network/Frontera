@@ -1,6 +1,8 @@
 import {
+  serializeRevocationStateCommitment,
   serializeStoredGrantRecord,
   serializeStoredRevocationRecord,
+  type RevocationStateCommitment,
 } from '../bounded-grant-store/bounded-grant-record.js';
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 
@@ -33,13 +35,21 @@ import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime
  *
  * ## Why the signature is over the *record* envelope
  *
- * `serializeStoredGrantRecord` already binds four things at once: the record
- * format, the grant id the row is filed under, the store schema version, and
- * the grant's full canonical form (which itself carries `digest`, computed with
- * `digest` held empty, so there is no circularity). Signing that string
- * therefore covers every authority-relevant field *and* the identity the row is
- * filed under — a signature lifted onto a different row fails, not merely a
- * signature over different field values.
+ * `serializeStoredGrantRecord` already binds five things at once: the record
+ * format, the store and grant id the row is filed under, the store schema
+ * version, and the grant's full canonical form (which itself carries `digest`,
+ * computed with `digest` held empty, so there is no circularity). Signing that
+ * string therefore covers every authority-relevant field *and* the identity the
+ * row is filed under — a signature lifted onto a different row, or into a
+ * different store, fails, not merely a signature over different field values.
+ *
+ * ## The third artifact: the revocation-state commitment (CORE-01)
+ *
+ * A grant signature and a revocation signature each prove that one record is
+ * genuine. Neither proves that a genuine revocation has not been *removed*. The
+ * revocation-state commitment is the artifact that does: a signed statement of
+ * the whole revocation set, re-signed on every revocation and checked on every
+ * read. It gets its own domain for the same reason the other two do.
  */
 
 /** The authority-artifact format this runtime implements. An envelope naming any other value is refused rather than reinterpreted under this one. */
@@ -64,6 +74,7 @@ export const AUTHORITY_ARTIFACT_VERSION = 'aoc.authority-artifact.v1';
 export const AUTHORITY_SIGNING_DOMAINS = {
   grant: 'frontera:authority-artifact:bounded-grant:v1\n',
   revocation: 'frontera:authority-artifact:grant-revocation:v1\n',
+  revocationState: 'frontera:authority-artifact:revocation-state:v1\n',
 } as const;
 
 export type AuthorityArtifactKind = keyof typeof AUTHORITY_SIGNING_DOMAINS;
@@ -125,18 +136,35 @@ export interface AuthoritySignature {
 }
 
 /** The exact bytes a bounded grant's signature is computed and verified over. Domain-separated, and identical on both sides by construction — there is one function, not a signing copy and a verifying copy that could drift. */
-export function grantSigningBytes(grant: BoundedGrant): Buffer {
-  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.grant}${serializeStoredGrantRecord(grant)}`, 'utf8');
+export function grantSigningBytes(grant: BoundedGrant, storeId: string): Buffer {
+  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.grant}${serializeStoredGrantRecord(grant, storeId)}`, 'utf8');
 }
 
 /** The exact bytes a revocation's signature is computed and verified over. A different domain from `grantSigningBytes`, so neither artifact's signature can be replayed as the other's. */
-export function revocationSigningBytes(revocation: GrantRevocation): Buffer {
-  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.revocation}${serializeStoredRevocationRecord(revocation)}`, 'utf8');
+export function revocationSigningBytes(revocation: GrantRevocation, storeId: string): Buffer {
+  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.revocation}${serializeStoredRevocationRecord(revocation, storeId)}`, 'utf8');
+}
+
+/** The exact bytes a revocation-state commitment's signature is computed and verified over. Its own domain, so no grant or revocation signature can stand in for it. */
+export function revocationStateSigningBytes(state: RevocationStateCommitment): Buffer {
+  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.revocationState}${serializeRevocationStateCommitment(state)}`, 'utf8');
 }
 
 /** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. */
-export function authoritySigningBytes(artifact: { readonly kind: 'grant'; readonly grant: BoundedGrant } | { readonly kind: 'revocation'; readonly revocation: GrantRevocation }): Buffer {
-  return artifact.kind === 'grant' ? grantSigningBytes(artifact.grant) : revocationSigningBytes(artifact.revocation);
+export function authoritySigningBytes(
+  artifact:
+    | { readonly kind: 'grant'; readonly grant: BoundedGrant; readonly storeId: string }
+    | { readonly kind: 'revocation'; readonly revocation: GrantRevocation; readonly storeId: string }
+    | { readonly kind: 'revocationState'; readonly state: RevocationStateCommitment },
+): Buffer {
+  switch (artifact.kind) {
+    case 'grant':
+      return grantSigningBytes(artifact.grant, artifact.storeId);
+    case 'revocation':
+      return revocationSigningBytes(artifact.revocation, artifact.storeId);
+    case 'revocationState':
+      return revocationStateSigningBytes(artifact.state);
+  }
 }
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/;

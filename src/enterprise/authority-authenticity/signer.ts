@@ -1,6 +1,7 @@
 import { createPrivateKey, createPublicKey, sign as cryptoSign, type KeyObject } from 'node:crypto';
 
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
+import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
@@ -8,6 +9,7 @@ import {
   grantSigningBytes,
   isSupportedAuthoritySignatureAlgorithm,
   revocationSigningBytes,
+  revocationStateSigningBytes,
   type AuthoritySignature,
   type AuthoritySignatureAlgorithm,
 } from './authority-signature.js';
@@ -18,7 +20,7 @@ import {
  * ## The interface is the boundary
  *
  * Everything a deployment can do with the authority signing key, it does
- * through the two methods below, and both are **domain-aware**: they take an
+ * through the three methods below, and all are **domain-aware**: they take an
  * artifact and produce that artifact's signature. There is deliberately no
  * `sign(bytes)`. A generic byte-signing capability would let any holder produce
  * a signature over bytes of its own choosing, which for a key whose whole
@@ -58,8 +60,17 @@ export interface AuthorityArtifactSigner {
   /** The key new artifacts are signed with. Historical artifacts keep whatever key id signed them; see the rotation model in §13 of the security document. */
   readonly activeKeyId: string;
   readonly algorithm: AuthoritySignatureAlgorithm;
-  signGrant(grant: BoundedGrant): Promise<AuthoritySignature>;
-  signRevocation(revocation: GrantRevocation): Promise<AuthoritySignature>;
+  /** Signs a grant as filed in the store named by `storeId`. */
+  signGrant(grant: BoundedGrant, storeId: string): Promise<AuthoritySignature>;
+  /** Signs a revocation as filed in the store named by `storeId`. */
+  signRevocation(revocation: GrantRevocation, storeId: string): Promise<AuthoritySignature>;
+  /**
+   * Signs a store's whole revocation state (CORE-01). This is the statement a
+   * read relies on to know that no revocation has been removed, so it is signed
+   * by the same authority key and under its own domain — and, like the other
+   * two, it takes a structured artifact, never bytes.
+   */
+  signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature>;
 }
 
 export interface SoftwareAuthorityArtifactSignerOptions {
@@ -121,11 +132,14 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
   return Object.freeze({
     activeKeyId: keyId,
     algorithm,
-    async signGrant(grant: BoundedGrant): Promise<AuthoritySignature> {
-      return signBytes(grantSigningBytes(grant));
+    async signGrant(grant: BoundedGrant, storeId: string): Promise<AuthoritySignature> {
+      return signBytes(grantSigningBytes(grant, storeId));
     },
-    async signRevocation(revocation: GrantRevocation): Promise<AuthoritySignature> {
-      return signBytes(revocationSigningBytes(revocation));
+    async signRevocation(revocation: GrantRevocation, storeId: string): Promise<AuthoritySignature> {
+      return signBytes(revocationSigningBytes(revocation, storeId));
+    },
+    async signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature> {
+      return signBytes(revocationStateSigningBytes(state));
     },
   });
 }

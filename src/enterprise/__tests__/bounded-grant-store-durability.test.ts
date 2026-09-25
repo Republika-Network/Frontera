@@ -17,7 +17,7 @@ import {
 import { createGrantExecutionService } from '../../features/execution-runtime/index.js';
 import { createRecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import { type DurableBoundedGrantStore } from '../bounded-grant-store/index.js';
-import { openDurableStore } from './authority-authenticity-fixture.js';
+import { dropAuthorityStoreTriggers, openDurableStore } from './authority-authenticity-fixture.js';
 import { isBoundedGrantStoreError } from '../bounded-grant-store/errors.js';
 
 /**
@@ -75,11 +75,12 @@ async function issueInto(store: BoundedGrantStorePort): Promise<BoundedGrant> {
   return outcome.grant;
 }
 
-/** Direct database access, used only to simulate the corruption and deletion a privileged writer could perform. */
+/** Direct database access, used only to simulate the corruption and deletion a privileged writer could perform — including dropping the store's defense-in-depth triggers, which such a writer can. */
 async function withRawDb<T>(dbPath: string, run: (db: import('better-sqlite3').Database) => T): Promise<T> {
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(dbPath);
   try {
+    dropAuthorityStoreTriggers(db);
     return run(db);
   } finally {
     db.close();
@@ -89,6 +90,13 @@ async function withRawDb<T>(dbPath: string, run: (db: import('better-sqlite3').D
 function assertCorrupt(error: unknown): true {
   assert.ok(isBoundedGrantStoreError(error), `expected a BoundedGrantStoreError, got ${String(error)}`);
   assert.equal(error.code, 'BOUNDED_GRANT_STORE_STATE_CORRUPT');
+  return true;
+}
+
+/** The revocation set no longer matches its signed commitment (CORE-01). */
+function assertRevocationStateInconsistent(error: unknown): true {
+  assert.ok(isBoundedGrantStoreError(error), `expected a BoundedGrantStoreError, got ${String(error)}`);
+  assert.equal(error.code, 'BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT', `expected inconsistent revocation state, got ${error.code}: ${error.message}`);
   return true;
 }
 
@@ -368,10 +376,12 @@ describe('Durable grant store — corrupt authority state fails closed', () => {
       db.prepare('DELETE FROM bounded_grant_revocations WHERE grant_id = ?').run(grant.id);
     });
 
+    // Since CORE-01 the deletion is caught by the signed revocation-state
+    // commitment, before the grant's (unsigned) pointer is even consulted.
     const second = await openDurableStore(dbPath);
     await assert.rejects(
       () => second.read(grant.id),
-      assertCorrupt,
+      assertRevocationStateInconsistent,
     );
     await second.close();
   });

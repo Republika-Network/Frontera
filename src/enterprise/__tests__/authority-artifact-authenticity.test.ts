@@ -40,7 +40,9 @@ import {
   AUTHORITY_KEY_A,
   AUTHORITY_KEY_B,
   AUTHORITY_KEY_UNTRUSTED,
+  dropAuthorityStoreTriggers,
   openDurableStore,
+  storeIdOf,
   testAuthenticity,
   testSigner,
   testVerifier,
@@ -114,6 +116,9 @@ async function withRawDb<T>(dbPath: string, run: (db: import('better-sqlite3').D
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(dbPath);
   try {
+    // The database-only writer: able to drop the store's defense-in-depth
+    // triggers, unable to sign. See `dropAuthorityStoreTriggers`.
+    dropAuthorityStoreTriggers(db);
     return run(db);
   } finally {
     db.close();
@@ -176,7 +181,7 @@ describe('Authority artifact authenticity — the privileged database writer', (
     await withRawDb(dbPath, (db) => {
       db.prepare('UPDATE bounded_grants SET grant_json = ?, grant_digest = ? WHERE grant_id = ?').run(
         serializeBoundedGrant(forged),
-        storedGrantRecordDigest(forged),
+        storedGrantRecordDigest(forged, storeIdOf(db)),
         grant.id,
       );
     });
@@ -205,7 +210,7 @@ describe('Authority artifact authenticity — the privileged database writer', (
     await second.close();
   });
 
-  it('a revocation altered and re-digested fails on its signature', async () => {
+  it('a revocation altered and re-digested is refused — the signed revocation-state commitment no longer describes it (CORE-01)', async () => {
     const dbPath = tempDbPath('revocation-reseal');
     const first = await openDurableStore(dbPath);
     const grant = await issueInto(first);
@@ -213,12 +218,37 @@ describe('Authority artifact authenticity — the privileged database writer', (
     await first.close();
 
     // Rewrite who recorded the revocation, and re-seal both the revocation's own
-    // digest and the grant's pointer to it — a fully self-consistent rewrite.
+    // digest and the grant's pointer to it — a fully self-consistent rewrite of
+    // every unkeyed value. Since CORE-01 the rewrite is caught one step earlier
+    // than the row's own signature: the signed commitment covers the row's
+    // digest, and the attacker cannot re-sign the commitment.
+    const storeId = await withRawDb(dbPath, storeIdOf);
     const rewritten: GrantRevocation = { grantId: grant.id, revokedAt: BEFORE_HORIZON, reason: 'security-incident', issuerRef: 'attacker' };
-    const rewrittenDigest = storedRevocationRecordDigest(rewritten);
+    const rewrittenDigest = storedRevocationRecordDigest(rewritten, storeId);
     await withRawDb(dbPath, (db) => {
       db.prepare('UPDATE bounded_grant_revocations SET issuer_ref = ?, revocation_digest = ? WHERE grant_id = ?').run('attacker', rewrittenDigest, grant.id);
       db.prepare('UPDATE bounded_grants SET revocation_digest = ? WHERE grant_id = ?').run(rewrittenDigest, grant.id);
+    });
+
+    const second = await openDurableStore(dbPath);
+    await assert.rejects(
+      () => second.read(grant.id),
+      (error: unknown) => isBoundedGrantStoreError(error) && error.code === 'BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT',
+    );
+    await second.close();
+  });
+
+  it('a revocation whose own signature is replaced fails on that signature', async () => {
+    const dbPath = tempDbPath('revocation-signature');
+    const first = await openDurableStore(dbPath);
+    const grant = await issueInto(first);
+    await first.revoke({ grantId: grant.id, reason: 'security-incident', revokedAt: BEFORE_HORIZON, issuerRef: 'operator-a' });
+    await first.close();
+
+    // Content, digests and the commitment are all untouched; only the row's
+    // signature is not the one the authority key produced.
+    await withRawDb(dbPath, (db) => {
+      db.prepare('UPDATE bounded_grant_revocations SET signature = ? WHERE grant_id = ?').run(Buffer.alloc(64, 9).toString('base64url'), grant.id);
     });
 
     const second = await openDurableStore(dbPath);
@@ -235,7 +265,7 @@ describe('Authority artifact authenticity — the privileged database writer', (
     // A real, valid signature over the real canonical bytes — under a key no
     // registry trusts. This is the whole reason trust comes from configuration
     // rather than from the artifact.
-    const attackerSignature = await testSigner(AUTHORITY_KEY_UNTRUSTED).signGrant(grant);
+    const attackerSignature = await testSigner(AUTHORITY_KEY_UNTRUSTED).signGrant(grant, await withRawDb(dbPath, storeIdOf));
     await withRawDb(dbPath, (db) => {
       db.prepare('UPDATE bounded_grants SET signature = ?, signing_key_id = ? WHERE grant_id = ?').run(
         attackerSignature.signature,
@@ -288,19 +318,20 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
   }
 
   const REVOCATION: GrantRevocation = { grantId: 'aoc.grant:x', revokedAt: BEFORE_HORIZON, reason: 'security-incident', issuerRef: 'operator-a' };
+  const STORE = 'store-under-test';
 
   it('a grant signature does not verify as a revocation signature', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
-    const result = verifier.verifyRevocation(REVOCATION, signature);
+    const signature = await signer.signGrant(grant, STORE);
+    const result = verifier.verifyRevocation(REVOCATION, STORE, signature);
     assert.equal(result.verified, false);
     assert.equal(result.verified === false && result.failure, 'AUTHORITY_SIGNATURE_INVALID');
   });
 
   it('a revocation signature does not verify as a grant signature', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signRevocation(REVOCATION);
-    const result = verifier.verifyGrant(grant, signature);
+    const signature = await signer.signRevocation(REVOCATION, STORE);
+    const result = verifier.verifyGrant(grant, STORE, signature);
     assert.equal(result.verified, false);
   });
 
@@ -312,21 +343,21 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
 
   it('domain separation is in the signed bytes, not only in the JSON shape', () => {
     const grant = grantFixture('aoc.grant:x');
-    assert.ok(grantSigningBytes(grant).toString('utf8').startsWith(AUTHORITY_SIGNING_DOMAINS.grant));
-    assert.ok(revocationSigningBytes(REVOCATION).toString('utf8').startsWith(AUTHORITY_SIGNING_DOMAINS.revocation));
+    assert.ok(grantSigningBytes(grant, STORE).toString('utf8').startsWith(AUTHORITY_SIGNING_DOMAINS.grant));
+    assert.ok(revocationSigningBytes(REVOCATION, STORE).toString('utf8').startsWith(AUTHORITY_SIGNING_DOMAINS.revocation));
   });
 
   it('a signature over grant A does not verify grant B', async () => {
     const a = grantFixture('aoc.grant:a');
     const b = grantFixture('aoc.grant:b');
-    const signature = await signer.signGrant(a);
-    assert.equal(verifier.verifyGrant(a, signature).verified, true);
-    assert.equal(verifier.verifyGrant(b, signature).verified, false);
+    const signature = await signer.signGrant(a, STORE);
+    assert.equal(verifier.verifyGrant(a, STORE, signature).verified, true);
+    assert.equal(verifier.verifyGrant(b, STORE, signature).verified, false);
   });
 
   it('changing ANY authority-relevant field breaks verification', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
+    const signature = await signer.signGrant(grant, STORE);
     const mutations: readonly BoundedGrant[] = [
       { ...grant, id: 'aoc.grant:other' },
       { ...grant, subject: 'actor-b' },
@@ -338,7 +369,7 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
       { ...grant, scope: { ...SOURCE_SCOPE, amount: { kind: 'ceiling', limit: '999999', unit: 'USD' } } },
     ];
     for (const mutated of mutations) {
-      assert.equal(verifier.verifyGrant(mutated, signature).verified, false, `mutation was not covered by the signature: ${serializeStoredGrantRecord(mutated)}`);
+      assert.equal(verifier.verifyGrant(mutated, STORE, signature).verified, false, `mutation was not covered by the signature: ${serializeStoredGrantRecord(mutated, STORE)}`);
     }
   });
 
@@ -348,34 +379,34 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
     // `serializeBoundedGrant` emits it. This pins that it does.
     const plain = grantFixture('aoc.grant:x');
     const provenanced: BoundedGrant = { ...plain, authorityBindingDigest: `sha256:${'a'.repeat(64)}` };
-    const plainSignature = await signer.signGrant(plain);
-    const provenancedSignature = await signer.signGrant(provenanced);
-    assert.equal(verifier.verifyGrant(provenanced, provenancedSignature).verified, true);
-    assert.equal(verifier.verifyGrant(provenanced, plainSignature).verified, false, 'provenance added after signing must not verify');
-    assert.equal(verifier.verifyGrant(plain, provenancedSignature).verified, false, 'provenance stripped after signing must not verify');
-    assert.equal(verifier.verifyGrant({ ...provenanced, authorityBindingDigest: `sha256:${'b'.repeat(64)}` }, provenancedSignature).verified, false, 'altered provenance must not verify');
+    const plainSignature = await signer.signGrant(plain, STORE);
+    const provenancedSignature = await signer.signGrant(provenanced, STORE);
+    assert.equal(verifier.verifyGrant(provenanced, STORE, provenancedSignature).verified, true);
+    assert.equal(verifier.verifyGrant(provenanced, STORE, plainSignature).verified, false, 'provenance added after signing must not verify');
+    assert.equal(verifier.verifyGrant(plain, STORE, provenancedSignature).verified, false, 'provenance stripped after signing must not verify');
+    assert.equal(verifier.verifyGrant({ ...provenanced, authorityBindingDigest: `sha256:${'b'.repeat(64)}` }, STORE, provenancedSignature).verified, false, 'altered provenance must not verify');
   });
 
   it('changing the keyId in the envelope breaks verification', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
-    const result = testVerifier([AUTHORITY_KEY_A, AUTHORITY_KEY_B]).verifyGrant(grant, { ...signature, keyId: AUTHORITY_KEY_B.keyId });
+    const signature = await signer.signGrant(grant, STORE);
+    const result = testVerifier([AUTHORITY_KEY_A, AUTHORITY_KEY_B]).verifyGrant(grant, STORE, { ...signature, keyId: AUTHORITY_KEY_B.keyId });
     assert.equal(result.verified, false);
     assert.equal(result.verified === false && result.failure, 'AUTHORITY_SIGNATURE_INVALID');
   });
 
   it('an unknown keyId fails closed, and is reported as such', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
-    const result = verifier.verifyGrant(grant, { ...signature, keyId: 'no-such-key' });
+    const signature = await signer.signGrant(grant, STORE);
+    const result = verifier.verifyGrant(grant, STORE, { ...signature, keyId: 'no-such-key' });
     assert.equal(result.verified === false && result.failure, 'AUTHORITY_SIGNING_KEY_UNKNOWN');
   });
 
   it('an unsupported algorithm is refused rather than attempted', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
+    const signature = await signer.signGrant(grant, STORE);
     for (const algorithm of ['hmac-sha256', 'none', 'ed25519', 'rsa-v1', '']) {
-      const result = verifier.verifyGrant(grant, { ...signature, algorithm });
+      const result = verifier.verifyGrant(grant, STORE, { ...signature, algorithm });
       assert.equal(result.verified, false, `algorithm '${algorithm}' must not verify`);
       assert.equal(
         result.verified === false && result.failure,
@@ -387,22 +418,22 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
 
   it('an unsupported artifact version is refused, never reinterpreted under the current one', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
-    const result = verifier.verifyGrant(grant, { ...signature, artifactVersion: 'aoc.authority-artifact.v9' });
+    const signature = await signer.signGrant(grant, STORE);
+    const result = verifier.verifyGrant(grant, STORE, { ...signature, artifactVersion: 'aoc.authority-artifact.v9' });
     assert.equal(result.verified === false && result.failure, 'AUTHORITY_ARTIFACT_VERSION_UNSUPPORTED');
   });
 
   it('a missing signature fails closed, and is distinguishable from a bad one', async () => {
     const grant = grantFixture('aoc.grant:x');
     for (const absent of [undefined, null]) {
-      const result = verifier.verifyGrant(grant, absent);
+      const result = verifier.verifyGrant(grant, STORE, absent);
       assert.equal(result.verified === false && result.failure, 'AUTHORITY_SIGNATURE_MISSING');
     }
   });
 
   it('malformed signature material fails closed', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
+    const signature = await signer.signGrant(grant, STORE);
     const malformed: readonly unknown[] = [
       {},
       'not-an-envelope',
@@ -416,36 +447,36 @@ describe('Authority artifact authenticity — cryptographic confusion', () => {
       { ...signature, artifactVersion: 42 },
     ];
     for (const candidate of malformed) {
-      const result = verifier.verifyGrant(grant, candidate);
+      const result = verifier.verifyGrant(grant, STORE, candidate);
       assert.equal(result.verified, false, `must not verify: ${JSON.stringify(candidate)}`);
     }
   });
 
   it('a truncated signature is MALFORMED, not merely invalid — no key is consulted for it', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
-    const result = verifier.verifyGrant(grant, { ...signature, signature: signature.signature.slice(0, 40) });
+    const signature = await signer.signGrant(grant, STORE);
+    const result = verifier.verifyGrant(grant, STORE, { ...signature, signature: signature.signature.slice(0, 40) });
     assert.equal(result.verified === false && result.failure, 'AUTHORITY_SIGNATURE_MALFORMED');
   });
 
   it('the wrong public key fails closed', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
+    const signature = await signer.signGrant(grant, STORE);
     // Key B's public material registered under key A's id: the envelope resolves,
     // the algorithm matches, and the signature still does not verify.
     const misregistered = createAuthorityArtifactVerifier([{ keyId: AUTHORITY_KEY_A.keyId, algorithm: 'ed25519-v1', publicKeyPem: AUTHORITY_KEY_B.publicKeyPem }]);
-    assert.equal(misregistered.verifyGrant(grant, signature).verified, false);
+    assert.equal(misregistered.verifyGrant(grant, STORE, signature).verified, false);
   });
 
   it('a key registered for one algorithm is not usable for another', async () => {
     const grant = grantFixture('aoc.grant:x');
-    const signature = await signer.signGrant(grant);
+    const signature = await signer.signGrant(grant, STORE);
     // There is only one supported algorithm today, so this is proven on the
     // registry's own rule rather than by inventing a second one: the verifier
     // compares the envelope's algorithm against the registry's, and refuses on
     // disagreement. The check is here so that adding a second algorithm cannot
     // silently make keys interchangeable between them.
-    const result = verifier.verifyGrant(grant, { ...signature, algorithm: 'ed25519-v1' });
+    const result = verifier.verifyGrant(grant, STORE, { ...signature, algorithm: 'ed25519-v1' });
     assert.equal(result.verified, true);
   });
 });
@@ -637,7 +668,7 @@ describe('Authority artifact authenticity — signer and verifier as separate ca
   it('the verifier exposes no way to sign, and the signer no way to read key material', () => {
     const verifier = testVerifier();
     const signer = testSigner();
-    for (const name of ['sign', 'signGrant', 'signRevocation', 'privateKey', 'key']) {
+    for (const name of ['sign', 'signGrant', 'signRevocation', 'signRevocationState', 'privateKey', 'key']) {
       assert.equal(name in verifier, false, `the verifier must not expose '${name}'`);
     }
     for (const name of ['privateKey', 'key', 'export', 'privateKeyPem']) {
@@ -652,16 +683,19 @@ describe('Authority artifact authenticity — signer and verifier as separate ca
   });
 
   it('a signature envelope never carries a public key for the verifier to trust', async () => {
-    const signature: AuthoritySignature = await testSigner().signGrant({
-      id: 'aoc.grant:x',
-      correlation: CORRELATION,
-      subject: 'actor-a',
-      scope: SOURCE_SCOPE,
-      issuedAt: NOW,
-      expiresAt: HORIZON,
-      sourceDigest: 'sha256:aaaa',
-      digest: 'sha256:bbbb',
-    });
+    const signature: AuthoritySignature = await testSigner().signGrant(
+      {
+        id: 'aoc.grant:x',
+        correlation: CORRELATION,
+        subject: 'actor-a',
+        scope: SOURCE_SCOPE,
+        issuedAt: NOW,
+        expiresAt: HORIZON,
+        sourceDigest: 'sha256:aaaa',
+        digest: 'sha256:bbbb',
+      },
+      'store-under-test',
+    );
     assert.deepEqual(Object.keys(signature).sort(), ['algorithm', 'artifactVersion', 'keyId', 'signature']);
     assert.equal(JSON.stringify(signature).includes('PUBLIC KEY'), false);
     assert.equal(signature.artifactVersion, AUTHORITY_ARTIFACT_VERSION);
@@ -750,11 +784,22 @@ describe('Authority artifact authenticity — signer failure never becomes an un
       async signRevocation(): Promise<AuthoritySignature> {
         throw new AuthoritySigningUnavailableError('signer offline');
       },
+      async signRevocationState(): Promise<AuthoritySignature> {
+        throw new AuthoritySigningUnavailableError('signer offline');
+      },
     };
   }
 
+  it('a new store cannot be created without a signer — its genesis commitment must be signed (CORE-01)', async () => {
+    const dbPath = tempDbPath('signer-down-genesis');
+    await assert.rejects(() => openDurableStore(dbPath, { authenticity: { signer: failingSigner(), verifier: testVerifier() } }), AuthoritySigningUnavailableError);
+    const tables = await withRawDb(dbPath, (db) => (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((row) => row.name));
+    assert.equal(tables.includes('bounded_grants'), false, 'a store whose genesis could not be signed must not be initialized');
+  });
+
   it('an issuance that cannot be signed is not issued, and writes nothing', async () => {
     const dbPath = tempDbPath('signer-down-issue');
+    await (await openDurableStore(dbPath)).close();
     const store = await openDurableStore(dbPath, { authenticity: { signer: failingSigner(), verifier: testVerifier() } });
 
     await assert.rejects(() => issueInto(store), AuthoritySigningUnavailableError);
@@ -800,13 +845,17 @@ describe('Authority artifact authenticity — Prompt 4 semantics are unchanged',
     const observingSigner: AuthorityArtifactSigner = {
       activeKeyId: AUTHORITY_KEY_A.keyId,
       algorithm: 'ed25519-v1',
-      async signGrant(grant) {
+      async signGrant(grant, storeId) {
         order.push('sign');
-        return testSigner(AUTHORITY_KEY_A).signGrant(grant);
+        return testSigner(AUTHORITY_KEY_A).signGrant(grant, storeId);
       },
-      async signRevocation(revocation) {
+      async signRevocation(revocation, storeId) {
         order.push('sign');
-        return testSigner(AUTHORITY_KEY_A).signRevocation(revocation);
+        return testSigner(AUTHORITY_KEY_A).signRevocation(revocation, storeId);
+      },
+      async signRevocationState(state) {
+        order.push('sign-state');
+        return testSigner(AUTHORITY_KEY_A).signRevocationState(state);
       },
     };
     await store.close();

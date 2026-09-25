@@ -1,5 +1,6 @@
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 import type { AuthorityControlledExecutionService } from '../execution-governance/index.js';
+import { isAuthenticatedDurableBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
 import type { EnterpriseModule } from './enterprise-module.js';
 import { KERNEL_MODULE_ID } from './kernel-module.js';
 
@@ -26,8 +27,23 @@ export const AUTHORITY_CONTROLLED_EXECUTION_MODULE_ID = 'aoc.enterprise.authorit
  * `TARGET_AUTHORITY_CONTROL_ARCHITECTURE.md` §9 — and an adapter that is down
  * withholds nothing anyway, because an execution that cannot run reports
  * `execution-failed` rather than a grant or a decision.
+ *
+ * It does report, since CORE-01, **which kind of grant store** the Host holds —
+ * `authenticated-durable` or `unauthenticated` — so a deployment running on
+ * unsigned authority storage says so rather than looking identical to one that
+ * is not. For the authenticated durable store it also probes the store's own
+ * local health, which includes verifying the signed revocation-state
+ * commitment: a store whose revocation state cannot be proven answers no
+ * authority read, and is reported unhealthy. That probe is local SQLite, never
+ * a provider.
  */
-export function createAuthorityControlledExecutionModule(service: AuthorityControlledExecutionService, adapterId: string, now: () => string): EnterpriseModule {
+export function createAuthorityControlledExecutionModule(
+  service: AuthorityControlledExecutionService,
+  adapterId: string,
+  now: () => string,
+  grantStore?: unknown,
+): EnterpriseModule {
+  const durable = isAuthenticatedDurableBoundedGrantStore(grantStore) ? grantStore : undefined;
   return {
     descriptor: {
       id: AUTHORITY_CONTROLLED_EXECUTION_MODULE_ID,
@@ -44,7 +60,25 @@ export function createAuthorityControlledExecutionModule(service: AuthorityContr
       }
     },
     async health() {
-      return { status: 'healthy', checkedAt: now(), details: { executionAdapterId: adapterId } };
+      if (durable === undefined) {
+        return { status: 'healthy', checkedAt: now(), details: { executionAdapterId: adapterId, grantStore: 'unauthenticated' } };
+      }
+      try {
+        const report = await durable.health();
+        return {
+          status: report.status === 'healthy' ? 'healthy' : 'unhealthy',
+          checkedAt: now(),
+          details: {
+            executionAdapterId: adapterId,
+            grantStore: 'authenticated-durable',
+            revocationState: report.revocationState,
+            ...(report.revocationStateFailure !== undefined ? { revocationStateFailure: report.revocationStateFailure } : {}),
+            ...(report.revocationSequence !== undefined ? { revocationSequence: report.revocationSequence } : {}),
+          },
+        };
+      } catch {
+        return { status: 'unhealthy', checkedAt: now(), details: { executionAdapterId: adapterId, grantStore: 'authenticated-durable', revocationState: 'failed' } };
+      }
     },
     async shutdown() {
       // The composition owns no external resources of its own: the grant store

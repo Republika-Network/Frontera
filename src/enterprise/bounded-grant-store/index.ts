@@ -12,13 +12,17 @@ export type { BoundedGrantStoreErrorCode } from './errors.js';
 
 export {
   BOUNDED_GRANT_RECORD_FORMAT,
+  REVOCATION_SET_FORMAT,
+  revocationSetDigest,
+  serializeRevocationStateCommitment,
   serializeStoredGrantRecord,
   serializeStoredRevocationRecord,
   storedGrantRecordDigest,
   storedRevocationRecordDigest,
 } from './bounded-grant-record.js';
+export type { RevocationSetEntry, RevocationStateCommitment } from './bounded-grant-record.js';
 
-export { createSqliteBoundedGrantStore } from './sqlite-bounded-grant-store.js';
+export { createSqliteBoundedGrantStore, isAuthenticatedDurableBoundedGrantStore } from './sqlite-bounded-grant-store.js';
 export type {
   BoundedGrantStoreHealth,
   CreateSqliteBoundedGrantStoreOptions,

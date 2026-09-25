@@ -92,3 +92,26 @@ export function authorityAuthenticityEnv(key: TestAuthorityKey = AUTHORITY_KEY_A
     AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: JSON.stringify([trustedKeyOf(key)]),
   };
 }
+
+/**
+ * The store id a durable grant store's records are bound to (CORE-01). Read
+ * straight from the file, the way an attacker with database access would.
+ */
+export function storeIdOf(db: import('better-sqlite3').Database): string {
+  return (db.prepare('SELECT store_id FROM bounded_grant_revocation_state WHERE singleton = 1').get() as { store_id: string }).store_id;
+}
+
+/**
+ * Becomes the database-only writer this repository's threat model assumes.
+ *
+ * The durable store installs append-only triggers as defense in depth. They
+ * stop an ordinary accidental UPDATE or DELETE; they do not stop anyone who can
+ * write the file, because that person can drop them. Tests that simulate
+ * tampering therefore drop them first — so every such test measures what the
+ * *signatures* prevent, not what a trigger happened to block. The store
+ * re-creates its triggers the next time it is opened.
+ */
+export function dropAuthorityStoreTriggers(db: import('better-sqlite3').Database): void {
+  const triggers = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).all() as { name: string }[];
+  for (const { name } of triggers) db.exec(`DROP TRIGGER IF EXISTS "${name.replace(/"/g, '""')}"`);
+}
