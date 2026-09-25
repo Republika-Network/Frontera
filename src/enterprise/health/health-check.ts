@@ -1,5 +1,5 @@
 import { AOC_KERNEL_VERSION } from '../../kernel/index.js';
-import type { EnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import type { EnterpriseConfiguration, EnterpriseEnvironment } from '../configuration/enterprise-configuration.js';
 import { computeConfigurationChecksum } from '../configuration/enterprise-configuration.js';
 import type { GovernanceStore } from '../persistence/governance-store.js';
 import type { EnterpriseLifecycleState, EnterpriseModuleId } from '../modules/enterprise-module.js';
@@ -13,6 +13,33 @@ export interface EnterpriseHealthLifecycleContext {
   readonly live: boolean;
   readonly ready: boolean;
   readonly modules: Readonly<Record<EnterpriseModuleId, EnterpriseModuleHealthEntry>>;
+}
+
+/**
+ * PROD-01: what the Host actually composed, in words an operator can check
+ * against what they meant to deploy. Derived from the composed objects, never
+ * from what configuration requested, and free of secrets, paths, key material
+ * and adapter identities (those are server-side only).
+ *
+ * Informational: `status` is still computed from module health alone. What
+ * makes a deployment *refuse* an unsafe posture is the Enterprise Host
+ * bootstrap (`host/enterprise-host.ts`), which checks this same object before
+ * it binds a socket.
+ */
+export interface EnterpriseHealthPosture {
+  readonly environment: EnterpriseEnvironment;
+  /** `durable` = SQLite stores; `ephemeral` = in-memory, lost on restart. */
+  readonly persistence: 'durable' | 'ephemeral';
+  /** Whether the legacy v1 routes require a bearer credential. The governed-action route always does. */
+  readonly authentication: 'required' | 'disabled';
+  readonly governedActions: 'composed' | 'not-composed';
+  /** The bounded-grant store's kind. `authenticated-durable` is the signed, revocation-state-verified store (CORE-01). */
+  readonly authorityStore: 'authenticated-durable' | 'unauthenticated' | 'not-composed';
+  readonly kernelAuthority: 'composed' | 'unavailable' | 'not-composed';
+  readonly emergencyControl: 'composed' | 'not-composed';
+  readonly exerciseControls: 'composed' | 'not-composed';
+  /** How many provider adapters the execution boundary holds. A count, never their identities. */
+  readonly executionAdapters: number;
 }
 
 /**
@@ -42,6 +69,8 @@ export interface EnterpriseHealthReport {
   readonly live?: boolean;
   readonly ready?: boolean;
   readonly modules?: Readonly<Record<EnterpriseModuleId, EnterpriseModuleHealthEntry>>;
+  /** PROD-01 — present whenever the caller supplied `EnterpriseHealthDependencies.posture` (every `AocEnterprise.health()`). */
+  readonly posture?: EnterpriseHealthPosture;
 }
 
 export interface EnterpriseHealthDependencies {
@@ -52,6 +81,8 @@ export interface EnterpriseHealthDependencies {
   readonly now: () => string;
   /** Optional -- see `EnterpriseHealthLifecycleContext`. */
   readonly lifecycle?: EnterpriseHealthLifecycleContext;
+  /** Optional -- see `EnterpriseHealthPosture`. */
+  readonly posture?: EnterpriseHealthPosture;
 }
 
 /**
@@ -108,5 +139,6 @@ export async function computeEnterpriseHealth(deps: EnterpriseHealthDependencies
     ...(deps.lifecycle !== undefined
       ? { lifecycleState: deps.lifecycle.lifecycleState, live: deps.lifecycle.live, ready: deps.lifecycle.ready, modules: deps.lifecycle.modules }
       : {}),
+    ...(deps.posture !== undefined ? { posture: deps.posture } : {}),
   };
 }

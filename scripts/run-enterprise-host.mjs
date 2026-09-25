@@ -1,13 +1,46 @@
-import { createEnterpriseServer } from '../dist/src/enterprise/index.js';
+// `npm run start:enterprise` — the Frontera Enterprise Host launcher.
+//
+// A thin process wrapper over `bootEnterpriseHost()` (src/enterprise/host/enterprise-host.ts),
+// the one canonical bootstrap: configuration, secure-profile validation,
+// composition, the posture/health gate and the listener all live there, so this
+// file and the tests start the same system. See docs/enterprise/AOC_ENTERPRISE_HOST.md.
+import { bootEnterpriseHost, isEnterpriseHostConfigurationError } from '../dist/src/enterprise/index.js';
 
-const server = await createEnterpriseServer();
-const { host, port } = await server.listen();
-console.log(`Soberanía Enterprise Host listening on http://${host}:${port}`);
-console.log('Boot with zero registered actors/trust domains (fail-closed default) -- seed real governance data via the recognition/authority runtimes before routing production traffic.');
+/** One line, code first. Messages are secret-free by construction; no stack, no environment. */
+function describe(error) {
+  const code = isEnterpriseHostConfigurationError(error) ? error.code : typeof error?.code === 'string' ? error.code : 'HOST_STARTUP_FAILED';
+  const message = error instanceof Error ? error.message : String(error);
+  return `[${code}] ${message}`;
+}
 
+let host;
+try {
+  host = await bootEnterpriseHost();
+  const { host: address, port } = await host.listen();
+  const p = host.posture;
+  console.log(`Frontera Enterprise Host listening on http://${address}:${port}`);
+  console.log(
+    `posture: environment=${p.environment} persistence=${p.persistence} authentication=${p.authentication} governedActions=${p.governedActions} authorityStore=${p.authorityStore} executionAdapters=${p.executionAdapters}`,
+  );
+  if (p.persistence === 'ephemeral') {
+    console.log('WARNING: ephemeral in-memory state (development only). Every grant, revocation and ledger entry is lost when this process exits.');
+  }
+} catch (error) {
+  console.error(`Frontera Enterprise Host refused to start ${describe(error)}`);
+  process.exit(1);
+}
+
+let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, async () => {
-    await server.close();
-    process.exit(0);
+  process.on(signal, () => {
+    if (stopping) return;
+    stopping = true;
+    host.close().then(
+      () => process.exit(0),
+      (error) => {
+        console.error(`Frontera Enterprise Host shutdown failed ${describe(error)}`);
+        process.exit(1);
+      },
+    );
   });
 }
