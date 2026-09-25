@@ -38,24 +38,38 @@ npm run validate:v1-release   # consolidated v1 gate (superset of validate:relea
 
 ## Start
 
+A production Host is the governed-action control plane or it does not
+start. The minimum secure configuration, the governed-action file and every
+refusal code are in `docs/enterprise/AOC_ENTERPRISE_HOST.md` §"Secure
+production host (PROD-01)"; `.env.example` lists every variable.
+
 ```bash
 AOC_ENTERPRISE_ENV=production \
 AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite \
 AOC_ENTERPRISE_REQUIRE_AUTH=true \
-AOC_ENTERPRISE_API_KEYS='<key1>,<key2>:org-acme' \
-npm run start:enterprise      # scripts/run-enterprise-host.mjs
+AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED=true \
+AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID=org-acme \
+AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE=/etc/frontera/governed-actions.json \
+npm run start:enterprise      # scripts/run-enterprise-host.mjs -> bootEnterpriseHost()
+# plus the authority signing key, the trusted verification set, the
+# *_SQLITE_PATH variables and the secrets the governed-action file names,
+# from your secret manager
 ```
 
 The entry point (`scripts/run-enterprise-host.mjs`) calls
-`createEnterpriseServer()` from the built `dist/` output, logs the listen
-address, and installs `SIGINT`/`SIGTERM` handlers that run a clean
-`server.close()` (reverse-order module shutdown, WAL checkpoint on store
-close). Always stop the Host with `SIGTERM`, never `SIGKILL`, unless it is
+`bootEnterpriseHost()` from the built `dist/` output. It validates the
+configuration strictly, composes the governed-action spine, refuses to bind
+unless the composed posture and health are what the profile requires, prints
+the listen address and posture, and installs `SIGINT`/`SIGTERM` handlers that
+run a clean close (listener, reverse-order module shutdown, every store the
+Host opened). A refusal prints `refused to start [CODE] message` and exits 1.
+Always stop the Host with `SIGTERM`, never `SIGKILL`, unless it is
 unresponsive.
 
 The Host boots with **zero registered actors/trust domains** (fail-closed
-default) — seed real governance data via the recognition/authority
-runtimes before routing production traffic.
+default). Provisioning the durable Kernel Authority world is, today, a
+trusted in-process operation (`AocEnterprise.kernelAuthorityProvisioning`);
+its HTTP surface is CTRL-01.
 
 ## Configuration reference
 
@@ -69,10 +83,10 @@ default (an unreasonable value never disables a timeout or limit).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AOC_ENTERPRISE_ENV` | `development` | Deployment environment: `development`, `test`, `staging`, or `production`. Unrecognized values fall back to `development`. |
+| `AOC_ENTERPRISE_ENV` | `development` | Deployment environment: `development`, `test`, `staging`, or `production`. `production`/`staging` select the secure profile. The Host refuses an unrecognized value. |
 | `AOC_ENTERPRISE_VERSION` | built-in `AOC_ENTERPRISE_HOST_VERSION` | Reported Enterprise version (health endpoint, logs). |
 | `AOC_ENTERPRISE_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn`, `error`. |
-| `AOC_ENTERPRISE_PERSISTENCE_PROVIDER` | `memory` | `sqlite` or `memory`. Anything other than `sqlite` means `memory`. **Production must set `sqlite`** — the memory provider loses everything on restart. |
+| `AOC_ENTERPRISE_PERSISTENCE_PROVIDER` | `memory` | `sqlite` or `memory`; the Host refuses anything else. **Production must set `sqlite`** — the Host refuses `memory` under the secure profile. |
 | `AOC_ENTERPRISE_SQLITE_PATH` | `.data/enterprise-host.sqlite` | Governance Store database file (`:memory:` supported). |
 | `AOC_ENTERPRISE_PASSPORT_SQLITE_PATH` | `.data/agent-passport.sqlite` | Agent Passport Store database file. Independent of every other store's file. |
 | `AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH` | `.data/assurance.sqlite` | Assurance Store database file. Independent of every other store's file. |
@@ -84,24 +98,23 @@ default (an unreasonable value never disables a timeout or limit).
 | `AOC_ENTERPRISE_EVENTS_ENABLED` | `true` | In-process event publishing on/off. |
 | `AOC_ENTERPRISE_TELEMETRY_ENABLED` | `true` | Operational counters on/off. |
 | `AOC_ENTERPRISE_API_KEYS` | (empty) | Static bearer tokens: `"key1,key2:org-acme,key3:org-beta"`. A bare key grants access regardless of the request's organization; a `key:orgId` pair scopes the key to that organization — a request for a different organization is a 403, not a 401. |
-| `AOC_ENTERPRISE_REQUIRE_AUTH` | `false` | When `true`, every API call must present a configured bearer token. |
+| `AOC_ENTERPRISE_REQUIRE_AUTH` | `false` | When `true`, every API call must present a configured bearer token. Required by the secure profile; `false` forces a loopback bind. |
 | `AOC_ENTERPRISE_TRACE_LEVEL` | `basic` | `basic` or `full` trace detail. |
 | `AOC_ENTERPRISE_HTTP_PORT` | `8787` | Listen port (`0` = OS-assigned, useful in tests). |
-| `AOC_ENTERPRISE_HTTP_HOST` | `0.0.0.0` | Listen host. Bind to `127.0.0.1` when a local reverse proxy fronts the Host. |
+| `AOC_ENTERPRISE_HTTP_HOST` | `127.0.0.1` | Listen host. Set `0.0.0.0` (with authentication on) to accept network traffic directly; keep `127.0.0.1` when a local reverse proxy fronts the Host. |
 | `AOC_ENTERPRISE_STARTUP_TIMEOUT_MS` | `30000` | Bound on module startup; exceeded = failed startup. |
 | `AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS` | `30000` | Bound on each module's `shutdown()` call. |
 | `AOC_ENTERPRISE_HEALTH_CHECK_TIMEOUT_MS` | `5000` | Bound on each module's health check. |
 | `AOC_ENTERPRISE_PASSPORT_REQUIRED` | `false` | `true` makes a Passport Store outage block Enterprise readiness. Default: Passport-backed recognition degrades gracefully. |
 | `AOC_ENTERPRISE_ASSURANCE_REQUIRED` | `false` | `true` makes an Assurance Store outage block Enterprise readiness. Default: Assurance degrades without blocking `POST /api/governance/evaluate`. |
 
-### Authentication is OFF by default
+### Authentication is off by default, and then loopback-only
 
-`AOC_ENTERPRISE_REQUIRE_AUTH` defaults to `false`: with default
-configuration the Host answers every request unauthenticated, on
-`0.0.0.0`. That default exists for zero-configuration local development
-only. **Any deployment reachable beyond localhost MUST set
-`AOC_ENTERPRISE_REQUIRE_AUTH=true` and configure
-`AOC_ENTERPRISE_API_KEYS`** before it receives traffic. Failed
+`AOC_ENTERPRISE_REQUIRE_AUTH` defaults to `false` for zero-configuration
+local development, where the Host binds `127.0.0.1` by default. The Host
+refuses to start with authentication off on any non-loopback address
+(`HOST_UNAUTHENTICATED_NETWORK_BIND`), and the secure profile refuses to
+start with it off at all. There is no default API key. Failed
 authentication is a 401 `AUTHENTICATION_FAILED`; a valid but
 wrongly-scoped key is a 403 `AUTHORIZATION_FAILED` (or a
 scope-violation code). API keys are never logged and never appear in
@@ -210,8 +223,18 @@ Environment=AOC_ENTERPRISE_SQLITE_PATH=/var/lib/aoc-enterprise/enterprise-host.s
 Environment=AOC_ENTERPRISE_PASSPORT_SQLITE_PATH=/var/lib/aoc-enterprise/agent-passport.sqlite
 Environment=AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH=/var/lib/aoc-enterprise/assurance.sqlite
 Environment=AOC_ENTERPRISE_REQUIRE_AUTH=true
-# Keep the key list out of the unit file:
-EnvironmentFile=/etc/aoc-enterprise/secrets.env   # AOC_ENTERPRISE_API_KEYS=...
+Environment=AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED=true
+Environment=AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID=org-acme
+Environment=AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH=/var/lib/aoc-enterprise/kernel-authority.sqlite
+Environment=AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH=/var/lib/aoc-enterprise/bounded-grants.sqlite
+Environment=AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH=/var/lib/aoc-enterprise/emergency-controls.sqlite
+Environment=AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH=/var/lib/aoc-enterprise/exercise-ledger.sqlite
+Environment=AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH=/var/lib/aoc-enterprise/authority-event-stream.sqlite
+Environment=AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH=/var/lib/aoc-enterprise/execution-outcomes.sqlite
+Environment=AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE=/etc/aoc-enterprise/governed-actions.json
+# Keep every secret out of the unit file: API keys, the authority signing
+# key and verification set, and each variable the governed-action file names.
+EnvironmentFile=/etc/aoc-enterprise/secrets.env
 
 # Hardening
 NoNewPrivileges=true
