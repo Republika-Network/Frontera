@@ -29,9 +29,20 @@ test('the launcher delegates to bootEnterpriseHost and composes nothing itself',
   }
 });
 
-function run(env, { stopWhenListening = false } = {}) {
+/**
+ * Spawns the launcher. A launcher that should refuse but instead boots would
+ * run forever, and the test runner does not kill spawned children on timeout,
+ * so every run has its own deadline: past it the child is killed and the run
+ * reports `timedOut` — a failure, never a hang.
+ */
+function run(env, { stopWhenListening = false, deadlineMs = 90_000 } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [LAUNCHER], { cwd: ROOT, env: { PATH: process.env.PATH, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, deadlineMs);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => {
@@ -41,7 +52,10 @@ function run(env, { stopWhenListening = false } = {}) {
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
-    child.on('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    child.on('exit', (code, signal) => {
+      clearTimeout(deadline);
+      resolve({ code, signal, stdout, stderr, timedOut });
+    });
   });
 }
 
@@ -57,6 +71,7 @@ test('a production launch without secure configuration exits 1 with a code, and 
     AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID: 'k1',
     AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM: pem,
   });
+  assert.equal(result.timedOut, false, `the launcher must refuse, not keep running: ${result.stdout}`);
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /refused to start \[HOST_GOVERNED_ACTIONS_REQUIRED\]/);
   assert.equal(result.stdout.includes('listening'), false, 'nothing was bound');
@@ -68,6 +83,7 @@ test('a production launch without secure configuration exits 1 with a code, and 
 
 test('a development launch states its posture, and SIGTERM shuts it down cleanly', { timeout: 120_000 }, async () => {
   const result = await run({ AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' }, { stopWhenListening: true });
+  assert.equal(result.timedOut, false, 'SIGTERM must stop the Host');
   assert.match(result.stdout, /listening on http:\/\/127\.0\.0\.1:\d+/);
   assert.match(result.stdout, /posture: environment=development persistence=ephemeral authentication=disabled governedActions=not-composed/);
   assert.match(result.stdout, /WARNING: ephemeral in-memory state/);
