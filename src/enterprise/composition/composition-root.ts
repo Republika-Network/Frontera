@@ -108,6 +108,16 @@ import {
   isCanonicalCustomerIdentifier,
   type CustomerIdentityAdmissionService,
 } from '../customer-identity/index.js';
+import {
+  AuthorityAuthenticityConfigurationError,
+  authorityVerificationKeyFromPrivateKey,
+  createAuthorityArtifactVerifier,
+  createSoftwareAuthorityArtifactSigner,
+  isSupportedAuthoritySignatureAlgorithm,
+  type AuthorityArtifactSigner,
+  type AuthorityArtifactVerifier,
+  type TrustedVerificationKey,
+} from '../authority-authenticity/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -779,7 +789,11 @@ async function buildKernelAuthorityStore(configuration: EnterpriseConfiguration,
  */
 async function buildBoundedGrantStore(configuration: EnterpriseConfiguration): Promise<BoundedGrantStorePort> {
   if (configuration.persistence.provider === 'sqlite') {
-    return createSqliteBoundedGrantStore(configuration.boundedGrant.sqlitePath, { busyTimeoutMs: configuration.persistence.busyTimeoutMs });
+    const { signer, verifier } = buildAuthorityAuthenticity(configuration);
+    return createSqliteBoundedGrantStore(configuration.boundedGrant.sqlitePath, {
+      busyTimeoutMs: configuration.persistence.busyTimeoutMs,
+      authenticity: { signer, verifier },
+    });
   }
   return createInMemoryBoundedGrantStore();
 }
@@ -874,6 +888,78 @@ function createAuthorityEventStreamReader(store: AuthorityEventStreamStore): Aut
     readStream: (context: Parameters<AuthorityEventStreamReader['readStream']>[0], streamId: string) => store.readStream(context, streamId),
     verifyStream: (context: Parameters<AuthorityEventStreamReader['verifyStream']>[0], streamId: string) => store.verifyStream(context, streamId),
   });
+}
+
+/**
+ * Builds the two halves of the authenticity boundary, **separately**, and
+ * refuses every configuration in which they would not agree.
+ *
+ * The separation is the point, and it is visible in the return type: a signer
+ * and a verifier, constructed independently, handed to different parts of the
+ * store. `buildBoundedGrantStore` passes both because it builds the object that
+ * does both jobs; nothing downstream of it receives the signer, and the exercise
+ * path receives neither — it gets `BoundedGrantReaderPort`, which has one
+ * method.
+ *
+ * ## Why this throws rather than degrading
+ *
+ * Fails closed like `buildKernelAuthorityStore` and like the durable store
+ * itself. A deployment that selects durable authority but configures no key
+ * boundary has asked for two things that contradict each other, and the
+ * resolutions available are: run durable authority unsigned (destroys the
+ * property), mint a key at startup (makes the process its own root of trust, so
+ * anything that can restart the process can mint authority), or refuse. Only the
+ * third is a security posture, so only the third is implemented. There is no
+ * flag that selects either of the others.
+ */
+function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier } {
+  const { activeSigningKeyId, signingKeyPem, verificationKeys } = configuration.authorityAuthenticity;
+
+  if (activeSigningKeyId === undefined || signingKeyPem === undefined) {
+    throw new AuthorityAuthenticityConfigurationError(
+      'The durable bounded-grant store requires an authority signing key. Configure AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID and AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM, or do not select the durable store. There is no unsigned durable authority mode.',
+    );
+  }
+
+  const active = verificationKeys.find((entry) => entry.keyId === activeSigningKeyId);
+  if (active === undefined) {
+    // A signing key absent from the trusted set would produce artifacts this
+    // deployment cannot read back. The store's own read-back on issuance would
+    // catch it on the first grant, but a startup refusal is the better place:
+    // the alternative is a Host that reports itself healthy and fails at the
+    // first exercise.
+    throw new AuthorityAuthenticityConfigurationError(
+      `The active authority signing key '${activeSigningKeyId}' is not present in the trusted verification set. An artifact signed by a key this deployment does not trust could never be read back.`,
+    );
+  }
+  if (!isSupportedAuthoritySignatureAlgorithm(active.algorithm)) {
+    throw new AuthorityAuthenticityConfigurationError(
+      `The active authority signing key '${activeSigningKeyId}' names algorithm '${active.algorithm}', which is outside the supported registry.`,
+    );
+  }
+  // The configured public half must be the public half of the configured
+  // private key. Without this, a deployment could sign with one key pair while
+  // trusting another's public key under the same id, and every issuance would
+  // fail its own read-back for a reason that looks like corruption.
+  if (authorityVerificationKeyFromPrivateKey(signingKeyPem).trim() !== active.publicKeyPem.trim()) {
+    throw new AuthorityAuthenticityConfigurationError(
+      `The configured authority signing key does not match the verification key registered under id '${activeSigningKeyId}'.`,
+    );
+  }
+
+  const trusted: readonly TrustedVerificationKey[] = verificationKeys.map((entry) => {
+    if (!isSupportedAuthoritySignatureAlgorithm(entry.algorithm)) {
+      throw new AuthorityAuthenticityConfigurationError(
+        `Trusted authority verification key '${entry.keyId}' names algorithm '${entry.algorithm}', which is outside the supported registry.`,
+      );
+    }
+    return { keyId: entry.keyId, algorithm: entry.algorithm, publicKeyPem: entry.publicKeyPem };
+  });
+
+  return {
+    signer: createSoftwareAuthorityArtifactSigner({ keyId: activeSigningKeyId, algorithm: active.algorithm, privateKeyPem: signingKeyPem }),
+    verifier: createAuthorityArtifactVerifier(trusted),
+  };
 }
 
 /** A dedicated id source for Enterprise-internal bookkeeping (event ids, boot id) -- independent of the Kernel's own `idGenerator`, so Enterprise bookkeeping never perturbs the Kernel's internal id sequence. */

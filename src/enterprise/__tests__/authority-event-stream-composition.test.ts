@@ -26,6 +26,7 @@ import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { AUTHORITY_EVENT_STREAM_MODULE_ID } from '../modules/authority-event-stream-module.js';
 import { ALLOWED_INTENT, EVALUATED_AT_POLICY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
+import { AUTHORITY_KEY_A, trustedKeyOf } from './authority-authenticity-fixture.js';
 import { steppingClock, tick } from './authority-event-stream-support.js';
 import { buildTestKernelProviders } from './support.js';
 
@@ -72,7 +73,13 @@ function configuration(options: { readonly sqlite?: string } = {}): EnterpriseCo
           AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: join(dir, 'execution-outcomes.sqlite'),
         }),
   });
-  return { ...base, authentication: { apiKeys: KEYS } };
+  // The durable bounded-grant store has no unsigned mode: a SQLite deployment
+  // must configure its authority signing and verification keys.
+  return {
+    ...base,
+    authentication: { apiKeys: KEYS },
+    authorityAuthenticity: { activeSigningKeyId: AUTHORITY_KEY_A.keyId, signingKeyPem: AUTHORITY_KEY_A.privateKeyPem, verificationKeys: [trustedKeyOf(AUTHORITY_KEY_A)] },
+  };
 }
 
 async function boundStore(): Promise<KernelAuthorityStore> {

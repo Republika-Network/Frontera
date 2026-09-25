@@ -155,13 +155,47 @@ The asymmetry that governs the whole design: **losing a grant fails closed; losi
 | Restart increases authority | **BLOCKED** | Every recovery path either preserves authority exactly or removes it |
 | Corrupt grant or revocation record yields a usable grant | **BLOCKED** | Record digest, artifact digest, canonical round-trip, identity and schema version verified on every authoritative read; failure throws and the exercise path reads a throw as "no grant". Never repaired, skipped or normalized |
 | **Partial** deletion — the revocation row removed, or the grant's reference to it cleared | **BLOCKED** | The two records cross-reference each other; any disagreement refuses the read, because the only direction a disagreement could be resolved in is "usable" |
-| A writer rewrites a record **and** recomputes its unkeyed digest | **NOT ADDRESSED** | Same class as accepted risk §8.3 and §8.2. GS-001, **Prompt 5** |
+| A writer rewrites a record **and** recomputes its unkeyed digest | **BLOCKED as of Prompt 5** for a writer with database access only — see §7.16b. Still **NOT ADDRESSED** for a writer who also holds the signing key or the key configuration | Was: same class as accepted risk §8.3 and §8.2, GS-001. Now: a detached signature is verified beside every digest, and a signature cannot be recomputed from the database's contents |
 | **Restoring an older snapshot restores revoked authority** | **NOT ADDRESSED** | No anti-rollback, and none claimed. Every integrity check passes on a legitimately-older store. GS-002; see §7.17's "Rollback / downgrade to stale state" row, which is the same risk one layer up |
 | Store unavailable, locked, or closed | **BLOCKED (fails closed)** | Exercise withholds and the adapter is not called. No cache, no last-known-good, no caller copy to fall back on |
 | Foreign schema version, at database or row level | **BLOCKED** | The store refuses to open a foreign database *before* creating its own tables; a row with an unrecognized version is refused on read. Unknown authority state is never reinterpreted |
 | A grant minted under a tampered policy pack is persisted durably | **OUT OF SCOPE HERE** | Grant-store integrity does not imply authority-policy integrity. NB-008, **Prompt 14** |
 
 **Conditional on configuration.** All of the above describes the durable store, selected when `persistence.provider === 'sqlite'`. The default provider is `memory`, where the in-memory store's fail-closed restart behaviour is unchanged.
+
+### 7.16b Bounded-grant authority authenticity (added by Prompt 5)
+
+Scoped to the same store. Canonical detail and the full 26-row threat table: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §20.
+
+Prompt 4 gave the store **storage integrity** — the bytes are the bytes that were written. Prompt 5 adds **cryptographic authenticity** — the bytes were written by a holder of a trusted authority signing key. The distinction is the whole section: an unkeyed digest is recomputable by anyone who can write the record, and the recipe is in this repository.
+
+Each persisted grant and revocation now carries a detached **Ed25519** signature over its canonical, domain-separated record bytes, verified on every authoritative read against a public key resolved from a composition-supplied trusted registry. Verification uses **public material only**, so the reading path can check authority it cannot mint.
+
+**Newly blocked:**
+
+| Threat | Status | Mitigation |
+|---|---|---|
+| DB-only record mutation with **every** unkeyed digest recomputed | **BLOCKED** | The signature is over the record envelope and cannot be produced from the database's contents. This is the Prompt 5 delta, and the central test |
+| Signature substitution — another grant's, or a revocation's onto a grant | **BLOCKED** | The signed bytes bind the grant id and the store schema version; grant and revocation occupy distinct signing domains enforced by a literal byte prefix, not only by JSON shape |
+| An artifact signed by an **unknown** key is accepted | **BLOCKED** | Key ids resolve only through the trusted registry; unknown fails closed with no fallback to another trusted key |
+| An artifact **nominates its own** verification key (trust-on-first-use) | **BLOCKED** | The envelope has no key field, and no verification path reads one. Trust comes from configuration |
+| An **unsigned** artifact is accepted as legacy | **BLOCKED** | `NOT NULL` columns; a `NULL` reports `AUTHORITY_SIGNATURE_MISSING`; a v1 (unsigned) database is refused at open and never auto-signed |
+| Algorithm confusion / downgrade | **BLOCKED** | Closed one-entry algorithm registry; the envelope's algorithm must equal the registry's for that key; no iteration and no try-until-one-verifies |
+| Signature truncation or corruption | **BLOCKED** | Strict base64url alphabet plus exact 64-byte decoded width, refused as malformed before any key is consulted |
+| Signer latency racing the commit guard | **BLOCKED** | Signing happens before the transaction opens; `commitGuard` still runs inside it, after signing, immediately before the commit |
+
+**Still open, and not narrowed by this prompt:**
+
+| Threat | Status | Note |
+|---|---|---|
+| **Private signing key theft** | **NOT ADDRESSED** | The key is resident in application process memory, loaded from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`. AA-001, asset A-32. External key custody — **deferred** |
+| **Process compromise** | **NOT ADDRESSED** | Implies the above. Cryptography does not help here |
+| **Trusted key registry replacement** | **NOT ADDRESSED** | Configuration is a trusted input; whoever writes it decides what is believed. AA-002, asset A-33 |
+| **Snapshot rollback** | **NOT ADDRESSED** | Every artifact in an older snapshot is validly signed, revocations included. Signatures authenticate, they do not timestamp. GS-002 / AA-003 — unchanged, and §7.17's rollback row still applies |
+| **A malicious but authorized signer** | **NOT ADDRESSED** | A holder of a trusted key can mint authority that is, by construction, authentic. Authenticity is not authorization |
+| Signer unavailable during **revocation** | **PARTIALLY BLOCKED** | Fails closed and loudly, but the revocation is not recorded and the grant stays exercisable. A genuine availability/security tradeoff, recorded as AA-004 rather than hidden |
+
+**Conditional on configuration, and narrower than it sounds.** This covers the **durable** bounded-grant store only. The in-memory store is unsigned — its integrity is the process's integrity, which is the honest ceiling for a medium inside the trust boundary. No other authority artifact in the repository is covered: Agent Passport still signs with HMAC, where verification and minting are the same capability, and §8's accepted risks about that are unchanged.
 
 ### 7.17 Automated backup/restore tooling (`backup:v1`/`restore:v1`)
 

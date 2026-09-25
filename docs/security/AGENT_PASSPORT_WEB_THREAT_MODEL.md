@@ -486,6 +486,7 @@ flowchart TD
 - **Existing mitigation:** the secret is server-side only; `passport-issuer.ts` uses `timingSafeEqual` (though `createTestSigner.verify` uses `===`, a timing side channel on the live issuer path — carried from SC-004).
 - **Residual risk:** any external claim of "verifiable passports" is currently unfounded.
 - **Recommended future owner:** Prompt 5 (cryptographic authenticity) and Prompt 6.
+- **Status note (PRE-00 forward-port):** the historical security Prompt 5 was scoped to bounded grants and grant revocations only; it did **not** change Agent Passport signing, which remains HMAC. APW-004 is still open and has no current owner until the Master Plan assigns one.
 
 ### APW-005 — No CSRF defense beyond SameSite
 - **Severity:** MEDIUM
@@ -619,7 +620,7 @@ Only what bears on system-wide no-bypass analysis:
 | Prompt | Inherits |
 |---|---|
 | **Prompt 4** (harden authoritative store) | APW-006 — this application's store has no integrity discipline; decide whether it is in scope for the same treatment |
-| **Prompt 5** (cryptographic authenticity) | APW-004 — MAC vs signature; APW-003 — key-history verification is the prerequisite |
+| **Prompt 5** (cryptographic authenticity) | APW-004 — MAC vs signature; APW-003 — key-history verification is the prerequisite. *Historical Prompt 5 covered bounded grants only; APW-003/APW-004 remain open.* |
 | **Prompt 6** (KMS/HSM) | APW-003, APW-004; both HMAC secrets are process-resident and rotation is destructive |
 | **Prompt 8** (least-privilege workload identity) | §15 — one process holds all four secrets with no scoping |
 | **Prompt 10** (constrain capabilities) | this application has no capability-ban test of any kind |

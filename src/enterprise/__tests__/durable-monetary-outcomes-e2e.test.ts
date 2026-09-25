@@ -22,6 +22,7 @@ import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-
 import type { KernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { createSqliteKernelAuthorityStore } from '../kernel-authority/sqlite-kernel-authority-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
+import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
 
 /**
  * P11 — durable monetary outcomes, end to end, through the one customer entry
@@ -125,6 +126,7 @@ async function openHost(dir: string, options: HostOptions = {}): Promise<Host> {
   const authorityStore = await createSqliteKernelAuthorityStore(file.authority);
   const configuration = loadEnterpriseConfiguration({
     AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
+    ...authorityAuthenticityEnv(),
     AOC_ENTERPRISE_SQLITE_PATH: file.governance,
     AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(dir, 'passport.sqlite'),
     AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(dir, 'assurance.sqlite'),

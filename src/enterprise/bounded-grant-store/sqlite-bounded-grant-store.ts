@@ -22,6 +22,12 @@ import {
   storedGrantRecordDigest,
   storedRevocationRecordDigest,
 } from './bounded-grant-record.js';
+import {
+  AuthoritySigningUnavailableError,
+  type AuthorityArtifactSigner,
+  type AuthorityArtifactVerifier,
+  type AuthoritySignature,
+} from '../authority-authenticity/index.js';
 
 /**
  * The durable authoritative bounded-grant store.
@@ -64,15 +70,38 @@ import {
  * here schedules, sweeps or polls, and stopping every background job in the
  * deployment changes no answer this store gives.
  *
- * ## Integrity is not authenticity
+ * ## Integrity and authenticity, side by side
  *
- * Both record digests are **unkeyed** SHA-256, the same limit
- * `boundedGrantDigest` and the Governance Store's `computeDigest` already
- * state. They detect accidental corruption, partial writes and casual
- * mutation. They do **not** stop a writer who can rewrite a record and
- * recompute its digest, and nothing here may be described as tamper-proof or
- * as a signature. `docs/security/AUTHORITATIVE_GRANT_STORE.md` §10 states the
- * boundary; Prompt 5 owns the key.
+ * Both record digests are **unkeyed** SHA-256. They detect accidental
+ * corruption, partial writes and casual mutation, with no key present — and
+ * they do **not** stop a writer who can rewrite a record and recompute them.
+ *
+ * Beside each digest is now a **detached Ed25519 signature** over the same
+ * canonical bytes, under an artifact-specific signing domain. It is verified on
+ * every authoritative read, against a public key resolved from the
+ * composition-supplied trusted registry, and a read whose signature does not
+ * verify refuses exactly as a failed digest does. That is what closes the gap
+ * the digests leave: a writer who can alter this database and recompute every
+ * unkeyed digest still cannot produce authority this store will return, because
+ * producing one requires a private key the database does not contain.
+ *
+ * Two limits stated here rather than left to be inferred. The signing key is
+ * **resident in this process's memory** in the current composition, so anything
+ * that can read process memory can mint authority that verifies — AA-001;
+ * external key custody (KMS/HSM) remains deferred. And a signature says a trusted key vouched for these bytes; it
+ * says nothing about whether the *policy* that produced them was legitimate,
+ * and nothing about a wholesale rollback to an earlier, validly-signed snapshot
+ * (GS-002). `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` states both.
+ *
+ * ## There is no unsigned mode
+ *
+ * Not a flag, not a default, not a legacy path. A row without a verifying
+ * signature is refused, and a database written under the previous, unsigned
+ * schema version is refused at open by the version guard rather than being
+ * reinterpreted or auto-signed under the current key. Auto-signing legacy rows
+ * would turn whatever a database happens to contain into authority this
+ * deployment vouches for, which is the one migration that must never be
+ * automatic.
  *
  * ## Concurrency
  *
@@ -90,6 +119,27 @@ export interface CreateSqliteBoundedGrantStoreOptions {
   /** Records when a row was committed. Bookkeeping only: no authorization decision reads it, and expiry is still derived from the instant a caller passes to the assessment. */
   readonly now?: () => string;
   readonly busyTimeoutMs?: number;
+  /**
+   * The authenticity boundary, and the reason it is **required** rather than
+   * optional.
+   *
+   * An optional signer would be a configuration in which durable authority is
+   * accepted unsigned, and an optional verifier one in which it is accepted
+   * unverified. Either is a permanent downgrade seam: the kind of flag that
+   * exists "for compatibility" and is still there, switched off, three years
+   * later. There is no such flag. A deployment that cannot supply both does not
+   * get a durable authority store.
+   *
+   * The two halves are supplied **separately**, never as one object that can do
+   * both, because that separation is the security property — see
+   * `authority-authenticity/`.
+   */
+  readonly authenticity: {
+    /** Holds private material. Reached only from `issue` and `revoke`; never from `read`. */
+    readonly signer: AuthorityArtifactSigner;
+    /** Public material only. This is what the authoritative read path uses, and it cannot mint authority. */
+    readonly verifier: AuthorityArtifactVerifier;
+  };
 }
 
 export interface BoundedGrantStoreHealth {
@@ -110,7 +160,7 @@ export interface DurableBoundedGrantStore extends BoundedGrantStorePort {
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
-// Schema (`aoc.bounded-grant-store.schema.v1`), two tables:
+// Schema (`aoc.bounded-grant-store.schema.v2`), two tables:
 //
 //   bounded_grants           one row per issued grant, immutable except for
 //                            `revocation_digest`, which is set once, inside the
@@ -126,8 +176,15 @@ const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 // together and disagreement is refused, so this is a cross-check, never a
 // second settable source of truth — the thing `bounded-grant.ts` refuses when
 // it declines to put a lifecycle status on the artifact.
+//
+// v2 adds four signature columns to each table. They are `NOT NULL`, so the
+// database itself refuses to hold an unsigned authority row: "forgot to sign"
+// is a write that fails rather than a row that reads as authority. The version
+// bump is what makes the change safe — a v1 database is refused at open by the
+// guard below, so unsigned rows written before signing existed are never
+// reinterpreted as signed, and never auto-signed under the current key.
 // ---------------------------------------------------------------------------
-const SCHEMA_V1 = `
+const SCHEMA_V2 = `
   CREATE TABLE IF NOT EXISTS bounded_grant_store_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     schema_version TEXT NOT NULL,
@@ -141,7 +198,11 @@ const SCHEMA_V1 = `
     grant_digest TEXT NOT NULL,
     revocation_digest TEXT,
     committed_at TEXT NOT NULL,
-    schema_version TEXT NOT NULL
+    schema_version TEXT NOT NULL,
+    signature_algorithm TEXT NOT NULL,
+    signing_key_id TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    signature_version TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS bounded_grant_revocations (
@@ -151,11 +212,23 @@ const SCHEMA_V1 = `
     issuer_ref TEXT NOT NULL,
     revocation_digest TEXT NOT NULL,
     committed_at TEXT NOT NULL,
-    schema_version TEXT NOT NULL
+    schema_version TEXT NOT NULL,
+    signature_algorithm TEXT NOT NULL,
+    signing_key_id TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    signature_version TEXT NOT NULL
   );
 `;
 
-interface GrantRow {
+/** The four columns that carry a detached signature. Shared by both tables, because a revocation's authenticity is worth exactly as much as a grant's. */
+interface SignatureColumns {
+  readonly signature_algorithm: string | null;
+  readonly signing_key_id: string | null;
+  readonly signature: string | null;
+  readonly signature_version: string | null;
+}
+
+interface GrantRow extends SignatureColumns {
   readonly grant_id: string;
   readonly grant_json: string;
   readonly grant_digest: string;
@@ -163,13 +236,33 @@ interface GrantRow {
   readonly schema_version: string;
 }
 
-interface RevocationRow {
+interface RevocationRow extends SignatureColumns {
   readonly grant_id: string;
   readonly revoked_at: string;
   readonly reason: string;
   readonly issuer_ref: string;
   readonly revocation_digest: string;
   readonly schema_version: string;
+}
+
+/**
+ * Rebuilds the signature envelope from a row's columns.
+ *
+ * Returns `undefined` — which the verifier reports as
+ * `AUTHORITY_SIGNATURE_MISSING` — when the signature column is absent, so a
+ * `NULL` is never read as a present-but-odd signature, and never as a legacy
+ * row to be trusted. The columns are `NOT NULL` in v2, so this can only be
+ * reached by a writer who went around the schema; that it is reachable at all
+ * is why it is checked.
+ */
+function signatureEnvelopeOf(row: SignatureColumns): unknown {
+  if (row.signature === null || row.signature === undefined) return undefined;
+  return {
+    algorithm: row.signature_algorithm,
+    keyId: row.signing_key_id,
+    signature: row.signature,
+    artifactVersion: row.signature_version,
+  };
 }
 
 function corrupt(grantId: string, what: string): BoundedGrantStoreError {
@@ -181,6 +274,25 @@ function corrupt(grantId: string, what: string): BoundedGrantStoreError {
 
 function unavailable(message: string): BoundedGrantStoreError {
   return new BoundedGrantStoreError('BOUNDED_GRANT_STORE_UNAVAILABLE', message);
+}
+
+/**
+ * A record no trusted authority key vouches for.
+ *
+ * Distinct from `corrupt` because the two mean different things to whoever
+ * reads the message. A digest mismatch says the bytes moved; this says the
+ * bytes may be exactly what someone intended, and that someone could not sign
+ * them. The failure reason is included — it separates "unknown key" from "bad
+ * signature" from "no signature", which an operator needs in order to tell a
+ * mis-rotated key from a forgery attempt — and nothing else is: no signature
+ * bytes and no signed payload, so an error can never hand back the canonical
+ * bytes a forgery would have to be produced over.
+ */
+function unauthentic(grantId: string, what: string, failure: string): BoundedGrantStoreError {
+  return new BoundedGrantStoreError(
+    'BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED',
+    `Persisted authority state for grant '${grantId}' is not authentic (${what}: ${failure}). The store refuses to answer from authority no trusted key vouches for.`,
+  );
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -286,9 +398,17 @@ function resolveOnDisk(dbPath: string): string {
   return absPath;
 }
 
+/**
+ * Opens the durable store.
+ *
+ * `options` has **no default**. It used to, and removing it is deliberate: with
+ * a default, a caller that simply forgot the authenticity boundary would get a
+ * working store, and the only thing standing between a deployment and unsigned
+ * durable authority would be everyone remembering. Now it does not compile.
+ */
 export async function createSqliteBoundedGrantStore(
   dbPath: string,
-  options: CreateSqliteBoundedGrantStoreOptions = {},
+  options: CreateSqliteBoundedGrantStoreOptions,
 ): Promise<DurableBoundedGrantStore> {
   const { default: Database } = await import('better-sqlite3');
 
@@ -318,7 +438,7 @@ export async function createSqliteBoundedGrantStore(
     }
   }
 
-  db.exec(SCHEMA_V1);
+  db.exec(SCHEMA_V2);
 
   const latest = db.prepare(`SELECT schema_version FROM bounded_grant_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
   if (latest === undefined) {
@@ -330,15 +450,25 @@ export async function createSqliteBoundedGrantStore(
     );
   }
 
-  const selectGrant = db.prepare(`SELECT grant_id, grant_json, grant_digest, revocation_digest, schema_version FROM bounded_grants WHERE grant_id = ?`);
-  const selectRevocation = db.prepare(`SELECT grant_id, revoked_at, reason, issuer_ref, revocation_digest, schema_version FROM bounded_grant_revocations WHERE grant_id = ?`);
+  const selectGrant = db.prepare(
+    `SELECT grant_id, grant_json, grant_digest, revocation_digest, schema_version, signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grants WHERE grant_id = ?`,
+  );
+  const selectRevocation = db.prepare(
+    `SELECT grant_id, revoked_at, reason, issuer_ref, revocation_digest, schema_version, signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grant_revocations WHERE grant_id = ?`,
+  );
   const insertGrant = db.prepare(
-    `INSERT INTO bounded_grants (grant_id, grant_json, grant_digest, revocation_digest, committed_at, schema_version) VALUES (@grantId, @grantJson, @grantDigest, NULL, @committedAt, @schemaVersion)`,
+    `INSERT INTO bounded_grants (grant_id, grant_json, grant_digest, revocation_digest, committed_at, schema_version, signature_algorithm, signing_key_id, signature, signature_version) VALUES (@grantId, @grantJson, @grantDigest, NULL, @committedAt, @schemaVersion, @signatureAlgorithm, @signingKeyId, @signature, @signatureVersion)`,
   );
   const insertRevocation = db.prepare(
-    `INSERT INTO bounded_grant_revocations (grant_id, revoked_at, reason, issuer_ref, revocation_digest, committed_at, schema_version) VALUES (@grantId, @revokedAt, @reason, @issuerRef, @revocationDigest, @committedAt, @schemaVersion)`,
+    `INSERT INTO bounded_grant_revocations (grant_id, revoked_at, reason, issuer_ref, revocation_digest, committed_at, schema_version, signature_algorithm, signing_key_id, signature, signature_version) VALUES (@grantId, @revokedAt, @reason, @issuerRef, @revocationDigest, @committedAt, @schemaVersion, @signatureAlgorithm, @signingKeyId, @signature, @signatureVersion)`,
   );
   const linkRevocation = db.prepare(`UPDATE bounded_grants SET revocation_digest = @revocationDigest WHERE grant_id = @grantId AND revocation_digest IS NULL`);
+
+  // Destructured here so the two halves are named separately from the point
+  // they enter this module. `verifier` is reachable from the read path;
+  // `signer` is reached only from `issue` and `revoke`, and a structural test
+  // pins that `runRead` and its helpers never name it.
+  const { signer, verifier } = options.authenticity;
 
   let closed = false;
 
@@ -356,6 +486,18 @@ export async function createSqliteBoundedGrantStore(
     // The artifact's own digest as well as the record envelope's. They detect
     // different substitutions, so passing one is not evidence about the other.
     if (!boundedGrantDigestMatches(grant)) throw corrupt(row.grant_id, 'grant digest mismatch');
+    // Authenticity last, and never instead of the checks above: the digests
+    // answer "are these the bytes that were written", the signature answers
+    // "did a trusted authority key vouch for them". A writer who recomputes
+    // every digest above reaches exactly this line and stops here, because the
+    // one thing they cannot recompute is a signature over their new bytes.
+    //
+    // Verified over the grant as parsed, not over the row's raw JSON: the two
+    // are already proven byte-identical by `parseStoredGrant`'s round-trip, and
+    // signing the parsed artifact is what makes the check independent of how
+    // the row happens to be stored.
+    const verification = verifier.verifyGrant(grant, signatureEnvelopeOf(row));
+    if (!verification.verified) throw unauthentic(row.grant_id, 'grant signature', verification.failure);
     return grant;
   }
 
@@ -369,6 +511,13 @@ export async function createSqliteBoundedGrantStore(
       issuerRef: row.issuer_ref,
     };
     if (storedRevocationRecordDigest(revocation) !== row.revocation_digest) throw corrupt(row.grant_id, 'revocation record digest mismatch');
+    // A revocation is authority state, at the same strength as a grant. A
+    // deployment where the grant is signed and the revocation is not would make
+    // the revocation the cheaper record to forge — and forging a revocation
+    // away is how authority comes back, which is the direction that must never
+    // be cheap.
+    const verification = verifier.verifyRevocation(revocation, signatureEnvelopeOf(row));
+    if (!verification.verified) throw unauthentic(row.grant_id, 'revocation signature', verification.failure);
     return revocation;
   }
 
@@ -394,7 +543,32 @@ export async function createSqliteBoundedGrantStore(
     return revocation;
   }
 
-  const runIssue = db.transaction((input: IssueBoundedGrantInput): IssueBoundedGrantOutcome => {
+  /**
+   * Runs a signer call and turns any failure into a refusal to proceed.
+   *
+   * Every path out of here that is not a signature is a throw. There is no
+   * branch in which a missing signature becomes a warning, a retry-with-nothing,
+   * or a row written without one — the point at which "the signer did not
+   * answer" could become "store it unsigned" is this function, and it does not
+   * exist here.
+   */
+  async function signGrantOrFail(grantId: string, produce: () => Promise<AuthoritySignature>): Promise<AuthoritySignature> {
+    try {
+      return await produce();
+    } catch (error) {
+      if (error instanceof AuthoritySigningUnavailableError) throw error;
+      throw new AuthoritySigningUnavailableError(`The authority signer could not sign the artifact for grant '${grantId}'.`);
+    }
+  }
+
+  /**
+   * The committing half of issuance. Everything here is synchronous and inside
+   * one transaction; the signature it persists was produced **before** the
+   * transaction opened, and `commitGuard` runs after that signing and
+   * immediately before the write. See `issue` below for why that order is the
+   * whole point.
+   */
+  const runIssue = db.transaction((input: IssueBoundedGrantInput, signature: AuthoritySignature): IssueBoundedGrantOutcome => {
     const existingRow = selectGrant.get(input.grant.id) as GrantRow | undefined;
     if (existingRow !== undefined) {
       // Grant identity is deterministic, so a re-delivered issuance lands here
@@ -429,11 +603,17 @@ export async function createSqliteBoundedGrantStore(
       grantDigest: storedGrantRecordDigest(input.grant),
       committedAt: now(),
       schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
+      signatureAlgorithm: signature.algorithm,
+      signingKeyId: signature.keyId,
+      signature: signature.signature,
+      signatureVersion: signature.artifactVersion,
     });
 
-    // Read back through the same verification path a later exercise will use.
-    // A row that cannot be read as the grant that was just written is not an
-    // issuance to acknowledge.
+    // Read back through the same verification path a later exercise will use —
+    // signature included. A row that cannot be read back as authentic is not an
+    // issuance to acknowledge, so a signature over the wrong bytes, or one this
+    // deployment's own verifier does not trust, fails the issuance here rather
+    // than becoming a grant that cannot be exercised later.
     return { outcome: 'issued', grant: verifiedGrant(selectGrant.get(input.grant.id) as GrantRow) };
   });
 
@@ -451,8 +631,8 @@ export async function createSqliteBoundedGrantStore(
     return { grant, ...(revocation !== undefined ? { revocation } : {}) };
   });
 
-  const runRevoke = db.transaction((input: RevokeBoundedGrantInput): RevokeBoundedGrantOutcome => {
-    const grantRow = selectGrant.get(input.grantId) as GrantRow | undefined;
+  const runRevoke = db.transaction((revocation: GrantRevocation, signature: AuthoritySignature): RevokeBoundedGrantOutcome => {
+    const grantRow = selectGrant.get(revocation.grantId) as GrantRow | undefined;
     if (grantRow === undefined) return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_NOT_FOUND] };
 
     // The grant's own integrity is deliberately *not* required here. Recording
@@ -460,11 +640,11 @@ export async function createSqliteBoundedGrantStore(
     // whose record is corrupt would be the one direction this store must never
     // take: leaving an untrustworthy grant with no revocation recorded against
     // it. Revocation needs the identity, and the identity is the primary key.
-    const existingRow = selectRevocation.get(input.grantId) as RevocationRow | undefined;
+    const existingRow = selectRevocation.get(revocation.grantId) as RevocationRow | undefined;
     if (existingRow !== undefined) {
       const existing = verifiedRevocation(existingRow);
       if (grantRow.revocation_digest !== existingRow.revocation_digest) {
-        throw corrupt(input.grantId, 'the grant references a different revocation than the one recorded');
+        throw corrupt(revocation.grantId, 'the grant references a different revocation than the one recorded');
       }
       // Idempotent, and the *first* revocation stands. A second call never
       // re-dates it or rewrites its reason: the moment a grant stopped being
@@ -472,15 +652,9 @@ export async function createSqliteBoundedGrantStore(
       return { outcome: 'already-revoked', revocation: existing };
     }
     if (grantRow.revocation_digest !== null) {
-      throw corrupt(input.grantId, 'a committed revocation is referenced by the grant but its record is absent');
+      throw corrupt(revocation.grantId, 'a committed revocation is referenced by the grant but its record is absent');
     }
 
-    const revocation: GrantRevocation = {
-      grantId: input.grantId,
-      revokedAt: input.revokedAt,
-      reason: input.reason,
-      issuerRef: input.issuerRef,
-    };
     const revocationDigest = storedRevocationRecordDigest(revocation);
     const committedAt = now();
 
@@ -492,13 +666,17 @@ export async function createSqliteBoundedGrantStore(
       revocationDigest,
       committedAt,
       schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
+      signatureAlgorithm: signature.algorithm,
+      signingKeyId: signature.keyId,
+      signature: signature.signature,
+      signatureVersion: signature.artifactVersion,
     });
 
     // Same transaction, so the record and the grant's reference to it commit
     // together. A crash between them cannot leave a revoked grant reading as
     // live, because there is no "between them" to crash in.
     const linked = linkRevocation.run({ grantId: revocation.grantId, revocationDigest }).changes;
-    if (linked !== 1) throw corrupt(input.grantId, 'the revocation could not be linked to its grant');
+    if (linked !== 1) throw corrupt(revocation.grantId, 'the revocation could not be linked to its grant');
 
     return { outcome: 'revoked', revocation };
   });
@@ -506,12 +684,41 @@ export async function createSqliteBoundedGrantStore(
   return {
     providerKind: 'sqlite',
 
+    /**
+     * Sign, then open the transaction, then re-check, then commit.
+     *
+     * The order is the security property, not an implementation detail. Signing
+     * may take time — today it is an in-process Ed25519 call, but the interface
+     * is `async` precisely so a deferred external signer (KMS/HSM) can put a
+     * network round-trip here — and a
+     * signer call cannot happen *inside* the transaction, because
+     * `better-sqlite3` transactions are synchronous and holding one open across
+     * a network call would make the availability of a signing service into the
+     * availability of the authority store.
+     *
+     * So the signature is produced first, outside the transaction. That creates
+     * exactly one question worth answering: could eligibility change while the
+     * signer is working, so that a grant is committed under an authorization
+     * that has since been withdrawn? It cannot, and the reason is that
+     * `commitGuard` still runs **inside** the transaction, **after** the
+     * signing, immediately before the insert. The window between signing and
+     * committing is re-checked at its far end, which is the same discipline
+     * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4.6 already required —
+     * unchanged in kind, and unchanged in type: the guard is still synchronous,
+     * and there is still no `await` between the read that decides and the write
+     * that records.
+     *
+     * A signature over a grant that is then refused is simply discarded. It
+     * never reaches storage, and a signature that was never persisted confers
+     * nothing: authority is a *committed row*, not a signature someone holds.
+     */
     async issue(input: IssueBoundedGrantInput): Promise<IssueBoundedGrantOutcome> {
       assertOpen();
+      const signature = await signGrantOrFail(input.grant.id, () => signer.signGrant(input.grant));
       // `runIssue` returns only after COMMIT. With `synchronous = FULL` the
       // commit is durable before this resolves, so success is never reported
       // ahead of the state that preserves it.
-      return runIssue(input);
+      return runIssue(input, signature);
     },
 
     async read(grantId: string): Promise<ReadBoundedGrantResult> {
@@ -519,14 +726,42 @@ export async function createSqliteBoundedGrantStore(
       return runRead(grantId);
     },
 
+    /**
+     * The same sign-then-commit order, and a harder tradeoff.
+     *
+     * If the signer is unavailable, this **throws**, and the grant stays
+     * exercisable. That is uncomfortable and it is still correct: the two
+     * alternatives are to write an unsigned revocation — which would mean the
+     * read path must accept unsigned authority state, destroying the property
+     * this whole file exists to establish — or to report success without
+     * persisting anything, which tells an operator a grant is revoked when it is
+     * not. The honest failure is the loud one.
+     *
+     * The cost is real and is recorded as **AA-004**: signer availability is now
+     * on the critical path of the emergency operation. `docs/security/
+     * AUTHORITY_ARTIFACT_AUTHENTICITY.md` §19.2 states it, and it is an input to
+     * the deferred external key-custody work — an external signing boundary
+     * makes this dependency a network dependency, which is worse, and is
+     * something that work must design for rather than discover.
+     */
     async revoke(input: RevokeBoundedGrantInput): Promise<RevokeBoundedGrantOutcome> {
       assertOpen();
       // Parity with the in-memory store: a reason outside the closed vocabulary
-      // is refused before anything is read or written.
+      // is refused before anything is read, written or signed.
       if (!isGrantRevocationReason(input.reason)) {
         return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_REVOKED] };
       }
-      return runRevoke(input);
+      // Fully determined by the input, so it can be built and signed before the
+      // transaction opens. `revokedAt` is the caller's instant, never the
+      // store's clock, so signing outside the transaction cannot shift it.
+      const revocation: GrantRevocation = {
+        grantId: input.grantId,
+        revokedAt: input.revokedAt,
+        reason: input.reason,
+        issuerRef: input.issuerRef,
+      };
+      const signature = await signGrantOrFail(input.grantId, () => signer.signRevocation(revocation));
+      return runRevoke(revocation, signature);
     },
 
     async health(): Promise<BoundedGrantStoreHealth> {

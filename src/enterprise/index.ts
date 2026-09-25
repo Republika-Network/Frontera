@@ -718,7 +718,8 @@ export type {
  * from `src/enterprise/bounded-grant-store`, which is not a frozen artifact.
  *
  * See `docs/security/AUTHORITATIVE_GRANT_STORE.md`. Its digests are storage
- * integrity, never cryptographic authenticity.
+ * integrity; the cryptographic authenticity beside them is
+ * `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md`.
  */
 export type {
   BoundedGrantStoreErrorCode,
@@ -769,6 +770,32 @@ export type {
   EmergencyControlStoreErrorCode,
   EmergencyControlStoreHealth,
 } from './emergency-control/index.js';
+
+/**
+ * The authority-artifact authenticity boundary -- type-only, for the same
+ * reason the store above is.
+ *
+ * A deployment adopts it by configuration
+ * (`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID`,
+ * `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`,
+ * `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`), and the composition root builds
+ * the signer and the verifier from it. A host that constructs its own durable
+ * store imports the factories from `src/enterprise/authority-authenticity`.
+ *
+ * Exported as types so a host can *name* the boundary it satisfies. Note which
+ * way the two halves point: a component handed an `AuthorityArtifactVerifier`
+ * can check authority and cannot mint it, which is the whole reason the two are
+ * separate types rather than one.
+ */
+export type {
+  AuthorityArtifactSigner,
+  AuthorityArtifactVerifier,
+  AuthoritySignature,
+  AuthoritySignatureAlgorithm,
+  AuthoritySignatureFailure,
+  AuthoritySignatureVerification,
+  TrustedVerificationKey,
+} from './authority-authenticity/index.js';
 
 export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js';
 
