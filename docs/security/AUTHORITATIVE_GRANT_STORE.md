@@ -4,7 +4,8 @@
 - Established by: Security & Containment Architecture track, **Prompt 4**.
 - Owns: **NB-009**.
 - Companion documents: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` (canonical: **Prompt 5** — the cryptographic authenticity attached beside the digests described here; read it for anything about signatures, keys or rotation), `NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` (canonical: the effect-path inventory and the no-bypass proof this store is the root of), `SECURITY_INVARIANTS.md` (canonical: what Frontera claims), `TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md`, `THREAT_MODEL_V1.md`, `SECURITY_CONTAINMENT_BASELINE_AUDIT.md`.
-- **Amended by Prompt 5.** The schema is now `aoc.bounded-grant-store.schema.v2` and both tables carry four `NOT NULL` signature columns. This document's persistence *semantics* are unchanged — the amendments are marked inline and confined to §8, §9, §10.3, §20 and §22.
+- **Amended by Prompt 5.** The schema became `aoc.bounded-grant-store.schema.v2` and both tables carry four `NOT NULL` signature columns. This document's persistence *semantics* are unchanged — the amendments are marked inline and confined to §8, §9, §10.3, §20 and §22.
+- **Amended by CORE-01.** The schema is now `aoc.bounded-grant-store.schema.v3`: a signed **revocation-state commitment** row, a `sequence` on each revocation, every signed record bound to a store id, and append-only triggers as defense in depth. "Not revoked" is now a signed statement rather than the absence of a row, which closes threat L (§5) for a database-only writer. Amendments are marked inline in §5, §9.1, §11.2, §15, §17 and §20; the full design is `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §26.
 - Implementation: `src/enterprise/bounded-grant-store/`, `src/features/grant-runtime/domain/grant-store-port.ts`, `src/features/grant-runtime/services/in-memory-bounded-grant-store.ts`.
 
 ---
@@ -119,11 +120,11 @@ Classification vocabulary: **BLOCKED** (the store prevents it), **PARTIALLY BLOC
 | I | Attacker **deletes** the revocation row | BLOCKED (as a partial write) | The grant row still references it. The mismatch is inconsistent authority state and the read **refuses** — the grant becomes unreadable rather than exercisable. Tested: `revocation-deleted` |
 | J | Attacker clears the grant's reference but leaves the revocation row | BLOCKED | Symmetric to I. Tested: `pointer-cleared` |
 | K | Attacker deletes the **grant** row | BLOCKED (fails closed) | No grant → `GRANT_EXERCISE_NOT_FOUND` → no adapter call. Deleting a grant only removes authority. With the revocation row orphaned, the read refuses outright. Tested: `orphan-revocation` |
-| L | Attacker rewrites **both** the revocation row and the grant's reference, consistently | **NOT ADDRESSED** | Same class as H: a privileged re-sealing writer. §19, R-GS-01 |
+| L | Attacker rewrites **both** the revocation row and the grant's reference, consistently — including deleting both | **BLOCKED since CORE-01** for a database-only writer (was NOT ADDRESSED; MASTER-00 showed deletion of both made the grant live) | The signed revocation-state commitment no longer describes the rows → `REVOCATION_STATE_INCONSISTENT`. `revocation-state-integrity.test.ts` E |
 | M | Duplicate issuance of the same identity | BLOCKED | `grant_id PRIMARY KEY` plus the in-transaction existence check. Resolves to `already-issued` with the **existing** grant, never a second row. Tested: `duplicate-issue` |
 | N | Duplicate revocation | BLOCKED | `grant_id PRIMARY KEY` on the revocation table plus the in-transaction check. Idempotent, and the **first** revocation stands — never re-dated, never re-reasoned. Tested: `revoke-idempotent` |
-| O | Replay of a stale database copy | **NOT ADDRESSED** | See §17. Nothing in the store is anchored outside the file |
-| P | Rollback to an older database snapshot | **NOT ADDRESSED** | See §17. A backup taken before a revocation restores a live grant. **Do not claim anti-rollback** |
+| O | Replay of a stale database copy | **NOT ADDRESSED across restart** | See §17. Nothing in the store is anchored outside the file. Since CORE-01 a *running* store refuses a commitment older than one it has verified |
+| P | Rollback to an older database snapshot | **NOT ADDRESSED across restart** | See §17. A backup taken before a revocation restores a live grant once the process restarts. **Do not claim anti-rollback** → CORE-07 |
 | Q | Concurrent exercise and revocation (same process) | BLOCKED | `better-sqlite3` is synchronous; a read transaction and a revoke transaction cannot interleave. The read either sees the committed revocation or precedes it |
 | R | Concurrent exercise and revocation (different processes) | PARTIALLY BLOCKED | SQLite serializes writers and WAL readers see a consistent snapshot. See §12 for exactly what this does and does not amount to |
 | S | Concurrent issuance of the same identity | BLOCKED | One grant and one `already-issued`, never two grants (M) |
@@ -266,7 +267,9 @@ CREATE TABLE bounded_grant_revocations (
 
 This is deliberately **not** a second settable source of truth. It never answers a question the revocation row does not; its only job is that removing either half leaves evidence. And the direction matters: a disagreement can only ever be resolved toward "usable", so it is never resolved at all.
 
-It defeats **partial** deletion (threats I and J). It does **not** defeat a writer who rewrites both halves consistently (threat L) — that is the same unkeyed-digest limit as threat H, and it is Prompt 5's.
+It defeats **partial** deletion (threats I and J). On its own it does **not** defeat a writer who rewrites or deletes both halves consistently (threat L) — the first row of the table above is exactly what such a writer produces.
+
+> **CORE-01 amendment.** The first row no longer means "not revoked". Every authoritative read first verifies the signed revocation-state commitment and checks that the revocation rows present are exactly the ones it covers; a grant is "not revoked" only when that signed set does not list it. The pointer cross-check above is kept, but it is only ever a reason to refuse. See `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §26.
 
 ### 9.2 What refuses to make a grant usable
 
@@ -352,6 +355,8 @@ resolve the grant row       -> refused GRANT_NOT_FOUND and stop
   -> acknowledge
 ```
 
+**CORE-01 amendment.** The same transaction now also verifies the signed revocation-state commitment before anything is decided, and advances it (sequence + 1, new set digest, new signature — signed before the transaction, re-checked for staleness inside it) together with the row and the pointer. There is no instant at which the row exists and the commitment does not cover it. Full flow: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §15.
+
 A grant whose own record is corrupt **can still be revoked**. That is deliberate: recording a revocation never increases authority, and refusing to revoke an untrustworthy grant would leave it with no revocation recorded against it — the one direction this store must never take. Revocation needs the identity, and the identity is the primary key.
 
 ### 11.3 Exercise
@@ -433,6 +438,7 @@ AocEnterprise (composition root)          knows SQLite, knows the path
 - The exercise service depends on **`BoundedGrantReaderPort`** — new in this phase. It declares `read` and nothing else, so `issue` and `revoke` are not merely banned by a structural test there, they are not reachable. `BoundedGrantStorePort extends BoundedGrantReaderPort`, so every existing caller that injects the whole store still compiles: the narrowing is on the consuming side, where the capability is used.
 - The execution runtime imports no storage implementation, no database driver and no filesystem — pinned structurally.
 - `execution-governance` stays storage-agnostic — pinned structurally.
+- **CORE-01:** under `persistence.provider === 'sqlite'`, a host-supplied `grantStore` must be the authenticated durable store (runtime brand); anything else is refused with `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED` before any store is opened. Under `memory` persistence any store is accepted and module health reports `grantStore: 'unauthenticated'`.
 - The composition root closes **only** the store it opened. A host-supplied store is the host's to close: it may be shared, and closing someone else's authoritative store on shutdown would make a second Host's grants unreadable.
 
 ## 16. Direct Writers and Readers
@@ -467,6 +473,7 @@ Concretely: take a backup at T0 while a grant is live; revoke it at T1; restore 
 - There is no anti-rollback mechanism in this store, and **none is claimed**.
 - Digest chaining alone would not solve it either, unless the chain head is anchored **outside** the database — in a signed, monotonic, externally-held value. That is not implemented.
 - The mitigation available today is operational: treat a restore of the authority store as a security-relevant operation, and re-apply revocations recorded after the snapshot.
+- **CORE-01** narrows this without closing it. Removing revocation rows is no longer enough: a rollback now needs a *previously captured* signed commitment together with the rows it covered, and a process that already verified a newer commitment refuses the older one. A restarted process cannot tell the difference. External anchoring is **CORE-07**.
 
 Owners: **Prompt 5** may strengthen authenticity in a way that makes an external anchor possible; **Prompt 17** and operational controls own restore governance.
 
@@ -504,6 +511,7 @@ Owners: **Prompt 5** may strengthen authenticity in a way that makes an external
 - **Existing mitigation:** casual and accidental mutation is detected and refused; the canonical round-trip closes normalization; the two-record cross-check closes partial deletion.
 - **Remediation in this prompt:** integrity extended to revocations, verified on every authoritative read, fail-closed, no silent repair. **The keying gap is not closed.**
 - **Residual risk:** R-GS-01. **Future owner: Prompt 5.**
+- **Disposition after CORE-01:** the un-revocation gap MASTER-00 found in the Prompt 5 disposition below (delete the revocation row and clear the pointer) is **closed** by the signed revocation-state commitment. GS-001 is now CLOSED for a database-only writer without qualification, and still OPEN for a key or configuration holder.
 - **Disposition after Prompt 5: CLOSED for a database-only writer.** A detached Ed25519 signature over the same canonical bytes is verified on every authoritative read against a composition-supplied trusted public key. A writer with write access to the database file, and no access to a signing key, can alter a record and recompute every unkeyed digest and still produce nothing the read path will return — proven by the central test in `authority-artifact-authenticity.test.ts`. **Still OPEN** for a writer who also holds the signing key or can rewrite the key configuration: the key is process-resident in this release (AA-001) and the registry is deployment-controlled (AA-002). See `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §22.
 
 ### GS-002 — Snapshot rollback can restore revoked authority
@@ -514,6 +522,7 @@ Owners: **Prompt 5** may strengthen authenticity in a way that makes an external
 - **Existing mitigation:** none in code. Operational only.
 - **Remediation in this prompt:** **none.** Documented honestly rather than papered over.
 - **Residual risk:** R-GS-02. **Future owner: Prompt 5 (anchor) / Prompt 17 (restore governance).**
+- **Disposition after CORE-01: STILL OPEN, narrowed** — needs a captured earlier signed state rather than row deletion; detected while the process runs; not across a restart. Owner: **CORE-07**.
 - **Disposition after Prompt 5: STILL OPEN — NOT ADDRESSED.** Signatures authenticate, they do not timestamp. Every artifact in a restored snapshot is validly signed, including grants whose revocations were rolled back with them, so a signature check passes exactly as a digest check did. Restated as AA-003. No anchor was added; none is claimed.
 
 ### GS-003 — The durable store is available but is not the default for every deployment

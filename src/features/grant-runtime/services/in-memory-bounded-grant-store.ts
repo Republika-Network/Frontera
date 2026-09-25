@@ -10,7 +10,8 @@ import type {
 } from '../domain/index.js';
 import { GRANT_REASON_CODES, isGrantRevocationReason } from '../domain/index.js';
 
-export const BOUNDED_GRANT_STORE_SCHEMA_VERSION = 'aoc.bounded-grant-store.schema.v2';
+/** The durable store's schema version. v3 (CORE-01) adds the signed revocation-state commitment and binds every signed record to its store. */
+export const BOUNDED_GRANT_STORE_SCHEMA_VERSION = 'aoc.bounded-grant-store.schema.v3';
 
 /**
  * The authoritative grant store for the vertical slice.

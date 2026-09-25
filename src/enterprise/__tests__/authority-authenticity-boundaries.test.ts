@@ -167,8 +167,8 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
   it('a constructed verifier has no signing member at runtime, and a constructed signer no key member', () => {
     const verifier = testVerifier();
     const signer = testSigner();
-    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyGrant', 'verifyRevocation']);
-    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signGrant', 'signRevocation']);
+    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyGrant', 'verifyRevocation', 'verifyRevocationState']);
+    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signGrant', 'signRevocation', 'signRevocationState']);
   });
 
   it('the signer offers no generic "sign arbitrary bytes" capability', () => {
@@ -176,7 +176,7 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
     const iface = signer.slice(signer.indexOf('export interface AuthorityArtifactSigner'));
     const body = iface.slice(0, iface.indexOf('}') + 1);
     assert.equal(/\bsign\s*\(/.test(body), false, 'a domain-aware signer must not expose a raw byte-signing operation');
-    assert.ok(body.includes('signGrant') && body.includes('signRevocation'));
+    assert.ok(body.includes('signGrant') && body.includes('signRevocation') && body.includes('signRevocationState'));
   });
 });
 
@@ -228,14 +228,44 @@ describe('Authority authenticity — no unsigned path exists', () => {
 
   it('the store verifies on every authoritative read, with no branch that skips it', () => {
     const code = codeOf(`${GRANT_STORE_ROOT}/sqlite-bounded-grant-store.ts`);
-    // Both verification calls are unconditional inside their helper, and both
-    // helpers throw on failure. A `verified === true` branch with no else, or a
-    // verification inside an `if`, would be the shape to catch.
-    for (const call of ['verifier.verifyGrant(', 'verifier.verifyRevocation(']) {
+    // All three verification calls are unconditional inside their helper, and
+    // every helper throws on failure. A `verified === true` branch with no
+    // else, or a verification inside an `if`, would be the shape to catch.
+    for (const call of ['verifier.verifyGrant(', 'verifier.verifyRevocation(', 'verifier.verifyRevocationState(']) {
       assert.ok(code.includes(call), `${call} must be present`);
       assert.equal(code.split(call).length - 1, 1, `${call} must appear exactly once — one verification point, not several to keep in step`);
     }
-    assert.equal(code.split('if (!verification.verified) throw').length - 1, 2, 'every verification must throw on failure');
+    assert.equal(code.split('if (!verification.verified) throw').length - 1, 3, 'every verification must throw on failure');
+  });
+
+  it('every authoritative transaction proves the revocation state before answering (CORE-01)', () => {
+    const code = codeOf(`${GRANT_STORE_ROOT}/sqlite-bounded-grant-store.ts`);
+    for (const transaction of ['const runRead = db.transaction(', 'const runIssue = db.transaction(', 'const runPlanRevocation = db.transaction(', 'const runRevoke = db.transaction(']) {
+      const start = code.indexOf(transaction);
+      assert.ok(start !== -1, `${transaction} must exist`);
+      const body = code.slice(start, start + 600);
+      const proven = body.indexOf('verifiedRevocationState()');
+      assert.ok(proven !== -1, `${transaction} must call verifiedRevocationState()`);
+      const firstRow = body.search(/select(Grant|Revocation)\.get\(/);
+      assert.ok(firstRow === -1 || proven < firstRow, `${transaction} must prove the revocation state before it reads a grant or revocation row`);
+    }
+    // "Not revoked" is answered from the verified commitment, never from the
+    // absence of a row alone.
+    const current = code.slice(code.indexOf('function currentRevocation('));
+    assert.ok(/function currentRevocation\([^)]*state: VerifiedRevocationState\)/.test(current), 'currentRevocation must take the verified revocation state');
+    assert.ok(current.indexOf('state.byGrantId.get(grantId)') !== -1, 'currentRevocation must consult the signed commitment');
+  });
+
+  it('the revocation-state signer is reached only from genesis, re-attestation and revocation — never from a read', () => {
+    const code = codeOf(`${GRANT_STORE_ROOT}/sqlite-bounded-grant-store.ts`);
+    for (const readSide of ['const runRead = db.transaction(', 'function verifiedRevocationState(', 'function currentRevocation(', 'function verifiedGrant(', 'function verifiedRevocation(']) {
+      const start = code.indexOf(readSide);
+      assert.ok(start !== -1, `${readSide} must exist`);
+      const rest = code.slice(start + readSide.length);
+      const end = rest.search(/\n  (const|function|async function|let) /);
+      const body = end === -1 ? rest : rest.slice(0, end);
+      assert.equal(/\bsigner\b/.test(body), false, `${readSide} must never reach the signer`);
+    }
   });
 
   it('no bounded-grant authority path uses an HMAC or any shared-secret construction', () => {

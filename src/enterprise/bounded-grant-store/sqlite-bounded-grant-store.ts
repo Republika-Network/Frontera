@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -16,11 +17,13 @@ import {
   type RevokeBoundedGrantInput,
   type RevokeBoundedGrantOutcome,
 } from '../../features/grant-runtime/index.js';
-import { BoundedGrantStoreError } from './errors.js';
+import { BoundedGrantStoreError, type BoundedGrantStoreErrorCode } from './errors.js';
 import {
-  serializeStoredRevocationRecord,
+  revocationSetDigest,
   storedGrantRecordDigest,
   storedRevocationRecordDigest,
+  type RevocationSetEntry,
+  type RevocationStateCommitment,
 } from './bounded-grant-record.js';
 import {
   AuthoritySigningUnavailableError,
@@ -61,6 +64,18 @@ import {
  *    disagreement — and the only direction a disagreement could ever be
  *    resolved in is "usable", which is precisely the direction that must never
  *    be taken.
+ * 5. **One signed statement of the whole revocation set (CORE-01).** Point 4
+ *    alone is a cross-check between two *unsigned* facts, and deleting both
+ *    halves of it — the revocation row and the pointer — used to return the
+ *    grant to exactly the bytes it had before it was revoked, where it read as
+ *    live. The store now also holds a signed revocation-state commitment
+ *    (`bounded-grant-record.ts`): the store's identity, the number of
+ *    revocations ever committed, and a digest over all of them in order. Every
+ *    revocation re-signs it inside the same transaction that writes the row;
+ *    every read verifies its signature and recomputes it from the rows present.
+ *    "This grant was never revoked" is therefore a positive, signed statement
+ *    rather than the absence of a row — and removing a revocation without the
+ *    signing key produces a set the signed statement does not describe.
  *
  * ## No cache, no sweeper, no background job
  *
@@ -85,13 +100,19 @@ import {
  * unkeyed digest still cannot produce authority this store will return, because
  * producing one requires a private key the database does not contain.
  *
- * Two limits stated here rather than left to be inferred. The signing key is
+ * Three limits stated here rather than left to be inferred. The signing key is
  * **resident in this process's memory** in the current composition, so anything
  * that can read process memory can mint authority that verifies — AA-001;
- * external key custody (KMS/HSM) remains deferred. And a signature says a trusted key vouched for these bytes; it
- * says nothing about whether the *policy* that produced them was legitimate,
- * and nothing about a wholesale rollback to an earlier, validly-signed snapshot
- * (GS-002). `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` states both.
+ * external key custody is CORE-02. A signature says a trusted key vouched for
+ * these bytes; it says nothing about whether the *policy* that produced them
+ * was legitimate. And the revocation-state commitment proves the revocation set
+ * is one this store's key signed, not that it is the *latest* one: a writer who
+ * kept a copy of an earlier commitment and restores it together with the rows
+ * it covered has rolled the store back to an earlier authentic state (GS-002).
+ * This process refuses a commitment older than one it has already verified,
+ * which catches that while it runs; across a restart nothing here can, and
+ * freshness/anchoring is CORE-07. `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md`
+ * states all three.
  *
  * ## There is no unsigned mode
  *
@@ -148,6 +169,16 @@ export interface BoundedGrantStoreHealth {
   readonly writable: boolean;
   readonly schemaVersion: string;
   readonly checkedAt: string;
+  /**
+   * Whether the signed revocation-state commitment verified against the rows
+   * present (CORE-01). A store whose revocation state cannot be proven answers
+   * no authoritative read, so it is never reported healthy.
+   */
+  readonly revocationState: 'verified' | 'failed';
+  /** Why it failed: an error code, never key material, signature bytes or row contents. */
+  readonly revocationStateFailure?: BoundedGrantStoreErrorCode;
+  /** The number of revocations the verified commitment covers. */
+  readonly revocationSequence?: number;
 }
 
 /** The durable store, plus the lifecycle surface a host needs. The exercise path is handed only `BoundedGrantReaderPort`; nothing below widens what it can reach. */
@@ -159,8 +190,42 @@ export interface DurableBoundedGrantStore extends BoundedGrantStorePort {
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 
+/**
+ * How many times a revocation re-plans after another writer advanced the
+ * revocation-state commitment while this one was signing. In-process callers
+ * are serialized and never retry; this bounds cross-process contention, and
+ * exhausting it throws rather than committing over a state nobody verified.
+ */
+const MAX_REVOCATION_ATTEMPTS = 3;
+
+/**
+ * Stores produced by `createSqliteBoundedGrantStore`, and nothing else.
+ *
+ * A runtime brand rather than a type: a TypeScript interface is satisfied by
+ * any object of the right shape, including the in-memory store and a host's own
+ * wrapper, and composition has to be able to tell those apart *at runtime* to
+ * refuse a silent downgrade from authenticated durable authority to one of
+ * them. Module-private, so membership cannot be granted from outside this file,
+ * and the branded object is frozen, so its methods cannot be swapped afterwards.
+ *
+ * This is a guard against an honest composition mistake, not against a
+ * malicious host: code running in the same process can replace this module
+ * outright. `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` states that
+ * boundary.
+ */
+const AUTHENTICATED_DURABLE_STORES = new WeakSet<object>();
+
+/**
+ * Whether `store` is an authenticated durable bounded-grant store — built by
+ * `createSqliteBoundedGrantStore`, with a signer and a verifier, and unaltered
+ * since. Anything else, including a wrapper around one, is not.
+ */
+export function isAuthenticatedDurableBoundedGrantStore(store: unknown): store is DurableBoundedGrantStore {
+  return typeof store === 'object' && store !== null && AUTHENTICATED_DURABLE_STORES.has(store);
+}
+
 // ---------------------------------------------------------------------------
-// Schema (`aoc.bounded-grant-store.schema.v2`), two tables:
+// Schema (`aoc.bounded-grant-store.schema.v3`), three tables:
 //
 //   bounded_grants           one row per issued grant, immutable except for
 //                            `revocation_digest`, which is set once, inside the
@@ -168,23 +233,35 @@ const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 //   bounded_grant_revocations  one row per revoked grant, `grant_id` as the
 //                            primary key so at most one revocation per grant is
 //                            enforced by the database and not only by the
-//                            application check performed before insert.
+//                            application check performed before insert, and a
+//                            `sequence` giving its position in the store's
+//                            revocation order (1, 2, 3, ... with no gaps).
+//   bounded_grant_revocation_state  exactly one row: the signed revocation-state
+//                            commitment (store id, sequence, set digest).
 //
 // `revocation_digest` is deliberately *not* a status field. It never says
-// anything the revocation row does not; its only job is that deleting the
-// revocation row leaves evidence a read can detect. The two are written
-// together and disagreement is refused, so this is a cross-check, never a
-// second settable source of truth — the thing `bounded-grant.ts` refuses when
-// it declines to put a lifecycle status on the artifact.
+// anything the revocation row does not; it is kept as a cross-check whose only
+// possible effect is a refusal. It is **not** what proves a grant unrevoked —
+// before CORE-01 it effectively was, and clearing it together with deleting the
+// revocation row made a revoked grant read as live. The signed commitment is
+// what proves it now.
 //
-// v2 adds four signature columns to each table. They are `NOT NULL`, so the
-// database itself refuses to hold an unsigned authority row: "forgot to sign"
-// is a write that fails rather than a row that reads as authority. The version
-// bump is what makes the change safe — a v1 database is refused at open by the
-// guard below, so unsigned rows written before signing existed are never
-// reinterpreted as signed, and never auto-signed under the current key.
+// v2 added `NOT NULL` signature columns, so the database refuses to hold an
+// unsigned authority row. v3 (CORE-01) adds the commitment table and the
+// `sequence` column, and binds every signed record to the store's id. A v2
+// database is refused at open by the version guard below: its rows are bound
+// to no store, and it holds no commitment from which the completeness of its
+// revocation set could be proven. Minting one for it would sign whatever the
+// file happens to contain — including a revocation set someone has already
+// pruned — so there is no automatic migration, by design.
+//
+// The triggers are **defense in depth only**. They stop an accidental UPDATE or
+// DELETE through an ordinary connection. They do not stop anyone who can write
+// the file, because that person can drop them; the signature on the
+// commitment is what stops that person, and the tests simulate exactly that
+// attacker by dropping the triggers first.
 // ---------------------------------------------------------------------------
-const SCHEMA_V2 = `
+const SCHEMA_V3 = `
   CREATE TABLE IF NOT EXISTS bounded_grant_store_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     schema_version TEXT NOT NULL,
@@ -207,6 +284,7 @@ const SCHEMA_V2 = `
 
   CREATE TABLE IF NOT EXISTS bounded_grant_revocations (
     grant_id TEXT PRIMARY KEY REFERENCES bounded_grants(grant_id),
+    sequence INTEGER NOT NULL UNIQUE CHECK (sequence >= 1),
     revoked_at TEXT NOT NULL,
     reason TEXT NOT NULL,
     issuer_ref TEXT NOT NULL,
@@ -218,7 +296,59 @@ const SCHEMA_V2 = `
     signature TEXT NOT NULL,
     signature_version TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS bounded_grant_revocation_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    store_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence >= 0),
+    revocation_set_digest TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    signature_algorithm TEXT NOT NULL,
+    signing_key_id TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    signature_version TEXT NOT NULL
+  );
+
+  CREATE TRIGGER IF NOT EXISTS bounded_grants_no_delete
+    BEFORE DELETE ON bounded_grants
+    BEGIN SELECT RAISE(ABORT, 'bounded_grants is append-only'); END;
+
+  CREATE TRIGGER IF NOT EXISTS bounded_grants_link_once
+    BEFORE UPDATE ON bounded_grants
+    WHEN OLD.revocation_digest IS NOT NULL
+      OR NEW.revocation_digest IS NULL
+      OR NEW.grant_id IS NOT OLD.grant_id
+      OR NEW.grant_json IS NOT OLD.grant_json
+      OR NEW.grant_digest IS NOT OLD.grant_digest
+      OR NEW.schema_version IS NOT OLD.schema_version
+      OR NEW.signature IS NOT OLD.signature
+    BEGIN SELECT RAISE(ABORT, 'a grant row changes only by linking its revocation, once'); END;
+
+  CREATE TRIGGER IF NOT EXISTS bounded_grant_revocations_no_update
+    BEFORE UPDATE ON bounded_grant_revocations
+    BEGIN SELECT RAISE(ABORT, 'bounded_grant_revocations is append-only'); END;
+
+  CREATE TRIGGER IF NOT EXISTS bounded_grant_revocations_no_delete
+    BEFORE DELETE ON bounded_grant_revocations
+    BEGIN SELECT RAISE(ABORT, 'bounded_grant_revocations is append-only'); END;
+
+  CREATE TRIGGER IF NOT EXISTS bounded_grant_revocation_state_no_delete
+    BEFORE DELETE ON bounded_grant_revocation_state
+    BEGIN SELECT RAISE(ABORT, 'the revocation-state commitment is never deleted'); END;
+
+  CREATE TRIGGER IF NOT EXISTS bounded_grant_revocation_state_advances
+    BEFORE UPDATE ON bounded_grant_revocation_state
+    WHEN NEW.store_id IS NOT OLD.store_id
+      OR NOT (
+        NEW.sequence IS OLD.sequence + 1
+        OR (NEW.sequence IS OLD.sequence AND NEW.revocation_set_digest IS OLD.revocation_set_digest)
+      )
+    BEGIN SELECT RAISE(ABORT, 'the revocation-state commitment only advances, one revocation at a time, or is re-signed unchanged'); END;
 `;
+
+/** The tables this runtime creates. A file holding any of them without a version record is not a fresh store and is not treated as one. */
+const STORE_TABLES = ['bounded_grants', 'bounded_grant_revocations', 'bounded_grant_revocation_state'] as const;
 
 /** The four columns that carry a detached signature. Shared by both tables, because a revocation's authenticity is worth exactly as much as a grant's. */
 interface SignatureColumns {
@@ -238,11 +368,36 @@ interface GrantRow extends SignatureColumns {
 
 interface RevocationRow extends SignatureColumns {
   readonly grant_id: string;
+  readonly sequence: number;
   readonly revoked_at: string;
   readonly reason: string;
   readonly issuer_ref: string;
   readonly revocation_digest: string;
   readonly schema_version: string;
+}
+
+interface RevocationStateRow extends SignatureColumns {
+  readonly store_id: string;
+  readonly sequence: number;
+  readonly revocation_set_digest: string;
+  readonly schema_version: string;
+}
+
+interface RevocationEntryRow {
+  readonly sequence: number;
+  readonly grant_id: string;
+  readonly revocation_digest: string;
+}
+
+/**
+ * The revocation state as a read has proven it: the signed commitment, and the
+ * committed revocations it covers, keyed by grant id. Only ever built by
+ * `verifiedRevocationState`, so holding one means every check there passed.
+ */
+interface VerifiedRevocationState {
+  readonly commitment: RevocationStateCommitment;
+  readonly entries: readonly RevocationSetEntry[];
+  readonly byGrantId: ReadonlyMap<string, RevocationSetEntry>;
 }
 
 /**
@@ -269,6 +424,26 @@ function corrupt(grantId: string, what: string): BoundedGrantStoreError {
   return new BoundedGrantStoreError(
     'BOUNDED_GRANT_STORE_STATE_CORRUPT',
     `Persisted authority state for grant '${grantId}' failed validation (${what}). The store refuses to answer from state it cannot validate.`,
+  );
+}
+
+/**
+ * The revocation state cannot be proven complete. Not about one grant — about
+ * whether the store can answer "was this revoked?" for any of them — so it
+ * names no grant id.
+ */
+function inconsistentRevocationState(what: string): BoundedGrantStoreError {
+  return new BoundedGrantStoreError(
+    'BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT',
+    `The bounded-grant store's revocation state cannot be proven complete (${what}). The store refuses to answer authority reads until it is restored from a trusted copy.`,
+  );
+}
+
+/** The revocation-state commitment carries no signature this deployment trusts. The same code as an unauthentic record, because it calls for the same response: find out who wrote it. */
+function unauthenticRevocationState(failure: string): BoundedGrantStoreError {
+  return new BoundedGrantStoreError(
+    'BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED',
+    `The bounded-grant store's revocation-state commitment is not authentic (${failure}). The store refuses to answer from revocation state no trusted key vouches for.`,
   );
 }
 
@@ -405,6 +580,13 @@ function resolveOnDisk(dbPath: string): string {
  * a default, a caller that simply forgot the authenticity boundary would get a
  * working store, and the only thing standing between a deployment and unsigned
  * durable authority would be everyone remembering. Now it does not compile.
+ *
+ * A **new** store signs its genesis revocation-state commitment here — sequence
+ * 0, the empty set, under a freshly generated store id — so opening a new store
+ * needs the signer. An existing store is never given a new genesis: a missing
+ * commitment on an existing store is inconsistent state, not a store to
+ * re-initialize, because re-initializing it would sign "nothing was revoked"
+ * over whatever the file happens to contain.
  */
 export async function createSqliteBoundedGrantStore(
   dbPath: string,
@@ -413,6 +595,12 @@ export async function createSqliteBoundedGrantStore(
   const { default: Database } = await import('better-sqlite3');
 
   const now = options.now ?? (() => new Date().toISOString());
+
+  // Destructured here so the two halves are named separately from the point
+  // they enter this module. `verifier` is reachable from the read path;
+  // `signer` is reached only from genesis, `issue` and `revoke`, and a
+  // structural test pins that `runRead` and its helpers never name it.
+  const { signer, verifier } = options.authenticity;
 
   const path = dbPath === ':memory:' ? ':memory:' : resolveOnDisk(dbPath);
   const db = new Database(path);
@@ -424,84 +612,187 @@ export async function createSqliteBoundedGrantStore(
   db.pragma('synchronous = FULL');
   db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(options.busyTimeoutMs)}`);
 
+  function refuseToOpen(message: string): never {
+    db.close();
+    throw unavailable(message);
+  }
+
   // The version guard runs *before* `CREATE TABLE IF NOT EXISTS`, so a database
   // written by a runtime this one does not implement is refused without being
   // mutated. Unknown authority state is never reinterpreted under the current
   // schema; a migration, if one is ever needed, is explicit work.
-  if (tableExists(db, 'bounded_grant_store_versions')) {
-    const existing = db.prepare(`SELECT schema_version FROM bounded_grant_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-    if (existing !== undefined && existing.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) {
-      db.close();
-      throw unavailable(
+  const selectLatestVersion = () =>
+    tableExists(db, 'bounded_grant_store_versions')
+      ? (db.prepare(`SELECT schema_version FROM bounded_grant_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined)
+      : undefined;
+
+  const fresh = !tableExists(db, 'bounded_grant_store_versions');
+  if (!fresh) {
+    const existing = selectLatestVersion();
+    if (existing === undefined) {
+      refuseToOpen('The bounded-grant store holds a version table with no version recorded. Refusing to open it rather than guessing what wrote it.');
+    }
+    if (existing.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) {
+      refuseToOpen(
         `The bounded-grant store is recorded under schema version '${existing.schema_version}', which this runtime does not implement (expected '${BOUNDED_GRANT_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
       );
     }
-  }
+    db.exec(SCHEMA_V3);
+  } else {
+    if (STORE_TABLES.some((table) => tableExists(db, table))) {
+      refuseToOpen('The bounded-grant store holds authority tables but no version record. Refusing to open it, and refusing to initialize it as a new store.');
+    }
 
-  db.exec(SCHEMA_V2);
-
-  const latest = db.prepare(`SELECT schema_version FROM bounded_grant_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-  if (latest === undefined) {
-    db.prepare(`INSERT INTO bounded_grant_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(BOUNDED_GRANT_STORE_SCHEMA_VERSION, now());
-  } else if (latest.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) {
-    db.close();
-    throw unavailable(
-      `The bounded-grant store is recorded under schema version '${latest.schema_version}', which this runtime does not implement (expected '${BOUNDED_GRANT_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
-    );
+    // Genesis. Signed before the transaction opens, like every other signature
+    // here; committed only if no other process initialized the file meanwhile.
+    const storeId = randomUUID();
+    const genesis: RevocationStateCommitment = { storeId, sequence: 0, revocationSetDigest: revocationSetDigest(storeId, []) };
+    let genesisSignature: AuthoritySignature;
+    try {
+      genesisSignature = await signOrFail('(genesis)', () => signer.signRevocationState(genesis));
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    const initialize = db.transaction(() => {
+      if (tableExists(db, 'bounded_grant_store_versions')) return;
+      db.exec(SCHEMA_V3);
+      db.prepare(`INSERT INTO bounded_grant_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(BOUNDED_GRANT_STORE_SCHEMA_VERSION, now());
+      db.prepare(
+        `INSERT INTO bounded_grant_revocation_state (singleton, store_id, sequence, revocation_set_digest, committed_at, schema_version, signature_algorithm, signing_key_id, signature, signature_version) VALUES (1, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(storeId, genesis.revocationSetDigest, now(), BOUNDED_GRANT_STORE_SCHEMA_VERSION, genesisSignature.algorithm, genesisSignature.keyId, genesisSignature.signature, genesisSignature.artifactVersion);
+    });
+    initialize.immediate();
+    const recorded = selectLatestVersion();
+    if (recorded === undefined || recorded.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) {
+      refuseToOpen(
+        `The bounded-grant store was initialized concurrently under schema version '${String(recorded?.schema_version)}', which this runtime does not implement (expected '${BOUNDED_GRANT_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
+      );
+    }
   }
 
   const selectGrant = db.prepare(
     `SELECT grant_id, grant_json, grant_digest, revocation_digest, schema_version, signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grants WHERE grant_id = ?`,
   );
   const selectRevocation = db.prepare(
-    `SELECT grant_id, revoked_at, reason, issuer_ref, revocation_digest, schema_version, signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grant_revocations WHERE grant_id = ?`,
+    `SELECT grant_id, sequence, revoked_at, reason, issuer_ref, revocation_digest, schema_version, signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grant_revocations WHERE grant_id = ?`,
+  );
+  const selectRevocationEntries = db.prepare(`SELECT sequence, grant_id, revocation_digest FROM bounded_grant_revocations ORDER BY sequence ASC`);
+  const selectRevocationState = db.prepare(
+    `SELECT store_id, sequence, revocation_set_digest, schema_version, signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grant_revocation_state WHERE singleton = 1`,
   );
   const insertGrant = db.prepare(
     `INSERT INTO bounded_grants (grant_id, grant_json, grant_digest, revocation_digest, committed_at, schema_version, signature_algorithm, signing_key_id, signature, signature_version) VALUES (@grantId, @grantJson, @grantDigest, NULL, @committedAt, @schemaVersion, @signatureAlgorithm, @signingKeyId, @signature, @signatureVersion)`,
   );
   const insertRevocation = db.prepare(
-    `INSERT INTO bounded_grant_revocations (grant_id, revoked_at, reason, issuer_ref, revocation_digest, committed_at, schema_version, signature_algorithm, signing_key_id, signature, signature_version) VALUES (@grantId, @revokedAt, @reason, @issuerRef, @revocationDigest, @committedAt, @schemaVersion, @signatureAlgorithm, @signingKeyId, @signature, @signatureVersion)`,
+    `INSERT INTO bounded_grant_revocations (grant_id, sequence, revoked_at, reason, issuer_ref, revocation_digest, committed_at, schema_version, signature_algorithm, signing_key_id, signature, signature_version) VALUES (@grantId, @sequence, @revokedAt, @reason, @issuerRef, @revocationDigest, @committedAt, @schemaVersion, @signatureAlgorithm, @signingKeyId, @signature, @signatureVersion)`,
   );
   const linkRevocation = db.prepare(`UPDATE bounded_grants SET revocation_digest = @revocationDigest WHERE grant_id = @grantId AND revocation_digest IS NULL`);
-
-  // Destructured here so the two halves are named separately from the point
-  // they enter this module. `verifier` is reachable from the read path;
-  // `signer` is reached only from `issue` and `revoke`, and a structural test
-  // pins that `runRead` and its helpers never name it.
-  const { signer, verifier } = options.authenticity;
+  const reattestRevocationState = db.prepare(
+    `UPDATE bounded_grant_revocation_state SET signature_algorithm = @signatureAlgorithm, signing_key_id = @signingKeyId, signature = @signature, signature_version = @signatureVersion WHERE singleton = 1 AND store_id = @storeId AND sequence = @sequence AND revocation_set_digest = @revocationSetDigest`,
+  );
+  const advanceRevocationState = db.prepare(
+    `UPDATE bounded_grant_revocation_state SET sequence = @sequence, revocation_set_digest = @revocationSetDigest, committed_at = @committedAt, signature_algorithm = @signatureAlgorithm, signing_key_id = @signingKeyId, signature = @signature, signature_version = @signatureVersion WHERE singleton = 1 AND store_id = @storeId AND sequence = @previousSequence`,
+  );
 
   let closed = false;
+
+  /**
+   * The newest revocation-state commitment this process has verified and seen
+   * committed. A limited, in-process freshness witness: a later read that finds
+   * an *older* commitment — or a different one at the same sequence — has
+   * found the store rolled back underneath it, and refuses. It is not a cache:
+   * nothing is ever answered from it, it only ever causes a refusal, and it is
+   * lost on restart, which is exactly why cross-restart rollback remains
+   * CORE-07's problem.
+   */
+  let newestVerified: { readonly sequence: number; readonly revocationSetDigest: string } | undefined;
+
+  function noteVerified(commitment: RevocationStateCommitment): void {
+    if (newestVerified === undefined || commitment.sequence > newestVerified.sequence) {
+      newestVerified = { sequence: commitment.sequence, revocationSetDigest: commitment.revocationSetDigest };
+    }
+  }
 
   function assertOpen(): void {
     if (closed) throw unavailable('The bounded-grant store has been closed.');
   }
 
-  /** The grant a row holds, proven to be the grant that was written. Throws rather than returning anything a caller could mistake for "no such grant". */
-  function verifiedGrant(row: GrantRow): BoundedGrant {
+  /**
+   * The store's revocation state, proven, or a throw. Runs inside every
+   * authoritative transaction, before any grant is answered for.
+   *
+   * The order is fixed: the commitment must exist, verify under a trusted key,
+   * and then describe *exactly* the revocation rows present — same count, a
+   * contiguous sequence from 1, same digest. The rows are digested by their
+   * stored `revocation_digest`; each row's own content is checked against that
+   * digest, and its own signature verified, when the grant it revokes is read.
+   * So a row can be neither removed, added, reordered nor rewritten without the
+   * commitment or that row's own checks failing — and producing a commitment
+   * that agrees with a pruned set needs the authority signing key.
+   */
+  function verifiedRevocationState(): VerifiedRevocationState {
+    const row = selectRevocationState.get() as RevocationStateRow | undefined;
+    if (row === undefined) throw inconsistentRevocationState('the signed revocation-state commitment is absent');
+    if (row.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) throw inconsistentRevocationState('the revocation-state commitment carries an unrecognized schema version');
+    if (typeof row.store_id !== 'string' || row.store_id.length === 0) throw inconsistentRevocationState('the revocation-state commitment names no store');
+    if (!Number.isSafeInteger(row.sequence) || row.sequence < 0) throw inconsistentRevocationState('the revocation-state sequence is not a non-negative integer');
+
+    const commitment: RevocationStateCommitment = { storeId: row.store_id, sequence: row.sequence, revocationSetDigest: row.revocation_set_digest };
+    const verification = verifier.verifyRevocationState(commitment, signatureEnvelopeOf(row));
+    if (!verification.verified) throw unauthenticRevocationState(verification.failure);
+
+    const rows = selectRevocationEntries.all() as RevocationEntryRow[];
+    if (rows.length !== commitment.sequence) {
+      throw inconsistentRevocationState(`the signed commitment covers ${commitment.sequence} revocation(s) but ${rows.length} are recorded`);
+    }
+    const entries: RevocationSetEntry[] = rows.map((entry, index) => {
+      if (entry.sequence !== index + 1) throw inconsistentRevocationState('the recorded revocation sequence has a gap or a duplicate');
+      return { sequence: entry.sequence, grantId: entry.grant_id, revocationDigest: entry.revocation_digest };
+    });
+    if (revocationSetDigest(commitment.storeId, entries) !== commitment.revocationSetDigest) {
+      throw inconsistentRevocationState('the recorded revocations disagree with the signed revocation-state commitment');
+    }
+
+    if (newestVerified !== undefined) {
+      if (commitment.sequence < newestVerified.sequence) {
+        throw inconsistentRevocationState(`the revocation-state commitment regressed from sequence ${newestVerified.sequence} to ${commitment.sequence}`);
+      }
+      if (commitment.sequence === newestVerified.sequence && commitment.revocationSetDigest !== newestVerified.revocationSetDigest) {
+        throw inconsistentRevocationState(`the revocation-state commitment at sequence ${commitment.sequence} differs from the one already verified`);
+      }
+    }
+
+    return { commitment, entries, byGrantId: new Map(entries.map((entry) => [entry.grantId, entry])) };
+  }
+
+  /** The grant a row holds, proven to be the grant that was written into this store. Throws rather than returning anything a caller could mistake for "no such grant". */
+  function verifiedGrant(row: GrantRow, storeId: string): BoundedGrant {
     if (row.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) throw corrupt(row.grant_id, 'unrecognized record schema version');
     const grant = parseStoredGrant(row.grant_json);
     if (grant === undefined) throw corrupt(row.grant_id, 'the stored grant is not a canonical bounded grant');
     if (grant.id !== row.grant_id) throw corrupt(row.grant_id, 'the stored grant is filed under a different identity');
-    if (storedGrantRecordDigest(grant) !== row.grant_digest) throw corrupt(row.grant_id, 'record digest mismatch');
+    if (storedGrantRecordDigest(grant, storeId) !== row.grant_digest) throw corrupt(row.grant_id, 'record digest mismatch');
     // The artifact's own digest as well as the record envelope's. They detect
     // different substitutions, so passing one is not evidence about the other.
     if (!boundedGrantDigestMatches(grant)) throw corrupt(row.grant_id, 'grant digest mismatch');
     // Authenticity last, and never instead of the checks above: the digests
     // answer "are these the bytes that were written", the signature answers
-    // "did a trusted authority key vouch for them". A writer who recomputes
-    // every digest above reaches exactly this line and stops here, because the
-    // one thing they cannot recompute is a signature over their new bytes.
+    // "did a trusted authority key vouch for them, in this store". A writer who
+    // recomputes every digest above reaches exactly this line and stops here,
+    // because the one thing they cannot recompute is a signature over their
+    // new bytes.
     //
     // Verified over the grant as parsed, not over the row's raw JSON: the two
     // are already proven byte-identical by `parseStoredGrant`'s round-trip, and
     // signing the parsed artifact is what makes the check independent of how
     // the row happens to be stored.
-    const verification = verifier.verifyGrant(grant, signatureEnvelopeOf(row));
+    const verification = verifier.verifyGrant(grant, storeId, signatureEnvelopeOf(row));
     if (!verification.verified) throw unauthentic(row.grant_id, 'grant signature', verification.failure);
     return grant;
   }
 
-  function verifiedRevocation(row: RevocationRow): GrantRevocation {
+  function verifiedRevocation(row: RevocationRow, storeId: string): GrantRevocation {
     if (row.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) throw corrupt(row.grant_id, 'unrecognized revocation schema version');
     if (!isGrantRevocationReason(row.reason)) throw corrupt(row.grant_id, 'the stored revocation carries a reason outside the closed vocabulary');
     const revocation: GrantRevocation = {
@@ -510,34 +801,39 @@ export async function createSqliteBoundedGrantStore(
       reason: row.reason,
       issuerRef: row.issuer_ref,
     };
-    if (storedRevocationRecordDigest(revocation) !== row.revocation_digest) throw corrupt(row.grant_id, 'revocation record digest mismatch');
+    if (storedRevocationRecordDigest(revocation, storeId) !== row.revocation_digest) throw corrupt(row.grant_id, 'revocation record digest mismatch');
     // A revocation is authority state, at the same strength as a grant. A
     // deployment where the grant is signed and the revocation is not would make
     // the revocation the cheaper record to forge — and forging a revocation
     // away is how authority comes back, which is the direction that must never
     // be cheap.
-    const verification = verifier.verifyRevocation(revocation, signatureEnvelopeOf(row));
+    const verification = verifier.verifyRevocation(revocation, storeId, signatureEnvelopeOf(row));
     if (!verification.verified) throw unauthentic(row.grant_id, 'revocation signature', verification.failure);
     return revocation;
   }
 
   /**
-   * The current revocation state for a grant, cross-checked against the pointer
-   * the grant row carries.
+   * The current revocation state for a grant, as the verified commitment
+   * states it, cross-checked against the revocation row and the pointer the
+   * grant row carries.
    *
-   * Every disagreement throws, and that is the whole point: a revocation row
-   * deleted out from under a grant leaves the pointer behind, and a pointer
-   * cleared out from under a revocation leaves the row behind. Either way the
-   * grant stops being readable rather than becoming exercisable again. Neither
-   * is repaired — `GS-INV-011`.
+   * "Not revoked" is returned only when the **signed** commitment lists no
+   * revocation for this grant — a positive statement, not the absence of a row.
+   * Every disagreement below throws, and none is repaired — `GS-INV-011`.
    */
-  function currentRevocation(grantId: string, pointer: string | null): GrantRevocation | undefined {
+  function currentRevocation(grantId: string, pointer: string | null, state: VerifiedRevocationState): GrantRevocation | undefined {
+    const committed = state.byGrantId.get(grantId);
     const row = selectRevocation.get(grantId) as RevocationRow | undefined;
-    if (row === undefined) {
+    if (committed === undefined) {
+      if (row !== undefined) throw inconsistentRevocationState(`a revocation record for grant '${grantId}' is not covered by the signed commitment`);
       if (pointer !== null) throw corrupt(grantId, 'a committed revocation is referenced by the grant but its record is absent');
       return undefined;
     }
-    const revocation = verifiedRevocation(row);
+    if (row === undefined) throw inconsistentRevocationState(`the signed commitment covers a revocation of grant '${grantId}' whose record is absent`);
+    const revocation = verifiedRevocation(row, state.commitment.storeId);
+    if (row.sequence !== committed.sequence || row.revocation_digest !== committed.revocationDigest) {
+      throw inconsistentRevocationState(`the revocation record for grant '${grantId}' is not the one the signed commitment covers`);
+    }
     if (pointer === null) throw corrupt(grantId, 'a revocation record exists that the grant does not reference');
     if (pointer !== row.revocation_digest) throw corrupt(grantId, 'the grant references a different revocation than the one recorded');
     return revocation;
@@ -552,12 +848,68 @@ export async function createSqliteBoundedGrantStore(
    * answer" could become "store it unsigned" is this function, and it does not
    * exist here.
    */
-  async function signGrantOrFail(grantId: string, produce: () => Promise<AuthoritySignature>): Promise<AuthoritySignature> {
+  async function signOrFail(grantId: string, produce: () => Promise<AuthoritySignature>): Promise<AuthoritySignature> {
     try {
       return await produce();
     } catch (error) {
       if (error instanceof AuthoritySigningUnavailableError) throw error;
       throw new AuthoritySigningUnavailableError(`The authority signer could not sign the artifact for grant '${grantId}'.`);
+    }
+  }
+
+  /** The revocation state alone, proven, in its own read transaction. Used to learn the store id before signing, and by `health`. */
+  const runVerifyRevocationState = db.transaction((): RevocationStateCommitment => verifiedRevocationState().commitment);
+
+  /**
+   * Key rotation for the commitment.
+   *
+   * Grants and revocations keep the key that signed them, and stay readable for
+   * as long as that key stays trusted. The commitment is different: it is one
+   * row, re-signed only when something is revoked, so a store that saw no
+   * revocation since a rotation would still hold a commitment signed by the
+   * *previous* key — and retiring that key would make every read in the store
+   * refuse, including reads of grants signed by the new key.
+   *
+   * So on open, a commitment that verifies under a trusted key other than the
+   * active one is re-signed, **unchanged**, under the active key. Only a
+   * commitment that has just passed `verifiedRevocationState` is ever
+   * re-signed, and the update is conditional on it still being exactly that
+   * commitment, so this cannot sign a state nobody verified. It is best-effort:
+   * a signer that is unavailable at open leaves a commitment that is still
+   * valid, and the next revocation re-signs it anyway.
+   */
+  const runReadCommitmentKey = db.transaction((): { readonly commitment: RevocationStateCommitment; readonly keyId: string } => {
+    const commitment = verifiedRevocationState().commitment;
+    const { signing_key_id: keyId } = selectRevocationState.get() as RevocationStateRow;
+    return { commitment, keyId: keyId ?? '' };
+  });
+  const runReattest = db.transaction((commitment: RevocationStateCommitment, signature: AuthoritySignature): void => {
+    const current = verifiedRevocationState().commitment;
+    if (current.storeId !== commitment.storeId || current.sequence !== commitment.sequence || current.revocationSetDigest !== commitment.revocationSetDigest) return;
+    reattestRevocationState.run({
+      storeId: commitment.storeId,
+      sequence: commitment.sequence,
+      revocationSetDigest: commitment.revocationSetDigest,
+      signatureAlgorithm: signature.algorithm,
+      signingKeyId: signature.keyId,
+      signature: signature.signature,
+      signatureVersion: signature.artifactVersion,
+    });
+    // Read back: a re-signature this deployment would refuse rolls back.
+    verifiedRevocationState();
+  });
+
+  if (!fresh) {
+    try {
+      const { commitment, keyId } = runReadCommitmentKey();
+      if (keyId !== signer.activeKeyId) {
+        const signature = await signer.signRevocationState(commitment);
+        runReattest.immediate(commitment, signature);
+      }
+    } catch {
+      // Deliberately swallowed, and deliberately narrow in what it swallows:
+      // nothing above writes unless verification passed. A commitment that does
+      // not verify stays exactly as found, and every read reports why.
     }
   }
 
@@ -568,7 +920,13 @@ export async function createSqliteBoundedGrantStore(
    * immediately before the write. See `issue` below for why that order is the
    * whole point.
    */
-  const runIssue = db.transaction((input: IssueBoundedGrantInput, signature: AuthoritySignature): IssueBoundedGrantOutcome => {
+  const runIssue = db.transaction((input: IssueBoundedGrantInput, signature: AuthoritySignature, storeId: string): { readonly outcome: IssueBoundedGrantOutcome; readonly state: RevocationStateCommitment } => {
+    // Issuance into a store whose revocation state cannot be proven would
+    // produce a grant no read could ever return; refuse it here instead.
+    const state = verifiedRevocationState();
+    if (state.commitment.storeId !== storeId) throw inconsistentRevocationState('the store identity changed while the grant was being signed');
+    const settle = (outcome: IssueBoundedGrantOutcome) => ({ outcome, state: state.commitment });
+
     const existingRow = selectGrant.get(input.grant.id) as GrantRow | undefined;
     if (existingRow !== undefined) {
       // Grant identity is deterministic, so a re-delivered issuance lands here
@@ -576,14 +934,14 @@ export async function createSqliteBoundedGrantStore(
       // exactly as it stands — never overwritten, never re-dated — and it is
       // verified first, because returning a corrupt grant as `already-issued`
       // would hand a caller an artifact this store cannot vouch for.
-      return { outcome: 'already-issued', grant: verifiedGrant(existingRow) };
+      return settle({ outcome: 'already-issued', grant: verifiedGrant(existingRow, storeId) });
     }
 
     // A revocation recorded against this identity precludes issuance. Under the
     // foreign key this can only be an orphan left by tampering, and the closed
     // reading of an orphan is "this identity is revoked".
-    if ((selectRevocation.get(input.grant.id) as RevocationRow | undefined) !== undefined) {
-      return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_REVOKED] };
+    if (state.byGrantId.has(input.grant.id) || (selectRevocation.get(input.grant.id) as RevocationRow | undefined) !== undefined) {
+      return settle({ outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_REVOKED] });
     }
 
     // The commit-boundary re-check, inside the transaction, against the records
@@ -591,16 +949,16 @@ export async function createSqliteBoundedGrantStore(
     // that decides and the write that records, so no interleaving is possible.
     const precondition = input.commitGuard();
     if (!precondition.permitted) {
-      return {
+      return settle({
         outcome: 'refused',
         reasonCodes: precondition.reasonCodes.length > 0 ? precondition.reasonCodes : [GRANT_REASON_CODES.GRANT_ELIGIBILITY_CHANGED],
-      };
+      });
     }
 
     insertGrant.run({
       grantId: input.grant.id,
       grantJson: serializeBoundedGrant(input.grant),
-      grantDigest: storedGrantRecordDigest(input.grant),
+      grantDigest: storedGrantRecordDigest(input.grant, storeId),
       committedAt: now(),
       schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
       signatureAlgorithm: signature.algorithm,
@@ -614,74 +972,200 @@ export async function createSqliteBoundedGrantStore(
     // issuance to acknowledge, so a signature over the wrong bytes, or one this
     // deployment's own verifier does not trust, fails the issuance here rather
     // than becoming a grant that cannot be exercised later.
-    return { outcome: 'issued', grant: verifiedGrant(selectGrant.get(input.grant.id) as GrantRow) };
+    return settle({ outcome: 'issued', grant: verifiedGrant(selectGrant.get(input.grant.id) as GrantRow, storeId) });
   });
 
-  const runRead = db.transaction((grantId: string): ReadBoundedGrantResult => {
+  const runRead = db.transaction((grantId: string): { readonly result: ReadBoundedGrantResult; readonly state: RevocationStateCommitment } => {
+    // The revocation state first, for every read — including a read of a grant
+    // that does not exist. There is one answer to "is this store's revocation
+    // state trustworthy", and every read gets it before anything else.
+    const state = verifiedRevocationState();
     const grantRow = selectGrant.get(grantId) as GrantRow | undefined;
     if (grantRow === undefined) {
-      if ((selectRevocation.get(grantId) as RevocationRow | undefined) !== undefined) {
+      if (state.byGrantId.has(grantId) || (selectRevocation.get(grantId) as RevocationRow | undefined) !== undefined) {
         throw corrupt(grantId, 'a revocation record exists for a grant that does not');
       }
-      return {};
+      return { result: {}, state: state.commitment };
     }
 
-    const grant = verifiedGrant(grantRow);
-    const revocation = currentRevocation(grantId, grantRow.revocation_digest);
-    return { grant, ...(revocation !== undefined ? { revocation } : {}) };
+    const grant = verifiedGrant(grantRow, state.commitment.storeId);
+    const revocation = currentRevocation(grantId, grantRow.revocation_digest, state);
+    return { result: { grant, ...(revocation !== undefined ? { revocation } : {}) }, state: state.commitment };
   });
 
-  const runRevoke = db.transaction((revocation: GrantRevocation, signature: AuthoritySignature): RevokeBoundedGrantOutcome => {
-    const grantRow = selectGrant.get(revocation.grantId) as GrantRow | undefined;
-    if (grantRow === undefined) return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_NOT_FOUND] };
+  /** The outcome for a grant that already has a committed revocation. The first revocation stands, verified, exactly as it was recorded. */
+  function alreadyRevoked(grantRow: GrantRow, grantId: string, state: VerifiedRevocationState): RevokeBoundedGrantOutcome {
+    const existing = currentRevocation(grantId, grantRow.revocation_digest, state);
+    if (existing === undefined) throw inconsistentRevocationState(`the committed revocation of grant '${grantId}' could not be read back`);
+    // Idempotent, and the *first* revocation stands. A second call never
+    // re-dates it or rewrites its reason: the moment a grant stopped being
+    // exercisable is a fact, and a later call is not new information about it.
+    return { outcome: 'already-revoked', revocation: existing };
+  }
 
+  type RevocationPlan =
+    | { readonly kind: 'settled'; readonly outcome: RevokeBoundedGrantOutcome; readonly state: RevocationStateCommitment }
+    | { readonly kind: 'sign'; readonly previous: RevocationStateCommitment; readonly next: RevocationStateCommitment; readonly revocationDigest: string };
+
+  /**
+   * Decides, against verified state, whether a revocation needs signing at
+   * all, and if so what the next commitment is. Read-only.
+   *
+   * The next commitment is computed from the **verified** set plus the new
+   * entry, never from rows that have not passed `verifiedRevocationState`. That
+   * is the rule that stops a revocation from laundering tampering: if someone
+   * had pruned the set, the verification above throws, and nothing is signed
+   * over the pruned set — a new signature would otherwise turn their deletion
+   * into state this store vouches for.
+   */
+  const runPlanRevocation = db.transaction((revocation: GrantRevocation): RevocationPlan => {
+    const state = verifiedRevocationState();
+    const grantRow = selectGrant.get(revocation.grantId) as GrantRow | undefined;
+    if (grantRow === undefined) {
+      return { kind: 'settled', outcome: { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_NOT_FOUND] }, state: state.commitment };
+    }
     // The grant's own integrity is deliberately *not* required here. Recording
     // a revocation never increases authority, and refusing to revoke a grant
     // whose record is corrupt would be the one direction this store must never
     // take: leaving an untrustworthy grant with no revocation recorded against
     // it. Revocation needs the identity, and the identity is the primary key.
-    const existingRow = selectRevocation.get(revocation.grantId) as RevocationRow | undefined;
-    if (existingRow !== undefined) {
-      const existing = verifiedRevocation(existingRow);
-      if (grantRow.revocation_digest !== existingRow.revocation_digest) {
-        throw corrupt(revocation.grantId, 'the grant references a different revocation than the one recorded');
-      }
-      // Idempotent, and the *first* revocation stands. A second call never
-      // re-dates it or rewrites its reason: the moment a grant stopped being
-      // exercisable is a fact, and a later call is not new information about it.
-      return { outcome: 'already-revoked', revocation: existing };
+    if (state.byGrantId.has(revocation.grantId)) {
+      return { kind: 'settled', outcome: alreadyRevoked(grantRow, revocation.grantId, state), state: state.commitment };
+    }
+    if ((selectRevocation.get(revocation.grantId) as RevocationRow | undefined) !== undefined) {
+      throw inconsistentRevocationState(`a revocation record for grant '${revocation.grantId}' is not covered by the signed commitment`);
     }
     if (grantRow.revocation_digest !== null) {
       throw corrupt(revocation.grantId, 'a committed revocation is referenced by the grant but its record is absent');
     }
 
-    const revocationDigest = storedRevocationRecordDigest(revocation);
-    const committedAt = now();
-
-    insertRevocation.run({
-      grantId: revocation.grantId,
-      revokedAt: revocation.revokedAt,
-      reason: revocation.reason,
-      issuerRef: revocation.issuerRef,
+    const { storeId, sequence } = state.commitment;
+    const revocationDigest = storedRevocationRecordDigest(revocation, storeId);
+    const nextEntries: RevocationSetEntry[] = [...state.entries, { sequence: sequence + 1, grantId: revocation.grantId, revocationDigest }];
+    return {
+      kind: 'sign',
+      previous: state.commitment,
+      next: { storeId, sequence: sequence + 1, revocationSetDigest: revocationSetDigest(storeId, nextEntries) },
       revocationDigest,
-      committedAt,
-      schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
-      signatureAlgorithm: signature.algorithm,
-      signingKeyId: signature.keyId,
-      signature: signature.signature,
-      signatureVersion: signature.artifactVersion,
-    });
-
-    // Same transaction, so the record and the grant's reference to it commit
-    // together. A crash between them cannot leave a revoked grant reading as
-    // live, because there is no "between them" to crash in.
-    const linked = linkRevocation.run({ grantId: revocation.grantId, revocationDigest }).changes;
-    if (linked !== 1) throw corrupt(revocation.grantId, 'the revocation could not be linked to its grant');
-
-    return { outcome: 'revoked', revocation };
+    };
   });
 
-  return {
+  const STALE = Symbol('stale revocation plan');
+
+  /**
+   * The committing half of revocation: the revocation row, the grant's pointer
+   * to it and the advanced, signed commitment, in **one** transaction. There is
+   * no instant at which the row exists and the commitment does not cover it, or
+   * the commitment covers a row that does not exist — so there is no
+   * intermediate state a crash could leave behind that reads as live.
+   *
+   * Returns `STALE` if another writer advanced the commitment after the plan
+   * was made; the caller re-plans and re-signs rather than committing over a
+   * state the signature was not computed for.
+   */
+  const runRevoke = db.transaction(
+    (
+      revocation: GrantRevocation,
+      plan: Extract<RevocationPlan, { kind: 'sign' }>,
+      revocationSignature: AuthoritySignature,
+      stateSignature: AuthoritySignature,
+    ): { readonly outcome: RevokeBoundedGrantOutcome; readonly state: RevocationStateCommitment } | typeof STALE => {
+      const state = verifiedRevocationState();
+      if (
+        state.commitment.storeId !== plan.previous.storeId ||
+        state.commitment.sequence !== plan.previous.sequence ||
+        state.commitment.revocationSetDigest !== plan.previous.revocationSetDigest
+      ) {
+        return STALE;
+      }
+
+      const grantRow = selectGrant.get(revocation.grantId) as GrantRow | undefined;
+      if (grantRow === undefined) return { outcome: { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_NOT_FOUND] }, state: state.commitment };
+      if (state.byGrantId.has(revocation.grantId)) return { outcome: alreadyRevoked(grantRow, revocation.grantId, state), state: state.commitment };
+      if (grantRow.revocation_digest !== null) {
+        throw corrupt(revocation.grantId, 'a committed revocation is referenced by the grant but its record is absent');
+      }
+
+      const committedAt = now();
+      insertRevocation.run({
+        grantId: revocation.grantId,
+        sequence: plan.next.sequence,
+        revokedAt: revocation.revokedAt,
+        reason: revocation.reason,
+        issuerRef: revocation.issuerRef,
+        revocationDigest: plan.revocationDigest,
+        committedAt,
+        schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
+        signatureAlgorithm: revocationSignature.algorithm,
+        signingKeyId: revocationSignature.keyId,
+        signature: revocationSignature.signature,
+        signatureVersion: revocationSignature.artifactVersion,
+      });
+
+      const linked = linkRevocation.run({ grantId: revocation.grantId, revocationDigest: plan.revocationDigest }).changes;
+      if (linked !== 1) throw corrupt(revocation.grantId, 'the revocation could not be linked to its grant');
+
+      const advanced = advanceRevocationState.run({
+        storeId: plan.next.storeId,
+        previousSequence: plan.previous.sequence,
+        sequence: plan.next.sequence,
+        revocationSetDigest: plan.next.revocationSetDigest,
+        committedAt,
+        signatureAlgorithm: stateSignature.algorithm,
+        signingKeyId: stateSignature.keyId,
+        signature: stateSignature.signature,
+        signatureVersion: stateSignature.artifactVersion,
+      }).changes;
+      if (advanced !== 1) throw inconsistentRevocationState('the revocation-state commitment could not be advanced');
+
+      // Read back through the same verification every later read will use:
+      // the new commitment, the set it covers, and this revocation's own row.
+      // A commitment this deployment's verifier would refuse is not a
+      // revocation to acknowledge — and the transaction rolls back rather than
+      // leaving a store every later read refuses.
+      const after = verifiedRevocationState();
+      const recorded = alreadyRevoked(selectGrant.get(revocation.grantId) as GrantRow, revocation.grantId, after);
+      if (recorded.outcome !== 'already-revoked') throw inconsistentRevocationState('the committed revocation could not be read back');
+      return { outcome: { outcome: 'revoked', revocation: recorded.revocation }, state: after.commitment };
+    },
+  );
+
+  /**
+   * In-process revocations run one at a time. The plan-sign-commit sequence
+   * has an `await` in the middle, and two interleaved revocations would each
+   * sign a successor to the same commitment; one would then always go stale.
+   * Serializing them here means only a *different process* can make a plan
+   * stale, and that is what the bounded retry below is for.
+   */
+  let revocationQueue: Promise<unknown> = Promise.resolve();
+
+  async function revokeSerialized(revocation: GrantRevocation): Promise<RevokeBoundedGrantOutcome> {
+    for (let attempt = 0; attempt < MAX_REVOCATION_ATTEMPTS; attempt += 1) {
+      assertOpen();
+      const plan = runPlanRevocation(revocation);
+      if (plan.kind === 'settled') {
+        noteVerified(plan.state);
+        return plan.outcome;
+      }
+      noteVerified(plan.previous);
+      // Both signatures before the transaction opens, like every other
+      // signature here. `revokedAt` is the caller's instant, never the store's
+      // clock, so signing outside the transaction cannot shift it.
+      const revocationSignature = await signOrFail(revocation.grantId, () => signer.signRevocation(revocation, plan.previous.storeId));
+      const stateSignature = await signOrFail(revocation.grantId, () => signer.signRevocationState(plan.next));
+      assertOpen();
+      const committed = runRevoke.immediate(revocation, plan, revocationSignature, stateSignature);
+      if (committed !== STALE) {
+        noteVerified(committed.state);
+        return committed.outcome;
+      }
+    }
+    throw unavailable(
+      `The revocation of grant '${revocation.grantId}' could not be committed: the revocation-state commitment kept advancing under concurrent writers. Nothing was recorded; retry the revocation.`,
+    );
+  }
+
+  const store: DurableBoundedGrantStore = {
     providerKind: 'sqlite',
 
     /**
@@ -711,19 +1195,29 @@ export async function createSqliteBoundedGrantStore(
      * A signature over a grant that is then refused is simply discarded. It
      * never reaches storage, and a signature that was never persisted confers
      * nothing: authority is a *committed row*, not a signature someone holds.
+     *
+     * The store id the grant is signed for is read, verified, before signing and
+     * re-checked inside the transaction.
      */
     async issue(input: IssueBoundedGrantInput): Promise<IssueBoundedGrantOutcome> {
       assertOpen();
-      const signature = await signGrantOrFail(input.grant.id, () => signer.signGrant(input.grant));
+      const before = runVerifyRevocationState();
+      noteVerified(before);
+      const signature = await signOrFail(input.grant.id, () => signer.signGrant(input.grant, before.storeId));
+      assertOpen();
       // `runIssue` returns only after COMMIT. With `synchronous = FULL` the
       // commit is durable before this resolves, so success is never reported
       // ahead of the state that preserves it.
-      return runIssue(input, signature);
+      const { outcome, state } = runIssue(input, signature, before.storeId);
+      noteVerified(state);
+      return outcome;
     },
 
     async read(grantId: string): Promise<ReadBoundedGrantResult> {
       assertOpen();
-      return runRead(grantId);
+      const { result, state } = runRead(grantId);
+      noteVerified(state);
+      return result;
     },
 
     /**
@@ -743,6 +1237,12 @@ export async function createSqliteBoundedGrantStore(
      * the deferred external key-custody work — an external signing boundary
      * makes this dependency a network dependency, which is worse, and is
      * something that work must design for rather than discover.
+     *
+     * CORE-01 adds a second signature to the same operation: the advanced
+     * revocation-state commitment. It is produced by the same signer, in the
+     * same window, and a failure of either leaves nothing recorded. A
+     * revocation of a grant that is unknown or already revoked is settled before
+     * the signer is called at all.
      */
     async revoke(input: RevokeBoundedGrantInput): Promise<RevokeBoundedGrantOutcome> {
       assertOpen();
@@ -751,17 +1251,15 @@ export async function createSqliteBoundedGrantStore(
       if (!isGrantRevocationReason(input.reason)) {
         return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_REVOKED] };
       }
-      // Fully determined by the input, so it can be built and signed before the
-      // transaction opens. `revokedAt` is the caller's instant, never the
-      // store's clock, so signing outside the transaction cannot shift it.
       const revocation: GrantRevocation = {
         grantId: input.grantId,
         revokedAt: input.revokedAt,
         reason: input.reason,
         issuerRef: input.issuerRef,
       };
-      const signature = await signGrantOrFail(input.grantId, () => signer.signRevocation(revocation));
-      return runRevoke(revocation, signature);
+      const run = revocationQueue.then(() => revokeSerialized(revocation));
+      revocationQueue = run.catch(() => undefined);
+      return run;
     },
 
     async health(): Promise<BoundedGrantStoreHealth> {
@@ -773,12 +1271,33 @@ export async function createSqliteBoundedGrantStore(
         readable = false;
       }
       const writable = readable && !closed;
+
+      // A store that is reachable but whose revocation state cannot be proven
+      // answers no authority read, so reachability alone is not health.
+      let revocationState: Pick<BoundedGrantStoreHealth, 'revocationState' | 'revocationStateFailure' | 'revocationSequence'> = {
+        revocationState: 'failed',
+        revocationStateFailure: 'BOUNDED_GRANT_STORE_UNAVAILABLE',
+      };
+      if (readable) {
+        try {
+          const verified = runVerifyRevocationState();
+          noteVerified(verified);
+          revocationState = { revocationState: 'verified', revocationSequence: verified.sequence };
+        } catch (error) {
+          revocationState = {
+            revocationState: 'failed',
+            revocationStateFailure: error instanceof BoundedGrantStoreError ? error.code : 'BOUNDED_GRANT_STORE_UNAVAILABLE',
+          };
+        }
+      }
+
       return {
-        status: readable && writable ? 'healthy' : 'unhealthy',
+        status: readable && writable && revocationState.revocationState === 'verified' ? 'healthy' : 'unhealthy',
         readable,
         writable,
         schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
         checkedAt: now(),
+        ...revocationState,
       };
     },
 
@@ -789,4 +1308,8 @@ export async function createSqliteBoundedGrantStore(
       }
     },
   };
+
+  Object.freeze(store);
+  AUTHENTICATED_DURABLE_STORES.add(store);
+  return store;
 }

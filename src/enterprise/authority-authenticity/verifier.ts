@@ -1,6 +1,7 @@
 import { createPublicKey, verify as cryptoVerify, type KeyObject } from 'node:crypto';
 
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
+import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import { AuthorityAuthenticityConfigurationError, type AuthoritySignatureFailure } from './errors.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
@@ -10,6 +11,7 @@ import {
   isSupportedAuthoritySignatureAlgorithm,
   isWellFormedAuthoritySignature,
   revocationSigningBytes,
+  revocationStateSigningBytes,
   type AuthoritySignature,
   type AuthoritySignatureAlgorithm,
 } from './authority-signature.js';
@@ -64,10 +66,12 @@ export type AuthoritySignatureVerification =
   | { readonly verified: false; readonly failure: AuthoritySignatureFailure };
 
 export interface AuthorityArtifactVerifier {
-  /** Whether this grant's signature was produced over *these* canonical bytes by a key this deployment trusts. */
-  verifyGrant(grant: BoundedGrant, signature: unknown): AuthoritySignatureVerification;
+  /** Whether this grant's signature was produced, for the store named by `storeId`, over *these* canonical bytes by a key this deployment trusts. */
+  verifyGrant(grant: BoundedGrant, storeId: string, signature: unknown): AuthoritySignatureVerification;
   /** The same question for a revocation, under a different signing domain, so neither artifact's signature can stand in for the other's. */
-  verifyRevocation(revocation: GrantRevocation, signature: unknown): AuthoritySignatureVerification;
+  verifyRevocation(revocation: GrantRevocation, storeId: string, signature: unknown): AuthoritySignatureVerification;
+  /** The same question for a store's revocation-state commitment (CORE-01), under its own domain. */
+  verifyRevocationState(state: RevocationStateCommitment, signature: unknown): AuthoritySignatureVerification;
   /** The key ids this verifier trusts, for composition checks and diagnostics. Ids only — never key material. */
   readonly trustedKeyIds: readonly string[];
 }
@@ -217,11 +221,14 @@ export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificati
 
   return Object.freeze({
     trustedKeyIds,
-    verifyGrant(grant: BoundedGrant, signature: unknown): AuthoritySignatureVerification {
-      return verify(grantSigningBytes(grant), signature);
+    verifyGrant(grant: BoundedGrant, storeId: string, signature: unknown): AuthoritySignatureVerification {
+      return verify(grantSigningBytes(grant, storeId), signature);
     },
-    verifyRevocation(revocation: GrantRevocation, signature: unknown): AuthoritySignatureVerification {
-      return verify(revocationSigningBytes(revocation), signature);
+    verifyRevocation(revocation: GrantRevocation, storeId: string, signature: unknown): AuthoritySignatureVerification {
+      return verify(revocationSigningBytes(revocation, storeId), signature);
+    },
+    verifyRevocationState(state: RevocationStateCommitment, signature: unknown): AuthoritySignatureVerification {
+      return verify(revocationStateSigningBytes(state), signature);
     },
   });
 }

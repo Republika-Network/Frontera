@@ -47,7 +47,22 @@ export type BoundedGrantStoreErrorCode =
    * Like every other code here, this is thrown, never returned, and the layer
    * above turns it into "no grant" — the closed direction.
    */
-  | 'BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED';
+  | 'BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED'
+  /**
+   * The store's revocation state cannot be proven complete (CORE-01): the
+   * signed revocation-state commitment is absent, the revocation records
+   * actually present disagree with it, their sequence has a gap or a duplicate,
+   * or the commitment is older than one this process has already verified.
+   *
+   * Its own code because it is neither of the above. No single record need be
+   * corrupt or unsigned for this to fire — the canonical case is a genuine
+   * revocation that has been *deleted*, leaving every remaining record
+   * perfectly valid. What it tells an operator is that the store can no longer
+   * answer "was this grant revoked?", and so it answers nothing. Recovery is a
+   * restore from a trusted copy; the store never repairs or re-signs the state
+   * it found, because re-signing it would launder the deletion into authority.
+   */
+  | 'BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT';
 
 export class BoundedGrantStoreError extends Error {
   constructor(

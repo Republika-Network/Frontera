@@ -99,7 +99,7 @@ import type { EmergencyControlReaderPort, EmergencyControlStorePort } from '../.
 import { createEmergencyControlReader, createInMemoryEmergencyControlStore } from '../../features/emergency-control-runtime/index.js';
 import { createSqliteEmergencyControlStore } from '../emergency-control/sqlite-emergency-control-store.js';
 import { ExecutionGovernanceError } from '../execution-governance/errors.js';
-import { createSqliteBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
+import { createSqliteBoundedGrantStore, isAuthenticatedDurableBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
 import {
   CustomerIdentityConfigurationError,
   assertCustomerCredentialConfiguration,
@@ -463,6 +463,16 @@ export interface EnterpriseAuthorityControlledExecutionOptions
    * `persistence.provider === 'sqlite'`, on `boundedGrant.sqlitePath`; the
    * in-memory store otherwise. A store supplied here overrides both, and the
    * host that supplied it is the one that closes it.
+   *
+   * **Under `persistence.provider === 'sqlite'` a supplied store must itself be
+   * an authenticated durable store** — one built by
+   * `createSqliteBoundedGrantStore`, unwrapped. Anything else (the in-memory
+   * store, a wrapper, a custom implementation) is refused at startup with
+   * `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED` (CORE-01): a durable deployment
+   * never silently downgrades to authority storage that does not sign and
+   * verify. Under `memory` persistence any `BoundedGrantStorePort` is accepted,
+   * as before — that configuration never promised durable, authenticated
+   * authority.
    *
    * **In-memory grants do not survive a process restart**, and a grant that is
    * gone reads as `GRANT_EXERCISE_NOT_FOUND` at the next exercise -- no
@@ -1039,6 +1049,23 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     assertCustomerCredentialConfiguration(configuration.authentication.apiKeys, configuration.kernelAuthority.organizationId);
   }
 
+  // CORE-01: no silent authenticity downgrade. Checked before anything is
+  // opened. A deployment that configured durable persistence has asked for
+  // authority that is signed, verified on every read and tamper-evident against
+  // revocation removal; a host-supplied store that is not the authenticated
+  // durable store would quietly replace all of that while the configuration
+  // still said "sqlite". This guards an honest composition mistake — a test
+  // double or wrapper carried into a durable deployment. It is not a defense
+  // against a malicious host, which runs in this process and can replace this
+  // function; that boundary is stated in AUTHORITY_ARTIFACT_AUTHENTICITY.md.
+  const suppliedGrantStore = options.authorityControlledExecution?.grantStore;
+  if (suppliedGrantStore !== undefined && configuration.persistence.provider === 'sqlite' && !isAuthenticatedDurableBoundedGrantStore(suppliedGrantStore)) {
+    throw new ExecutionGovernanceError(
+      'EXECUTION_GRANT_STORE_NOT_AUTHENTICATED',
+      'This Host is configured for durable persistence, and the supplied authorityControlledExecution.grantStore is not an authenticated durable bounded-grant store. Omit it so the Host opens the signed store itself, or supply one built by createSqliteBoundedGrantStore. There is no unauthenticated durable authority mode.',
+    );
+  }
+
   // Adapter composition is checked before anything is opened: a deployment that
   // states both a single adapter and a routing table, or neither, has not said
   // which provider an authorized action reaches, and that is not a question to
@@ -1520,6 +1547,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         // of the children behind it.
         executionAdapter?.adapterId ?? 'unknown',
         kernelProviders.clock.now,
+        grantStore,
       ),
     );
   }

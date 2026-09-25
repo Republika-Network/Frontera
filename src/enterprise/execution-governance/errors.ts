@@ -22,7 +22,16 @@ export type ExecutionGovernanceErrorCode =
   /** The host stated both a single execution adapter and an adapter routing table, or neither. Which provider an authorized action reaches is not a thing to resolve by precedence. */
   | 'EXECUTION_ADAPTER_COMPOSITION_INVALID'
   /** P7: the host composed `exerciseControls` without a policy, without an exercise-time authority-binding resolver, or with a ledger that does not implement the port. There is no default policy and no permissive stand-in. */
-  | 'EXECUTION_EXERCISE_CONTROLS_INVALID';
+  | 'EXECUTION_EXERCISE_CONTROLS_INVALID'
+  /**
+   * CORE-01: the host supplied its own `grantStore` to a deployment configured
+   * for durable persistence, and that store is not an authenticated durable
+   * bounded-grant store. Accepting it would silently replace signed,
+   * tamper-evident authority with whatever the host passed in — the in-memory
+   * store, or a wrapper — while the configuration still said "durable". There
+   * is no flag that permits it.
+   */
+  | 'EXECUTION_GRANT_STORE_NOT_AUTHENTICATED';
 
 export class ExecutionGovernanceError extends Error {
   constructor(

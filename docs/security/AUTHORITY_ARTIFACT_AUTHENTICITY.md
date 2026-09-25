@@ -2,8 +2,8 @@
 
 - **Track:** Security & Containment Architecture. Authored as the historical security-track **Prompt 5** (commit `03c1eb2`) and forward-ported onto current main as **PRE-00**.
 - **Numbering:** "Prompt N" in this document is the legacy security-hardening prompt series — the same labels `SECURITY_INVARIANTS.md` and `AUTHORITATIVE_GRANT_STORE.md` use — kept as provenance, not as the active roadmap. Work described here as *deferred* (notably external key custody) has no owner assigned by this document.
-- **Scope:** the authority artifacts the bounded-grant execution path trusts — `BoundedGrant` and `GrantRevocation` — and nothing else.
-- **Status:** implemented for the durable bounded-grant store. Signing key **process-resident** (AA-001); external key custody (KMS/HSM) remains deferred.
+- **Scope:** the authority artifacts the bounded-grant execution path trusts — `BoundedGrant`, `GrantRevocation` and, since **CORE-01**, the store's signed **revocation-state commitment** — and nothing else.
+- **Status:** implemented for the durable bounded-grant store. Signing key **process-resident** (AA-001); external key custody is **CORE-02**. Revocation-state integrity (removal of a revocation by a database-only writer) closed by **CORE-01** — §26.
 - **Predecessor:** `AUTHORITATIVE_GRANT_STORE.md` (Prompt 4).
 
 ---
@@ -86,6 +86,18 @@ There is **no** token, no lifecycle status field, no usage counter, and (before 
 | `reason` | closed seven-value vocabulary | yes |
 | `issuerRef` | who recorded it | yes |
 
+Since CORE-01 both artifacts are also signed **as filed in one store**: the record envelope carries the store's `storeId` (§26.3).
+
+### 4.2a Revocation-state commitment (CORE-01)
+
+| Field | Authority-relevant | Covered |
+|---|---|---|
+| `storeId` | which store's revocation set this is | yes |
+| `sequence` | how many revocations the store has ever committed | yes |
+| `revocationSetDigest` | every committed revocation, in order (sequence, grant id, record digest) | yes |
+
+One row per store. See §26.
+
 ### 4.3 Evidence table — the state before this prompt
 
 | # | Question | Finding |
@@ -130,9 +142,14 @@ A note on #7, because it is the kind of thing that gets quietly conflated: `issu
 | **AA-INV-019** | Signing does not widen authority | signing is a separate step over an already-constructed artifact; no issuance check was removed | 28 unmodified Prompt 4 tests |
 | **AA-INV-020** | Prompt 3's ordering is preserved | `read → assess → adapter` untouched | no-bypass suites unchanged |
 | **AA-INV-021** | Trust is never taken from the artifact | envelope has no key field; no verification path reads one | structural: no TOFU, no envelope key field |
-| **AA-INV-022** | A signer failure never becomes an unsigned write | `signGrantOrFail` has no branch that returns without a signature | signer-down issue/revoke tests |
+| **AA-INV-022** | A signer failure never becomes an unsigned write | `signOrFail` has no branch that returns without a signature | signer-down issue/revoke/genesis tests |
+| **AA-INV-023** (CORE-01) | "Not revoked" is a signed statement, never the absence of a row | `currentRevocation` answers from the verified commitment; every authoritative transaction runs `verifiedRevocationState()` first | `revocation-state-integrity.test.ts` C, E, E+K; structural: every transaction proves the state before reading a row |
+| **AA-INV-024** (CORE-01) | The revocation set actually present must be exactly the set the signed commitment describes — same count, contiguous sequence, same digest | `verifiedRevocationState` | C, E, G, H, renumbering test |
+| **AA-INV-025** (CORE-01) | Grant, revocation and commitment are bound to one store; no genuine artifact of another store verifies here | `storeId` in every record envelope and in the commitment | E+ (foreign genesis splice) |
+| **AA-INV-026** (CORE-01) | Nothing is ever signed over a revocation state that has not just verified — tampering cannot be laundered into a new signature | revocation plans and re-attestation build only from `verifiedRevocationState()` | no-laundering, re-attestation-never-signs-tampered tests |
+| **AA-INV-027** (CORE-01) | A durable deployment never silently runs on an unauthenticated grant store | runtime brand checked at composition; `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED` | O tests (in-memory, shape-alike, wrapper refused) |
 
-AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does.
+AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's.
 
 ## 6. Signature Algorithm
 
@@ -173,8 +190,9 @@ Four fields, all required, no free-form metadata. What is **absent** is as load-
 ### 8.1 What is signed
 
 ```
-grant:      "frontera:authority-artifact:bounded-grant:v1\n"   + serializeStoredGrantRecord(grant)
-revocation: "frontera:authority-artifact:grant-revocation:v1\n" + serializeStoredRevocationRecord(revocation)
+grant:            "frontera:authority-artifact:bounded-grant:v1\n"    + serializeStoredGrantRecord(grant, storeId)
+revocation:       "frontera:authority-artifact:grant-revocation:v1\n" + serializeStoredRevocationRecord(revocation, storeId)
+revocation state: "frontera:authority-artifact:revocation-state:v1\n" + serializeRevocationStateCommitment(state)     (CORE-01)
 ```
 
 There is exactly **one** function producing each — signing and verification call the same one, so the two sides cannot drift.
@@ -183,10 +201,10 @@ There is exactly **one** function producing each — signing and verification ca
 
 ### 8.2 Why the record envelope rather than the artifact alone
 
-`serializeStoredGrantRecord` binds four things in one deterministic string:
+`serializeStoredGrantRecord` binds five things in one deterministic string (record format v2 / schema v3 since CORE-01, which added `storeId`):
 
 ```
-{"format":"aoc.bounded-grant-store.record.v1","grant":<canonical grant>,"grantId":"<id>","kind":"grant","schemaVersion":"aoc.bounded-grant-store.schema.v2"}
+{"format":"aoc.bounded-grant-store.record.v2","grant":<canonical grant>,"grantId":"<id>","kind":"grant","schemaVersion":"aoc.bounded-grant-store.schema.v3","storeId":"<store id>"}
 ```
 
 So the signature covers every authority-relevant field **and** the identity the row is filed under **and** the schema version it was written by. A signature lifted onto a different row therefore fails — proven by the substitution tests — which a signature over the artifact alone would not have guaranteed.
@@ -214,7 +232,7 @@ domain separator + envelope  →  Ed25519 signature   (authenticity; new)
 Two mechanisms, deliberately redundant:
 
 1. **An explicit literal byte prefix**, different per artifact type, newline-terminated so prefix and payload cannot be re-split.
-2. The payload's own `"kind":"grant"` / `"kind":"revocation"` field.
+2. The payload's own `"kind":"grant"` / `"kind":"revocation"` / `"kind":"revocation-state"` field.
 
 The prompt's rule — *do not rely only on JSON shape* — is why (1) exists. The deliberate-violation experiment is the evidence it is doing work: collapsing both domains to one string left the cross-artifact confusion tests **passing**, because the payload JSON still differed, and was caught only by the test that asserts the two domain constants differ. Shape alone would have been an accidental property, dependent on two serializers continuing to disagree. The prefix makes separation a property of the signing input itself.
 
@@ -226,8 +244,9 @@ The prompt's rule — *do not rely only on JSON shape* — is why (1) exists. Th
 interface AuthorityArtifactSigner {
   readonly activeKeyId: string;
   readonly algorithm: AuthoritySignatureAlgorithm;
-  signGrant(grant: BoundedGrant): Promise<AuthoritySignature>;
-  signRevocation(revocation: GrantRevocation): Promise<AuthoritySignature>;
+  signGrant(grant: BoundedGrant, storeId: string): Promise<AuthoritySignature>;
+  signRevocation(revocation: GrantRevocation, storeId: string): Promise<AuthoritySignature>;
+  signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature>; // CORE-01
 }
 ```
 
@@ -366,16 +385,24 @@ The row is read back through the same verification path a later exercise will us
 
 ## 15. Revocation Signing
 
+As of CORE-01 (the pre-CORE-01 flow signed one artifact and had no commitment):
+
 ```
 validate reason (closed vocabulary)  -> refused and stop, before anything is signed
   -> construct revocation (fully determined by the caller's input)
-  -> SIGN                                    [outside the transaction]
-  -> BEGIN
-     -> grant exists?        -> refused GRANT_NOT_FOUND
-     -> already revoked?     -> verified, cross-checked -> already-revoked and stop
-     -> dangling pointer?    -> REFUSED (corrupt)
-     -> INSERT revocation row + signature columns
-     -> UPDATE grant.revocation_digest        [same transaction]
+  -> [in-process revocations are serialized]
+  -> PLAN (read transaction)
+     -> VERIFY REVOCATION STATE (commitment signature, count, sequence, digest)   -> refuse on any failure
+     -> grant exists?        -> refused GRANT_NOT_FOUND           (nothing signed)
+     -> already revoked?     -> verified, cross-checked -> already-revoked and stop   (nothing signed)
+     -> next commitment = verified set + this revocation, sequence + 1
+  -> SIGN revocation, SIGN next commitment      [outside the transaction]
+  -> BEGIN IMMEDIATE
+     -> VERIFY REVOCATION STATE again; changed since the plan?  -> STALE, re-plan (bounded)
+     -> INSERT revocation row (with its sequence) + signature columns
+     -> UPDATE grant.revocation_digest
+     -> UPDATE commitment (sequence + 1, new digest, new signature)
+     -> read back: VERIFY REVOCATION STATE + this revocation
   -> COMMIT (durable)
   -> acknowledge
 ```
@@ -391,14 +418,20 @@ A grant whose own record is corrupt **can still be revoked**, unchanged from Pro
 Every durable authoritative read, inside one transaction:
 
 ```
+REVOCATION-STATE COMMITMENT (CORE-01), before any row is read:
+  present?                 -> REVOCATION_STATE_INCONSISTENT
+  schema, store id, sequence well formed -> REVOCATION_STATE_INCONSISTENT
+  signature, trusted key   -> AUTHENTICITY FAILED
+  rows == sequence, contiguous 1..n, set digest matches -> REVOCATION_STATE_INCONSISTENT
+  not older than the newest this process verified      -> REVOCATION_STATE_INCONSISTENT
 row schema version         -> corrupt
 canonical parse + round-trip equality  -> corrupt
 identity (grant.id == row.grant_id)    -> corrupt
 record envelope digest     -> corrupt
 artifact's own digest      -> corrupt
 SIGNATURE ENVELOPE + TRUSTED KEY + VERIFY  -> AUTHENTICITY FAILED
-revocation record: schema, vocabulary, digest, SIGNATURE   -> corrupt / authenticity
-grant↔revocation cross-check           -> corrupt
+revocation (from the COMMITMENT, not from row presence): schema, vocabulary, digest, SIGNATURE, matches committed entry -> corrupt / authenticity / inconsistent
+grant↔revocation pointer cross-check   -> corrupt   (defense in depth only; no longer the evidence)
 -> return authority state
 ```
 
@@ -407,6 +440,8 @@ Digests are checked **before** the signature, deliberately: they are cheap, they
 There is **no** branch that skips verification, no legacy path, and no flag. A structural test asserts each verify call appears exactly once — one verification point per artifact type, not several to keep in step — and that every one throws on failure.
 
 ## 17. Persistence Schema
+
+Schema version **`aoc.bounded-grant-store.schema.v3`** since CORE-01 (§26.5). The text below describes the v2 change that introduced signing, which v3 keeps.
 
 Schema version **`aoc.bounded-grant-store.schema.v2`** (was `.v1`).
 
@@ -433,6 +468,8 @@ This is the pre-production disposition the prompt prefers, and it is the right o
 
 **Legacy records are never auto-signed.** That is the one migration that must never be automatic: signing whatever a database happens to contain, under the current key, would convert arbitrary prior content into authority this deployment cryptographically vouches for — and would erase the provenance that makes the signature mean anything. If a deployment needs to carry v1 data forward, that is explicit, operator-controlled work, and it is not implemented here.
 
+**CORE-01 (v2 → v3).** A v2 database is refused at open in exactly the same way, and for a stronger reason: its rows are bound to no store id and it holds no revocation-state commitment, so the completeness of its revocation set cannot be proven. Minting a commitment for it would sign whatever set of revocations the file currently contains — including one that has already been pruned. No commitment is ever created for a file that already holds authority tables (tested).
+
 **Operational consequence.** A deployment that already runs the durable store (`persistence.provider === 'sqlite'`) will find its existing `bounded-grants.sqlite` refused at open after upgrading, with `BOUNDED_GRANT_STORE_UNAVAILABLE`. That is intended. The operator must decide what happens to the authority it holds — typically re-issue through the normal issuance path under the new key, into a fresh file — and must not "fix" it by signing the old rows. Nothing in this repository modifies an existing database to make it open.
 
 ## 19. Failure Semantics
@@ -442,7 +479,9 @@ This is the pre-production disposition the prompt prefers, and it is the right o
 | Code | Meaning | Where |
 |---|---|---|
 | `BOUNDED_GRANT_STORE_STATE_CORRUPT` | the bytes moved | Prompt 4, unchanged |
-| `BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED` | no trusted key vouches for these bytes | **new** |
+| `BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED` | no trusted key vouches for these bytes (a record, or the revocation-state commitment) | **new** |
+| `BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT` | the revocation set cannot be proven complete: commitment absent, rows disagree with it, sequence gap, or a regression this process observed | **CORE-01** |
+| `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED` | a durable Host was handed a grant store that is not the authenticated durable store | **CORE-01**, composition only |
 | `BOUNDED_GRANT_STORE_UNAVAILABLE` | cannot open / closed / foreign schema version | Prompt 4, unchanged |
 | `AuthorityAuthenticityConfigurationError` | the key boundary cannot be built | composition only |
 | `AuthoritySigningUnavailableError` | the signer could not produce a signature | issue / revoke |
@@ -482,12 +521,16 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | J | Replace the trusted public key config | **NOT ADDRESSED** | config is a trusted input; an attacker who controls it controls trust. AA-002 |
 | K | Steal the private signing key | **NOT ADDRESSED** | cryptography cannot help. AA-001 → external key custody (deferred) |
 | L | Read the private key from process memory | **NOT ADDRESSED** | it is resident there. AA-001 → external key custody (deferred) |
-| M | DB-only write access | **BLOCKED — except un-revocation (see MASTER-00 correction below)** | the central test |
+| M | DB-only write access | **BLOCKED** (since CORE-01) — including removal of a revocation | the central test; §26. A *restore of a previously captured, genuinely signed state* is threat R, not M |
 | N | DB + config write access | **NOT ADDRESSED** | equivalent to J + M |
 | O | An old signing key is compromised | **PARTIALLY BLOCKED** | remove it from the verification set; artifacts it signed become unreadable (§13.1). No per-key revocation list |
 | P | Rotation removes a historical verifier too early | **DEPLOYMENT-DEPENDENT** | fails closed (unreadable), never open. Documented, tested |
 | Q | Artifact replay | **BLOCKED** for cross-row replay (E, F); a signature replayed onto *its own* row is a no-op |
-| R | Snapshot rollback | **NOT ADDRESSED** | every artifact in an old snapshot is validly signed. **GS-002 stays open**; a signature says nothing about freshness |
+| R | Snapshot rollback | **PARTIALLY BLOCKED** (CORE-01) | detected **while the process runs** (in-process freshness witness, §26.6); **not detected across a restart**. **GS-002 stays open** → CORE-07 |
+| R2 | Delete a revocation row and clear the grant's pointer (the MASTER-00 un-revocation) | **BLOCKED** (CORE-01) | the signed commitment no longer describes the rows; `REVOCATION_STATE_INCONSISTENT`. Test E |
+| R3 | R2 + rewrite the commitment's unkeyed fields | **BLOCKED** (CORE-01) | commitment signature. Test E+K |
+| R4 | R2 + splice in a genuine commitment from another store under the same key (e.g. the genesis of a re-created file) | **BLOCKED** (CORE-01) | store binding: this store's grants are signed for this store's id. Test E+ |
+| R5 | Host injects an unauthenticated grant store into a durable deployment | **BLOCKED** (CORE-01) for composition mistakes | runtime brand; a malicious in-process host is out of scope (§26.8) |
 | S | Signature truncation / corruption | **BLOCKED** | strict base64url + exact 64-byte width → `MALFORMED` |
 | T | Duplicate key ids with conflicting keys | **BLOCKED** | refused at composition |
 | U | Signer coerced to sign attacker-chosen bytes | **BLOCKED** | no generic byte-signing operation exists |
@@ -497,12 +540,12 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | Y | Signing failure during revocation | **PARTIALLY BLOCKED** | fails closed but withholds the revocation. AA-004, §19.2 |
 | Z | Signer latency racing commitGuard | **BLOCKED** | guard runs after signing, inside the transaction, before commit. §14.1 |
 
-> **MASTER-00 correction (2026-09-25).** Threat M is not fully blocked. The grant row's
-> `revocation_digest` pointer is not covered by any signature, so a database-only writer who deletes
-> the `bounded_grant_revocations` row **and** sets `bounded_grants.revocation_digest = NULL` makes a
-> revoked grant read as live (`currentRevocation`, `sqlite-bounded-grant-store.ts`). The durability
-> tests exercise each half of that tamper separately, never together. Tracked as **CORE-01** in
-> `docs/architecture/FRONTERA-MASTER-PLAN.md`; the GS-001 row in §22 is qualified the same way.
+> **MASTER-00 correction (2026-09-25), resolved by CORE-01.** MASTER-00 found threat M was not fully
+> blocked: the grant row's `revocation_digest` pointer was not covered by any signature, so a
+> database-only writer who deleted the `bounded_grant_revocations` row **and** set
+> `bounded_grants.revocation_digest = NULL` made a revoked grant read as live. CORE-01 reproduced it
+> (the grant was *executed*, adapter called once) and closed it with the signed revocation-state
+> commitment (§26). The pointer remains only as a cross-check that can cause a refusal.
 
 ## 21. Residual Risks
 
@@ -510,10 +553,13 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 |---|---|---|---|
 | **AA-001** | **HIGH** | The authority signing private key is **resident in application process memory**, loaded from configuration. Anything that can read this process — a memory disclosure, a debugger, a core dump, a malicious dependency — can mint authority that verifies perfectly | external key custody (deferred) |
 | **AA-002** | MEDIUM | The trusted verification registry is deployment-controlled configuration. An attacker who can write it can install their own key and make their own artifacts authentic. Host/config compromise defeats this boundary | deployment; external key custody (deferred) narrows it |
-| **AA-003** | MEDIUM | Signatures carry no freshness. A wholesale rollback to an earlier snapshot restores artifacts that are all validly signed, including grants whose revocations are rolled back with them. Same shape as **GS-002** | external anchor; unowned |
+| **AA-003** | MEDIUM | Signatures carry no freshness. A wholesale rollback to an earlier snapshot — or a restore of a previously *captured* commitment together with the rows it covered — restores artifacts that are all validly signed, including grants whose revocations are rolled back with them. Since CORE-01 this requires a copy of the earlier signed state (removing rows no longer suffices), and a running process detects it; a restarted one does not. Old commitment bytes can also persist in WAL frames or free pages of the file. Same shape as **GS-002** | **CORE-07** |
 | **AA-004** | MEDIUM | Signer availability is required to **revoke**. A signer outage cannot withdraw authority and correctly refuses to pretend it did (§19.2) | deferred — external key custody; durable kill-switch convergence (legacy labels Prompt 6 / Prompt 12) |
 | **AA-005** | LOW | Every issuance and revocation attempt invokes the signer, including ones subsequently refused. Free today; a metered or rate-limited external signer makes it a cost | external key custody (deferred) |
 | **AA-006** | LOW | One algorithm is registered. Adding a second is deliberate work — correct, but it means a provider that cannot do Ed25519 requires a code change, not configuration | external key custody (deferred) |
+| **AA-007** (CORE-01) | LOW | A database-only writer who tampers with the revocation state makes **every** read refuse — a denial of service against the store. This is the intended fail-closed direction; recovery is a restore from a trusted copy, never an automatic repair | deployment (PROD-02 backup/restore) |
+| **AA-008** (CORE-01) | LOW | Every authoritative read recomputes the revocation-set digest over all committed revocations: O(number of revocations). Revocations are rare relative to grants; a very large revocation history would need an authenticated index (e.g. a Merkle structure) | future, if measured |
+| **AA-009** (CORE-01) | LOW | Revocation now needs **two** signatures (revocation + commitment) and opening a **new** store needs one (genesis). AA-004 and AA-005 therefore apply to both | CORE-02 |
 
 ## 22. Findings
 
@@ -525,8 +571,8 @@ AA-001 … AA-006 above. Each is supported by the implementation, not anticipate
 
 | ID | Was | Now |
 |---|---|---|
-| **GS-001** — a privileged writer can re-seal unkeyed digests | OPEN | **CLOSED for a database-only writer, except un-revocation (MASTER-00 correction above; CORE-01).** A writer with write access to the database file, and no access to a signing key, can no longer produce usable authority — proven by the central test. **Still open** for a writer who also holds the signing key or can write the key configuration (AA-001, AA-002) |
-| **GS-002** — snapshot rollback can restore revoked authority | OPEN | **STILL OPEN — NOT ADDRESSED.** Signatures authenticate, they do not timestamp. Restated as AA-003 |
+| **GS-001** — a privileged writer can re-seal unkeyed digests | OPEN | **CLOSED for a database-only writer (CORE-01 closed the un-revocation gap MASTER-00 found).** A writer with write access to the database file, and no access to a signing key, can neither produce usable authority nor remove a committed revocation — proven by the central test and `revocation-state-integrity.test.ts`. **Still open** for a writer who also holds the signing key or can write the key configuration (AA-001, AA-002), and for restore of a previously captured signed state (GS-002 / AA-003) |
+| **GS-002** — snapshot rollback can restore revoked authority | OPEN | **STILL OPEN.** Narrowed by CORE-01: needs a *captured* earlier signed state rather than row deletion, and is detected while the process runs; not detected across a restart. Restated as AA-003 → CORE-07 |
 | **GS-003** — durable store available but not default | OPEN | unchanged; Prompt 17 |
 | **GS-004** — revocation records carried no integrity | CLOSED (integrity) | now also **authenticated**, at the same strength as grants |
 | **NB-009** — the store was in-memory, singly implemented, unkeyed | PARTIALLY CLOSED | *in-memory*: closed (Prompt 4). *singly implemented*: closed (Prompt 4). *unkeyed*: **closed for the durable store** by this prompt. **NOT fully closed** — the key is process-resident, so "authority the application cannot forge" is not yet true (AA-001) |
@@ -547,6 +593,8 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 8. A **database written under the previous unsigned schema is refused**, not migrated and not auto-signed.
 9. Prompt 4's transactional, durability and fail-closed semantics are **unchanged** — evidenced by 28 unmodified durability tests.
 10. Prompt 3's no-bypass proof is **unchanged and remains PROVEN — PATH LOCAL**.
+11. (CORE-01) **In the durable authority store**, a database writer **without access to a trusted signing key** cannot make a committed revocation disappear: deleting, clearing, rewriting, moving or renumbering revocation state, or splicing in another store's genuine commitment, makes authoritative reads fail closed, and the governed execution path withholds.
+12. (CORE-01) A Host configured for durable persistence **refuses** a host-supplied grant store that is not the authenticated durable store.
 
 ## 24. Claims We Must Not Make
 
@@ -554,7 +602,9 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 |---|---|
 | "Authority is tamper-proof" | it is not. An attacker with the signing key, the process, or the key configuration forges freely |
 | "Host compromise cannot forge authority" | host compromise yields the private key (AA-001) |
-| "Rollback cannot resurrect old authority" | it can. Signatures carry no freshness (AA-003 / GS-002) |
+| "Rollback cannot resurrect old authority" | it can. Signatures carry no freshness (AA-003 / GS-002). CORE-01 detects it only within a running process |
+| "Database compromise cannot un-revoke a grant" | only a database-only writer *without a captured earlier signed state* is blocked. A restore of such a state across a restart is not detected (CORE-07) |
+| "A malicious host cannot bypass the signed store" | the composition check guards mistakes. Code in the same process can replace the check (§26.8) |
 | "The signing key cannot be stolen" | it is in process memory, loaded from configuration |
 | "Cryptographic authenticity proves the policy was legitimate" | it proves a trusted key vouched for these bytes. NB-008 is untouched |
 | "The application process cannot access signing material" | **false today.** This becomes sayable only once external key custody lands (deferred) |
@@ -569,7 +619,7 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 
 | Question | Answer |
 |---|---|
-| Signing interface to preserve | `AuthorityArtifactSigner` — `activeKeyId`, `algorithm`, `signGrant`, `signRevocation`. Domain-aware; do **not** widen it to `sign(bytes)` |
+| Signing interface to preserve | `AuthorityArtifactSigner` — `activeKeyId`, `algorithm`, `signGrant(grant, storeId)`, `signRevocation(revocation, storeId)`, `signRevocationState(state)` (CORE-01). Domain-aware; do **not** widen it to `sign(bytes)` |
 | Already async? | **Yes.** Both methods return `Promise`. No call site needs restructuring for a network signer |
 | Algorithm | `ed25519-v1`. Closed registry in `authority-signature.ts`. **Verify the target provider supports Ed25519** — several managed KMS products offer only ECDSA/RSA. Adding `ecdsa-p256-v1` is deliberate code + config work; there must be no negotiation or fallback |
 | Key id model | opaque string; artifacts record theirs; registry resolves it. A KMS key ARN/resource name can be the key id directly |
@@ -577,12 +627,64 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 | Where the private key enters process memory | `EnterpriseConfiguration.authorityAuthenticity.signingKeyPem`, from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`, parsed once in the signer |
 | How many processes hold it | every process that composes the **durable** store. In-memory-store deployments hold none |
 | Verification registry | stays local and public-key-only. A KMS adapter replaces the **signer**; the verifier should keep verifying locally, so a KMS outage does not stop reads |
-| Signing call sites | exactly two: `issue` and `revoke` in `sqlite-bounded-grant-store.ts`, both **outside** the transaction, both via `signGrantOrFail` |
+| Signing call sites | in `sqlite-bounded-grant-store.ts`, all **outside** any transaction, all via `signOrFail` except re-attestation: `issue` (grant), `revoke` (revocation + commitment), open of a new store (genesis commitment), open of an existing store whose commitment is signed by a non-active trusted key (best-effort re-attestation, §26.7) |
 | Latency assumptions | signing is on the issuance and revocation paths, not the read path. Every issuance and revocation attempt signs, refused ones included (AA-005) — consider a pre-check if the provider meters calls |
 | Error semantics to preserve | `AuthoritySigningUnavailableError` must stay a **hard failure**. No unsigned fallback, no "signed later", no optimistic acknowledgement |
 | commitGuard race | already handled: sign → BEGIN → commitGuard → INSERT → COMMIT. **Preserve this order.** A KMS call inside the transaction would be a correctness and availability regression |
 | Rotation | registry holds active + historical. A KMS adapter must keep recording the *signing* key id on each artifact |
 | **The target invariant** | **No production authority-signing private key is resident in application process memory.** Today: FALSE. `SEC-INV-U02` stays NOT IMPLEMENTED until it is true |
+
+## 26. CORE-01 — Revocation-State Integrity
+
+### 26.1 The defect
+
+A signed revocation proves a revocation is genuine. It proves nothing about whether a genuine revocation has been **removed**. Before CORE-01, the only statement "this grant has a revocation" was the unsigned `bounded_grants.revocation_digest` pointer. Deleting the revocation row and nulling the pointer returned the grant row to exactly the bytes it held before revocation — genuinely signed, internally consistent — and nothing unkeyed needed recomputing. Reproduced on `main @ a0a0e3b` before the fix: the grant read back live and `createGrantExecutionService.exercise` returned `executed` with the adapter called once.
+
+### 26.2 The model
+
+The store holds one **revocation-state commitment**: `{storeId, sequence, revocationSetDigest}`, where `revocationSetDigest` is SHA-256 over `[[sequence, grantId, revocationRecordDigest], …]` in sequence order, and the commitment is Ed25519-signed under its own domain (`frontera:authority-artifact:revocation-state:v1`). Each revocation row carries its `sequence` (1, 2, 3 … with no gaps).
+
+- **Read.** Every authoritative transaction verifies the commitment (present, well formed, signed by a trusted key), then checks that the revocation rows present are *exactly* the ones it describes, before any grant is answered for. "Not revoked" is returned only when the signed commitment lists no revocation for the grant. The revocation row for a listed grant must then pass its own digest and signature checks and match the committed entry.
+- **Write.** A revocation plans against the verified state, signs the revocation and the successor commitment outside the transaction, and commits row + pointer + commitment in one `BEGIN IMMEDIATE` transaction that re-verifies the state and refuses a stale plan. Nothing is ever signed over a state that has not just verified, so tampering cannot be laundered into a new signature.
+- **Absence.** A new store signs a genesis commitment (sequence 0, empty set). An existing store with no commitment is inconsistent, never re-initialized.
+
+**Trust chain:** trusted verification key (configuration) → commitment signature → exact revocation set → per-revocation record digest and signature → grant signature bound to the same store id.
+
+### 26.3 Store binding
+
+Every record envelope carries the store's random `storeId`, so grant and revocation signatures are for *this* store. Without it, a genuine commitment from any other store signed by the same key — most simply, the genesis commitment of a file re-created after deletion — could be spliced over this store's rows to state "nothing revoked". With it, the grant fails its signature under the foreign store id (test E+).
+
+### 26.4 Monotonicity
+
+There is no reverse transition and no `unRevoke`. A second revocation of a revoked grant returns the first, unchanged, and signs nothing. Restoring authority means issuing new authority. Append-only triggers (no DELETE on grants, revocations or the commitment; a grant row changes only by linking its revocation once; the commitment only advances by one or is re-signed unchanged) are **defense in depth**. A file-level writer can drop them, so every attack test drops them first.
+
+### 26.5 Schema and compatibility
+
+`aoc.bounded-grant-store.schema.v3`, record format `aoc.bounded-grant-store.record.v2`. v1 and v2 databases are refused at open, unmutated. There is no migration: a v2 file cannot prove its revocation set complete, and signing one for it would vouch for whatever it currently contains. Operators re-issue authority into a fresh v3 store. No production database was touched by this change.
+
+### 26.6 What is blocked, and what is not
+
+| Attacker | Result |
+|---|---|
+| Database-only writer (any SQL, drops triggers, recomputes unkeyed digests; no trusted signing key) deletes, clears, rewrites, moves, renumbers or re-signs (untrusted key) revocation state | **Blocked.** Reads fail closed (`REVOCATION_STATE_INCONSISTENT` / `AUTHENTICITY_FAILED` / `STATE_CORRUPT`); execution withholds |
+| Same, splicing a genuine commitment from another store under the same key | **Blocked** (store binding) |
+| Same, restoring a **previously captured** genuine commitment plus the rows it covered, **while the process runs** | **Detected** — the in-process freshness witness refuses a commitment older than one already verified |
+| Same, **across a restart** | **Not detected.** Indistinguishable from "never revoked" using the file alone. Old commitment bytes may also remain in WAL/free pages. **CORE-07** (external freshness/anchoring) |
+| Holder of the signing key, process, or key configuration | **Not addressed** (AA-001, AA-002; CORE-02) |
+
+### 26.7 Key rotation
+
+The commitment is one row, re-signed only on revocation. So on open, a commitment that verifies under a trusted key other than the active one is re-signed **unchanged** under the active key (best-effort; skipped if the state does not verify or the signer fails). Without this, retiring the old key would make every read in a store with no recent revocation refuse. Tested.
+
+### 26.8 Composition: no silent downgrade
+
+`createSqliteBoundedGrantStore` returns a frozen object registered in a module-private `WeakSet`. `isAuthenticatedDurableBoundedGrantStore` checks that brand at runtime, not by TypeScript shape. Under `persistence.provider === 'sqlite'`, `createEnterprise` refuses a host-supplied `grantStore` without the brand (in-memory store, shape-alike, or a wrapper around the real store) with `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED`, before anything is opened. There is no override flag. Under `memory` persistence any store is still accepted, and module health reports `grantStore: 'unauthenticated'` instead of looking identical to a durable deployment.
+
+**Boundary.** This guards an honest composition mistake. An embedding host runs in the same process and can replace any module, including this check; a malicious host is outside the trust boundary.
+
+### 26.9 Health
+
+`DurableBoundedGrantStore.health()` verifies the commitment and reports `revocationState: 'verified' | 'failed'`, the failure code, and the verified sequence. A store whose revocation state cannot be proven is never `healthy`. The Authority-Controlled Execution module surfaces this (optional criticality, so it does not take the Host out of `ready`; every read it cannot serve withholds).
 
 ---
 
