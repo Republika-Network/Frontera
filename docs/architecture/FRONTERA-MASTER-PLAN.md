@@ -4,6 +4,7 @@
   architecture baseline, roadmap and milestones.
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
+- **Last status change:** CORE-01 → VERIFIED on branch `fix/core-01-revocation-integrity` (from `main` @ `a0a0e3b`), 2026-09-25. NEXT → PROD-01 (§14).
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -137,8 +138,8 @@ host composes none of the governed-action spine.
 | Bounded grants (attenuation-only) | VERIFIED | `src/features/grant-runtime/domain/grant-attenuation.ts:162`; `grant-attenuation.test.ts`, `bounded-grant-scenario.test.ts` |
 | Durable grant store with digests (Prompt 4) | VERIFIED (sqlite only) | `src/enterprise/bounded-grant-store/sqlite-bounded-grant-store.ts`; `bounded-grant-store-durability.test.ts` |
 | Grant expiry (checked at exercise, never scheduled) | VERIFIED | `governed-action/orchestrator.ts:547` |
-| Revocation (durable, signed) | **PARTIAL** | `execution-governance/service.ts:202`. In-process only, with no API. Un-revocation hole: §3.7 |
-| **Authority artifact authenticity (PRE-00)** | **PARTIAL** | §3.7 |
+| Revocation (durable, signed) | **VERIFIED (sqlite only)** — revocation-state integrity closed by CORE-01 | `sqlite-bounded-grant-store.ts` (`verifiedRevocationState`); `revocation-state-integrity.test.ts`. Still in-process only, with no API (CTRL-01). Cross-restart rollback open (CORE-07) |
+| **Authority artifact authenticity (PRE-00 + CORE-01)** | **VERIFIED (sqlite only), not default-wired** | §3.7. Shipped host does not compose it (PROD-01); key process-resident (CORE-02) |
 | No-bypass execution (single adapter call site) | VERIFIED, path-local | `no-bypass-effect-paths.test.ts`, `security-invariants.test.ts`. 3 of 46 effect paths are grant-controlled; the rest are excepted or separate models (`docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`) |
 | Emergency control / kill switch (P4) | VERIFIED (opt-in) | `composition-root.ts:1326-1336`; `emergency-control-*.test.ts`. Operator surface is in-process only |
 | Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in) | `composition-root.ts:1266-1278`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
@@ -279,7 +280,21 @@ guarantee is not delivered by default, and one documented claim is false.
   `bounded-grant-store-durability.test.ts`. **98/98 passed** in the MASTER-00 run.
   All three are in the `npm test` glob.
 
-**FACT: what is not delivered**
+**FACT: CORE-01 update (2026-09-25).** Items 1, 3 and 5 below are **resolved** by
+CORE-01; items 2, 4 and 6 are unchanged. The text of each is kept as the
+MASTER-00 record.
+
+- Item 1: closed by a signed revocation-state commitment verified on every
+  authoritative read (`AUTHORITY_ARTIFACT_AUTHENTICITY.md` §26, SEC-INV-124).
+  Reproduced before the fix (the revoked grant *executed*), blocked after it.
+  The corrected BLOCKED claim for threat M is scoped to a database-only writer
+  without a captured earlier signed state.
+- Item 3: a `sqlite`-persistence Host refuses a non-authenticated host-supplied
+  `grantStore` (`EXECUTION_GRANT_STORE_NOT_AUTHENTICATED`, SEC-INV-125).
+- Item 5: key-mismatch, active-key-not-trusted and malformed verification-key
+  JSON are tested at composition.
+
+**FACT: what is not delivered (MASTER-00 record)**
 
 1. **Un-revocation by a database-only writer (verified from source).**
    - The grant row's `revocation_digest` pointer is not covered by any signature.
@@ -353,11 +368,11 @@ restated against what exists:
                     ┌───────────── CORE ─────────────┐
                     │ principals · authority world   │  exists (P2, Kernel-Authority)
                     │ provenance/lineage             │  partial
-                    │ bounded grants · revocation    │  exists; revocation hole
+                    │ bounded grants · revocation    │  exists; tamper-evident (CORE-01)
                     │ policy · ceilings · controls   │  exists (opt-in)
                     │ obligations · trusted context  │  library-only → CORE-03/04
                     │ approvals (engine side)        │  partial → CORE-05
-                    │ authenticity · signer boundary │  partial → CORE-01/02
+                    │ authenticity · signer boundary │  durable store: done; key custody → CORE-02
                     │ governed-action envelope       │  exists (P3/P5)
                     └───────────────┬────────────────┘
                               GovernedActionIntent
@@ -451,7 +466,7 @@ as a roadmap mechanism (§15).
 | Prompt 2 / 2.5 / 2.6: Trust boundaries; passport-web threat model; checkout credential fix | CORE / CTRL | VERIFIED | |
 | Prompt 3: No-bypass execution | CORE | VERIFIED, path-local | 3/46 effect paths under grant control |
 | Prompt 4: Authoritative grant store | CORE | VERIFIED (sqlite) | Not the default provider |
-| Prompt 5 / PRE-00: Authority artifact authenticity | CORE | PARTIAL | Un-revocation hole; not default-wired → CORE-01 |
+| Prompt 5 / PRE-00: Authority artifact authenticity | CORE | VERIFIED (sqlite) after CORE-01 | Un-revocation hole closed by CORE-01; not default-wired → PROD-01 |
 | Prompt 6: KMS/HSM for signing secrets | CORE | PLANNED | → CORE-02 |
 | Prompt 7 / 9 / 16: Sandbox, secretless, escape model | PROD | DEFERRED | No agent-execution process exists |
 | Prompt 8: Workload identity | PROD | DEFERRED | Deployment guidance only |
@@ -567,19 +582,22 @@ Candidate items from the MASTER-00 brief were changed as follows:
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** |
+| Status | **VERIFIED** (2026-09-25, branch `fix/core-01-revocation-integrity`) |
 | Depends on | PRE-00 (merged) |
 | Purpose | Make invariant 4 true for the signed store, and stop the authenticity guarantee from being silently absent |
 | Existing reused | `authority-authenticity/*` (signer, verifier, domain tags, closed registry); `sqlite-bounded-grant-store.ts` read path; the three existing authenticity suites |
 | Remaining work | (a) **Close the un-revocation path.** Make the grant↔revocation linkage authenticated, e.g. a signed revocation-state commitment or signed append-only revocation log, so deleting the revocation row *and* clearing the pointer is detected. (b) **Refuse a host-injected unsigned `grantStore`** when the persistence provider is durable, or require an explicit, audited acknowledgement. (c) Add tests for key-mismatch, active-key-not-trusted and malformed verification-key JSON. (d) Correct `AUTHORITY_ARTIFACT_AUTHENTICITY.md` threat M and GS-001, and the corresponding invariants text |
 | Exit criteria | A test that deletes the revocation row **and** nulls the pointer fails closed. A test proves a durable deployment cannot run with an unsigned grant store without explicit opt-out. All composition fail-closed branches are tested. Docs make no BLOCKED claim that a test does not prove. Full suite green |
 | Non-goals | KMS/HSM (CORE-02); rollback/freshness against whole-snapshot restore (CORE-07); signing other stores (ASSURE-02); changing the shipped host defaults (PROD-01) |
+| Delivered | (a) Signed revocation-state commitment `{storeId, sequence, revocationSetDigest}` under domain `frontera:authority-artifact:revocation-state:v1`, verified before every authoritative answer; grant/revocation/commitment bound to a per-store id; genesis commitment on store creation; schema v3, v1/v2 refused and not migrated; in-process freshness witness; re-attestation on key rotation; append-only triggers as defense in depth. (b) Durable Host refuses an unauthenticated injected `grantStore` (runtime brand, no override flag). (c) Key-mismatch, active-key-not-trusted, malformed verification-key JSON tested. (d) `AUTHORITY_ARTIFACT_AUTHENTICITY.md` threat M / GS-001 corrected and §26 added; SEC-INV-124/125; threat model §7.16c |
+| Evidence | `revocation-state-integrity.test.ts` (45), production-service case in `authority-controlled-execution-scenario.test.ts`, structural rules in `authority-authenticity-boundaries.test.ts`; five deliberate-violation experiments each failed the expected tests; typecheck, lint, build, workspace tests green; root suite green except one pre-existing CRLF working-copy artifact (`structural-boundaries.test.ts`, passes 64/64 against the committed LF tree) |
+| Residual (owned elsewhere) | Cross-restart restore of a captured earlier signed state (CORE-07); process-resident key and signer availability, now two signatures per revocation plus genesis (CORE-02, AA-004/AA-009); not default-wired and `memory` persistence still accepts any store (PROD-01) |
 
 **CORE-02: External Signer & Key Custody Boundary**
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
+| Status | PLANNED (unblocked: CORE-01 VERIFIED; the commitment format is settled — `signRevocationState(state)`) |
 | Depends on | CORE-01 (hard: the revocation-state commitment format must be settled before its signer moves out of process) |
 | Purpose | Remove AA-001 (a process-resident key can mint authority) and design around AA-004 (signer availability on revocation) |
 | Existing reused | `AuthorityArtifactSigner` is already async and narrow (`signGrant`/`signRevocation`, no generic byte signing). Configuration redaction exists |
@@ -914,8 +932,8 @@ CORE obligations and generalized bound kinds, not payment fields.
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
-| Depends on | CORE-01 (hard) |
+| Status | **NEXT** |
+| Depends on | CORE-01 (hard) — VERIFIED |
 | Purpose | The shipped host composes the governed-action spine with durable stores, authenticity, P7, and auth on (SC-001, GS-003) |
 | Exit criteria | `npm run start:enterprise`, with documented config, runs governed actions with signed grants. Insecure config refuses to boot |
 | Parallel | Yes, with CORE-02/03 |
@@ -984,7 +1002,7 @@ PROD-01 + PROD-02 + CTRL-01..04 + CORE-06 ──► PROD-03
 All of the following must be true:
 
 1. **Revocation is tamper-evident.**
-   - The un-revocation path (§3.7) is closed (CORE-01).
+   - The un-revocation path (§3.7) is closed (CORE-01). **Done** (2026-09-25).
    - Snapshot rollback is at least *detected* (CORE-07), or formally accepted as a deployment control with a documented operational mitigation.
 2. **Authority authenticity is on by default.**
    - Durable grants are signed.
@@ -1103,45 +1121,47 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 ## 14. Current NEXT Item
 
-**NEXT: CORE-01 — Revocation State Integrity & Durable Authenticity Enforcement**
+**NEXT: PROD-01 — Production Host Composition & Secure Defaults**
 
-**Why it is next:**
+**Previous NEXT:** CORE-01 — **VERIFIED** 2026-09-25 (§9).
 
-- It is a **correctness defect in a merged security guarantee**. A
-  database-only writer can un-revoke a grant, and the canonical security
-  document says this is BLOCKED.
-- It violates invariant 4 directly.
-- It is also small and fully contained in CORE.
-- CORE-02 (external signer) should not come first. Moving the signer out of
-  process before the revocation-state commitment format is settled would bake
-  the hole into the external boundary, and CORE-02 is larger with more design
-  surface.
+**Why it is next (evidence from CORE-01, not position in the list):**
+
+- After CORE-01, four items have their hard dependencies satisfied: CORE-02,
+  CORE-03 (soft), PROD-01 and CTRL-01 (soft on PROD-01). Exactly one is NEXT.
+- **CORE-01's guarantee is inert on the shipped host.** Every property CORE-01
+  and PRE-00 verified holds only under `persistence.provider === 'sqlite'`
+  with `authorityControlledExecution` composed. The shipped host
+  (`scripts/run-enterprise-host.mjs`) composes neither (§3.7 item 2), and the
+  default `memory` persistence still accepts any grant store (SEC-INV-125's
+  stated boundary). PROD-01 is the item that turns a verified capability into
+  a deployed property. GOVERNANCE CORE STABLE item 2 ("authenticity on by
+  default, unsigned substitute refused") names CORE-01 **and** PROD-01.
+- **PROD-01 is pilot-critical; CORE-02 is not** (§11.5 lists CORE-02 as
+  desirable unless a pilot's threat model requires it). CORE-02 remains
+  unblocked and may run in parallel.
+- **CORE-01 produced concrete PROD-01 inputs:** the v3 store is incompatible
+  with v1/v2 files by design, so a secure-default host needs a documented
+  fresh-store/re-issuance procedure and key configuration that refuses to
+  boot when absent; genesis signing means a new durable store cannot even be
+  created without the signer.
+- **It unlocks the most:** CTRL-01 (soft dependency, and the revocation API
+  should land on a host that composes the signed store), CORE-06 (hard
+  dependency), PROD-02 (soft).
+- CORE-03 is the longest chain to CORE PROVEN (PAY/CREDIT), and remains the
+  recommended parallel stream. It does not depend on PROD-01.
 
 **Prerequisites already satisfied:**
 
-- PRE-00 signer and verifier.
-- Domain-separated signing input.
-- Closed algorithm registry.
-- Durable store with transactional authoritative reads.
-- The three authenticity suites, as a harness to extend.
+- CORE-01 (hard): signed store, revocation-state integrity, composition refusal
+  of unauthenticated injected stores.
+- Configuration parsing and fail-closed key-boundary composition (PRE-00),
+  now tested on every branch.
 
-**What it unlocks:**
+**Out of scope for PROD-01:**
 
-- CORE-02 (settled artifact set to sign externally).
-- PROD-01 (a secure default can be switched on).
-- CTRL-01 (a revocation API on a trustworthy revocation store).
-- ASSURE-01 (trace over authentic revocation state).
-
-**Out of scope:**
-
-- KMS/HSM.
-- Whole-snapshot rollback detection.
-- Signing other stores.
-- Changing shipped host defaults.
-- Any PAY, CREDIT or CTRL work.
-- Merging the P13 branch.
-
----
+- KMS/HSM (CORE-02), rollback anchoring (CORE-07), backup/restore coverage
+  (PROD-02), any PAY, CREDIT or CTRL work.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
