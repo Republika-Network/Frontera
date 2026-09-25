@@ -37,6 +37,7 @@ Storage / Identity / Blockchain / AI Systems
 
 | Topic | Document |
 |---|---|
+| **Master architecture, roadmap & milestones (authoritative)** | `docs/architecture/FRONTERA-MASTER-PLAN.md` |
 | Frozen HTTP API surface & versioning policy | `docs/enterprise/API_STABILITY_V1.md` |
 | Security invariants (canonical: scope, enforcement, boundary) | `docs/security/SECURITY_INVARIANTS.md` |
 | No-bypass execution (canonical: effect-path inventory, what authorizes each effect) | `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md` |

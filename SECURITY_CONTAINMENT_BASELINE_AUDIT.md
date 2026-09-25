@@ -1,5 +1,9 @@
 # PROMPT 0 — SECURITY & CONTAINMENT ARCHITECTURE: BASELINE AUDIT
 
+> **Historical — superseded as active roadmap (MASTER-00, 2026-09-25).** Findings remain valid evidence;
+> the Prompt 1–24 sequencing is replaced by the CORE/PAY/CREDIT/ASSURE/CTRL/PROD roadmap in
+> `docs/architecture/FRONTERA-MASTER-PLAN.md` (mapping in its §6.2). Preserved for provenance.
+
 **Repository:** `Republika-Network/Frontera`
 **Branch audited:** `main` @ `6efff5c` (identical to `claude/frontera-security-audit-eajd3o`; `git diff main..HEAD` is empty)
 **Scope:** 1,871 TypeScript files across `src/`, `packages/` (36), `apps/` (5)
