@@ -402,6 +402,11 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
     assert.equal(missing.status, 401, missing.text);
     const wrong = await govern(baseUrl, intent(), bearer('not-a-configured-key'));
     assert.equal(wrong.status, 401, wrong.text);
+    // There is no hidden default credential.
+    for (const guess of ['admin', 'secret', 'changeme', 'test-key', 'local-key', 'admin123', 'frontera', 'aoc-enterprise']) {
+      const guessed = await govern(baseUrl, intent(), bearer(guess));
+      assert.equal(guessed.status, 401, `'${guess}' must not authenticate: ${guessed.text}`);
+    }
     const legacy = await govern(baseUrl, intent(), bearer(LEGACY_KEY));
     assert.equal(legacy.status, 403, 'a legacy key is never a customer principal');
     const outsider = await govern(baseUrl, intent(), bearer(OUTSIDER_KEY));
@@ -577,6 +582,12 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
     ['an inline provider secret in the file', (dir) => secureEnv(dir, {}, governedFile({ genericHttpAdapters: [{ ...(governedFile()['genericHttpAdapters'] as object[])[0], credential: { kind: 'bearer', token: ERP_TOKEN } }] })), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
     ['an unknown field in the file', (dir) => secureEnv(dir, {}, governedFile({ allowPrivateNetwork: true })), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
     ['a grant lifetime above one hour', (dir) => secureEnv(dir, {}, governedFile({ grantLifetimeSeconds: 7200 })), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['a malformed log level', (dir) => secureEnv(dir, { AOC_ENTERPRISE_LOG_LEVEL: 'verbose' }), 'HOST_ENVIRONMENT_INVALID'],
+    ...['99999', '65536', '-1', 'abc', ' 8787', '8787 ', '80.5', ''].map(
+      (port): [string, (dir: string) => Record<string, string | undefined>, string] => [`an invalid port '${port}'`, (dir) => secureEnv(dir, { AOC_ENTERPRISE_HTTP_PORT: port }), 'HOST_ENVIRONMENT_INVALID'],
+    ),
+    ['the pre-PROD-01 combination: production, SQLite, authentication off, network bind', (dir) => secureEnv(dir, { AOC_ENTERPRISE_REQUIRE_AUTH: 'false', AOC_ENTERPRISE_HTTP_HOST: '0.0.0.0' }), 'HOST_UNAUTHENTICATED_NETWORK_BIND'],
+    ['production on an IPv6 wildcard bind without authentication', (dir) => secureEnv(dir, { AOC_ENTERPRISE_REQUIRE_AUTH: 'false', AOC_ENTERPRISE_HTTP_HOST: '::' }), 'HOST_UNAUTHENTICATED_NETWORK_BIND'],
     ['a network bind without authentication (development)', () => ({ AOC_ENTERPRISE_HTTP_HOST: '0.0.0.0' }), 'HOST_UNAUTHENTICATED_NETWORK_BIND'],
     ['required authentication with no credential (development)', () => ({ AOC_ENTERPRISE_REQUIRE_AUTH: 'true' }), 'HOST_CREDENTIALS_MISSING'],
   ];
