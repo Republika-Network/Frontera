@@ -1,4 +1,4 @@
-# Soberanía Enterprise Demo Scenario Pack
+# Frontera Systems Demo Scenario Pack
 
 Recognition Runtime, Authority Graph, Approval Runtime, External Agent
 Handshake and Action Enforcement make Soberanía **decidable**. The Control Plane
@@ -694,7 +694,7 @@ snapshot, and its underlying policy/enforcement decision and proof into one
 `enterprise_demo_packet`. It never fabricates a scenario outcome -- every
 included fact is exactly what the real scenario run produced.
 
-## Soberanía Enterprise Pilot Template
+## Frontera Systems Pilot Template
 
 Enterprise Demo scenarios can now be packaged into reusable Enterprise Pilot
 Templates via `src/features/aoc-enterprise-pilot-template/services/pilot-scenario-binding-service.ts`,

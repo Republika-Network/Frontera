@@ -24,7 +24,7 @@ It is a pure data contract. No persistence, no service, no API, no policy engine
 - no KYC/AML, investor onboarding, or transfer-agent logic
 - no securities, title, or ownership assertion
 
-Soberanía Enterprise **authorizes** tokenization. It is not the tokenization provider.
+Frontera Systems **authorizes** tokenization. It is not the tokenization provider.
 
 ## Semantics
 
@@ -89,7 +89,7 @@ TokenizationMandate  ->  external system performs issuance  ->  execution eviden
 
 ## Where the governance actually happens
 
-Nothing in this package decides anything, and nothing in it persists anything. Authority, policy, approvals, obligations, decision and durable evidence for `TOKENIZE` come from the primitives Soberanía Enterprise already has — `AocKernel`, Recognition Runtime, Authority Graph, Approval Runtime, the Domain Policy Pack Runtime, and the Governance Store. The Enterprise module that binds this package to them — and that stores mandates durably, in SQLite, across process restarts — lives at `src/enterprise/tokenization-governance/`.
+Nothing in this package decides anything, and nothing in it persists anything. Authority, policy, approvals, obligations, decision and durable evidence for `TOKENIZE` come from the primitives Frontera Systems already has — `AocKernel`, Recognition Runtime, Authority Graph, Approval Runtime, the Domain Policy Pack Runtime, and the Governance Store. The Enterprise module that binds this package to them — and that stores mandates durably, in SQLite, across process restarts — lives at `src/enterprise/tokenization-governance/`.
 
 See `docs/enterprise/AOC_TOKENIZE_CAPABILITY.md`, `docs/architecture/ADR-TOKENIZE-CAPABILITY.md`, and `docs/architecture/ADR-TOKENIZATION-MANDATE-PERSISTENCE.md`.
 
@@ -99,4 +99,4 @@ In the Soberanía model, `TOKENIZE` is an Enterprise **Governed Action**, the ev
 
 ## Ownership
 
-Soberanía Enterprise. Depends only on `@aoc/protocol` (identity primitives) and `@aoc-enterprise/resource-envelope` (`resourceRefIdentityEquals`).
+Frontera Systems. Depends only on `@aoc/protocol` (identity primitives) and `@aoc-enterprise/resource-envelope` (`resourceRefIdentityEquals`).

@@ -14,7 +14,7 @@ that system later reported became of it. It is a pure data contract: no
 persistence, no service, no API, no policy engine, no provider SDK, no
 execution.
 
-## What Soberanía Enterprise governs, and what it does not
+## What Frontera Systems governs, and what it does not
 
 Soberanía governs **the authority to transfer**. It does not transfer.
 
@@ -141,4 +141,4 @@ measures it.
 - `@aoc-enterprise/governed-authorization` — the action-neutral vocabulary this
   package consumes.
 
-Ownership: Soberanía Enterprise.
+Ownership: Frontera Systems.

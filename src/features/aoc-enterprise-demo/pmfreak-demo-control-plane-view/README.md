@@ -8,7 +8,7 @@ aoc.demo.pmfreak.control_plane_view.v1
 
 Purpose:
 
-Provides a deterministic Control Plane view-model layer for the PMFreak Soberanía Enterprise demo.
+Provides a deterministic Control Plane view-model layer for the PMFreak Frontera Systems demo.
 
 This view consumes scenario run results from the PMFreak Project Governance Scenario Pack and turns them into presentation-ready cards, panels, badges, timelines and dashboard metrics.
 
@@ -76,7 +76,7 @@ The Control Plane view shows:
 - jurisdiction context references
 - export readiness
 
-In this demo, `allow` means that Soberanía Enterprise allows the governed demo action to proceed based on the configured passport, evidence and approvals.
+In this demo, `allow` means that Frontera Systems allows the governed demo action to proceed based on the configured passport, evidence and approvals.
 
 It does not mean:
 
@@ -159,6 +159,6 @@ No network calls, no LLM calls, no OCR/PDF parsing, no `Math.random()`, no `Date
 
 ```
 PMFreak demonstrates what autonomous project agents can do.
-Soberanía Enterprise demonstrates why they can be trusted to do it.
+Frontera Systems demonstrates why they can be trusted to do it.
 The Control Plane shows why a governed decision was made.
 ```
