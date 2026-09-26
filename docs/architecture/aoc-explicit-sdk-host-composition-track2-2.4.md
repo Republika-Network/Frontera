@@ -2,7 +2,7 @@
 
 ## Public SDK consumption model
 
-External hosts compose Soberanía Enterprise Runtime with `createAocEnterpriseRuntime()` from `@aoc-enterprise/runtime` or `@aoc-enterprise/runtime/runtime-host`. The factory accepts host-provided runtime ports and returns a stable runtime object with these methods:
+External hosts compose Frontera Systems Runtime with `createAocEnterpriseRuntime()` from `@aoc-enterprise/runtime` or `@aoc-enterprise/runtime/runtime-host`. The factory accepts host-provided runtime ports and returns a stable runtime object with these methods:
 
 - `evaluate(input)`
 - `enforce(input)`

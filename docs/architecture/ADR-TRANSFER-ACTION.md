@@ -14,7 +14,7 @@
 
 ## Context
 
-Soberanía Enterprise governed three exercises of authority over a governed asset:
+Frontera Systems governed three exercises of authority over a governed asset:
 representing rights externally, encumbering them, and permitting their
 exercise. All three leave the question "who holds this right?" untouched.
 
@@ -361,7 +361,7 @@ Answered separately, per the six questions:
 - **E. Does the updated relationship need to cross Enterprise deployments?**
   **Not demonstrated.** Every identity in this action is opaque and
   deployment-local. A cross-deployment transfer — where the recipient is
-  governed by a *different* Soberanía Enterprise instance — would be a genuine
+  governed by a *different* Frontera Systems instance — would be a genuine
   cross-sovereignty requirement, and this implementation produced no such case.
 - **F. Does Protocol therefore need a new primitive?** **Not yet.**
 

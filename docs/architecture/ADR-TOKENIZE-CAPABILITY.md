@@ -1,7 +1,7 @@
 # ADR: `TOKENIZE` as a governed capability
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: `ADR-ACCESS-GRANT.md` (`EnterpriseAccessGrant`),
   `ADR-ACCESS-DECISION.md`, `ADR-POLICY-OBLIGATION.md`,
   `ADR-DURABLE-GRANTS-REVOCATION.md`, `ADR-ENTERPRISE-GOVERNANCE-STORE.md`,
@@ -10,7 +10,7 @@
 
 ## Context
 
-Soberanía Enterprise must be able to govern whether an already-governed asset may
+Frontera Systems must be able to govern whether an already-governed asset may
 be tokenized: by whom, over which rights, in what portion, through which
 executor, under which conditions, after which approvals, and with what
 durable evidence. It must do so **without becoming a tokenization platform**.
@@ -144,13 +144,13 @@ Shares are integer basis points.
 Soberanía Protocol    asset identity, authority, attestations, evidence,
                       sovereignty boundary
       |
-Soberanía Enterprise  request -> policy -> decision -> obligations ->
+Frontera Systems  request -> policy -> decision -> obligations ->
                       approvals -> grant (TokenizationMandate) -> use ->
                       revocation -> evidence
       |
 External system       token issuance
 ```
 
-Soberanía Enterprise owns the decision to authorize tokenization. It never
+Frontera Systems owns the decision to authorize tokenization. It never
 performs issuance, and it never claims authority over tokens an external
 system has already issued.

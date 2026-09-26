@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@aoc-enterprise/canonical-runtime-contracts` is the single semantic source of truth for all typed contracts across the Soberanía Enterprise runtime ecosystem.
+`@aoc-enterprise/canonical-runtime-contracts` is the single semantic source of truth for all typed contracts across the Frontera Systems runtime ecosystem.
 
 It eliminates semantic drift by ensuring that reason codes, governance decisions, event schemas, billing entitlements, feature gates, error taxonomy, and response envelopes are defined exactly once and consumed everywhere.
 
