@@ -1,4 +1,4 @@
-# Soberanía Protocol ↔ Soberanía Enterprise Boundary
+# Soberanía Protocol ↔ Frontera Systems Boundary
 
 > STATUS: DRAFT — PENDING PROFESSIONAL LEGAL REVIEW.
 > This document combines a technical description (derived from
@@ -11,9 +11,9 @@
 
 ## Summary
 
-Soberanía Protocol and Soberanía Enterprise are two separate projects with a
-one-directional dependency: **Soberanía Enterprise depends on Soberanía Protocol;
-Soberanía Protocol does not depend on Soberanía Enterprise.**
+Soberanía Protocol and Frontera Systems are two separate projects with a
+one-directional dependency: **Frontera Systems depends on Soberanía Protocol;
+Soberanía Protocol does not depend on Frontera Systems.**
 
 - **Soberanía Protocol** is a separate GitHub repository
   (`Architects-of-Change-Protocol/Architects_of_Change_Protocol`) that
@@ -22,15 +22,15 @@ Soberanía Protocol does not depend on Soberanía Enterprise.**
   grant contracts, audit event envelope contracts, and scoped access
   grammar. It is described in this repository's own architecture docs
   as required to "remain product-neutral and enterprise-neutral."
-- **Soberanía Enterprise** (this repository) is the commercial orchestration,
+- **Frontera Systems** (this repository) is the commercial orchestration,
   runtime, and operational layer that consumes Soberanía Protocol's published
   contracts via the `@aoc/protocol` package and builds a deployable,
   governable, auditable product on top of them.
 
-This document describes Soberanía Enterprise's side of that boundary, as
+This document describes Frontera Systems' side of that boundary, as
 evidenced by this repository. It does not speak authoritatively for Soberanía
 Protocol's own repository, governance, or licensing, which this review
-did not access beyond what Soberanía Enterprise's own docs and CI
+did not access beyond what Frontera Systems' own docs and CI
 configuration reveal.
 
 ## What belongs to Soberanía Protocol
@@ -49,17 +49,17 @@ models for consent, scoped access, capability semantics, identity
 claims, and audit events" and "must remain product-neutral and
 enterprise-neutral."
 
-## What belongs to Soberanía Enterprise
+## What belongs to Frontera Systems
 
-Per the same documents, Soberanía Enterprise owns orchestration contracts and
+Per the same documents, Frontera Systems owns orchestration contracts and
 implementations for:
 
 - `policy-runtime` (runtime policy decisions and enterprise guardrails)
 - `tenant-governance`, `org-boundary` (tenant/org boundary management)
 - `integration-runtime` (connector frameworks)
 - `control-plane-sdk`, `enterprise-audit`, `agent-governance`
-- the Soberanía Kernel (`src/kernel`), Soberanía Enterprise Host (`src/enterprise`),
-  and Soberanía Enterprise Runtime (`src/runtime`) — the actual executable
+- the Soberanía Kernel (`src/kernel`), Frontera Systems Host (`src/enterprise`),
+  and Frontera Systems Runtime (`src/runtime`) — the actual executable
   systems that operationalize protocol primitives.
 
 These contracts are, per `protocol-integration.md`, "intentionally
@@ -69,7 +69,7 @@ executable implementation.
 
 ## What Enterprise consumes from Protocol
 
-Soberanía Enterprise imports protocol symbols from the canonical package entry
+Frontera Systems imports protocol symbols from the canonical package entry
 `@aoc/protocol` (never deep-imports protocol internals, per
 `protocol-integration.md`). In this repository, the dependency is wired
 as:
@@ -92,8 +92,8 @@ not vendored or copied into this repository.
 
 Per `docs/legal/IP_OVERVIEW.md` Section 2, the concrete implementations
 that exist in this repository include: the Soberanía Kernel decision engine,
-the Soberanía Enterprise Host (HTTP API, persistence, events, telemetry,
-health), the Soberanía Enterprise Runtime (grants, delegation, vault,
+the Frontera Systems Host (HTTP API, persistence, events, telemetry,
+health), the Frontera Systems Runtime (grants, delegation, vault,
 federation), the Governance Store, the Assurance Runtime (Soberanía SAF
 framework), the Evidence lifecycle, the Agent Passport Runtime, the
 Enterprise Host SDK, tenant-isolation enforcement in the store layer,
@@ -113,33 +113,33 @@ none should be assumed to exist beyond what is coded here.
 
 ## What Enterprise operates
 
-The Soberanía Enterprise Host is designed to be run as a deployed service
+The Frontera Systems Host is designed to be run as a deployed service
 (`scripts/run-enterprise-host.mjs`, `docs/operations/DEPLOYMENT_GUIDE_V1.md`),
 with its own persistence (SQLite or in-memory), health/liveness/readiness
 endpoints, structured logging, and telemetry counters. Soberanía Protocol, by
 contrast, is not something this repository operates — it is a
-compile-time dependency of Soberanía Enterprise, not run as a separate service
-by Soberanía Enterprise, and not bundled into Soberanía Enterprise's shipped runtime
+compile-time dependency of Frontera Systems, not run as a separate service
+by Frontera Systems, and not bundled into Frontera Systems' shipped runtime
 artifacts (see the note on `validate-publishability.mjs` below).
 
 ## What a customer can deploy
 
-A customer with a Commercial Agreement for Soberanía Enterprise can deploy the
-Soberanía Enterprise Host (and, where licensed, the Enterprise Runtime, SDK,
+A customer with a Commercial Agreement for Frontera Systems can deploy the
+Frontera Systems Host (and, where licensed, the Enterprise Runtime, SDK,
 and supporting tooling) as described in the deployment guide. Soberanía
 Enterprise is built against Soberanía Protocol's published contracts at
 compile time, but `scripts/validate-publishability.mjs` treats
 `@aoc/protocol` as a **compile-time type dependency only** and
 independently asserts, on every publishability run, that no shipped/
 packed JS artifact imports `@aoc/protocol` at runtime. A customer
-deployment of Soberanía Enterprise's built artifacts therefore does not
+deployment of Frontera Systems' built artifacts therefore does not
 necessarily include Soberanía Protocol's own code at runtime — only Enterprise
 code that was type-checked against Protocol's contracts during the
 build.
 
 ## What a customer does not get by acquiring Enterprise
 
-Acquiring rights to Soberanía Enterprise under a Commercial Agreement does
+Acquiring rights to Frontera Systems under a Commercial Agreement does
 **not**, by itself:
 
 - transfer ownership of, or any rights in, Soberanía Protocol or its
@@ -157,8 +157,8 @@ Acquiring rights to Soberanía Enterprise under a Commercial Agreement does
 The following require a written Commercial Agreement rather than being
 available by default:
 
-- production use, deployment, or redistribution of Soberanía Enterprise;
-- any sublicense or resale of Soberanía Enterprise or derived services;
+- production use, deployment, or redistribution of Frontera Systems;
+- any sublicense or resale of Frontera Systems or derived services;
 - use of Onchainfest LLC's trademarks in customer-facing materials;
 - access to source code (as opposed to compiled artifacts), where
   applicable.
@@ -171,7 +171,7 @@ this review), the "Soberanía Protocol" column reflects only what Soberanía
 Enterprise's own documentation states about Protocol's role — not an
 independent audit of the Protocol repository.
 
-| Capacidad | Soberanía Protocol | Soberanía Enterprise | Régimen | Evidencia | Observaciones |
+| Capacidad | Soberanía Protocol | Frontera Systems | Régimen | Evidencia | Observaciones |
 |---|---|---|---|---|---|
 | Specifications (primitive semantics) | Sí — owns normative models | No — consumes only | Protocol-owned; separate repo/license | `foundation.md`, `protocol-integration.md` | Enterprise imports via `@aoc/protocol` only |
 | Primitives (consent-engine, capability-tokens, scoped-access, identity, audit-sdk) | Sí — canonical per `protocol-integration.md` | Reserved / not implemented (empty stub packages) | Protocol-owned; Enterprise-side stubs currently empty | `packages/consent-engine` etc. contain only `.gitkeep` | No redefinition currently exists because no Enterprise-side code exists; must remain consumption-only if implemented |
@@ -195,9 +195,9 @@ independent audit of the Protocol repository.
 
 ## Dependency direction
 
-- Soberanía Enterprise may depend on public or versioned contracts published
+- Frontera Systems may depend on public or versioned contracts published
   by Soberanía Protocol (currently `@aoc/protocol >=0.1.0`).
-- Soberanía Protocol must not depend on Soberanía Enterprise's proprietary code.
+- Soberanía Protocol must not depend on Frontera Systems' proprietary code.
   Nothing in this repository grants Soberanía Protocol any such dependency,
   and none was found.
 - Proprietary Enterprise extensions must not silently redefine the
@@ -213,12 +213,12 @@ independent audit of the Protocol repository.
 
 - Access to Soberanía Protocol (e.g., as an open resource, if and when Soberanía
   Protocol is made available on such terms by its own project) does
-  **not** grant any rights to Soberanía Enterprise. Soberanía Enterprise's licensing
+  **not** grant any rights to Frontera Systems. Frontera Systems' licensing
   is governed exclusively by `LICENSE` and any executed Commercial
   Agreement.
-- Acquiring Soberanía Enterprise under a Commercial Agreement does **not**
+- Acquiring Frontera Systems under a Commercial Agreement does **not**
   transfer ownership of Soberanía Protocol, its source code, or its
-  specifications, and does not transfer ownership of Soberanía Enterprise's
+  specifications, and does not transfer ownership of Frontera Systems'
   own source code either, unless an executed written agreement expressly
   says so.
 - Where Soberanía Protocol has its own separate license, that license governs

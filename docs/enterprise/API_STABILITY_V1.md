@@ -1,6 +1,6 @@
-# Soberanía Enterprise HTTP API -- v1 Stability Contract
+# Frontera Systems HTTP API -- v1 Stability Contract
 
-> This document freezes the public HTTP surface of the Soberanía Enterprise Host
+> This document freezes the public HTTP surface of the Frontera Systems Host
 > for the v1.0.0 release. The implementation source of truth is
 > `src/enterprise/adapters/node-http-adapter.ts` (routing) and
 > `src/enterprise/api/` (wire contracts: `governance-evaluate-contract.ts`,

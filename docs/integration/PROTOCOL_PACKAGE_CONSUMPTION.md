@@ -1,13 +1,13 @@
-# Soberanía Enterprise ← Soberanía Protocol: Versioned Package Consumption
+# Frontera Systems ← Soberanía Protocol: Versioned Package Consumption
 
 ## Architecture
 
-Soberanía Enterprise consumes Soberanía Protocol exclusively as a **published package boundary**, never as source:
+Frontera Systems consumes Soberanía Protocol exclusively as a **published package boundary**, never as source:
 
 ```text
 Soberanía Protocol (packages/protocol, @aoc/protocol)
     ↓ versioned public package (peerDependency ">=0.1.0 || >=0.2.0-rc.0")
-Soberanía Enterprise (this repository)
+Frontera Systems (this repository)
     ↓ proprietary runtime and implementation
 PMFreak
 ```
