@@ -43,7 +43,7 @@ into it.
 | External Agent Handshake | Does an external agent have local standing? |
 | Action Enforcement | Should execution be blocked? |
 | Soberanía Control Plane | Can an operator inspect the proof trail? |
-| Soberanía Enterprise Demo | Can the system be proven end-to-end? |
+| Frontera Systems Demo | Can the system be proven end-to-end? |
 | **Domain Policy Pack Runtime** | **Which domain/jurisdiction/customer policy applies, and what does it require?** |
 
 The Domain Policy Pack Runtime never re-implements or bypasses any of the
@@ -591,7 +591,7 @@ That module never re-evaluates a policy rule -- it packages the decision and
 proof this runtime already produced, preserving `demoOnly`/
 `legalCompleteness` as plain metadata, never a compliance claim.
 
-## Soberanía Enterprise Pilot Template
+## Frontera Systems Pilot Template
 
 Sample policy packs registered here (payments-basic, procurement-basic,
 data-boundary-basic, financial-approval-basic, sports-event-settlement-basic,

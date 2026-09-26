@@ -9,7 +9,7 @@ aoc.integration.pmfreak.remote_governance_endpoint.v1
 Repo:
 
 ```
-Soberanía Enterprise
+Frontera Systems
 ```
 
 Purpose:
