@@ -1,4 +1,4 @@
-# Soberanía Enterprise — Official Test Strategy (v1.0.0)
+# Frontera Systems — Official Test Strategy (v1.0.0)
 
 This document defines the single sanctioned way tests are built and run in this repository, and the test-harness normalization shipped with v1.0.0 (PR-008 Part 5).
 

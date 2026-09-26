@@ -2,18 +2,18 @@
 
 > STATUS: DRAFT — PENDING PROFESSIONAL LEGAL REVIEW.
 > This file lists third-party software distributed with, or built by,
-> Soberanía Enterprise, and the license each is distributed under. It does not
+> Frontera Systems, and the license each is distributed under. It does not
 > reproduce full license texts, because this repository does not
 > currently have `node_modules` installed (no build artifacts to extract
 > verified license text from) — see "Generating verbatim license texts"
 > below for how to complete this before external distribution.
 
-Soberanía Enterprise incorporates the following third-party open source
+Frontera Systems incorporates the following third-party open source
 software. Each remains subject to its own license, listed below. See
 `docs/legal/OPEN_SOURCE_DEPENDENCIES.md` for the fuller inventory,
 classification, and evidence for each entry.
 
-## Direct dependencies distributed with Soberanía Enterprise
+## Direct dependencies distributed with Frontera Systems
 
 | Package | License | Copyright |
 |---|---|---|
