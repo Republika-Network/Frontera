@@ -1,8 +1,8 @@
-# SK005 — Soberanía Enterprise Official Pitch Deck
+# SK005 — Frontera Systems Official Pitch Deck
 
 - Status: **Draft v1 — Repository-Backed**
 - Program: Sales Kit Program, SK005
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/aoc-enterprise-pitch-deck-jvetve`
 - Mode: Commercial design. No production code. No website implementation.
 - Audience: CTO, VP Engineering, VP Product, Head of Platform, Enterprise Founder, Technical Co-Founder
@@ -10,7 +10,7 @@
 
 ## Role of this document
 
-This is the official commercial narrative for Soberanía Enterprise. It is the
+This is the official commercial narrative for Frontera Systems. It is the
 source of truth for every downstream commercial asset — Enterprise
 Landing, Governed Access Landing, Assurance Landing, One Pager, Executive
 Brief, Technical Assessment Proposal, website messaging, and future sales
@@ -70,11 +70,11 @@ SOBERANÍA PROTOCOL
   Provider-neutral, product-neutral specification layer.
   Owns: identity, capability-token, consent-grant, and audit-envelope
   contracts, and scoped-access grammar. Separate repository, separate
-  governance. Soberanía Enterprise depends on it; it never depends on
-  Soberanía Enterprise.
+  governance. Frontera Systems depends on it; it never depends on
+  Frontera Systems.
         │
         ▼
-SOBERANÍA ENTERPRISE  (v1.0.0 core — proprietary, Onchainfest LLC)
+Frontera Systems  (v1.0.0 core — proprietary, Onchainfest LLC)
   The commercial orchestration, runtime, and operational layer.
   Kernel (decision engine) · Enterprise Host (27 frozen API endpoints)
   Governance Store · Agent Passport / Runtime Guard · Evidence Bundle
@@ -122,10 +122,10 @@ in black and white.
 
 ### Slide 1 — Hero
 
-**Slide Objective:** Establish who Soberanía Enterprise is for and what problem
+**Slide Objective:** Establish who Frontera Systems is for and what problem
 it solves, in one breath, before any architecture appears.
 
-**Title:** Soberanía Enterprise
+**Title:** Frontera Systems
 
 **Subtitle:** Governed access to every system your product depends on —
 provable, revocable, and auditable, without rebuilding your storage layer.
@@ -144,7 +144,7 @@ abstract network/lock/shield graphic — it says nothing a competitor's deck
 doesn't already say.
 
 **Body Copy:** "Every enterprise product touches a provider it doesn't
-control — storage, identity, a document vault. Soberanía Enterprise governs
+control — storage, identity, a document vault. Frontera Systems governs
 what happens at that boundary."
 
 **Presenter Notes (≤90s):** "Thanks for the time. Before I show you
@@ -154,7 +154,7 @@ to some other system — S3, IPFS, Google Drive, whatever it is — and the
 moment you do, you lose the ability to prove who actually had access,
 when, and whether it was supposed to end. That's not a storage problem.
 It's a governance problem, and it sits exactly at the seam between your
-product and the providers underneath it. That seam is what Soberanía Enterprise
+product and the providers underneath it. That seam is what Frontera Systems
 governs. I'll show you how, and then I want your read on whether it maps
 to a real gap in what you're running today."
 
@@ -376,7 +376,7 @@ except Pinata).
 ┌──────────────────────── SOBERANÍA PROTOCOL ────────────────────────┐
 │ identity · capability tokens · consent · audit envelopes            │
 └───────────────────────────────┬─────────────────────────────────────┘
-┌──────────────────────── SOBERANÍA ENTERPRISE ───────────────────────┐
+┌──────────────────────── Frontera Systems ───────────────────────┐
 │ Decision · Obligation · Grant · Revocation · Usage · Evidence        │
 │ (immutable — cannot hold a credential, a signed URL, or an SDK type) │
 └───────────────────────────────┬─────────────────────────────────────┘
@@ -769,7 +769,7 @@ diagram.
 **Body Copy:**
 
 **Available today**
-- Soberanía Enterprise core (Kernel, Enterprise Host, 27-endpoint API surface) — v1.0.0
+- Frontera Systems core (Kernel, Enterprise Host, 27-endpoint API surface) — v1.0.0
 - Governance Store (persistence, tenant isolation)
 - Agent Governance — Agent Passport Core and Runtime Guard
 - Evidence & Audit — Evidence Bundle API (`/api/evidence/build`, `/verify`)
@@ -922,7 +922,7 @@ rather than redrawing it.
    against a real Pinata-backed scenario, not a mockup. Slide 12's
    "Request a Live Demo" is exactly this.
 
-7. **"What happens to our data/access model if Soberanía Enterprise disappears
+7. **"What happens to our data/access model if Frontera Systems disappears
    or we switch vendors?"**
    The evidence and grant records are yours, immutable, and provider-
    independent by design — they don't live inside the provider's own
@@ -977,8 +977,8 @@ rather than redrawing it.
    yet as a customer-callable API — this is explicitly the Design Partner
    stage of work, stated plainly on Slide 11.
 
-8. **How is Soberanía Protocol licensed relative to Soberanía Enterprise?** They're
-   separate projects with separate governance; Soberanía Enterprise is
+8. **How is Soberanía Protocol licensed relative to Frontera Systems?** They're
+   separate projects with separate governance; Frontera Systems is
    proprietary (Onchainfest LLC). Protocol's own licensing terms are
    governed by its own separate project and aren't restated here.
 
@@ -1011,12 +1011,12 @@ rather than redrawing it.
    explicitly not a certification authority. It's built to make those
    certification processes faster, not to replace them.
 
-6. **Who owns Onchainfest LLC / Soberanía Enterprise commercially?** Soberanía
+6. **Who owns Onchainfest LLC / Frontera Systems commercially?** Soberanía
    Enterprise is proprietary software owned by Onchainfest LLC; production
    use requires a written Commercial Agreement.
 
-7. **What's the relationship between Soberanía Protocol and Soberanía Enterprise
-   commercially?** Acquiring rights to Soberanía Enterprise does not transfer
+7. **What's the relationship between Soberanía Protocol and Frontera Systems
+   commercially?** Acquiring rights to Frontera Systems does not transfer
    any rights in Soberanía Protocol — they are governed separately.
 
 8. **Is source code access included?** Not by default — delivery may be
@@ -1041,6 +1041,6 @@ rather than redrawing it.
 
 Every slide above is written so that removing "Soberanía" and reading it back
 still describes the customer's problem, not our product. If a future
-edit of this deck starts explaining Soberanía Enterprise before it's explained
+edit of this deck starts explaining Frontera Systems before it's explained
 the customer's governance gap, that edit should be reverted, not
 polished.

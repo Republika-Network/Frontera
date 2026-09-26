@@ -2,7 +2,7 @@
 
 - Status: **Implemented**
 - Sequence: R006.A, Soberanía Architectural Consolidation Program
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/aoc-commercial-demo-g40xfx`
 - Package: `@aoc-enterprise/commercial-demo` (`packages/commercial-demo`)
 - Required input (read, not modified): `docs/architecture/ADR-ACCESS-LIFECYCLE.md`

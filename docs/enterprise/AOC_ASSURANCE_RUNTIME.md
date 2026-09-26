@@ -1,4 +1,4 @@
-# Soberanía Enterprise Assurance Runtime v1 (PR-007)
+# Frontera Systems Assurance Runtime v1 (PR-007)
 
 The Assurance Runtime evaluates whether a subject satisfies explicit,
 versioned Assurance controls with sufficient, verified evidence.
