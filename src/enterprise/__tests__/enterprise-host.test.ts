@@ -623,6 +623,31 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
     assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.sqlite')), []);
   });
 
+  it('POST-COMPOSITION: a production Host whose composed runtime is ephemeral, though every configuration check saw sqlite, is refused before listen', async () => {
+    // Every secure-profile rule is also enforced before composition, so no
+    // well-formed environment reaches the posture gate. This environment
+    // diverges between reads: the strict validator (1st read) and the
+    // secure-profile rule (3rd) see `sqlite`, the lenient loader that feeds
+    // composition (2nd) sees `memory`. Only the check against what was
+    // actually composed can catch it.
+    const dir = workDir();
+    const env = secureEnv(dir);
+    let reads = 0;
+    Object.defineProperty(env, 'AOC_ENTERPRISE_PERSISTENCE_PROVIDER', {
+      enumerable: true,
+      get: () => (++reads === 2 ? 'memory' : 'sqlite'),
+    });
+    const adapter = recordingAdapter();
+    const error = await refusal(bootEnterpriseHost({ env, executionAdapters: [adapter] }));
+    assert.equal(reads, 3, 'validator, loader and secure-profile rule each read the provider once');
+    assert.ok(error instanceof EnterpriseHostConfigurationError, String(error));
+    assert.equal(error.code, 'HOST_COMPOSITION_INCOMPLETE', error.message);
+    assert.match(error.message, /persistence is 'ephemeral', expected 'durable'/);
+    assert.match(error.message, /authorityStore is 'unauthenticated', expected 'authenticated-durable'/);
+    assertNoSecret(error.message, 'a secure-profile refusal');
+    assert.equal(adapter.calls.length, 0);
+  });
+
   it('ATOMIC STARTUP: a store failing mid-composition closes every store already opened', { skip: !CAN_SEE_HANDLES && 'needs /proc/self/fd' }, async () => {
     const dir = workDir();
     // A directory where the outcome store's file should be: it cannot open,
