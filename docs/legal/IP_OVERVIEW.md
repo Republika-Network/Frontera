@@ -1,4 +1,4 @@
-# Soberanía Enterprise Intellectual Property Overview
+# Frontera Systems Intellectual Property Overview
 
 > STATUS: DRAFT — PENDING PROFESSIONAL LEGAL REVIEW.
 > This document is a factual inventory derived from repository contents
@@ -7,7 +7,7 @@
 
 ## 1. Ownership
 
-Soberanía Enterprise, as embodied in this repository, is owned by Onchainfest
+Frontera Systems, as embodied in this repository, is owned by Onchainfest
 LLC, subject to:
 
 - third-party open source and commercial dependencies (see
@@ -18,7 +18,7 @@ LLC, subject to:
   partner-specific agreement) that has not been reviewed as part of this
   inventory;
 - Soberanía Protocol and its own, separate terms — Soberanía Protocol is a distinct
-  repository and project that Soberanía Enterprise consumes as a dependency,
+  repository and project that Frontera Systems consumes as a dependency,
   not material owned or claimed by this repository (see
   `docs/legal/PROTOCOL_ENTERPRISE_BOUNDARY.md`).
 
@@ -33,13 +33,13 @@ in the notes below the table.
 | Activo | Estado | Rutas | Tipo de IP | Dependencia de Soberanía Protocol | Observaciones |
 |---|---|---|---|---|---|
 | Soberanía Kernel (governance decision engine) | Implemented, tested | `src/kernel/**` | Copyright; trade secret (decision logic) | Consumes `@aoc/protocol` contracts | Sole decision-maker in the request path; boundary enforced by structural tests |
-| Soberanía Enterprise Host (runtime hosting/API) | Implemented, tested | `src/enterprise/**` (134 source files) | Copyright; trade secret | Orchestrates around, does not redefine, protocol contracts | HTTP adapter, composition root, persistence, events, health, telemetry; 27 documented API endpoints (`release/RELEASE_MANIFEST.json`) |
-| Soberanía Enterprise Runtime (grants, delegation, vault, federation) | Implemented, tested | `src/runtime/**` (43 source files) | Copyright; trade secret | Consumes protocol primitives | Independently tested; does not call `AocKernel.evaluate()` |
+| Frontera Systems Host (runtime hosting/API) | Implemented, tested | `src/enterprise/**` (134 source files) | Copyright; trade secret | Orchestrates around, does not redefine, protocol contracts | HTTP adapter, composition root, persistence, events, health, telemetry; 27 documented API endpoints (`release/RELEASE_MANIFEST.json`) |
+| Frontera Systems Runtime (grants, delegation, vault, federation) | Implemented, tested | `src/runtime/**` (43 source files) | Copyright; trade secret | Consumes protocol primitives | Independently tested; does not call `AocKernel.evaluate()` |
 | Governance Store (persistence layer) | Implemented | `src/enterprise/governance-store/**` | Copyright; trade secret (schema/design) | None | SQLite + in-memory providers; schema-version guards |
 | Assurance Runtime / Soberanía SAF framework | Implemented | `src/enterprise/assurance/**` | Copyright; trade secret | None | `AOC_SAF_FRAMEWORK_ID = 'aoc.saf'`; sealed, re-derived section digests |
 | Evidence lifecycle (Evidence Bundle) | Implemented | `src/enterprise/evidence/**` | Copyright; trade secret | None | Per `docs/architecture/ADR-EVIDENCE-BUNDLE.md` |
 | Agent Passport Runtime (governance execution) | Implemented, tested (27 source files, 2 test files) | `packages/agent-governance/**` | Copyright; trade secret | None | Passport issuance/verification, constitution, runtime-guard decisions; consumed in ~39 locations |
-| Enterprise Host SDK | Implemented, tested | `packages/enterprise-host-sdk/**` | Copyright | Consumes Soberanía Enterprise's own API, not Soberanía Protocol directly | Typed HTTP client; frozen v1.0.0 surface; zero runtime dependencies |
+| Enterprise Host SDK | Implemented, tested | `packages/enterprise-host-sdk/**` | Copyright | Consumes Frontera Systems' own API, not Soberanía Protocol directly | Typed HTTP client; frozen v1.0.0 surface; zero runtime dependencies |
 | Tenant isolation (enforcement) | Implemented, empirically verified | `src/enterprise/governance-store/**` (shared tenant-scoping helpers) | Trade secret | None | Verified under concurrency (0 cross-tenant leaks in load testing per `docs/release/TECHNICAL_DUE_DILIGENCE_V1.md` §3). **Not** the same as `packages/tenant-governance`, which is contracts-only (see below) |
 | Adapters (transport layer) | Implemented | `src/enterprise/adapters/node-http-adapter.ts`, `src/runtime/adapters/**` | Copyright | None | Single transport-aware module per host, per architecture docs |
 | Operational tooling (backup/restore/portability) | Implemented, tested | `scripts/portability/**`, `scripts/generate-release-manifest.mjs` | Copyright; trade secret (procedures) | None | `backup:v1` / `restore:v1` / `validate:portability:v1`; 18 contract tests |
@@ -62,7 +62,7 @@ exist as workspace directories but contain no source beyond a
 `.gitkeep` placeholder. Their names conceptually mirror the "Protocol
 primitive layer" described in `docs/architecture/foundation.md`, but
 today they contain no implementation, and no protocol-primitive
-redefinition currently exists in Soberanía Enterprise as a result. They are
+redefinition currently exists in Frontera Systems as a result. They are
 listed here for completeness and founder awareness, not as implemented
 assets. See Section 5.
 

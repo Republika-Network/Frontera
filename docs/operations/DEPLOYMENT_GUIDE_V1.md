@@ -1,6 +1,6 @@
-# Soberanía Enterprise Host — Deployment Guide (v1.0.0)
+# Frontera Systems Host — Deployment Guide (v1.0.0)
 
-Deploying the Soberanía Enterprise Host as a production HTTP service. Companion
+Deploying the Frontera Systems Host as a production HTTP service. Companion
 documents: `docs/operations/RUNBOOKS_V1.md`,
 `docs/operations/BACKUP_RECOVERY_V1.md`,
 `docs/enterprise/AOC_ENTERPRISE_HOST.md`,
@@ -186,7 +186,7 @@ proxy, data on a dedicated volume.
 
 ```ini
 [Unit]
-Description=Soberanía Enterprise Host
+Description=Frontera Systems Host
 After=network-online.target
 Wants=network-online.target
 

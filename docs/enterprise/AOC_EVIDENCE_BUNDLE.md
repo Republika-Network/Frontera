@@ -1,8 +1,8 @@
-# Soberanía Enterprise Evidence Bundle v1
+# Frontera Systems Evidence Bundle v1
 
 PR-005 introduces the Evidence Bundle: the first official mechanism for
 turning a Governance Store record (PR-004) into something safe to hand to
-someone outside Soberanía Enterprise -- an auditor, a partner, a customer, or the
+someone outside Frontera Systems -- an auditor, a partner, a customer, or the
 public.
 
 **Core principle: `Truth ≠ Disclosure`.** The Governance Store keeps the

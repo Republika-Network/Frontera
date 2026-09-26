@@ -1,4 +1,4 @@
-# Soberanía Enterprise Foundation Architecture
+# Frontera Systems Foundation Architecture
 
 ## 1) Layered Separation of Concerns
 
@@ -9,7 +9,7 @@ Soberanía is intentionally split into three layers with strict one-way dependen
    - Owns the normative models for consent, scoped access, capability semantics, identity claims, and audit events.
    - Must remain product-neutral and enterprise-neutral.
 
-2. **Soberanía Enterprise (orchestration layer)**
+2. **Frontera Systems (orchestration layer)**
    - Operationalizes protocol primitives for enterprise-grade deployment and governance.
    - Provides runtime policy decisions, organizational boundary management, tenancy, control planes, connector frameworks, and operations tooling.
    - May compose protocol primitives, but cannot redefine primitive semantics.

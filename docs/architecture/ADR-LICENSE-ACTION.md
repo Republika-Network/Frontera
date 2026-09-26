@@ -10,7 +10,7 @@
 
 ## Context
 
-Soberanía Enterprise had two verified governed actions — `TOKENIZE` (authorizing an
+Frontera Systems had two verified governed actions — `TOKENIZE` (authorizing an
 external *representation* of governed rights) and `COLLATERALIZE` (authorizing
 governed rights to be committed as *security* for an obligation) — plus the
 `authorization_artifact` classification and the Governance Reference Integrity
@@ -31,7 +31,7 @@ one that could most plausibly *break* the emerging pattern:
 
 The question this ADR answers is not "ca Soberanía govern licensing?" — it plainly
 can, through machinery that already exists. It is: **what did implementing it
-concretely reveal about which vocabulary genuinely belongs to Soberanía Enterprise?**
+concretely reveal about which vocabulary genuinely belongs to Frontera Systems?**
 
 ## Decision
 

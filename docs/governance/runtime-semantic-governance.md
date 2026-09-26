@@ -4,7 +4,7 @@
 
 Semantic governance is the discipline of ensuring that the language used across runtime, SDK, API, and protocol layers remains consistent, deterministic, and auditable.
 
-In Soberanía Enterprise, semantic governance is enforced through:
+In Frontera Systems, semantic governance is enforced through:
 
 1. A canonical contracts package as the single definition source
 2. CI scripts that detect drift at commit time

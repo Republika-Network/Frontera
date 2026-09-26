@@ -1,4 +1,4 @@
-# Soberanía Enterprise Monorepo Boundaries & Strategy
+# Frontera Systems Monorepo Boundaries & Strategy
 
 ## Recommended Monorepo Layout
 

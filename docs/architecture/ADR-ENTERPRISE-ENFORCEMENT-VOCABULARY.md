@@ -1,4 +1,4 @@
-# ADR: The four-enforcement semantic audit — what vocabulary genuinely belongs to Soberanía Enterprise
+# ADR: The four-enforcement semantic audit — what vocabulary genuinely belongs to Frontera Systems
 
 - Status: accepted. **Supersedes the three-enforcement audit** recorded in this
   file at commit `91460d3`; that audit's conclusions are preserved below, each
@@ -13,7 +13,7 @@
 
 ## Context
 
-Soberanía Enterprise now governs four concrete exercises of authority over a governed
+Frontera Systems now governs four concrete exercises of authority over a governed
 asset:
 
 ```
@@ -374,7 +374,7 @@ Every regression suite and every release check was re-run after the extraction:
 root **3906 pass / 0 fail**, workspaces **996 pass / 0 fail**, and every check
 that passed at baseline still passes.
 
-## Does Soberanía Enterprise need a generic enforcement framework?
+## Does Frontera Systems need a generic enforcement framework?
 
 **No — and after four implementations it is clearer why it never will.**
 
@@ -474,7 +474,7 @@ for one at any layer. Everything above that final box is now proven and, where
 it was vocabulary, shared.
 
 After four enforcements the smallest reusable semantic vocabulary that
-genuinely belongs to Soberanía Enterprise is exactly what
+genuinely belongs to Frontera Systems is exactly what
 `@aoc-enterprise/governed-authorization` now contains:
 
 1. a **governed asset reference** (already Protocol's `ResourceRef`);

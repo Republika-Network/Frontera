@@ -1,14 +1,14 @@
-# Contributing to Soberanía Enterprise
+# Contributing to Frontera Systems
 
 > STATUS: DRAFT — PENDING PROFESSIONAL LEGAL REVIEW.
 
-Soberanía Enterprise is proprietary software owned by Onchainfest LLC (see
+Frontera Systems is proprietary software owned by Onchainfest LLC (see
 `LICENSE`, `NOTICE.md`, `COPYRIGHT.md`). This is **not** an open source
 project, and this document does not use an open-contribution model.
 
 ## Contributions require prior authorization
 
-Soberanía Enterprise does not accept unsolicited public contributions (e.g.
+Frontera Systems does not accept unsolicited public contributions (e.g.
 unsolicited pull requests from outside contributors). All contributions
 — code, documentation, schemas, tests, or other materials merged into
 this repository — require prior authorization from Onchainfest LLC and
@@ -87,7 +87,7 @@ this repository's existing architectural and process conventions:
 
 - Respect the layering rules in `docs/architecture/foundation.md`,
   `docs/architecture/protocol-integration.md`, and
-  `docs/architecture/repo-boundaries.md` — in particular, Soberanía Enterprise
+  `docs/architecture/repo-boundaries.md` — in particular, Frontera Systems
   code must not redefine Soberanía Protocol primitive semantics.
 - Follow the test and validation conventions in
   `docs/testing/TEST_STRATEGY_V1.md`.

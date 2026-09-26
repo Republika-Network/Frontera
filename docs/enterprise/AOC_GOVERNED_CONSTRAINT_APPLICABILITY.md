@@ -1,6 +1,6 @@
 # Governed constraint applicability
 
-How Soberanía Enterprise decides **which persistent authority constraints affect which
+How Frontera Systems decides **which persistent authority constraints affect which
 governed actions, and how** — without inventing a single business or legal rule.
 
 - Scope: `@aoc-enterprise/governed-authority`,

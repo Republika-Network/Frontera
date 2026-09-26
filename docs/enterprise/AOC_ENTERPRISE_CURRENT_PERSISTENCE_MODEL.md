@@ -1,4 +1,4 @@
-# Soberanía Enterprise — Current Persistence Model (pre-PR-004 baseline)
+# Frontera Systems — Current Persistence Model (pre-PR-004 baseline)
 
 This document records, before any PR-004 refactoring, exactly what the Soberanía
 Enterprise Host's decision persistence does today — as established by

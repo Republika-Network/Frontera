@@ -378,7 +378,7 @@ npm run build && node --test --test-reporter=spec dist/src/features/verifiable-e
 or simply `npm test` from the repo root to run the whole suite (this module
 follows the same `node --test` convention as every other feature).
 
-## Soberanía Enterprise Pilot Template
+## Frontera Systems Pilot Template
 
 Verifiable Export Packages can now be bound into Enterprise Pilot Kits via
 `src/features/aoc-enterprise-pilot-template/services/pilot-export-package-binding-service.ts`,

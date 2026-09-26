@@ -490,7 +490,7 @@ via
 That adapter is read-model-only: it never mutates Control Plane state and
 never creates policy/evidence/enforcement truth of its own.
 
-## Soberanía Enterprise Pilot Template
+## Frontera Systems Pilot Template
 
 Control Plane walkthroughs can now be included in Enterprise Pilot
 Templates via

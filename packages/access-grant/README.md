@@ -57,7 +57,7 @@ translate into provider-specific execution -- never that execution itself.
   package never duplicates those fields.
 - **Everything else on `EnterpriseAccessGrant`** -- `id`, `status`,
   `principalId`, `issuedAt`, `expiresAt`, `correlationId`, `issuerRef?`,
-  `auditRefs?` -- is owned by Soberanía Enterprise (`@aoc-enterprise/access-grant`),
+  `auditRefs?` -- is owned by Frontera Systems (`@aoc-enterprise/access-grant`),
   because it is metadata about the issuance event itself.
 
 ## Why composition by reference, not embedding
@@ -354,7 +354,7 @@ against the current time -- see "Explicit non-responsibilities."
 
 ## Install / build
 
-Part of the Soberanía Enterprise workspace:
+Part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/access-grant

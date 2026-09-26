@@ -1,6 +1,6 @@
 # Agent Passport Migration V1 (PR-006)
 
-How the new Soberanía Enterprise Agent Passport Runtime
+How the new Frontera Systems Agent Passport Runtime
 (`src/enterprise/passport/`) relates to the pre-existing Agent Passport
 SaaS product. See `AOC_AGENT_PASSPORT_CURRENT_MODEL.md` for the full
 inventory this migration analysis is based on.

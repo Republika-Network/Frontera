@@ -1,6 +1,6 @@
 # Soberanía Governance Store — Operations Guide
 
-Operating the Governance Store v1 in the Soberanía Enterprise Host.
+Operating the Governance Store v1 in the Frontera Systems Host.
 
 ## Initialization
 

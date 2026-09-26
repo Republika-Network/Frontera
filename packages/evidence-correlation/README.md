@@ -76,7 +76,7 @@ whatever produced them.
 - **Everything on `EnterpriseEvidenceCorrelation`** -- `id`, `resource`,
   `decisionRefs`, `obligationRefs?`, `grantRefs?`, `usageRefs?`,
   `revocationRefs?`, `correlatedAt`, `metadata?`, `description?` -- is owned
-  by Soberanía Enterprise (`@aoc-enterprise/evidence-correlation`).
+  by Frontera Systems (`@aoc-enterprise/evidence-correlation`).
 
 ## Composition with the R004 line (Phase 2 / Phase 4)
 
@@ -394,7 +394,7 @@ this change**:
 
 ## Install / build
 
-Part of the Soberanía Enterprise workspace:
+Part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/evidence-correlation

@@ -1,7 +1,7 @@
 # ADR: Canonical Evidence Correlation (R004.J)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: R004.D (`ADR-RESOURCE-ENVELOPE.md`, `EnterpriseResourceEnvelope`),
   R004.E (`ADR-ACCESS-DECISION.md`, `EnterpriseAccessDecision`),
   R004.F (`ADR-POLICY-OBLIGATION.md`, `EnterpriseAccessObligation`),

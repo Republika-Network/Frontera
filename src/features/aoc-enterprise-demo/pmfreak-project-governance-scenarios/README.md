@@ -8,7 +8,7 @@ aoc.demo.pmfreak.project_governance_scenarios.v1
 
 Purpose:
 
-Demonstrates how Soberanía Enterprise governs PMFreak agents inside realistic project-governance scenarios.
+Demonstrates how Frontera Systems governs PMFreak agents inside realistic project-governance scenarios.
 
 This pack uses the PMFreak Agent Passport Demo Pack (`aoc.demo.pmfreak.agent_passport.v1`) to evaluate whether project agents can perform attempted actions. It models scenarios such as:
 
@@ -32,7 +32,7 @@ This pack does not certify compliance.
 ## Core rule: this pack orchestrates, it never re-decides
 
 ```
-The previous PR answered: Can PMFreak agents have Soberanía Enterprise passports?
+The previous PR answered: Can PMFreak agents have Frontera Systems passports?
 This PR answers: What happens when PMFreak agents try to act inside real
 project-governance scenarios?
 ```
@@ -55,7 +55,7 @@ This pack never re-implements passport status handling, authority-scope checks, 
 
 The Billing Readiness Agent attempts to mark a milestone as ready for billing (`pmfreak.action.billing.mark_ready`).
 
-Soberanía Enterprise checks:
+Frontera Systems checks:
 
 - passport status
 - role authority
@@ -71,7 +71,7 @@ Soberanía Enterprise checks:
 - policy pack references
 - audit/export trace
 
-In this demo, `allow` means that Soberanía Enterprise allows the governed demo action to proceed based on the configured passport, evidence, and approvals. It does not mean:
+In this demo, `allow` means that Frontera Systems allows the governed demo action to proceed based on the configured passport, evidence, and approvals. It does not mean:
 
 - invoice validity is certified
 - customer acceptance is certified
@@ -163,5 +163,5 @@ No network calls, no LLM calls, no OCR/PDF parsing, no `Math.random()`, no `Date
 
 ```
 PMFreak demonstrates what autonomous project agents can do.
-Soberanía Enterprise demonstrates why they can be trusted to do it.
+Frontera Systems demonstrates why they can be trusted to do it.
 ```

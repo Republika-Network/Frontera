@@ -47,7 +47,7 @@ It records the immutable outcome of an evaluation that happened elsewhere.
   `decision.resource`.
 - **Everything else on `EnterpriseAccessDecision`** -- `evaluatedAt`,
   `correlationId`, `reason?`, `policyEvaluationRef?`, `evidenceRefs?` -- is
-  owned by Soberanía Enterprise (`@aoc-enterprise/access-decision`), because it is
+  owned by Frontera Systems (`@aoc-enterprise/access-decision`), because it is
   metadata about the evaluation event itself, not part of the request or the
   resource.
 
@@ -248,7 +248,7 @@ this contract records only that a decision was made, never how to act on it.
 
 ## Install / build
 
-Part of the Soberanía Enterprise workspace:
+Part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/access-decision

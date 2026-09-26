@@ -1,6 +1,6 @@
 # Soberanía Delegated Capabilities & Derived Authority
 
-How Soberanía Enterprise proves that a requester's **capability to act** was derived
+How Frontera Systems proves that a requester's **capability to act** was derived
 through a bounded, traceable, still-live chain from a source that genuinely had
 it — and never became broader along the way.
 
@@ -294,7 +294,7 @@ holder through a longer chain neither adds nor removes one. See
 
 The bounded claim is exactly:
 
-> Soberanía Enterprise can recognize and enforce authority derived through a typed,
+> Frontera Systems can recognize and enforce authority derived through a typed,
 > bounded, traceable delegation lineage **within this deployment's governance
 > state**.
 

@@ -35,7 +35,7 @@ interprets, resolves, or executes against.
 
 ## Authorization is not legal validity
 
-This package lets Soberanía Enterprise say exactly one kind of thing: *this authority
+This package lets Frontera Systems say exactly one kind of thing: *this authority
 graph, policy state, approval state and obligation set permitted Actor A to
 grant License L to Licensee B under Terms T.*
 

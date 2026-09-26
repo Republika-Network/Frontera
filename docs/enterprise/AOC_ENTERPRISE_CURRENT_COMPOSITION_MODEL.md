@@ -1,4 +1,4 @@
-# Soberanía Enterprise -- Current Composition Model (pre-PR-003 baseline)
+# Frontera Systems -- Current Composition Model (pre-PR-003 baseline)
 
 This document reconstructs, as-built, the composition path produced by PR-001
 (`src/kernel/`) and PR-002 (`src/enterprise/`), before any PR-003 module

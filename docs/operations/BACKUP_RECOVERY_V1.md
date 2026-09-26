@@ -1,4 +1,4 @@
-# Soberanía Enterprise Host — Backup and Recovery (v1.0.0)
+# Frontera Systems Host — Backup and Recovery (v1.0.0)
 
 Backup strategy for the Enterprise Host's SQLite persistence. Applies
 only to `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite`; the `memory`

@@ -1,8 +1,8 @@
-# Soberanía Enterprise + Soberanía Protocol Integration
+# Frontera Systems + Soberanía Protocol Integration
 
 ## Purpose
 
-This document defines how Soberanía Enterprise consumes Soberanía Protocol primitives without redefining protocol semantics.
+This document defines how Frontera Systems consumes Soberanía Protocol primitives without redefining protocol semantics.
 
 ## Canonical ownership
 
