@@ -1,7 +1,7 @@
 # ADR: `COLLATERALIZE` as a governed action, and what the second enforcement taught us
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: `ADR-TOKENIZE-CAPABILITY.md`,
   `ADR-TOKENIZATION-MANDATE-PERSISTENCE.md`, `ADR-ACCESS-GRANT.md`,
   `ADR-POLICY-OBLIGATION.md`, `ADR-ENTERPRISE-GOVERNANCE-STORE.md`,
@@ -10,7 +10,7 @@
 
 ## Context
 
-Soberanía Enterprise must be able to govern whether a defined scope of specified
+Frontera Systems must be able to govern whether a defined scope of specified
 rights of an already-governed asset may be committed as collateral securing a
 referenced obligation: by whom, for whose benefit, through which executor,
 under which conditions, after which approvals, and with what durable evidence.
@@ -21,7 +21,7 @@ This is deliberately the **second** real enforcement. `TOKENIZE` was the
 first. The purpose of implementing a second one is not only to have it, but to
 obtain a second concrete specimen so we can tell — from code, not from
 intuition — which parts of the first implementation were genuinely generic
-Soberanía Enterprise Enforcement infrastructure and which were specific to
+Frontera Systems Enforcement infrastructure and which were specific to
 tokenization.
 
 The method was therefore fixed in advance: **implement concretely first,
@@ -167,7 +167,7 @@ framework.
 
 ## Consequences
 
-- Soberanía Enterprise now demonstrably has a governance architecture that is **not
+- Frontera Systems now demonstrably has a governance architecture that is **not
   tokenization-specific**: the same asset can be the subject of two
   independent governed actions, each with its own enforcement, mandate,
   durable store and evidence chain.

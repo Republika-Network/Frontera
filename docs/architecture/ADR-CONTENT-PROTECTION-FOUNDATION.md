@@ -1,9 +1,9 @@
 # ADR: Protected Resource + Content Encryption Foundation (Sovereign Execution Binding, Slice 2)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: Slice 2 of N, Sovereign Execution Binding
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/aoc-enterprise-slice-2-yq7pgf`
 - Precondition: `ADR-DURABLE-GRANTS-REVOCATION.md` (Slice 1, durable
   `AccessGrant`/`GrantRevocation`, truthful effective revocation) -- verified
@@ -67,7 +67,7 @@ finalizeRevocationEnforcement` two-phase write ordering
 - **Soberanía Protocol = Sovereignty.** Not modified. This slice adds no
   canonical sovereign asset identity, manifest, or digest semantics of its
   own -- see "Sovereign binding" below.
-- **Soberanía Enterprise = Governance + Enforcement.** This slice's entire
+- **Frontera Systems = Governance + Enforcement.** This slice's entire
   contribution: `src/enterprise/content-protection/`.
 - **Assurance = Verification.** Not touched; no scoring/monitoring
   authority moved into this slice.
