@@ -1,6 +1,6 @@
-# Soberanía Enterprise Module Authoring Guide
+# Frontera Systems Module Authoring Guide
 
-This guide is for adding a new operational module to the Soberanía Enterprise
+This guide is for adding a new operational module to the Frontera Systems
 Host's module registry -- not for adding governance/decision logic (that
 belongs in the Kernel, `src/kernel/`) and not for a dynamic/loadable
 plugin (this system doesn't have those; see

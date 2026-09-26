@@ -1,6 +1,6 @@
 # Soberanía Governed Authority
 
-The state Soberanía Enterprise keeps about **which governed right each party
+The state Frontera Systems keeps about **which governed right each party
 controls**, how that authority arose, and how completed governed execution
 changes it.
 
@@ -11,7 +11,7 @@ records why each decision below was made rather than what it is.
 
 A governed authority position asserts exactly this:
 
-> According to the governance state and evidence this Soberanía Enterprise
+> According to the governance state and evidence this Frontera Systems
 > deployment recognizes, Actor A has authority to exercise Scope S of Right R
 > over Resource X, within a stated effective window.
 
@@ -219,7 +219,7 @@ TOKENIZE   COLLATERALIZE   LICENSE   TRANSFER
 The Kernel runs the check after the existing chain, only against an outcome
 that chain already found viable, and it can only **narrow** that outcome into a
 denial. It never rescues a denial and never grants anything. `AocKernel`
-remains the only component in Soberanía Enterprise that produces a decision — there
+remains the only component in Frontera Systems that produces a decision — there
 is no second kernel and no second authorization engine.
 
 ## Trust boundary

@@ -1,4 +1,4 @@
-# Soberanía Enterprise Module Lifecycle & Registry v1
+# Frontera Systems Module Lifecycle & Registry v1
 
 ## Purpose
 

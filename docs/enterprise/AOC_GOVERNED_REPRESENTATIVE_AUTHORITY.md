@@ -1,6 +1,6 @@
 # Soberanía Holder-Bound Representative Authority
 
-The state Soberanía Enterprise keeps about **which party may exercise another
+The state Frontera Systems keeps about **which party may exercise another
 party's governed authority**, within what envelope, and on what basis.
 
 Companion to `docs/architecture/ADR-HOLDER-BOUND-REPRESENTATIVE-AUTHORITY.md`,
@@ -10,7 +10,7 @@ layer permits the exercise of but never confers.
 
 ## The three authority questions
 
-Soberanía Enterprise now distinguishes three questions that were previously two. All
+Frontera Systems now distinguishes three questions that were previously two. All
 three are independent, and none substitutes for another.
 
 ```
@@ -56,7 +56,7 @@ arbitrary-holder vulnerability".
 
 A representation asserts exactly this:
 
-> According to the governance state this Soberanía Enterprise deployment recognizes,
+> According to the governance state this Frontera Systems deployment recognizes,
 > Representative R may cause Holder H's authority over Rights [...] of
 > Resource X to be exercised, for Actions [...], up to Ceiling C, between
 > `effectiveFrom` and `expiresAt`.
