@@ -27,15 +27,20 @@ export const EXECUTION_OUTCOME_MODULE_ID = 'aoc.enterprise.execution-outcomes';
  *
  * It owns nothing: the composition root closes a store it opened, and a host
  * closes one it supplied.
+ *
+ * A Host whose purpose **is** governed execution (the Enterprise Host bootstrap,
+ * `host/enterprise-host.ts`) composes it as `required` instead: there, an
+ * unhealthy outcome store means the Host cannot do the one thing it runs for, and
+ * `/health` and `/ready` must say so.
  */
-export function createExecutionOutcomeModule(store: ExecutionOutcomeStore, now: () => string): EnterpriseModule {
+export function createExecutionOutcomeModule(store: ExecutionOutcomeStore, now: () => string, criticality: 'required' | 'optional' = 'optional'): EnterpriseModule {
   return {
     descriptor: {
       id: EXECUTION_OUTCOME_MODULE_ID,
       version: AOC_ENTERPRISE_HOST_VERSION,
       displayName: 'Durable Execution Outcomes',
       description: 'Immutable, integrity-verified, tenant-confined record of each governed execution: its exact prepared context and its initial provider observation. No route.',
-      criticality: 'optional',
+      criticality,
       dependencies: [{ moduleId: GOVERNED_ACTION_ORCHESTRATOR_MODULE_ID }],
       capabilities: ['execution.durable-outcomes', 'execution.provider-certainty'],
     },

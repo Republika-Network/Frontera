@@ -328,11 +328,70 @@ function parseApiKeys(value: string | undefined): readonly EnterpriseApiKey[] {
     });
 }
 
+const ENVIRONMENT_VALUES: readonly EnterpriseEnvironment[] = ['development', 'test', 'staging', 'production'];
+const PERSISTENCE_PROVIDER_VALUES: readonly EnterprisePersistenceProviderKind[] = ['memory', 'sqlite'];
+const LOG_LEVEL_VALUES: readonly EnterpriseConfiguration['logLevel'][] = ['debug', 'info', 'warn', 'error'];
+const BOOLEAN_VARIABLES = [
+  'AOC_ENTERPRISE_REQUIRE_AUTH',
+  'AOC_ENTERPRISE_EVENTS_ENABLED',
+  'AOC_ENTERPRISE_TELEMETRY_ENABLED',
+  'AOC_ENTERPRISE_PASSPORT_REQUIRED',
+  'AOC_ENTERPRISE_ASSURANCE_REQUIRED',
+  'AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED',
+  'AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED',
+] as const;
+
+/**
+ * The strict reading of the same variables `loadEnterpriseConfiguration`
+ * reads leniently.
+ *
+ * `loadEnterpriseConfiguration` maps anything it does not recognize to a
+ * default — `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqllite` becomes `memory`,
+ * `AOC_ENTERPRISE_ENV=prod` becomes `development`, `AOC_ENTERPRISE_REQUIRE_AUTH=yes`
+ * becomes `false`. Embedders and tests rely on that leniency, so it stays. A
+ * process an operator starts must not: each of those is a silent downgrade
+ * from what the operator wrote. The Enterprise Host bootstrap
+ * (`host/enterprise-host.ts`) refuses to boot while this returns anything.
+ *
+ * Returns one problem per variable, naming the variable and the accepted
+ * values — never echoing a value, because a mistyped variable can hold a
+ * secret.
+ */
+export function validateEnterpriseEnvironment(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const problems: string[] = [];
+  const oneOf = (name: string, allowed: readonly string[]): void => {
+    const value = env[name];
+    if (value !== undefined && !allowed.includes(value)) problems.push(`${name} must be one of: ${allowed.join(', ')}.`);
+  };
+  oneOf('AOC_ENTERPRISE_ENV', ENVIRONMENT_VALUES);
+  oneOf('AOC_ENTERPRISE_PERSISTENCE_PROVIDER', PERSISTENCE_PROVIDER_VALUES);
+  oneOf('AOC_ENTERPRISE_LOG_LEVEL', LOG_LEVEL_VALUES);
+  oneOf('AOC_ENTERPRISE_TRACE_LEVEL', ['basic', 'full']);
+  for (const name of BOOLEAN_VARIABLES) {
+    const value = env[name];
+    if (value !== undefined && !['true', 'false', '1', '0'].includes(value.toLowerCase())) problems.push(`${name} must be true or false.`);
+  }
+  const port = env.AOC_ENTERPRISE_HTTP_PORT;
+  if (port !== undefined && (!/^\d{1,5}$/.test(port) || Number.parseInt(port, 10) > 65_535)) problems.push('AOC_ENTERPRISE_HTTP_PORT must be an integer from 0 to 65535.');
+  const host = env.AOC_ENTERPRISE_HTTP_HOST;
+  if (host !== undefined && host.trim().length === 0) problems.push('AOC_ENTERPRISE_HTTP_HOST must not be empty.');
+  const verificationKeys = env.AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS;
+  if (verificationKeys !== undefined && verificationKeys.trim().length > 0 && parseAuthorityVerificationKeys(verificationKeys).length === 0) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS must be a JSON array of {keyId, algorithm, publicKeyPem} objects.');
+  }
+  const apiKeys = env.AOC_ENTERPRISE_API_KEYS;
+  if (apiKeys !== undefined && parseApiKeys(apiKeys).some((apiKey) => apiKey.key.length === 0)) {
+    problems.push('AOC_ENTERPRISE_API_KEYS contains an entry with an empty key.');
+  }
+  return problems;
+}
+
 /**
  * Reads `env` (defaults to `process.env`) into a fully-resolved
- * `EnterpriseConfiguration`. Every field has a safe, local-dev-friendly
- * default so the Enterprise Host can boot with zero configuration;
- * production deployments override via environment variables.
+ * `EnterpriseConfiguration`. Every field has a local-dev-friendly default so
+ * an embedder can compose with zero configuration. Lenient by design; the
+ * Enterprise Host bootstrap applies `validateEnterpriseEnvironment` and its
+ * secure-profile rules on top (`host/enterprise-host.ts`).
  */
 export function loadEnterpriseConfiguration(env: Readonly<Record<string, string | undefined>> = process.env): EnterpriseConfiguration {
   return {
@@ -365,7 +424,10 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     http: {
       port: Number.parseInt(env.AOC_ENTERPRISE_HTTP_PORT ?? '8787', 10),
-      host: env.AOC_ENTERPRISE_HTTP_HOST ?? '0.0.0.0',
+      // Loopback unless an operator says otherwise. A network-facing bind is a
+      // deployment decision, and the Enterprise Host bootstrap refuses one
+      // without authentication (PROD-01; NB-005).
+      host: env.AOC_ENTERPRISE_HTTP_HOST ?? '127.0.0.1',
     },
     lifecycle: {
       startupTimeoutMs: parsePositiveIntMs(env.AOC_ENTERPRISE_STARTUP_TIMEOUT_MS, 30_000),

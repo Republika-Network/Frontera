@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "trustDomainId": "trust-domain-acme",
+  "grantLifetimeSeconds": 300,
+  "customerPrincipals": [
+    {
+      "principalId": "principal-agent-1",
+      "externalSubject": { "system": "example-app", "subjectId": "agent-1" },
+      "apiKeyEnv": "FRONTERA_CUSTOMER_KEY_AGENT_1"
+    }
+  ],
+  "monetary": {
+    "assets": [{ "assetId": "USD", "scale": 2 }],
+    "financialActions": []
+  },
+  "genericHttpAdapters": [
+    {
+      "adapterId": "erp.invoice-approval",
+      "origin": "https://erp.example.com",
+      "method": "POST",
+      "path": [
+        { "kind": "literal", "value": "v1" },
+        { "kind": "literal", "value": "invoice-approvals" }
+      ],
+      "body": {
+        "kind": "json-object",
+        "fields": {
+          "invoice": { "kind": "source", "source": "resource" },
+          "approvedBy": { "kind": "source", "source": "subject" },
+          "reference": { "kind": "source", "source": "correlation.executionId" }
+        }
+      },
+      "credential": { "kind": "bearer", "tokenEnv": "FRONTERA_ERP_API_TOKEN" },
+      "providerRefHeader": "x-request-id",
+      "timeoutMs": 10000
+    }
+  ],
+  "routes": [
+    { "action": "invoice.approve", "adapterId": "erp.invoice-approval" }
+  ]
+}

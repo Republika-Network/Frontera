@@ -202,6 +202,10 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
         // its one outbound call is enumerated by the network scan below.
         'src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts',
         'src/enterprise/execution-governance/service.ts',
+        // Type-only (PROD-01): the Enterprise Host bootstrap hands embedder
+        // adapters to the composition root's registry and supplies the trusted
+        // route selector. It invokes nothing.
+        'src/enterprise/host/enterprise-host.ts',
         // Deliberately NOT `src/enterprise/index.ts`: the Enterprise barrel has
         // never re-exported a `src/features` type — not `BoundedGrantStorePort`,
         // not `KernelGrantCapability`, not `ExecutionAdapter` — even where an
