@@ -1,9 +1,9 @@
 # ADR: Access Governance Lifecycle (R005.0)
 
 - Status: **Accepted — Frozen**
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: R005.0, Soberanía Architectural Consolidation Program
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/access-governance-lifecycle-adr-0v93ka`
 - Frozen at commit: `6f725fdc81a98af0120ee125fc43ba2a68285922`
   (merge of PR #85, `feat(access-governance): add EnterpriseEvidenceCorrelation

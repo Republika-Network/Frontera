@@ -7,7 +7,7 @@
 
 ## Scope
 
-This policy covers vulnerability reporting for Soberanía Enterprise, the
+This policy covers vulnerability reporting for Frontera Systems, the
 proprietary software in this repository. It does not cover Soberanía Protocol,
 which is a separate repository with its own security policy (see
 `docs/legal/PROTOCOL_ENTERPRISE_BOUNDARY.md` for the boundary between
@@ -16,7 +16,7 @@ Enterprise's channel below and it will be routed appropriately.
 
 ## Reporting a vulnerability
 
-Security vulnerabilities affecting Soberanía Enterprise must be reported
+Security vulnerabilities affecting Frontera Systems must be reported
 privately to:
 
 ```text
@@ -72,7 +72,7 @@ Commercial Agreement, where one exists.
 
 To help triage a report efficiently, include where known:
 
-- product and repository (Soberanía Enterprise / this repository);
+- product and repository (Frontera Systems / this repository);
 - affected component;
 - version, release, or commit;
 - description of the issue;

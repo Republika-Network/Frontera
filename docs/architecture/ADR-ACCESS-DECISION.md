@@ -1,7 +1,7 @@
 # ADR: Canonical Access Decision (R004.E)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: R004.C (`ResourceRef` canonicality conclusion), R004.D
   (`ADR-RESOURCE-ENVELOPE.md`, `EnterpriseResourceEnvelope`),
   `packages/scoped-access/src/enterprise-scoped-access-request.ts` (the

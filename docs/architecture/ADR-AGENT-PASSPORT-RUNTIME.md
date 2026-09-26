@@ -1,7 +1,7 @@
-# ADR: Soberanía Enterprise Agent Passport Runtime v1
+# ADR: Frontera Systems Agent Passport Runtime v1
 
 - Status: Accepted (PR-006)
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: `ADR-ENTERPRISE-GOVERNANCE-STORE.md`, `ADR-EVIDENCE-BUNDLE.md`,
   `docs/enterprise/AOC_AGENT_PASSPORT_CURRENT_MODEL.md`,
   `docs/enterprise/AOC_AGENT_PASSPORT_RUNTIME.md`,
@@ -35,7 +35,7 @@
 
 ## Decision
 
-Create the Soberanía Enterprise Agent Passport Runtime v1
+Create the Frontera Systems Agent Passport Runtime v1
 (`src/enterprise/passport/`):
 
 - **Append-only Passport events, reconstructed state.** A Passport is

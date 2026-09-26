@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Soberanía Enterprise. The project follows [Semantic Versioning](https://semver.org/): the public HTTP API surface, the exported package entrypoints, and the store schema identifiers are the compatibility contract (see `docs/enterprise/API_STABILITY_V1.md`).
+All notable changes to Frontera Systems. The project follows [Semantic Versioning](https://semver.org/): the public HTTP API surface, the exported package entrypoints, and the store schema identifiers are the compatibility contract (see `docs/enterprise/API_STABILITY_V1.md`).
 
 ## [Unreleased]
 
