@@ -582,7 +582,7 @@ Other technical debt:
 
 | # | Item | Owner |
 |---|---|---|
-| TD-1 | Rename incomplete. README body and CHANGELOG header say "Frontera Systems". `@aoc-enterprise/*`, `AocKernel`, `AOC_ENTERPRISE_*` and `docs/enterprise/AOC_*.md` remain (compatibility namespaces are intentional, per README) | PROD |
+| TD-1 | Rename incomplete. The product docs, README body and CHANGELOG header say "Frontera Systems" (PR #146); the v1.0.0 release, operations and performance reports keep their historical "AOC Enterprise" titles. `@aoc-enterprise/*`, `AocKernel`, `AOC_ENTERPRISE_*` and `docs/enterprise/AOC_*.md` remain (compatibility namespaces are intentional, per README) | PROD |
 | TD-2 | Stale "current state" docs contradict code. `CURRENT_STATE_AUTHORITY_CONTROL.md` says obligations are "never discharged". `ADR-CONTEXT-PROVENANCE-AND-TRUST` says "no implementation". The TARGET doc says "no implementation has been performed" | CORE (historical banners added by MASTER-00 where they act as roadmaps) |
 | TD-3 | Production providers import `bridgeRecognitionRuntime` from a fixtures file (`providers/kernel-provider-composition.ts:11`) | CORE |
 | TD-4 | Zero-consumer packages: `capability-tokens`, `access-decision`, `access-obligation`, `policy-runtime`, `consent-engine`, `org-boundary`, `tenant-governance`, `control-plane-sdk`, `enterprise-audit`, `audit-sdk`, `control-plane` | PROD (deprecation decision) |
