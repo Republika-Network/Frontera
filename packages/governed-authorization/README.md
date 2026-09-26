@@ -1,6 +1,6 @@
 # `@aoc-enterprise/governed-authorization`
 
-The action-neutral vocabulary shared by Soberanía Enterprise's governed actions.
+The action-neutral vocabulary shared by Frontera Systems' governed actions.
 
 This package exists because four independently-motivated governed actions —
 `TOKENIZE`, `COLLATERALIZE`, `LICENSE` and `TRANSFER` — converged on the same
@@ -104,4 +104,4 @@ and cannot be replayed through a sibling action's contract. No serialized byte,
 no consumer, no validator and no stored record changed when this package was
 introduced.
 
-Ownership: Soberanía Enterprise.
+Ownership: Frontera Systems.

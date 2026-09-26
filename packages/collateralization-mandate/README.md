@@ -37,7 +37,7 @@ against any registry, liquidates or seizes anything, or contacts any external
 system. It is a pure data contract: no persistence, no service, no API, no
 policy engine, no execution.
 
-**Soberanía Enterprise governs whether collateralization is authorized. External
+**Frontera Systems governs whether collateralization is authorized. External
 systems execute the collateral arrangement.**
 
 ## Three distinctions that carry weight
@@ -160,5 +160,5 @@ A third enforcement is the right moment to decide, not this one.
 
 ## Ownership
 
-Soberanía Enterprise. Depends only on `@aoc/protocol` (types) and
+Frontera Systems. Depends only on `@aoc/protocol` (types) and
 `@aoc-enterprise/resource-envelope` (`resourceRefIdentityEquals`).

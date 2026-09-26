@@ -1,6 +1,6 @@
 # @aoc-enterprise/enterprise-host-sdk
 
-Minimal typed HTTP client for the **Soberanía Enterprise Host v1 API**.
+Minimal typed HTTP client for the **Frontera Systems Host v1 API**.
 
 Transport only, by design:
 
@@ -12,7 +12,7 @@ Transport only, by design:
 
 ## Install / build
 
-The package is part of the Soberanía Enterprise workspace:
+The package is part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/enterprise-host-sdk
