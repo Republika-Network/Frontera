@@ -1,7 +1,7 @@
-# ADR: Soberanía Enterprise Governance Store v1
+# ADR: Frontera Systems Governance Store v1
 
 - Status: Accepted (PR-004)
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: `ADR-ENTERPRISE-HOST-NAMING.md`, `ADR-ENTERPRISE-MODULE-LIFECYCLE.md`,
   `docs/enterprise/AOC_ENTERPRISE_GOVERNANCE_STORE.md`,
   `docs/enterprise/AOC_ENTERPRISE_CURRENT_PERSISTENCE_MODEL.md`
@@ -25,7 +25,7 @@
 
 ## Decision
 
-Create the Soberanía Enterprise Governance Store v1
+Create the Frontera Systems Governance Store v1
 (`src/enterprise/governance-store/`):
 
 - **append-oriented** storage with no public update/delete surface;

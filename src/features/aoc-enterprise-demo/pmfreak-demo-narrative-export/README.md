@@ -8,7 +8,7 @@ aoc.demo.pmfreak.narrative_export.v1
 
 Purpose:
 
-Provides a deterministic narrative export layer for the PMFreak Soberanía Enterprise demo.
+Provides a deterministic narrative export layer for the PMFreak Frontera Systems demo.
 
 This pack consumes Control Plane view models from the PMFreak Demo Control Plane View and turns them into human-readable narrative exports.
 
@@ -70,7 +70,7 @@ The Narrative Export explains:
 
 - what the agent attempted
 - which passport was used
-- what Soberanía Enterprise checked
+- what Frontera Systems checked
 - which decision was returned
 - which evidence was missing or satisfied
 - which approvals were missing or satisfied
@@ -182,7 +182,7 @@ No network calls, no LLM calls, no OCR/PDF parsing, no `Math.random()`, no `Date
 
 ```
 PMFreak demonstrates what autonomous project agents can do.
-Soberanía Enterprise demonstrates why they can be trusted to do it.
+Frontera Systems demonstrates why they can be trusted to do it.
 The Control Plane shows why a governed decision was made.
 The Narrative Export explains that decision in shareable language.
 ```

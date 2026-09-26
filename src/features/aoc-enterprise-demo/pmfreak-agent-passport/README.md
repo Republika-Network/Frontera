@@ -8,7 +8,7 @@ aoc.demo.pmfreak.agent_passport.v1
 
 Purpose:
 
-Demonstrates how PMFreak agents can operate with Soberanía Enterprise passports.
+Demonstrates how PMFreak agents can operate with Frontera Systems passports.
 
 This pack models PMFreak agents as governed actors with identity, passport status, authority scope, capability tokens, evidence requirements, approval requirements, policy decisions, Control Plane summaries and export metadata.
 
@@ -28,7 +28,7 @@ PMFreak agents should not act only because they are technically able to act.
 
 They should act only when they have:
 - recognized identity
-- valid Soberanía Enterprise passport
+- valid Frontera Systems passport
 - role-specific authority scope
 - active capability token
 - sufficient evidence
@@ -40,7 +40,7 @@ They should act only when they have:
 ```
 
 PMFreak demonstrates what autonomous project agents can do.
-Soberanía Enterprise demonstrates why those agents can be trusted to do it.
+Frontera Systems demonstrates why those agents can be trusted to do it.
 
 ## Default status
 
@@ -66,7 +66,7 @@ Each role is defined in `pmfreak-agent-roles.ts` as a `PMFreakAgentRoleProfile`;
 
 The Billing Readiness Agent is the primary demo agent. It attempts to mark a project milestone as ready for billing (`pmfreak.action.billing.mark_ready`).
 
-Soberanía Enterprise checks:
+Frontera Systems checks:
 
 - passport status (must be `active`, not `revoked`/`suspended`/`expired`/`draft`)
 - role authority (the action must be in `allowedActionIds`, not in `restrictedActionIds`)

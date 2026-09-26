@@ -1,7 +1,7 @@
 # Migration: `kernel-host` -> `enterprise`
 
 This guide covers the rename introduced by the "Rename Kernel Host to
-Enterprise Host" iteration on top of PR-002 (Soberanía Enterprise Runtime Host
+Enterprise Host" iteration on top of PR-002 (Frontera Systems Runtime Host
 v1). No behavior changed -- see
 `docs/enterprise/AOC_ENTERPRISE_HOST.md` for what stayed the same and
 `docs/architecture/ADR-ENTERPRISE-HOST-NAMING.md` for why the rename

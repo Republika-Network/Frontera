@@ -6,7 +6,7 @@ Sovereign infrastructure for enterprise AI agents, programmable consent, scoped 
 
 ## Overview
 
-Soberanía Enterprise is the enterprise orchestration layer built on top of Soberanía Protocol.
+Frontera Systems is the enterprise orchestration layer built on top of Soberanía Protocol.
 
 It enables organizations to:
 
@@ -24,7 +24,7 @@ It enables organizations to:
 ```txt
 Applications
     ↓
-Soberanía Enterprise
+Frontera Systems
     ↓
 Soberanía Protocol
     ↓
@@ -83,7 +83,7 @@ Client SDK: `packages/enterprise-host-sdk` (`@aoc-enterprise/enterprise-host-sdk
 
 ### Technical namespace
 
-Soberanía Enterprise preserves the existing `aoc` and `aoc-enterprise` technical
+Frontera Systems preserves the existing `aoc` and `aoc-enterprise` technical
 namespaces for compatibility. Package names, API identifiers, schemas, protocol
 identifiers, serialized values, and public code symbols using those namespaces
 remain unchanged unless explicitly versioned otherwise.
@@ -92,7 +92,7 @@ remain unchanged unless explicitly versioned otherwise.
 
 ## License and ownership
 
-Soberanía Enterprise is proprietary software. Copyright © 2026 Onchainfest LLC.
+Frontera Systems is proprietary software. Copyright © 2026 Onchainfest LLC.
 All Rights Reserved. Commercial use requires a written agreement. See
 `LICENSE` and `NOTICE.md`. Soberanía Protocol has a separate legal and
 licensing regime — see `docs/legal/PROTOCOL_ENTERPRISE_BOUNDARY.md`.

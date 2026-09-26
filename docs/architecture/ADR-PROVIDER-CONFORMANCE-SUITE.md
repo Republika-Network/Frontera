@@ -1,9 +1,9 @@
 # ADR: Provider Conformance Suite (R005.D)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: R005.D, Soberanía Architectural Consolidation Program
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/provider-conformance-suite-67t084`
 - Related: `ADR-ACCESS-LIFECYCLE.md` (R005.0, frozen input), `ADR-PROVIDER-ADAPTER-CONTRACT.md`
   (R005.A, frozen input), `ADR-PROVIDER-TRANSLATION-MODEL.md` (R005.B, frozen

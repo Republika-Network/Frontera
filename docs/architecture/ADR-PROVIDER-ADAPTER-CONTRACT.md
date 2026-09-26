@@ -1,9 +1,9 @@
 # ADR: Canonical Provider Adapter Contract (R005.A)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: R005.A, Soberanía Architectural Consolidation Program
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/canonical-provider-adapter-bqa14i`
 - Related: `ADR-ACCESS-LIFECYCLE.md` (R005.0, frozen input — treated as
   frozen architecture, not modified by this change), `ADR-ACCESS-GRANT.md`

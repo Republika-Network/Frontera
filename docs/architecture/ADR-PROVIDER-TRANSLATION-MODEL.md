@@ -1,9 +1,9 @@
 # ADR: Canonical Provider Translation Model (R005.B)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: R005.B, Soberanía Architectural Consolidation Program
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/canonical-provider-translation-model-icite4`
 - Related: `ADR-ACCESS-LIFECYCLE.md` (R005.0, frozen input — treated as
   frozen architecture, not modified by this change),

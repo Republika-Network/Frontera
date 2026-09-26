@@ -14,21 +14,21 @@ Two layers, two vocabularies. They are not synonyms and must not be conflated:
 Soberanía Protocol
   → Sovereignty Capabilities     what a sovereign holds
 
-Soberanía Enterprise
+Frontera Systems
   → Governed Actions             what may be exercised
   → Enforcements                 the evaluation of whether it may be
   → Grants / Mandates            the durable authorization that results
   → Evidence                     what an external system reported afterwards
 ```
 
-Soberanía Enterprise now has **three** governed actions:
+Frontera Systems now has **three** governed actions:
 
 ```
 TOKENIZE                = a Governed Action.
 COLLATERALIZE           = a Governed Action.
 LICENSE                 = a Governed Action.
 
-License Enforcement     = Soberanía Enterprise evaluates whether, and on what
+License Enforcement     = Frontera Systems evaluates whether, and on what
                           terms, LICENSE may be exercised.
 
 LicenseMandate          = the durable, Soberanía-owned authorization artifact a
@@ -60,13 +60,13 @@ The contract type is named `EnterpriseLicenseMandate` rather than
 > already-governed asset, for specified uses, within a specified operating
 > context, under defined governance conditions.
 
-Soberanía Enterprise governs whether licensing is authorized, who may grant it, to
+Frontera Systems governs whether licensing is authorized, who may grant it, to
 whom, over which governed rights, within which scope, for what permitted uses,
 and under which conditions.
 
 ## Boundary — authorization is not legal validity
 
-Soberanía Enterprise is able to say exactly one kind of thing:
+Frontera Systems is able to say exactly one kind of thing:
 
 > This authority graph, policy state, approval state and obligation set
 > permitted Actor A to grant License L to Licensee B under Terms T.

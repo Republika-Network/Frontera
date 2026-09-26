@@ -2,7 +2,7 @@
 
 > STATUS: DRAFT — PENDING PROFESSIONAL LEGAL REVIEW.
 
-**Product:** Soberanía Enterprise
+**Product:** Frontera Systems
 
 **Owner:** Onchainfest LLC
 
@@ -10,14 +10,14 @@
 
 ## Nature of this software
 
-Soberanía Enterprise is proprietary software owned by Onchainfest LLC. It is
+Frontera Systems is proprietary software owned by Onchainfest LLC. It is
 not open source software. Its use, copying, modification, and
 distribution are governed by the terms in `LICENSE`, or by a separate
 written commercial agreement where one exists.
 
 ## Relationship to Soberanía Protocol
 
-Soberanía Enterprise is the commercial, operational, and deployable
+Frontera Systems is the commercial, operational, and deployable
 implementation layer that consumes Soberanía Protocol — a separate,
 independently maintained project defining public specifications,
 primitives, and standards for programmable consent, capability tokens,
@@ -26,18 +26,18 @@ scoped access, identity, and audit event contracts.
 Soberanía Protocol is a distinct repository
 (`Architects-of-Change-Protocol/Architects_of_Change_Protocol`) with its
 own governance and licensing terms, which this document does not modify,
-restate, or supersede. Soberanía Enterprise consumes Soberanía Protocol's published
+restate, or supersede. Frontera Systems consumes Soberanía Protocol's published
 contracts as a peer dependency (`@aoc/protocol`); it does not own,
 redefine, or claim Soberanía Protocol's specifications.
 
 The specification layer (Soberanía Protocol) and the commercial implementation
-layer (Soberanía Enterprise) are kept intentionally separate. For a detailed
+layer (Frontera Systems) are kept intentionally separate. For a detailed
 technical and legal breakdown of what belongs to each layer, see
 `docs/legal/PROTOCOL_ENTERPRISE_BOUNDARY.md`.
 
 ## Third-party components
 
-Soberanía Enterprise incorporates third-party open source dependencies, each
+Frontera Systems incorporates third-party open source dependencies, each
 of which remains subject to its own license. Onchainfest LLC claims no
 ownership over these components. See:
 

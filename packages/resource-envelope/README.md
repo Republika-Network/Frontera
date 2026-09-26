@@ -27,7 +27,7 @@ the description of such a resource that a governance decision can be made
   `envelope.resource`.
 - **Everything else on `EnterpriseResourceEnvelope`** — `location`,
   `integrity`, `descriptor`, `lifecycleState`, `registeredAt`,
-  `correlationId` — is owned by Soberanía Enterprise
+  `correlationId` — is owned by Frontera Systems
   (`@aoc-enterprise/resource-envelope`), because it is governance metadata
   about a resource, not part of what makes the resource *that* resource.
   Protocol has no concept of "where a resource's bytes live" or "has this
@@ -220,7 +220,7 @@ events to resources and requests today. Not implemented here.
 
 ## Install / build
 
-Part of the Soberanía Enterprise workspace:
+Part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/resource-envelope

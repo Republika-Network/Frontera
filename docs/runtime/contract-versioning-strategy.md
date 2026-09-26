@@ -53,7 +53,7 @@ function assertContractCompatibility(requiredVersion: string) {
 
 ## Federation Preparation
 
-When Soberanía Enterprise federates across trust domains or exposes external SDKs, contract versioning becomes a cross-org concern:
+When Frontera Systems federates across trust domains or exposes external SDKs, contract versioning becomes a cross-org concern:
 
 1. **External SDKs** must pin to a minimum contract version and receive changelogs on breaking changes.
 2. **Federated runtimes** negotiate a compatible contract version range during `RuntimeNegotiationType.FEDERATION_EXPANSION`.

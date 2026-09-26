@@ -7,7 +7,7 @@
 
 ## Context: the gap the governed-authority foundation left
 
-The previous foundation gave Soberanía Enterprise the ability to say *which party
+The previous foundation gave Frontera Systems the ability to say *which party
 controls which governed right, and how much of it*, and to move that authority
 when a governed execution completes. It closed two questions:
 
@@ -235,7 +235,7 @@ folding them would have forced one coverage union to carry two verdicts and
 would have left a denial unable to say which of the two proofs was missing.
 
 No `RepresentativeKernel`, `DelegationKernel`, `ProxyKernel` or `AgencyKernel`.
-`AocKernel` remains the only component in Soberanía Enterprise that decides.
+`AocKernel` remains the only component in Frontera Systems that decides.
 
 Both facts are resolved in one step, because they share everything the
 resolution needs — tenant, resource, right list, instant — and because a caller

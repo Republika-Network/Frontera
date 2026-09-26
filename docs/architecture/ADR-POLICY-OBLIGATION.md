@@ -1,7 +1,7 @@
 # ADR: Canonical Policy Obligation (R004.F)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Related: R004.D (`ADR-RESOURCE-ENVELOPE.md`, `EnterpriseResourceEnvelope`),
   R004.E (`ADR-ACCESS-DECISION.md`, `EnterpriseAccessDecision`),
   `packages/canonical-runtime-contracts/src/governance/obligations.ts`

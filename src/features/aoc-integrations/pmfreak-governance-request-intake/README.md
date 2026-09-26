@@ -9,13 +9,13 @@ aoc.integration.pmfreak.governance_request_intake.v1
 Repo:
 
 ```
-Soberanía Enterprise
+Frontera Systems
 ```
 
 Purpose:
 
 ```
-This module lets Soberanía Enterprise receive and evaluate PMFreak governance requests.
+This module lets Frontera Systems receive and evaluate PMFreak governance requests.
 ```
 
 Runtime direction:
@@ -39,9 +39,9 @@ This module does not provide legal advice.
 ```
 PMFreak agent attempts an action.
 PMFreak builds a Soberanía governance request.
-Soberanía Enterprise receives the request.
-Soberanía Enterprise evaluates the request.
-Soberanía Enterprise returns a governed decision.
+Frontera Systems receives the request.
+Frontera Systems evaluates the request.
+Frontera Systems returns a governed decision.
 PMFreak receives the decision.
 ```
 
@@ -58,7 +58,7 @@ Soberanía certifies invoice validity, customer acceptance, compliance, or legal
 
 ## Relationship to the existing PMFreak demo layers
 
-Soberanía Enterprise already has a PMFreak governed-agent demo stack:
+Frontera Systems already has a PMFreak governed-agent demo stack:
 
 ```
 Soberanía PMFreak Agent Passport Demo Pack v1                    (src/features/aoc-enterprise-demo/pmfreak-agent-passport)

@@ -1,4 +1,4 @@
-# ADR: Soberanía Enterprise Module Lifecycle & Registry
+# ADR: Frontera Systems Module Lifecycle & Registry
 
 ## Status
 

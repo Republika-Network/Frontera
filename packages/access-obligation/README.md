@@ -44,7 +44,7 @@ condition out.
   tests in `__tests__/enterprise-access-obligation.test.ts`.
 - **Everything on `EnterpriseAccessObligation`** -- `id`, `type`,
   `mandatory`, `severity?`, `parameters?`, `description?`, `evidenceRefs?` --
-  is owned by Soberanía Enterprise (`@aoc-enterprise/access-obligation`).
+  is owned by Frontera Systems (`@aoc-enterprise/access-obligation`).
 
 ## Why composition by reference, not embedding
 
@@ -253,7 +253,7 @@ describe it.
 
 ## Install / build
 
-Part of the Soberanía Enterprise workspace:
+Part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/access-obligation

@@ -1,7 +1,7 @@
 # ADR — Governance Reference Integrity
 
 **Status:** Accepted
-**Scope:** Soberanía Enterprise Governance Store (`src/enterprise/governance-store/`)
+**Scope:** Frontera Systems Governance Store (`src/enterprise/governance-store/`)
 **Supersedes nothing. Changes no historical record.**
 
 Related: `ADR-ENTERPRISE-GOVERNANCE-STORE.md`,
@@ -199,5 +199,5 @@ sovereignty capability and touches no Protocol contract.
 
 ```
 Soberanía Protocol    -> Sovereignty Capabilities
-Soberanía Enterprise  -> Governed Actions -> Enforcements -> Mandates -> Evidence
+Frontera Systems  -> Governed Actions -> Enforcements -> Mandates -> Evidence
 ```

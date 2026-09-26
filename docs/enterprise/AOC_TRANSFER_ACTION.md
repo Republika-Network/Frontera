@@ -1,4 +1,4 @@
-# Soberanía Enterprise — the `TRANSFER` Governed Action
+# Frontera Systems — the `TRANSFER` Governed Action
 
 ## Where this sits
 
@@ -6,14 +6,14 @@
 Soberanía Protocol
   └─ Sovereignty Capabilities
 
-Soberanía Enterprise
+Frontera Systems
   └─ Governed Actions          TOKENIZE · COLLATERALIZE · LICENSE · TRANSFER
        └─ Enforcement          the evaluation of whether, and how, one may happen
             └─ Grants / Mandates   the durable artifact a successful evaluation produces
                  └─ Evidence        what an external system reported afterwards
 ```
 
-`TRANSFER` is an **Soberanía Enterprise Governed Action**. It is *not* a Soberanía
+`TRANSFER` is an **Frontera Systems Governed Action**. It is *not* a Soberanía
 Protocol Sovereignty Capability. The Kernel's internal field is still named
 `capability`, and `capability: 'transfer'` should be read as "the identifier of
 the Governed Action `TRANSFER`"; no repository-wide rename is implied.
@@ -22,7 +22,7 @@ Three terms, kept apart throughout:
 
 ```
 TRANSFER                 the Governed Action
-Transfer Enforcement     Soberanía Enterprise's evaluation of whether/how it may happen
+Transfer Enforcement     Frontera Systems' evaluation of whether/how it may happen
 TransferMandate          the durable, Soberanía-owned authorization artifact it produces
 ```
 
@@ -259,7 +259,7 @@ Unlike the licence store, this schema carries a cumulative
 
 ## Boundary
 
-Soberanía Enterprise is not a registry, a transfer agent, a custodian, a settlement
+Frontera Systems is not a registry, a transfer agent, a custodian, a settlement
 system, an escrow, a title system, or a marketplace. There is no provider
 adapter for transfer and none is implied.
 

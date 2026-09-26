@@ -13,13 +13,13 @@ Two layers, two vocabularies. They are not synonyms and must not be conflated:
 Soberanía Protocol
   → Sovereignty Capabilities     what a sovereign holds
 
-Soberanía Enterprise
+Frontera Systems
   → Governed Actions             what may be exercised
   → Enforcements                 the evaluation of whether it may be
   → Grants / Mandates            the durable authorization that results
 ```
 
-Soberanía Enterprise now has **three** governed actions. This document covers the
+Frontera Systems now has **three** governed actions. This document covers the
 second; see `docs/enterprise/AOC_LICENSE_ACTION.md` for the third, and
 `docs/architecture/ADR-ENTERPRISE-ENFORCEMENT-VOCABULARY.md` for the
 three-enforcement semantic audit that compares all of them.
@@ -29,9 +29,9 @@ TOKENIZE                    = a Governed Action.
 COLLATERALIZE               = a Governed Action.
 LICENSE                     = a Governed Action.
 
-Tokenization Enforcement    = Soberanía Enterprise evaluates whether TOKENIZE
+Tokenization Enforcement    = Frontera Systems evaluates whether TOKENIZE
                               may be exercised.
-Collateralization           = Soberanía Enterprise evaluates whether COLLATERALIZE
+Collateralization           = Frontera Systems evaluates whether COLLATERALIZE
 Enforcement                   may be exercised.
 
 TokenizationMandate         = the durable authorization artifact a successful
@@ -68,7 +68,7 @@ system, no second authorization system, and no action-specific API.
 ```
 Governed Asset
       ↓
-Soberanía Enterprise
+Frontera Systems
 COLLATERALIZE request
       ↓
 authority · policy · approvals · obligations
@@ -84,7 +84,7 @@ collateral arrangement
 execution evidence
 ```
 
-**Soberanía Enterprise authorizes collateralization. Soberanía Enterprise is not the
+**Frontera Systems authorizes collateralization. Frontera Systems is not the
 lender, the collateral agent, the registry, or the platform.**
 
 It does not originate or service loans, compute interest or loan-to-value,
@@ -541,7 +541,7 @@ recommended below, and both mandates now use it:
 ```
 COLLATERALIZE decision
       ↓
-CollateralizationMandate         → authorization_artifact   (produced by Soberanía Enterprise)
+CollateralizationMandate         → authorization_artifact   (produced by Frontera Systems)
       ↓
 external collateral execution    → execution_record         (reported by an external system)
       ↓

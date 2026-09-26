@@ -15,7 +15,7 @@ package's own published `package.json` at resolution time). Where no
 `license` field is recorded in the lockfile, this document says so
 explicitly rather than guessing. Workspace-internal packages
 (`@aoc-enterprise/*`, `packages/*`, `apps/*`) are excluded from this
-table — they are Soberanía Enterprise's own proprietary code, not third-party
+table — they are Frontera Systems' own proprietary code, not third-party
 dependencies (see `docs/legal/IP_OVERVIEW.md`). `@aoc/protocol` is
 likewise excluded — it is a peer dependency on the separate Soberanía Protocol
 project, not a conventional open-source dependency (see

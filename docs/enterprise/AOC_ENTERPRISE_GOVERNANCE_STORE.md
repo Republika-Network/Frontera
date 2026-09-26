@@ -1,4 +1,4 @@
-# Soberanía Enterprise Governance Store v1
+# Frontera Systems Governance Store v1
 
 The Governance Store is the canonical, durable, append-oriented,
 integrity-verifiable record of every governance evaluation the Soberanía
@@ -22,7 +22,7 @@ Store preserves what happened in a form suitable for later verification.
 Governance Request
         │
         ▼
-Soberanía Enterprise Host ── authentication, validation, idempotency resolution
+Frontera Systems Host ── authentication, validation, idempotency resolution
         │
         ▼
 Soberanía Kernel ── kernel.evaluate() (unchanged by PR-004)
@@ -548,10 +548,10 @@ apart.
 
 | Reference type | Produced by | Means |
 | --- | --- | --- |
-| `passport_event` | Soberanía Enterprise | an Agent Passport lifecycle event |
-| `evidence_bundle` | Soberanía Enterprise | an Evidence Bundle built over this evaluation |
-| `assurance_record` | Soberanía Enterprise | an Assurance assessment or finding artifact |
-| `authorization_artifact` | **Soberanía Enterprise** | **a durable artifact produced by Soberanía Enterprise that records or embodies authorization resulting from a governed enforcement decision** |
+| `passport_event` | Frontera Systems | an Agent Passport lifecycle event |
+| `evidence_bundle` | Frontera Systems | an Evidence Bundle built over this evaluation |
+| `assurance_record` | Frontera Systems | an Assurance assessment or finding artifact |
+| `authorization_artifact` | **Frontera Systems** | **a durable artifact produced by Frontera Systems that records or embodies authorization resulting from a governed enforcement decision** |
 | `execution_record` | external system | a report that an external system acted on an authorization Soberanía issued |
 | `external_artifact` | outside Soberanía | an artifact originating *outside* the Soberanía authorization machinery, referenced as evidence or context |
 
@@ -675,4 +675,4 @@ so future Passport events, Evidence Bundles, Assurance records, and
 execution records can attach to committed evaluations without schema
 changes. `GovernanceCorrectionRecord` is reserved (type only) so future
 corrections are appended, never updated in place. The recommended next
-step is PR-005 — Soberanía Enterprise Evidence Bundle v1.
+step is PR-005 — Frontera Systems Evidence Bundle v1.

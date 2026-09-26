@@ -1,8 +1,8 @@
-# Soberanía Enterprise Pilot Template
+# Frontera Systems Pilot Template
 
 Recognition Runtime, Authority Graph, Approval Runtime, External Agent
 Handshake, Action Enforcement, the Domain Policy Pack Runtime, Evidence /
-Source / Citation Runtime, the Soberanía Control Plane, Soberanía Enterprise Demo, and
+Source / Citation Runtime, the Soberanía Control Plane, Frontera Systems Demo, and
 the Verifiable Export Package answer "can this be recognized, authorized,
 approved, policy-checked, evidenced, enforced, observed and exported?" None
 of them answer the question an enterprise buyer or operator asks before

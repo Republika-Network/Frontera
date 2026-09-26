@@ -505,7 +505,7 @@ legitimately represents a holder. Also not reached. See
 
 ## Consequences
 
-Soberanía Enterprise no longer merely governs isolated actions. It maintains governed
+Frontera Systems no longer merely governs isolated actions. It maintains governed
 continuity of authority across them:
 
 ```

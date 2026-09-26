@@ -44,7 +44,7 @@ never carries that fact out.
   grant field (resource, scope, expiry, status, ...).
 - **Everything on `EnterpriseGrantRevocation`** -- `id`, `revokedAt`,
   `reason`, `issuerRef`, `correlationId`, `evidenceRefs?`, `description?` --
-  is owned by Soberanía Enterprise (`@aoc-enterprise/grant-revocation`).
+  is owned by Frontera Systems (`@aoc-enterprise/grant-revocation`).
 
 ## Why composition by reference, not embedding -- and why no `EnterpriseAccessGrant` needs to exist yet
 
@@ -306,7 +306,7 @@ this change**:
 
 ## Install / build
 
-Part of the Soberanía Enterprise workspace:
+Part of the Frontera Systems workspace:
 
 ```bash
 npm run build --workspace @aoc-enterprise/grant-revocation

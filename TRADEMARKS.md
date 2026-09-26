@@ -14,7 +14,7 @@ products:
 
 - Soberanía
 - Soberanía Protocol
-- Soberanía Enterprise
+- Frontera Systems
 - Soberanía Assurance
 - Soberanía SAF
 
@@ -53,7 +53,7 @@ retention is a record of fact and is not a current trademark claim.
   it does not attempt to use this trademark notice to acquire ownership
   or control over the separate Soberanía Protocol project itself. See
   `docs/legal/PROTOCOL_ENTERPRISE_BOUNDARY.md` for the ownership and
-  governance boundary between Soberanía Protocol and Soberanía Enterprise.
+  governance boundary between Soberanía Protocol and Frontera Systems.
 - It does not extend to generic or descriptive terms used in their
   ordinary sense (e.g., "governance," "assurance," "evidence," "agent")
   outside the specific marks listed above.

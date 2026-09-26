@@ -1,9 +1,9 @@
 # ADR: Durable Grants + Truthful Effective Revocation (Sovereign Execution Binding, Slice 1)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: Slice 1 of N, Sovereign Execution Binding
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/durable-grants-revocation-tctqpg`
 - Related: `ADR-ACCESS-LIFECYCLE.md` (R005.0, frozen input), `ADR-PROVIDER-ADAPTER-CONTRACT.md`
   (R005.A, frozen input), `ADR-PROVIDER-TRANSLATION-MODEL.md` (R005.B, frozen
@@ -39,7 +39,7 @@ separating that single claim into four, each independently true or false,
 independently recorded:
 
 1. **Governance Revocation** — the durable, tenant-scoped business fact
-   that Soberanía Enterprise no longer considers a grant valid. Represented by
+   that Frontera Systems no longer considers a grant valid. Represented by
    `AccessGrantRecord.status: 'revoked'` plus an
    `AccessGrantRevocationRecord`
    (`src/enterprise/access-governance/contracts.ts`), composed directly
@@ -104,7 +104,7 @@ about **this one provider adapter**, verified directly against the real
 `pinata` SDK surface (`packages/pinata-adapter/src/pinata-provider-client.ts`):
 Pinata's private-gateway signed access links (`gateways.private.createAccessLink`)
 carry their own `expires` bound and have no companion "revoke this link"
-API. It is not evidence that Soberanía Enterprise's architecture cannot support
+API. It is not evidence that Frontera Systems' architecture cannot support
 real-time revocation — a future provider adapter (e.g. one fronting
 short-lived, individually-revocable capability tokens) can genuinely
 declare `effectiveRevocationMode: 'immediate_selective'`, and this

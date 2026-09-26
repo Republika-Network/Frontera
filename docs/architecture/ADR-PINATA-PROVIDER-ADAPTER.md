@@ -1,9 +1,9 @@
 # ADR: Pinata Provider Adapter (R005.C)
 
 - Status: Accepted
-- Deciders: Soberanía Enterprise architecture
+- Deciders: Frontera Systems architecture
 - Sequence: R005.C, Soberanía Architectural Consolidation Program
-- Repository: `architects-of-change-protocol/aoc-enterprise` (Soberanía Enterprise)
+- Repository: `architects-of-change-protocol/aoc-enterprise` (Frontera Systems)
 - Branch: `claude/pinata-provider-adapter-oxtgdr`
 - Related: `ADR-ACCESS-LIFECYCLE.md` (R005.0, frozen input), `ADR-PROVIDER-ADAPTER-CONTRACT.md`
   (R005.A, frozen input), `ADR-PROVIDER-TRANSLATION-MODEL.md` (R005.B, frozen

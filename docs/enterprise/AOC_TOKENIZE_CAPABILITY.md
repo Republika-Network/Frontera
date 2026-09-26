@@ -17,7 +17,7 @@ Two layers, two vocabularies. They are not synonyms and must not be conflated:
 Soberanía Protocol
   → Sovereignty Capabilities     what a sovereign holds
 
-Soberanía Enterprise
+Frontera Systems
   → Governed Actions             what may be exercised
   → Enforcements                 the evaluation of whether it may be
   → Grants / Mandates            the durable authorization that results
@@ -28,7 +28,7 @@ Applied here:
 ```
 TOKENIZE                 = a Governed Action.
 
-Tokenization Enforcement = Soberanía Enterprise evaluates whether TOKENIZE may be
+Tokenization Enforcement = Frontera Systems evaluates whether TOKENIZE may be
                            exercised, by whom, over which rights, in what
                            scope, and under which conditions.
 
@@ -36,7 +36,7 @@ TokenizationMandate      = the durable authorization artifact produced by a
                            successful enforcement.
 ```
 
-`TOKENIZE` is no longer the only one. Soberanía Enterprise now governs two actions,
+`TOKENIZE` is no longer the only one. Frontera Systems now governs two actions,
 and the same asset may be the subject of both, independently:
 
 ```
@@ -59,7 +59,7 @@ documentation model, not a rename. Read `capability: 'tokenize'` in code as
 
 ## Definition
 
-`TOKENIZE` is a governed action of Soberanía Enterprise.
+`TOKENIZE` is a governed action of Frontera Systems.
 
 > **TOKENIZE** — exercising authorized control over specified rights
 > associated with an already-governed asset, in order to create an external
@@ -76,7 +76,7 @@ Soberanía Protocol
     │  establishes / anchors: asset identity, authority, attestations,
     │  evidence, sovereignty boundary
     ▼
-Soberanía Enterprise
+Frontera Systems
     │  governs exercise of authority: request, policy, decision,
     │  obligations, approvals, grant, use, revocation, evidence
     ▼
@@ -84,7 +84,7 @@ External Tokenization System
        performs issuance
 ```
 
-**Soberanía Enterprise authorizes tokenization. Soberanía Enterprise is not the
+**Frontera Systems authorizes tokenization. Frontera Systems is not the
 tokenization provider.**
 
 It does not mint, issue, transfer, burn, price, custody, or list tokens. It
@@ -343,19 +343,19 @@ apart is the point:
 ```
 TOKENIZE decision
       ↓
-TokenizationMandate          → authorization_artifact   (produced by Soberanía Enterprise)
+TokenizationMandate          → authorization_artifact   (produced by Frontera Systems)
       ↓
 external token execution     → execution_record         (reported by an external system)
 ```
 
 The `TokenizationMandate` is recorded as a `GovernanceReferenceRecord` with
 `referenceType: 'authorization_artifact'` — the Governance Store type for a
-durable artifact Soberanía Enterprise itself produced to record an authorization
+durable artifact Frontera Systems itself produced to record an authorization
 resulting from enforcement. External token issuance is a report about
 someone else's action and stays an `execution_record`; it is never
 reclassified as authorization.
 
-This preserves the conceptual hierarchy — Soberanía Enterprise → Governed Actions →
+This preserves the conceptual hierarchy — Frontera Systems → Governed Actions →
 Enforcements → Grants / Mandates — in the evidence record itself. The
 classification is evidence vocabulary only: it confers no authority, and a
 reference appended by hand grants nothing. See "Reference vocabulary" in
