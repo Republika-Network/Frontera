@@ -79,6 +79,11 @@ spine. The minimum secure configuration is in
 `docs/enterprise/AOC_ENTERPRISE_HOST.md` §"Secure production host (PROD-01)";
 every variable is in `.env.example`.
 
+Operators inspect and revoke authority, and stop or resume execution, through
+the authority administration API (`/api/admin/...`, CTRL-01) — enabled by
+declaring `administrators` in the governed-action file. Reference and runbook:
+`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md`.
+
 Client SDK: `packages/enterprise-host-sdk` (`@aoc-enterprise/enterprise-host-sdk`).
 
 ### Technical namespace

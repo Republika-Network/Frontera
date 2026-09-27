@@ -447,7 +447,8 @@ AocEnterprise (composition root)          knows SQLite, knows the path
 |---|---|---|---|---|---|
 | `GrantExecutionService` (exercise path) | **yes** | no — not in its type | no — not in its type | no — no such method exists | yes, via `assessExercise` / `exercise` |
 | `GrantIssuanceService` | yes | yes | yes | no | yes, via `authorize` / `revokeGrant` |
-| `AuthorityControlledExecutionService` | indirect | indirect | indirect | no | yes; **not HTTP-reachable** — no route issues, extends, revokes or exercises a grant |
+| `AuthorityControlledExecutionService` | indirect | indirect | indirect | no | yes; **not HTTP-reachable** — no route issues, extends or exercises a grant through it |
+| Authority administration service (CTRL-01) | yes (reader port) | no — not in its type | yes, **only** via `AuthorityControlledExecutionService.revokeGrant` | no | yes, via `/api/admin/authority/grants/...` for configured administrators only (`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md`) |
 | Composition root | no | no | no | no | it builds the store and closes it |
 | A host that supplies `grantStore` | yes | yes | yes | **whatever its own implementation allows** | yes — **D-GS3** |
 | Anything with filesystem write access to the database file | yes | yes | yes | yes | **D-GS1** — outside application control |
