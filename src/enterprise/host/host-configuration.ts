@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   loadEnterpriseConfiguration,
   validateEnterpriseEnvironment,
+  type EnterpriseAdministrator,
   type EnterpriseApiKey,
   type EnterpriseConfiguration,
 } from '../configuration/enterprise-configuration.js';
@@ -38,6 +39,7 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_UNAUTHENTICATED_NETWORK_BIND'
   | 'HOST_CREDENTIALS_MISSING'
   | 'HOST_CREDENTIALS_AMBIGUOUS'
+  | 'HOST_ADMINISTRATOR_INVALID'
   | 'HOST_PERSISTENCE_NOT_DURABLE'
   | 'HOST_AUTHENTICATION_REQUIRED'
   | 'HOST_GOVERNED_ACTIONS_REQUIRED'
@@ -90,6 +92,13 @@ export interface EnterpriseHostConfiguration {
 
 export const GOVERNED_ACTIONS_FILE_VARIABLE = 'AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE';
 export const MAX_GRANT_LIFETIME_SECONDS = 3600;
+/**
+ * CTRL-01: the shortest administrator secret the Host accepts. An administrator
+ * credential can revoke authority and stop execution for the whole deployment,
+ * so a short or guessable one is a deployment defect, refused at boot.
+ */
+export const MIN_ADMINISTRATOR_SECRET_LENGTH = 32;
+const OPERATOR_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const SECURE_ENVIRONMENTS = new Set(['production', 'staging']);
@@ -147,6 +156,39 @@ interface ParsedGovernedActionsFile {
   readonly governedActions: EnterpriseHostGovernedActionConfiguration;
   /** Resolved customer secrets, kept off `governedActions` so the returned configuration object carries none. */
   readonly customerKeys: readonly { readonly principal: EnterpriseHostCustomerPrincipal; readonly apiKey: string }[];
+  /** CTRL-01: resolved administrator credentials. Kept apart from every ordinary credential. */
+  readonly administrators: readonly EnterpriseAdministrator[];
+}
+
+function administratorInvalid(message: string): never {
+  throw new EnterpriseHostConfigurationError('HOST_ADMINISTRATOR_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${message}`);
+}
+
+/**
+ * CTRL-01: `administrators` — who may administer authority through
+ * `/api/admin/...`. Optional: absent, the administration API is not mounted.
+ * Each entry names a stable operator id (the identity every mutation is
+ * recorded under) and the environment variable holding its secret.
+ */
+function parseAdministrators(env: Env, value: unknown): readonly EnterpriseAdministrator[] {
+  if (value === undefined) return [];
+  const entries = array(value, 'administrators');
+  if (entries.length === 0) invalid('administrators must name at least one administrator when present; omit it to leave the administration API unmounted.');
+  const seen = new Set<string>();
+  return entries.map((entry, index) => {
+    const where = `administrators[${index}]`;
+    if (!isRecord(entry)) invalid(`${where} must be an object.`);
+    closedKeys(entry, ['operatorId', 'apiKeyEnv'], where);
+    const operatorId = text(entry.operatorId, `${where}.operatorId`);
+    if (!OPERATOR_ID.test(operatorId)) invalid(`${where}.operatorId must be 1-128 letters, digits, '.', '_' or '-', starting with a letter or digit.`);
+    if (seen.has(operatorId)) invalid(`${where}.operatorId '${operatorId}' is declared twice; one operator has one identity.`);
+    seen.add(operatorId);
+    const key = secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`);
+    if (key.length < MIN_ADMINISTRATOR_SECRET_LENGTH || key.trim() !== key) {
+      administratorInvalid(`${where}.apiKeyEnv names a secret shorter than ${MIN_ADMINISTRATOR_SECRET_LENGTH} characters or with surrounding whitespace. An administrator credential must be a long random secret.`);
+    }
+    return { operatorId, key };
+  });
 }
 
 function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActionsFile {
@@ -164,7 +206,7 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
     invalid('the file is not valid JSON.');
   }
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
-  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'monetary', 'genericHttpAdapters', 'routes'], 'the file');
+  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'monetary', 'genericHttpAdapters', 'routes'], 'the file');
   if (parsed.version !== 1) invalid('version must be 1.');
 
   const trustDomainId = text(parsed.trustDomainId, 'trustDomainId');
@@ -231,6 +273,7 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
       routes,
     },
     customerKeys: customerPrincipals,
+    administrators: parseAdministrators(env, parsed.administrators),
   };
 }
 
@@ -270,17 +313,25 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     organizationId: base.kernelAuthority.organizationId,
     customerIdentity: { principalId: principal.principalId, externalSubject: principal.externalSubject },
   }));
-  const configuration: EnterpriseConfiguration = { ...base, authentication: { apiKeys: [...base.authentication.apiKeys, ...customerKeys] } };
+  // Administrators are deliberately NOT merged into `authentication.apiKeys`:
+  // an administrator secret authenticates the administration API only, and an
+  // ordinary key never authenticates there.
+  const administrators = parsed?.administrators ?? [];
+  const configuration: EnterpriseConfiguration = {
+    ...base,
+    authentication: { apiKeys: [...base.authentication.apiKeys, ...customerKeys] },
+    ...(administrators.length > 0 ? { administration: { administrators } } : {}),
+  };
 
   const seen = new Set<string>();
-  for (const apiKey of configuration.authentication.apiKeys) {
-    if (seen.has(apiKey.key)) {
+  for (const secret of [...configuration.authentication.apiKeys.map((apiKey) => apiKey.key), ...administrators.map((administrator) => administrator.key)]) {
+    if (seen.has(secret)) {
       throw new EnterpriseHostConfigurationError(
         'HOST_CREDENTIALS_AMBIGUOUS',
-        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS and/or customerPrincipals). One secret authenticates one caller.',
+        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals and/or administrators). One secret authenticates one caller.',
       );
     }
-    seen.add(apiKey.key);
+    seen.add(secret);
   }
 
   if (!configuration.features.requireAuthentication && !isLoopback(configuration.http.host)) {

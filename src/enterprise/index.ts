@@ -22,6 +22,7 @@ export type {
   EnterprisePersistenceProviderKind,
   EnterpriseFeatureFlags,
   EnterpriseApiKey,
+  EnterpriseAdministrator,
   PublicEnterpriseConfiguration,
 } from './configuration/enterprise-configuration.js';
 
@@ -799,6 +800,9 @@ export type {
 
 export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js';
 
+// CTRL-01 -- the authority administration API's application service and wire contract.
+export * from './authority-administration/index.js';
+
 export { createEnterpriseServer } from './host/enterprise-server.js';
 export type { EnterpriseServer } from './host/enterprise-server.js';
 // PROD-01 -- the Enterprise Host bootstrap: the one supported way to start Frontera as a process.
@@ -810,6 +814,7 @@ export {
   isEnterpriseHostConfigurationError,
   GOVERNED_ACTIONS_FILE_VARIABLE,
   MAX_GRANT_LIFETIME_SECONDS,
+  MIN_ADMINISTRATOR_SECRET_LENGTH,
 } from './host/host-configuration.js';
 export type {
   EnterpriseHostConfiguration,

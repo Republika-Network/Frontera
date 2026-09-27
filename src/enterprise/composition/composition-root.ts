@@ -33,6 +33,7 @@ import { createKernelAuthorityModule, createUnavailableKernelAuthorityModule } f
 import { createEnterpriseLogger, type EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { createEnterpriseTelemetry, type EnterpriseTelemetry } from '../telemetry/enterprise-telemetry.js';
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
+import { createAuthorityAdministrationService, type AuthorityAdministrationService } from '../authority-administration/service.js';
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 import { createEnterpriseModuleRegistry } from '../registry/enterprise-module-registry.js';
 import { createEnterpriseLifecycleController } from '../lifecycle/enterprise-lifecycle-controller.js';
@@ -674,6 +675,19 @@ export interface AocEnterprise {
    * checks to satisfy.
    */
   readonly emergencyControlAdministration?: EmergencyControlStorePort;
+  /**
+   * CTRL-01 — the authority administration API's application service, present
+   * **only** when at least one administrator credential is configured
+   * (`configuration.administration`). Behind `/api/admin/...`.
+   *
+   * Every call takes the caller's `Authorization` header and authenticates it
+   * as an administrator itself — an ordinary API key, legacy or customer, is
+   * refused — then runs the existing authoritative operation (bounded-grant
+   * read and CORE-01 revocation, Kernel Authority read and revocation,
+   * emergency control) under the operator identity configured for that
+   * credential. It issues nothing, provisions nothing and un-revokes nothing.
+   */
+  readonly authorityAdministration?: AuthorityAdministrationService;
   /**
    * P8 — the **read-only** surface over the canonical authority event stream,
    * present only when governed actions are composed and a stream store is
@@ -1784,6 +1798,36 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     moduleSnapshot: () => lifecycle.modules().map((module) => ({ moduleId: module.id, version: module.version, status: module.state })),
   });
 
+  // CTRL-01: composed from the objects above — never a second path to any of
+  // them. Absent unless an administrator is configured: there is no default
+  // administrator, and no other credential reaches it.
+  const administrators = configuration.administration?.administrators ?? [];
+  const authorityAdministration: AuthorityAdministrationService | undefined =
+    administrators.length === 0
+      ? undefined
+      : createAuthorityAdministrationService({
+          administrators,
+          ordinaryCredentials: configuration.authentication.apiKeys,
+          organizationId: configuration.kernelAuthority.organizationId,
+          now: kernelProviders.clock.now,
+          isReady: () => lifecycle.isReady(),
+          lifecycleState: () => lifecycle.lifecycleState(),
+          logger,
+          ...(grantStore !== undefined && authorityControlledExecution !== undefined
+            ? { grants: { reader: { read: (grantId: string) => grantStore.read(grantId) }, revoke: (input) => authorityControlledExecution.revokeGrant(input) } }
+            : {}),
+          ...(kernelAuthorityStore !== undefined && kernelAuthorityProvisioning !== undefined
+            ? {
+                kernelAuthority: {
+                  store: { getRecord: (context, organizationId, entityKind, entityId) => kernelAuthorityStore.getRecord(context, organizationId, entityKind, entityId) },
+                  provisioning: { revoke: (context, input, provisioningOptions) => kernelAuthorityProvisioning.revoke(context, input, provisioningOptions) },
+                },
+              }
+            : {}),
+          ...(emergencyControlStore !== undefined ? { emergencyControl: emergencyControlStore } : {}),
+          ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
+        });
+
   // PROD-01: what this Host actually composed, stated in `/health` so a
   // deployment on ephemeral state, disabled authentication or unauthenticated
   // authority storage never looks identical to one that is not. Computed from
@@ -1803,6 +1847,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         : options.authorityControlledExecution.executionAdapterRouting !== undefined
           ? genericHttpAdapters.length + (Array.isArray(options.authorityControlledExecution.executionAdapterRouting.adapters) ? options.authorityControlledExecution.executionAdapterRouting.adapters.length : 0)
           : 1,
+    authorityAdministration: authorityAdministration !== undefined ? 'enabled' : 'not-configured',
   });
 
   const enterprise: AocEnterprise = {
@@ -1837,6 +1882,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         }
       : {}),
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
+    ...(authorityAdministration !== undefined ? { authorityAdministration } : {}),
     ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
     ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
     ...(executionResolutionStore !== undefined ? { executionResolutions: createExecutionResolutionReader(executionResolutionStore) } : {}),

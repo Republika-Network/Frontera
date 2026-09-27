@@ -28,6 +28,7 @@ import {
   validateSignalRequestBody,
 } from '../api/assurance-contract.js';
 import { GOVERNANCE_EVALUATE_AMOUNT_LOCATION, GOVERNED_ACTION_AMOUNT_LOCATION, parseJsonWithExactMonetaryNumber } from '../api/exact-monetary-json.js';
+import { ADMIN_MAX_BODY_BYTES } from '../authority-administration/contracts.js';
 
 /** P9: v1 monetary JSON numbers are read from their exact source text, never through IEEE-754. */
 const parseGovernedActionBody = (text: string): unknown => parseJsonWithExactMonetaryNumber(text, GOVERNED_ACTION_AMOUNT_LOCATION);
@@ -40,14 +41,14 @@ const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB -- generous for a governance-evalua
  * that carry a monetary JSON number pass a parser that keeps that number's exact
  * source text (`api/exact-monetary-json.ts`, P9).
  */
-function readRequestBody(req: IncomingMessage, parse: (text: string) => unknown = JSON.parse): Promise<unknown> {
+function readRequestBody(req: IncomingMessage, parse: (text: string) => unknown = JSON.parse, maxBytes: number = MAX_BODY_BYTES): Promise<unknown> {
   return new Promise((resolvePromise, rejectPromise) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
 
     req.on('data', (chunk: Buffer) => {
       totalBytes += chunk.length;
-      if (totalBytes > MAX_BODY_BYTES) {
+      if (totalBytes > maxBytes) {
         rejectPromise(new EnterpriseHttpError(400, 'INVALID_REQUEST', 'Request body exceeds the maximum accepted size.'));
         req.destroy();
         return;
@@ -67,6 +68,23 @@ function readRequestBody(req: IncomingMessage, parse: (text: string) => unknown 
     });
     req.on('error', rejectPromise);
   });
+}
+
+const JSON_CONTENT_TYPE = /^application\/json\s*(?:;.*)?$/i;
+
+/**
+ * CTRL-01: the body reader handed to the authority administration service,
+ * which calls it only after the caller is authorized. JSON only, and bounded
+ * far below the general limit: an administrative body is a reason or a scope.
+ */
+function administrationBodyReader(req: IncomingMessage): () => Promise<unknown> {
+  return () => {
+    const contentType = req.headers['content-type'];
+    if (typeof contentType !== 'string' || !JSON_CONTENT_TYPE.test(contentType)) {
+      return Promise.reject(new EnterpriseHttpError(415, 'INVALID_REQUEST', 'Administration requests must be sent as application/json.'));
+    }
+    return readRequestBody(req, JSON.parse, ADMIN_MAX_BODY_BYTES);
+  };
 }
 
 function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
@@ -188,6 +206,49 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
             .then((outcome) => writeJson(res, outcome.httpStatus, outcome.body))
             .catch(fail);
           return;
+        }
+      }
+
+      // -- CTRL-01 authority administration. Mounted only when the Host composed
+      // `authorityAdministration` (an administrator is configured); otherwise
+      // every path below falls through to the unmounted-route 404. The service
+      // authenticates the administrator, derives the operator identity and runs
+      // the existing authoritative operation — this adapter only routes. Every
+      // mutation is a POST; a GET never changes anything.
+      if (url.pathname.startsWith('/api/admin/') && enterprise.authorityAdministration !== undefined) {
+        const administration = enterprise.authorityAdministration;
+        const auth = req.headers.authorization;
+        const route = matchAdministrationRoute(method, url.pathname);
+        if (route !== undefined) {
+          const respond = (promise: Promise<unknown>): void => {
+            promise.then((body) => writeJson(res, 200, body)).catch(fail);
+          };
+          switch (route.kind) {
+            case 'grant':
+              respond(administration.inspectGrant(auth, route.id));
+              return;
+            case 'execution':
+              respond(administration.inspectExecutionGrant(auth, route.id));
+              return;
+            case 'grant-revoke':
+              respond(administration.revokeGrant(auth, route.id, administrationBodyReader(req)));
+              return;
+            case 'entity':
+              respond(administration.inspectAuthorityEntity(auth, route.entityKind, route.id));
+              return;
+            case 'entity-revoke':
+              respond(administration.revokeAuthorityEntity(auth, route.entityKind, route.id, administrationBodyReader(req)));
+              return;
+            case 'emergency-controls':
+              respond(administration.listEmergencyControls(auth));
+              return;
+            case 'emergency-control-activate':
+              respond(administration.activateEmergencyControl(auth, administrationBodyReader(req)));
+              return;
+            case 'emergency-control-release':
+              respond(administration.releaseEmergencyControl(auth, administrationBodyReader(req)));
+              return;
+          }
         }
       }
 
@@ -497,6 +558,39 @@ function normalizePathDecodeError(error: unknown): unknown {
   return error instanceof URIError
     ? new EnterpriseHttpError(400, 'INVALID_REQUEST', 'Request path contains malformed percent-encoding.')
     : error;
+}
+
+type AdministrationRoute =
+  | { readonly kind: 'grant' | 'grant-revoke' | 'execution'; readonly id: string }
+  | { readonly kind: 'entity' | 'entity-revoke'; readonly entityKind: string; readonly id: string }
+  | { readonly kind: 'emergency-controls' | 'emergency-control-activate' | 'emergency-control-release' };
+
+/**
+ * CTRL-01 routes. Reads are `GET`, mutations are `POST` to an explicit verb
+ * path; anything else — including a `GET` on a mutation path — matches nothing
+ * and is a 404. There is deliberately no route that un-revokes, deletes a
+ * revocation, issues a grant or provisions authority.
+ */
+function matchAdministrationRoute(method: string, pathname: string): AdministrationRoute | undefined {
+  if (method === 'GET') {
+    const grant = /^\/api\/admin\/authority\/grants\/([^/]+)$/.exec(pathname);
+    if (grant?.[1] !== undefined) return { kind: 'grant', id: decodeURIComponent(grant[1]) };
+    const entity = /^\/api\/admin\/authority\/entities\/([^/]+)\/([^/]+)$/.exec(pathname);
+    if (entity?.[1] !== undefined && entity[2] !== undefined) return { kind: 'entity', entityKind: decodeURIComponent(entity[1]), id: decodeURIComponent(entity[2]) };
+    const execution = /^\/api\/admin\/authority\/executions\/([^/]+)$/.exec(pathname);
+    if (execution?.[1] !== undefined) return { kind: 'execution', id: decodeURIComponent(execution[1]) };
+    if (pathname === '/api/admin/emergency-controls') return { kind: 'emergency-controls' };
+    return undefined;
+  }
+  if (method === 'POST') {
+    const grant = /^\/api\/admin\/authority\/grants\/([^/]+)\/revoke$/.exec(pathname);
+    if (grant?.[1] !== undefined) return { kind: 'grant-revoke', id: decodeURIComponent(grant[1]) };
+    const entity = /^\/api\/admin\/authority\/entities\/([^/]+)\/([^/]+)\/revoke$/.exec(pathname);
+    if (entity?.[1] !== undefined && entity[2] !== undefined) return { kind: 'entity-revoke', entityKind: decodeURIComponent(entity[1]), id: decodeURIComponent(entity[2]) };
+    if (pathname === '/api/admin/emergency-controls/activate') return { kind: 'emergency-control-activate' };
+    if (pathname === '/api/admin/emergency-controls/release') return { kind: 'emergency-control-release' };
+  }
+  return undefined;
 }
 
 type GovernanceReadRoute =

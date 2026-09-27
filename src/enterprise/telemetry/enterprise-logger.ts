@@ -34,6 +34,10 @@ export interface EnterpriseLogContext {
   readonly normalizedScore?: number;
   readonly findingCount?: number;
   readonly evaluatorVersion?: string;
+  /** CTRL-01 authority administration fields. The trusted operator id (from configuration, never a request), the operation, and the target's canonical id. Never a credential. */
+  readonly operatorId?: string;
+  readonly operation?: string;
+  readonly target?: string;
 }
 
 export type EnterpriseLogLevel = 'debug' | 'info' | 'warn' | 'error';

@@ -40,6 +40,13 @@ export interface EnterpriseHealthPosture {
   readonly exerciseControls: 'composed' | 'not-composed';
   /** How many provider adapters the execution boundary holds. A count, never their identities. */
   readonly executionAdapters: number;
+  /**
+   * CTRL-01: whether the authority administration API (`/api/admin/...`) is
+   * mounted. `enabled` only when at least one administrator credential is
+   * configured; `not-configured` means no route exists and no credential of any
+   * kind reaches authority administration over HTTP.
+   */
+  readonly authorityAdministration: 'enabled' | 'not-configured';
 }
 
 /**
