@@ -1,7 +1,7 @@
 {
   "surface": "aoc-enterprise-host-http.v1",
   "documentation": "docs/enterprise/API_STABILITY_V1.md",
-  "endpointCount": 28,
+  "endpointCount": 36,
   "routeLiterals": [
     "/api/assurance/assessments",
     "/api/assurance/manual-reviews",
@@ -28,10 +28,18 @@
     "^\\/api\\/passports\\/([^/]+)$",
     "^\\/api\\/passports\\/([^/]+)\\/([^/]+)$",
     "^\\/api\\/passports\\/([^/]+)\\/events$",
-    "^\\/api\\/passports\\/([^/]+)\\/history$"
+    "^\\/api\\/passports\\/([^/]+)\\/history$",
+    "^\\/api\\/admin\\/authority\\/entities\\/([^/]+)\\/([^/]+)$",
+    "^\\/api\\/admin\\/authority\\/entities\\/([^/]+)\\/([^/]+)\\/revoke$",
+    "^\\/api\\/admin\\/authority\\/executions\\/([^/]+)$",
+    "^\\/api\\/admin\\/authority\\/grants\\/([^/]+)$",
+    "^\\/api\\/admin\\/authority\\/grants\\/([^/]+)\\/revoke$",
+    "^\\/api\\/admin\\/emergency-controls$",
+    "^\\/api\\/admin\\/emergency-controls\\/(activate|release)$"
   ],
   "routePrefixGuards": [
-    "/api/assurance/"
+    "/api/assurance/",
+    "/api/admin/"
   ],
   "passportActions": [
     "activate",

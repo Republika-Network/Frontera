@@ -405,7 +405,7 @@ describe('GOV-ACT-11 (narrowed by P5): exactly one HTTP route reaches the orches
     assert.equal((adapter.match(/url\.pathname === '\/api\/governed-actions'/g) ?? []).length, 1, 'one route, one literal');
     assert.match(adapter, /enterprise\.customerIdentityAdmission !== undefined && enterprise\.governedActionOrchestrator !== undefined \? enterprise\.governAction : undefined/);
     // Nothing below the application call is reachable from the transport.
-    for (const pattern of [/\.govern\s*\(/, /\.admit\s*\(/, /governed-action\/|customer-identity\//, /execution-governance|grant-runtime|execution-runtime|emergency-control/, /\.exercise\s*\(|\.execute\s*\(|issueFromDecision|selectAdapter/]) {
+    for (const pattern of [/\.govern\s*\(/, /\.admit\s*\(/, /governed-action\/|customer-identity\//, /execution-governance|grant-runtime|execution-runtime|emergency-control\/|emergency-control-runtime/, /\.exercise\s*\(|\.execute\s*\(|issueFromDecision|selectAdapter/]) {
       assert.equal(pattern.test(adapter), false, `the HTTP adapter must not reach ${String(pattern)}`);
     }
   });

@@ -579,7 +579,7 @@ function matchAdministrationRoute(method: string, pathname: string): Administrat
     if (entity?.[1] !== undefined && entity[2] !== undefined) return { kind: 'entity', entityKind: decodeURIComponent(entity[1]), id: decodeURIComponent(entity[2]) };
     const execution = /^\/api\/admin\/authority\/executions\/([^/]+)$/.exec(pathname);
     if (execution?.[1] !== undefined) return { kind: 'execution', id: decodeURIComponent(execution[1]) };
-    if (pathname === '/api/admin/emergency-controls') return { kind: 'emergency-controls' };
+    if (/^\/api\/admin\/emergency-controls$/.exec(pathname) !== null) return { kind: 'emergency-controls' };
     return undefined;
   }
   if (method === 'POST') {
@@ -587,8 +587,9 @@ function matchAdministrationRoute(method: string, pathname: string): Administrat
     if (grant?.[1] !== undefined) return { kind: 'grant-revoke', id: decodeURIComponent(grant[1]) };
     const entity = /^\/api\/admin\/authority\/entities\/([^/]+)\/([^/]+)\/revoke$/.exec(pathname);
     if (entity?.[1] !== undefined && entity[2] !== undefined) return { kind: 'entity-revoke', entityKind: decodeURIComponent(entity[1]), id: decodeURIComponent(entity[2]) };
-    if (pathname === '/api/admin/emergency-controls/activate') return { kind: 'emergency-control-activate' };
-    if (pathname === '/api/admin/emergency-controls/release') return { kind: 'emergency-control-release' };
+    const transition = /^\/api\/admin\/emergency-controls\/(activate|release)$/.exec(pathname);
+    if (transition?.[1] === 'activate') return { kind: 'emergency-control-activate' };
+    if (transition?.[1] === 'release') return { kind: 'emergency-control-release' };
   }
   return undefined;
 }

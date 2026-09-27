@@ -335,8 +335,11 @@ describe('CTRL-01 structure — the administration layer has no path around the 
     const adapter = codeOf('src/enterprise/adapters/node-http-adapter.ts');
     const section = /function matchAdministrationRoute[\s\S]*?\n}\n/.exec(adapter)?.[0] ?? '';
     assert.ok(section.length > 0, 'the administration route matcher exists');
-    const verbs = [...section.matchAll(/\\\/(revoke|activate|release|[a-z-]+)\$/g)].map((match) => match[1]);
-    for (const verb of verbs) assert.ok(['revoke'].includes(verb ?? ''), `unexpected mutation verb '${String(verb)}'`);
+    // The literal last segment of every administration path: the revoke verb, and the read-only list.
+    const suffixes = [...section.matchAll(/\\\/([a-z-]+)\$/g)].map((match) => match[1]);
+    for (const suffix of suffixes) assert.ok(['revoke', 'emergency-controls'].includes(suffix ?? ''), `unexpected route suffix '${String(suffix)}'`);
+    // The only alternation of verbs is the emergency-control transition pair.
+    assert.deepEqual([...section.matchAll(/\(([a-z]+(?:\|[a-z]+)+)\)\$/g)].map((match) => match[1]), ['activate|release']);
     assert.equal(/'(PUT|PATCH|DELETE)'/.test(section), false, 'no PUT, PATCH or DELETE administration route');
     assert.equal(/unrevoke|restore|reactivate|reinstate|issue|provision/i.test(section), false);
     assert.equal(/emergencyControlAdministration|kernelAuthorityProvisioning|authorityControlledExecution/.test(adapter), false, 'the adapter reaches no operator surface directly');

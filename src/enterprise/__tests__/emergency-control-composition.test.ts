@@ -346,16 +346,26 @@ describe('Emergency control composition — adapter routing is host configuratio
 });
 
 describe('Emergency control composition — no customer surface', () => {
-  it('the frozen HTTP surface gains no emergency or adapter route, and no route mentions emergency control', () => {
+  it('no customer or legacy route reaches emergency control; the only emergency routes are CTRL-01 administration routes, served by the administration service', () => {
     const adapterSource = readFileSync('src/enterprise/adapters/node-http-adapter.ts', 'utf8');
-    for (const token of ['emergency', 'emergencyControl', 'adapterRouting', 'selectAdapter']) {
-      assert.equal(new RegExp(token, 'i').test(adapterSource), false, `the HTTP adapter must not mention ${token}`);
+    // The transport never holds the store or the routing: no import of it, no
+    // reference to the operator surface, no adapter-selection vocabulary.
+    for (const pattern of [/from '[^']*emergency-control/, /\bemergencyControl/, /emergencyControlAdministration/, /adapterRouting/i, /selectAdapter/i]) {
+      assert.equal(pattern.test(adapterSource), false, `the HTTP adapter must not mention ${String(pattern)}`);
     }
-    const freeze = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { readonly routeLiterals: readonly string[] };
+    // CTRL-01: an administrator changes emergency control only through the
+    // authority administration service, which authenticates the administrator.
+    for (const call of adapterSource.matchAll(/administration\.(\w+)\(/g)) {
+      assert.ok(['inspectGrant', 'inspectExecutionGrant', 'revokeGrant', 'inspectAuthorityEntity', 'revokeAuthorityEntity', 'listEmergencyControls', 'activateEmergencyControl', 'releaseEmergencyControl'].includes(call[1] ?? ''), String(call[1]));
+    }
+    const freeze = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { readonly routeLiterals: readonly string[]; readonly routePatterns: readonly string[] };
     for (const route of freeze.routeLiterals) {
       // `/api/governed-actions` (P5) is the customer route onto the path the
       // interlock governs; it can observe a withholding, never administer one.
       assert.equal(/emergency|adapter/i.test(route), false, `${route} must not exist`);
+    }
+    for (const pattern of freeze.routePatterns.filter((route) => /emergency|adapter/i.test(route))) {
+      assert.ok(pattern.startsWith('^\\/api\\/admin\\/emergency-controls'), `${pattern}: an emergency route exists only under /api/admin/ (CTRL-01)`);
     }
   });
 
