@@ -357,6 +357,7 @@ Repository-wide scan of `src/`, `packages/` and `apps/` for the type name and fo
 | `src/enterprise/execution-governance/service.ts` | Holds an `ExecutionAdapter` as `options.executionAdapter` and passes it straight into `createGrantExecutionService`. **Never invokes it** |
 | `src/enterprise/composition/composition-root.ts` | Type position. Builds the registry from the host's trusted routing table when one is configured — including one child per `genericHttpAdapters` entry (P6) — and hands the result to ACE. **Never invokes it** |
 | `src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts` | **Implements** the port (P6). A registry child built by the composition root; invokes no adapter. Its one outbound network call is EP-050, enumerated in §7.6 |
+| `src/enterprise/host/enterprise-host.ts` | Type position (PROD-01). The Enterprise Host bootstrap passes embedder-supplied adapters into `executionAdapterRouting.adapters` — the same registry, reachable only through a configured route — and supplies the trusted `selectAdapter` over the governed-action file's routes. The launcher supplies none. **Never invokes it** |
 | *(not `src/enterprise/index.ts`)* | The Enterprise barrel deliberately re-exports **no** `src/features` type — not `BoundedGrantStorePort`, not `KernelGrantCapability`, not `ExecutionAdapter` — even where an exported option type already names one. A host that needs to write an adapter imports the feature module, which is not a frozen artifact |
 | `src/features/execution-runtime/tests/execution-fixture.ts` | Test fixture (`RecordingExecutionAdapter`) |
 
@@ -1192,6 +1193,7 @@ Eleven findings. A separate authority model is **not** a finding by itself; each
 - **Why the proof is limited:** this is the reason Prompt 2 §11's "store-layer tenant scoping = **HARD CHOKEPOINT**" is not correct as written. The scoping is real, but the *principal* it scopes against is produced by a configuration flag, so the chokepoint is a **DEPLOYMENT CHOKEPOINT**. SEC-TRUST-007 records the auth default; it does not record the `system: true` escalation or its effect on the chokepoint classification.
 - **Residual risk:** unchanged in code; the classification is corrected here and in `TRUST_BOUNDARIES_AND_PRIVILEGED_ASSETS.md` §11.
 - **Future prompt owner:** Prompt 17 (deployment topology). Changing the default is a production behaviour change and is out of scope here.
+- **Update (PROD-01):** **closed for the shipped Host.** `npm run start:enterprise` now boots through `bootEnterpriseHost()`, which binds `127.0.0.1` by default, refuses a non-loopback bind with authentication off (SEC-INV-127), and refuses to start at all without authentication under `AOC_ENTERPRISE_ENV=production`/`staging` (SEC-INV-126). The `system: true` mapping itself is unchanged, so the classification above still holds for an embedder that composes its own server with authentication off.
 
 ### NB-006 — A bounded grant is unbounded in the number of times it may be exercised
 - **Severity:** LOW · **Effect path:** EP-011 · **Protected resource:** the adapter's provider

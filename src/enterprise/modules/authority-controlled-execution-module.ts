@@ -36,12 +36,18 @@ export const AUTHORITY_CONTROLLED_EXECUTION_MODULE_ID = 'aoc.enterprise.authorit
  * commitment: a store whose revocation state cannot be proven answers no
  * authority read, and is reported unhealthy. That probe is local SQLite, never
  * a provider.
+ *
+ * A Host whose purpose **is** governed execution (the Enterprise Host bootstrap,
+ * `host/enterprise-host.ts`) composes it as `required` instead: there, an
+ * unhealthy grant store means the Host cannot do the one thing it runs for, and
+ * `/health` and `/ready` must say so.
  */
 export function createAuthorityControlledExecutionModule(
   service: AuthorityControlledExecutionService,
   adapterId: string,
   now: () => string,
   grantStore?: unknown,
+  criticality: 'required' | 'optional' = 'optional',
 ): EnterpriseModule {
   const durable = isAuthenticatedDurableBoundedGrantStore(grantStore) ? grantStore : undefined;
   return {
@@ -50,7 +56,7 @@ export function createAuthorityControlledExecutionModule(
       version: AOC_ENTERPRISE_HOST_VERSION,
       displayName: 'Authority-Controlled Execution',
       description: 'Bounded-grant issuance and grant-gated, provider-neutral execution composed onto the Kernel.',
-      criticality: 'optional',
+      criticality,
       dependencies: [{ moduleId: KERNEL_MODULE_ID }],
       capabilities: ['grant.issue', 'grant.exercise', 'grant.revoke', 'execution.adapter'],
     },

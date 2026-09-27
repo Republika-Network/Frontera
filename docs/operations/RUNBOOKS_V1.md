@@ -16,10 +16,14 @@ One runbook per operational situation. Prerequisite reading:
    ```bash
    npm ci && npm run build
    ```
-3. Configure the environment (see the deployment guide). Minimum for any
-   non-local deployment: `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite`,
-   the three `*_SQLITE_PATH` variables on the data volume,
-   `AOC_ENTERPRISE_REQUIRE_AUTH=true`, `AOC_ENTERPRISE_API_KEYS=...`.
+3. Configure the environment (see the deployment guide). A production
+   Host needs the secure profile in `docs/enterprise/AOC_ENTERPRISE_HOST.md`
+   §"Secure production host (PROD-01)": `AOC_ENTERPRISE_ENV=production`,
+   `sqlite` persistence with every `*_SQLITE_PATH` on the data volume,
+   `AOC_ENTERPRISE_REQUIRE_AUTH=true`, the durable Kernel Authority source,
+   the authority signing key and trusted set, and
+   `AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`. It refuses to start otherwise,
+   printing `refused to start [CODE]`.
 4. Start the service (`systemctl start aoc-enterprise` or
    `npm run start:enterprise`). First boot creates the three databases
    and records their schema versions.

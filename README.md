@@ -70,8 +70,14 @@ Storage / Identity / Blockchain / AI Systems
 npm ci
 npm run build
 npm test                  # full suite: compiled root tests + contract suites + workspaces
-npm run start:enterprise  # boots the Enterprise Host (see the deployment guide for configuration)
+npm run start:enterprise  # zero config: development, in-memory, loopback-only (prints a WARNING)
 ```
+
+A production Host (`AOC_ENTERPRISE_ENV=production`) refuses to start unless it
+is durable, authenticated, signing authority and composing the governed-action
+spine. The minimum secure configuration is in
+`docs/enterprise/AOC_ENTERPRISE_HOST.md` §"Secure production host (PROD-01)";
+every variable is in `.env.example`.
 
 Client SDK: `packages/enterprise-host-sdk` (`@aoc-enterprise/enterprise-host-sdk`).
 

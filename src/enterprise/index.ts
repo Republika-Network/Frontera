@@ -485,7 +485,7 @@ export type {
 export { createKernelAuthorityModule, KERNEL_AUTHORITY_MODULE_ID } from './modules/kernel-authority-module.js';
 
 export { computeEnterpriseHealth } from './health/health-check.js';
-export type { EnterpriseHealthReport, EnterpriseHealthState, EnterpriseHealthDependencies } from './health/health-check.js';
+export type { EnterpriseHealthReport, EnterpriseHealthState, EnterpriseHealthDependencies, EnterpriseHealthPosture } from './health/health-check.js';
 
 export {
   validateGovernanceEvaluateRequestBody,
@@ -801,6 +801,23 @@ export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js
 
 export { createEnterpriseServer } from './host/enterprise-server.js';
 export type { EnterpriseServer } from './host/enterprise-server.js';
+// PROD-01 -- the Enterprise Host bootstrap: the one supported way to start Frontera as a process.
+export { bootEnterpriseHost, HOST_ORGANIZATIONAL_AUTHORITY_BINDING } from './host/enterprise-host.js';
+export type { BootEnterpriseHostOptions, EnterpriseHost } from './host/enterprise-host.js';
+export {
+  loadEnterpriseHostConfiguration,
+  EnterpriseHostConfigurationError,
+  isEnterpriseHostConfigurationError,
+  GOVERNED_ACTIONS_FILE_VARIABLE,
+  MAX_GRANT_LIFETIME_SECONDS,
+} from './host/host-configuration.js';
+export type {
+  EnterpriseHostConfiguration,
+  EnterpriseHostConfigurationErrorCode,
+  EnterpriseHostCustomerPrincipal,
+  EnterpriseHostGovernedActionConfiguration,
+} from './host/host-configuration.js';
+export { validateEnterpriseEnvironment } from './configuration/enterprise-configuration.js';
 
 // -- Soberanía Enterprise Module Lifecycle & Registry (PR-003) --------------------
 

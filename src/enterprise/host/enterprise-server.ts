@@ -12,24 +12,35 @@ export interface EnterpriseServer {
 }
 
 /**
- * Boots the Enterprise Kernel as a production HTTP service: composes an
- * `AocEnterprise` (`composition/composition-root.ts`) and binds it to a
+ * Binds a composed `AocEnterprise` (`composition/composition-root.ts`) to a
  * plain `node:http` server -- no web framework dependency, consistent with
- * the rest of this package. `scripts/run-enterprise-host.mjs` is the CLI
- * entry point that calls this from the built `dist/` output. The HTTP
- * server consumes only the stable `AocEnterprise` interface -- it has no
- * visibility into how the Kernel, persistence, or providers were composed.
+ * the rest of this package. The HTTP server consumes only the stable
+ * `AocEnterprise` interface -- it has no visibility into how the Kernel,
+ * persistence, or providers were composed.
+ *
+ * This is the embedding-level server factory. The process an operator starts
+ * (`npm run start:enterprise`) does not call it directly: it calls
+ * `bootEnterpriseHost()` (`host/enterprise-host.ts`), which validates the
+ * deployment's secure profile, composes the governed-action spine from
+ * configuration, and then delegates here.
  */
 export async function createEnterpriseServer(options: CreateEnterpriseOptions = {}): Promise<EnterpriseServer> {
   const enterprise = await createEnterprise(options);
   const server = createServer(createEnterpriseRequestListener(enterprise));
+  let closing: Promise<void> | undefined;
 
   return {
     enterprise,
     server,
     listen() {
-      return new Promise((resolvePromise) => {
+      return new Promise((resolvePromise, rejectPromise) => {
+        // A bind failure (port in use, address unavailable) rejects instead of
+        // surfacing as an unhandled 'error' event; the caller decides whether to
+        // close the composed Enterprise.
+        const onError = (error: Error): void => rejectPromise(error);
+        server.once('error', onError);
         server.listen(enterprise.configuration.http.port, enterprise.configuration.http.host, () => {
+          server.off('error', onError);
           enterprise.logger.info('enterprise.host.listening', {});
           // Read back the OS-assigned port (relevant when `http.port` is configured as
           // 0, e.g. in tests) rather than trusting the configured value blindly.
@@ -38,11 +49,21 @@ export async function createEnterpriseServer(options: CreateEnterpriseOptions = 
         });
       });
     },
-    async close() {
-      await new Promise<void>((resolvePromise, rejectPromise) => {
-        server.close((error) => (error ? rejectPromise(error) : resolvePromise()));
-      });
-      await enterprise.close();
+    close() {
+      // Idempotent, and safe before `listen()`: a server that never bound still
+      // owns a composed Enterprise whose stores must be closed.
+      closing ??= (async () => {
+        if (server.listening) {
+          await new Promise<void>((resolvePromise, rejectPromise) => {
+            server.close((error) => (error ? rejectPromise(error) : resolvePromise()));
+            // Stop accepting first, then drop idle keep-alive sockets so close
+            // does not wait on a client that will never send again.
+            server.closeIdleConnections();
+          });
+        }
+        await enterprise.close();
+      })();
+      return closing;
     },
   };
 }

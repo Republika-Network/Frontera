@@ -390,9 +390,178 @@ Not built in this iteration, deliberately out of scope:
 
 ```bash
 npm run build
-npm run start:enterprise        # scripts/run-enterprise-host.mjs
+npm run start:enterprise        # scripts/run-enterprise-host.mjs -> bootEnterpriseHost()
 # `npm run start:kernel-host` still works (points at the same script), transitionally.
 ```
+
+The secure production path is the next section. `createEnterprise()` and
+`createEnterpriseServer()` remain the **embedding** surface; they apply none
+of the secure-profile rules below.
+
+## Secure production host (PROD-01)
+
+### One canonical path
+
+```
+npm run start:enterprise
+  └─ scripts/run-enterprise-host.mjs        thin launcher: print posture, handle SIGINT/SIGTERM
+      └─ bootEnterpriseHost()               src/enterprise/host/enterprise-host.ts
+          ├─ loadEnterpriseHostConfiguration   strict env + governed-action file   (refuse)
+          ├─ createEnterpriseServer            -> createEnterprise (composition root)
+          │     authority signing keys checked before any store opens;
+          │     every store it opens is closed again if composition fails     (refuse)
+          ├─ posture + health gate             composed == required; signed revocation
+          │                                    state verifies; required modules healthy (refuse, closed)
+          └─ listen()                          only now is a socket bound
+```
+
+Tests call `bootEnterpriseHost()` directly
+(`src/enterprise/__tests__/enterprise-host.test.ts`), and
+`tests/enterprise-host-launcher.test.mjs` pins that the launcher delegates to
+it and composes nothing itself.
+
+### Profiles
+
+`AOC_ENTERPRISE_ENV` selects the profile. There is no other mode flag.
+
+| Profile | Persistence | Authentication | Governed actions | Bind |
+|---|---|---|---|---|
+| `development`, `test` | `memory` (default) or `sqlite` | optional | optional (file) | loopback unless auth is on |
+| `production`, `staging` | `sqlite`, stated explicitly | **required**, with credentials | **required** (file) | any, auth is on |
+
+Every variable is read strictly by the bootstrap
+(`validateEnterpriseEnvironment`): `AOC_ENTERPRISE_ENV=prod`,
+`AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqllite` or `AOC_ENTERPRISE_REQUIRE_AUTH=yes`
+refuse to boot. The lenient `loadEnterpriseConfiguration` is unchanged for
+embedders.
+
+### Minimum secure configuration
+
+```bash
+AOC_ENTERPRISE_ENV=production
+AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite
+AOC_ENTERPRISE_REQUIRE_AUTH=true
+AOC_ENTERPRISE_HTTP_HOST=0.0.0.0                  # or 127.0.0.1 behind a TLS proxy
+AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED=true
+AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID=org-acme
+AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID=authority-key-2026-01
+AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM=<secret, PKCS#8>
+AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS='[{"keyId":"authority-key-2026-01","algorithm":"ed25519-v1","publicKeyPem":"..."}]'
+AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE=/etc/frontera/governed-actions.json
+# every AOC_ENTERPRISE_*_SQLITE_PATH on a persistent volume (see .env.example)
+# plus each secret variable the governed-action file names
+npm run start:enterprise
+```
+
+### The governed-action file
+
+JSON, `version: 1`, closed schema (an unknown field refuses to boot). A
+reviewed example: `examples/enterprise-host/governed-actions.example.json`.
+
+| Field | Meaning |
+|---|---|
+| `trustDomainId` | The trust domain governed actions are evaluated in |
+| `grantLifetimeSeconds` | Bounded-grant lifetime from the committed decision, 1 … 3600 |
+| `customerPrincipals[]` | `principalId`, `externalSubject {system, subjectId}`, `apiKeyEnv`. Each becomes a customer credential scoped to `AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID`, bound to the Kernel Authority actor carrying that external subject |
+| `monetary` | Optional. `assets [{assetId, scale}]`, `financialActions []` (P9) |
+| `genericHttpAdapters[]` | `EnterpriseGenericHttpExecutionAdapterOptions` (`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`), except `credential` is `{kind:'bearer', tokenEnv}` or `{kind:'header', name, valueEnv}` |
+| `routes[]` | `{action, adapterId}`. An action with no route reaches no adapter |
+
+**The file holds no secrets.** A secret is named by the variable that holds
+it; an inline `token`, `value` or `key` is refused. A named variable that is
+unset or empty refuses to boot (`HOST_SECRET_REFERENCE_UNRESOLVED`, naming the
+variable, never a value). A secret used by two credentials refuses
+(`HOST_CREDENTIALS_AMBIGUOUS`).
+
+### What the secure Host composes
+
+| Capability | Status on the secure Host |
+|---|---|
+| Customer principal binding (API key → principal → subject → actor) | **required** |
+| Durable Kernel Authority world + trusted in-process provisioning surface | **required** |
+| Grant-aware Kernel, Governance Store commit/re-read | **required** |
+| Authenticated durable bounded-grant store (signed, revocation-state verified, CORE-01) | **required**; its health is part of readiness |
+| P7 exercise controls, durable ledger; P10 authority-sourced ceilings | **required**; no host-imposed aggregate limits (the authority's own apply) |
+| P11 durable execution outcomes | **required** |
+| Durable emergency control (P4) | composed; operator surface in-process only (CTRL-01) |
+| P8 authority event stream | optional by design (evidence never blocks) |
+| Generic HTTP adapter(s) behind the trusted registry, routed by the file | composed as configured |
+| P12 reconciliation | not wired: no resolution authority implementation ships |
+| Policy packs | not wired: no durable policy store (CORE-03 / NB-008) |
+| Obligations, trusted context | not wired: CORE-04 |
+| Durable approvals | not wired: `approval_required` stays withheld (CORE-05) |
+| Evidence bundle store | in-memory on every Host (ASSURE) |
+
+The authority binding every grant states is
+`HOST_ORGANIZATIONAL_AUTHORITY_BINDING` (`organizational-authority`): the Host
+composes no mandate or representative-authority window. Exercise-time lineage
+is revalidated for financial actions (P10); for non-financial actions the
+bound is the grant lifetime, at most one hour, until CORE-04.
+
+### Refusal codes
+
+`EnterpriseHostConfigurationError.code`, printed by the launcher as
+`refused to start [CODE] message` with exit status 1. Messages name variables
+and fields, never values; no stack trace is printed.
+
+| Code | When |
+|---|---|
+| `HOST_ENVIRONMENT_INVALID` | A variable does not parse strictly (includes malformed `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`) |
+| `HOST_UNAUTHENTICATED_NETWORK_BIND` | Authentication off and a non-loopback bind |
+| `HOST_CREDENTIALS_MISSING` | Authentication required, no credential |
+| `HOST_CREDENTIALS_AMBIGUOUS` | One secret configured for two credentials |
+| `HOST_PERSISTENCE_NOT_DURABLE` | Secure profile without explicit `sqlite` |
+| `HOST_AUTHENTICATION_REQUIRED` | Secure profile without `AOC_ENTERPRISE_REQUIRE_AUTH=true` |
+| `HOST_GOVERNED_ACTIONS_REQUIRED` | Secure profile without the governed-action file |
+| `HOST_KERNEL_AUTHORITY_REQUIRED` | Governed actions without the durable Kernel Authority source, or secure profile with it optional |
+| `HOST_AUTHORITY_SIGNING_KEY_REQUIRED` | Secure profile without signing key and trusted set |
+| `HOST_GOVERNED_ACTIONS_FILE_UNREADABLE` / `_INVALID` | The file cannot be read, or breaks the schema |
+| `HOST_SECRET_REFERENCE_UNRESOLVED` | A named secret variable is unset or empty |
+| `HOST_EXECUTION_ROUTE_INVALID` | No route, or a route to an unconfigured adapter |
+| `HOST_COMPOSITION_INCOMPLETE` | The composed Enterprise does not have the posture the profile requires |
+| `HOST_NOT_HEALTHY` | Composed, but a required module is unhealthy — e.g. the signed revocation state of the grant store does not verify |
+
+Composition's own refusals pass through unchanged: a signing key absent from
+the trusted set or not matching it (`AuthorityAuthenticityConfigurationError`),
+invalid Generic HTTP configuration (`GenericHttpConfigurationError`), invalid
+customer credentials (`CustomerIdentityConfigurationError`), an unopenable
+store.
+
+### Health, readiness and posture
+
+- `GET /live` — the process is running (lifecycle only).
+- `GET /ready` — `200` only when the lifecycle is ready **and** `/health` is
+  not `unhealthy`. On a secure Host the governed spine is `required`, so a
+  grant store whose revocation state stops verifying makes the Host not
+  ready.
+- `GET /health` — `healthy`: every module healthy; `degraded`: ready, an
+  optional module impaired; `unhealthy` (HTTP 503): not ready, the Governance
+  Store unreachable, or a required module unhealthy. It carries `posture`:
+  `environment`, `persistence` (`durable`/`ephemeral`), `authentication`,
+  `governedActions`, `authorityStore`
+  (`authenticated-durable`/`unauthenticated`/`not-composed`),
+  `kernelAuthority`, `emergencyControl`, `exerciseControls`, and a count of
+  execution adapters. No secret, key, path or adapter identity.
+
+### Shutdown
+
+`SIGINT`/`SIGTERM` → the listener stops accepting and idle connections close
+→ the lifecycle shuts modules down in reverse order → every store the
+composition root opened is closed (each exactly once; host-supplied stores
+are the host's). A second signal is ignored; the process exits 0, or 1 if
+shutdown failed.
+
+### What an operator still does by hand
+
+- **Provisioning authority** (actors, trust domain, grants, delegations) and
+  **revoking** it has no HTTP route yet: it is the trusted in-process
+  `AocEnterprise.kernelAuthorityProvisioning` surface (CTRL-01).
+- **Revoking a bounded grant** and **activating an emergency stop** are
+  in-process too (`authorityControlledExecution.revokeGrant`,
+  `emergencyControlAdministration`).
+- **Backup/restore** covers four stores; the governed-action stores are
+  PROD-02.
+- The authority signing key is process-resident (AA-001, CORE-02).
 
 Embedding without `node:http` (e.g. a Next.js route handler):
 

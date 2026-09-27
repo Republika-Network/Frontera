@@ -21,8 +21,13 @@ export const EXERCISE_CONTROL_MODULE_ID = 'aoc.enterprise.exercise-control';
  *
  * It owns nothing: the composition root closes a ledger it opened, and a host
  * closes one it supplied.
+ *
+ * A Host whose purpose **is** governed execution (the Enterprise Host bootstrap,
+ * `host/enterprise-host.ts`) composes it as `required` instead: there, an
+ * unhealthy exercise-control ledger means the Host cannot do the one thing it runs for, and
+ * `/health` and `/ready` must say so.
  */
-export function createExerciseControlModule(ledger: ExerciseControlLedgerPort, now: () => string): EnterpriseModule {
+export function createExerciseControlModule(ledger: ExerciseControlLedgerPort, now: () => string, criticality: 'required' | 'optional' = 'optional'): EnterpriseModule {
   const probe = (ledger as Partial<{ health: () => Promise<{ readonly status: string; readonly readable: boolean; readonly writable: boolean; readonly schemaVersion: string }> }>).health;
   return {
     descriptor: {
@@ -30,7 +35,7 @@ export function createExerciseControlModule(ledger: ExerciseControlLedgerPort, n
       version: AOC_ENTERPRISE_HOST_VERSION,
       displayName: 'Exercise Controls',
       description: 'Aggregate / velocity exercise limits, a durable reservation ledger and exercise-time authority-binding revalidation on the bounded-grant path. No route.',
-      criticality: 'optional',
+      criticality,
       dependencies: [{ moduleId: AUTHORITY_CONTROLLED_EXECUTION_MODULE_ID }],
       capabilities: ['exercise.aggregate-limits', 'exercise.reservation', 'exercise.authority-binding-revalidation'],
     },

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AOC_KERNEL_VERSION, createAocKernel, type AocKernel, type KernelIdGenerator, type PolicyPackProvider } from '../../kernel/index.js';
-import { computeEnterpriseHealth, type EnterpriseHealthReport } from '../health/health-check.js';
+import { computeEnterpriseHealth, type EnterpriseHealthPosture, type EnterpriseHealthReport } from '../health/health-check.js';
 import { loadEnterpriseConfiguration, toPublicEnterpriseConfiguration, type EnterpriseConfiguration, type PublicEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { createInProcessEventPublisher, type EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import {
@@ -390,6 +390,17 @@ export interface EnterpriseGovernedActionOrchestratorOptions {
   readonly trustDomainId: string;
   /** **Required.** The trusted grant expiry (and optional narrowing) for each governed action. No default exists, and `undefined` withholds. */
   readonly grantPolicy: GovernedActionGrantPolicy;
+  /**
+   * Whether governed execution is this Host's reason to exist. Default `false`.
+   *
+   * `true` registers the governed spine's modules — Authority-Controlled
+   * Execution (and with it the authenticated grant store's revocation-state
+   * probe), exercise controls, the orchestrator and the durable outcome store —
+   * as `required`: a failure in any of them makes `/health` unhealthy and
+   * `/ready` not ready. The Enterprise Host bootstrap sets it; an embedder
+   * whose Host also serves other purposes may leave it off.
+   */
+  readonly required?: boolean;
 }
 
 /** What a host states about money. See `EnterpriseOptions.monetary`. */
@@ -797,9 +808,12 @@ async function buildKernelAuthorityStore(configuration: EnterpriseConfiguration,
  * the Host reported itself healthy, which is the fail-open shape this whole
  * store exists to remove.
  */
-async function buildBoundedGrantStore(configuration: EnterpriseConfiguration): Promise<BoundedGrantStorePort> {
+async function buildBoundedGrantStore(
+  configuration: EnterpriseConfiguration,
+  authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier } | undefined,
+): Promise<BoundedGrantStorePort> {
   if (configuration.persistence.provider === 'sqlite') {
-    const { signer, verifier } = buildAuthorityAuthenticity(configuration);
+    const { signer, verifier } = authenticity ?? buildAuthorityAuthenticity(configuration);
     return createSqliteBoundedGrantStore(configuration.boundedGrant.sqlitePath, {
       busyTimeoutMs: configuration.persistence.busyTimeoutMs,
       authenticity: { signer, verifier },
@@ -972,6 +986,12 @@ function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): { r
   };
 }
 
+/** Closes a store that may or may not own a handle (the in-memory ones own none). Used by the atomic-startup cleanup in `createEnterprise`. */
+async function closeIfClosable(resource: unknown): Promise<void> {
+  const closable = resource as Partial<{ close: () => Promise<void> }> | undefined;
+  if (typeof closable?.close === 'function') await closable.close();
+}
+
 /** A dedicated id source for Enterprise-internal bookkeeping (event ids, boot id) -- independent of the Kernel's own `idGenerator`, so Enterprise bookkeeping never perturbs the Kernel's internal id sequence. */
 function createEnterpriseIdGenerator(): KernelIdGenerator {
   return { nextId: (prefix: string) => `${prefix}-${randomUUID()}` };
@@ -1031,6 +1051,21 @@ export function getInternalEnterpriseConfiguration(enterprise: AocEnterprise): E
  * them online is new.
  */
 export async function createEnterprise(options: CreateEnterpriseOptions = {}): Promise<AocEnterprise> {
+  // Atomic startup (PROD-01). Every store this root opens registers its close
+  // here; if composition or the lifecycle start fails part-way, each is closed
+  // in reverse before the root error is rethrown. A refused Host leaves no
+  // SQLite handle, WAL lock or listener behind. Host-supplied stores are never
+  // registered: the host closes what the host opened.
+  const opened: (() => Promise<void>)[] = [];
+  try {
+    return await composeEnterprise(options, opened);
+  } catch (error) {
+    for (const close of opened.reverse()) await close().catch(() => {});
+    throw error;
+  }
+}
+
+async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() => Promise<void>)[]): Promise<AocEnterprise> {
   const configuration = options.configuration ?? loadEnterpriseConfiguration();
   const eventIdGenerator = createEnterpriseIdGenerator();
 
@@ -1065,6 +1100,15 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
       'This Host is configured for durable persistence, and the supplied authorityControlledExecution.grantStore is not an authenticated durable bounded-grant store. Omit it so the Host opens the signed store itself, or supply one built by createSqliteBoundedGrantStore. There is no unauthenticated durable authority mode.',
     );
   }
+
+  // PROD-01: the authenticity boundary is resolved before any store is opened,
+  // so a missing, mismatched or untrusted signing key refuses the Host before a
+  // single SQLite file exists — not after the Governance, Passport, Assurance
+  // and Kernel Authority stores have been opened. Pure: key parsing only.
+  const authorityAuthenticity =
+    options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite'
+      ? buildAuthorityAuthenticity(configuration)
+      : undefined;
 
   // Adapter composition is checked before anything is opened: a deployment that
   // states both a single adapter and a routing table, or neither, has not said
@@ -1187,7 +1231,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     kernelAuthorityStore = options.kernelAuthorityStore;
   } else if (configuration.kernelAuthority.enabled) {
     try {
-      kernelAuthorityStore = await buildKernelAuthorityStore(configuration, () => new Date().toISOString(), eventIdGenerator.nextId);
+      const store = await buildKernelAuthorityStore(configuration, () => new Date().toISOString(), eventIdGenerator.nextId);
+      opened.push(() => store.close());
+      kernelAuthorityStore = store;
     } catch (error) {
       if (configuration.kernelAuthority.required) throw error;
       kernelAuthorityStartupFailure = error instanceof Error ? error : new Error(String(error));
@@ -1242,6 +1288,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
 
   const persistence = options.persistence ?? (await buildStore(configuration, kernelProviders.clock.now));
+  if (options.persistence === undefined) opened.push(() => persistence.close());
   if (governedActionOptions !== undefined) {
     // Checked here, against the store actually composed, because a host may inject its own.
     // Before the lifecycle starts, so a refused composition leaves nothing running.
@@ -1257,7 +1304,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   }
   const evidenceStore = options.evidenceStore ?? createInMemoryEvidenceStore({ now: kernelProviders.clock.now });
   const passportStore = options.passportStore ?? (await buildPassportStore(configuration, kernelProviders.clock.now, eventIdGenerator.nextId));
+  if (options.passportStore === undefined) opened.push(() => passportStore.close());
   const assuranceStore = options.assuranceStore ?? (await buildAssuranceStore(configuration, kernelProviders.clock.now));
+  if (options.assuranceStore === undefined) opened.push(() => assuranceStore.close());
   const eventPublisher = options.eventPublisher ?? createInProcessEventPublisher();
   const telemetry = options.telemetry ?? createEnterpriseTelemetry();
   const logger = options.logger ?? createEnterpriseLogger(configuration.logLevel);
@@ -1284,8 +1333,9 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   const grantStore: BoundedGrantStorePort | undefined =
     options.authorityControlledExecution === undefined
       ? undefined
-      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration)));
+      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration, authorityAuthenticity)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
+  if (grantStoreOpenedHere) opened.push(() => closeIfClosable(grantStore));
 
   // The exercise-control ledger (P7), opened **only** when exercise controls
   // are composed and the host supplied no ledger — and then always the durable
@@ -1302,6 +1352,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
           now: kernelProviders.clock.now,
         })));
   const exerciseLedgerOpenedHere = exerciseControlOptions !== undefined && exerciseControlOptions.ledger === undefined;
+  if (exerciseLedgerOpenedHere) opened.push(() => closeIfClosable(exerciseLedger));
 
   // P8: the canonical authority event stream, composed with governed actions
   // only. Evidence, so an unopenable store is *not* a startup failure: the
@@ -1322,6 +1373,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     }
   }
   const authorityEventStoreOpenedHere = authorityEventStore !== undefined && options.authorityEventStream?.store === undefined;
+  if (authorityEventStoreOpenedHere) opened.push(() => closeIfClosable(authorityEventStore));
 
   // P11: the durable execution outcome store, composed with governed actions
   // and never without them. Load-bearing — a governed execution is refused
@@ -1330,12 +1382,14 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
   const executionOutcomeStore: ExecutionOutcomeStore | undefined =
     governedActionOptions === undefined ? undefined : (options.executionOutcomes?.store ?? (await buildExecutionOutcomeStore(configuration, kernelProviders.clock.now)));
   const executionOutcomeStoreOpenedHere = executionOutcomeStore !== undefined && options.executionOutcomes?.store === undefined;
+  if (executionOutcomeStoreOpenedHere) opened.push(() => closeIfClosable(executionOutcomeStore));
   // P12: the execution resolution store, only when reconciliation is enabled.
   // Load-bearing before the claim, so a store that cannot be opened fails
   // startup here — never a silent fallback to memory.
   const executionResolutionStore: ExecutionResolutionStore | undefined =
     resolutionAuthorities === undefined ? undefined : (options.executionReconciliation?.store ?? (await buildExecutionResolutionStore(configuration, kernelProviders.clock.now)));
   const executionResolutionStoreOpenedHere = executionResolutionStore !== undefined && options.executionReconciliation?.store === undefined;
+  if (executionResolutionStoreOpenedHere) opened.push(() => closeIfClosable(executionResolutionStore));
   // The write-only projector: the one object lifecycle modules are handed.
   const authorityEvents: AuthorityEventProjector | undefined =
     governedActionOptions === undefined || grantStore === undefined || customerIdentityAdmission === undefined
@@ -1352,6 +1406,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     ? (options.emergencyControl?.store ?? (await buildEmergencyControlStore(configuration)))
     : undefined;
   const emergencyControlOpenedHere = emergencyControlRequested && options.emergencyControl?.store === undefined;
+  if (emergencyControlOpenedHere) opened.push(() => closeIfClosable(emergencyControlStore));
   // Narrowed to the **read** capability before it is handed to anything that
   // executes — a fresh one-method object over the same store, exactly as
   // customer admission is handed a binding reader rather than the authority
@@ -1532,6 +1587,10 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     }
   }
 
+  // The governed spine is `required` only when the host says governed
+  // execution is what it runs for (the Enterprise Host bootstrap does).
+  const spineCriticality: 'required' | 'optional' = governedActionOptions?.required === true ? 'required' : 'optional';
+
   const registry = createEnterpriseModuleRegistry();
   registry.register(createTelemetryModule(telemetry, configuration.telemetry.enabled, kernelProviders.clock.now));
   registry.register(createEventsModule(eventPublisher, configuration.eventPublishing.enabled, kernelProviders.clock.now));
@@ -1548,15 +1607,16 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         executionAdapter?.adapterId ?? 'unknown',
         kernelProviders.clock.now,
         grantStore,
+        spineCriticality,
       ),
     );
   }
   if (authorityControlledExecution !== undefined && exerciseLedger !== undefined) {
-    registry.register(createExerciseControlModule(exerciseLedger, kernelProviders.clock.now));
+    registry.register(createExerciseControlModule(exerciseLedger, kernelProviders.clock.now, spineCriticality));
   }
   if (governedActionOptions !== undefined) {
-    registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now));
-    if (executionOutcomeStore !== undefined) registry.register(createExecutionOutcomeModule(executionOutcomeStore, kernelProviders.clock.now));
+    registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now, spineCriticality));
+    if (executionOutcomeStore !== undefined) registry.register(createExecutionOutcomeModule(executionOutcomeStore, kernelProviders.clock.now, spineCriticality));
     if (executionResolutionStore !== undefined && resolutionAuthorities !== undefined) {
       registry.register(createExecutionResolutionModule(executionResolutionStore, resolutionAuthorities.authorities.size, kernelProviders.clock.now));
     }
@@ -1724,6 +1784,27 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
     moduleSnapshot: () => lifecycle.modules().map((module) => ({ moduleId: module.id, version: module.version, status: module.state })),
   });
 
+  // PROD-01: what this Host actually composed, stated in `/health` so a
+  // deployment on ephemeral state, disabled authentication or unauthenticated
+  // authority storage never looks identical to one that is not. Computed from
+  // the composed objects, never from what the configuration asked for.
+  const posture: EnterpriseHealthPosture = Object.freeze({
+    environment: configuration.environment,
+    persistence: persistence.providerKind === 'sqlite' ? 'durable' : 'ephemeral',
+    authentication: configuration.features.requireAuthentication ? 'required' : 'disabled',
+    governedActions: governedActionOrchestrator !== undefined && customerIdentityAdmission !== undefined ? 'composed' : 'not-composed',
+    authorityStore: grantStore === undefined ? 'not-composed' : isAuthenticatedDurableBoundedGrantStore(grantStore) ? 'authenticated-durable' : 'unauthenticated',
+    kernelAuthority: kernelAuthorityStore !== undefined ? 'composed' : kernelAuthorityStartupFailure !== undefined ? 'unavailable' : 'not-composed',
+    emergencyControl: emergencyControlStore !== undefined ? 'composed' : 'not-composed',
+    exerciseControls: exerciseLedger !== undefined ? 'composed' : 'not-composed',
+    executionAdapters:
+      options.authorityControlledExecution === undefined
+        ? 0
+        : options.authorityControlledExecution.executionAdapterRouting !== undefined
+          ? genericHttpAdapters.length + (Array.isArray(options.authorityControlledExecution.executionAdapterRouting.adapters) ? options.authorityControlledExecution.executionAdapterRouting.adapters.length : 0)
+          : 1,
+  });
+
   const enterprise: AocEnterprise = {
     configuration: toPublicEnterpriseConfiguration(configuration),
     kernel,
@@ -1795,6 +1876,7 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
         eventPublishingEnabled: configuration.eventPublishing.enabled,
         now: kernelProviders.clock.now,
         lifecycle: lifecycleSnapshot,
+        posture,
       });
     },
     start: () => lifecycle.start(),

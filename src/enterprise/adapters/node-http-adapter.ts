@@ -138,9 +138,23 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         return;
       }
 
+      // Ready means "can do its job now", not only "started": a Host whose
+      // lifecycle is up but whose health is `unhealthy` — a required module
+      // failing, such as the authenticated grant store's revocation-state proof
+      // on a governed-action Host, or an unreachable Governance Store — is not
+      // ready. Liveness (`/live`) stays lifecycle-only.
       if (method === 'GET' && url.pathname === '/ready') {
-        const ready = enterprise.isReady();
-        writeJson(res, ready ? 200 : 503, { ready, lifecycleState: enterprise.lifecycleState() });
+        if (!enterprise.isReady()) {
+          writeJson(res, 503, { ready: false, lifecycleState: enterprise.lifecycleState() });
+          return;
+        }
+        enterprise
+          .health()
+          .then((report) => {
+            const ready = report.status !== 'unhealthy';
+            writeJson(res, ready ? 200 : 503, { ready, lifecycleState: enterprise.lifecycleState(), status: report.status });
+          })
+          .catch(() => writeJson(res, 503, { ready: false, lifecycleState: enterprise.lifecycleState() }));
         return;
       }
 
