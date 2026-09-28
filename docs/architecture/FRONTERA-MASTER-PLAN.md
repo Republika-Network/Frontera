@@ -5,7 +5,7 @@
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
 - **Reconciled by:** MASTER-01 (governed action intelligence & roadmap reconciliation), 2026-09-27, against `main` @ `c66e0c7` (CTRL-01 merged). Architecture and roadmap only; no runtime change.
-- **Last status change:** MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Previous: CTRL-01 → VERIFIED 2026-09-26.
+- **Last status change:** MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -78,16 +78,31 @@ and feeds the core; it never replaces it (§4.4, invariants 24–32):
   is not demonstrated.** The orchestrator is action-agnostic, but its only
   parameter axes are `amount` and `counterparty`, `GrantBoundKey` is a closed
   money-shaped list, and "financial" is a first-class branch (§4.1, L-2 … L-6).
-  There is no first-class *resource* on the envelope beyond the grant's
-  `resources` bound key. Only one non-monetary execution path exists (Generic HTTP).
+  The envelope already carries required `action` and `resource` strings
+  (`governed-action/contracts.ts:52-54` → Kernel `action.type` / `resourceScope`
+  and the grant's `action` / `resources` bounds), but as opaque identifiers:
+  the only action classification is `financial` / `non-financial`, and there is
+  no resource class at all. The only execution adapter is Generic HTTP.
 - **No intelligence component exists.** No model call, agent, RiskSignal or
   behavioural detector exists anywhere; a structural test forbids intelligence
   vocabulary in Kernel sources (`src/enterprise/__tests__/security-invariants.test.ts`,
   "names no AI, model or inference dependency").
-- **The shipped host does not compose the spine.** `scripts/run-enterprise-host.mjs`
-  calls `createEnterpriseServer()` with no options, so `npm run start:enterprise`
-  runs no governed actions, no bounded-grant store and no authority
-  authenticity. The spine is reachable only by an embedding host that composes it in-process.
+- **The shipped host composes the spine (since PROD-01; corrected by MASTER-01 —
+  the MASTER-00 statement that it did not is no longer true).**
+  `npm run start:enterprise` → `scripts/run-enterprise-host.mjs` (a thin launcher)
+  → `bootEnterpriseHost()` (`src/enterprise/host/enterprise-host.ts`) → strict
+  configuration + secure profile → `createEnterpriseServer()` with the
+  governed-action composition (customer admission, grant-aware Kernel over the
+  durable Kernel Authority world, authenticated durable grant store, P7 + P10,
+  durable P4, P8, P11, Generic HTTP via the trusted registry) → posture + health
+  gate → `listen()`. The secure profile refuses to start without durable
+  persistence, required authentication, composed governed actions and an
+  `authenticated-durable` authority store (§3.8, PROD-01). CTRL-01's
+  administration API is mounted on this same Host and was qualified through
+  `bootEnterpriseHost()` (`authority-administration-api.test.ts`). What the
+  shipped Host does **not** compose: policy packs, trusted context, obligations,
+  approvals and P12 (§3.8). `createEnterprise()` remains a lenient embedding
+  surface that defaults to `memory` and composes nothing unless asked.
 - **The README positioning is stale.** It still describes "Frontera Systems … built on
   Soberanía Protocol" for "programmable consent, scoped machine access".
 
@@ -186,8 +201,8 @@ path" (§13) with a precise rule.
 | POLICY | Answered only if the host injects a policy pack | — |
 | LIMITS | Answered only if P7 is composed | P7 / P10 |
 | OBLIGATIONS | **Not answered** on the governed path | — |
-| ACTION | Partly answered | `intent` + host-trusted classifier; parameters limited to `amount`/`counterparty` (CORE-03) |
-| RESOURCE | Barely answered | Only the grant's `resources` bound key; no resource class on the envelope (CORE-03) |
+| ACTION | Partly answered | Required `action` identifier + host-trusted `financial`/`non-financial` classifier; parameters limited to `amount`/`counterparty` (CORE-03) |
+| RESOURCE | Partly answered | Required `resource` identifier on the envelope → Kernel `resourceScope` and grant `resources` bound; no resource class, so governance cannot depend on *what kind* of resource it is (CORE-03) |
 | ADMITTED CONTEXT | **Not answered** | `assertedContext` reaches the Kernel as caller claims (CORE-04) |
 | MECHANISM | Answered | Adapter id |
 | RESULT | Answered | P11 / P12 |
@@ -455,7 +470,9 @@ MASTER-00 record.
 ```
                   apps/agent-passport-web  (separate product: own DB, HMAC passports, Stripe billing)
 
-  Embedding host (in-process composition)  ── HTTP: node:http, static API keys, auth off by default
+  Shipped Host: npm run start:enterprise → bootEnterpriseHost()  ── HTTP: node:http, static API keys +
+    (CTRL-01) administrator credentials; secure profile requires auth (PROD-01)
+  Embedding host (in-process createEnterprise(); memory, auth off by default)
         │
         ▼
   ENTERPRISE COMPOSITION ROOT  (src/enterprise/composition/composition-root.ts)
@@ -562,8 +579,8 @@ runtime envelope.
 | Question | Element | Where it lives (FACT today → owner) |
 |---|---|---|
 | WHO | Actor / Principal | Customer principal → subject → Kernel-Authority actor (P2) |
-| WANTS TO DO WHAT | Action | `intent` + host-trusted classification → first-class action class (CORE-03) |
-| TO WHAT | Resource | Grant `resources` bound only → first-class resource class + reference (CORE-03) |
+| WANTS TO DO WHAT | Action | `GovernedActionIntent.action` (required identifier) + host-trusted `financial`/`non-financial` class → domain-declared action class (CORE-03) |
+| TO WHAT | Resource | `GovernedActionIntent.resource` (required identifier → `resourceScope`, grant `resources`) → domain-declared resource class over that reference (CORE-03) |
 | UNDER WHOSE AUTHORITY | Authority / Grant / Provenance | Kernel-Authority world, Authority Graph, BoundedGrant (VERIFIED); lineage (CORE-04) |
 | UNDER WHAT CONDITIONS | Constraints, Policy, Obligations, Trusted Context | P7/P10 (VERIFIED); policy packs (CORE-03, PARTIAL); obligations + trusted context (CORE-04) |
 | THROUGH WHAT | Execution mechanism / Adapter | Adapter registry + Generic HTTP (VERIFIED); rails (PAY) |
@@ -1046,7 +1063,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Depends on | CORE-01 (soft) |
 | Purpose | Keep **one** generic governed-action envelope, and make it express the Governed Action semantic model (§4.2) — actor, action, resource, structured and arbitrary bounded parameters, non-financial semantics — without coercing everything into `amount`/`counterparty`. Establish that a GovernedAction is **not inherently monetary**. Provide the generic, domain-extensible Governance Profile format (§4.3) |
 | Existing reused | `GovernedActionIntent`, the orchestrator, P9 `MonetaryAmount`, the host-trusted classifier, grant attenuation |
-| Remaining work | First-class action class and resource class + resource reference on the envelope, as opaque domain-declared identifiers (no CORE taxonomy, no universal enums). Typed, host-declared action parameter dimensions (quantity, party, reference, duration), with attenuation rules per dimension, so a `GrantBoundKey` is no longer a closed money list (L-2 to L-6); money becomes one dimension. Unify `currency`/`unit` naming. Move reserved context keys to a registry that verticals extend (prerequisite for L-7). Give policy-pack writes a caller identity (NB-008). **Governance Profile schema** (MASTER-01): declarative, versioned, owner + provenance recorded, validated, keyed by action class × resource class, referencing policies and constraint kinds by id — data only, no resolver, no executable content |
+| Remaining work | Action class and resource class, as opaque domain-declared identifiers (no CORE taxonomy, no universal enums), declared over the envelope's **existing** `action` and `resource` fields (which stay; no replacement envelope) and generalizing today's `financial`/`non-financial` classifier. Typed, host-declared action parameter dimensions (quantity, party, reference, duration), with attenuation rules per dimension, so a `GrantBoundKey` is no longer a closed money list (L-2 to L-6); money becomes one dimension. Unify `currency`/`unit` naming. Move reserved context keys to a registry that verticals extend (prerequisite for L-7). Give policy-pack writes a caller identity (NB-008). **Governance Profile schema** (MASTER-01): declarative, versioned, owner + provenance recorded, validated, keyed by action class × resource class, referencing policies and constraint kinds by id — data only, no resolver, no executable content |
 | Exit criteria | A non-financial action with a structured parameter, and a quantity bound that is not money, are governed and attenuated end to end, with its action class and resource class recorded in the decision and the evidence. The same resource under two action classes (e.g. read one record vs export all) is governed differently by policy alone. Existing P9/P10 suites pass unchanged. A Governance Profile validates, versions and records provenance; an executable or unknown-field profile is refused. No payment, credit, database, Kubernetes or other domain term is added to CORE |
 | Non-goals | `PaymentIntent` or `CreditIntent` (PAY-01, CREDIT-01); a universal "EconomicIntent" or replacement envelope; a resource/action taxonomy in CORE; profile resolution (INTEL-02); any AI component |
 
@@ -1472,7 +1489,7 @@ inventory, provisioning) is unchanged.
 | Exit criteria | `npm run start:enterprise`, with documented config, runs governed actions with signed grants. Insecure config refuses to boot |
 | Delivered | One canonical bootstrap, `bootEnterpriseHost()` (`src/enterprise/host/`); the launcher only delegates and prints posture. Strict environment parsing (`validateEnterpriseEnvironment`) and a closed-schema governed-action file (`AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`) whose secrets are env-var references. Secure profile (`production`/`staging`) refuses: non-`sqlite`, auth off or credential-less, no governed-action file, disabled/optional Kernel Authority, no signing key. Any profile refuses an unauthenticated non-loopback bind; default bind `127.0.0.1`. Composes existing capabilities only (customer admission, grant-aware Kernel over durable Kernel Authority, authenticated grant store, P7 + P10, durable P4, P8, P11, Generic HTTP via the trusted registry). Composition root: signing keys resolved before any store opens; atomic startup; governed spine registrable `required`; `/health` `posture`. Post-composition posture + health gate before `listen()` (a tampered revocation state refuses the start); `/ready` requires health not `unhealthy`; idempotent close. SEC-INV-126 … 128; NB-005, GS-003 closed for the shipped Host |
 | Evidence | `enterprise-host.test.ts` (53) and `tests/enterprise-host-launcher.test.mjs` (4): reproduction of the pre-PROD-01 gap, end-to-end governed action over SQLite with a signed grant, denial/no-bypass, Generic HTTP reached only after authorization (no request sent), revocation (Kernel Authority and bounded grant, including a CORE-01 tamper refusing restart and failing `/ready` at runtime), restart durability, 34 configuration refusals (including invalid ports, a malformed log level and the literal pre-PROD-01 production/SQLite/auth-off/`0.0.0.0` combination), default-looking credentials (`admin`, `changeme`, …) refused with 401, atomic startup and shutdown without leaked handles. Twelve deliberate-violation experiments each failed the expected tests; one of them exposed that a launcher spawn could hang the suite, fixed by a per-spawn kill deadline. The launcher test also caught a real signal race (handlers installed after the listen banner), fixed. Final run: typecheck, lint, build green; root 7516/7518 pass, 1 skipped (live Pinata, unconfigured), 1 failing — the pre-existing CRLF working-copy artifact in `structural-boundaries.test.ts` (64/64 against a `git archive` export of the committed LF tree); workspaces 1069/1069. Re-verification (11 added host cases, each failing under a deliberate port/loopback-check breakage): root 7528/7529 pass, 1 skipped, 0 failing; workspaces 1069/1069 |
-| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04); the grant lifetime (≤ 1 h) is the bound meanwhile. Approvals withheld (CORE-05). Policy packs not wired (CORE-03 / NB-008). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
+| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). *(Update: revocation and emergency stop/release are exposed over the admin API by CTRL-01, VERIFIED 2026-09-26; provisioning remains in-process → CTRL-02.)* Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04); the grant lifetime (≤ 1 h) is the bound meanwhile. Approvals withheld (CORE-05). Policy packs not wired (CORE-03 / NB-008). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
 | Parallel | Yes, with CORE-02/03 |
 
 **PROD-02: Complete Backup / Restore Coverage**
