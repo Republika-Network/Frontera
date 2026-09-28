@@ -11,6 +11,7 @@ import { isPositiveMonetaryAmount, parseMonetaryAmount, type MonetaryAmount } fr
 import { isCanonicalCustomerIdentifier } from '../customer-identity/index.js';
 import type { GovernanceProfileRegistry, ResolvedGovernanceProfile } from '../governance-profile/index.js';
 import type { ClassifiedGovernedActionIntent, GovernedActionMonetaryTrust } from './contracts.js';
+import { monetaryIngressFromWire } from './monetary-naming.js';
 
 /**
  * Canonicalizes an untrusted governed-action intent, or refuses it.
@@ -48,7 +49,7 @@ export type GovernedActionIntentValidation =
   | { readonly valid: true; readonly intent: ClassifiedGovernedActionIntent }
   | { readonly valid: false; readonly violations: readonly string[] };
 
-const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'parameters', 'governanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey']);
+const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'parameters', 'expectedGovernanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey']);
 
 /**
  * Keys an asserted context may not carry at its top level.
@@ -113,6 +114,7 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   // registry declares them; see `validateGovernedActionIntent`.)
   'resourceClass',
   'governanceProfile',
+  'expectedGovernanceProfile',
   'governedParameters',
   'classification',
   'scale',
@@ -217,7 +219,7 @@ function validateAmount(value: unknown, trust: GovernedActionMonetaryTrust, viol
     violations.push(`amount carries undeclared properties: ${extra.join(', ')}.`);
     return undefined;
   }
-  const parsed = parseMonetaryAmount({ value: value['value'], unit: value['currency'] }, trust.assets);
+  const parsed = parseMonetaryAmount(monetaryIngressFromWire(value), trust.assets);
   if (!parsed.valid) {
     violations.push(AMOUNT_VIOLATION_MESSAGES[parsed.violation]);
     return undefined;
@@ -285,11 +287,11 @@ function validateParameters(raw: unknown, profile: ResolvedGovernanceProfile, go
 /** A caller's `{ id, version }` expectation against the profile the trusted resolver chose. Pinning is allowed; choosing is not. */
 function validateProfileExpectation(raw: unknown, profile: ResolvedGovernanceProfile, violations: string[]): void {
   if (!isPlainObject(raw) || Object.keys(raw).some((key) => key !== 'id' && key !== 'version') || !isSemanticIdentifier(raw['id']) || !isGovernanceProfileVersion(raw['version'])) {
-    violations.push('governanceProfile must be exactly { id, version }: a semantic identifier and a positive integer.');
+    violations.push('expectedGovernanceProfile must be exactly { id, version }: a semantic identifier and a positive integer.');
     return;
   }
   if (raw['id'] !== profile.reference.id || raw['version'] !== profile.reference.version) {
-    violations.push('governanceProfile does not match the profile trusted configuration resolves for this action and resource; it can be pinned, never chosen.');
+    violations.push('expectedGovernanceProfile does not match the effective profile trusted configuration resolves for this action and resource; it can be pinned, never chosen.');
   }
 }
 
@@ -300,7 +302,7 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
   const undeclared = Object.keys(raw).filter((key) => !DECLARED_KEYS.has(key));
   if (undeclared.length > 0) violations.push(`The intent carries undeclared properties: ${undeclared.join(', ')}.`);
 
-  const { action, resource, counterparty, amount, parameters, governanceProfile, assertedContext, correlationId, idempotencyKey } = raw;
+  const { action, resource, counterparty, amount, parameters, expectedGovernanceProfile, assertedContext, correlationId, idempotencyKey } = raw;
 
   if (!isCanonicalCustomerIdentifier(action)) violations.push('action must be a canonical identifier.');
   if (!isCanonicalCustomerIdentifier(resource)) violations.push('resource must be a canonical identifier.');
@@ -327,9 +329,11 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
       violations.push(`This action and resource are not governed by any trusted Governance Profile (${resolution.reason}).`);
     } else if (resolution.kind === 'unclassified') {
       if (parameters !== undefined) violations.push('No Governance Profile governs this action, so it may carry no parameters.');
-      if (governanceProfile !== undefined) violations.push('No Governance Profile governs this action, so no governanceProfile expectation can be met.');
+      if (expectedGovernanceProfile !== undefined) violations.push('No Governance Profile governs this action, so no expectedGovernanceProfile can be met.');
     } else if (governance !== undefined) {
-      if (governanceProfile !== undefined) validateProfileExpectation(governanceProfile, resolution.profile, violations);
+      // The effective profile is the resolver's, full stop. The caller's
+      // expectation is only compared against it: it can pin, never choose.
+      if (expectedGovernanceProfile !== undefined) validateProfileExpectation(expectedGovernanceProfile, resolution.profile, violations);
       declaredParameters = validateParameters(parameters, resolution.profile, governance, violations);
       semantics = resolution.semantics;
     }
@@ -340,9 +344,11 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
     if (!isPlainObject(assertedContext) || !isContextValue(assertedContext, 0)) {
       violations.push(`assertedContext must be a plain JSON object of at most ${MAX_CONTEXT_KEYS} keys per level and depth ${MAX_CONTEXT_DEPTH}.`);
     } else {
-      // Declared dimension ids are reserved too, in any case: one canonical
-      // value per dimension, and it is the declared parameter's.
-      const reserved = Object.keys(assertedContext).filter((key) => GOVERNED_ACTION_RESERVED_CONTEXT_KEYS.includes(key) || governance?.shadowsDeclaredDimension(key) === true);
+      // The reserved-key registry: the built-in list above, plus the keys
+      // trusted configuration registers (verticals extend it; L-7) and every
+      // declared dimension id — both in any case. One canonical value per
+      // dimension, and it is the declared parameter's.
+      const reserved = Object.keys(assertedContext).filter((key) => GOVERNED_ACTION_RESERVED_CONTEXT_KEYS.includes(key) || governance?.reservesContextKey(key) === true);
       if (reserved.length > 0) violations.push(`assertedContext may not carry identity or authority keys: ${reserved.join(', ')}.`);
       else canonicalContext = copyContextValue(assertedContext) as Readonly<Record<string, unknown>>;
     }

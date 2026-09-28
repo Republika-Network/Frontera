@@ -126,7 +126,12 @@ function buildPolicyEvaluationInput(
     // fields only — never merged into `metadata`, which stays the resolved-facts
     // namespace. A proposed parameter is not a trusted fact.
     ...(action.semantics !== undefined
-      ? { actionClass: action.semantics.actionClass, resourceClass: action.semantics.resourceClass, governanceProfile: action.semantics.governanceProfile.id }
+      ? {
+          actionClass: action.semantics.actionClass,
+          resourceClass: action.semantics.resourceClass,
+          governanceProfile: action.semantics.governanceProfile.id,
+          governanceProfileVersion: action.semantics.governanceProfile.version,
+        }
       : {}),
     ...(action.governedParameters !== undefined
       ? { governedParameters: action.governedParameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) }

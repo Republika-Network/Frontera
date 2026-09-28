@@ -56,6 +56,8 @@ export const GRANT_EXERCISE_REASON_CODES = {
   GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH: 'GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH',
   /** A typed parameter is outside the grant's bound for its dimension (a different exact value, above a maximum, another type), is absent where the grant bounds its dimension, or is stated for a dimension the grant never bounded (CORE-03). */
   GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE: 'GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE',
+  /** The attempt's action class or resource class is not the class the grant is bound to — or the grant binds one and the attempt states none, or the reverse (CORE-03). */
+  GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH: 'GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH',
 } as const;
 
 export type GrantExerciseReasonCode = (typeof GRANT_EXERCISE_REASON_CODES)[keyof typeof GRANT_EXERCISE_REASON_CODES];

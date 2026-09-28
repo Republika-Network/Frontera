@@ -71,9 +71,11 @@ export function buildTestGrant(overrides: Partial<Omit<BoundedGrant, 'id' | 'dig
   const scope = overrides.scope ?? TEST_SCOPE;
   const expiresAt = overrides.expiresAt ?? TEST_EXPIRES_AT;
   const provenance = overrides.authorityBindingDigest !== undefined ? { authorityBindingDigest: overrides.authorityBindingDigest } : {};
+  const semantics = overrides.semanticsFormat !== undefined ? { semanticsFormat: overrides.semanticsFormat } : {};
   const withoutDigest = {
-    id: boundedGrantId({ correlation, subject, scope, expiresAt, ...provenance }),
+    id: boundedGrantId({ correlation, subject, scope, expiresAt, ...provenance, ...semantics }),
     ...provenance,
+    ...semantics,
     correlation,
     subject,
     scope,

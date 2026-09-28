@@ -38,6 +38,8 @@ export interface EnforcementPolicyEvaluationInput {
   readonly actionClass?: string;
   readonly resourceClass?: string;
   readonly governanceProfile?: string;
+  /** CORE-03 — the effective (trusted, server-resolved) Governance Profile's version. An integer; ordered predicates compare it numerically. */
+  readonly governanceProfileVersion?: number;
   /** CORE-03 — the typed parameter values the action proposes, one per declared dimension, in canonical order. Proposed values, not trusted facts. */
   readonly governedParameters?: readonly GovernedParameter[];
 

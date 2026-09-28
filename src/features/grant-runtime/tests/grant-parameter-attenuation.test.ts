@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 
 import {
   GRANT_REASON_CODES,
+  GRANT_SEMANTICS_FORMAT_V1,
   attenuateGrantScope,
+  boundedGrantId,
+  serializeBoundedGrant,
   createGrantIssuanceService,
   createInMemoryBoundedGrantStore,
   grantScopeIsWithin,
@@ -31,8 +34,10 @@ const exact = (dimension: string, value: string): GrantParameterBound => ({ dime
 function scopeWith(parameters: readonly GrantParameterBound[]): GrantScope {
   return {
     action: { kind: 'identity', value: 'read-customer-records' },
+    actionClass: { kind: 'identity', value: 'read' },
     governanceProfile: { kind: 'identity', value: PROFILE },
     parameters,
+    resourceClass: { kind: 'identity', value: 'customer_dataset' },
     resources: { kind: 'set', values: ['customer-data-example'] },
   };
 }
@@ -121,6 +126,16 @@ describe('CORE-03 — containment is proven of the artifact, strictly', () => {
 });
 
 describe('CORE-03 — scope well-formedness and serialization', () => {
+  it('the semantic axes are all-or-none, and parameter bounds never stand without them', () => {
+    const full = scopeWith([max('recordCount', 1)]);
+    const { actionClass: _a, ...noActionClass } = full;
+    const { parameters: _p, ...noParameters } = full;
+    const { actionClass: _x, resourceClass: _y, governanceProfile: _z, ...parametersOnly } = full;
+    assert.equal(isWellFormedGrantScope(noActionClass), false, 'a partial semantic set');
+    assert.equal(isWellFormedGrantScope(parametersOnly), false, 'parameters without the semantic axes');
+    assert.equal(isWellFormedGrantScope(noParameters), true, 'a profile may govern no parameter');
+  });
+
   it('an empty or unsorted parameter list is not a well-formed scope', () => {
     assert.equal(isWellFormedGrantScope(scopeWith([])), false);
     assert.equal(isWellFormedGrantScope(scopeWith([max('recordCount', 1), exact('dataScope', 'x')])), false);
@@ -148,7 +163,7 @@ describe('CORE-03 — scope well-formedness and serialization', () => {
     assert.equal(a, b);
     assert.equal(
       a,
-      `{"action":{"kind":"identity","value":"read-customer-records"},"governanceProfile":{"kind":"identity","value":"${PROFILE}"},"parameters":[{"dimension":"dataScope","kind":"exact","type":"token","value":"x"},{"dimension":"recordCount","kind":"maximum","limit":50,"type":"integer"}],"resources":{"kind":"set","values":["customer-data-example"]}}`,
+      `{"action":{"kind":"identity","value":"read-customer-records"},"actionClass":{"kind":"identity","value":"read"},"governanceProfile":{"kind":"identity","value":"${PROFILE}"},"parameters":[{"dimension":"dataScope","kind":"exact","type":"token","value":"x"},{"dimension":"recordCount","kind":"maximum","limit":50,"type":"integer"}],"resourceClass":{"kind":"identity","value":"customer_dataset"},"resources":{"kind":"set","values":["customer-data-example"]}}`,
     );
   });
 });
@@ -174,6 +189,16 @@ describe('CORE-03 — the production issuance service over a non-money bound', (
       expiresAt: '2026-01-01T12:10:00.000Z',
       ...(requested !== undefined ? { requestedBounds: { parameters: requested } } : {}),
     });
+
+  it('a semantic grant carries the explicit semanticsFormat marker, inside its identity; a legacy one carries none', async () => {
+    const semantic = await issue([max('recordCount', 1000)]);
+    assert.equal(semantic.outcome, 'issued');
+    if (semantic.outcome !== 'issued') return;
+    assert.equal(semantic.grant.semanticsFormat, GRANT_SEMANTICS_FORMAT_V1);
+    assert.match(serializeBoundedGrant(semantic.grant), /"semanticsFormat":"frontera\.grant-semantics\.v1"/);
+    const { semanticsFormat: _format, ...withoutMarker } = semantic.grant;
+    assert.notEqual(boundedGrantId({ ...withoutMarker, correlation, subject: 'agent-a' }), semantic.grant.id, 'the marker is part of the identity');
+  });
 
   it('issues a narrowed grant, whose identity and digest cover the parameter bound', async () => {
     const narrowed = await issue([max('recordCount', 1000)], [max('recordCount', 100)]);

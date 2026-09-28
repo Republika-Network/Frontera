@@ -80,6 +80,14 @@ export interface GovernanceConfiguration {
   readonly actionClasses?: readonly GovernanceActionClassDeclaration[];
   readonly resourceClasses?: readonly GovernanceResourceClassDeclaration[];
   readonly profiles?: readonly GovernanceProfileDefinition[];
+  /**
+   * The reserved-key registry's trusted extensions: `assertedContext` keys a
+   * deployment or vertical (e.g. a payment protocol pack, L-7) reserves beside
+   * the built-in `GOVERNED_ACTION_RESERVED_CONTEXT_KEYS`, which always remain.
+   * Matched regardless of case. Only configuration can add one; a request can
+   * neither add nor remove a reserved key.
+   */
+  readonly reservedContextKeys?: readonly string[];
 }
 
 /**
@@ -116,4 +124,8 @@ export interface GovernanceProfileRegistry {
   resolve(action: string, resource: string): GovernanceProfileResolution;
   /** Whether `key` names a declared dimension regardless of case — so a caller-asserted context key cannot shadow one. */
   shadowsDeclaredDimension(key: string): boolean;
+  /** The configured reserved-key extensions, sorted. */
+  readonly reservedContextKeys: readonly string[];
+  /** Whether `key` is reserved by configuration: a registered extension or a declared dimension, regardless of case. The built-in list is checked by the envelope beside this. */
+  reservesContextKey(key: string): boolean;
 }

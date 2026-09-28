@@ -54,9 +54,14 @@ export interface ActionDescriptor {
   readonly evidenceIds?: readonly string[];
   /**
    * Legacy, untyped, **never authority-material**: serialized terms some
-   * mandate services attach for the wrapped engine's own metadata. Nothing on
-   * the grant, policy-pack or exercise path reads it. Typed, declared,
-   * authority-material parameters are `governedParameters` below (CORE-03).
+   * library-only mandate services attach for the wrapped engine's recognition
+   * metadata (`context.parameters`). It reaches no policy input, no grant
+   * projection and no exercise request, and the governed-action path never
+   * sets it (`kernel-legacy-parameters.test.ts`). The one canonical,
+   * authority-relevant parameter model is `governedParameters` (CORE-03).
+   *
+   * @deprecated Non-authoritative compatibility field for library-only mandate
+   * services. New code states typed, declared `governedParameters`.
    */
   readonly parameters?: Readonly<Record<string, unknown>>;
 

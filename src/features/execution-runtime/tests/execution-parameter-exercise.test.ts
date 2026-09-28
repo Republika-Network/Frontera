@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { GovernedParameter } from '../../governed-parameter-runtime/index.js';
-import type { GrantScope } from '../../grant-runtime/index.js';
+import { GRANT_SEMANTICS_FORMAT_V1, type GrantScope } from '../../grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODES as E, assessBoundedGrantExercise, type GrantExerciseRequest } from '../index.js';
 import { TEST_ISSUED_AT, buildTestGrant } from './execution-fixture.js';
 
@@ -16,6 +16,8 @@ const PROFILE = `customer-data-read@1#sha256:${'e'.repeat(64)}`;
 const CORRELATION = { requestId: 'req-p', decisionId: 'dec-p', action: 'read-customer-records', resourceScope: 'customer-data-example' };
 const SCOPE: GrantScope = {
   action: { kind: 'identity', value: 'read-customer-records' },
+  actionClass: { kind: 'identity', value: 'read' },
+  resourceClass: { kind: 'identity', value: 'customer_dataset' },
   governanceProfile: { kind: 'identity', value: PROFILE },
   organization: { kind: 'identity', value: 'org-a' },
   parameters: [
@@ -24,7 +26,7 @@ const SCOPE: GrantScope = {
   ],
   resources: { kind: 'set', values: ['customer-data-example'] },
 };
-const GRANT = buildTestGrant({ correlation: CORRELATION, scope: SCOPE, subject: 'agent-a' });
+const GRANT = buildTestGrant({ correlation: CORRELATION, scope: SCOPE, subject: 'agent-a', semanticsFormat: GRANT_SEMANTICS_FORMAT_V1 });
 const AT = '2026-01-01T12:05:00.000Z';
 
 function attempt(parameters: readonly GovernedParameter[] | undefined, overrides: Partial<GrantExerciseRequest> = {}): GrantExerciseRequest {
@@ -35,6 +37,8 @@ function attempt(parameters: readonly GovernedParameter[] | undefined, overrides
     resource: 'customer-data-example',
     organization: 'org-a',
     governanceProfile: PROFILE,
+    actionClass: 'read',
+    resourceClass: 'customer_dataset',
     ...(parameters !== undefined ? { parameters } : {}),
     correlation: CORRELATION,
     executionId: 'exec-p',
@@ -103,6 +107,23 @@ describe('CORE-03 §73 — action, resource and profile substitution at exercise
     assert.deepEqual([...assess(attempt(within, { governanceProfile: `customer-data-export@1#sha256:${'e'.repeat(64)}` })).reasonCodes], [E.GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH]);
     const { governanceProfile: _omitted, ...noProfile } = attempt(within);
     assert.deepEqual([...assess(noProfile).reasonCodes], [E.GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH]);
+  });
+
+  it('an attempt under another action class or resource class — or none — is refused with GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH', () => {
+    assert.deepEqual([...assess(attempt(within, { actionClass: 'export' })).reasonCodes], [E.GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH]);
+    assert.deepEqual([...assess(attempt(within, { resourceClass: 'public_dataset' })).reasonCodes], [E.GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH]);
+    const { actionClass: _omitted, ...noClass } = attempt(within);
+    assert.deepEqual([...assess(noClass).reasonCodes], [E.GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH]);
+  });
+
+  it('a grant whose semantic marker and axes disagree is an integrity failure, whatever is attempted', () => {
+    const noMarker = buildTestGrant({ correlation: CORRELATION, scope: SCOPE, subject: 'agent-a' });
+    assert.ok(assessBoundedGrantExercise({ grant: noMarker, request: attempt(within, { boundedGrantId: noMarker.id }), at: AT }).reasonCodes.includes(E.GRANT_EXERCISE_INTEGRITY_INVALID), 'new axes without semanticsFormat');
+    const { actionClass: _a, ...partial } = SCOPE;
+    const markerWithoutAxes = buildTestGrant({ correlation: CORRELATION, scope: partial, subject: 'agent-a', semanticsFormat: GRANT_SEMANTICS_FORMAT_V1 });
+    assert.ok(assessBoundedGrantExercise({ grant: markerWithoutAxes, request: attempt(within, { boundedGrantId: markerWithoutAxes.id }), at: AT }).reasonCodes.includes(E.GRANT_EXERCISE_INTEGRITY_INVALID), 'semanticsFormat without its required axes');
+    const unknownMarker = buildTestGrant({ correlation: CORRELATION, scope: SCOPE, subject: 'agent-a', semanticsFormat: 'frontera.grant-semantics.v2' });
+    assert.ok(assessBoundedGrantExercise({ grant: unknownMarker, request: attempt(within, { boundedGrantId: unknownMarker.id }), at: AT }).reasonCodes.includes(E.GRANT_EXERCISE_INTEGRITY_INVALID), 'an unknown marker');
   });
 
   it('a legacy grant (no profile, no parameters) refuses an attempt that states either', () => {

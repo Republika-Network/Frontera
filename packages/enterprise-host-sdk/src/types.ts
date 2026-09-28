@@ -116,8 +116,8 @@ export interface GovernedActionIntent {
    * coercion. An action no profile governs may carry none.
    */
   readonly parameters?: Readonly<Record<string, number | string | boolean>>;
-  /** The profile you expect to govern this action. Pins, never selects: a mismatch is refused. */
-  readonly governanceProfile?: { readonly id: string; readonly version: number };
+  /** The profile you expect to govern this action. A hint that pins, never selects: the Host resolves the effective profile, and a mismatch is refused. */
+  readonly expectedGovernanceProfile?: { readonly id: string; readonly version: number };
   /** Evidence the caller *asserts* (e.g. a passport id). The Host verifies it; submitting it does not make it trusted. */
   readonly assertedContext?: Readonly<Record<string, unknown>>;
   readonly correlationId?: string;

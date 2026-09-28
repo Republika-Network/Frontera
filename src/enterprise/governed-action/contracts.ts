@@ -78,13 +78,15 @@ export interface GovernedActionIntent {
    */
   readonly parameters?: Readonly<Record<string, unknown>>;
   /**
-   * CORE-03 — the profile the caller *expects* to govern this action,
-   * `{ id, version }`. Optional. Never a selection: the trusted resolver
-   * chooses the profile from `action` × `resource`, and an expectation that
-   * disagrees with it (another id, an older or newer version) is refused
-   * rather than honoured.
+   * CORE-03 — a **hint that pins**, never a selector: the profile the caller
+   * *expects* to govern this action, `{ id, version }`. The **effective**
+   * profile is always the one the trusted resolver chooses from `action` ×
+   * `resource`; it is what the decision records and the grant binds. An
+   * expectation that disagrees with it (another id, an older or newer
+   * version) is refused rather than honoured, and an absent expectation
+   * changes nothing.
    */
-  readonly governanceProfile?: GovernedActionProfileExpectation;
+  readonly expectedGovernanceProfile?: GovernedActionProfileExpectation;
   /**
    * Context the caller *asserts* — evidence references such as a passport or
    * capability-token id. It reaches the Kernel as `request.context`, where it
@@ -131,7 +133,7 @@ export interface GovernedActionProfileExpectation {
  * Profile governs the action (CORE-03). `parameters` is the declared, typed,
  * canonically ordered list — never the caller's object.
  */
-type GovernedActionIntentCommon = Omit<GovernedActionIntent, 'amount' | 'parameters' | 'governanceProfile'> & {
+type GovernedActionIntentCommon = Omit<GovernedActionIntent, 'amount' | 'parameters' | 'expectedGovernanceProfile'> & {
   readonly semantics?: GovernedActionSemantics;
   readonly parameters?: readonly DeclaredGovernedParameter[];
 };

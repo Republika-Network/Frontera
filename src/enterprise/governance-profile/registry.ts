@@ -162,8 +162,26 @@ export function governanceProfileDigest(definition: GovernanceProfileDefinition)
   return computeDigest({ format: GOVERNANCE_PROFILE_FORMAT, profile: definition });
 }
 
+/** A reserved context key: a plain JSON-key-shaped identifier, at most 64 characters. */
+const RESERVED_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+
+function buildReservedContextKeys(value: unknown): readonly string[] {
+  const entries = list(value, 'reservedContextKeys', 64);
+  const folds = new Set<string>();
+  const keys: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string' || !RESERVED_KEY.test(entry)) fail('reservedContextKeys holds a malformed key.');
+    if (folds.has(entry.toLowerCase())) fail(`reservedContextKeys names '${entry}' twice (keys are reserved regardless of case).`);
+    folds.add(entry.toLowerCase());
+    keys.push(entry);
+  }
+  return Object.freeze(keys.sort(byId));
+}
+
 export function createGovernanceProfileRegistry(configuration: GovernanceConfiguration | undefined): GovernanceProfileRegistry {
-  const config = closed(configuration ?? {}, ['parameterDimensions', 'actionClasses', 'resourceClasses', 'profiles'], 'governance');
+  const config = closed(configuration ?? {}, ['parameterDimensions', 'actionClasses', 'resourceClasses', 'profiles', 'reservedContextKeys'], 'governance');
+  const reservedContextKeys = buildReservedContextKeys(config['reservedContextKeys']);
+  const reservedFolds = new Set(reservedContextKeys.map((key) => key.toLowerCase()));
 
   let dimensions: ParameterDimensionRegistry;
   try {
@@ -199,7 +217,8 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
   profiles.sort((left, right) => byId(left.definition.profileId, right.definition.profileId));
 
   const dimensionFolds = new Set(dimensions.dimensions.map((dimension) => semanticIdentifierFold(dimension.id)));
-  const configured = actions.ids.size > 0 || resources.ids.size > 0 || profiles.length > 0;
+  const configured = actions.ids.size > 0 || resources.ids.size > 0 || profiles.length > 0 || reservedContextKeys.length > 0;
+  const shadows = (key: string): boolean => typeof key === 'string' && dimensionFolds.has(key.toLowerCase());
 
   return Object.freeze({
     configured,
@@ -216,8 +235,10 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
       const semantics: GovernedActionSemantics = Object.freeze({ actionClass, resourceClass, governanceProfile: profile.reference });
       return { kind: 'resolved', profile, semantics };
     },
-    shadowsDeclaredDimension(key: string): boolean {
-      return typeof key === 'string' && dimensionFolds.has(key.toLowerCase());
+    shadowsDeclaredDimension: shadows,
+    reservedContextKeys,
+    reservesContextKey(key: string): boolean {
+      return typeof key === 'string' && (reservedFolds.has(key.toLowerCase()) || shadows(key));
     },
   });
 }

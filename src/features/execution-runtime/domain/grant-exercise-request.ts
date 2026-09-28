@@ -61,6 +61,9 @@ export interface GrantExerciseRequest {
    * identity axis.
    */
   readonly governanceProfile?: string;
+  /** CORE-03 — the trusted action class and resource class the action was classified under. Each must equal the class the grant is bound to, under the same three-way rule. */
+  readonly actionClass?: string;
+  readonly resourceClass?: string;
   /**
    * The typed parameter values being attempted, one per declared dimension, in
    * canonical dimension order (CORE-03). Every dimension the grant bounds must
@@ -134,6 +137,8 @@ export function isWellFormedGrantExerciseRequest(request: GrantExerciseRequest):
   if (request.organization !== undefined && request.organization.length === 0) return false;
   if (request.amount !== undefined && !isWellFormedGrantExerciseAmount(request.amount)) return false;
   if (request.governanceProfile !== undefined && request.governanceProfile.length === 0) return false;
+  if (request.actionClass !== undefined && request.actionClass.length === 0) return false;
+  if (request.resourceClass !== undefined && request.resourceClass.length === 0) return false;
   if (request.parameters !== undefined && !isWellFormedExerciseParameters(request.parameters)) return false;
   return (
     request.correlation.requestId.length > 0 &&

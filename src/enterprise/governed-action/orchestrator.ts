@@ -41,6 +41,7 @@ import { GovernedActionConfigurationError } from './errors.js';
 import { EXECUTION_UNCONFIRMED_OUTCOME, createExecutionLedger, type PriorExecution } from './execution-ledger.js';
 import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId, governedActionIdempotencyScope } from './identifiers.js';
 import { validateGovernedActionIntent } from './intent.js';
+import { monetaryAmountOfKernelAction } from './monetary-naming.js';
 import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
 
 /**
@@ -392,6 +393,7 @@ function observationOf(outcome: ExecutionOutcome, observedAt: string): Execution
 /** The exercise request, built from the verified request and the grant — never from the caller's object. */
 function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: { readonly id: string; readonly correlation: GrantCorrelation }, executionId: string): GrantExerciseRequest {
   const { request } = verified;
+  const amount = monetaryAmountOfKernelAction(request.action);
   return {
     boundedGrantId: grant.id,
     subject: scope.actorId,
@@ -399,11 +401,17 @@ function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: 
     resource: request.action.resourceScope,
     ...(request.action.counterpartyId !== undefined ? { counterparty: request.action.counterpartyId } : {}),
     ...(request.organization !== undefined ? { organization: request.organization.id } : {}),
-    ...(request.action.amount !== undefined && request.action.currency !== undefined ? { amount: { value: request.action.amount, unit: request.action.currency } } : {}),
+    ...(amount !== undefined ? { amount } : {}),
     // CORE-03: the profile and typed parameters the *committed* decision was
     // made on — the grant bounds them, and the exercise gate proves this
     // attempt inside those bounds. Never re-read from the caller.
-    ...(request.action.semantics !== undefined ? { governanceProfile: formatGovernanceProfileReference(request.action.semantics.governanceProfile) } : {}),
+    ...(request.action.semantics !== undefined
+      ? {
+          governanceProfile: formatGovernanceProfileReference(request.action.semantics.governanceProfile),
+          actionClass: request.action.semantics.actionClass,
+          resourceClass: request.action.semantics.resourceClass,
+        }
+      : {}),
     ...(request.action.governedParameters !== undefined
       ? { parameters: request.action.governedParameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) }
       : {}),
@@ -454,7 +462,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Execution reconciliation, when enabled, requires a resolution-authority binder and a resolution reader.');
   }
   const governance = options.governance;
-  if (governance !== undefined && (governance === null || typeof governance !== 'object' || typeof governance.resolve !== 'function' || typeof governance.shadowsDeclaredDimension !== 'function')) {
+  if (governance !== undefined && (governance === null || typeof governance !== 'object' || typeof governance.resolve !== 'function' || typeof governance.reservesContextKey !== 'function')) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed-action semantics, when supplied, must be a trusted Governance Profile registry.');
   }
   const hostRevalidateSource = options.revalidateSource;

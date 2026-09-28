@@ -121,10 +121,12 @@ function sourceScopeFor(request: KernelEvaluationRequest): GrantScope {
   const parameters = request.action.governedParameters === undefined ? undefined : parameterBoundsFor(request.action.governedParameters);
   return {
     ...(action.length > 0 ? { action: { kind: 'identity' as const, value: action } } : {}),
+    ...(semantics !== undefined ? { actionClass: { kind: 'identity' as const, value: semantics.actionClass } } : {}),
     ...(request.action.counterpartyId !== undefined ? { counterparty: { kind: 'identity' as const, value: request.action.counterpartyId } } : {}),
     ...(semantics !== undefined ? { governanceProfile: { kind: 'identity' as const, value: formatGovernanceProfileReference(semantics.governanceProfile) } } : {}),
     ...(request.organization?.id !== undefined ? { organization: { kind: 'identity' as const, value: request.organization.id } } : {}),
     ...(parameters !== undefined ? { parameters } : {}),
+    ...(semantics !== undefined ? { resourceClass: { kind: 'identity' as const, value: semantics.resourceClass } } : {}),
     ...(request.action.resourceScope.length > 0 ? { resources: { kind: 'set' as const, values: [request.action.resourceScope] } } : {}),
   };
 }

@@ -8,7 +8,7 @@ import type {
   RevokeBoundedGrantInput,
   RevokeBoundedGrantOutcome,
 } from '../domain/index.js';
-import { GRANT_REASON_CODES, isGrantRevocationReason } from '../domain/index.js';
+import { GRANT_REASON_CODES, isGrantRevocationReason, isWellFormedBoundedGrantSemantics } from '../domain/index.js';
 
 /** The durable store's schema version. v3 (CORE-01) adds the signed revocation-state commitment and binds every signed record to its store. */
 export const BOUNDED_GRANT_STORE_SCHEMA_VERSION = 'aoc.bounded-grant-store.schema.v3';
@@ -40,6 +40,8 @@ export function createInMemoryBoundedGrantStore(): BoundedGrantStorePort {
 
   return {
     async issue(input: IssueBoundedGrantInput): Promise<IssueBoundedGrantOutcome> {
+      // CORE-03: a grant whose semantic marker and axes disagree is never stored.
+      if (!isWellFormedBoundedGrantSemantics(input.grant)) return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_SEMANTICS_FORMAT_INVALID] };
       // ---- critical section begins. No `await` below this line. ----
       const existing = grants.get(input.grant.id);
       if (existing !== undefined) {

@@ -43,6 +43,7 @@ export type PolicyPredicateField =
   | 'actionClass'
   | 'resourceClass'
   | 'governanceProfile'
+  | 'governanceProfileVersion'
   | 'parameter';
 
 export interface PolicyGroupCondition {

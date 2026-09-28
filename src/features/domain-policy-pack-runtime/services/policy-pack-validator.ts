@@ -177,6 +177,9 @@ export class PolicyPackValidator {
           message: `Rule ${ruleId} orders a parameter against something other than a safe integer. Only integer dimensions are ordered, and a threshold is never text.`,
         });
       }
+      if (condition.field === 'governanceProfileVersion' && ORDERED_OPERATORS.has(condition.operator) && !(typeof condition.value === 'number' && Number.isSafeInteger(condition.value))) {
+        issues.push({ code: 'INVALID_PARAMETER_THRESHOLD', message: `Rule ${ruleId} orders governanceProfileVersion against something other than a safe integer.` });
+      }
       if (condition.field === 'amount' && !isMonetaryPredicateValue(condition)) {
         issues.push({
           code: 'INVALID_MONETARY_THRESHOLD',

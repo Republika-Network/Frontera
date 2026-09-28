@@ -5,6 +5,7 @@ import {
   grantBoundComparisonPermits,
   grantCorrelationMatches,
   grantParameterBound,
+  isWellFormedBoundedGrantSemantics,
   type BoundedGrant,
   type GrantBound,
   type GrantCorrelation,
@@ -119,7 +120,9 @@ export function assessBoundedGrantExercise(input: {
   // 1. Integrity. A grant whose fields differ from the ones that were digested
   //    is refused, never repaired — and refused *first*, because every bound
   //    below is read off those same fields.
-  if (!boundedGrantDigestMatches(grant)) reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_INTEGRITY_INVALID);
+  // CORE-03: a grant whose semantic marker and axes disagree is interpretable
+  // in neither format, so it is an integrity failure, not a scope question.
+  if (!boundedGrantDigestMatches(grant) || !isWellFormedBoundedGrantSemantics(grant)) reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_INTEGRITY_INVALID);
 
   // 2. Revocation. An immutable event held beside the grant; its presence is
   //    the whole of the check.
@@ -161,6 +164,12 @@ export function assessBoundedGrantExercise(input: {
   //    typed parameters, under the same both-directions absence rule.
   if (!axisAgrees(grant.scope.governanceProfile, request.governanceProfile === undefined ? undefined : { kind: 'identity', value: request.governanceProfile })) {
     reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH);
+  }
+  if (
+    !axisAgrees(grant.scope.actionClass, request.actionClass === undefined ? undefined : { kind: 'identity', value: request.actionClass }) ||
+    !axisAgrees(grant.scope.resourceClass, request.resourceClass === undefined ? undefined : { kind: 'identity', value: request.resourceClass })
+  ) {
+    reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH);
   }
   if (!parametersAgree(grant.scope.parameters, request.parameters)) {
     reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE);

@@ -114,6 +114,8 @@ export class PolicyConditionEvaluator {
         return input.resourceClass;
       case 'governanceProfile':
         return input.governanceProfile;
+      case 'governanceProfileVersion':
+        return input.governanceProfileVersion;
       default:
         return undefined;
     }

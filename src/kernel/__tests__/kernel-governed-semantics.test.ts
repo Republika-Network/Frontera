@@ -60,6 +60,7 @@ describe('CORE-03 — typed semantics reach policy as typed fields, never as tru
     assert.equal(policy.actionClass, 'export');
     assert.equal(policy.resourceClass, 'customer_dataset');
     assert.equal(policy.governanceProfile, 'customer-data-export');
+    assert.equal(policy.governanceProfileVersion, 2, 'the effective profile version is available to policy');
     assert.deepEqual(policy.governedParameters, [
       { dimension: 'destination', type: 'token', value: 'approved-archive' },
       { dimension: 'recordCount', type: 'integer', value: 50 },
@@ -79,6 +80,8 @@ describe('CORE-03 — the grant source binds the profile and bounds every evalua
   it('projects the profile reference as an identity axis and each parameter under its declared bound kind', () => {
     const source = deriveGrantSourceAuthorization(new KernelGrantCapability({ declaration: {} }), REQUEST, decision);
     assert.deepEqual(source.scope.governanceProfile, { kind: 'identity', value: `customer-data-export@2#${DIGEST}` });
+    assert.deepEqual(source.scope.actionClass, { kind: 'identity', value: 'export' });
+    assert.deepEqual(source.scope.resourceClass, { kind: 'identity', value: 'customer_dataset' });
     assert.deepEqual(source.scope.parameters, [
       { dimension: 'destination', kind: 'exact', type: 'token', value: 'approved-archive' },
       { dimension: 'recordCount', kind: 'maximum', type: 'integer', limit: 50 },

@@ -5,7 +5,10 @@ import {
   attenuateGrantScope,
   boundedGrantDigest,
   boundedGrantId,
+  GRANT_SEMANTICS_FORMAT_V1,
+  grantScopeCarriesSemantics,
   grantScopeIsWithin,
+  isWellFormedBoundedGrantSemantics,
   grantSourceDigest,
   grantSourceMatchesCorrelation,
   isWellFormedGrantCorrelation,
@@ -219,10 +222,15 @@ export function createGrantIssuanceService(options: GrantIssuanceServiceOptions)
       const expiresAt = validity.expiresAt;
 
       const provenance = request.authorityBindingDigest !== undefined ? { authorityBindingDigest: request.authorityBindingDigest } : {};
-      const id = boundedGrantId({ correlation: request.correlation, subject: request.subject, scope: attenuation.scope, expiresAt, ...provenance });
+      // CORE-03: a grant carrying semantic axes carries the explicit, signed
+      // format marker; one that cannot state them completely is not issued.
+      const semantics = grantScopeCarriesSemantics(attenuation.scope) ? { semanticsFormat: GRANT_SEMANTICS_FORMAT_V1 } : {};
+      if (!isWellFormedBoundedGrantSemantics({ scope: attenuation.scope, ...semantics })) return refusal([GRANT_REASON_CODES.GRANT_SEMANTICS_FORMAT_INVALID]);
+      const id = boundedGrantId({ correlation: request.correlation, subject: request.subject, scope: attenuation.scope, expiresAt, ...provenance, ...semantics });
       const withoutDigest = {
         id,
         ...provenance,
+        ...semantics,
         correlation: request.correlation,
         subject: request.subject,
         scope: attenuation.scope,

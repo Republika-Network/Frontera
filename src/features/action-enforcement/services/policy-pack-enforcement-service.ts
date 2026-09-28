@@ -216,6 +216,7 @@ export class PolicyPackEnforcementService {
       ...(evalInput?.actionClass !== undefined ? { actionClass: evalInput.actionClass } : {}),
       ...(evalInput?.resourceClass !== undefined ? { resourceClass: evalInput.resourceClass } : {}),
       ...(evalInput?.governanceProfile !== undefined ? { governanceProfile: evalInput.governanceProfile } : {}),
+      ...(evalInput?.governanceProfileVersion !== undefined ? { governanceProfileVersion: evalInput.governanceProfileVersion } : {}),
       ...(evalInput?.governedParameters !== undefined ? { governedParameters: evalInput.governedParameters } : {}),
       ...(evalInput?.metadata !== undefined ? { metadata: evalInput.metadata } : {}),
     };

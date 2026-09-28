@@ -157,6 +157,8 @@ export interface AdministeredGrantView {
   /** What it was derived from: the committed governance request and decision, and the act they covered. */
   readonly provenance: { readonly requestId: string; readonly decisionId: string; readonly action: string; readonly resourceScope: string };
   readonly bounds: AdministeredGrantBounds;
+  /** CORE-03 — the grant's explicit, signed semantic format (`frontera.grant-semantics.v1`) when its bounds include the semantic axes; absent on every other grant. */
+  readonly semanticsFormat?: string;
   readonly issuedAt: string;
   readonly expiresAt: string;
   /**
@@ -208,6 +210,7 @@ export function toAdministeredGrantView(grant: BoundedGrant, revocation: GrantRe
       resourceScope: grant.correlation.resourceScope,
     },
     bounds,
+    ...(grant.semanticsFormat !== undefined ? { semanticsFormat: grant.semanticsFormat } : {}),
     issuedAt: grant.issuedAt,
     expiresAt: grant.expiresAt,
     status: { eligibility: assessment.eligibility, reasonCodes: [...assessment.reasonCodes], assessedAt },
