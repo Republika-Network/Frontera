@@ -116,7 +116,7 @@ function content(row: RawRow): ObligationDischargeRowContent {
  * and the head exactly as the application would — and then either keeps the
  * genuine head signature, or signs the forged head with the attacker's own key.
  */
-async function forge(file: string, edit: (rows: RawRow[]) => RawRow[], signature: 'keep' | 'attacker-key' = 'attacker-key'): Promise<void> {
+async function forge(file: string, edit: (rows: RawRow[]) => RawRow[], signature: 'keep' | 'attacker-key' | 'head-untouched' = 'attacker-key'): Promise<void> {
   const db = new Database(file);
   try {
     const meta = db.prepare('SELECT store_id, organization_id FROM obligation_discharge_store_meta WHERE id = 1').get() as { store_id: string; organization_id: string };
@@ -129,7 +129,7 @@ async function forge(file: string, edit: (rows: RawRow[]) => RawRow[], signature
       chain = nextObligationDischargeChainDigest(chain, row.row_digest);
     });
     const forgedSignature =
-      signature === 'keep'
+      signature !== 'attacker-key'
         ? head.signature_json
         : JSON.stringify(await testSigner(AUTHORITY_KEY_UNTRUSTED).signObligationDischargeState({ storeId: meta.store_id, organizationId: meta.organization_id, sequence: rows.length, chainDigest: chain }));
     db.exec('DROP TRIGGER IF EXISTS obligation_discharges_no_update; DROP TRIGGER IF EXISTS obligation_discharges_no_delete;');
@@ -139,7 +139,7 @@ async function forge(file: string, edit: (rows: RawRow[]) => RawRow[], signature
         'INSERT INTO obligation_discharges VALUES (@sequence, @organization_id, @request_id, @action, @resource_scope, @obligation_type, @source_id, @outcome, @observed_at, @reference, @subject_id, @recorded_by, @recorded_at, @row_digest)',
       );
       for (const row of rows) insert.run(row);
-      db.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(rows.length, chain, forgedSignature);
+      if (signature !== 'head-untouched') db.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(rows.length, chain, forgedSignature);
     })();
   } finally {
     db.close();
@@ -269,6 +269,23 @@ describe('CORE-04 — the obligation discharge store is authenticated, not merel
       assert.equal(await state(replica), 'discharged');
       await forge(copy, (rows) => rows.filter((row) => row.source_id !== 'notes'), signature);
       await refused(copy);
+    }
+  });
+
+  it('rows rewritten underneath the genuine, untouched signed head — every row digest recomputed, same count — are refused by the chain', async () => {
+    const edits: readonly ((rows: RawRow[]) => RawRow[])[] = [
+      (rows) => rows.map((row) => ({ ...row, source_id: 'board' })),
+      (rows) => rows.map((row) => ({ ...row, outcome: 'waived', source_id: 'board' })),
+      (rows) => rows.map((row) => ({ ...row, request_id: 'aoc.gar:elsewhere' })),
+      (rows) => [...rows].reverse(),
+    ];
+    for (const edit of edits) {
+      const file = path();
+      const store = await open(file);
+      await record(store, 'notes', 'discharged');
+      await record(store, 'notes', 'discharged', tick(), { requestId: 'aoc.gar:second', action: 'deploy-release', resourceScope: 'production' });
+      await forge(file, edit, 'head-untouched');
+      await refused(file);
     }
   });
 

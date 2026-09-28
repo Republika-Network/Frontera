@@ -172,10 +172,18 @@ satisfies). Justified changes:
   `finance.approval | second.signer` union was domain vocabulary in CORE). The
   two historical kinds remain valid identifiers.
 - **Per-profile declaration**: a profile's `obligations: [{obligationType, blocking}]`.
-- **A durable discharge store** (`obligation-discharges.sqlite`): append-only
-  (UPDATE/DELETE refused by triggers), each row digested over its content,
-  verified on every read — a failed read leaves every blocking obligation
-  unsatisfied. Reports are written only through an **in-process trusted writer**
+- **A durable, authenticated discharge store** (`obligation-discharges.sqlite`,
+  schema v2). A verified or waived discharge releases issuance, so the store is
+  **authority-material** and its boundary is cryptographic (the CORE-01
+  pattern): a hash chain over the whole append-only history, from a genesis
+  bound to a random store id and the organization, whose head
+  `{storeId, organizationId, sequence, chainDigest}` is signed by the
+  deployment's authority signer under
+  `frontera:authority-artifact:obligation-discharge-state:v1`. Every
+  authoritative read (at open and before every issuance) verifies the
+  signature and recomputes the chain; any failure refuses the store and leaves
+  every blocking obligation unsatisfied. Triggers remain as defense in depth
+  only. See §2.8.1. Reports are written only through an **in-process trusted writer**
   (`AocEnterprise.obligationDischarges.record({system: true, actorId}, …)`),
   attributed to that writer, citing a configured source; the input has no
   state/verified/satisfied field. No HTTP route, SDK method or CTRL-01 call
@@ -184,6 +192,36 @@ satisfies). Justified changes:
   it stood (an unmet blocking obligation withholds the *grant*, never rewrites
   the decision); a retry of the same request (same idempotency key → same
   committed decision, never re-made) is issued on the obligation state *now*.
+
+#### 2.8.1 Why a signed state, not signed rows
+
+Reproduced before the fix: a database-only writer inserted a row citing the
+configured independent source, recomputed the unkeyed digest, and the canonical
+Host executed the withheld action. Signing rows alone (Candidate A) would not
+suffice: the lifecycle orders reports by observation time and refuses
+`discharged → waived`, so *deleting* a genuine self-reported discharge could let
+a genuine later waiver apply. Completeness of the set is part of the property,
+so the whole history is committed (Candidate B). Store identity and organization
+are inside the genesis, every row digest and the signed head, so a row or a head
+copied from another store or organization fails; correlation
+(`requestId`, `action`, `resourceScope`), source and outcome are inside each row
+digest and therefore inside the signed chain. The unauthenticated v1 format
+(never shipped) is refused, never upgraded; there is no unauthenticated durable
+mode. The in-memory store (memory persistence only) keeps the same chain but
+signs nothing — there is no database for a writer to reach — and the secure
+profile refuses it.
+
+**Rollback.** A restore of an older genuine signed state after a restart is not
+detected (CORE-07); an in-process witness refuses regression while the process
+lives. The trusted writer records reports for one obligation of one decision in
+strictly increasing observation time, so every committed prefix is a prefix of
+the lifecycle sequence; a satisfied obligation is terminal, so a rollback can
+remove satisfaction but never manufacture it.
+
+**Gate source.** Whether an obligation applies at issuance is decided from the
+trusted configuration of the request the server rebuilt (its effective
+profile), never from the committed Governance Record's own `obligations` field,
+which is integrity-only (§3.7 item 4 of the Master Plan).
 
 Only pre-execution (issuance-gating) obligations exist; a non-blocking
 obligation is recorded and gates nothing; outcomes and evidence never discharge
@@ -258,14 +296,31 @@ annotates and does not relabel.
 | Policy mutation through context | Mitigated | context is input only; pack writes remain NB-008-gated |
 | Obligation forgery / unauthorized discharge | Mitigated | trusted writer + configured source class; self-reported never satisfies |
 | Obligation replay | Mitigated | decision-bound correlation |
-| Discharge store tampering | Mitigated (integrity) | append-only triggers + per-row digest; a DB-level writer who also recomputes digests is **residual** (unsigned) |
+| Discharge store tampering / forged satisfaction by a DB-only writer | **Mitigated (authenticity)** | signed chain head verified on every read; insert/alter/delete/reorder/transplant/re-sign-with-own-key refused (`obligation-discharge-authenticity.test.ts`, Host forgery E2E) |
+| Discharge store rollback to an older genuine state | **Residual (CORE-07)**, bounded | in-process witness; time-ordered recording makes a rollback unable to manufacture satisfaction |
+| Signing key or process compromise | **Residual (CORE-02)** | whoever holds the key can sign any state (AA-001) |
+| Governance Record tampering (integrity-only, pre-existing) | **Residual (ASSURE-02)**, narrowed | the obligation gate no longer reads the record; the context digest is authentic once inside a signed grant |
 | Context/decision digest mismatch | Mitigated | digest in committed record and in signed grant source |
 | TOCTOU | **Residual, bounded** | §2.7 |
 | Source revocation after issuance | **Residual, bounded** | §2.7; CTRL-01 revocation |
 
 ## 5. Residuals and owners
 
-- Provenance and discharge rows are integrity-protected, not signed (ASSURE-02 / CORE-02).
+- **Security properties, separated.** *Authenticity:* the discharge store's
+  committed state and every issued grant (with its context digest) are signed.
+  *Integrity only:* the committed Governance Record, including its context
+  evaluation (pre-existing, §3.7 item 4; ASSURE-02), and context provenance
+  digests on readings (a connector-level attacker can recompute them).
+  *Rollback:* not detected across restarts for either store (CORE-07).
+  *Process/key compromise:* not addressed (CORE-02).
+- **Provenance classification.** Context provenance is never read back from
+  storage to admit a fact: admission happens in memory, at decision time, from
+  the provider. The persisted context evaluation carries no values and cannot
+  become an admitted fact; its digest is inside the signed grant's
+  `sourceDigest`. What a Governance Store writer *can* still do is the
+  pre-existing integrity-only residual (rewrite a committed decision before a
+  grant is issued from it, e.g. its status or `validUntil`); bounded by the
+  Host grant lifetime and every issuance/exercise gate, and owned by ASSURE-02.
 - No exercise-time re-fetch of facts (by design); the window is `maxAgeSeconds`.
 - Profile obligations have no own deadline; the grant lifetime bounds a withheld decision.
 - Policy packs have no durable store or file format on the Host; policy is in-process composition (CORE-08 / CTRL-02).
