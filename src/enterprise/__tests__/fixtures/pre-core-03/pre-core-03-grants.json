@@ -1,0 +1,23 @@
+{
+  "generatedBy": "CORE-03 fixture generator against the unmodified build of 2ee659b (pre-CORE-03)",
+  "keyId": "pre-core-03-fixture-key",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAZE4LlxvQzcmalJvQGxurh/nK+BtubzX3leqUIL2whzQ=\n-----END PUBLIC KEY-----\n",
+  "grants": [
+    {
+      "id": "aoc.grant:980fc3d46206903bfd0ee3296e45e85a",
+      "digest": "sha256:0e4c91f0cfe543bc716ca875b0985275e861a9cfb145f196557729182ac79640",
+      "sourceDigest": "sha256:f8f5d3da9084a2d22aa783854223d2aae3fe9e043431f2424cedaf7f4de2533d",
+      "revoked": false,
+      "serialized": "{\"authorityBindingDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"correlation\":{\"action\":\"payment.send\",\"decisionId\":\"dec-legacy-active\",\"requestId\":\"req-legacy-active\",\"resourceScope\":\"resource-treasury-1\"},\"digest\":\"sha256:0e4c91f0cfe543bc716ca875b0985275e861a9cfb145f196557729182ac79640\",\"expiresAt\":\"2099-01-01T00:00:00.000Z\",\"id\":\"aoc.grant:980fc3d46206903bfd0ee3296e45e85a\",\"issuedAt\":\"2026-01-01T12:00:00.000Z\",\"scope\":{\"action\":{\"kind\":\"identity\",\"value\":\"payment.send\"},\"amount\":{\"kind\":\"ceiling\",\"limit\":\"100\",\"unit\":\"USD\"},\"counterparty\":{\"kind\":\"identity\",\"value\":\"vendor-v123\"},\"organization\":{\"kind\":\"identity\",\"value\":\"org-a\"},\"resources\":{\"kind\":\"set\",\"values\":[\"resource-treasury-1\"]}},\"sourceDigest\":\"sha256:f8f5d3da9084a2d22aa783854223d2aae3fe9e043431f2424cedaf7f4de2533d\",\"subject\":\"agent-a\"}",
+      "scopeSerialized": "{\"action\":{\"kind\":\"identity\",\"value\":\"payment.send\"},\"amount\":{\"kind\":\"ceiling\",\"limit\":\"100\",\"unit\":\"USD\"},\"counterparty\":{\"kind\":\"identity\",\"value\":\"vendor-v123\"},\"organization\":{\"kind\":\"identity\",\"value\":\"org-a\"},\"resources\":{\"kind\":\"set\",\"values\":[\"resource-treasury-1\"]}}"
+    },
+    {
+      "id": "aoc.grant:f2008a67703f167fece7fd9868d60539",
+      "digest": "sha256:0f0c9023fe09b29de89fe0d1f5a8f3d2d6440ec1876cdff80a5a0b1de62afab9",
+      "sourceDigest": "sha256:f9565c45672bdd1c4dbc72f228bd9709da1ec4a8f62034495a3cf4c6895b1a60",
+      "revoked": true,
+      "serialized": "{\"authorityBindingDigest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"correlation\":{\"action\":\"payment.send\",\"decisionId\":\"dec-legacy-revoked\",\"requestId\":\"req-legacy-revoked\",\"resourceScope\":\"resource-treasury-1\"},\"digest\":\"sha256:0f0c9023fe09b29de89fe0d1f5a8f3d2d6440ec1876cdff80a5a0b1de62afab9\",\"expiresAt\":\"2099-01-01T00:00:00.000Z\",\"id\":\"aoc.grant:f2008a67703f167fece7fd9868d60539\",\"issuedAt\":\"2026-01-01T12:00:00.000Z\",\"scope\":{\"action\":{\"kind\":\"identity\",\"value\":\"payment.send\"},\"amount\":{\"kind\":\"ceiling\",\"limit\":\"100\",\"unit\":\"USD\"},\"counterparty\":{\"kind\":\"identity\",\"value\":\"vendor-v123\"},\"organization\":{\"kind\":\"identity\",\"value\":\"org-a\"},\"resources\":{\"kind\":\"set\",\"values\":[\"resource-treasury-1\"]}},\"sourceDigest\":\"sha256:f9565c45672bdd1c4dbc72f228bd9709da1ec4a8f62034495a3cf4c6895b1a60\",\"subject\":\"agent-a\"}",
+      "scopeSerialized": "{\"action\":{\"kind\":\"identity\",\"value\":\"payment.send\"},\"amount\":{\"kind\":\"ceiling\",\"limit\":\"100\",\"unit\":\"USD\"},\"counterparty\":{\"kind\":\"identity\",\"value\":\"vendor-v123\"},\"organization\":{\"kind\":\"identity\",\"value\":\"org-a\"},\"resources\":{\"kind\":\"set\",\"values\":[\"resource-treasury-1\"]}}"
+    }
+  ]
+}
