@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createFinancialActionClassifier, createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
-import { createGovernanceProfileRegistry } from '../governance-profile/index.js';
+import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry } from '../governance-profile/index.js';
 import { buildGovernedActionKernelRequest } from '../governed-action/kernel-request.js';
 import { validateGovernedActionIntent, type ClassifiedGovernedActionIntent, type GovernedActionMonetaryTrust } from '../governed-action/index.js';
 import { APPROVED_DESTINATION, CUSTOMER_DATA, DEPLOY_ACTION, EXPORT_ACTION, PAYMENT_ACTION, PRODUCTION_ENVIRONMENT, READ_ACTION, SEMANTIC_CONFIGURATION, TREASURY } from './governed-action-semantics-fixture.js';
@@ -147,26 +147,78 @@ describe('CORE-03 §43 / §71 — parameters are declared, typed and unambiguous
 
 describe('CORE-03 §19 / §72 — a profile can be pinned, never chosen', () => {
   it('a matching expectation is accepted and changes nothing about the resolved profile', () => {
-    const intent = accepted(read({ recordCount: 1 }, { governanceProfile: { id: 'customer-data-read', version: 1 } }));
+    const intent = accepted(read({ recordCount: 1 }, { expectedGovernanceProfile: { id: 'customer-data-read', version: 1 } }));
     assert.equal(intent.semantics?.governanceProfile.id, 'customer-data-read');
   });
 
   it('profile substitution is refused: naming the (more permissive) export profile on a read does not select it', () => {
-    refused(read({ recordCount: 1 }, { governanceProfile: { id: 'customer-data-export', version: 2 } }), /pinned, never chosen/);
+    refused(read({ recordCount: 1 }, { expectedGovernanceProfile: { id: 'customer-data-export', version: 2 } }), /pinned, never chosen/);
   });
 
   it('a version mismatch — downgrade or upgrade — is refused', () => {
-    refused({ action: EXPORT_ACTION, resource: CUSTOMER_DATA, idempotencyKey: 'k', parameters: { recordCount: 1, destination: APPROVED_DESTINATION }, governanceProfile: { id: 'customer-data-export', version: 1 } }, /pinned, never chosen/);
-    refused({ action: EXPORT_ACTION, resource: CUSTOMER_DATA, idempotencyKey: 'k', parameters: { recordCount: 1, destination: APPROVED_DESTINATION }, governanceProfile: { id: 'customer-data-export', version: 3 } }, /pinned, never chosen/);
+    refused({ action: EXPORT_ACTION, resource: CUSTOMER_DATA, idempotencyKey: 'k', parameters: { recordCount: 1, destination: APPROVED_DESTINATION }, expectedGovernanceProfile: { id: 'customer-data-export', version: 1 } }, /pinned, never chosen/);
+    refused({ action: EXPORT_ACTION, resource: CUSTOMER_DATA, idempotencyKey: 'k', parameters: { recordCount: 1, destination: APPROVED_DESTINATION }, expectedGovernanceProfile: { id: 'customer-data-export', version: 3 } }, /pinned, never chosen/);
   });
 
   it('a request-defined profile body is refused: an expectation is exactly { id, version }', () => {
-    refused(read({ recordCount: 1 }, { governanceProfile: { id: 'customer-data-read', version: 1, parameters: [] } }), /exactly \{ id, version \}/);
-    refused(read({ recordCount: 1 }, { governanceProfile: { id: 'customer-data-read', version: '1' } }), /exactly \{ id, version \}/);
-    refused(read({ recordCount: 1 }, { governanceProfile: 'customer-data-read' }), /exactly \{ id, version \}/);
+    refused(read({ recordCount: 1 }, { expectedGovernanceProfile: { id: 'customer-data-read', version: 1, parameters: [] } }), /exactly \{ id, version \}/);
+    refused(read({ recordCount: 1 }, { expectedGovernanceProfile: { id: 'customer-data-read', version: '1' } }), /exactly \{ id, version \}/);
+    refused(read({ recordCount: 1 }, { expectedGovernanceProfile: 'customer-data-read' }), /exactly \{ id, version \}/);
   });
 
   it('an expectation on an unprofiled action cannot be met', () => {
-    refused({ action: PAYMENT_ACTION, resource: TREASURY, amount: { value: '1', currency: 'USD' }, idempotencyKey: 'k', governanceProfile: { id: 'customer-data-read', version: 1 } }, /no governanceProfile expectation can be met/);
+    refused({ action: PAYMENT_ACTION, resource: TREASURY, amount: { value: '1', currency: 'USD' }, idempotencyKey: 'k', expectedGovernanceProfile: { id: 'customer-data-read', version: 1 } }, /no expectedGovernanceProfile can be met/);
+  });
+});
+
+describe('CORE-03 — the profile hint is `expectedGovernanceProfile`; nothing on the envelope binds governance', () => {
+  it('the retired name `governanceProfile` is not an envelope field at all', () => {
+    refused(read({ recordCount: 1 }, { governanceProfile: { id: 'customer-data-export', version: 2 } }), /undeclared properties: governanceProfile/);
+  });
+
+  it('neither name can be asserted as context', () => {
+    refused(read({ recordCount: 1 }, { assertedContext: { governanceProfile: 'customer-data-export' } }), /identity or authority keys: governanceProfile/);
+    refused(read({ recordCount: 1 }, { assertedContext: { expectedGovernanceProfile: 'customer-data-export' } }), /identity or authority keys: expectedGovernanceProfile/);
+  });
+
+  it('with or without a hint, the effective profile is the resolver’s, byte for byte', () => {
+    const hinted = accepted(read({ recordCount: 1 }, { expectedGovernanceProfile: { id: 'customer-data-read', version: 1 } }));
+    const unhinted = accepted(read({ recordCount: 1 }));
+    const resolved = GOVERNANCE.resolve(READ_ACTION, CUSTOMER_DATA);
+    assert.equal(resolved.kind, 'resolved');
+    if (resolved.kind !== 'resolved') return;
+    assert.deepEqual(hinted.semantics, resolved.semantics);
+    assert.deepEqual(unhinted.semantics, resolved.semantics);
+  });
+});
+
+describe('CORE-03 — the reserved-key registry: built-in keys stay, trusted configuration extends, callers cannot', () => {
+  const EXTENDED = createGovernanceProfileRegistry({ ...SEMANTIC_CONFIGURATION, reservedContextKeys: ['mppChallenge', 'paymentCredential'] });
+  const withExtensions = (raw: unknown) => validateGovernedActionIntent(raw, MONETARY, EXTENDED);
+  const payment = (assertedContext: Record<string, unknown>) => ({ action: PAYMENT_ACTION, resource: TREASURY, amount: { value: '1', currency: 'USD' }, idempotencyKey: 'k', assertedContext });
+
+  it('a registered extension is reserved, in any case; without the registration it is ordinary context', () => {
+    for (const key of ['mppChallenge', 'MPPChallenge', 'paymentcredential']) {
+      const result = withExtensions(payment({ [key]: 'x' }));
+      assert.equal(result.valid, false, key);
+    }
+    assert.equal(validate(payment({ mppChallenge: 'x' })).valid, true, 'unregistered: plain asserted context');
+  });
+
+  it('the built-in reserved keys remain reserved beside the extensions', () => {
+    assert.equal(withExtensions(payment({ paymentCeiling: '999' })).valid, false);
+    assert.equal(withExtensions(payment({ actorId: 'someone' })).valid, false);
+  });
+
+  it('a caller cannot register, name or remove a reserved key', () => {
+    refused({ ...payment({}), reservedContextKeys: ['anything'] }, /undeclared properties: reservedContextKeys/);
+    assert.deepEqual(EXTENDED.reservedContextKeys, ['mppChallenge', 'paymentCredential']);
+    assert.equal(Object.isFrozen(EXTENDED.reservedContextKeys), true);
+  });
+
+  it('configuration is validated: malformed or case-duplicated extension keys refuse composition', () => {
+    for (const reservedContextKeys of [['a b'], [''], ['1abc'], ['x'.repeat(65)], ['mppChallenge', 'MPPCHALLENGE'], 'mppChallenge']) {
+      assert.throws(() => createGovernanceProfileRegistry({ reservedContextKeys } as never), GovernanceProfileConfigurationError, JSON.stringify(reservedContextKeys));
+    }
   });
 });

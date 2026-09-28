@@ -12,10 +12,11 @@ import type { PolicyPackRule } from '../../features/domain-policy-pack-runtime/d
 import type { PolicyPredicateCondition } from '../../features/domain-policy-pack-runtime/domain/policy-pack-condition.js';
 import { GRANT_EXERCISE_REASON_CODES as E, type GrantExerciseRequest } from '../../features/execution-runtime/index.js';
 import { createRecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
-import { GRANT_REASON_CODES, createInMemoryBoundedGrantStore, type BoundedGrant, type BoundedGrantStorePort, type RequestedGrantBounds } from '../../features/grant-runtime/index.js';
+import { GRANT_REASON_CODES, GRANT_SEMANTICS_FORMAT_V1, createInMemoryBoundedGrantStore, type BoundedGrant, type BoundedGrantStorePort, type RequestedGrantBounds } from '../../features/grant-runtime/index.js';
 import type { PolicyPackProvider } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import { createEnterprise, type AocEnterprise } from '../composition/composition-root.js';
+import { createGovernanceProfileRegistry } from '../governance-profile/index.js';
 import { loadEnterpriseConfiguration, type EnterpriseApiKey } from '../configuration/enterprise-configuration.js';
 import type { GrantAuthorityBinding } from '../execution-governance/index.js';
 import type { GovernedActionGrantPolicyQuery } from '../governed-action/index.js';
@@ -34,6 +35,9 @@ import {
   SEMANTIC_CONFIGURATION,
   TREASURY,
 } from './governed-action-semantics-fixture.js';
+
+/** NB-008: the trusted policy author these tests write as. */
+const POLICY_WRITER = { system: true, actorId: 'operator:policy-pack-test' } as const;
 
 /**
  * CORE-03 §24 / §52 — **the same resource, two materially different actions,
@@ -104,8 +108,8 @@ const RULES: readonly PolicyPackRule[] = [
 
 function policyPackProvider(): PolicyPackProvider {
   const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext('2026-01-01T00:00:00.000Z'));
-  runtime.registerPolicyPack({ id: 'policy-pack-core03-customer-data', name: 'CORE-03 proof policy', description: 'Synthetic', kind: 'data_boundary', domain: 'general_enterprise' });
-  runtime.registerPolicyPackVersion({
+  runtime.registerPolicyPack(POLICY_WRITER, { id: 'policy-pack-core03-customer-data', name: 'CORE-03 proof policy', description: 'Synthetic', kind: 'data_boundary', domain: 'general_enterprise' });
+  runtime.registerPolicyPackVersion(POLICY_WRITER, {
     id: VERSION_ID,
     policyPackId: 'policy-pack-core03-customer-data',
     version: '1.0.0',
@@ -116,7 +120,7 @@ function policyPackProvider(): PolicyPackProvider {
     demoOnly: true,
     legalCompleteness: 'not_legal_advice',
   });
-  runtime.activatePolicyPackVersion(VERSION_ID);
+  runtime.activatePolicyPackVersion(POLICY_WRITER, VERSION_ID);
   return createActionEnforcementPolicyPackIntegration(runtime);
 }
 
@@ -271,6 +275,8 @@ describe('CORE-03 §52 — same resource, read vs export, governed differently b
     assert.match(grant.scope.governanceProfile?.kind === 'identity' ? grant.scope.governanceProfile.value : '', /^customer-data-read@1#sha256:[0-9a-f]{64}$/, 'the grant is bound to the profile that governed it');
     assert.deepEqual(grant.scope.parameters, [{ dimension: 'recordCount', kind: 'maximum', type: 'integer', limit: 50 }], 'the grant bounds exactly what the decision evaluated');
     assert.deepEqual(grant.scope.resources, { kind: 'set', values: [CUSTOMER_DATA] });
+    assert.deepEqual([grant.scope.actionClass, grant.scope.resourceClass], [{ kind: 'identity', value: 'read' }, { kind: 'identity', value: 'customer_dataset' }], 'classes are explicit, signed axes');
+    assert.equal(grant.semanticsFormat, GRANT_SEMANTICS_FORMAT_V1, 'the explicit semantic format marker');
 
     const payload = await committedRequestPayload(host, reply);
     const action = payload['action'] as { semantics: { actionClass: string; resourceClass: string; governanceProfile: { id: string; version: number } }; governedParameters: unknown };
@@ -330,6 +336,32 @@ describe('CORE-03 §52 — same resource, read vs export, governed differently b
   });
 });
 
+describe('CORE-03 — profile substitution: the caller hints, the server decides', () => {
+  it('a substituted, more permissive profile id/version is refused; the valid follow-up commits and binds the real profile id, version and digest', async () => {
+    const host = await openHost();
+    const effective = createGovernanceProfileRegistry(SEMANTIC_CONFIGURATION).resolve(READ_ACTION, CUSTOMER_DATA);
+    assert.equal(effective.kind, 'resolved');
+    if (effective.kind !== 'resolved') return;
+
+    for (const substitute of [{ id: 'customer-data-export', version: 2 }, { id: 'customer-data-read', version: 2 }, { id: 'customer-data-read', version: 0 }]) {
+      const refused = await govern(host, { ...read(50), expectedGovernanceProfile: substitute });
+      assert.equal(refused.status, 'rejected', JSON.stringify(substitute));
+      assert.equal(refused.decision, undefined, 'no decision is committed under any profile');
+    }
+    assert.equal(host.grants.length, 0);
+
+    const followUp = await govern(host, read(50));
+    assert.equal(followUp.status, 'executed', JSON.stringify(followUp));
+    const committed = (await committedRequestPayload(host, followUp))['action'] as { semantics: { governanceProfile: { id: string; version: number; digest: string } } };
+    assert.deepEqual(committed.semantics.governanceProfile, effective.profile.reference, 'the decision records the effective profile');
+    assert.equal(
+      host.grants[0]?.scope.governanceProfile?.kind === 'identity' ? host.grants[0].scope.governanceProfile.value : undefined,
+      `${effective.profile.reference.id}@${effective.profile.reference.version}#${effective.profile.reference.digest}`,
+      'the grant binds the effective profile',
+    );
+  });
+});
+
 describe('CORE-03 §54 — envelope refusals on the real path: missing, wrong type, undeclared, unprofiled', () => {
   it('each is rejected before the Kernel runs: no decision, no grant, no adapter', async () => {
     const host = await openHost();
@@ -340,7 +372,7 @@ describe('CORE-03 §54 — envelope refusals on the real path: missing, wrong ty
       { ...read(50), parameters: { recordCount: 50, destination: 'x' } },
       { ...read(50), parameters: { recordCount: 50, RecordCount: 1000000 } },
       { ...read(50), assertedContext: { recordCount: 1000000 } },
-      { ...read(50), governanceProfile: { id: 'customer-data-export', version: 2 } },
+      { ...read(50), expectedGovernanceProfile: { id: 'customer-data-export', version: 2 } },
       { action: PAYMENT_ACTION, resource: TREASURY, amount: { value: '10', currency: 'USD' }, parameters: { recordCount: 1 } },
     ]) {
       const reply = await govern(host, intent);
@@ -367,6 +399,8 @@ describe('CORE-03 §73 — a read grant cannot be exercised as an export, over a
       resource: CUSTOMER_DATA,
       organization: ORG,
       governanceProfile: profile,
+      actionClass: 'read',
+      resourceClass: 'customer_dataset',
       parameters: [{ dimension: 'recordCount', type: 'integer', value: 50 }],
       correlation: grant.correlation,
       executionId: 'exec-substitution',
@@ -379,6 +413,8 @@ describe('CORE-03 §73 — a read grant cannot be exercised as an export, over a
       ['over the parameter bound', { ...genuine, parameters: [{ dimension: 'recordCount', type: 'integer', value: 51 }] }, E.GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE],
       ['a smuggled extra dimension', { ...genuine, parameters: [{ dimension: 'destination', type: 'token', value: 'x' }, { dimension: 'recordCount', type: 'integer', value: 50 }] }, E.GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE],
       ['profile substitution', { ...genuine, governanceProfile: profile.replace('customer-data-read@1', 'customer-data-export@2') }, E.GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH],
+      ['action-class substitution (read → export)', { ...genuine, actionClass: 'export' }, E.GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH],
+      ['resource-class substitution', { ...genuine, resourceClass: 'public_dataset' }, E.GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH],
     ];
     for (const [name, attempt, code] of cases) {
       const assessment = await ace.assessExercise(attempt);

@@ -177,7 +177,7 @@ describe('CORE-03 §63 — the canonical secure Host governs a profiled, paramet
     const { host, calls, baseUrl } = await boot(secureEnv(dir));
     await provision(host);
 
-    const reply = await govern(baseUrl, { action: READ_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50 }, governanceProfile: { id: 'customer-data-read', version: 1 } });
+    const reply = await govern(baseUrl, { action: READ_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50 }, expectedGovernanceProfile: { id: 'customer-data-read', version: 1 } });
     assert.equal(reply.status, 200, reply.text);
     assert.equal(reply.body['status'], 'executed');
     assert.equal(calls.length, 1);
@@ -189,6 +189,8 @@ describe('CORE-03 §63 — the canonical secure Host governs a profiled, paramet
     assert.match((bounds['governanceProfile'] as { value: string }).value, /^customer-data-read@1#sha256:[0-9a-f]{64}$/);
     assert.deepEqual(bounds['parameters'], [{ dimension: 'recordCount', kind: 'maximum', type: 'integer', limit: 50 }]);
     assert.deepEqual(bounds['resources'], { kind: 'set', values: [CUSTOMER_DATA] });
+    assert.deepEqual([bounds['actionClass'], bounds['resourceClass']], [{ kind: 'identity', value: 'read' }, { kind: 'identity', value: 'customer_dataset' }]);
+    assert.equal(view.body['semanticsFormat'], 'frontera.grant-semantics.v1');
     assert.equal((view.body['status'] as { eligibility: string }).eligibility, 'exercisable');
 
     // Restart: the signed, parameter-bound grant verifies from disk.
@@ -214,8 +216,8 @@ describe('CORE-03 §63 — the canonical secure Host governs a profiled, paramet
       { action: READ_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: '50' } },
       { action: READ_ACTION, resource: CUSTOMER_DATA },
       { action: READ_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50, destination: APPROVED_DESTINATION } },
-      { action: READ_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50 }, governanceProfile: { id: 'customer-data-export', version: 2 } },
-      { action: EXPORT_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50, destination: APPROVED_DESTINATION }, governanceProfile: { id: 'customer-data-export', version: 1 } },
+      { action: READ_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50 }, expectedGovernanceProfile: { id: 'customer-data-export', version: 2 } },
+      { action: EXPORT_ACTION, resource: CUSTOMER_DATA, parameters: { recordCount: 50, destination: APPROVED_DESTINATION }, expectedGovernanceProfile: { id: 'customer-data-export', version: 1 } },
     ]) {
       const reply = await govern(baseUrl, intent);
       assert.equal(reply.body['status'], 'rejected', `${JSON.stringify(intent)} → ${reply.text}`);

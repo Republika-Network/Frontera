@@ -9,6 +9,8 @@ import Database from 'better-sqlite3';
 import { createGrantExecutionService, GRANT_EXERCISE_REASON_CODES as E, type GrantExerciseRequest } from '../../features/execution-runtime/index.js';
 import { createRecordingExecutionAdapter } from '../../features/execution-runtime/tests/execution-fixture.js';
 import {
+  GRANT_REASON_CODES,
+  boundedGrantDigest,
   boundedGrantDigestMatches,
   boundedGrantId,
   createGrantIssuanceService,
@@ -19,7 +21,7 @@ import {
 } from '../../features/grant-runtime/index.js';
 import type { KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability, deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
-import { createAuthorityArtifactVerifier } from '../authority-authenticity/index.js';
+import { AUTHORITY_SIGNING_DOMAINS, createAuthorityArtifactVerifier, grantSigningBytes } from '../authority-authenticity/index.js';
 import { canonicalSerialize } from '../governance-store/canonical-json.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
 import { grantSourceDigest } from '../../features/grant-runtime/index.js';
@@ -164,8 +166,10 @@ describe('CORE-03 §29 / §74 — new authority-material semantics are signed, d
   const correlation = { requestId: 'req-core03', decisionId: 'dec-core03', action: 'read-customer-records', resourceScope: 'customer-data-example' };
   const scope: GrantScope = {
     action: { kind: 'identity', value: 'read-customer-records' },
+    actionClass: { kind: 'identity', value: 'read' },
     governanceProfile: { kind: 'identity', value: `customer-data-read@1#sha256:${'f'.repeat(64)}` },
     parameters: [{ dimension: 'recordCount', kind: 'maximum', type: 'integer', limit: 50 }],
+    resourceClass: { kind: 'identity', value: 'customer_dataset' },
     resources: { kind: 'set', values: ['customer-data-example'] },
   };
 
@@ -205,6 +209,12 @@ describe('CORE-03 §29 / §74 — new authority-material semantics are signed, d
     ['swapping the governing profile', 'customer-data-read@1', 'customer-data-export@2'],
     ['retyping the parameter', '"type":"integer"', '"type":"token"'],
     ['renaming the dimension', '"dimension":"recordCount"', '"dimension":"recordcount"'],
+    ['stripping the parameters axis', '"parameters":[{"dimension":"recordCount","kind":"maximum","limit":50,"type":"integer"}],', ''],
+    ['stripping the action class', '"actionClass":{"kind":"identity","value":"read"},', ''],
+    ['stripping the resource class', '"resourceClass":{"kind":"identity","value":"customer_dataset"},', ''],
+    ['swapping the action class (read → export)', '"actionClass":{"kind":"identity","value":"read"}', '"actionClass":{"kind":"identity","value":"export"}'],
+    ['stripping the semantics format marker (downgrade to a legacy reading)', ',"semanticsFormat":"frontera.grant-semantics.v1"', ''],
+    ['changing the semantics format marker', '"semanticsFormat":"frontera.grant-semantics.v1"', '"semanticsFormat":"frontera.grant-semantics.v2"'],
   ] as const) {
     it(`tampering by ${name} in the database is refused on read (digest + Ed25519 cover it)`, async () => {
       const path = join(work, `core03-tamper-${name.replace(/\W+/g, '-')}.sqlite`);
@@ -224,11 +234,62 @@ describe('CORE-03 §29 / §74 — new authority-material semantics are signed, d
     });
   }
 
+  it('a legacy grant cannot be upgraded by adding a marker or axes in the database (mixing)', async () => {
+    const path = legacyStoreCopy();
+    const live = LEGACY.grants.find((vector) => !vector.revoked) as LegacyGrantVector;
+    const db = new Database(path);
+    dropAuthorityStoreTriggers(db);
+    db.prepare('UPDATE bounded_grants SET grant_json = ? WHERE grant_id = ?').run(live.serialized.replace(',"sourceDigest"', ',"semanticsFormat":"frontera.grant-semantics.v1","sourceDigest"'), live.id);
+    db.close();
+    const store = await openDurableStore(path, { authenticity: legacyAuthenticity() });
+    try {
+      await assert.rejects(() => store.read(live.id));
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('the store refuses to sign or keep a grant whose marker and axes disagree (new axes without the marker; the marker without its axes)', async () => {
+    const store = await openDurableStore(join(work, 'core03-mixing-issue.sqlite'));
+    try {
+      const base = await issueInto(join(work, 'core03-mixing-source.sqlite'));
+      const { semanticsFormat: _marker, ...unmarked } = base;
+      const withoutMarker = { ...unmarked, digest: boundedGrantDigest(unmarked) };
+      const { actionClass: _a, ...partialScope } = base.scope;
+      const partialWithoutDigest = { ...unmarked, semanticsFormat: base.semanticsFormat as string, scope: partialScope };
+      const markerWithoutAxes = { ...partialWithoutDigest, digest: boundedGrantDigest(partialWithoutDigest) };
+      for (const [name, grant] of [['new axes without semanticsFormat', withoutMarker], ['semanticsFormat without its required axes', markerWithoutAxes]] as const) {
+        const outcome = await store.issue({ grant: grant as BoundedGrant, commitGuard: () => ({ permitted: true, reasonCodes: [] }) });
+        assert.equal(outcome.outcome, 'refused', name);
+        if (outcome.outcome === 'refused') assert.deepEqual([...outcome.reasonCodes], [GRANT_REASON_CODES.GRANT_SEMANTICS_FORMAT_INVALID], name);
+      }
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('signing domain (§7): the existing bounded-grant domain is kept, and the marker and every semantic axis are inside the signed payload', async () => {
+    const grant = await issueInto(join(work, 'core03-signing-domain.sqlite'));
+    const bytes = grantSigningBytes(grant, 'store-under-test').toString('utf8');
+    assert.ok(bytes.startsWith(AUTHORITY_SIGNING_DOMAINS.grant), 'domain tag unchanged: frontera:authority-artifact:bounded-grant:v1');
+    assert.equal(AUTHORITY_SIGNING_DOMAINS.grant, 'frontera:authority-artifact:bounded-grant:v1\n');
+    for (const material of ['"semanticsFormat":"frontera.grant-semantics.v1"', '"actionClass":{"kind":"identity","value":"read"}', '"resourceClass":{"kind":"identity","value":"customer_dataset"}', '"governanceProfile":{"kind":"identity","value":"customer-data-read@1#sha256:', '"parameters":[{"dimension":"recordCount"']) {
+      assert.ok(bytes.includes(material), `signed payload carries ${material}`);
+    }
+    // Cross-format interpretation is impossible without re-signing: a legacy
+    // grant's signed bytes contain none of these, and a semantic grant's bytes
+    // cannot lose any of them without changing what the signature covers.
+    const legacy = JSON.parse(LEGACY.grants[0]?.serialized ?? '{}') as BoundedGrant;
+    assert.equal(grantSigningBytes(legacy, 'store-under-test').toString('utf8').includes('semanticsFormat'), false);
+  });
+
   it('the grant identity covers every new axis: another profile or another bound is another grant (§75)', () => {
-    const idOf = (candidate: GrantScope) => boundedGrantId({ correlation, subject: 'agent-a', scope: candidate, expiresAt: '2099-01-01T00:00:00.000Z' });
+    const idOf = (candidate: GrantScope) => boundedGrantId({ correlation, subject: 'agent-a', scope: candidate, expiresAt: '2099-01-01T00:00:00.000Z', semanticsFormat: 'frontera.grant-semantics.v1' });
     const base = idOf(scope);
     assert.notEqual(base, idOf({ ...scope, parameters: [{ dimension: 'recordCount', kind: 'maximum', type: 'integer', limit: 51 }] }));
     assert.notEqual(base, idOf({ ...scope, governanceProfile: { kind: 'identity', value: `customer-data-read@2#sha256:${'f'.repeat(64)}` } }));
+    assert.notEqual(base, idOf({ ...scope, actionClass: { kind: 'identity', value: 'export' } }));
+    assert.notEqual(base, idOf({ ...scope, resourceClass: { kind: 'identity', value: 'public_dataset' } }));
     const { governanceProfile: _profile, ...withoutProfile } = scope;
     assert.notEqual(base, idOf(withoutProfile));
   });

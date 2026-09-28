@@ -176,3 +176,44 @@ describe('CORE-03 §19 — the orchestrator holds the trusted registry by type o
     assert.deepEqual(builders.map((file) => file.split(/[\\/]/).join('/')).sort(), ['src/enterprise/composition/composition-root.ts', 'src/enterprise/host/host-configuration.ts']);
   });
 });
+
+describe('CORE-03 — the policy engine stays generic: it knows classes, profiles and typed dimensions, never a domain', () => {
+  const POLICY_GENERIC_SOURCES = [
+    ...productionSources('src/features/domain-policy-pack-runtime/services'),
+    ...productionSources('src/features/domain-policy-pack-runtime/domain'),
+    'src/features/domain-policy-pack-runtime/integrations/action-enforcement-policy-pack-integration.ts',
+    ...productionSources('src/features/action-enforcement/services').filter((file) => file.includes('policy-pack')),
+  ];
+
+  it('measures the evaluator, validator, registry, runtime and the enforcement bridge', () => {
+    for (const expected of ['policy-condition-evaluator.ts', 'policy-pack-validator.ts', 'policy-pack-registry.ts', 'policy-pack-runtime.ts', 'policy-pack-condition.ts', 'policy-pack-enforcement-service.ts']) {
+      assert.ok(POLICY_GENERIC_SOURCES.some((file) => file.endsWith(expected)), expected);
+    }
+  });
+
+  it('names no CORE-03 domain vocabulary and branches on no class, profile or dimension value', () => {
+    const vocabulary = [/customer[_-]?(data|database|dataset|record)/i, /production[_-]?environment/i, /\brecordCount\b/, /\brollbackAvailable\b/, /\breleaseVersion\b/, /customer-data-(read|export)|production-deploy/, /\bxrpl?\b/i, /kubernetes/i];
+    const branches = [
+      /\b(actionClass|resourceClass|governanceProfile|governanceProfileVersion)\b[\w.?]*\s*(===|!==|==|!=)\s*['"`]/,
+      /\b(parameterId|dimension)\s*(===|!==|==|!=)\s*['"`]/,
+      /switch\s*\([^)]*\b(actionClass|resourceClass|governanceProfile|parameterId|dimension)\b/,
+    ];
+    for (const file of POLICY_GENERIC_SOURCES) {
+      const code = codeOf(file);
+      for (const pattern of [...vocabulary, ...branches]) assert.equal(pattern.test(code), false, `${file} ${String(pattern)}`);
+    }
+  });
+
+  it('the predicate grammar exposes only generic semantic fields', () => {
+    const grammar = codeOf('src/features/domain-policy-pack-runtime/domain/policy-pack-condition.ts');
+    for (const field of ["'actionClass'", "'resourceClass'", "'governanceProfile'", "'governanceProfileVersion'", "'parameter'"]) assert.ok(grammar.includes(field), field);
+    assert.match(grammar, /readonly parameterId\?: string;/, 'a dimension is addressed by data, never by a field named after it');
+  });
+});
+
+describe('CORE-03 — one canonical currency ↔ unit mapping point', () => {
+  it('only governed-action/monetary-naming.ts translates between the frozen `currency` name and the canonical `unit`', () => {
+    const translating = productionSources('src/enterprise/governed-action').filter((file) => /unit:\s*[\w.?[\]'"]*currency|currency:\s*[\w.?]*\.unit\b/.test(codeOf(file)));
+    assert.deepEqual(translating.map((file) => file.split(/[\\/]/).join('/')), ['src/enterprise/governed-action/monetary-naming.ts']);
+  });
+});
