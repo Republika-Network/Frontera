@@ -63,10 +63,18 @@ function service(sources: readonly ContextSource[] = [ERP, REGISTRY, OTHER_ORG_E
   return new ContextResolutionService({ sources, declaration });
 }
 
-/** A reading as a connector would take it: provenance digest computed over the whole reading. */
+/** A reading as a connector would take it: provenance digest computed over the whole reading — including a bound the producer itself states (v2). */
 function reading(key: string, value: string | number | boolean, sourceId: string, observedAt = minutesAgo(1), extra: Partial<ContextFactObservation> = {}): ContextFactObservation {
   const reference = extra.reference ?? `${sourceId}:${key}:ref-1`;
-  const base = { key, value, sourceId, observedAt, reference, ...(extra.organizationId !== undefined ? { organizationId: extra.organizationId } : {}) };
+  const base = {
+    key,
+    value,
+    sourceId,
+    observedAt,
+    reference,
+    ...(extra.organizationId !== undefined ? { organizationId: extra.organizationId } : {}),
+    ...(extra.maxAgeSeconds !== undefined ? { maxAgeSeconds: extra.maxAgeSeconds } : {}),
+  };
   return { ...base, provenanceDigest: contextObservationProvenanceDigest(base), ...extra };
 }
 
@@ -156,9 +164,10 @@ describe('CORE-04 §55 — freshness: same source, value and provenance, differe
     assert.deepEqual(tightened.classify([reading('invoice.exists', true, 'erp-primary', secondsAgo(120))], NOW, ORG).stale, ['invoice.exists']);
     const relaxed = service([ERP, REGISTRY], { requirements: [{ key: 'invoice.exists', minimumTrustClass: 'authoritative', required: true, maxAgeSeconds: 86_400 }] });
     assert.deepEqual(relaxed.classify([reading('invoice.exists', true, 'erp-primary', minutesAgo(60))], NOW, ORG).stale, ['invoice.exists'], 'a longer requirement bound does not relax the source’s 900 s');
-    const selfRelaxing = { ...reading('invoice.exists', true, 'erp-primary', minutesAgo(60)), maxAgeSeconds: 86_400 };
+    // Producer-stated (digested) bounds: they can only tighten. Changing one in transit is provenance tamper (context-provenance-freshness.test.ts).
+    const selfRelaxing = reading('invoice.exists', true, 'erp-primary', minutesAgo(60), { maxAgeSeconds: 86_400 });
     assert.deepEqual(service().classify([selfRelaxing], NOW, ORG).stale, ['invoice.exists'], 'a reading cannot relax its own bound');
-    const malformedBound = { ...reading('invoice.exists', true, 'erp-primary', secondsAgo(5)), maxAgeSeconds: -1 };
+    const malformedBound = reading('invoice.exists', true, 'erp-primary', secondsAgo(5), { maxAgeSeconds: -1 });
     assert.deepEqual(service().classify([malformedBound], NOW, ORG).stale, ['invoice.exists'], 'a malformed self-stated bound is treated as already stale');
   });
 

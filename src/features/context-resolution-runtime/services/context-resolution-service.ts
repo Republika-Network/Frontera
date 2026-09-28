@@ -419,17 +419,27 @@ function hasValidProvenance(observation: ContextFactObservation): boolean {
   const { reference, provenanceDigest } = observation;
   if (typeof reference !== 'string' || reference.length === 0 || reference.length > CONTEXT_FACT_STRING_MAX_LENGTH) return false;
   if (typeof provenanceDigest !== 'string') return false;
-  return (
-    provenanceDigest ===
-    contextObservationProvenanceDigest({
-      key: observation.key,
-      value: observation.value,
-      sourceId: observation.sourceId,
-      observedAt: observation.observedAt,
-      reference,
-      ...(observation.organizationId !== undefined ? { organizationId: observation.organizationId } : {}),
-    })
-  );
+  // Every authority-affecting field the reading states is recomputed over —
+  // including its own freshness bound and attestation evidence (CORE-04
+  // review). A field that cannot be canonicalized (a non-integer bound) is a
+  // provenance failure, never a throw and never a skipped field.
+  try {
+    return (
+      provenanceDigest ===
+      contextObservationProvenanceDigest({
+        key: observation.key,
+        value: observation.value,
+        sourceId: observation.sourceId,
+        observedAt: observation.observedAt,
+        reference,
+        ...(observation.organizationId !== undefined ? { organizationId: observation.organizationId } : {}),
+        ...(observation.maxAgeSeconds !== undefined ? { maxAgeSeconds: observation.maxAgeSeconds } : {}),
+        ...(observation.attestationRef !== undefined ? { attestationRef: observation.attestationRef } : {}),
+      })
+    );
+  } catch {
+    return false;
+  }
 }
 
 function byRefusal(left: RefusedContextObservation, right: RefusedContextObservation): number {

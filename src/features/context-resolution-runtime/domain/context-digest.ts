@@ -29,7 +29,14 @@ import type { ContextResolution } from './context-resolution.js';
  * rather than hashing an ambiguous spelling.
  */
 
-export const CONTEXT_OBSERVATION_PROVENANCE_DOMAIN = 'frontera:context-observation:v1';
+/**
+ * v2 (CORE-04 review): the provenance digest covers **every authority-affecting
+ * field** a producer states — including `maxAgeSeconds`, which decides whether
+ * the reading is fresh, and `attestationRef`, which an attested source's
+ * verifier judges. Under v1 neither was covered, so an intermediary could strip
+ * or raise a producer's own freshness bound and the reading still verified.
+ */
+export const CONTEXT_OBSERVATION_PROVENANCE_DOMAIN = 'frontera:context-observation:v2';
 export const ADMITTED_CONTEXT_FORMAT = 'frontera.admitted-context.v1';
 
 type CanonicalValue = string | boolean | number | readonly CanonicalValue[] | { readonly [key: string]: CanonicalValue | undefined };
@@ -55,7 +62,12 @@ function sha256(text: string): string {
   return `sha256:${createHash('sha256').update(text).digest('hex')}`;
 }
 
-/** What a provenance digest covers: the whole reading, as it was taken. */
+/**
+ * What a provenance digest covers: the whole reading, as it was taken — every
+ * field admission or freshness reads. Only `provenanceDigest` itself is outside
+ * it. `contextObservationProvenanceFields` below is the one place that list is
+ * spelled, and admission recomputes over exactly it.
+ */
 export interface ContextObservationProvenanceInput {
   readonly key: string;
   readonly value: ContextFactValue;
@@ -63,6 +75,10 @@ export interface ContextObservationProvenanceInput {
   readonly observedAt: string;
   readonly reference: string;
   readonly organizationId?: string;
+  /** The producer's own freshness bound. Authority-material: it can only tighten, and removing or raising it would widen. */
+  readonly maxAgeSeconds?: number;
+  /** The attestation evidence an attested source's verifier judges. */
+  readonly attestationRef?: string;
 }
 
 /** The provenance digest of one reading. Computed by whoever takes the reading; recomputed by admission. */
@@ -75,6 +91,8 @@ export function contextObservationProvenanceDigest(input: ContextObservationProv
       observedAt: input.observedAt,
       reference: input.reference,
       organizationId: input.organizationId,
+      maxAgeSeconds: input.maxAgeSeconds,
+      attestationRef: input.attestationRef,
     })}`,
   );
 }
