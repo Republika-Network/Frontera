@@ -1,6 +1,7 @@
 import { compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
 import type { PolicyCondition, PolicyPredicateCondition, PolicyPredicateField } from '../domain/policy-pack-condition.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
+import { metadataPathIsReserved, parseMetadataPath } from '../domain/metadata-path.js';
 
 export interface PolicyConditionEvaluationResult {
   readonly matched: boolean;
@@ -145,14 +146,21 @@ export class PolicyConditionEvaluator {
     return facts.find((fact) => fact.factClass === factClass)?.value;
   }
 
+  /**
+   * CORE-04 review: the same grammar the validator checks (`metadata-path.ts`)
+   * — a malformed path reads nothing rather than being normalized into another
+   * one — and a reserved namespace reads nothing even from a pack that was
+   * never validated. Own properties only, so no prototype member answers.
+   */
   private readMetadataPath(metadata: Readonly<Record<string, unknown>> | undefined, path: string): unknown {
     if (!metadata) {
       return undefined;
     }
-    const segments = path.split('.').filter((segment) => segment.length > 0);
+    const segments = parseMetadataPath(path);
+    if (segments === undefined || metadataPathIsReserved(segments)) return undefined;
     let current: unknown = metadata;
     for (const segment of segments) {
-      if (current === null || typeof current !== 'object') {
+      if (current === null || typeof current !== 'object' || !Object.prototype.hasOwnProperty.call(current, segment)) {
         return undefined;
       }
       current = (current as Record<string, unknown>)[segment];
