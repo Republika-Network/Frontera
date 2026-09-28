@@ -181,6 +181,14 @@ is `exercisable` or `unusable`; `reasonCodes` are `GRANT_REVOKED` and/or
 `{ revokedAt, reason, revokedBy }` as the signed record holds it, or `null`.
 No digest, signature, key id or storage field is returned.
 
+`bounds` lists every axis the grant states, derived from the grant runtime's
+own axis list (so an axis the exercise gate enforces can never be missing
+here). Since CORE-03 that includes `governanceProfile` — an identity bound on
+`<profileId>@<version>#sha256:…` for an action a Governance Profile governs —
+and, when the grant bounds typed parameters, `bounds.parameters`:
+`[{ dimension, kind: "exact", type, value } | { dimension, kind: "maximum", type: "integer", limit }]`
+in canonical dimension order. A grant issued before CORE-03 shows neither.
+
 ### 4.2 `GET /api/admin/authority/executions/{executionId}` — which grant an execution ran under
 
 `POST /api/governed-actions` returns `requestId` and `executionId` but — by

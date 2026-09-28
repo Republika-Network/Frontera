@@ -400,6 +400,16 @@ property is rejected, never ignored):
   `amount` (`{ value: JSON number or decimal text, currency: asset identifier }`,
   nothing else — see "Amounts" below); `assertedContext` (plain JSON object, at most 64
   keys per level, depth 8).
+- **Optional since CORE-03 (additive; no route or response change):**
+  `parameters` — typed values for the parameter dimensions the Host's
+  Governance Profile declares for this `action` × `resource`, keyed by exact
+  dimension id (an integer as a JSON number that is a safe integer, a token as
+  a string, a boolean as a boolean; no coercion). Refused when no profile
+  governs the action, when a key is undeclared, when a required dimension is
+  absent or when a value has the wrong type. `governanceProfile` —
+  `{ id, version }`, an *expectation* that pins the profile the Host resolves;
+  a mismatch is refused, and it never selects a profile. A Host without a
+  `governance` configuration behaves exactly as before.
 - **Amounts (exact since P9).** `amount.value` is a non-negative JSON number
   (the v1 form — read from its exact source characters, never re-parsed through
   a double) or decimal **text** (`"7500"`, `"10.50"`: no sign, exponent,
