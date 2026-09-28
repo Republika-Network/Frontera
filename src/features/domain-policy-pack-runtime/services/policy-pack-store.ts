@@ -4,6 +4,7 @@ import type { PolicyPackEvaluationResult } from '../domain/policy-pack-evaluatio
 import type { PolicyPackDecision } from '../domain/policy-pack-decision.js';
 import type { PolicyPackProof } from '../domain/policy-pack-proof.js';
 import type { PolicyPackEvent } from '../domain/policy-pack-event.js';
+import { PolicyPackWriteRefusedError } from '../runtime/policy-pack-runtime-errors.js';
 
 export interface PolicyPackEvaluationFilter {
   readonly actorId?: string;
@@ -25,8 +26,28 @@ export class PolicyPackStore {
   private readonly decisions = new Map<string, PolicyPackDecision>();
   private readonly proofs = new Map<string, PolicyPackProof>();
   private readonly events: PolicyPackEvent[] = [];
+  #authorityFrozen = false;
+
+  /**
+   * NB-008: make the policy half of this store (packs and versions) read-only,
+   * irreversibly. Called by the registry's `freeze`; evaluations, decisions,
+   * proofs and events stay writable, because they record what policy did
+   * rather than change what it is.
+   */
+  freezeAuthority(): void {
+    this.#authorityFrozen = true;
+  }
+
+  get authorityFrozen(): boolean {
+    return this.#authorityFrozen;
+  }
+
+  private assertAuthorityWritable(): void {
+    if (this.#authorityFrozen) throw new PolicyPackWriteRefusedError('POLICY_PACK_REGISTRY_FROZEN', 'The policy-pack store is frozen: packs and versions are read-only.');
+  }
 
   savePack(pack: PolicyPack): PolicyPack {
+    this.assertAuthorityWritable();
     this.packs.set(pack.id, pack);
     return pack;
   }
@@ -40,6 +61,7 @@ export class PolicyPackStore {
   }
 
   updatePackStatus(policyPackId: string, status: PolicyPackStatus, updatedAt: string): PolicyPack | undefined {
+    this.assertAuthorityWritable();
     const existing = this.packs.get(policyPackId);
     if (!existing) {
       return undefined;
@@ -58,6 +80,7 @@ export class PolicyPackStore {
   }
 
   saveVersion(version: PolicyPackVersion): PolicyPackVersion {
+    this.assertAuthorityWritable();
     this.versions.set(version.id, version);
     return version;
   }
@@ -70,12 +93,13 @@ export class PolicyPackStore {
     return this.versions.has(policyPackVersionId);
   }
 
-  updateVersionStatus(policyPackVersionId: string, status: PolicyPackVersionStatus, updatedAt: string): PolicyPackVersion | undefined {
+  updateVersionStatus(policyPackVersionId: string, status: PolicyPackVersionStatus, updatedAt: string, changedBy?: string): PolicyPackVersion | undefined {
+    this.assertAuthorityWritable();
     const existing = this.versions.get(policyPackVersionId);
     if (!existing) {
       return undefined;
     }
-    const updated: PolicyPackVersion = { ...existing, status, updatedAt };
+    const updated: PolicyPackVersion = { ...existing, status, updatedAt, ...(changedBy !== undefined ? { statusChangedBy: changedBy } : {}) };
     this.versions.set(policyPackVersionId, updated);
     return updated;
   }

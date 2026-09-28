@@ -11,10 +11,13 @@ import {
 } from '../../integrations/policy-pack-pilot-adapter.js';
 import type { PilotPolicyModel } from '../../domain/pilot-policy.js';
 
+/** NB-008: the trusted policy author these tests write as. */
+const POLICY_WRITER = { system: true, actorId: 'operator:policy-pack-test' } as const;
+
 describe('policy-pack-pilot-adapter', () => {
   it('1. maps policy packs', () => {
     const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext('2026-01-01T00:00:00.000Z'));
-    const version = registerPaymentsBasicPolicyPack(runtime);
+    const version = registerPaymentsBasicPolicyPack(runtime, POLICY_WRITER);
     const pack = runtime.listActivePolicyPacks().find((p) => p.id === version.policyPackId);
     if (pack === undefined) {
       throw new Error('Expected active policy pack.');
@@ -27,13 +30,13 @@ describe('policy-pack-pilot-adapter', () => {
 
   it('2. preserves demoOnly', () => {
     const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext('2026-01-01T00:00:00.000Z'));
-    const version = registerPaymentsBasicPolicyPack(runtime);
+    const version = registerPaymentsBasicPolicyPack(runtime, POLICY_WRITER);
     assert.equal(version.demoOnly, true);
   });
 
   it('3. preserves legalCompleteness', () => {
     const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext('2026-01-01T00:00:00.000Z'));
-    const version = registerPaymentsBasicPolicyPack(runtime);
+    const version = registerPaymentsBasicPolicyPack(runtime, POLICY_WRITER);
     assert.equal(mapPolicyPackVersionLegalCompleteness(version), 'not_legal_advice');
   });
 

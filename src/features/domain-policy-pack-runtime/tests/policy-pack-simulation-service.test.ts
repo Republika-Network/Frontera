@@ -9,6 +9,9 @@ import { PolicyPackLedger } from '../services/policy-pack-ledger.js';
 import { PolicyPackRegistry } from '../services/policy-pack-registry.js';
 import { PolicyPackSimulationService } from '../services/policy-pack-simulation-service.js';
 
+/** NB-008: the trusted policy author these tests write as. */
+const POLICY_WRITER = { system: true, actorId: 'operator:policy-pack-test' } as const;
+
 const NOW = '2026-01-01T00:00:00.000Z';
 
 function buildRule(overrides: Partial<PolicyPackRule> = {}): PolicyPackRule {
@@ -58,8 +61,8 @@ function setUp(rules: readonly PolicyPackRule[]) {
   const store = new PolicyPackStore();
   const ledger = new PolicyPackLedger(ctx, store);
   const registry = new PolicyPackRegistry(ctx, store, ledger);
-  registry.registerPolicyPack({ id: 'pack-1', name: 'Test Pack', description: 'Test', kind: 'demo', domain: 'payments' });
-  registry.registerPolicyPackVersion({
+  registry.registerPolicyPack(POLICY_WRITER, { id: 'pack-1', name: 'Test Pack', description: 'Test', kind: 'demo', domain: 'payments' });
+  registry.registerPolicyPackVersion(POLICY_WRITER, {
     id: 'pack-1-v1',
     policyPackId: 'pack-1',
     version: '1.0.0',
@@ -70,7 +73,7 @@ function setUp(rules: readonly PolicyPackRule[]) {
     demoOnly: true,
     legalCompleteness: 'not_legal_advice',
   });
-  registry.activatePolicyPackVersion('pack-1-v1');
+  registry.activatePolicyPackVersion(POLICY_WRITER, 'pack-1-v1');
   const simulationService = new PolicyPackSimulationService(ctx, store, ledger);
   return { ctx, store, ledger, registry, simulationService };
 }

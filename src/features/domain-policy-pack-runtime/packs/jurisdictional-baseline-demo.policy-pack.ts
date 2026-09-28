@@ -1,3 +1,4 @@
+import type { PolicyPackWriterContext } from '../domain/policy-pack-writer.js';
 import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
 import type { PolicyPackSource } from '../domain/policy-pack-source.js';
 import type { PolicyPackVersion } from '../domain/policy-pack-version.js';
@@ -177,8 +178,8 @@ export const JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK_VERSION_V1: RegisterPolicy
   legalCompleteness: 'not_legal_advice',
 };
 
-export function registerJurisdictionalBaselineDemoPolicyPack(runtime: PolicyPackRuntime): PolicyPackVersion {
-  runtime.registerPolicyPack(JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK);
-  runtime.registerPolicyPackVersion(JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK_VERSION_V1);
-  return runtime.activatePolicyPackVersion(JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK_VERSION_V1.id);
+export function registerJurisdictionalBaselineDemoPolicyPack(runtime: PolicyPackRuntime, writer: PolicyPackWriterContext): PolicyPackVersion {
+  runtime.registerPolicyPack(writer, JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK);
+  runtime.registerPolicyPackVersion(writer, JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK_VERSION_V1);
+  return runtime.activatePolicyPackVersion(writer, JURISDICTIONAL_BASELINE_DEMO_POLICY_PACK_VERSION_V1.id);
 }

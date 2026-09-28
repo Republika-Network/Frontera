@@ -4,6 +4,7 @@ export type PolicyPackEventType =
   | 'policy_pack_version_deprecated'
   | 'policy_pack_version_revoked'
   | 'policy_pack_version_superseded'
+  | 'policy_pack_registry_frozen'
   | 'policy_evaluation_started'
   | 'policy_pack_applicability_resolved'
   | 'policy_rule_matched'

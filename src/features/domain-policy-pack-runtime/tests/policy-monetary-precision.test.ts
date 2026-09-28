@@ -16,6 +16,9 @@ import { PolicyPackRegistry } from '../services/policy-pack-registry.js';
 import { PolicyPackStore } from '../services/policy-pack-store.js';
 import { PolicyPackValidator } from '../services/policy-pack-validator.js';
 
+/** NB-008: the trusted policy author these tests write as. */
+const POLICY_WRITER = { system: true, actorId: 'operator:policy-pack-test' } as const;
+
 /**
  * P9 closure — a policy's monetary threshold is exact data, never a JavaScript
  * number.
@@ -137,8 +140,8 @@ describe('P9 policy thresholds — a number threshold cannot be registered', () 
       const ctx = createPolicyPackRuntimeContext(NOW);
       const store = new PolicyPackStore();
       const registry = new PolicyPackRegistry(ctx, store, new PolicyPackLedger(ctx, store));
-      registry.registerPolicyPack(pack);
-      assert.doesNotThrow(() => registry.registerPolicyPackVersion(shipped), shipped.id);
+      registry.registerPolicyPack(POLICY_WRITER, pack);
+      assert.doesNotThrow(() => registry.registerPolicyPackVersion(POLICY_WRITER, shipped), shipped.id);
     }
   });
 });
@@ -149,8 +152,8 @@ describe('P9 policy evaluation — a non-canonical input amount fails closed', (
     const store = new PolicyPackStore();
     const ledger = new PolicyPackLedger(ctx, store);
     const registry = new PolicyPackRegistry(ctx, store, ledger);
-    registry.registerPolicyPack({ id: 'pack-1', name: 'Pack', description: 'Pack', kind: 'demo', domain: 'payments' });
-    registry.registerPolicyPackVersion({
+    registry.registerPolicyPack(POLICY_WRITER, { id: 'pack-1', name: 'Pack', description: 'Pack', kind: 'demo', domain: 'payments' });
+    registry.registerPolicyPackVersion(POLICY_WRITER, {
       id: 'pack-1-v1',
       policyPackId: 'pack-1',
       version: '1.0.0',
@@ -177,7 +180,7 @@ describe('P9 policy evaluation — a non-canonical input amount fails closed', (
       demoOnly: true,
       legalCompleteness: 'not_legal_advice',
     });
-    registry.activatePolicyPackVersion('pack-1-v1');
+    registry.activatePolicyPackVersion(POLICY_WRITER, 'pack-1-v1');
     return new PolicyPackEvaluationService(ctx, store, ledger);
   }
 

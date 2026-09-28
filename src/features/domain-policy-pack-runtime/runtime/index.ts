@@ -18,4 +18,5 @@ export {
   PolicyPackValidationError,
   PolicyPackDecisionNotFoundError,
   PolicyPackProofNotFoundError,
+  PolicyPackWriteRefusedError,
 } from './policy-pack-runtime-errors.js';

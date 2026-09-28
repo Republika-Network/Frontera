@@ -9,7 +9,9 @@ import {
   PolicyPackInvalidStatusTransitionError,
   PolicyPackNotFoundError,
   PolicyPackVersionNotFoundError,
+  PolicyPackWriteRefusedError,
 } from '../runtime/policy-pack-runtime-errors.js';
+import { isTrustedPolicyPackWriter, type PolicyPackWriterContext } from '../domain/policy-pack-writer.js';
 import type { PolicyPackLedger } from './policy-pack-ledger.js';
 import type { PolicyPackStore } from './policy-pack-store.js';
 import { PolicyPackValidator } from './policy-pack-validator.js';
@@ -50,9 +52,18 @@ const VALID_TRANSITIONS: Readonly<Record<string, readonly string[]>> = {
  * Registers policy packs and policy pack versions, enforces lifecycle
  * transitions, and records lifecycle events on the ledger. Never evaluates
  * rules -- that is PolicyRuleEvaluator's responsibility.
+ *
+ * NB-008 (closed by CORE-03): every write takes a trusted
+ * `PolicyPackWriterContext` first and is refused without one
+ * (`POLICY_PACK_WRITER_REQUIRED`); the writer is recorded on the pack, the
+ * version and the lifecycle event. `freeze(writer)` makes the registry — and
+ * the policy half of its store — read-only for the rest of the process
+ * (`POLICY_PACK_REGISTRY_FROZEN`), the policy-pack counterpart of the
+ * assurance registry's freeze before traffic (SEC-INV-034).
  */
 export class PolicyPackRegistry {
   private readonly validator = new PolicyPackValidator();
+  #frozenBy: string | undefined;
 
   constructor(
     private readonly ctx: PolicyPackRuntimeContext,
@@ -60,7 +71,31 @@ export class PolicyPackRegistry {
     private readonly ledger: PolicyPackLedger,
   ) {}
 
-  registerPolicyPack(input: RegisterPolicyPackInput): PolicyPack {
+  /** The writer, verified, or a refusal. Checked before anything is read or changed. */
+  private authorize(writer: unknown): PolicyPackWriterContext {
+    if (!isTrustedPolicyPackWriter(writer)) {
+      throw new PolicyPackWriteRefusedError('POLICY_PACK_WRITER_REQUIRED', 'Policy-pack writes require a trusted writer context ({ system: true, actorId }).');
+    }
+    if (this.#frozenBy !== undefined) {
+      throw new PolicyPackWriteRefusedError('POLICY_PACK_REGISTRY_FROZEN', `The policy-pack registry was frozen by ${this.#frozenBy}; packs and versions are read-only.`);
+    }
+    return writer;
+  }
+
+  /** Irreversibly makes packs and versions read-only. Recorded with its writer. */
+  freeze(writer: PolicyPackWriterContext): void {
+    const { actorId } = this.authorize(writer);
+    this.#frozenBy = actorId;
+    this.store.freezeAuthority();
+    this.ledger.recordEvent({ type: 'policy_pack_registry_frozen', payload: { actorId } });
+  }
+
+  isFrozen(): boolean {
+    return this.#frozenBy !== undefined;
+  }
+
+  registerPolicyPack(writer: PolicyPackWriterContext, input: RegisterPolicyPackInput): PolicyPack {
+    const { actorId } = this.authorize(writer);
     if (this.store.hasPack(input.id)) {
       throw new PolicyPackDuplicateIdError('policy pack', input.id);
     }
@@ -76,6 +111,8 @@ export class PolicyPackRegistry {
       versions: [],
       createdAt: now,
       updatedAt: now,
+      registeredBy: actorId,
+      lastWrittenBy: actorId,
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
     this.store.savePack(pack);
@@ -83,13 +120,14 @@ export class PolicyPackRegistry {
     this.ledger.recordEvent({
       type: 'policy_pack_registered',
       policyPackId: pack.id,
-      payload: { name: pack.name, kind: pack.kind, domain: pack.domain },
+      payload: { name: pack.name, kind: pack.kind, domain: pack.domain, actorId },
     });
 
     return pack;
   }
 
-  registerPolicyPackVersion(input: RegisterPolicyPackVersionInput): PolicyPackVersion {
+  registerPolicyPackVersion(writer: PolicyPackWriterContext, input: RegisterPolicyPackVersionInput): PolicyPackVersion {
+    const { actorId } = this.authorize(writer);
     const pack = this.store.getPack(input.policyPackId);
     if (!pack) {
       throw new PolicyPackNotFoundError(input.policyPackId);
@@ -112,6 +150,7 @@ export class PolicyPackRegistry {
       legalCompleteness: input.legalCompleteness,
       createdAt: now,
       updatedAt: now,
+      registeredBy: actorId,
       ...(input.effectiveUntil !== undefined ? { effectiveUntil: input.effectiveUntil } : {}),
       ...(input.supersedesVersionId !== undefined ? { supersedesVersionId: input.supersedesVersionId } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
@@ -120,14 +159,15 @@ export class PolicyPackRegistry {
     this.validator.validateVersion(version);
     this.store.saveVersion(version);
 
-    const updatedPack: PolicyPack = { ...pack, versions: [...pack.versions, version], updatedAt: now };
+    const updatedPack: PolicyPack = { ...pack, versions: [...pack.versions, version], updatedAt: now, lastWrittenBy: actorId };
     this.store.savePack(updatedPack);
 
     return version;
   }
 
-  activatePolicyPackVersion(policyPackVersionId: string): PolicyPackVersion {
-    const version = this.transition(policyPackVersionId, 'active');
+  activatePolicyPackVersion(writer: PolicyPackWriterContext, policyPackVersionId: string): PolicyPackVersion {
+    const { actorId } = this.authorize(writer);
+    const version = this.transition(policyPackVersionId, 'active', actorId);
 
     this.validator.validateActivatable(version);
 
@@ -138,17 +178,18 @@ export class PolicyPackRegistry {
         status: 'active',
         currentVersionId: version.id,
         updatedAt: this.ctx.clock.now(),
+        lastWrittenBy: actorId,
       };
       this.store.savePack(updated);
     }
 
     if (version.supersedesVersionId && this.store.hasVersion(version.supersedesVersionId)) {
-      this.transition(version.supersedesVersionId, 'superseded');
+      this.transition(version.supersedesVersionId, 'superseded', actorId);
       this.ledger.recordEvent({
         type: 'policy_pack_version_superseded',
         policyPackId: version.policyPackId,
         policyPackVersionId: version.supersedesVersionId,
-        payload: { supersededByVersionId: version.id },
+        payload: { supersededByVersionId: version.id, actorId },
       });
     }
 
@@ -156,41 +197,44 @@ export class PolicyPackRegistry {
       type: 'policy_pack_version_activated',
       policyPackId: version.policyPackId,
       policyPackVersionId: version.id,
-      payload: { version: version.version },
+      payload: { version: version.version, actorId },
     });
 
     return version;
   }
 
-  deprecatePolicyPackVersion(policyPackVersionId: string): PolicyPackVersion {
-    const version = this.transition(policyPackVersionId, 'deprecated');
+  deprecatePolicyPackVersion(writer: PolicyPackWriterContext, policyPackVersionId: string): PolicyPackVersion {
+    const { actorId } = this.authorize(writer);
+    const version = this.transition(policyPackVersionId, 'deprecated', actorId);
     this.ledger.recordEvent({
       type: 'policy_pack_version_deprecated',
       policyPackId: version.policyPackId,
       policyPackVersionId: version.id,
-      payload: { version: version.version },
+      payload: { version: version.version, actorId },
     });
     return version;
   }
 
-  revokePolicyPackVersion(policyPackVersionId: string): PolicyPackVersion {
-    const version = this.transition(policyPackVersionId, 'revoked');
+  revokePolicyPackVersion(writer: PolicyPackWriterContext, policyPackVersionId: string): PolicyPackVersion {
+    const { actorId } = this.authorize(writer);
+    const version = this.transition(policyPackVersionId, 'revoked', actorId);
     this.ledger.recordEvent({
       type: 'policy_pack_version_revoked',
       policyPackId: version.policyPackId,
       policyPackVersionId: version.id,
-      payload: { version: version.version },
+      payload: { version: version.version, actorId },
     });
     return version;
   }
 
-  supersedePolicyPackVersion(policyPackVersionId: string, supersededByVersionId: string): PolicyPackVersion {
-    const version = this.transition(policyPackVersionId, 'superseded');
+  supersedePolicyPackVersion(writer: PolicyPackWriterContext, policyPackVersionId: string, supersededByVersionId: string): PolicyPackVersion {
+    const { actorId } = this.authorize(writer);
+    const version = this.transition(policyPackVersionId, 'superseded', actorId);
     this.ledger.recordEvent({
       type: 'policy_pack_version_superseded',
       policyPackId: version.policyPackId,
       policyPackVersionId: version.id,
-      payload: { supersededByVersionId },
+      payload: { supersededByVersionId, actorId },
     });
     return version;
   }
@@ -207,7 +251,7 @@ export class PolicyPackRegistry {
     return this.store.listActiveVersions();
   }
 
-  private transition(policyPackVersionId: string, to: PolicyPackVersion['status']): PolicyPackVersion {
+  private transition(policyPackVersionId: string, to: PolicyPackVersion['status'], actorId: string): PolicyPackVersion {
     const version = this.store.getVersion(policyPackVersionId);
     if (!version) {
       throw new PolicyPackVersionNotFoundError(policyPackVersionId);
@@ -216,7 +260,7 @@ export class PolicyPackRegistry {
     if (!allowed.includes(to)) {
       throw new PolicyPackInvalidStatusTransitionError(policyPackVersionId, version.status, to);
     }
-    const updated = this.store.updateVersionStatus(policyPackVersionId, to, this.ctx.clock.now());
+    const updated = this.store.updateVersionStatus(policyPackVersionId, to, this.ctx.clock.now(), actorId);
     if (!updated) {
       throw new PolicyPackVersionNotFoundError(policyPackVersionId);
     }

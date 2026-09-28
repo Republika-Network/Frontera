@@ -1,3 +1,4 @@
+import { DEMO_POLICY_PACK_WRITER } from './domain-policy-pack-demo.fixture.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
 import { createPolicyPackRuntimeContext } from '../runtime/policy-pack-runtime-context.js';
 import { createPolicyPackRuntime, type PolicyPackRuntime } from '../services/policy-pack-runtime.js';
@@ -19,7 +20,7 @@ export const GLOBAL_LEGAL_BASELINE_RESOURCE_SCOPE = 'project:demo-global-legal-b
  */
 export function buildGlobalLegalBaselineDemoPolicyPackRuntime(initialIso: string = GLOBAL_LEGAL_BASELINE_DEMO_NOW): PolicyPackRuntime {
   const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext(initialIso));
-  registerGlobalLegalBaselinePolicyPack(runtime);
+  registerGlobalLegalBaselinePolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
   return runtime;
 }
 

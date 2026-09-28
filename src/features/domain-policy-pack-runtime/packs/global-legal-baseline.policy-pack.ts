@@ -1,3 +1,4 @@
+import type { PolicyPackWriterContext } from '../domain/policy-pack-writer.js';
 import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
 import type { PolicyPackSource } from '../domain/policy-pack-source.js';
 import type { PolicyPackVersion } from '../domain/policy-pack-version.js';
@@ -848,8 +849,8 @@ export const GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1: RegisterPolicyPackVer
   },
 };
 
-export function registerGlobalLegalBaselinePolicyPack(runtime: PolicyPackRuntime): PolicyPackVersion {
-  runtime.registerPolicyPack(GLOBAL_LEGAL_BASELINE_POLICY_PACK);
-  runtime.registerPolicyPackVersion(GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1);
-  return runtime.activatePolicyPackVersion(GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1.id);
+export function registerGlobalLegalBaselinePolicyPack(runtime: PolicyPackRuntime, writer: PolicyPackWriterContext): PolicyPackVersion {
+  runtime.registerPolicyPack(writer, GLOBAL_LEGAL_BASELINE_POLICY_PACK);
+  runtime.registerPolicyPackVersion(writer, GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1);
+  return runtime.activatePolicyPackVersion(writer, GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1.id);
 }
