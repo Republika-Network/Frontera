@@ -331,6 +331,22 @@ P12 lets a host-composed, trusted **resolution authority** later establish wheth
 | **Timeout as evidence / forced answers** | No TTL, poll, sweeper or timer; `unresolved` writes nothing | An execution may stay unresolved — and its capacity consumed — forever |
 | **Generic providerRef dereference (SSRF)** | P12 core never parses, fetches or templates a `providerRef`; no status-URL configuration exists | — |
 
+### 7.23 Governed action intelligence (PLAN — added by MASTER-01; nothing implemented)
+
+`docs/architecture/FRONTERA-MASTER-PLAN.md` §4.4 and the INTEL track introduce a future **Frontera Agent**: model- or rule-driven components that interpret intents, resolve Governance Profiles, plan and retrieve context, and emit candidate RiskSignals. **None of it exists**; no model call exists anywhere (§1 of the Master Plan). This section records the threat obligations every INTEL item must discharge before it can be VERIFIED. The architectural requirement is the same for every row: until a deterministic boundary (CORE-04 Trusted Context Boundary, deterministic organization policy, the Kernel) admits it, the worst an attacker can produce is an **untrusted** candidate interpretation, observation, question or candidate RiskSignal; after admission, the worst is a **restriction** of authority (availability loss), never an expansion.
+
+| Threat | Required boundary (future) | Owner |
+| --- | --- | --- |
+| **Prompt injection** (in intent text, retrieved documents, tool output) | Interpretation output is candidate-only and passes the same envelope validation as any caller; it cannot fill trusted-context keys | INTEL-01, CORE-04 |
+| **Malicious retrieved content / malicious tool output / poisoned context** | Every observation carries source identity and provenance; only configured sources admitted for that fact class count | INTEL-04, CORE-04 |
+| **Hallucination** | A fabricated fact has no admissible source; unresolved stays `unresolved`, and policy decides | INTEL-01/04, CORE-04 |
+| **Provenance confusion** (a fact attributed to the wrong source) | Source identity is set by the retrieval tool binding, never by model text; authority to attest is per fact class | INTEL-04, CORE-04 |
+| **Signal fabrication / model compromise** | Candidate signals cannot reach policy; admission requires a configured producer and resolvable evidence references; admitted signals may drive only restrictive policy effects (monotonicity) | INTEL-05, CORE-04, INTEL-06 |
+| **Compromised external context source** | Per-fact-class trust, freshness and organization trust rules; a source never gains authority to authorize | CORE-04 |
+| **Model / provider drift** | Model identity and version recorded on every observation and signal; organization rules may scope admission to specific producers/versions | INTEL-05, CORE-04 |
+| **Tool-authority escalation** (retrieval credentials used to act) | Retrieval tools are least-privilege, read-only by default and separate from execution authority; execution happens only through a BoundedGrant and the single adapter call site (SEC-INV-011) | INTEL-04 |
+| **Denial of service via false restrictive signals** | Accepted cost of monotonicity; bounded by organization admission rules, false-positive handling and human override through durable approval / emergency release | INTEL-06, CTRL-04 |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.

@@ -4,7 +4,8 @@
   architecture baseline, roadmap and milestones.
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
-- **Last status change:** CTRL-01 → VERIFIED on branch `feat/ctrl-01-authority-admin-api` (from `main` @ `194a3e9`), 2026-09-26. Kernel-Authority provisioning over an API moved from CTRL-01 to CTRL-02 (§9). NEXT → CTRL-02 (§14).
+- **Reconciled by:** MASTER-01 (governed action intelligence & roadmap reconciliation), 2026-09-27, against `main` @ `c66e0c7` (CTRL-01 merged). Architecture and roadmap only; no runtime change.
+- **Last status change:** MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Previous: CTRL-01 → VERIFIED 2026-09-26.
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -25,16 +26,39 @@ document is wrong and must be corrected.
 
 ## 1. Product Thesis
 
-**HYPOTHESIS (target thesis):** Frontera is a protocol-neutral and rail-neutral
-**organizational authority control plane**. It answers one question:
+**HYPOTHESIS (target thesis, revised by MASTER-01):** Frontera is an
+**authority layer for governed machine and autonomous-system actions**:
+protocol-neutral, rail-neutral and **action-neutral**. It answers one question:
 
-> Does this software actor have valid authority to cause this action on behalf
-> of this organization, under these policies, limits, obligations and conditions?
+> Does this principal have valid authority to perform this action over this
+> resource on behalf of this organization, under these conditions?
+
+"Conditions" means policies, limits, obligations and admitted trusted context
+(§4.2). Payments are a major use case, not the definition of the product: a
+payment is one class of Governed Action (PAY), credit is one class of governed
+economic workflow (CREDIT), and deploying software, reading customer data,
+rotating a credential or changing infrastructure are others. MASTER-00's
+phrasing ("organizational authority control plane … cause this action") is
+preserved in substance; MASTER-01 makes the resource and the non-monetary
+action explicit.
 
 Frontera governs authority **before** execution. Protocols coordinate actions.
-Rails execute or settle them. Evidence proves what happened. Frontera does not
-own the blockchain, payment rail, wallet, payment protocol, lending protocol,
-vault or settlement network.
+Rails and adapters execute or settle them. Evidence proves what happened.
+Frontera does not own the blockchain, payment rail, wallet, payment protocol,
+lending protocol, vault, settlement network or the target system an action
+affects.
+
+**HYPOTHESIS (intelligence thesis, MASTER-01):** around the deterministic
+authority core, Frontera should eventually *understand* the action being
+requested, the resource being affected, which facts are material, which of them
+are missing, what behaviour is unusual and which evidence is relevant — and
+resolve as much of that as possible from authorized machine sources before a
+human is asked ("machine-speed due diligence"). Not all due diligence is
+automatable and human review does not disappear. This intelligence surrounds
+and feeds the core; it never replaces it (§4.4, invariants 24–32):
+
+> **The Frontera Agent understands. The Kernel decides. The Grant authorizes.
+> The Adapter executes. Evidence proves.**
 
 **FACT (how far the code supports the thesis today):**
 
@@ -50,6 +74,16 @@ vault or settlement network.
   `PaymentIntent`, `settlement` and `receipt` in core layers
   (`src/enterprise/__tests__/authority-payment-ceilings-structure.test.ts`).
   However, no second rail exists to prove neutrality against.
+- **Action neutrality is structural in control flow but not in parameters, and
+  is not demonstrated.** The orchestrator is action-agnostic, but its only
+  parameter axes are `amount` and `counterparty`, `GrantBoundKey` is a closed
+  money-shaped list, and "financial" is a first-class branch (§4.1, L-2 … L-6).
+  There is no first-class *resource* on the envelope beyond the grant's
+  `resources` bound key. Only one non-monetary execution path exists (Generic HTTP).
+- **No intelligence component exists.** No model call, agent, RiskSignal or
+  behavioural detector exists anywhere; a structural test forbids intelligence
+  vocabulary in Kernel sources (`src/enterprise/__tests__/security-invariants.test.ts`,
+  "names no AI, model or inference dependency").
 - **The shipped host does not compose the spine.** `scripts/run-enterprise-host.mjs`
   calls `createEnterpriseServer()` with no options, so `npm run start:enterprise`
   runs no governed actions, no bounded-grant store and no authority
@@ -88,11 +122,60 @@ exists to turn it from HYPOTHESIS into FACT, via the milestones in §11.
 20. Avoid premature generalization.
 21. Reuse existing generic primitives where they are actually sufficient.
 22. Do not create one god-object merely to make payments and credit look symmetrical.
-23. Frontera should eventually answer: **WHO** attempted **WHAT**, on behalf of
-    **WHICH ORGANIZATION**, under **WHOSE AUTHORITY**, subject to **WHICH POLICY**,
-    within **WHICH LIMITS**, producing **WHICH OBLIGATIONS**, causing **WHICH
-    ECONOMIC ACTION**, through **WHICH EXECUTION MECHANISM**, producing **WHICH
-    RESULT**, proven by **WHICH EVIDENCE**.
+23. Frontera should eventually answer: **WHO** attempted **WHAT ACTION** over
+    **WHICH RESOURCE**, on behalf of **WHICH ORGANIZATION**, under **WHOSE
+    AUTHORITY**, subject to **WHICH POLICY**, within **WHICH LIMITS**, given
+    **WHICH ADMITTED CONTEXT**, producing **WHICH OBLIGATIONS**, through **WHICH
+    EXECUTION MECHANISM**, producing **WHICH RESULT**, proven by **WHICH
+    EVIDENCE**. (MASTER-01: "which economic action" generalized to action +
+    resource; an economic action is one case. See §4.2.)
+
+**DECISION (MASTER-01): governed action intelligence invariants.** These
+replace MASTER-00's blanket "no behavioural or AI scoring in the authorization
+path" (§13) with a precise rule.
+
+24. **The Frontera Agent understands. The Kernel decides. The Grant authorizes.
+    The Adapter executes. Evidence proves.** Concretely: the Agent owns
+    understanding, context and signals; the Kernel owns the deterministic
+    authority decision; the BoundedGrant is the bounded authority artifact; the
+    Execution Adapter owns the side effect; Evidence owns proof and historical trace.
+25. **AI may produce observations and RiskSignals. AI may never create, expand
+    or exercise authority.** It never mints a grant, never overrides
+    deterministic policy, never directly authorizes execution, and never
+    exercises authority because it recommends execution.
+26. **Any AI-derived information capable of affecting authority crosses the
+    Trusted Context Boundary (CORE-04) and deterministic organization policy
+    first.** The only path is: Agent → observation / candidate RiskSignal →
+    Trusted Context Boundary → deterministic policy → Kernel → ALLOW / REVIEW /
+    DENY. Never AI → ALLOW, never AI → DENY directly, never AI → more authority.
+27. **Security monotonicity.** AI-derived intelligence may, through
+    deterministic policy, preserve or reduce currently exercisable authority. It
+    never independently increases it. Expansion requires legitimate issuance,
+    policy change, delegation or human/organizational authority through existing
+    deterministic mechanisms.
+28. **AI model output is not a root of trust.** A model cannot establish by
+    assertion identity, ownership, organizational authority, policy, approval,
+    provenance, settlement or artifact authenticity. It may propose claims;
+    trusted deterministic systems decide whether they are admissible.
+29. **Model confidence is not authority confidence.** `confidence = 0.95` does
+    not mean "95 % authorized". Confidence may be one input an organization
+    policy reads about an *admitted* signal; it never replaces provenance,
+    organizational authority, admissibility or deterministic evaluation.
+30. **Authority to attest ≠ authority to authorize; retrieval authority ≠
+    execution authority.** A source may be authoritative for one fact class and
+    not another (ERP: invoice existence; registry: supplier destination; chain:
+    transaction state; HR: employment status), and none of them authorizes the
+    action. Permission to *read* (ERP invoice, Kubernetes status, customer
+    record) never implies permission to *act* (pay, deploy, modify). The
+    Agent's context-retrieval permissions are separate from, and never convert
+    into, governed-action execution authority.
+31. **The organization owns binding policy.** AI may identify relevant policy,
+    missing facts, anomalies and relationships. It may not silently rewrite
+    policy, create authority rules, raise limits or authorize itself. Evidence
+    informs later evaluation; it never rewrites policy autonomously.
+32. **CORE is independent of INTEL.** CORE correctness is testable with no LLM,
+    model provider, behavioural model, vector store or agent framework present.
+    INTEL is a consumer and provider around CORE; CORE never imports INTEL.
 
 **FACT: current coverage of invariant 23.**
 
@@ -103,7 +186,9 @@ exists to turn it from HYPOTHESIS into FACT, via the milestones in §11.
 | POLICY | Answered only if the host injects a policy pack | — |
 | LIMITS | Answered only if P7 is composed | P7 / P10 |
 | OBLIGATIONS | **Not answered** on the governed path | — |
-| ECONOMIC ACTION | Partly answered | Intent + monetary amount |
+| ACTION | Partly answered | `intent` + host-trusted classifier; parameters limited to `amount`/`counterparty` (CORE-03) |
+| RESOURCE | Barely answered | Only the grant's `resources` bound key; no resource class on the envelope (CORE-03) |
+| ADMITTED CONTEXT | **Not answered** | `assertedContext` reaches the Kernel as caller claims (CORE-04) |
 | MECHANISM | Answered | Adapter id |
 | RESULT | Answered | P11 / P12 |
 | EVIDENCE | Answered, integrity-only | Event stream |
@@ -151,11 +236,11 @@ wiring inventory is §3.8.
 | Delegation lineage | **PARTIAL** | Enforced at decision when the actor is an agent. Re-resolved at issue, commit and exercise **only for financial actions** (`kernel-authority/financial-authority-resolver.ts`). Non-financial revalidation is a host callback |
 | Obligation lifecycle (discharge/verify/waive) | **LIBRARY-ONLY** | `src/features/obligation-runtime` is tested. The governed-action Kernel is built with `grants` only (`composition-root.ts:1370-1376`), and a host Kernel is refused (`:1113`), so obligations **cannot reach** governed actions |
 | Trusted context provenance (layer C) | **LIBRARY-ONLY** | `src/features/context-resolution-runtime` is tested. It is not composed; `assertedContext` reaches the Kernel as caller claims |
-| Risk signals | ABSENT | Boundary tests ban `riskScore`/`anomal` from the authorization path by design |
+| Risk signals | ABSENT | Boundary tests ban `riskScore`/`anomal` from Kernel sources by design. That ban stays: a future admitted RiskSignal reaches the Kernel only as a generic trusted-context fact (CORE-04), never by name (§4.4) |
 | Approvals | **PARTIAL** | `approval_required` always ends `withheld:'approval'` (`orchestrator.ts:593`). The approval store is in-memory. There is no way to present an approval proof on the governed path |
 | Escalation | LIBRARY-ONLY | `approval-runtime.ts:203` (domain code only) |
 | Holder-bound representative / right-scoped Governed Authority | LIBRARY-ONLY | Kernel providers exist (`AocKernel.ts:70-101`); no enterprise wiring |
-| Deterministic AI boundary | PARTIAL | Lexical negative test only; the ADR is architecture-only |
+| Deterministic AI boundary | PARTIAL | Lexical negative test only; the ADR is architecture-only. Amended in direction by MASTER-01 for restrict-only admitted RiskSignals (§4.4.6); the ADR's prohibitions remain in force until CORE-04 + INTEL-06 deliver |
 | Legacy `src/runtime/authorization` (protocol capability tokens) | SUPERSEDED | Serves the SDK host only |
 | Kernel `emergencyDeny` | SUPERSEDED | Replaced by P4 durable emergency control |
 
@@ -423,6 +508,12 @@ restated against what exists:
                                   PROD (host, durability, onboarding, hardening)
 ```
 
+**DECISION (MASTER-01).** INTEL (§4.4) sits *beside* CORE, not above or inside
+it: it reads intents, ASSURE evidence and authorized context sources, and it
+feeds CORE only through the CORE-04 Trusted Context Boundary. CORE never
+depends on INTEL (invariant 32). INTEL is a new track, not a runtime layer
+above the envelope.
+
 ### 4.1 The governed-action primitive question
 
 **FACT:**
@@ -445,11 +536,305 @@ restated against what exists:
 - PAY and CREDIT can then build on it safely: authority, grant, ceilings, claim,
   outcome and evidence are shared, and intent semantics are not.
 
+**DECISION (MASTER-01, reaffirmed).** The canonical governed-action spine does
+not change:
+
+```
+GovernedAction (GovernedActionIntent envelope)
+  → Kernel (deterministic decision, Governance Store commit)
+  → BoundedGrant (attenuation-only, signed)
+  → constraints / exercise controls (P4 emergency, P7, P10, obligations)
+  → write-ahead claim / governed execution
+  → Execution Adapter (single call site)
+  → Outcome (P11, P12)
+  → Evidence (P8 stream, bundles, assurance)
+```
+
+No universal action object is added above `GovernedActionIntent`, and no
+parallel AI authorization pipeline exists or may be built. "GovernedAction" in
+this document names the semantic concept; `GovernedActionIntent` remains its
+runtime envelope.
+
+### 4.2 Governed Action semantic model
+
+**DECISION (MASTER-01).** A Governed Action answers:
+
+| Question | Element | Where it lives (FACT today → owner) |
+|---|---|---|
+| WHO | Actor / Principal | Customer principal → subject → Kernel-Authority actor (P2) |
+| WANTS TO DO WHAT | Action | `intent` + host-trusted classification → first-class action class (CORE-03) |
+| TO WHAT | Resource | Grant `resources` bound only → first-class resource class + reference (CORE-03) |
+| UNDER WHOSE AUTHORITY | Authority / Grant / Provenance | Kernel-Authority world, Authority Graph, BoundedGrant (VERIFIED); lineage (CORE-04) |
+| UNDER WHAT CONDITIONS | Constraints, Policy, Obligations, Trusted Context | P7/P10 (VERIFIED); policy packs (CORE-03, PARTIAL); obligations + trusted context (CORE-04) |
+| THROUGH WHAT | Execution mechanism / Adapter | Adapter registry + Generic HTTP (VERIFIED); rails (PAY) |
+| WITH WHAT RESULT | Outcome | P11 / P12 (VERIFIED) |
+| PROVEN BY WHAT | Evidence | P8 stream, bundles (integrity-only) → ASSURE |
+
+This is a **semantic model, not a god-object.** The envelope stays small and
+extensible: typed, host/domain-declared parameter dimensions (CORE-03) carry
+what a domain needs. **A GovernedAction is not inherently monetary**; money is
+one parameter dimension (P9) among others.
+
+**Action + Resource awareness (DECISION).** Governance requirements depend on
+the combination Actor × Action × Resource, not on any one of them:
+
+| Action × Resource | Material governance differs because… |
+|---|---|
+| transfer × XRP asset | value moves irreversibly to a destination |
+| deploy × production environment | a change reaches live systems |
+| read × customer database (one record) | bounded data disclosure |
+| export × customer database (all records) | bulk disclosure — same resource, radically different governance |
+| modify × infrastructure | state change with blast radius |
+| revoke × credential | security-relevant, often urgent |
+| activate × physical or digital control | real-world effect (see note) |
+
+CORE owns the generic slots (actor, action class, resource class, resource
+reference, typed parameters) and their authority semantics. **CORE does not own
+a resource or action taxonomy**: no universal enums, no XRP, database,
+Kubernetes or robot semantics. Action and resource classes are opaque,
+domain-declared identifiers, as asset ids already are (P9). Domain / vertical
+packs teach Frontera which facts matter for a given combination, via
+Governance Profiles (§4.3).
+
+Future profile families may cover financial assets, data, infrastructure,
+credentials, software environments and physical systems. **Frontera is not
+claimed ready for physical-system control**: physical actuation will need
+stronger safety qualification (fail-safe semantics, real-time bounds,
+human-in-the-loop guarantees) than any current milestone defines.
+
+**Rail neutrality vs action neutrality (DECISION).** Two distinct properties,
+never to be collapsed:
+
+| Property | Meaning | Proven by |
+|---|---|---|
+| **Rail neutrality** | The same authority core governs *economically equivalent* actions across different settlement rails (XRPL, Lightning) | CORE PROVEN (§11.2) |
+| **Action neutrality** | The same authority core governs *materially different* classes of action and resource (transfer XRP, deploy to production, read customer data) | GOVERNED ACTION THESIS PROVEN (§11.6) |
+
+### 4.3 Governance Profiles
+
+**DECISION (MASTER-01).** A **Governance Profile** is a declarative
+description of the governance requirements relevant to one Action × Resource
+combination. No existing repository term covers it: a policy pack holds binding
+rules, a `ContextRequirement` (ADR-CONTEXT-PROVENANCE-AND-TRUST §4) holds the
+facts one rule needs; a profile is the domain's statement of *what matters* for
+a combination, and points at those. Conceptually:
+
+```
+profileId, version, owner (organization or domain pack), provenance
+resourceClass                 e.g. xrpl_asset            | production_environment
+actionClass                   e.g. transfer              | deploy
+materialFacts[]               ownership, destination,    | release_version, tests_passed,
+                              amount, purpose,           | approved_change_window,
+                              recipient_relationship     | rollback_available, incident_status
+requiredEvidence[]
+relevantPolicies[]            references to policy packs, never inline rules
+potentialApprovalRequirements[]
+applicableConstraints[]       references to CORE constraint kinds
+```
+
+Properties (binding on future work):
+
+- **Declarative and schema-bound.** Data validated against a versioned schema.
+  **Never arbitrary executable code**, and never code supplied by AI.
+- **Versionable, with a lifecycle** (draft → active → retired) and compatibility
+  rules across versions.
+- **Organization/domain-owned, provenance-aware.** Every version records who
+  authored and who activated it, like a promoted policy pack
+  (ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY §5). An AI-drafted profile is a
+  draft until an authorized human promotes it.
+- **Not load-bearing for authority on its own.** Binding requirements come from
+  organization policy (and its `ContextRequirement`s) keyed on the
+  deterministic action/resource classification. A wrong or missing profile
+  selection can make the Agent gather the wrong facts; it cannot make the
+  Kernel require fewer facts. Unresolved required facts stay `unresolved`, and
+  policy decides what that means.
+
+Ownership: the profile **schema**, validation, versioning and provenance are
+CORE-03 (generic, no domain vocabulary). Binding a profile's material facts to
+trusted sources is CORE-04. Profile **resolution** is INTEL-02. Profile
+**content** belongs to domain packs (PAY, CREDIT, verticals) and organizations.
+Nothing is implemented by MASTER-01.
+
+### 4.4 The Frontera Agent and the intelligence boundary
+
+**DECISION (MASTER-01).**
+
+#### 4.4.1 What the Frontera Agent is
+
+The **Frontera Agent** is a *logical* set of intelligence capabilities, not one
+process, model, service or LLM: Action Interpreter, Resource Intelligence,
+Governance Profile Resolver, Context Planner, Context Resolver, Behavioural
+Intelligence. No deployment topology is chosen, and multiple physical models
+are not required. Three conceptual roles, which may share implementation and
+do not each get a roadmap system:
+
+- **Action Intelligence** — understands what is being requested (INTEL-01).
+- **Resource Intelligence** — understands what is affected and which profile is
+  relevant (INTEL-01, INTEL-02).
+- **Risk Intelligence** — observes history, evidence and behaviour (INTEL-05).
+
+It corresponds to layer G of `ADR-AUTHORITY-CONTROL-LAYERING.md`. Layer G
+still never appears in the authorization path: its outputs reach policy only
+as layer-C facts admitted by CORE-04.
+
+The Agent **may** interpret, classify, investigate, ask, retrieve, correlate,
+detect, summarize, produce observations and produce candidate RiskSignals. It
+**may not** create, expand or exercise authority, mint a grant, override
+deterministic policy, discharge an obligation, approve on behalf of a human, or
+directly authorize execution.
+
+#### 4.4.2 Canonical flow
+
+```
+Intent (natural language or machine)
+  ↓
+Frontera Agent (INTEL)                             ── untrusted by construction
+  ├── interpret action                  INTEL-01
+  ├── understand / classify resource    INTEL-01
+  ├── resolve Governance Profile        INTEL-02
+  ├── identify material facts, plan questions   INTEL-03
+  ├── retrieve context (bounded tools)  INTEL-04 ── via configured sources (ERP, CRM,
+  │                                                  registry, chain, LDR, evidence…)
+  ├── correlate evidence                INTEL-05 ◄── ASSURE-04 substrate
+  └── emit observations / candidate RiskSignals
+  ↓
+Trusted Context Boundary (CORE-04)                 ── deterministic admission
+  ↓
+GovernedAction (envelope, CORE-03) + admitted context
+  ↓
+deterministic organization Policy + Kernel         ── ALLOW / REVIEW / DENY
+  ↓
+BoundedGrant → constraints → claim → Execution Adapter → Outcome → Evidence (ASSURE)
+  ↓
+Behavioural Intelligence (INTEL-05) ── feeds future observations / RiskSignals only
+```
+
+The Agent is optional: a governed action can enter the envelope directly from
+a machine caller with no interpretation, as every governed action does today.
+
+#### 4.4.3 Observations, Trusted Context and authority to attest
+
+An **Observation** is a value the Agent found or inferred, carrying where
+applicable: value, source, timestamp, provenance, fact type, confidence and
+correlation. An observation is untrusted. CORE-04 owns the deterministic
+**Trusted Context Boundary** through which an observation may become an
+*admissible fact*; admission requires source identity, source authority for
+that fact class (configured by the organization, never named by the requester
+or the Agent — ADR-CONTEXT-PROVENANCE-AND-TRUST §3), provenance, freshness,
+fact type and an organization-defined trust rule. INTEL-04 retrieves; it never
+decides that a source is trustworthy.
+
+A source can have **authority to attest** a fact class (ERP → invoice
+existence; wallet registry → destination registration; blockchain → chain
+state; HR → employment status) without any **authority to authorize** the
+action (invariant 30). The existing `ContextSource` + trust-class model (FACT:
+LIBRARY-ONLY, `context-resolution-runtime`) is the intended vehicle.
+
+**Live Data Rail (LDR)** is one possible context source / transport for ERP,
+organizational, operational and external facts: Agent / Context Resolver → LDR
+or source adapter → observation → provenance → Trusted Context Boundary. LDR
+transports and provides data. It is not part of the authority core and it does
+not authorize anything.
+
+#### 4.4.4 RiskSignal
+
+A **RiskSignal** is an observation or assessment about risk, never an
+authorization decision. Conceptual fields: type, severity, confidence, actor,
+action, resource, timeWindow, supportingEvidenceRefs, provenance (producer,
+detector/model identity and version, inputs). Example: `type:
+threshold_circumvention, severity: high, supportingEvidenceRefs: [...]`.
+
+Lifecycle:
+
+| State | Produced by | May affect authority? |
+|---|---|---|
+| **candidate** | INTEL-05 (model, rule or statistical detector) | **No.** Displayable, reviewable, recordable |
+| **admitted / trusted** | CORE-04 admission: acceptable producer (a configured signal source), evidence references that resolve, provenance, freshness, signal type the organization's policy declares, and the producer's trust as configured by the organization | Only as an input to deterministic organization policy, and only restrictively (invariant 27, §4.4.5) |
+
+Admission evaluates the *producer and its evidence*, not the model's
+self-assessment: **model confidence ≠ trust** (invariant 29). A RiskSignal
+never directly ALLOWs, DENYs, creates a grant, increases authority or executes.
+
+#### 4.4.5 Adaptive Authority Containment
+
+Admitted RiskSignals may cause **deterministic organization policy** to apply
+more restrictive authority controls through **existing** mechanisms: an
+additional obligation (CORE-04), a shorter grant lifetime or lower ceiling
+(grant attenuation, P10), an approval requirement (CORE-05 / CTRL-04),
+suspension (P4 emergency control), revocation (CORE-01) or an emergency stop.
+The AI performs none of these transitions; policy does. Intelligence may
+contribute to **restricting** authority; it may never independently
+**expand** it (invariant 27).
+
+Non-normative example:
+
+| Admitted signal | Organization policy (deterministic) applies |
+|---|---|
+| none | ceiling 10,000 |
+| elevated risk | ceiling capped at 5,000 |
+| high risk | human approval required (durable approval, CORE-05) |
+| critical risk | authority suspended or revoked |
+
+The human-approval boundary is preserved: the Agent identifies risk or missing
+context; deterministic policy decides whether approval is required; a human
+with authority approves or rejects through the durable approval mechanism
+(CORE-05, CTRL-04). The Agent never impersonates human authority. Approvals are
+not merged into INTEL.
+
+#### 4.4.6 Relationship to `ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY`
+
+FACT: that ADR (accepted, architecture-only) forbids any model output from
+becoming a `ContextFact` at any trust class (§2.2, hard invariant 4), says a
+detected anomaly may inform a human but never add an approval requirement
+(§7), and requires that removing every advisory producer changes no decision
+(hard invariant 7). MASTER-01 departs from it **only** for restrict-only
+admitted RiskSignals. DECISION:
+
+- Prohibitions 1, 3, 4, 5 and the `Advisory` shape stand. A candidate RiskSignal
+  and an Observation are advisories in that ADR's sense.
+- Hard invariant 4 and §7 are narrowed: an *admitted* RiskSignal — produced by
+  a configured signal source and admitted by CORE-04 under an organization rule
+  — may be read by policy, **only by rules whose effect is restrictive**. A
+  policy-pack validation rule enforces this (a signal key in a rule that
+  widens, allows or lengthens is refused).
+- Hard invariant 7 is restated as a testable monotonicity property: *with every
+  intelligence producer removed, every decision equals the no-signal baseline;
+  with them present, every decision is equal to or more restrictive than it.*
+- The ADR's reproducibility objection is answered by recording: an admitted
+  signal is persisted and digested as a decision input, so the decision is
+  reproducible from its recorded inputs, exactly as an authoritative ERP fact is.
+- **Until CORE-04 and INTEL-06 deliver this with tests, the ADR's prohibitions
+  remain fully in force.** INTEL-06 owns a superseding ADR for the narrowed
+  clauses. The Kernel-source intelligence-vocabulary ban stays unchanged.
+
+#### 4.4.7 Evidence feedback loop
+
+Intent → Frontera Agent → GovernedAction + admitted context → Kernel →
+BoundedGrant → Execution → Outcome → Evidence → Behavioural Intelligence →
+future observations / RiskSignals. This is a monitoring loop, **not autonomous
+policy rewriting**: evidence informs later evaluation; policy stays
+organization-owned (invariant 31). A learned baseline is an INTEL input, never
+a policy.
+
+#### 4.4.8 Model and AI security obligations (PLAN)
+
+Future INTEL work must be threat-modelled for: prompt injection, malicious
+retrieved content, hallucination, model compromise, poisoned context,
+malicious tool output, provenance confusion, signal fabrication, a compromised
+external context source, and model/provider drift. The architectural
+requirement is that each of these can at worst produce an **untrusted**
+candidate interpretation, observation, question or candidate RiskSignal until a
+deterministic boundary admits it — and, after admission, can at worst
+**restrict** authority (an availability cost), never expand it. The
+Agent's retrieval tools are least-privilege, read-only by default, and
+separate from execution authority (invariant 30). Mitigations are not
+implemented by MASTER-01; see `docs/security/THREAT_MODEL_V1.md` §7.23.
+
 ---
 
 ## 5. Track Model
 
-**DECISION.** Future work uses only these six prefixes. Global `P`, `Prompt`,
+**DECISION.** Future work uses only these seven prefixes (INTEL added by MASTER-01). Global `P`, `Prompt`,
 `Phase`, `R`, `SK`, `FR-REC`, `Slice`, `Sprint` and `MPP-xx` numbering is retired
 as a roadmap mechanism (§15).
 
@@ -458,8 +843,9 @@ as a roadmap mechanism (§15).
 | **CORE** | Principals, authority world, provenance/delegation, grants, revocation, policy evaluation, ceilings/exercise controls, obligations, trusted inputs/risk inputs, approvals (engine side), authenticity, signer/key-trust boundaries, the governed-action envelope | — | Import or name any payment protocol, rail, credit mechanism, wallet, custodian or KMS vendor |
 | **PAY** | Payment intent, protocol adapters (MPP, x402), rail adapters (XRPL, Lightning, …), payment credentials, receipts, settlement, payment outcomes | CORE | Add payment vocabulary to CORE types |
 | **CREDIT** | Credit intent, borrower context, exposure/concentration/collateral, loan authorization, repayment obligations, credit adapters (XLS-65/66), Reverse Carry | CORE; PAY only for shared rail clients | Add credit vocabulary to CORE types |
-| **ASSURE** | End-to-end trace, evidence authenticity, settlement evidence, portable assurance, qualification suites | CORE, PAY, CREDIT (read-only) | Become an authority source (invariant 13) |
-| **CTRL** | Organizations, humans, agents inventory, authority administration, approvals UX, API, web, mobile, alerts | CORE, ASSURE | Become a decision path (a UI never decides) |
+| **ASSURE** | End-to-end trace, evidence authenticity, settlement evidence, portable assurance, qualification suites, the behavioural evidence substrate (ASSURE-04) | CORE, PAY, CREDIT (read-only) | Become an authority source (invariant 13); analyse behaviour or emit RiskSignals (INTEL) |
+| **INTEL** | The Frontera Agent (§4.4): action/resource interpretation, Governance Profile resolution, context question planning, bounded context retrieval with provenance, behavioural analysis and candidate RiskSignals, adaptive-containment integration | CORE (public contracts only), ASSURE (read-only), CTRL (surfaces) | Be imported by CORE (invariant 32); decide, mint, expand or exercise authority; write trusted context except through CORE-04 admission; approve on a human's behalf; rewrite policy; become the canonical evidence store |
+| **CTRL** | Organizations, humans, agents inventory, authority administration, approvals UX, API, web, mobile, alerts; surfaces for context, questions, RiskSignals and containment state (§9 CTRL note) | CORE, ASSURE, INTEL (display) | Become a decision path (a UI never decides) |
 | **PROD** | Bootable host, secure defaults, backup/recovery, observability, onboarding, SSO/RBAC, billing, deployment, release qualification | all | Change authority semantics |
 
 ---
@@ -507,7 +893,7 @@ as a roadmap mechanism (§15).
 | Prompt 10: FS/process/network constraints | CORE | PARTIAL | Boundary tests exist; extend as layers are added |
 | Prompt 11: Egress allowlisting | PROD | PLANNED | → PROD-04 |
 | Prompt 12: Kill switch | CORE | VERIFIED (opt-in) | Delivered by P4 emergency control; operator API delivered by CTRL-01 |
-| Prompt 13 / P21: Behavioural abuse detection / intelligence | ASSURE | DEFERRED | → ASSURE-04; must stay outside the authorization path |
+| Prompt 13 / P21: Behavioural abuse detection / intelligence | ASSURE / INTEL | PLANNED | → ASSURE-04 (evidence substrate) + INTEL-05 (analysis, candidate RiskSignals); affects authority only restrictively via CORE-04 + INTEL-06 (MASTER-01, §4.4) |
 | Prompt 14: Self-modification protection | CORE | PARTIAL | Policy-pack writes carry no caller identity (NB-008) → CORE-03 |
 | Prompt 15: Tamper-evident evidence | ASSURE | PARTIAL | Integrity yes, authenticity no → ASSURE-02 |
 | Prompt 17 / P17: Deployment topology / store-set durability | PROD | PARTIAL | Host topology VERIFIED by PROD-01 (NB-005, GS-003 closed for the shipped Host); store-set backup → PROD-02 |
@@ -551,6 +937,7 @@ as a roadmap mechanism (§15).
 | Execution outcomes | P11 outcome store · P12 resolution store · governance-store attempt row | Intentional: claim, observation and resolution are distinct facts | — |
 | Idempotency | `requestId` from `idempotencyKey` (spine) · P13 business-operation identity (unmerged) · Stripe webhook idempotency (passport-web) | Spine vs P13: Intentional (request vs business operation), must be reconciled when P13 lands. Stripe: separate product | PAY-02 |
 | Policy context | Kernel `request.context`, Recognition `PolicyContext`, domain-pack `aoc.context`, `ExerciseControlPolicy`, `GovernedActionGrantPolicy` | Mostly intentional (one per gate). There is no single trusted-context object | CORE-03 |
+| Advisory vs RiskSignal (future) | `Advisory` (ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY §3, unimplemented) · RiskSignal (§4.4.4, unimplemented) · assurance-runtime typed signals (§7.14 of the threat model; assessment-scoped) | Not yet duplicated. A candidate RiskSignal must be an `Advisory` kind, not a second advisory shape; assurance signals stay assessment-scoped | CORE-04 (admitted schema), INTEL-05 |
 | Challenge normalization / payment intents | Only P13 (unmerged) | Not yet duplicated. Keep it that way | PAY-01/02 |
 | Control plane | `src/features/aoc-control-plane` · `packages/control-plane` (orphan) · `control-plane-sdk` (types) · passport-web admin | Reconcile. Pick one base | CTRL-03 |
 
@@ -610,6 +997,18 @@ Candidate items from the MASTER-00 brief were changed as follows:
 - **Split:** "PAY-03 Settlement Rail Boundary + XRPL" into PAY-03 (boundary + credentials) and PAY-04 (XRPL).
 - **Deferred:** mobile (CTRL-06/07), and Stripe and other rails beyond the second.
 
+MASTER-01 (2026-09-27) changed the roadmap as follows:
+
+- **Added:** the INTEL track (INTEL-01 … INTEL-06) and CORE-08 (action-neutrality
+  qualification, the gate for GOVERNED ACTION THESIS PROVEN, §11.6).
+- **Expanded:** CORE-03 (actor/action/resource semantics, Governance Profile
+  schema) and CORE-04 (Trusted Context Boundary, authority to attest, admitted
+  RiskSignal contract).
+- **Re-scoped:** ASSURE-04 to the behavioural evidence substrate; analysis moved
+  to INTEL-05. ASSURE-04 moved from DEFERRED to PLANNED.
+- **Re-prioritized:** NEXT moved from CTRL-02 to CORE-03 (§14). CTRL-02's
+  purpose and scope are unchanged. CTRL-01 is not reopened.
+
 ### CORE
 
 **CORE-01: Revocation State Integrity & Durable Authenticity Enforcement**
@@ -639,17 +1038,17 @@ Candidate items from the MASTER-00 brief were changed as follows:
 | Exit criteria | No production composition holds an authority private key in process memory when an external signer is configured. Refusal paths are tested. CORE imports no KMS vendor SDK |
 | Non-goals | Customer transaction-signing keys for rails (PAY-03); signing evidence (ASSURE-02); a PKI |
 
-**CORE-03: Governed Action Parameter Model (envelope generalization)**
+**CORE-03: Governed Action Semantic & Parameter Model (Actor · Action · Resource; envelope generalization)**
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
+| Status | **NEXT** (MASTER-01) |
 | Depends on | CORE-01 (soft) |
-| Purpose | Keep **one** generic governed-action envelope, and make it express non-payment parameters without coercing everything into `amount`/`counterparty` |
+| Purpose | Keep **one** generic governed-action envelope, and make it express the Governed Action semantic model (§4.2) — actor, action, resource, structured and arbitrary bounded parameters, non-financial semantics — without coercing everything into `amount`/`counterparty`. Establish that a GovernedAction is **not inherently monetary**. Provide the generic, domain-extensible Governance Profile format (§4.3) |
 | Existing reused | `GovernedActionIntent`, the orchestrator, P9 `MonetaryAmount`, the host-trusted classifier, grant attenuation |
-| Remaining work | Typed, host-declared action parameter dimensions (quantity, party, reference, duration), with attenuation rules per dimension, so a `GrantBoundKey` is no longer a closed money list (L-2 to L-6). Unify `currency`/`unit` naming. Move reserved context keys to a registry that verticals extend (prerequisite for L-7). Give policy-pack writes a caller identity (NB-008) |
-| Exit criteria | A non-financial action with a structured parameter, and a quantity bound that is not money, are governed and attenuated end to end. Existing P9/P10 suites pass unchanged. No payment or credit term is added to CORE |
-| Non-goals | `PaymentIntent` or `CreditIntent` (PAY-01, CREDIT-01); a universal "EconomicIntent" god-object |
+| Remaining work | First-class action class and resource class + resource reference on the envelope, as opaque domain-declared identifiers (no CORE taxonomy, no universal enums). Typed, host-declared action parameter dimensions (quantity, party, reference, duration), with attenuation rules per dimension, so a `GrantBoundKey` is no longer a closed money list (L-2 to L-6); money becomes one dimension. Unify `currency`/`unit` naming. Move reserved context keys to a registry that verticals extend (prerequisite for L-7). Give policy-pack writes a caller identity (NB-008). **Governance Profile schema** (MASTER-01): declarative, versioned, owner + provenance recorded, validated, keyed by action class × resource class, referencing policies and constraint kinds by id — data only, no resolver, no executable content |
+| Exit criteria | A non-financial action with a structured parameter, and a quantity bound that is not money, are governed and attenuated end to end, with its action class and resource class recorded in the decision and the evidence. The same resource under two action classes (e.g. read one record vs export all) is governed differently by policy alone. Existing P9/P10 suites pass unchanged. A Governance Profile validates, versions and records provenance; an executable or unknown-field profile is refused. No payment, credit, database, Kubernetes or other domain term is added to CORE |
+| Non-goals | `PaymentIntent` or `CreditIntent` (PAY-01, CREDIT-01); a universal "EconomicIntent" or replacement envelope; a resource/action taxonomy in CORE; profile resolution (INTEL-02); any AI component |
 
 **CORE-04: Trusted Context & Obligations on the Governed Path**
 
@@ -657,11 +1056,11 @@ Candidate items from the MASTER-00 brief were changed as follows:
 |---|---|
 | Status | PLANNED |
 | Depends on | CORE-03 (hard: context facts and obligations bind to envelope parameters) |
-| Purpose | Make layers C and D reachable from governed actions (both are LIBRARY-ONLY today). Answer the OBLIGATIONS question of invariant 23. Provide the risk-input boundary |
+| Purpose | Make layers C and D reachable from governed actions (both are LIBRARY-ONLY today). Answer the OBLIGATIONS and ADMITTED CONTEXT questions of invariant 23. Own the deterministic **Trusted Context Boundary** (§4.4.3) through which observations — including Agent observations and RiskSignals — become admissible facts, and the risk-input boundary |
 | Existing reused | `context-resolution-runtime`, `obligation-runtime`, `GRANT_OBLIGATIONS_UNSATISFIED` mapping (`orchestrator.ts:671`), FR-REC-02 trusted context provider as a pattern |
-| Remaining work | Compose `contextResolution` and `obligations` into the grant-aware Kernel (`composition-root.ts:1370`). Trusted-input registry: which sources may assert which facts. A risk-signal input as a trusted *fact* (never an authorization-path score, per the existing ban). Durable obligation state. Non-financial exercise-time lineage revalidation (closing the host-callback gap). Decision on the two authority worlds (§7) |
-| Exit criteria | A governed action is withheld for an unsatisfied obligation and admitted after verified discharge, durably, across restart. Caller-asserted context cannot occupy a trusted-fact key. Lineage is revalidated at exercise for non-financial actions |
-| Non-goals | Behavioural intelligence (ASSURE-04); payment receipts as obligation discharge (PAY-05); credit repayment (CREDIT-05) |
+| Remaining work | Compose `contextResolution` and `obligations` into the grant-aware Kernel (`composition-root.ts:1370`). Trusted-input registry: which sources may **attest** which fact classes (authority to attest ≠ authority to authorize, invariant 30), with source identity, provenance, freshness and organization trust rules. Binding a Governance Profile's material facts to `ContextRequirement`s and trusted sources. The canonical **admitted RiskSignal** input contract (candidate → admitted lifecycle, §4.4.4), named generically (no intelligence vocabulary in CORE), with a policy-pack rule that signal keys may drive only restrictive effects. Durable obligation state. Non-financial exercise-time lineage revalidation (closing the host-callback gap). Decision on the two authority worlds (§7) |
+| Exit criteria | A governed action is withheld for an unsatisfied obligation and admitted after verified discharge, durably, across restart. Caller-asserted context cannot occupy a trusted-fact key. A source configured to attest one fact class cannot attest another. An observation without source identity or provenance, or stale beyond its freshness, is not admitted. Lineage is revalidated at exercise for non-financial actions. All of it passes with no intelligence component present |
+| Non-goals | Retrieving context (INTEL-04); generating RiskSignals (INTEL-05); containment policies (INTEL-06); payment receipts as obligation discharge (PAY-05); credit repayment (CREDIT-05) |
 
 **CORE-05: Durable Approvals (engine side)**
 
@@ -697,6 +1096,18 @@ Candidate items from the MASTER-00 brief were changed as follows:
 | Remaining work | Monotonic, externally anchored or timestamped authority-state checkpoints. Refusal on detected regression |
 | Exit criteria | Restoring an older signed snapshot is detected before any grant is exercised |
 | Non-goals | A blockchain-specific anchor inside CORE (an anchor adapter is fine) |
+
+**CORE-08: Action-Neutrality Qualification (Governed Action Thesis)** (added by MASTER-01)
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | CORE-03 (hard), CORE-04 (hard), CORE-05 (hard), CORE-06 (soft: reuse its adversarial and no-bypass harness); one monetary execution path (PAY-04 preferred, Generic HTTP acceptable — §11.6) |
+| Purpose | The gate for **GOVERNED ACTION THESIS PROVEN** (§11.6): prove action neutrality — the same deterministic core governs materially different action/resource domains |
+| Existing reused | Generic HTTP adapter (P6) for non-monetary domains; P9/P10 for the monetary domain; structural boundary tests; the orchestrator scenario suites |
+| Remaining work | Three reference domains expressed only through Governance Profiles, organization policy, context sources, domain validation and adapters. A structural test that the Kernel and orchestrator contain no domain branching. Cross-domain denial, over-bound, revoked-mid-flight and missing-context cases |
+| Exit criteria | §11.6 all true |
+| Non-goals | Rail neutrality (PAY-07, §11.2); any INTEL component (the thesis is about the deterministic core); physical actuation |
 
 ### PAY
 
@@ -898,12 +1309,85 @@ CORE obligations and generalized bound kinds, not payment fields.
 | Status | PLANNED |
 | Depends on | ASSURE-02 |
 
-**ASSURE-04: Behavioural Risk Intelligence**
+**ASSURE-04: Behavioural Evidence Substrate** (re-scoped by MASTER-01; formerly "Behavioural Risk Intelligence")
 
 | Field | Content |
 |---|---|
-| Status | DEFERRED |
-| Note | Former P21 / Prompt 13. Advisory only; never on the authorization path |
+| Status | PLANNED (was DEFERRED) |
+| Depends on | ASSURE-01 (hard) |
+| Purpose | Former P21 / Prompt 13, evidence half. A trustworthy, verifiable, queryable behavioural history for INTEL-05 to analyse: governed actions, decisions and denials, outcomes, actors, actions, resources, destinations, amounts, timing, failed attempts and sequences, derived from the P8 stream and P11/P12 records with integrity (and, after ASSURE-02, authenticity) preserved |
+| Exit criteria | For any actor, action class or resource class, the history over a time window can be read and verified back to canonical records; a RiskSignal's `supportingEvidenceRefs` can be resolved and verified against it |
+| Non-goals | Detection, baselines, anomaly analysis or RiskSignal generation (INTEL-05); any effect on authority |
+| Ownership boundary | **ASSURE owns** trustworthy evidence, historical trace and verifiable source material. **INTEL owns** analysis of it and emits candidate observations/RiskSignals. INTEL never becomes the evidence store; ASSURE never analyses or signals |
+
+### INTEL
+
+**DECISION (MASTER-01).** The INTEL track implements the Frontera Agent (§4.4).
+Every INTEL item shares these non-goals: no authorization decision, no grant
+minting, no authority expansion, no execution, no approval on a human's behalf,
+no policy rewriting, no model or AI SDK anywhere in CORE, and no INTEL
+dependency for CORE correctness. The items are **not** a strict chain; see §10.
+No INTEL item is required for PILOT READY (§11.3).
+
+**INTEL-01: Action & Resource Interpretation**
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | CORE-03 (hard: the target it interprets into — actor, action class, resource class, typed parameters) |
+| Purpose | Translate natural-language or machine intent into **candidate** structured GovernedAction information: actor, action, resource, target, purpose, parameters, references. "Pay invoice 8819" → candidate `{action: transfer, resource: <asset>, target: <payee>, purpose: invoice 8819, …}` |
+| Verification | Interpretation represents at least three materially different action/resource domains (e.g. transfer, deploy, read/export data). Output is typed as candidate/untrusted and can enter the envelope only through the same validation any caller's intent passes (no privileged path). A test proves interpretation alone never authorizes, mints authority or executes: removing it changes no decision for an identical validated envelope |
+| Non-goals | Authority; filling trusted-context keys; profile resolution (INTEL-02); a model-provider abstraction beyond what this item needs (§16) |
+
+**INTEL-02: Governance Profile Resolution**
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | CORE-03 (hard: profile schema); INTEL-01 (soft: an already-structured machine intent needs no interpretation) |
+| Purpose | Given actor × action × resource, determine which Governance Profile applies and return its required facts, evidence, relevant policies, potential approvals and applicable constraints. Deterministic lookup where the classification is exact; AI may *propose* a profile where it is ambiguous |
+| Verification | Declarative profiles determine required material facts with no executable code and no AI-created binding policy. Every resolution records profile id, version, owner and provenance. A test proves a wrong or absent profile selection cannot reduce the facts the Kernel's policy requires (§4.3) |
+| Non-goals | Authoring or activating profiles (organizations/domain packs, human promotion); inventing policy |
+
+**INTEL-03: Context Question Planner**
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | INTEL-02 (hard); CORE-04 (soft: reads `unresolved` / `stale` / `conflicted` resolutions to know what is still open) |
+| Purpose | Given action, resource, profile and known context, identify which material facts remain unresolved and turn each into a bounded question or retrieval task: "Does invoice 8819 exist?", "Does the amount match?", "Has this destination been used before?", "Is the deployment inside the approved change window?", "Is rollback available?", "Is this actor normally permitted this class of action?" |
+| Verification | Every unresolved material fact becomes a bounded, explainable, traceable question or retrieval task linked to the profile fact it serves. The planner has no decision output; a structural test proves it cannot reach the Kernel or the grant path |
+| Non-goals | Answering the questions (INTEL-04, humans); deciding authority; asking humans what a machine source can answer |
+
+**INTEL-04: Context Resolution & Provenance**
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | CORE-04 (hard: the admission boundary and source registry); INTEL-02 (hard: what to fetch); INTEL-03 (soft) |
+| Purpose | **Machine-speed due diligence.** Before asking a human, resolve material facts from authorized machine sources (ERP, CRM, LDR, internal APIs, registries, blockchains, the evidence stream, operational systems): required fact → machine source available? → retrieve, else unresolved / human path. Every observation carries value, source, timestamp, provenance, fact type, confidence and correlation |
+| Verification | Context is retrieved only through bounded, least-privilege, read-only tools whose permissions are separate from any execution authority (invariant 30). Source identity and provenance are retained on every observation. Facts affect authority only after CORE-04 admission; a test proves an un-admitted observation never reaches policy |
+| Non-goals | Deciding a source is trustworthy (CORE-04); write access to any source; claiming all due diligence is automatable |
+
+**INTEL-05: Behavioural Intelligence & RiskSignal Generation**
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | ASSURE-04 (hard: behavioural evidence substrate); CORE-04 (hard: the RiskSignal contract a candidate must conform to) |
+| Purpose | Former P21 / Prompt 13, analysis half. Analyse governed actions, outcomes, denials, actors, resources, destinations, amounts, timing, frequency, sequences, failed attempts, prior relationships and baselines, and emit **candidate** RiskSignals: novel destination, velocity anomaly, near-ceiling repetition, threshold circumvention, unusual time/resource/action, repeated-denial probing, behavioural deviation, unexpected sequence, correlated actions. Detectors may be rules, statistics or models |
+| Verification | Every observation is derived from ASSURE-04 evidence/history, and every candidate RiskSignal carries resolvable `supportingEvidenceRefs` and producer provenance. No direct authority decision occurs: a test proves candidate signals cannot reach policy |
+| Non-goals | Admission (CORE-04); containment (INTEL-06); storing canonical evidence (ASSURE); autonomous policy change |
+
+**INTEL-06: Adaptive Authority Containment**
+
+| Field | Content |
+|---|---|
+| Status | PLANNED |
+| Depends on | INTEL-05 (hard); CORE-04 (hard: admission, restrict-only signal rule); CORE-05 (hard: durable approvals as an effect); CORE-03 (hard: attributable policy-pack writes, NB-008 — containment rules are organization policy); CORE-01 revocation and P4 emergency control (VERIFIED); CTRL-04 (soft: the human side of an approval requirement); CTRL-02 (soft: an organizational identity for policy-driven revocation, §16) |
+| Purpose | Let admitted RiskSignals cause deterministic organization policy to apply more restrictive controls: added obligation, shorter grant lifetime, lower ceiling, approval requirement, suspension, revocation, emergency stop (§4.4.5). Any generic restrict-only policy effect not yet in CORE is added in CORE under CORE's rules (generic name, non-intelligence test), not in INTEL |
+| Verification | Admitted signals trigger deterministic restrictive responses through existing authority mechanisms only. The monotonicity property (§4.4.6) is a test across the reference domains: removing all producers yields the baseline; any signal set yields equal or more restrictive decisions. A policy rule using a signal key to widen, allow or lengthen is refused at validation. AI cannot independently expand authority under any tested configuration. The superseding ADR for ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY hard invariants 4/7 and §7 is accepted |
+| Non-goals | Expanding authority; AI-performed transitions; learned thresholds becoming policy; alerts delivery (CTRL-05) |
 
 ### CTRL
 
@@ -925,8 +1409,8 @@ CORE obligations and generalized bound kinds, not payment fields.
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** |
-| Depends on | CTRL-01 — VERIFIED |
+| Status | PLANNED (unblocked; the recommended parallel stream, §14) |
+| Depends on | CTRL-01 — VERIFIED; CORE-03 (soft, MASTER-01: authority-grant provisioning schemas enter the frozen v1 API surface, and should expose CORE-03's generalized bounds rather than today's money-typed `spending_limit` (L-5)) |
 | Existing reused | passport-web account/role model as reference; `BoundCustomerIdentity`; the CTRL-01 administration boundary (`authority-administration/`) and `kernelAuthorityProvisioning` |
 | Remaining work | Human operator identity + roles in the enterprise runtime, replacing CTRL-01's shared administrator secrets as the operator identity. An agent inventory backed by Kernel-Authority actors. **Kernel-Authority provisioning over the API** (actors, passports, capability tokens, authority grants, delegations — moved here from CTRL-01), authorized by operator role, under the Kernel's existing append rules (terminal revocation, no in-place rewrite) and monetary checks. A passport reconciliation decision (§7) |
 | Exit criteria | A pilot organization onboards an agent and assigns it bounded authority without source code, a REPL or direct DB access, as an identified human operator |
@@ -964,6 +1448,17 @@ CORE obligations and generalized bound kinds, not payment fields.
 | Field | Content |
 |---|---|
 | Status | DEFERRED |
+
+**CTRL and INTEL (MASTER-01, PLAN).** Future control-plane surfaces may need to
+show unresolved context, required facts, open questions, source provenance,
+RiskSignals with their supporting evidence, review requirements, alerts,
+containment state and human approvals. These attach to CTRL-03 (display),
+CTRL-04 (approval and review) and CTRL-05 (alerts) when the corresponding INTEL
+items exist; no CTRL item gains an INTEL dependency for the pilot. A surface
+displays; it never decides. **CTRL-01 is unchanged and remains VERIFIED as
+delivered**, including its decision not to expose provisioning behind a shared
+administrator secret. CTRL-02's scope (human operators, organizations, agent
+inventory, provisioning) is unchanged.
 
 ### PROD
 
@@ -1008,14 +1503,16 @@ CORE obligations and generalized bound kinds, not payment fields.
 
 ## 10. Dependency Graph
 
-**PLAN.** `──►` is a hard dependency. `┄┄►` is a soft dependency.
+**PLAN.** `──►` is a hard dependency. `┄┄►` is a soft dependency. `✓` = VERIFIED.
+Rebuilt by MASTER-01 to include INTEL and CORE-08.
 
 ```
-CORE-01 ──► CORE-02 ──► CORE-07
-   │           └┄┄► ASSURE-02 ──► ASSURE-03
-   ├──► PROD-01 ──┄┄► PROD-02
-   ├──► CTRL-01 ──► CTRL-02 ──► CTRL-03 ──► CTRL-04 ◄── CORE-05
-   ├┄┄► ASSURE-01
+CORE-01✓ ──► CORE-02 ──► CORE-07
+   │            └┄┄► ASSURE-02 ──► ASSURE-03
+   ├──► PROD-01✓ ┄┄► PROD-02
+   ├──► CTRL-01✓ ──► CTRL-02 ──► CTRL-03 ──► CTRL-04 ◄── CORE-05
+   │                   ▲ ┄┄ CORE-03 (provisioning schemas)
+   ├┄┄► ASSURE-01 ──► ASSURE-04
    └┄┄► CORE-03 ──► CORE-04 ┄┄► CORE-05
            │           │
            │           └───────────────────────────┐
@@ -1029,9 +1526,37 @@ CORE-01 ──► CORE-02 ──► CORE-07
                                      └──► CREDIT-05 ◄── CORE-04, ◄┄┄ PAY-05
                                              └──► CREDIT-06 ──► CREDIT-07 ◄── ASSURE-01
 
+INTEL (beside CORE; CORE never depends on it):
+   CORE-03 ──► INTEL-01
+   CORE-03 ──► INTEL-02 ◄┄┄ INTEL-01
+               INTEL-02 ──► INTEL-03 ◄┄┄ CORE-04
+   CORE-04 + INTEL-02 ──► INTEL-04 ◄┄┄ INTEL-03
+   ASSURE-04 + CORE-04 ──► INTEL-05
+   INTEL-05 + CORE-03 + CORE-04 + CORE-05 ──► INTEL-06 ◄┄┄ CTRL-04, CTRL-02
+
 CORE-01..05 + PROD-01 ──► CORE-06
+CORE-03 + CORE-04 + CORE-05 (+┄┄ CORE-06) + one monetary execution path ──► CORE-08
 PROD-01 + PROD-02 + CTRL-01..04 + CORE-06 ──► PROD-03
 ```
+
+**Foundation dependencies.** CORE-03 and CORE-04 are the roots of every
+remaining thesis: they gate CORE-05, PAY-01, CREDIT-01, all of INTEL, CORE-08
+and (via CORE-05 → CTRL-04 and CORE-06) PILOT READY.
+
+**Paths.**
+
+| Path | Sequence | Ends in |
+|---|---|---|
+| **Critical pilot path** | CORE-03 → CORE-04 → CORE-05 → CORE-06, joined by CTRL-02 → CTRL-03 → CTRL-04 (needs CORE-05), PROD-02, ASSURE-01 → PROD-03 | PILOT READY (§11.3) |
+| **Governed Action Thesis path** | CORE-03 → CORE-04 → CORE-05 → CORE-08 | GOVERNED ACTION THESIS PROVEN (§11.6) |
+| **Rail-neutrality path** | CORE-03 → PAY-01 → PAY-03 → PAY-04 / PAY-06 (+ PAY-02, PAY-05, ASSURE-01) → PAY-07, on GOVERNANCE CORE STABLE | CORE PROVEN (§11.2) |
+| **Intelligence path** | CORE-03 → INTEL-01 / INTEL-02 → INTEL-03; CORE-04 → INTEL-04; ASSURE-01 → ASSURE-04 → INTEL-05 → INTEL-06 | adaptive containment; not a pilot blocker |
+| **Credit path** | CORE-03 → CREDIT-01 … CREDIT-07 | CREDIT THESIS PROVEN (§11.4) |
+
+**Parallel streams** (see §12): CTRL-02 ∥ CORE-03; PROD-02 anytime; ASSURE-01 →
+ASSURE-04 ∥ CORE-03/04; CORE-02 ∥ everything; after CORE-03, INTEL-01 ∥ INTEL-02
+∥ PAY-01 ∥ CREDIT-01 ∥ CORE-04; after CORE-04, INTEL-04 ∥ INTEL-05 (given
+ASSURE-04) ∥ CORE-05.
 
 ---
 
@@ -1058,11 +1583,16 @@ All of the following must be true:
 7. **Approvals are durable and resumable** (CORE-05).
 8. **The no-bypass proof is re-run** against the composed default host (CORE-06).
 9. **Every "BLOCKED" security claim has a test.**
+10. **CORE is independent of INTEL** (MASTER-01, invariant 32): every item above is
+    demonstrated with no intelligence component present, and the Kernel-source
+    intelligence-vocabulary structural test still passes.
 
 ### 11.2 CORE PROVEN
 
 **Definition.** Frontera governs economic actions independently of payment
-protocol and settlement rail.
+protocol and settlement rail. **This is rail neutrality** (§4.2): economically
+equivalent actions on different rails. It does not prove action neutrality;
+that is GOVERNED ACTION THESIS PROVEN (§11.6), and the two share no criteria.
 
 Requires GOVERNANCE CORE STABLE, plus:
 
@@ -1101,6 +1631,14 @@ Requires:
 A pilot may govern **Generic HTTP actions only**. It does not require PAY
 unless the pilot's use case is payments, in which case PAY-01 … PAY-04 are added.
 
+**MASTER-01 re-evaluation: INTEL is not required for PILOT READY.** A valid
+pilot uses deterministic policy, manually configured or source-resolved trusted
+context (CORE-04) and human approvals (CORE-05, CTRL-04), with no AI. Pilot
+operational readiness is distinct from the full intelligent-governance thesis;
+no INTEL item blocks shipping. A pilot may *opt in* to INTEL items as they
+become VERIFIED, and must then also accept their threat-model obligations
+(§4.4.8). GOVERNED ACTION THESIS PROVEN is likewise not a pilot requirement.
+
 ### 11.4 CREDIT THESIS PROVEN
 
 **Definition.** Frontera governs institutional credit without credit semantics in CORE.
@@ -1120,10 +1658,44 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 | Required before first serious pilot | Desirable for scaled enterprise product |
 |---|---|
-| CORE-01, 03, 04, 05, 06; PROD-01, 02, 03; CTRL-01 … 04; ASSURE-01 | CORE-02 (unless the pilot threat model requires it), CORE-07, ASSURE-02/03/04 |
+| CORE-01, 03, 04, 05, 06; PROD-01, 02, 03; CTRL-01 … 04; ASSURE-01 | CORE-02 (unless the pilot threat model requires it), CORE-07, CORE-08, ASSURE-02/03/04 |
+| | INTEL-01 … INTEL-06 (governed action intelligence) |
 | | SSO, advanced RBAC, billing, IaC, pentest, certification (PROD-04) |
 | | Mobile (CTRL-06/07), alerts (CTRL-05) |
 | | Broad multi-chain, Stripe (PAY-09), x402 (PAY-08) |
+
+### 11.6 GOVERNED ACTION THESIS PROVEN
+
+**Definition (MASTER-01).** Frontera's deterministic core is **action-neutral**:
+Governed Actions are infrastructure, not a payment feature. Distinct from CORE
+PROVEN (rail neutrality, §11.2) and non-duplicative with it. Gate: CORE-08.
+
+Requires CORE-03, CORE-04 and CORE-05 VERIFIED, plus:
+
+1. **At least three materially different action/resource domains** run end to
+   end on the same Host. Representative (substitutable, provided semantic
+   diversity is kept):
+   - **Treasury:** transfer × monetary asset (e.g. XRP), exercising P9/P10
+     ceilings; execution via XRPL (PAY-04) when available, otherwise any
+     governed monetary adapter — rail neutrality is not what is being proven.
+   - **DevOps:** deploy × production environment, via an HTTP /
+     Kubernetes-like adapter, with material facts such as change window and
+     rollback availability.
+   - **Data:** read vs export × customer data, via an API adapter, with a
+     non-monetary quantity bound (records) distinguishing the two actions.
+2. **Shared, unchanged across all domains:** the GovernedAction spine, the
+   Kernel implementation, authority semantics, the BoundedGrant model, the
+   constraint architecture, the obligation architecture, the evidence model
+   and the lifecycle (decision → grant → claim → outcome → evidence).
+3. **Only these vary:** Governance Profile, context sources, organization
+   policy, domain validation and Execution Adapter.
+4. **No domain-specific branching in the Kernel or orchestrator**, proven by a
+   structural test; CORE source is identical across the three domain runs.
+5. In every domain a denial, an over-bound request, a revocation mid-flight and
+   a missing required fact each behave per the shared semantics (withheld,
+   denied or REVIEW by policy — never allowed by default).
+6. No intelligence component is required (invariant 32). INTEL is proven
+   separately by INTEL-06 verification.
 
 ---
 
@@ -1139,6 +1711,11 @@ Requires GOVERNANCE CORE STABLE, plus:
   - PAY rail work (PAY-03/04/06) and CREDIT-02/03 are independent until CREDIT-04, which shares the XRPL client with PAY-04.
 - **PAY-08 (x402)** is parallel to PAY-04/06.
 - **PROD-02** can run any time after PROD-01.
+- **MASTER-01:** CTRL-02 runs in parallel with CORE-03 (soft dependency only on
+  CORE-03's bound schemas). ASSURE-01 → ASSURE-04 can run alongside CORE-03/04.
+  After CORE-03, INTEL-01 and INTEL-02 can proceed in parallel with CORE-04,
+  PAY-01 and CREDIT-01. INTEL-04 and INTEL-05 are independent of each other.
+  No INTEL item is on the pilot critical path.
 
 ---
 
@@ -1155,7 +1732,21 @@ Requires GOVERNANCE CORE STABLE, plus:
   payment protocol, and does not hold customer transaction keys.
 - No rail or protocol SDK in CORE.
 - No retry loop in the authorization path. An unconfirmed execution is never re-sent automatically.
-- No behavioural or AI scoring in the authorization path.
+- ~~No behavioural or AI scoring in the authorization path.~~ Replaced by
+  MASTER-01 with the precise rule (invariants 24–32): AI may produce
+  observations and RiskSignals; it never creates, expands or exercises
+  authority, and anything AI-derived that can affect authority crosses the
+  CORE-04 Trusted Context Boundary and deterministic policy, restrictively only.
+- AI is not the authority decision maker; it cannot mint, expand or exercise
+  authority, including by recommending execution.
+- No LLM, model provider or agent framework inside the deterministic
+  authorization boundary, and no AI SDK in CORE.
+- CORE does not own a universal resource or action taxonomy, and does not
+  become payment-specific.
+- INTEL does not replace deterministic policy; evidence does not autonomously
+  rewrite policy.
+- Governance Profiles are not arbitrary executable code.
+- LDR is not authority. Model confidence is not authority confidence.
 - No IAM or authentication for target systems (TARGET architecture §10 stands).
 - Mobile, SSO and billing are not pilot prerequisites.
 
@@ -1163,47 +1754,50 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 ## 14. Current NEXT Item
 
-**NEXT: CTRL-02 — Organizations, Human Operators & Agent Inventory**
+**NEXT: CORE-03 — Governed Action Semantic & Parameter Model (Actor · Action · Resource; envelope generalization)**
 
-**Previous NEXT:** CTRL-01 — **VERIFIED** 2026-09-26 (§9). Before it, PROD-01
-and CORE-01 — VERIFIED 2026-09-25.
+**Previous NEXT:** CTRL-02 (set 2026-09-26 after CTRL-01 → VERIFIED; before it
+PROD-01 and CORE-01 — VERIFIED 2026-09-25). MASTER-01 recalculated NEXT on
+2026-09-27 once INTEL, CORE-08 and the revised CORE-03/04 dependencies were
+included. CTRL-02's purpose is unchanged; it is not NEXT.
 
-**Why it is next (evidence from CTRL-01, not position in the list):**
+**Candidates (unblocked):** CORE-03, CTRL-02, PROD-02, CORE-02, ASSURE-01. Every
+INTEL item, CORE-04, CORE-05 and CORE-08 are blocked (directly or transitively)
+by CORE-03.
 
-- After CTRL-01 the unblocked candidates are CTRL-02 (hard dependency CTRL-01,
-  met), PROD-02, CORE-02, CORE-03 and ASSURE-01. CORE-04 and CORE-05 remain
-  behind CORE-03. Exactly one is NEXT.
-- **PILOT READY means "without the founder operating source code or database
-  state" (§11.3), and the largest remaining violation is provisioning.** After
-  CTRL-01 an operator can inspect and revoke authority and stop or resume
-  execution over the API, but onboarding an agent — provisioning its actor,
-  passport, capability token, authority grant and delegation — still requires
-  in-process code (`kernelAuthorityProvisioning`; the CTRL-01 tests provision
-  that way). CTRL-01 deliberately did not expose it (§9, CTRL-01 "Re-scoped"):
-  a single shared bearer secret is the wrong identity for minting standing
-  authority. CTRL-02 owns exactly that — human operator identity and an agent
-  inventory, with provisioning behind them.
-- **It retires CTRL-01's main residual risk.** CTRL-01 administrators are named
-  operators behind shared secrets; CTRL-02's human operator identity is what the
-  administration boundary should authenticate.
-- **It is on the critical path**: CTRL-02 → CTRL-03 → CTRL-04 are all pilot
-  requirements, and CTRL-04 additionally waits on CORE-05.
-- PROD-02 (backup of the six governed-action stores) remains pilot-critical and
-  independent — the recommended parallel stream. CORE-03 remains the longest
-  chain to GOVERNANCE CORE STABLE and CORE PROVEN. CORE-02 remains desirable,
-  not pilot-critical (§11.5). ASSURE-01 is a soft input to CTRL-03, not a
-  blocker for CTRL-02.
+**Why CORE-03:**
 
-**Prerequisites already satisfied:**
+- **Dependency criticality.** CORE-03 is the single root of the CORE-04 → CORE-05
+  chain (pilot critical path: CORE-05 gates CTRL-04 and CORE-06), of PAY-01 and
+  CREDIT-01, of all six INTEL items, and of CORE-08. The CORE chain
+  (CORE-03 → 04 → 05 → 06) is now the longest pole to PILOT READY; the CTRL chain
+  (CTRL-02 → 03 → 04) cannot finish before CORE-05 anyway.
+- **Security correctness.** CORE-03 closes NB-008 (policy-pack writes carry no
+  caller identity — an open self-modification finding, Prompt 14) and the
+  L-2 … L-6 leakage, and it defines the Governance Profile format as
+  declarative data before any intelligence component could be tempted to
+  supply executable governance.
+- **Avoiding API churn.** CTRL-02 exposes Kernel-Authority provisioning,
+  including authority grants, over the frozen v1 API (`release/api-surface.v1.json`).
+  Today an authority grant's limit is money-typed (`spending_limit`, L-5).
+  Freezing that shape into public provisioning schemas before CORE-03
+  generalizes bounds would make the thesis correction a breaking API change.
+- **Governed Action thesis leverage.** MASTER-01's product thesis ("not
+  inherently monetary", action × resource) is false in the envelope until CORE-03
+  lands. It is the first step of the thesis path and of the intelligence path.
+- **Avoiding premature AI.** CORE-03 is deterministic, needs no model and makes
+  INTEL-01/02 possible without letting them shape CORE.
+- **Pilot leverage is preserved.** CTRL-02 remains unblocked and is the
+  recommended parallel stream; PROD-02 remains independent and pilot-critical.
 
-- CTRL-01 (hard): the administrative authorization boundary on the canonical
-  Host — a separate administrator credential class, closed request schemas,
-  operator identity from configuration recorded by every store.
+**Prerequisites already satisfied:** CORE-01 (soft) — VERIFIED. The envelope,
+orchestrator, P9 monetary semantics, grant attenuation and host-trusted
+classifier exist (§4.1).
 
-**Out of scope for CTRL-02:**
-
-- Web UI (CTRL-03), approvals (CORE-05, CTRL-04), SSO / advanced RBAC
-  (PROD-04), KMS/HSM (CORE-02), backup (PROD-02), any PAY or CREDIT work.
+**Out of scope for CORE-03:** `PaymentIntent` / `CreditIntent` (PAY-01,
+CREDIT-01); trusted context, obligations and RiskSignal admission (CORE-04);
+profile resolution and any AI component (INTEL); provisioning APIs (CTRL-02);
+any change to CTRL-01.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
@@ -1217,11 +1811,35 @@ and CORE-01 — VERIFIED 2026-09-25.
 | "Not in Pn" lists in P9–P12 ADRs (P13–P21) | Historical; mapping §6.2. ADR bodies remain authoritative for their mechanisms |
 | `CURRENT_STATE_*` docs, `ADR-ACCESS-LIFECYCLE.md` phases, `docs/release/*` next-step sections, SK005 deck | Historical |
 | Unmerged branch `feat/p13-mpp-business-idempotency` | Input to PAY-02; not to be merged as-is |
+| `ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY.md` hard invariants 4 and 7, §7; `ADR-AUTHORITY-CONTROL-LAYERING.md` layer G | In force. Narrowed in *direction* by MASTER-01 for restrict-only admitted RiskSignals only (§4.4.6); superseded for those clauses only when INTEL-06 lands its ADR |
 
 **Rules:**
 
-1. New work is identified by `CORE|PAY|CREDIT|ASSURE|CTRL|PROD-nn` only.
+1. New work is identified by `CORE|PAY|CREDIT|ASSURE|INTEL|CTRL|PROD-nn` only.
 2. Completing an item updates its status here in the same PR.
 3. Only one item is NEXT at a time.
 4. A capability is VERIFIED only when it is wired into a production composition path and tested. Docs alone never qualify.
 5. When code and this document disagree about what exists, fix this document.
+
+## 16. Open Architectural Questions
+
+**HYPOTHESIS / PLAN (MASTER-01).** Recorded instead of guessed. Each has a
+roadmap owner who must decide it before or during that item.
+
+| # | Question | Owner |
+|---|---|---|
+| OQ-1 | Governance Profile schema: an extension of the policy-pack format or a separate artifact? Its field set, lifecycle states and cross-version compatibility rules | CORE-03 |
+| OQ-2 | Profile versioning and activation: who may promote a profile, and how a decision records the profile version in force | CORE-03 (format), CTRL-02 (who) |
+| OQ-3 | Canonical RiskSignal schema: exact fields, closed vs open type set, and whether a candidate is an `Advisory` kind (§7 duplication table says it should be) | CORE-04 (admitted contract), INTEL-05 (candidate) |
+| OQ-4 | Candidate → admitted lifecycle: admission rules, the trust class an admitted signal carries (`derived` inheritance?), expiry and withdrawal of an admitted signal | CORE-04 |
+| OQ-5 | Context freshness: default `maxAgeSeconds` per fact class, and behaviour when a fact goes stale between decision and exercise | CORE-04 |
+| OQ-6 | Tool permission model for the Agent: how retrieval credentials are provisioned, scoped and audited separately from execution authority | INTEL-04 (with CORE-04 source registry) |
+| OQ-7 | Model/provider abstraction: whether one is needed at all, and where it lives (never in CORE) | INTEL-01 |
+| OQ-8 | Model provenance and multi-model provenance: how producer, model id/version, prompt/template version and inputs are recorded on an observation or signal | INTEL-05 (format), ASSURE-02 (authenticity) |
+| OQ-9 | Behavioural baseline storage: derived baselines stored by INTEL or recorded as evidence by ASSURE? (Tentative: source events ASSURE-04, derived baselines INTEL-05, never authoritative) | ASSURE-04 / INTEL-05 |
+| OQ-10 | Signal retention: how long candidate and admitted signals are kept, and their privacy constraints | ASSURE-04 |
+| OQ-11 | False-positive handling: how an organization dismisses or suppresses a signal, and the audit trail for doing so | INTEL-06, CTRL-04 |
+| OQ-12 | Human appeal / override of containment: which human authority may lift a restriction, through which durable mechanism (approval, emergency release, re-issuance) | INTEL-06, CORE-05, CTRL-04 |
+| OQ-13 | The identity under which policy-driven revocation or suspension is recorded (today every revocation carries a configured operator, CTRL-01) | INTEL-06, CTRL-02 |
+| OQ-14 | Whether the restrict-only rule for signal keys can be enforced purely by policy-pack validation or also needs a Kernel-side monotonicity check | CORE-04, INTEL-06 |
+| OQ-15 | Physical-system actuation: what additional safety qualification a physical-systems profile family requires | Unassigned (future milestone; not claimed) |
