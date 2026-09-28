@@ -13,6 +13,7 @@ import {
   type GrantExerciseRequest,
 } from '../../features/execution-runtime/index.js';
 import { formatGovernanceProfileReference, type GovernedParameter } from '../../features/governed-parameter-runtime/index.js';
+import type { KernelEvaluationRequest } from '../../kernel/index.js';
 import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
 import type { GovernanceProfileRegistry } from '../governance-profile/index.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
@@ -172,6 +173,21 @@ export interface GovernedActionOrchestratorOptions {
    * extend, select or replace it.
    */
   readonly governance?: GovernanceProfileRegistry;
+  /**
+   * CORE-04 — the obligations a committed decision stands under, read again
+   * **at issuance** from the authoritative discharge store (never from the
+   * request, never from the committed record).
+   *
+   * A decision records its obligations as they stood when it was made; a
+   * blocking one unsatisfied then withholds the grant (`withheldBy:
+   * 'obligations'`) and never the decision. A retry of the same request (same
+   * idempotency key → same committed decision) is issued only once every
+   * blocking obligation is satisfied *now* — `verified` by an independent
+   * source, or `waived` — and the grant's source records that it was. The
+   * decision itself is never re-made, and a denied or withheld decision gains
+   * nothing from any obligation state.
+   */
+  readonly obligations?: { satisfiedNow(request: KernelEvaluationRequest): Promise<boolean> };
   readonly now: () => string;
   readonly enterpriseContext: () => GovernanceEnterpriseContext;
   readonly events: {
@@ -433,6 +449,7 @@ function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: 
  */
 export function createGovernedActionOrchestrator(options: GovernedActionOrchestratorOptions): GovernedActionOrchestrator {
   const { organizationId: servedOrganizationId, issuance, execution, governanceStore: store, grantPolicy, monetary, now } = options;
+  const obligationState = options.obligations;
   if (
     monetary === null ||
     typeof monetary !== 'object' ||
@@ -508,12 +525,15 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
    * current authorization, so a source that has narrowed since refuses the
    * issuance rather than being masked by the persisted snapshot.
    */
-  function persistedSourceGuard(verified: VerifiedDecision): (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined {
-    const source = verified.source;
+  function persistedSourceGuard(verified: VerifiedDecision, obligationsSatisfied: boolean | undefined): (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined {
+    // CORE-04: the committed source, with the obligation aggregate as it
+    // stands at issuance — the one field issuance re-reads.
+    const source = obligationsSatisfied === undefined ? verified.source : { ...verified.source, allBlockingObligationsSatisfied: obligationsSatisfied };
     return (correlation) => {
       if (!grantCorrelationMatches(correlation, source.correlation)) return undefined;
       if (hostRevalidateSource === undefined) return source;
-      return hostRevalidateSource(correlation);
+      const current = hostRevalidateSource(correlation);
+      return current === undefined || obligationsSatisfied === undefined ? current : { ...current, allBlockingObligationsSatisfied: obligationsSatisfied && current.allBlockingObligationsSatisfied };
     };
   }
 
@@ -665,6 +685,19 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const terms = termsFor(scope, verified);
       if (terms === undefined) return result({ status: 'withheld', withheldBy: 'grant-terms', ...decided, reasonCodes: [R.GOVERNED_ACTION_GRANT_TERMS_UNAVAILABLE] });
 
+      // CORE-04: a decision that stands under obligations is issued on their
+      // state *now*. Unreadable is unsatisfied.
+      let obligationsSatisfied: boolean | undefined;
+      if (persisted.obligations !== undefined && obligationState !== undefined) {
+        try {
+          obligationsSatisfied = (await obligationState.satisfiedNow(verified.request)) === true;
+        } catch {
+          obligationsSatisfied = false;
+        }
+      } else if (persisted.obligations !== undefined) {
+        obligationsSatisfied = false;
+      }
+
       // Phase: issuance — ACE's, unchanged, from the persisted decision only.
       let authorization;
       try {
@@ -673,7 +706,8 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
           decision: persisted,
           grantExpiresAt: terms.grantExpiresAt,
           ...(terms.requestedBounds !== undefined ? { requestedBounds: terms.requestedBounds } : {}),
-          revalidateSource: persistedSourceGuard(verified),
+          ...(obligationsSatisfied !== undefined ? { obligationsSatisfied } : {}),
+          revalidateSource: persistedSourceGuard(verified, obligationsSatisfied),
         });
       } catch (error) {
         return result({ status: 'system_error', ...decided, reasonCodes: [isExecutionGovernanceError(error) ? R.GOVERNED_ACTION_COMPOSITION_INVALID : R.GOVERNED_ACTION_GRANT_ISSUANCE_FAILED] });

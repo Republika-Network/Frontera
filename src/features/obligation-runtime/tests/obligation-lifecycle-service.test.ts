@@ -68,15 +68,27 @@ describe('Obligation declaration — the configuration is validated where it is 
     );
   });
 
-  it('rejects an obligation type outside the closed vocabulary — there is no escape hatch for inventing one', () => {
+  // CORE-04: obligation kinds are declared identifiers (the vocabulary moved
+  // out of CORE into trusted configuration, as action classes did in CORE-03).
+  // What remains refused is a malformed kind or a case-only duplicate — and a
+  // kind still comes only from the operator's declaration, never a request.
+  it('rejects a malformed obligation kind and a case-only duplicate — kinds are declared identifiers, never free text', () => {
+    for (const obligationType of ['', 'Finance Rubber Stamp!', 'finance..approval', `a${'b'.repeat(64)}`]) {
+      assert.throws(
+        () => new ObligationLifecycleService({ sources: [APPROVAL], declaration: { requirements: [{ obligationType, blocking: true }] } }),
+        ObligationConfigurationError,
+        obligationType,
+      );
+    }
     assert.throws(
       () =>
         new ObligationLifecycleService({
           sources: [APPROVAL],
-          declaration: { requirements: [{ obligationType: 'finance.rubber-stamp' as 'finance.approval', blocking: true }] },
+          declaration: { requirements: [{ obligationType: 'change.approval', blocking: true }, { obligationType: 'Change.Approval', blocking: false }] },
         }),
       ObligationConfigurationError,
     );
+    assert.doesNotThrow(() => new ObligationLifecycleService({ sources: [APPROVAL], declaration: { requirements: [{ obligationType: 'change.approval', blocking: true }] } }));
   });
 
   it('rejects a duplicate obligation and a malformed deadline', () => {

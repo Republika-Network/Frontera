@@ -1,3 +1,4 @@
+import type { ExerciseControlQuery } from '../../features/exercise-control-runtime/index.js';
 import type { EmergencyControlReaderPort } from '../../features/emergency-control-runtime/index.js';
 import {
   createGrantIssuanceService,
@@ -179,6 +180,13 @@ export interface AuthorityControlledExecutionOptions {
    */
   readonly financialAuthority?: AuthorityControlledFinancialAuthority;
   /**
+   * CORE-04 — exercise-time lineage revalidation for non-financial grants,
+   * resolved from the same durable authority world the Kernel decides
+   * against. Composition-supplied, never a host option. **Requires
+   * `exerciseControls`** (it runs inside the exercise gate).
+   */
+  readonly authorityLineage?: (query: ExerciseControlQuery) => boolean;
+  /**
    * P8 — the canonical authority event stream's **write-only** recorder, when
    * the composition root composed one. Never a host option.
    *
@@ -227,11 +235,18 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
       'financialAuthority requires a synchronous resolve() and composed exerciseControls: durable spending limits are enforced by the exercise-control reservation, and financial authority nothing enforces would be unlimited.',
     );
   }
+  if (options.authorityLineage !== undefined && (typeof options.authorityLineage !== 'function' || options.exerciseControls === undefined)) {
+    throw new ExecutionGovernanceError('EXECUTION_EXERCISE_CONTROLS_INVALID', 'authorityLineage requires a synchronous function and composed exerciseControls: lineage is revalidated inside the exercise gate.');
+  }
   const exerciseControl =
     options.exerciseControls === undefined
       ? undefined
       : createAuthorityControlledExerciseControlGate(
-          { ...options.exerciseControls, ...(financialAuthority !== undefined ? { financialAuthority: financialAuthority.resolve } : {}) },
+          {
+            ...options.exerciseControls,
+            ...(financialAuthority !== undefined ? { financialAuthority: financialAuthority.resolve } : {}),
+            ...(options.authorityLineage !== undefined ? { authorityLineage: options.authorityLineage } : {}),
+          },
           now,
           evidence,
         );

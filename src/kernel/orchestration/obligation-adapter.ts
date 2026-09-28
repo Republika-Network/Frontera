@@ -30,29 +30,59 @@ import { AOC_KERNEL_EXERCISE_REASON_CODES, type AocKernelExerciseReasonCode } fr
  */
 export interface KernelObligationOptions {
   readonly provider: ObligationDischargeProvider;
-  /** The deployment's configured discharge sources. Operator-provisioned; never named by a requester. */
   readonly sources: readonly ObligationDischargeSource[];
   /** Which obligations stand, which of them block exercise, and how long a discharge of each stays good. */
   readonly declaration: ObligationDeclaration;
+  /**
+   * CORE-04 — obligations keyed by the effective Governance Profile (id,
+   * version **and** digest). A request whose trusted semantics name one of
+   * these profiles stands under exactly that profile's obligations instead of
+   * `declaration`. Built by trusted composition only.
+   */
+  readonly profileDeclarations?: readonly KernelProfileObligationDeclaration[];
+}
+
+/** CORE-04 — one Governance Profile's obligation declaration. */
+export interface KernelProfileObligationDeclaration {
+  readonly profile: { readonly id: string; readonly version: number; readonly digest: string };
+  readonly declaration: ObligationDeclaration;
+}
+
+/** The declaration a request stands under, chosen from trusted semantics only. */
+export interface KernelObligationSelection {
+  readonly service: ObligationLifecycleService;
+  readonly requirements: readonly ObligationRequirement[];
 }
 
 /**
  * The obligation capability, composed once at Kernel construction.
  *
  * Constructing it here rather than per request is what makes a configuration
- * error a wiring-time failure instead of a decision-time one: a deployment that
- * registers its own request bag as an independent discharge source finds out
- * when it builds the Kernel.
+ * error a wiring-time failure instead of a decision-time one.
  */
 export class KernelObligationCapability {
   readonly provider: ObligationDischargeProvider;
   readonly service: ObligationLifecycleService;
   readonly requirements: readonly ObligationRequirement[];
+  private readonly byProfile: ReadonlyMap<string, KernelObligationSelection>;
 
   constructor(options: KernelObligationOptions) {
     this.provider = options.provider;
     this.service = new ObligationLifecycleService({ sources: options.sources, declaration: options.declaration });
     this.requirements = options.declaration.requirements;
+    const byProfile = new Map<string, KernelObligationSelection>();
+    for (const entry of options.profileDeclarations ?? []) {
+      const key = `${entry.profile.id}@${entry.profile.version}#${entry.profile.digest}`;
+      if (byProfile.has(key)) throw new TypeError(`Obligations are declared twice for Governance Profile ${key}.`);
+      byProfile.set(key, { service: new ObligationLifecycleService({ sources: options.sources, declaration: entry.declaration }), requirements: entry.declaration.requirements });
+    }
+    this.byProfile = byProfile;
+  }
+
+  select(request: KernelEvaluationRequest): KernelObligationSelection {
+    const profile = request.action.semantics?.governanceProfile;
+    const selected = profile === undefined ? undefined : this.byProfile.get(`${profile.id}@${profile.version}#${profile.digest}`);
+    return selected ?? { service: this.service, requirements: this.requirements };
   }
 }
 
@@ -99,7 +129,8 @@ export async function resolveKernelObligations(
 ): Promise<ObligationResolution | undefined> {
   if (capability === undefined) return undefined;
 
-  const declaredTypes = capability.service.declaredTypes();
+  const { service } = capability.select(request);
+  const declaredTypes = service.declaredTypes();
   if (declaredTypes.length === 0) return undefined;
 
   const correlation = obligationCorrelationFor(request);
@@ -117,16 +148,16 @@ export async function resolveKernelObligations(
   try {
     observations = (await capability.provider.resolveObligationDischarges(query)).observations;
   } catch {
-    return unresolvedObligationResolution({ declaredTypes, obligations: capability.service.declare(correlation, at), resolvedAt: at });
+    return unresolvedObligationResolution({ declaredTypes, obligations: service.declare(correlation, at), resolvedAt: at });
   }
 
   if (!Array.isArray(observations)) {
     // A malformed provider result is not an empty world. Fail closed to
     // "consulted and could not answer", exactly as a throw does.
-    return unresolvedObligationResolution({ declaredTypes, obligations: capability.service.declare(correlation, at), resolvedAt: at });
+    return unresolvedObligationResolution({ declaredTypes, obligations: service.declare(correlation, at), resolvedAt: at });
   }
 
-  return capability.service.resolve(observations, correlation, at);
+  return service.resolve(observations, correlation, at);
 }
 
 /** One code per unsatisfying state, and the three unsatisfying states are all of them. `verified` and `waived` never appear here because they never withhold. */

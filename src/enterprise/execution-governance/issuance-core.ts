@@ -116,6 +116,14 @@ export interface IssueFromDecisionInput {
    * `decision`. The authority binding is re-resolved at commit regardless.
    */
   readonly revalidateSource?: (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined;
+  /**
+   * CORE-04 — the decision's blocking-obligation aggregate as it stands **at
+   * issuance**, read by trusted composition from the discharge store. Replaces
+   * only `allBlockingObligationsSatisfied` in the measured source; every other
+   * field is still projected from the committed decision. Absent, the
+   * committed value stands (the pre-CORE-04 behaviour).
+   */
+  readonly obligationsSatisfied?: boolean;
 }
 
 export interface AuthorityControlledIssuanceCore {
@@ -378,7 +386,8 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
       // The projection layer E is allowed to see, built by the Kernel's own
       // adapter from an already-frozen result. Never assembled from request
       // data, and never mutated here.
-      const measured = deriveGrantSourceAuthorization(grantCapability, request, decision);
+      const projected = deriveGrantSourceAuthorization(grantCapability, request, decision);
+      const measured = input.obligationsSatisfied === undefined ? projected : { ...projected, allBlockingObligationsSatisfied: input.obligationsSatisfied };
 
       // The Kernel evaluated under *its* grant declaration and reported the
       // ceilings that declaration produced; the projection above recomputed
