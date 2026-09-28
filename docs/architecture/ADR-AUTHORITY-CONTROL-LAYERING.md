@@ -1,6 +1,10 @@
 # ADR: Authority-control layering — seven conceptual layers and their boundaries
 
 - Status: accepted (architecture only — **no implementation performed**)
+- **MASTER-01 note (2026-09-27):** layer G is the Frontera Agent / INTEL track
+  (`FRONTERA-MASTER-PLAN.md` §4.4). G still never appears in the authorization
+  path; its outputs reach policy only as layer-C facts admitted by CORE-04, and
+  only restrictively.
 - Related: `ADR-CONTEXT-PROVENANCE-AND-TRUST.md`,
   `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md`,
   `ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY.md`,

@@ -1,6 +1,12 @@
 # ADR: AI may interpret, recommend and explain — it may never authorize
 
 - Status: accepted (architecture only — **no implementation performed**)
+- **Amended in direction by MASTER-01 (2026-09-27)** — see
+  `FRONTERA-MASTER-PLAN.md` §4.4.6. Prohibitions 1, 3, 4, 5 and the `Advisory`
+  shape stand. Hard invariant 4 and §7 are to be narrowed for **restrict-only,
+  CORE-04-admitted RiskSignals** only, and hard invariant 7 restated as a
+  monotonicity property. **Until CORE-04 and INTEL-06 deliver that with tests,
+  this ADR is fully in force.** INTEL-06 owns the superseding ADR.
 - Related: `ADR-AUTHORITY-CONTROL-LAYERING.md` (layer G),
   `ADR-CONTEXT-PROVENANCE-AND-TRUST.md`, `ADR-ASSURANCE-RUNTIME.md`,
   `ADR-EVIDENCE-BUNDLE.md`
