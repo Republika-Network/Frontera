@@ -7,9 +7,8 @@ import {
   type ObligationDischargeQuery,
   type ObligationDischargeSource,
 } from '../../features/obligation-runtime/index.js';
-import type { ObligationDischargeRecordInput, ObligationDischargeStore, ObligationDischargeWriterContext, StoredObligationDischarge } from './contracts.js';
+import type { ObligationDischargeContent, ObligationDischargeRecordInput, ObligationDischargeStore, ObligationDischargeWriterContext, StoredObligationDischarge } from './contracts.js';
 import { ObligationDischargeError } from './errors.js';
-import { obligationDischargeRowDigest } from './integrity.js';
 
 /** Bounds on the opaque strings a report carries. */
 const MAX_TEXT = 256;
@@ -62,8 +61,19 @@ export function createObligationDischargeRecorder(options: ObligationDischargeRe
   const sourceIds = new Set(options.sources.map((source) => source.id));
   const { store, organizationId, now } = options;
 
+  // One report at a time, so the time-order check below and the append see the same history.
+  let tail: Promise<unknown> = Promise.resolve();
+
   return Object.freeze({
-    async record(writer: ObligationDischargeWriterContext, input: ObligationDischargeRecordInput): Promise<StoredObligationDischarge> {
+    record(writer: ObligationDischargeWriterContext, input: ObligationDischargeRecordInput): Promise<StoredObligationDischarge> {
+      const result = tail.then(() => recordOnce(writer, input));
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  });
+
+  async function recordOnce(writer: ObligationDischargeWriterContext, input: ObligationDischargeRecordInput): Promise<StoredObligationDischarge> {
+    {
       // Own data properties only, on plain objects: an inherited or getter
       // `system: true` is not a trusted writer.
       if (writer === null || typeof writer !== 'object' || readOwn(writer, 'system') !== true || !isText(readOwn(writer, 'actorId'))) {
@@ -91,7 +101,7 @@ export function createObligationDischargeRecorder(options: ObligationDischargeRe
       if (reference !== undefined && !isText(reference)) invalid('reference must be a non-empty string of at most 256 characters when present.');
       if (subjectId !== undefined && !isText(subjectId)) invalid('subjectId must be a non-empty string of at most 256 characters when present.');
 
-      const content: Omit<StoredObligationDischarge, 'digest'> = {
+      const content: ObligationDischargeContent = {
         organizationId,
         correlation: { requestId, action, resourceScope },
         obligationType,
@@ -103,11 +113,19 @@ export function createObligationDischargeRecorder(options: ObligationDischargeRe
         recordedBy: readOwn(writer, 'actorId') as string,
         recordedAt,
       };
-      const row: StoredObligationDischarge = Object.freeze({ ...content, digest: obligationDischargeRowDigest(content) });
-      await store.append(row);
-      return row;
-    },
-  });
+      // Reports for one obligation of one decision are recorded in strictly
+      // increasing observation time. The lifecycle orders by that time, so this
+      // makes every prefix of the committed history a prefix of the lifecycle
+      // sequence — and since a satisfied obligation is terminal, no earlier
+      // prefix (a rollback, CORE-07) can ever be satisfied when the whole is not.
+      const earlier = (await store.read(organizationId, content.correlation)).filter((row) => row.obligationType === content.obligationType);
+      if (earlier.some((row) => Date.parse(row.observedAt) >= Date.parse(observedAt))) {
+        invalid('A report for this obligation was already recorded at or after this observation time; reports are recorded in time order.');
+      }
+      // The store binds the row to its position and advances the signed head.
+      return store.append(content);
+    }
+  }
 }
 
 /**

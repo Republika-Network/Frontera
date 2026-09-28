@@ -98,6 +98,12 @@ describe('CORE-04 structure — obligation discharge has one in-process writer, 
     }
   });
 
+  it('issuance re-reads obligations whenever they are composed — never gated on the committed record claiming obligations', () => {
+    const orchestrator = codeOf('src/enterprise/governed-action/orchestrator.ts');
+    assert.match(orchestrator, /if \(obligationState !== undefined\) \{\s*try \{\s*obligationsSatisfied = \(await obligationState\.satisfiedNow\(verified\.request\)\) === true;/);
+    assert.equal(/persisted\.obligations !== undefined && obligationState !== undefined/.test(orchestrator), false);
+  });
+
   it('the recorder states no resulting state: its input has no state, verified or satisfied field', () => {
     const contracts = codeOf('src/enterprise/obligation-discharge/contracts.ts');
     const input = /export interface ObligationDischargeRecordInput \{[\s\S]*?\r?\n\}/.exec(contracts)?.[0] ?? '';

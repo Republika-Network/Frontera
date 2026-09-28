@@ -5,6 +5,7 @@ import {
   type RevocationStateCommitment,
 } from '../bounded-grant-store/bounded-grant-record.js';
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
+import { serializeObligationDischargeStateCommitment, type ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 
 /**
  * The signature envelope for an authority artifact, the closed algorithm
@@ -75,6 +76,8 @@ export const AUTHORITY_SIGNING_DOMAINS = {
   grant: 'frontera:authority-artifact:bounded-grant:v1\n',
   revocation: 'frontera:authority-artifact:grant-revocation:v1\n',
   revocationState: 'frontera:authority-artifact:revocation-state:v1\n',
+  /** CORE-04: the signed head of an obligation discharge store — authority-material, because a verified discharge releases grant issuance. */
+  obligationDischargeState: 'frontera:authority-artifact:obligation-discharge-state:v1\n',
 } as const;
 
 export type AuthorityArtifactKind = keyof typeof AUTHORITY_SIGNING_DOMAINS;
@@ -150,12 +153,18 @@ export function revocationStateSigningBytes(state: RevocationStateCommitment): B
   return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.revocationState}${serializeRevocationStateCommitment(state)}`, 'utf8');
 }
 
+/** The exact bytes an obligation discharge store's state commitment is signed and verified over (CORE-04). Its own domain, so no grant, revocation or revocation-state signature can stand in for it. */
+export function obligationDischargeStateSigningBytes(state: ObligationDischargeStateCommitment): Buffer {
+  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.obligationDischargeState}${serializeObligationDischargeStateCommitment(state)}`, 'utf8');
+}
+
 /** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. */
 export function authoritySigningBytes(
   artifact:
     | { readonly kind: 'grant'; readonly grant: BoundedGrant; readonly storeId: string }
     | { readonly kind: 'revocation'; readonly revocation: GrantRevocation; readonly storeId: string }
-    | { readonly kind: 'revocationState'; readonly state: RevocationStateCommitment },
+    | { readonly kind: 'revocationState'; readonly state: RevocationStateCommitment }
+    | { readonly kind: 'obligationDischargeState'; readonly state: ObligationDischargeStateCommitment },
 ): Buffer {
   switch (artifact.kind) {
     case 'grant':
@@ -164,6 +173,8 @@ export function authoritySigningBytes(
       return revocationSigningBytes(artifact.revocation, artifact.storeId);
     case 'revocationState':
       return revocationStateSigningBytes(artifact.state);
+    case 'obligationDischargeState':
+      return obligationDischargeStateSigningBytes(artifact.state);
   }
 }
 

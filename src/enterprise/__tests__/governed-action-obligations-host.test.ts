@@ -6,7 +6,14 @@ import Database from 'better-sqlite3';
 
 import { DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
 import { toKernelEvaluationResult } from '../governance-store/store-common.js';
-import { ObligationDischargeError, type ObligationDischargeRecordInput, type ObligationDischargeWriterContext } from '../obligation-discharge/index.js';
+import {
+  ObligationDischargeError,
+  nextObligationDischargeChainDigest,
+  obligationDischargeRowDigest,
+  type ObligationDischargeRecordInput,
+  type ObligationDischargeWriterContext,
+} from '../obligation-discharge/index.js';
+import { AUTHORITY_KEY_UNTRUSTED, testSigner } from './authority-authenticity-fixture.js';
 import {
   ADMIN,
   ADMIN_KEY,
@@ -55,13 +62,17 @@ after(() => workspace.cleanup());
 const WRITER: ObligationDischargeWriterContext = { system: true, actorId: 'operator:change-board-integration' };
 const deploy = (releaseVersion = 'release-2026-09-28') => ({ action: DEPLOY, resource: PRODUCTION, parameters: { releaseVersion } });
 
+// Reports for one obligation are recorded in strictly increasing observation time.
+let observed = Date.now() - 3_600_000;
+
 function report(reply: Reply, overrides: Partial<ObligationDischargeRecordInput> = {}): ObligationDischargeRecordInput {
+  observed += 1000;
   return {
     correlation: { requestId: reply.body['requestId'] as string, action: DEPLOY, resourceScope: PRODUCTION },
     obligationType: 'change.approval',
     sourceId: 'change-approvals',
     outcome: 'discharged',
-    observedAt: new Date(Date.now() - 1000).toISOString(),
+    observedAt: new Date(observed).toISOString(),
     reference: 'CAB-7781',
     subjectId: 'approver-17',
     ...overrides,
@@ -208,31 +219,101 @@ describe('CORE-04 §62 / §94 — a blocking obligation withholds, and only a ve
   });
 });
 
-describe('CORE-04 §39 / §40 — the discharge store is append-only and verified on every read', () => {
-  it('UPDATE and DELETE are refused; a row rewritten underneath the triggers fails verification, and a failed read withholds — fail closed', async () => {
-    const booted = await started();
-    await provision(booted.host);
-    const key = nextKey('tamper');
-    const withheld = await govern(booted.baseUrl, deploy('release-tamper'), key);
-    await recorder(booted).record(WRITER, report(withheld, { sourceId: 'ticket-notes', reference: 'TICKET-9' }));
-    await booted.host.close();
-
-    const path = join(booted.dir, 'obligation-discharges.sqlite');
-    const db = new Database(path);
+describe('CORE-04 — a database-only writer cannot manufacture obligation satisfaction (canonical Host)', () => {
+  /**
+   * The attacker writes the discharge store's SQLite file directly and knows
+   * every algorithm in the repository (row digest, chain, head), but holds no
+   * trusted authority key — it signs the forged head with a key of its own.
+   */
+  async function forgeVerifiedDischarge(dir: string, requestId: string): Promise<void> {
+    const db = new Database(join(dir, 'obligation-discharges.sqlite'));
     try {
-      assert.throws(() => db.prepare(`UPDATE obligation_discharges SET source_id = 'change-approvals'`).run(), /append-only/);
-      assert.throws(() => db.prepare('DELETE FROM obligation_discharges').run(), /append-only/);
-      // A database-level writer can drop the triggers. The digest still holds.
-      db.exec('DROP TRIGGER obligation_discharges_no_update');
-      db.prepare(`UPDATE obligation_discharges SET source_id = 'change-approvals'`).run();
+      const meta = db.prepare('SELECT store_id, organization_id FROM obligation_discharge_store_meta WHERE id = 1').get() as { store_id: string; organization_id: string };
+      const head = db.prepare('SELECT sequence, chain_digest FROM obligation_discharge_head WHERE id = 1').get() as { sequence: number; chain_digest: string };
+      const row = {
+        organizationId: meta.organization_id,
+        correlation: { requestId, action: DEPLOY, resourceScope: PRODUCTION },
+        obligationType: 'change.approval',
+        sourceId: 'change-approvals',
+        outcome: 'discharged',
+        observedAt: new Date(Date.now() - 500).toISOString(),
+        recordedBy: 'attacker',
+        recordedAt: new Date().toISOString(),
+      };
+      const sequence = head.sequence + 1;
+      const digest = obligationDischargeRowDigest(meta.store_id, sequence, row);
+      const chain = nextObligationDischargeChainDigest(head.chain_digest, digest);
+      const signature = await testSigner(AUTHORITY_KEY_UNTRUSTED).signObligationDischargeState({ storeId: meta.store_id, organizationId: meta.organization_id, sequence, chainDigest: chain });
+      db.prepare(
+        `INSERT INTO obligation_discharges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)`,
+      ).run(sequence, row.organizationId, requestId, DEPLOY, PRODUCTION, row.obligationType, row.sourceId, row.outcome, row.observedAt, row.recordedBy, row.recordedAt, digest);
+      db.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(sequence, chain, JSON.stringify(signature));
     } finally {
       db.close();
     }
+  }
 
-    const restarted = await started(booted.dir);
-    const reply = await govern(restarted.baseUrl, deploy('release-tamper'), key);
-    assertWithheldForObligations(reply, 'tampered store');
-    assert.equal(restarted.calls.length, 0);
+  function snapshot(dir: string): () => void {
+    const db = new Database(join(dir, 'obligation-discharges.sqlite'));
+    const head = db.prepare('SELECT sequence, chain_digest, signature_json FROM obligation_discharge_head').get() as { sequence: number; chain_digest: string; signature_json: string };
+    db.close();
+    return () => {
+      const restore = new Database(join(dir, 'obligation-discharges.sqlite'));
+      restore.exec('DROP TRIGGER IF EXISTS obligation_discharges_no_delete;');
+      restore.prepare('DELETE FROM obligation_discharges WHERE sequence > ?').run(head.sequence);
+      restore.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(head.sequence, head.chain_digest, head.signature_json);
+      restore.close();
+    };
+  }
+
+  it('pending → forged discharge written to SQLite (live and across restart) → no grant, no adapter → remediated → legitimate authenticated discharge → executed exactly once', async () => {
+    const first = await started();
+    await provision(first.host);
+    const key = nextKey('forgery');
+    const withheld = await govern(first.baseUrl, deploy('release-forgery'), key);
+    assertWithheldForObligations(withheld, 'pending');
+    const requestId = withheld.body['requestId'] as string;
+    const remediate = snapshot(first.dir);
+
+    // Forged while the Host runs: the pre-issuance read refuses the store; the grant stays withheld.
+    await forgeVerifiedDischarge(first.dir, requestId);
+    assertWithheldForObligations(await govern(first.baseUrl, deploy('release-forgery'), key), 'forged (live)');
+    assert.equal(first.calls.length, 0);
+    // The trusted writer will not extend a forged history either.
+    await assert.rejects(() => recorder(first).record(WRITER, report(withheld)), (error: unknown) => error instanceof ObligationDischargeError && error.code === 'OBLIGATION_DISCHARGE_STORE_CORRUPT');
+    await first.host.close();
+
+    // Restart: the forged store refuses the Host before it listens.
+    await assert.rejects(() => started(first.dir), (error: unknown) => error instanceof ObligationDischargeError && error.code === 'OBLIGATION_DISCHARGE_STORE_CORRUPT');
+
+    // Remediated (the forged row removed, the genuine signed head restored): the Host boots, still withheld.
+    remediate();
+    const second = await started(first.dir);
+    assertWithheldForObligations(await govern(second.baseUrl, deploy('release-forgery'), key), 'remediated');
+    assert.equal(second.calls.length, 0);
+
+    // The legitimate path: the configured independent source, through the trusted writer, signed by the deployment key.
+    await recorder(second).record(WRITER, report(withheld));
+    await second.host.close();
+    const third = await started(first.dir);
+    const released = await govern(third.baseUrl, deploy('release-forgery'), key);
+    assert.equal(released.body['status'], 'executed', released.text);
+    assert.equal(third.calls.length, 1);
+  });
+
+  it('the append-only triggers still refuse UPDATE and DELETE — defense in depth, not the boundary', async () => {
+    const booted = await started();
+    await provision(booted.host);
+    const withheld = await govern(booted.baseUrl, deploy('release-triggers'));
+    await recorder(booted).record(WRITER, report(withheld, { sourceId: 'ticket-notes' }));
+    await booted.host.close();
+    const db = new Database(join(booted.dir, 'obligation-discharges.sqlite'));
+    try {
+      assert.throws(() => db.prepare(`UPDATE obligation_discharges SET source_id = 'change-approvals'`).run(), /append-only/);
+      assert.throws(() => db.prepare('DELETE FROM obligation_discharges').run(), /append-only/);
+    } finally {
+      db.close();
+    }
   });
 });
 

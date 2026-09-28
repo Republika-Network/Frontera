@@ -1,44 +1,43 @@
-import { computeDigest } from '../governance-store/digest.js';
 import type { ObligationDischargeCorrelation, StoredObligationDischarge } from './contracts.js';
 import { ObligationDischargeError } from './errors.js';
+import {
+  nextObligationDischargeChainDigest,
+  obligationDischargeGenesisDigest,
+  obligationDischargeRowDigest,
+  type ObligationDischargeStateCommitment,
+} from './state-commitment.js';
 
-/** Domain tag of a stored discharge row's digest. */
-export const OBLIGATION_DISCHARGE_ROW_FORMAT = 'frontera.obligation-discharge.v1';
-
-/** The digest a row must carry: every field but the digest itself, canonical JSON, under the format tag. */
-export function obligationDischargeRowDigest(row: Omit<StoredObligationDischarge, 'digest'>): string {
-  return computeDigest({
-    format: OBLIGATION_DISCHARGE_ROW_FORMAT,
-    organizationId: row.organizationId,
-    correlation: { requestId: row.correlation.requestId, action: row.correlation.action, resourceScope: row.correlation.resourceScope },
-    obligationType: row.obligationType,
-    sourceId: row.sourceId,
-    outcome: row.outcome,
-    observedAt: row.observedAt,
-    ...(row.reference !== undefined ? { reference: row.reference } : {}),
-    ...(row.subjectId !== undefined ? { subjectId: row.subjectId } : {}),
-    recordedBy: row.recordedBy,
-    recordedAt: row.recordedAt,
-  });
+function corrupt(message: string): never {
+  throw new ObligationDischargeError('OBLIGATION_DISCHARGE_STORE_CORRUPT', message);
 }
 
-/** Refuses the whole read if any row does not verify, or belongs to another organization or correlation than was asked for. */
-export function verifiedDischargeRows(
-  rows: readonly StoredObligationDischarge[],
-  organizationId: string,
-  correlation: ObligationDischargeCorrelation,
-): readonly StoredObligationDischarge[] {
-  for (const row of rows) {
-    const { digest, ...content } = row;
-    if (
-      digest !== obligationDischargeRowDigest(content) ||
-      row.organizationId !== organizationId ||
-      row.correlation.requestId !== correlation.requestId ||
-      row.correlation.action !== correlation.action ||
-      row.correlation.resourceScope !== correlation.resourceScope
-    ) {
-      throw new ObligationDischargeError('OBLIGATION_DISCHARGE_STORE_CORRUPT', 'A stored obligation discharge failed verification; no report from this store is believed.');
-    }
+/**
+ * Recomputes a store's whole history against its committed head.
+ *
+ * Every row must sit at its exact position (1…n, contiguous), belong to the
+ * store's organization, carry the digest of its content bound to this store and
+ * that position, and the chain over all of them must end exactly at the
+ * committed head. An inserted, altered, deleted, reordered or transplanted row
+ * fails, and so does the whole read: a history that does not verify is not
+ * partially believed.
+ */
+export function verifyObligationDischargeHistory(rows: readonly StoredObligationDischarge[], state: ObligationDischargeStateCommitment): void {
+  if (!Number.isSafeInteger(state.sequence) || state.sequence < 0 || rows.length !== state.sequence) corrupt('The discharge history does not have the committed length.');
+  let chain = obligationDischargeGenesisDigest(state.storeId, state.organizationId);
+  for (const [index, row] of rows.entries()) {
+    const { sequence, digest, ...content } = row;
+    if (sequence !== index + 1) corrupt('The discharge history is not contiguous.');
+    if (row.organizationId !== state.organizationId) corrupt('A discharge row belongs to another organization.');
+    const expected = obligationDischargeRowDigest(state.storeId, sequence, content);
+    if (digest !== expected) corrupt('A discharge row does not match its digest.');
+    chain = nextObligationDischargeChainDigest(chain, digest);
   }
-  return rows;
+  if (chain !== state.chainDigest) corrupt('The discharge history does not match the committed state.');
+}
+
+/** The rows of one decision correlation, from an already-verified history. */
+export function rowsForCorrelation(rows: readonly StoredObligationDischarge[], correlation: ObligationDischargeCorrelation): readonly StoredObligationDischarge[] {
+  return rows.filter(
+    (row) => row.correlation.requestId === correlation.requestId && row.correlation.action === correlation.action && row.correlation.resourceScope === correlation.resourceScope,
+  );
 }

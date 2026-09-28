@@ -694,10 +694,14 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const terms = termsFor(scope, verified);
       if (terms === undefined) return result({ status: 'withheld', withheldBy: 'grant-terms', ...decided, reasonCodes: [R.GOVERNED_ACTION_GRANT_TERMS_UNAVAILABLE] });
 
-      // CORE-04: a decision that stands under obligations is issued on their
-      // state *now*. Unreadable is unsatisfied.
+      // CORE-04: a decision is issued on the state of its obligations *now*.
+      // Whether any stand is decided from trusted configuration — the effective
+      // profile of the request this server rebuilt and bound to the committed
+      // record — never from the committed record's own obligation field, which
+      // a writer of the (integrity-only) Governance Store could strip.
+      // Unreadable is unsatisfied.
       let obligationsSatisfied: boolean | undefined;
-      if (persisted.obligations !== undefined && obligationState !== undefined) {
+      if (obligationState !== undefined) {
         try {
           obligationsSatisfied = (await obligationState.satisfiedNow(verified.request)) === true;
         } catch {

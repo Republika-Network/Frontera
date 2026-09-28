@@ -61,22 +61,41 @@ export interface ObligationDischargeRecordInput {
   readonly subjectId?: string;
 }
 
-/** One stored row: the input, the organization, the attribution and the integrity digest. */
-export interface StoredObligationDischarge extends ObligationDischargeRecordInput {
+/** What the recorder hands a store to append: the report, its organization and its attribution. */
+export interface ObligationDischargeContent extends ObligationDischargeRecordInput {
   readonly organizationId: string;
   readonly recordedBy: string;
   readonly recordedAt: string;
-  /** `sha256:<hex>` over the canonical row content (every field above). Verified on every read. */
+}
+
+/** One stored row: its content, its position in the store's history, and the digest that position binds. */
+export interface StoredObligationDischarge extends ObligationDischargeContent {
+  /** 1-based position in the store's append-only history. */
+  readonly sequence: number;
+  /** `sha256:<hex>` over the row bound to its store and sequence (`obligationDischargeRowDigest`). */
   readonly digest: string;
 }
 
 export interface ObligationDischargeStore {
-  /** `durable` survives a restart; `ephemeral` does not. */
-  readonly kind: 'durable' | 'ephemeral';
-  append(row: StoredObligationDischarge): Promise<void>;
-  /** Every verified row for one organization and one decision correlation, in append order. Throws when any row fails verification. */
+  /**
+   * `durable-authenticated` — SQLite, every append advances a hash chain whose
+   * head is signed by the deployment's authority key, and every read verifies
+   * the signature and the whole chain. `ephemeral` — process memory only (no
+   * database a writer could reach; lost on restart); refused by the secure
+   * profile.
+   */
+  readonly kind: 'durable-authenticated' | 'ephemeral';
+  /** Appends one report and advances the committed state. Nothing is written if the committed state cannot first be verified, or the new state cannot be signed. */
+  append(content: ObligationDischargeContent): Promise<StoredObligationDischarge>;
+  /**
+   * The authoritative read: verifies the store's committed state — signature,
+   * chain over every row, organization, store identity — and only then returns
+   * the rows for one decision correlation, in append order. Throws when
+   * anything fails; nothing read from an unverifiable store is believed.
+   */
   read(organizationId: string, correlation: ObligationDischargeCorrelation): Promise<readonly StoredObligationDischarge[]>;
   close(): Promise<void>;
 }
 
-export const OBLIGATION_DISCHARGE_STORE_SCHEMA_VERSION = 1;
+/** v2: the authenticated format (signed chain head). v1 — an unauthenticated format that existed only on the unshipped CORE-04 branch — is refused, never upgraded. */
+export const OBLIGATION_DISCHARGE_STORE_SCHEMA_VERSION = 2;

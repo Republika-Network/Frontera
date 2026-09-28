@@ -2,6 +2,7 @@ import { createPublicKey, verify as cryptoVerify, type KeyObject } from 'node:cr
 
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
+import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { AuthorityAuthenticityConfigurationError, type AuthoritySignatureFailure } from './errors.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
@@ -11,6 +12,7 @@ import {
   isSupportedAuthoritySignatureAlgorithm,
   isWellFormedAuthoritySignature,
   revocationSigningBytes,
+  obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
   type AuthoritySignatureAlgorithm,
@@ -72,6 +74,8 @@ export interface AuthorityArtifactVerifier {
   verifyRevocation(revocation: GrantRevocation, storeId: string, signature: unknown): AuthoritySignatureVerification;
   /** The same question for a store's revocation-state commitment (CORE-01), under its own domain. */
   verifyRevocationState(state: RevocationStateCommitment, signature: unknown): AuthoritySignatureVerification;
+  /** CORE-04: verifies an obligation discharge store's signed state commitment. */
+  verifyObligationDischargeState(state: ObligationDischargeStateCommitment, signature: unknown): AuthoritySignatureVerification;
   /** The key ids this verifier trusts, for composition checks and diagnostics. Ids only — never key material. */
   readonly trustedKeyIds: readonly string[];
 }
@@ -229,6 +233,9 @@ export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificati
     },
     verifyRevocationState(state: RevocationStateCommitment, signature: unknown): AuthoritySignatureVerification {
       return verify(revocationStateSigningBytes(state), signature);
+    },
+    verifyObligationDischargeState(state: ObligationDischargeStateCommitment, signature: unknown): AuthoritySignatureVerification {
+      return verify(obligationDischargeStateSigningBytes(state), signature);
     },
   });
 }

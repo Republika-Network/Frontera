@@ -13,6 +13,7 @@ import {
   createStoredObligationDischargeProvider,
   type ObligationDischargeStore,
 } from '../obligation-discharge/index.js';
+import { testAuthenticity } from './authority-authenticity-fixture.js';
 
 /**
  * CORE-04 — the obligation discharge store, recorder and provider in
@@ -41,8 +42,8 @@ after(async () => {
 async function stores2(): Promise<readonly [string, ObligationDischargeStore][]> {
   const dir = mkdtempSync(join(tmpdir(), 'frontera-obligations-'));
   directories.push(dir);
-  const durable = await createSqliteObligationDischargeStore(join(dir, 'obligations.sqlite'), { now: () => NOW });
-  const ephemeral = createInMemoryObligationDischargeStore();
+  const durable = await createSqliteObligationDischargeStore(join(dir, 'obligations.sqlite'), { now: () => NOW, organizationId: ORG, authenticity: testAuthenticity() });
+  const ephemeral = createInMemoryObligationDischargeStore({ organizationId: ORG });
   stores.push(durable, ephemeral);
   return [
     ['sqlite', durable],
@@ -63,7 +64,7 @@ describe('CORE-04 — a report’s worth comes from the configured source, never
     for (const [name, store] of await stores2()) {
       const recorder = createObligationDischargeRecorder({ store, sources: SOURCES, organizationId: ORG, now: () => NOW });
       assert.equal(await stateAfter(store), 'required', name);
-      await recorder.record(WRITER, { correlation: CORRELATION, obligationType: 'change.approval', sourceId: 'notes', outcome: 'discharged', observedAt: NOW });
+      await recorder.record(WRITER, { correlation: CORRELATION, obligationType: 'change.approval', sourceId: 'notes', outcome: 'discharged', observedAt: '2026-09-28T11:59:00.000Z' });
       assert.equal(await stateAfter(store), 'discharged', name);
       const row = await recorder.record(WRITER, { correlation: CORRELATION, obligationType: 'change.approval', sourceId: 'board', outcome: 'discharged', observedAt: NOW, reference: 'CAB-1' });
       assert.equal(row.recordedBy, 'operator:board-sync', 'attributed');

@@ -787,6 +787,9 @@ describe('Authority artifact authenticity — signer failure never becomes an un
       async signRevocationState(): Promise<AuthoritySignature> {
         throw new AuthoritySigningUnavailableError('signer offline');
       },
+      async signObligationDischargeState(): Promise<AuthoritySignature> {
+        throw new AuthoritySigningUnavailableError('signer offline');
+      },
     };
   }
 
@@ -856,6 +859,9 @@ describe('Authority artifact authenticity — Prompt 4 semantics are unchanged',
       async signRevocationState(state) {
         order.push('sign-state');
         return testSigner(AUTHORITY_KEY_A).signRevocationState(state);
+      },
+      async signObligationDischargeState(state) {
+        return testSigner(AUTHORITY_KEY_A).signObligationDischargeState(state);
       },
     };
     await store.close();

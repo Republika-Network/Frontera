@@ -1498,8 +1498,16 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       ? undefined
       : (options.obligations?.store ??
         (persistence.providerKind === 'sqlite'
-          ? await createSqliteObligationDischargeStore(configuration.obligationDischarge.sqlitePath, { now: kernelProviders.clock.now, busyTimeoutMs: configuration.persistence.busyTimeoutMs })
-          : createInMemoryObligationDischargeStore()));
+          ? await createSqliteObligationDischargeStore(configuration.obligationDischarge.sqlitePath, {
+              now: kernelProviders.clock.now,
+              busyTimeoutMs: configuration.persistence.busyTimeoutMs,
+              organizationId: configuration.kernelAuthority.organizationId,
+              // The same authority signer and trusted verifier the grant store
+              // uses: a verified discharge releases issuance, so its store's
+              // committed state is an authority artifact.
+              authenticity: authorityAuthenticity ?? buildAuthorityAuthenticity(configuration),
+            })
+          : createInMemoryObligationDischargeStore({ organizationId: configuration.kernelAuthority.organizationId })));
   const obligationDischargeStoreOpenedHere = obligationDischargeStore !== undefined && options.obligations?.store === undefined;
   if (obligationDischargeStoreOpenedHere) opened.push(() => closeIfClosable(obligationDischargeStore));
   // The one obligation capability shape the grant-aware Kernel decides with
@@ -2013,7 +2021,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     authorityAdministration: authorityAdministration !== undefined ? 'enabled' : 'not-configured',
     // CORE-04: from the composed objects, never from what was asked for.
     trustedContext: governedTrust?.context !== undefined && governedActionOrchestrator !== undefined ? 'composed' : 'not-configured',
-    obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind,
+    obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind === 'durable-authenticated' ? 'durable' : 'ephemeral',
   });
 
   const enterprise: AocEnterprise = {
