@@ -72,7 +72,7 @@ describe('Capital Discovery context provider', () => {
     } });
     const observations = (await provider.resolveContext(base)).observations;
     const classify = (trustClass: 'asserted' | 'authoritative') => new ContextResolutionService({
-      sources: [{ id: 'source', kind: 'internal_store', name: 'CD state', trustClass }],
+      sources: [{ id: 'source', kind: 'internal_store', name: 'CD state', trustClass, attests: [{ factClass: 'deployment.fact' }, { factClass: 'extra.fact' }, { factClass: 'other.fact' }] }],
       declaration: { requirements: [{ key: 'deployment.fact', minimumTrustClass: 'asserted', required: false }] },
     }).classify(observations, at);
     assert.equal(classify('asserted').facts[0]?.trustClass, 'asserted');
@@ -136,7 +136,7 @@ describe('Capital Discovery context provider', () => {
         { key: 'deployment.fact', value: false, observedAt: at }]; },
     } });
     const capability = new KernelContextCapability({ provider,
-      sources: [{ id: 'source', kind: 'internal_store', name: 'CD state', trustClass: 'authoritative' }],
+      sources: [{ id: 'source', kind: 'internal_store', name: 'CD state', trustClass: 'authoritative', attests: [{ factClass: 'deployment.fact' }, { factClass: 'extra.fact' }, { factClass: 'other.fact' }] }],
       declaration: { requirements: [{ key: 'deployment.fact', minimumTrustClass: 'asserted', required: false }] },
     });
     const request = { ...toKernelRequest(buildDraftClosureEmailGuardInput()),

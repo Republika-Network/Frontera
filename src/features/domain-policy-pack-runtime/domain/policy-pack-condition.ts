@@ -44,7 +44,10 @@ export type PolicyPredicateField =
   | 'resourceClass'
   | 'governanceProfile'
   | 'governanceProfileVersion'
-  | 'parameter';
+  | 'parameter'
+  // CORE-04: trusted context, admitted by the Trusted Context Boundary.
+  | 'contextFact'
+  | 'restrictiveFact';
 
 export interface PolicyGroupCondition {
   readonly type: 'group';
@@ -66,6 +69,18 @@ export interface PolicyPredicateCondition {
    * undeclared or absent dimension reads as absent, never as a default.
    */
   readonly parameterId?: string;
+  /**
+   * CORE-04 — the fact class a `field: 'contextFact'` or
+   * `field: 'restrictiveFact'` predicate reads, exactly (case-sensitive, no
+   * path). Required with those fields and refused with any other.
+   *
+   * Only **admitted** facts are readable: a fact that was missing, stale,
+   * conflicted, refused or below its declared trust class reads as absent —
+   * never as `false`, never as a default. `contextFact` reads material facts;
+   * `restrictiveFact` reads restrict-only facts, and a rule that does so may
+   * only restrict (validator: no `allow`/`no_op` effect, no negation).
+   */
+  readonly factClass?: string;
 }
 
 export type PolicyCondition = PolicyGroupCondition | PolicyPredicateCondition;

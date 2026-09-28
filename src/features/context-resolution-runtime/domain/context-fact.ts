@@ -74,6 +74,10 @@ export interface ContextFact {
   readonly derivation?: ContextFactDerivation;
   /** Present only when `resolution === 'conflicted'`: the other sources that answered this key differently. Never reduced to a winner. */
   readonly conflictingSourceIds?: readonly string[];
+  /** CORE-04 — the provenance reference the reading carried (the record it came from). Opaque; retained, digested, never interpreted. */
+  readonly reference?: string;
+  /** CORE-04 — the reading's verified provenance digest, when its source requires one. */
+  readonly provenanceDigest?: string;
 }
 
 /**
@@ -95,6 +99,54 @@ export interface ContextFactObservation {
   readonly maxAgeSeconds?: number;
   /** Opaque attestation reference, honoured only when the citing source is configured `attested`. */
   readonly attestationRef?: string;
+  /**
+   * CORE-04 — the record this reading came from (an ERP document id, a ledger
+   * transaction id, a registry entry). Required, with `provenanceDigest`, when
+   * the citing source declares `provenance: 'reference-digest'`.
+   */
+  readonly reference?: string;
+  /** CORE-04 — `contextObservationProvenanceDigest(...)` over this whole reading, computed where the reading was taken. */
+  readonly provenanceDigest?: string;
+  /**
+   * CORE-04 — the organization the reading claims to be about. A claim, never
+   * a grant of scope: when present it must equal the organization the request
+   * is made in, or the reading is refused (`organization_mismatch`). Absent, the
+   * *source's* configured organization is what scopes it.
+   */
+  readonly organizationId?: string;
+}
+
+/** CORE-04 — bounds on a fact value. A context fact is compared, never parsed, so a longer string is a malformed one. */
+export const CONTEXT_FACT_STRING_MAX_LENGTH = 256;
+
+/**
+ * CORE-04 — whether a value may be admitted as a fact.
+ *
+ * Numbers are admitted only as **safe integers**. A fact is authority-material
+ * input to deterministic policy and to a digest the decision is bound to, and
+ * a binary floating-point reading has no single canonical spelling a policy,
+ * a digest and a later auditor are guaranteed to agree on. An exact decimal
+ * quantity travels as canonical decimal text (a string), exactly as P9 money
+ * does.
+ */
+export function isAdmissibleContextFactValue(value: unknown): value is ContextFactValue {
+  if (typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && !Object.is(value, -0);
+  if (typeof value === 'string') return value.length > 0 && value.length <= CONTEXT_FACT_STRING_MAX_LENGTH;
+  return false;
+}
+
+/**
+ * CORE-04 — whether a reading claims to have been taken after `at` by more
+ * than the tolerated skew. Such a reading is refused, never clamped: an
+ * impossible time is evidence the reading is wrong, not that it is very fresh.
+ * An unparseable time is treated as future-dated, which is the refusing side.
+ */
+export function isFutureDatedAt(observedAt: string, at: string, maxFutureSkewSeconds: number): boolean {
+  const observed = Date.parse(observedAt);
+  const now = Date.parse(at);
+  if (Number.isNaN(observed) || Number.isNaN(now)) return true;
+  return observed - now > maxFutureSkewSeconds * 1000;
 }
 
 /** Structural violations of a fact. Hard invariant 1 made checkable: no `sourceId`, no `observedAt`, no fact. */
@@ -117,7 +169,12 @@ export function validateContextFact(fact: ContextFact): readonly string[] {
   return violations;
 }
 
-/** Whether an observation is still fresh at `at`, given a bound. Total: an unparseable timestamp is not fresh, which is the safe direction. */
+/**
+ * Whether an observation is still fresh at `at`, given a bound. Total: an
+ * unparseable timestamp is not fresh, which is the safe direction.
+ *
+ * The boundary is exclusive: a reading exactly `maxAgeSeconds` old is stale.
+ */
 export function isFreshAt(observedAt: string, maxAgeSeconds: number, at: string): boolean {
   const observed = Date.parse(observedAt);
   const now = Date.parse(at);

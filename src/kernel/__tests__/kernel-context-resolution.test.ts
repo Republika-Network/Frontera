@@ -20,9 +20,9 @@ import type { PolicyPackProvider } from '../contracts/ports.js';
 import { AOC_KERNEL_REASON_CODES } from '../reason-codes/reason-codes.js';
 import { NOW, toKernelRequest } from './characterization/support.js';
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
-const CRM: ContextSource = { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative' };
-const REQUEST_SOURCE: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] };
+const CRM: ContextSource = { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] };
+const REQUEST_SOURCE: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted', attests: [{ factClass: 'vendor.status' }] };
 const SOURCES = [ERP, CRM, REQUEST_SOURCE];
 
 function buildKernel(options: {
@@ -253,7 +253,7 @@ describe('Kernel context capability — determinism and configuration', () => {
       ContextConfigurationError,
     );
     assert.throws(
-      () => buildKernel({ declaration: VENDOR_OPTIONAL, sources: [{ ...REQUEST_SOURCE, trustClass: 'authoritative' }] }),
+      () => buildKernel({ declaration: VENDOR_OPTIONAL, sources: [{ ...REQUEST_SOURCE, trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] }] }),
       ContextConfigurationError,
     );
   });

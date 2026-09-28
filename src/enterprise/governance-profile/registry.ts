@@ -15,6 +15,7 @@ import {
   type GovernanceActionClassDeclaration,
   type GovernanceConfiguration,
   type GovernanceProfileDefinition,
+  type GovernanceProfileObligation,
   type GovernanceProfileParameter,
   type GovernanceProfileRegistry,
   type GovernanceProfileResolution,
@@ -116,7 +117,7 @@ function validateProfile(
   resourceClasses: ReadonlySet<string>,
 ): GovernanceProfileDefinition {
   const where = `profiles[${index}]`;
-  const entry = closed(raw, ['profileId', 'version', 'owner', 'provenance', 'actionClass', 'resourceClass', 'parameters', 'materialFacts', 'relevantPolicies'], where);
+  const entry = closed(raw, ['profileId', 'version', 'owner', 'provenance', 'actionClass', 'resourceClass', 'parameters', 'materialFacts', 'relevantPolicies', 'restrictiveFacts', 'obligations'], where);
   const { profileId, version, owner, actionClass, resourceClass } = entry;
   if (!isSemanticIdentifier(profileId)) fail(`${where}.profileId is not a semantic identifier.`);
   if (!isGovernanceProfileVersion(version)) fail(`${where}.version must be a positive integer.`);
@@ -139,6 +140,19 @@ function validateProfile(
   }
   parameters.sort((left, right) => byId(left.dimension, right.dimension));
 
+  const materialFacts = uniqueReferences(entry['materialFacts'], `${where}.materialFacts`, isSemanticIdentifier);
+  const restrictiveFacts = uniqueReferences(entry['restrictiveFacts'], `${where}.restrictiveFacts`, isSemanticIdentifier);
+  // CORE-04: one fact class, one role. A class both material and restrict-only
+  // would be read by two predicate families with opposite monotonicity rules;
+  // and two spellings differing only by case would let one shadow the other.
+  const factFolds = new Set<string>();
+  for (const factClass of [...materialFacts, ...restrictiveFacts]) {
+    const fold = semanticIdentifierFold(factClass);
+    if (factFolds.has(fold)) fail(`${where} declares fact class '${factClass}' twice across materialFacts and restrictiveFacts (fact classes are unique regardless of case).`);
+    factFolds.add(fold);
+  }
+  const obligations = validateProfileObligations(entry['obligations'], `${where}.obligations`);
+
   return Object.freeze({
     profileId,
     version,
@@ -147,9 +161,30 @@ function validateProfile(
     actionClass,
     resourceClass,
     parameters: Object.freeze(parameters),
-    materialFacts: uniqueReferences(entry['materialFacts'], `${where}.materialFacts`, isSemanticIdentifier),
+    materialFacts,
     relevantPolicies: uniqueReferences(entry['relevantPolicies'], `${where}.relevantPolicies`, isGovernedParameterToken),
+    // CORE-04: only when non-empty, so every CORE-03 profile keeps its digest.
+    ...(restrictiveFacts.length > 0 ? { restrictiveFacts } : {}),
+    ...(obligations.length > 0 ? { obligations } : {}),
   });
+}
+
+/** CORE-04 — a profile's obligations: closed entries, declared kinds, unique regardless of case, `blocking` stated explicitly. */
+function validateProfileObligations(value: unknown, where: string): readonly GovernanceProfileObligation[] {
+  const obligations: GovernanceProfileObligation[] = [];
+  const folds = new Set<string>();
+  for (const [index, raw] of list(value, where, LIMITS.referencesPerProfile).entries()) {
+    const entry = closed(raw, ['obligationType', 'blocking'], `${where}[${index}]`);
+    const { obligationType, blocking } = entry;
+    if (!isSemanticIdentifier(obligationType)) fail(`${where}[${index}].obligationType is not an obligation kind identifier.`);
+    if (typeof blocking !== 'boolean') fail(`${where}[${index}].blocking must be stated as a boolean — "not stated" is never "not blocking".`);
+    const fold = semanticIdentifierFold(obligationType);
+    if (folds.has(fold)) fail(`${where} names obligation '${obligationType}' twice.`);
+    folds.add(fold);
+    obligations.push(Object.freeze({ obligationType, blocking }));
+  }
+  obligations.sort((left, right) => byId(left.obligationType, right.obligationType));
+  return Object.freeze(obligations);
 }
 
 /**
@@ -161,6 +196,9 @@ function validateProfile(
 export function governanceProfileDigest(definition: GovernanceProfileDefinition): string {
   return computeDigest({ format: GOVERNANCE_PROFILE_FORMAT, profile: definition });
 }
+
+/** CORE-04: the internal namespaces resolved facts, obligations and grants use. Never writable by a caller, in any case. */
+const RESERVED_INTERNAL_NAMESPACES: readonly string[] = ['aoc.context', 'aoc.obligations', 'aoc.grant'];
 
 /** A reserved context key: a plain JSON-key-shaped identifier, at most 64 characters. */
 const RESERVED_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
@@ -217,6 +255,11 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
   profiles.sort((left, right) => byId(left.definition.profileId, right.definition.profileId));
 
   const dimensionFolds = new Set(dimensions.dimensions.map((dimension) => semanticIdentifierFold(dimension.id)));
+  // CORE-04: a declared fact class cannot be spelled by a caller either — in
+  // any case — so an asserted value can never sit beside, or be mistaken for,
+  // an admitted one.
+  const factClasses = [...new Set(profiles.flatMap((profile) => [...profile.definition.materialFacts, ...(profile.definition.restrictiveFacts ?? [])]))].sort(byId);
+  const factFolds = new Set(factClasses.map((factClass) => semanticIdentifierFold(factClass)));
   const configured = actions.ids.size > 0 || resources.ids.size > 0 || profiles.length > 0 || reservedContextKeys.length > 0;
   const shadows = (key: string): boolean => typeof key === 'string' && dimensionFolds.has(key.toLowerCase());
 
@@ -238,8 +281,11 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
     shadowsDeclaredDimension: shadows,
     reservedContextKeys,
     reservesContextKey(key: string): boolean {
-      return typeof key === 'string' && (reservedFolds.has(key.toLowerCase()) || shadows(key));
+      if (typeof key !== 'string') return false;
+      const fold = key.toLowerCase();
+      return reservedFolds.has(fold) || shadows(key) || factFolds.has(fold) || RESERVED_INTERNAL_NAMESPACES.some((prefix) => fold === prefix || fold.startsWith(`${prefix}.`));
     },
+    factClasses: Object.freeze(factClasses),
   });
 }
 

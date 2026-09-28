@@ -45,13 +45,19 @@ export class PolicyConditionEvaluator {
     const matched = this.applyOperator(condition.operator, fieldValue, condition.value);
     return {
       matched,
-      reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''}${condition.parameterId ? `.${condition.parameterId}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
+      reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''}${condition.parameterId ? `.${condition.parameterId}` : ''}${condition.factClass ? `.${condition.factClass}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
     };
   }
 
   private getFieldValue(condition: PolicyPredicateCondition, input: PolicyEvaluationInput): unknown {
     if (condition.field === 'parameter') {
       return this.readParameter(input, condition.parameterId);
+    }
+    if (condition.field === 'contextFact') {
+      return this.readFact(input.contextFacts, condition.factClass);
+    }
+    if (condition.field === 'restrictiveFact') {
+      return this.readFact(input.restrictiveFacts, condition.factClass);
     }
     if (condition.field === 'metadata') {
       if (!condition.metadataPath) {
@@ -125,6 +131,12 @@ export class PolicyConditionEvaluator {
   private readParameter(input: PolicyEvaluationInput, parameterId: string | undefined): unknown {
     if (parameterId === undefined || input.governedParameters === undefined) return undefined;
     return input.governedParameters.find((parameter) => parameter.dimension === parameterId)?.value;
+  }
+
+  /** CORE-04: an admitted fact by exact class, found in a list — never by property access, so no prototype member can answer for an unadmitted class. */
+  private readFact(facts: PolicyEvaluationInput['contextFacts'], factClass: string | undefined): unknown {
+    if (factClass === undefined || facts === undefined) return undefined;
+    return facts.find((fact) => fact.factClass === factClass)?.value;
   }
 
   private readMetadataPath(metadata: Readonly<Record<string, unknown>> | undefined, path: string): unknown {

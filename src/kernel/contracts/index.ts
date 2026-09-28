@@ -15,6 +15,7 @@ export type {
   ContextEvaluation,
   ContextFactEvaluation,
   ContextRequirementEvaluation,
+  ContextRefusalEvaluation,
   DisregardedObligationObservationEvaluation,
   ObligationDischargeEvaluation,
   GrantBoundEvaluation,

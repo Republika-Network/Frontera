@@ -17,6 +17,7 @@ import type { EnforcementTargetType } from '../../features/action-enforcement/do
 import type { KernelEvaluationOptions } from '../contracts/kernel-options.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import { KernelValidationError } from '../errors/kernel-errors.js';
+import type { AdmittedPolicyContext } from './context-adapter.js';
 
 const ENFORCEMENT_TARGET_TYPES: ReadonlySet<string> = new Set<EnforcementTargetType>([
   'tool_call',
@@ -88,6 +89,7 @@ function buildPolicyEvaluationInput(
   request: KernelEvaluationRequest,
   constraintContext: GovernedConstraintPolicyContext | undefined,
   contextResolution: ContextResolution | undefined,
+  admittedContext: AdmittedPolicyContext | undefined,
 ): EnforcementPolicyEvaluationInput | undefined {
   const { action } = request;
   const hasPolicyPackFields =
@@ -136,6 +138,10 @@ function buildPolicyEvaluationInput(
     ...(action.governedParameters !== undefined
       ? { governedParameters: action.governedParameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) }
       : {}),
+    // CORE-04: admitted trusted context, in typed fields of its own and from
+    // the Trusted Context Boundary only. A stale, conflicted, refused or
+    // missing fact is absent here — never `false`, never a default.
+    ...(admittedContext !== undefined ? { contextFacts: admittedContext.contextFacts, restrictiveFacts: admittedContext.restrictiveFacts } : {}),
     ...(metadata !== undefined ? { metadata } : {}),
   };
 }
@@ -173,9 +179,10 @@ export function toGuardActionRequestInput(
   options: KernelEvaluationOptions | undefined,
   constraintContext?: GovernedConstraintPolicyContext,
   contextResolution?: ContextResolution,
+  admittedContext?: AdmittedPolicyContext,
 ): GuardActionRequestInput {
   const { actor, action, target } = request;
-  const policyEvaluationInput = buildPolicyEvaluationInput(request, constraintContext, contextResolution);
+  const policyEvaluationInput = buildPolicyEvaluationInput(request, constraintContext, contextResolution, admittedContext);
   const targetType = toEnforcementTargetType(target?.type);
   const context: Record<string, unknown> = { ...(request.context ?? {}) };
 

@@ -55,6 +55,18 @@ export interface ContextRequirement {
    * because the resolver decided."
    */
   readonly required: boolean;
+  /**
+   * CORE-04 — a **restrict-only** fact class (the admitted form of what the
+   * architecture calls a RiskSignal).
+   *
+   * Absence is the baseline, so a restrictive requirement is never `required`.
+   * But an *ambiguous* reading — conflicting admitted readings, or a resolver
+   * that could not answer at all — denies, because letting a second source (or
+   * an outage) suppress a restriction would let context widen authority. Policy
+   * reads a restrictive fact only through the restrict-only predicate, whose
+   * rules may only restrict (see the policy validator).
+   */
+  readonly restrictive?: boolean;
 }
 
 /**
@@ -74,7 +86,16 @@ export interface ContextDeclaration {
   readonly assertedFactPolicy?: ContextAssertedFactPolicy;
   /** The keys this deployment has reviewed and accepted as assertable. Read only under `require-declaration`. Never requester-supplied. */
   readonly assertableKeys?: readonly string[];
+  /**
+   * CORE-04 — how far in the future (seconds) a reading's time may lie before
+   * it is refused as `future_dated`. Defaults to `0`: a reading from the future
+   * is impossible, and clock skew is something a deployment states, never
+   * something assumed. At most 300.
+   */
+  readonly maxFutureSkewSeconds?: number;
 }
+
+export const CONTEXT_MAX_FUTURE_SKEW_SECONDS = 300;
 
 export function contextDeclarationAssertedFactPolicy(declaration: ContextDeclaration): ContextAssertedFactPolicy {
   return declaration.assertedFactPolicy ?? DEFAULT_CONTEXT_ASSERTED_FACT_POLICY;
@@ -101,6 +122,12 @@ export function validateContextDeclaration(declaration: ContextDeclaration): rea
     if (typeof requirement.required !== 'boolean') {
       violations.push(`ContextRequirement '${requirement.key}': required must be declared explicitly — "not stated" must never be read as "not needed".`);
     }
+    if (requirement.restrictive !== undefined && typeof requirement.restrictive !== 'boolean') {
+      violations.push(`ContextRequirement '${requirement.key}': restrictive must be a boolean when present.`);
+    }
+    if (requirement.restrictive === true && requirement.required === true) {
+      violations.push(`ContextRequirement '${requirement.key}': a restrict-only fact is never required — its absence is the baseline it may only restrict from.`);
+    }
   }
 
   const derivedKeys = new Set<string>();
@@ -117,6 +144,11 @@ export function validateContextDeclaration(declaration: ContextDeclaration): rea
 
   for (const assertableKey of declaration.assertableKeys ?? []) {
     if (!seen.has(assertableKey)) violations.push(`ContextDeclaration.assertableKeys names '${assertableKey}', which is not a declared context requirement.`);
+  }
+
+  const skew = declaration.maxFutureSkewSeconds;
+  if (skew !== undefined && (!Number.isSafeInteger(skew) || skew < 0 || skew > CONTEXT_MAX_FUTURE_SKEW_SECONDS)) {
+    violations.push(`ContextDeclaration.maxFutureSkewSeconds must be an integer from 0 to ${CONTEXT_MAX_FUTURE_SKEW_SECONDS}.`);
   }
 
   const policy = declaration.assertedFactPolicy;

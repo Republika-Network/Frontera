@@ -10,9 +10,9 @@ import { createInMemoryContextResolver } from '../services/in-memory-context-res
 const NOW = '2026-01-01T12:00:00.000Z';
 
 const SOURCES: readonly ContextSource[] = [
-  { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' },
-  { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative' },
-  { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted' },
+  { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.secretMargin' }, { factClass: 'vendor.status' }] },
+  { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative', attests: [{ factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.secretMargin' }, { factClass: 'vendor.status' }] },
+  { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted', attests: [{ factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.secretMargin' }, { factClass: 'vendor.status' }] },
 ];
 
 const DECLARATION: ContextDeclaration = {

@@ -28,7 +28,7 @@ import { NOW, toKernelRequest } from './characterization/support.js';
  * one submits the forgery a caller would actually try.
  */
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'invoice.status' }, { factClass: 'riskScore' }, { factClass: 'vendor.status' }] };
 const SOURCES = [ERP];
 
 const TRUSTED_VENDOR: ContextDeclaration = {
@@ -186,7 +186,7 @@ describe('Self-assertion — a forged fact cannot satisfy a trusted requirement'
   });
 
   it('a caller cannot promote a trust class: the request source is asserted no matter what the body claims', async () => {
-    const REQUEST_SOURCE: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted' };
+    const REQUEST_SOURCE: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted', attests: [{ factClass: 'invoice.status' }, { factClass: 'riskScore' }, { factClass: 'vendor.status' }] };
     const fixture = buildDatasysEnforcementFixture();
     const kernel = new AocKernel({
       recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),

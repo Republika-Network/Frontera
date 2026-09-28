@@ -3,6 +3,7 @@ export type {
   GovernanceActionClassDeclaration,
   GovernanceConfiguration,
   GovernanceProfileDefinition,
+  GovernanceProfileObligation,
   GovernanceProfileParameter,
   GovernanceProfileProvenance,
   GovernanceProfileRefusal,

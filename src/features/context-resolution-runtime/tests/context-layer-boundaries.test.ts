@@ -98,7 +98,7 @@ describe('Context layer boundaries — the facts layer cannot decide', () => {
     // Exercised through a real resolution rather than asserted about the type,
     // so the guarantee holds at runtime and not only at compile time.
     const service = new contextRuntime.ContextResolutionService({
-      sources: [{ id: 'ctx.src.erp', kind: 'erp', name: 'ERP', trustClass: 'authoritative' }],
+      sources: [{ id: 'ctx.src.erp', kind: 'erp', name: 'ERP', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] }],
       declaration: { requirements: [{ key: 'vendor.status', minimumTrustClass: 'authoritative', required: true }] },
     });
     const resolution = service.classify([{ key: 'vendor.status', value: 'approved', sourceId: 'ctx.src.erp', observedAt: '2026-01-01T00:00:00.000Z' }], '2026-01-01T00:00:00.000Z');

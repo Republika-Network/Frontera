@@ -1,6 +1,10 @@
 import { evaluateContextDerivation, type ContextDerivation } from '../domain/context-derivation.js';
+import { contextObservationProvenanceDigest } from '../domain/context-digest.js';
 import {
+  CONTEXT_FACT_STRING_MAX_LENGTH,
+  isAdmissibleContextFactValue,
   isFreshAt,
+  isFutureDatedAt,
   staleAtFor,
   type ContextFact,
   type ContextFactFreshness,
@@ -15,8 +19,8 @@ import {
   type ContextDeclaration,
   type ContextRequirement,
 } from '../domain/context-requirement.js';
-import type { ContextResolution } from '../domain/context-resolution.js';
-import { CONTEXT_DERIVED_SOURCE_ID, type ContextSource } from '../domain/context-source.js';
+import type { ContextObservationRefusalReason, ContextResolution, RefusedContextObservation } from '../domain/context-resolution.js';
+import { CONTEXT_DERIVED_SOURCE_ID, contextSourceAttestationFor, type ContextSource } from '../domain/context-source.js';
 import { contextTrustClassSatisfies, minimumContextTrustClass, type TerminalContextTrustClass } from '../domain/context-trust.js';
 import { ContextConfigurationError } from './context-resolution-errors.js';
 import { ContextSourceRegistry } from './context-source-registry.js';
@@ -48,6 +52,7 @@ export class ContextResolutionService {
   private readonly requirementsByKey: ReadonlyMap<string, ContextRequirement>;
   private readonly requested: readonly string[];
   private readonly declared: readonly string[];
+  private readonly maxFutureSkewSeconds: number;
 
   constructor(options: ContextResolutionServiceOptions) {
     const violations = validateContextDeclaration(options.declaration);
@@ -56,6 +61,7 @@ export class ContextResolutionService {
     this.registry = new ContextSourceRegistry(options.sources);
     this.declaration = options.declaration;
     this.derivations = options.declaration.derivations ?? [];
+    this.maxFutureSkewSeconds = options.declaration.maxFutureSkewSeconds ?? 0;
 
     const requirementsByKey = new Map<string, ContextRequirement>();
     for (const requirement of options.declaration.requirements) requirementsByKey.set(requirement.key, requirement);
@@ -98,19 +104,48 @@ export class ContextResolutionService {
   }
 
   /**
-   * Classifies observations into facts.
+   * The Trusted Context Boundary: admits or refuses each reading, then
+   * classifies the admitted ones into facts.
    *
    * Observations for keys that were not declared are discarded. That is not
    * tidiness: a resolver that could widen the fact set beyond the declaration
    * would make the declared-keys-only guarantee — and the bounded blast radius
    * that follows from it — untrue.
+   *
+   * Every other reading crosses the same ordered admission checks (CORE-04),
+   * and a reading that fails any of them is refused — recorded on
+   * `refused`, never turned into a fact, never defaulted:
+   *
+   * ```
+   * source identity      → source_untrusted
+   * fact-class authority → fact_class_not_attested
+   * organization scope   → organization_mismatch
+   * observation time     → observation_time_invalid, future_dated
+   * value                → value_malformed
+   * attestation          → attestation_missing
+   * provenance           → provenance_invalid
+   * ```
+   *
+   * Freshness is decided afterwards, on the admitted reading, against the
+   * stricter of the source's bound for this class, the requirement's and the
+   * reading's own: a stale reading is a `stale` fact, which no read reports as
+   * satisfied.
+   *
+   * `organizationId` is the organization the request is made in — typed
+   * request identity, never a requester claim.
    */
-  classify(observations: readonly ContextFactObservation[], at: string): ContextResolution {
+  classify(observations: readonly ContextFactObservation[], at: string, organizationId?: string): ContextResolution {
     const byKey = new Map<string, ContextFactObservation[]>();
     for (const key of this.requested) byKey.set(key, []);
+    const refused: RefusedContextObservation[] = [];
     for (const observation of observations) {
       const bucket = byKey.get(observation.key);
       if (bucket === undefined) continue;
+      const refusal = this.refusalOf(observation, at, organizationId);
+      if (refusal !== undefined) {
+        refused.push({ key: observation.key, sourceId: typeof observation.sourceId === 'string' ? observation.sourceId : '', reason: refusal });
+        continue;
+      }
       bucket.push(observation);
     }
 
@@ -118,20 +153,19 @@ export class ContextResolutionService {
     const unresolved: string[] = [];
 
     for (const key of this.requested) {
-      const usable = (byKey.get(key) ?? []).filter((observation) => this.isUsable(observation));
+      const usable = deduplicated(byKey.get(key) ?? []);
       if (usable.length === 0) {
         unresolved.push(key);
         continue;
       }
-
       const distinctValues = new Set<ContextFactValue>(usable.map((observation) => observation.value));
       if (distinctValues.size > 1) {
         // Never reduced to a winner. Every answering source is reported, each
         // naming the others, so a deployment's rule sees the disagreement
         // itself rather than one side of it.
-        const sourceIds = usable.map((observation) => observation.sourceId);
         for (const observation of usable) {
-          facts.push(this.toFact(observation, 'conflicted', at, sourceIds.filter((sourceId) => sourceId !== observation.sourceId)));
+          const disagreeing = usable.filter((other) => other.value !== observation.value).map((other) => other.sourceId);
+          facts.push(this.toFact(observation, 'conflicted', at, disagreeing));
         }
         continue;
       }
@@ -157,6 +191,7 @@ export class ContextResolutionService {
       unresolved: [...new Set(unresolved)].sort(),
       stale: uniqueSortedKeys(ordered, 'stale'),
       conflicted: uniqueSortedKeys(ordered, 'conflicted'),
+      refused: [...refused].sort(byRefusal),
       assertedFactPolicy: contextDeclarationAssertedFactPolicy(this.declaration),
       assertableKeys: [...(this.declaration.assertableKeys ?? [])].sort(),
       resolvedAt: at,
@@ -164,20 +199,22 @@ export class ContextResolutionService {
   }
 
   /**
-   * An observation is usable only if it can be fully classified.
-   *
-   * Three ways to fail, all fail-closed to `unresolved` rather than to some
-   * default class: an unregistered source (no origin means no trust), an
-   * unparseable observation time (hard invariant 1), and an `attested` source
-   * that produced no attestation reference (an attestation is what is verified;
-   * without one there is nothing that was).
+   * Why a reading may not be admitted, or `undefined` when it may. The order is
+   * the admission order and is load-bearing only for which single reason is
+   * recorded; every failing reading is refused whichever check catches it.
    */
-  private isUsable(observation: ContextFactObservation): boolean {
-    const source = this.registry.get(observation.sourceId);
-    if (source === undefined) return false;
-    if (Number.isNaN(Date.parse(observation.observedAt))) return false;
-    if (source.trustClass === 'attested' && observation.attestationRef === undefined) return false;
-    return true;
+  private refusalOf(observation: ContextFactObservation, at: string, organizationId: string | undefined): ContextObservationRefusalReason | undefined {
+    const source = typeof observation.sourceId === 'string' ? this.registry.get(observation.sourceId) : undefined;
+    if (source === undefined || source.id === CONTEXT_DERIVED_SOURCE_ID) return 'source_untrusted';
+    if (contextSourceAttestationFor(source, observation.key) === undefined) return 'fact_class_not_attested';
+    if (source.organizationId !== undefined && source.organizationId !== organizationId) return 'organization_mismatch';
+    if (observation.organizationId !== undefined && observation.organizationId !== organizationId) return 'organization_mismatch';
+    if (typeof observation.observedAt !== 'string' || Number.isNaN(Date.parse(observation.observedAt))) return 'observation_time_invalid';
+    if (isFutureDatedAt(observation.observedAt, at, this.maxFutureSkewSeconds)) return 'future_dated';
+    if (!isAdmissibleContextFactValue(observation.value)) return 'value_malformed';
+    if (source.trustClass === 'attested' && observation.attestationRef === undefined) return 'attestation_missing';
+    if (source.provenance === 'reference-digest' && !hasValidProvenance(observation)) return 'provenance_invalid';
+    return undefined;
   }
 
   /** Among observations that agree on the value, the one with the strongest claim: highest trust class, then most recently observed, then lowest source id. Total and stable. */
@@ -201,19 +238,30 @@ export class ContextResolutionService {
   }
 
   private trustClassOf(observation: ContextFactObservation): TerminalContextTrustClass {
-    // Never `undefined` in practice: `isUsable` already rejected unregistered
+    // Never `undefined` in practice: `refusalOf` already refused unregistered
     // sources. `asserted` is the fail-closed fallback rather than a throw, so a
     // mis-ordered call can only ever under-trust a fact.
     return this.registry.get(observation.sourceId)?.trustClass ?? 'asserted';
   }
 
-  /** The stricter of the requirement's bound and the source's own. Absent on both means this key carries no freshness tolerance and can never be stale. */
+  /**
+   * The strictest applicable freshness bound: the source's configured bound for
+   * this fact class (CORE-04's canonical owner), the requirement's, and the
+   * reading's own. Each may only tighten the others. A reading that states a
+   * malformed bound of its own is treated as already stale (bound `0`), never
+   * as unbounded. Absent everywhere means this key carries no freshness
+   * tolerance and can never be stale.
+   */
   private maxAgeFor(key: string, observation: ContextFactObservation): number | undefined {
+    const source = this.registry.get(observation.sourceId);
+    const bounds: number[] = [];
+    const attested = source === undefined ? undefined : contextSourceAttestationFor(source, key)?.maxAgeSeconds;
+    if (attested !== undefined) bounds.push(attested);
     const declared = this.requirementsByKey.get(key)?.maxAgeSeconds;
+    if (declared !== undefined) bounds.push(declared);
     const observed = observation.maxAgeSeconds;
-    if (declared === undefined) return observed;
-    if (observed === undefined) return declared;
-    return Math.min(declared, observed);
+    if (observed !== undefined) bounds.push(typeof observed === 'number' && Number.isFinite(observed) && observed > 0 ? observed : 0);
+    return bounds.length === 0 ? undefined : Math.min(...bounds);
   }
 
   private freshnessStatus(observation: ContextFactObservation, at: string): ResolvedContextFactStatus {
@@ -246,7 +294,9 @@ export class ContextResolutionService {
       resolution: status,
       ...(freshness !== undefined ? { freshness } : {}),
       ...(trustClass === 'attested' && observation.attestationRef !== undefined ? { attestationRef: observation.attestationRef } : {}),
-      ...(conflictingSourceIds !== undefined && conflictingSourceIds.length > 0 ? { conflictingSourceIds: [...conflictingSourceIds].sort() } : {}),
+      ...(conflictingSourceIds !== undefined && conflictingSourceIds.length > 0 ? { conflictingSourceIds: [...new Set(conflictingSourceIds)].sort() } : {}),
+      ...(typeof observation.reference === 'string' ? { reference: observation.reference } : {}),
+      ...(source.provenance === 'reference-digest' && typeof observation.provenanceDigest === 'string' ? { provenanceDigest: observation.provenanceDigest } : {}),
     };
   }
 
@@ -279,6 +329,9 @@ export class ContextResolutionService {
 
     const outcome = evaluateContextDerivation(derivation.operator, operands.map((operand) => operand.value));
     if (!outcome.ok) return undefined;
+    // CORE-04: a derived fact is admitted on the same terms as a read one — a
+    // non-integer result has no canonical spelling, so it resolves `unresolved`.
+    if (!isAdmissibleContextFactValue(outcome.value)) return undefined;
 
     const effectiveTrustClass = minimumContextTrustClass(operands.map((operand) => operand.effectiveTrustClass));
     const observedAt = operands.reduce((oldest, operand) => (Date.parse(operand.observedAt) < Date.parse(oldest) ? operand.observedAt : oldest), operands[0]?.observedAt ?? at);
@@ -299,6 +352,54 @@ export class ContextResolutionService {
       derivation: { operator: derivation.operator, operandKeys: [...derivation.operandKeys] },
     };
   }
+}
+
+/**
+ * CORE-04 — repeated readings of one value from one source collapse to one,
+ * deterministically, whatever order they arrived in: the most recent, then the
+ * lexicographically smallest reference. A duplicate can therefore neither
+ * multiply a fact, nor manufacture a conflict with itself, nor change the
+ * resolution digest by arriving in a different order.
+ */
+function deduplicated(observations: readonly ContextFactObservation[]): readonly ContextFactObservation[] {
+  const byIdentity = new Map<string, ContextFactObservation>();
+  for (const observation of observations) {
+    const identity = `${observation.sourceId}\u0000${typeof observation.value}\u0000${String(observation.value)}`;
+    const current = byIdentity.get(identity);
+    if (current === undefined || laterReading(observation, current)) byIdentity.set(identity, observation);
+  }
+  return [...byIdentity.values()].sort((left, right) => (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0));
+}
+
+function laterReading(candidate: ContextFactObservation, current: ContextFactObservation): boolean {
+  const candidateAt = Date.parse(candidate.observedAt);
+  const currentAt = Date.parse(current.observedAt);
+  if (candidateAt !== currentAt) return candidateAt > currentAt;
+  return (candidate.reference ?? '') < (current.reference ?? '');
+}
+
+/** A reading carries valid provenance when its reference is present and bounded and its digest recomputes over the whole reading. */
+function hasValidProvenance(observation: ContextFactObservation): boolean {
+  const { reference, provenanceDigest } = observation;
+  if (typeof reference !== 'string' || reference.length === 0 || reference.length > CONTEXT_FACT_STRING_MAX_LENGTH) return false;
+  if (typeof provenanceDigest !== 'string') return false;
+  return (
+    provenanceDigest ===
+    contextObservationProvenanceDigest({
+      key: observation.key,
+      value: observation.value,
+      sourceId: observation.sourceId,
+      observedAt: observation.observedAt,
+      reference,
+      ...(observation.organizationId !== undefined ? { organizationId: observation.organizationId } : {}),
+    })
+  );
+}
+
+function byRefusal(left: RefusedContextObservation, right: RefusedContextObservation): number {
+  if (left.key !== right.key) return left.key < right.key ? -1 : 1;
+  if (left.sourceId !== right.sourceId) return left.sourceId < right.sourceId ? -1 : 1;
+  return left.reason < right.reason ? -1 : left.reason > right.reason ? 1 : 0;
 }
 
 function uniqueSortedKeys(facts: readonly ContextFact[], status: ResolvedContextFactStatus): readonly string[] {

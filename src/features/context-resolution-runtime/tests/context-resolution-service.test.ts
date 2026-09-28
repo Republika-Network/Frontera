@@ -9,10 +9,10 @@ import { ContextConfigurationError } from '../services/context-resolution-errors
 
 const NOW = '2026-01-01T12:00:00.000Z';
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
-const CRM: ContextSource = { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative' };
-const REQUEST: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted' };
-const ATTESTOR: ContextSource = { id: 'ctx.src.attest.issuer', kind: 'signed_attestation', name: 'Issuer', trustClass: 'attested' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
+const CRM: ContextSource = { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
+const REQUEST: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
+const ATTESTOR: ContextSource = { id: 'ctx.src.attest.issuer', kind: 'signed_attestation', name: 'Issuer', trustClass: 'attested', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
 
 const SOURCES = [ERP, CRM, REQUEST, ATTESTOR];
 
@@ -285,7 +285,7 @@ describe('Context configuration is rejected at wiring time', () => {
 
   it('refuses a configured source claiming the reserved derived-source id', () => {
     assert.throws(
-      () => service(VENDOR_STATUS, [{ id: CONTEXT_DERIVED_SOURCE_ID, kind: 'erp', name: 'Impostor', trustClass: 'authoritative' }]),
+      () => service(VENDOR_STATUS, [{ id: CONTEXT_DERIVED_SOURCE_ID, kind: 'erp', name: 'Impostor', trustClass: 'authoritative', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] }]),
       ContextConfigurationError,
     );
   });
