@@ -145,6 +145,22 @@ anywhere — whether or not a capability is configured, and generalizing the
 two-name `organizationId` defence to a namespace. The attacks are written from
 the attacker's side in `src/kernel/__tests__/kernel-context-self-assertion.test.ts`.
 
+## CORE-04: the Trusted Context Boundary on the governed path
+
+Since CORE-04 this layer is composed into the governed-action Kernel, per
+effective Governance Profile, and `ContextResolutionService.classify` is the one
+admission point. A source carries **fact-class-scoped authority to attest**
+(`attests: [{factClass, maxAgeSeconds}]`, required, no wildcard), an optional
+organization scope and a provenance requirement; a reading is refused — and the
+refusal recorded — for an unconfigured source, an unattested fact class, another
+organization, an impossible or future time, a non-integer or malformed value, a
+missing attestation or a non-recomputing provenance digest. Duplicates collapse
+deterministically; the source's per-class bound is the canonical freshness
+owner. Policy reads admitted facts only, through typed `contextFact` /
+`restrictiveFact` predicates, and the admitted-context digest
+(`contextResolutionDigest`) binds the committed decision and the signed grant.
+See `docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md`.
+
 ## What this phase deliberately does not do
 
 - **No evidence extension.** `TARGET_AUTHORITY_CONTROL_ARCHITECTURE.md` §8 puts

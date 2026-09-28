@@ -152,7 +152,7 @@ which a caller can supply, select or edit a profile.
 | Typed declared parameters | **authority material** | `intent.parameters` (untrusted wire) → validated declared list → Kernel `action.governedParameters` → policy `governedParameters` → grant `scope.parameters` → exercise `parameters` |
 | Effective profile id/version/digest, action class, resource class | **authority material** | Kernel `action.semantics` → policy fields → grant axes + `semanticsFormat` → exercise |
 | Typed parameters for adapters | **execution material** — none in CORE-03 | §8 |
-| Profile `materialFacts` | declared references to future **trusted context** (CORE-04) | policy `metadata['aoc.context']`, unchanged |
+| Profile `materialFacts` | declared references to **trusted context** — admitted by CORE-04's Trusted Context Boundary since 2026-09-28 | policy `contextFact` predicates (admitted facts only); raw `metadata['aoc.context']` paths are refused (ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH) |
 | `assertedContext`, legacy `ActionDescriptor.parameters` | **metadata**, never authority | recognition metadata only |
 
 There is one canonical authority-relevant parameter model

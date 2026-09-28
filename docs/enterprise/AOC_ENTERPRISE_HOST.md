@@ -465,7 +465,9 @@ reviewed example: `examples/enterprise-host/governed-actions.example.json`.
 | `customerPrincipals[]` | `principalId`, `externalSubject {system, subjectId}`, `apiKeyEnv`. Each becomes a customer credential scoped to `AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID`, bound to the Kernel Authority actor carrying that external subject |
 | `administrators[]` | Optional (CTRL-01). `operatorId`, `apiKeyEnv`. Each becomes an **administrator** credential for `/api/admin/...` only — never an ordinary API key. Secret ≥ 32 characters. Absent: the administration API is not mounted. See `AOC_AUTHORITY_ADMINISTRATION_API.md` |
 | `monetary` | Optional. `assets [{assetId, scale}]`, `financialActions []` (P9) |
-| `governance` | Optional (CORE-03). `parameterDimensions [{id, type: integer\|token\|boolean, bound: exact\|maximum}]`, `actionClasses [{id, actions[]}]`, `resourceClasses [{id, resources[]}]`, `profiles [{profileId, version, owner, provenance {authoredBy, approvedBy}, actionClass, resourceClass, parameters [{dimension, required}], materialFacts [], relevantPolicies []}]`, `reservedContextKeys []` (trusted extensions of the reserved `assertedContext` keys). Validated completely at startup; anything malformed, undeclared or executable-looking refuses to boot (`HOST_GOVERNED_ACTIONS_FILE_INVALID`). Absent: nothing is classified and no governed action may carry `parameters`. See `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` |
+| `governance` | Optional (CORE-03). `parameterDimensions [{id, type: integer\|token\|boolean, bound: exact\|maximum}]`, `actionClasses [{id, actions[]}]`, `resourceClasses [{id, resources[]}]`, `profiles [{profileId, version, owner, provenance {authoredBy, approvedBy}, actionClass, resourceClass, parameters [{dimension, required}], materialFacts [], relevantPolicies [], restrictiveFacts? [], obligations? [{obligationType, blocking}]}]`, `reservedContextKeys []` (trusted extensions of the reserved `assertedContext` keys). Validated completely at startup; anything malformed, undeclared or executable-looking refuses to boot (`HOST_GOVERNED_ACTIONS_FILE_INVALID`). Absent: nothing is classified and no governed action may carry `parameters`. See `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` |
+| `trustedContext` | Required when a profile declares `materialFacts` or `restrictiveFacts` (CORE-04); otherwise omit it. `sources [{sourceId, kind, name, trustClass: authoritative\|attested, organizationId, attests [{factClass, maxAgeSeconds}]}]`, `maxFutureSkewSeconds` (0 … 300, default 0). The **source registry**: which source may attest which fact classes, for this organization only, and how long each reading stays fresh. A `request` kind, an `asserted` class, another organization, a missing freshness bound, an attestation of an undeclared fact class, or a declared fact no source attests refuses to boot. Every reading must carry a provenance reference and digest. The retrieval side — the **context provider** — and the **policy** are trusted in-process inputs (`bootEnterpriseHost({ contextProvider, policyPackProvider })`); without both, a file declaring facts refuses to start. See `docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md` |
+| `obligations` | Required when a profile declares `obligations` (CORE-04). `sources [{sourceId, kind, name, verificationClass: independent\|self_reported}]` — who may report discharges and what each report is worth. Reports are recorded durably (`AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH`, default `.data/obligation-discharges.sqlite`) only through the trusted in-process writer `enterprise.obligationDischarges.record(...)`; no HTTP route exists |
 | `genericHttpAdapters[]` | `EnterpriseGenericHttpExecutionAdapterOptions` (`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`), except `credential` is `{kind:'bearer', tokenEnv}` or `{kind:'header', name, valueEnv}` |
 | `routes[]` | `{action, adapterId}`. An action with no route reaches no adapter |
 
@@ -490,16 +492,19 @@ variable, never a value). A secret used by two credentials refuses
 | P8 authority event stream | optional by design (evidence never blocks) |
 | Generic HTTP adapter(s) behind the trusted registry, routed by the file | composed as configured |
 | P12 reconciliation | not wired: no resolution authority implementation ships |
-| Policy packs | not wired: no durable policy store (CORE-03 / NB-008) |
-| Obligations, trusted context | not wired: CORE-04 |
+| Policy packs | in-process only (`bootEnterpriseHost({ policyPackProvider })`, NB-008 writer); no durable policy store or file format; required when a profile declares facts |
+| Trusted context (CORE-04) | composed when the file declares `trustedContext`; the Trusted Context Boundary admits facts per effective profile (`posture.trustedContext`) |
+| Obligations (CORE-04) | composed when the file declares `obligations`; durable discharge store, required durable on the secure profile (`posture.obligations`) |
+| Exercise-time lineage revalidation (CORE-04) | composed with P7/P10: every action class, not only financial |
 | Durable approvals | not wired: `approval_required` stays withheld (CORE-05) |
 | Evidence bundle store | in-memory on every Host (ASSURE) |
 
 The authority binding every grant states is
 `HOST_ORGANIZATIONAL_AUTHORITY_BINDING` (`organizational-authority`): the Host
 composes no mandate or representative-authority window. Exercise-time lineage
-is revalidated for financial actions (P10); for non-financial actions the
-bound is the grant lifetime, at most one hour, until CORE-04.
+is revalidated for every action class: financial actions through P10's
+monetary authority, and — since CORE-04 — non-financial actions through the
+authority chain for the grant's action and resource.
 
 ### Refusal codes
 
@@ -545,9 +550,10 @@ store.
   `governedActions`, `authorityStore`
   (`authenticated-durable`/`unauthenticated`/`not-composed`),
   `kernelAuthority`, `emergencyControl`, `exerciseControls`, a count of
-  execution adapters, and `authorityAdministration` (`enabled` /
-  `not-configured`, CTRL-01). No secret, key, path, operator or adapter
-  identity.
+  execution adapters, `authorityAdministration` (`enabled` /
+  `not-configured`, CTRL-01), `trustedContext` (`composed` / `not-configured`,
+  CORE-04) and `obligations` (`durable` / `ephemeral` / `not-configured`,
+  CORE-04). No secret, key, path, operator, source or adapter identity.
 
 ### Shutdown
 
