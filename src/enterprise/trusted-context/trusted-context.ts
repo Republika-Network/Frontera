@@ -73,7 +73,12 @@ export interface TrustedContextSourceDefinition {
   readonly sourceId: string;
   readonly kind: ContextSourceKind;
   readonly name: string;
-  /** `authoritative` (read directly from a system of record) or `attested` (a verified signed attestation). Never `asserted`. */
+  /**
+   * `authoritative` — read directly from a configured system of record. The
+   * only class a Host source may carry: `attested` requires per-reading
+   * evidence verification that the Host does not compose (CORE-04 review), and
+   * is refused at startup. Never `asserted`.
+   */
   readonly trustClass: 'authoritative' | 'attested';
   /** The organization this source attests for. Must be the one this Host serves. */
   readonly organizationId: string;
@@ -180,7 +185,14 @@ function buildContextSources(configuration: unknown, organizationId: string, dec
       invalid(`${where}.kind must be a declared context source kind other than 'request' — on the governed path the requester is never a context source.`);
     }
     const trustClass = entry['trustClass'];
-    if (trustClass !== 'authoritative' && trustClass !== 'attested') invalid(`${where}.trustClass must be 'authoritative' or 'attested'.`);
+    // CORE-04 review: `attested` means evidence *verified* for each reading.
+    // The Host composes no attestation verifier, so it cannot honour the
+    // class, and an attestation reference alone is an opaque string — a
+    // source configured as `attested` is refused, never quietly accepted.
+    if (trustClass === 'attested') {
+      invalid(`${where}.trustClass 'attested' requires an attestation verifier, and this Host composes none; configure the source as 'authoritative' (read directly from a configured system of record).`);
+    }
+    if (trustClass !== 'authoritative') invalid(`${where}.trustClass must be 'authoritative'.`);
     const sourceOrganization = text(entry['organizationId'], `${where}.organizationId`);
     if (sourceOrganization !== organizationId) {
       invalid(`${where} is scoped to organization '${sourceOrganization}', and this Host serves one organization only; a source for another organization is never authoritative here.`);

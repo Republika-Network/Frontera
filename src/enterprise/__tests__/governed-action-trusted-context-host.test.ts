@@ -354,6 +354,12 @@ describe('CORE-04 §66 / §67 / §101 — startup: no default trust, no fallback
     await refusesToBoot(governedFile({ trustedContext: { sources, maxFutureSkewSeconds: 3600 } }), true, true, 'GOVERNED_ACTION_TRUSTED_CONTEXT_INVALID');
   });
 
+  it('CORE-04 review: refuses an `attested` source — the Host composes no attestation verifier, and a reference alone is not attestation', async () => {
+    for (const kind of ['signed_attestation', 'erp']) {
+      await refusesToBoot(governedFile({ trustedContext: { sources: [{ ...sources[0], kind, trustClass: 'attested' }, ...sources.slice(1)] } }), true, true, 'GOVERNED_ACTION_TRUSTED_CONTEXT_INVALID');
+    }
+  });
+
   it('refuses facts declared with no context provider, or with no policy to decide with them — never healthy-and-proceeding', async () => {
     await assert.rejects(
       () => bootEnterpriseHost({ env: secureEnv(workspace.dir()), executionAdapters: [STUB_ADAPTER], policyPackProvider: policyPackProvider() }),

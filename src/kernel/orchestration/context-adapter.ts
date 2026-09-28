@@ -2,6 +2,7 @@ import {
   contextResolutionDigest,
   readContextFacts,
   unresolvedContextResolution,
+  type ContextAttestationVerifier,
   type ContextDeclaration,
   type ContextFactRead,
   type ContextFactValue,
@@ -49,6 +50,8 @@ export interface KernelContextResolutionOptions {
    * a declaration.
    */
   readonly resolveEffectiveProfile?: KernelEffectiveProfileResolver;
+  /** CORE-04 review — verifies an `attested` source's evidence. Absent, no reading of an `attested` source is admitted. */
+  readonly attestationVerifier?: ContextAttestationVerifier;
 }
 
 /** CORE-04 — one Governance Profile's context declaration. */
@@ -89,14 +92,15 @@ export class KernelContextCapability {
     assertEffectiveProfileResolver(options.profileDeclarations?.length ?? 0, options.resolveEffectiveProfile, 'Context requirements');
     this.resolveEffectiveProfile = options.resolveEffectiveProfile;
     this.provider = options.provider;
-    this.service = new ContextResolutionService({ sources: options.sources, declaration: options.declaration });
+    const attestation = options.attestationVerifier !== undefined ? { attestationVerifier: options.attestationVerifier } : {};
+    this.service = new ContextResolutionService({ sources: options.sources, declaration: options.declaration, ...attestation });
     this.requirements = options.declaration.requirements;
     const byProfile = new Map<string, KernelContextSelection>();
     for (const entry of options.profileDeclarations ?? []) {
       const key = profileKey(entry.profile);
       if (byProfile.has(key)) throw new TypeError(`Context is declared twice for Governance Profile ${key}.`);
       byProfile.set(key, {
-        service: new ContextResolutionService({ sources: options.sources, declaration: entry.declaration }),
+        service: new ContextResolutionService({ sources: options.sources, declaration: entry.declaration, ...attestation }),
         requirements: entry.declaration.requirements,
         profile: key,
       });
@@ -232,6 +236,7 @@ const REFUSAL_TO_REASON_CODE: Readonly<Record<ContextObservationRefusalReason, A
   organization_mismatch: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED,
   provenance_invalid: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID,
   attestation_missing: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID,
+  attestation_invalid: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID,
   future_dated: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_TIME_INVALID,
   observation_time_invalid: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_TIME_INVALID,
   value_malformed: AOC_KERNEL_REASON_CODES.CONTEXT_REQUIRED_FACT_MALFORMED,

@@ -85,4 +85,4 @@ export {
 } from './domain/index.js';
 
 export { ContextConfigurationError, ContextResolutionService, ContextSourceRegistry, createFailingContextResolver, createInMemoryContextResolver } from './services/index.js';
-export type { ContextResolutionServiceOptions } from './services/index.js';
+export type { ContextAttestationVerifier, ContextResolutionServiceOptions } from './services/index.js';

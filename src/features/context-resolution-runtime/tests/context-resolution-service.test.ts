@@ -82,13 +82,23 @@ describe('Context resolution — trust classification comes from configuration',
     assert.deepEqual(resolution.unresolved, ['vendor.status']);
   });
 
-  it('an attested source with its attestation reference produces an attested fact', () => {
+  it('an attestation reference alone confers nothing: with no attestation verifier the reading is refused, never attested (CORE-04 review)', () => {
     const resolution = service({ requirements: [{ key: 'vendor.status', minimumTrustClass: 'attested', required: false }] }).classify(
       [observation({ key: 'vendor.status', value: 'approved', sourceId: ATTESTOR.id, attestationRef: 'att-1' })],
       NOW,
     );
-    assert.equal(resolution.facts[0]?.trustClass, 'attested');
-    assert.equal(resolution.facts[0]?.attestationRef, 'att-1');
+    assert.deepEqual(resolution.facts, []);
+    assert.deepEqual(resolution.refused, [{ key: 'vendor.status', sourceId: ATTESTOR.id, reason: 'attestation_invalid' }]);
+  });
+
+  it('an attested source whose evidence the configured verifier accepts produces an attested fact', () => {
+    const verified = new ContextResolutionService({
+      sources: SOURCES,
+      declaration: { requirements: [{ key: 'vendor.status', minimumTrustClass: 'attested', required: false }] },
+      attestationVerifier: ({ source, observation: reading }) => source.id === ATTESTOR.id && reading.attestationRef === 'att-1',
+    }).classify([observation({ key: 'vendor.status', value: 'approved', sourceId: ATTESTOR.id, attestationRef: 'att-1' })], NOW);
+    assert.equal(verified.facts[0]?.trustClass, 'attested');
+    assert.equal(verified.facts[0]?.attestationRef, 'att-1');
   });
 
   it('an unparseable observation time is discarded rather than dated', () => {

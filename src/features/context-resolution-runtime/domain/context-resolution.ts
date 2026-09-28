@@ -16,7 +16,9 @@ import { DEFAULT_CONTEXT_ASSERTED_FACT_POLICY, type ContextAssertedFactPolicy } 
  * future_dated              the reading claims a time after the resolution instant, beyond the tolerated skew
  * observation_time_invalid  the reading's time is not a valid instant
  * provenance_invalid        the source requires provenance and the reading's is missing or does not recompute
- * attestation_missing       an attested source produced no attestation reference
+ * attestation_missing       an attested source produced no (or an empty) attestation reference
+ * attestation_invalid       an attested source's evidence was not verified: no attestation verifier is
+ *                           configured, or the configured verifier did not accept it (CORE-04 review)
  * value_malformed           the value is not an admissible fact value (e.g. a non-integer number)
  * ```
  */
@@ -28,6 +30,7 @@ export type ContextObservationRefusalReason =
   | 'observation_time_invalid'
   | 'provenance_invalid'
   | 'attestation_missing'
+  | 'attestation_invalid'
   | 'value_malformed';
 
 export const CONTEXT_OBSERVATION_REFUSAL_REASONS: readonly ContextObservationRefusalReason[] = [
@@ -38,6 +41,7 @@ export const CONTEXT_OBSERVATION_REFUSAL_REASONS: readonly ContextObservationRef
   'observation_time_invalid',
   'provenance_invalid',
   'attestation_missing',
+  'attestation_invalid',
   'value_malformed',
 ];
 

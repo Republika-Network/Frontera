@@ -28,7 +28,26 @@ import { ContextSourceRegistry } from './context-source-registry.js';
 export interface ContextResolutionServiceOptions {
   readonly sources: readonly ContextSource[];
   readonly declaration: ContextDeclaration;
+  /**
+   * CORE-04 review — the only thing that can make a reading `attested`.
+   *
+   * An attestation *reference* is an opaque string; carrying one proves
+   * nothing. A reading from an `attested` source is admitted only when this
+   * verifier — deterministic, synchronous, no network — accepts its evidence
+   * for exactly that source and reading. Absent, no reading of any `attested`
+   * source is admitted (`attestation_invalid`): the class is never conferred
+   * by presence alone.
+   */
+  readonly attestationVerifier?: ContextAttestationVerifier;
 }
+
+/**
+ * CORE-04 review — verifies an attested source's evidence for one reading:
+ * issuer, key, artifact and signature as the deployment defines them. Returns
+ * `true` only for evidence it verified; anything else, including a throw, is
+ * refusal.
+ */
+export type ContextAttestationVerifier = (input: { readonly source: ContextSource; readonly observation: ContextFactObservation }) => boolean;
 
 /**
  * Turns a resolver's raw observations into a classified, stably-ordered
@@ -54,11 +73,14 @@ export class ContextResolutionService {
   private readonly declared: readonly string[];
   private readonly maxFutureSkewSeconds: number;
 
+  private readonly attestationVerifier: ContextAttestationVerifier | undefined;
+
   constructor(options: ContextResolutionServiceOptions) {
     const violations = validateContextDeclaration(options.declaration);
     if (violations.length > 0) throw new ContextConfigurationError('Context declaration is invalid.', violations);
 
     this.registry = new ContextSourceRegistry(options.sources);
+    this.attestationVerifier = options.attestationVerifier;
     this.declaration = options.declaration;
     this.derivations = options.declaration.derivations ?? [];
     this.maxFutureSkewSeconds = options.declaration.maxFutureSkewSeconds ?? 0;
@@ -212,9 +234,23 @@ export class ContextResolutionService {
     if (typeof observation.observedAt !== 'string' || Number.isNaN(Date.parse(observation.observedAt))) return 'observation_time_invalid';
     if (isFutureDatedAt(observation.observedAt, at, this.maxFutureSkewSeconds)) return 'future_dated';
     if (!isAdmissibleContextFactValue(observation.value)) return 'value_malformed';
-    if (source.trustClass === 'attested' && observation.attestationRef === undefined) return 'attestation_missing';
+    if (source.trustClass === 'attested') {
+      const reference = observation.attestationRef;
+      if (typeof reference !== 'string' || reference.trim().length === 0) return 'attestation_missing';
+      if (!this.attestationVerified(source, observation)) return 'attestation_invalid';
+    }
     if (source.provenance === 'reference-digest' && !hasValidProvenance(observation)) return 'provenance_invalid';
     return undefined;
+  }
+
+  /** Only the configured verifier's explicit `true` is verification; no verifier, `false`, a non-boolean or a throw is not. */
+  private attestationVerified(source: ContextSource, observation: ContextFactObservation): boolean {
+    if (this.attestationVerifier === undefined) return false;
+    try {
+      return this.attestationVerifier({ source, observation }) === true;
+    } catch {
+      return false;
+    }
   }
 
   /** Among observations that agree on the value, the one with the strongest claim: highest trust class, then most recently observed, then lowest source id. Total and stable. */
