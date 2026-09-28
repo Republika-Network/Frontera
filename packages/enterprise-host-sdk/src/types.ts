@@ -109,6 +109,15 @@ export interface GovernedActionIntent {
   readonly resource: string;
   readonly counterparty?: string;
   readonly amount?: GovernedActionAmount;
+  /**
+   * Typed values for the parameter dimensions the Host's Governance Profile
+   * declares for this action and resource, keyed by exact dimension id: an
+   * integer as a JSON number, a token as a string, a boolean as a boolean. No
+   * coercion. An action no profile governs may carry none.
+   */
+  readonly parameters?: Readonly<Record<string, number | string | boolean>>;
+  /** The profile you expect to govern this action. Pins, never selects: a mismatch is refused. */
+  readonly governanceProfile?: { readonly id: string; readonly version: number };
   /** Evidence the caller *asserts* (e.g. a passport id). The Host verifies it; submitting it does not make it trusted. */
   readonly assertedContext?: Readonly<Record<string, unknown>>;
   readonly correlationId?: string;

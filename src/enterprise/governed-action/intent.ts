@@ -1,5 +1,15 @@
+import {
+  GOVERNED_PARAMETERS_MAX,
+  compareDimensionIds,
+  isGovernanceProfileVersion,
+  isSemanticIdentifier,
+  parseGovernedParameterValue,
+  type DeclaredGovernedParameter,
+  type GovernedActionSemantics,
+} from '../../features/governed-parameter-runtime/index.js';
 import { isPositiveMonetaryAmount, parseMonetaryAmount, type MonetaryAmount } from '../../features/monetary-runtime/index.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/index.js';
+import type { GovernanceProfileRegistry, ResolvedGovernanceProfile } from '../governance-profile/index.js';
 import type { ClassifiedGovernedActionIntent, GovernedActionMonetaryTrust } from './contracts.js';
 
 /**
@@ -24,12 +34,21 @@ import type { ClassifiedGovernedActionIntent, GovernedActionMonetaryTrust } from
  * amount — decimal text, strictly positive, in an asset the host's registry
  * recognizes, within that asset's trusted scale — and a non-financial action
  * must carry none.
+ *
+ * **Semantically classified by trusted configuration, never by the caller
+ * (CORE-03).** The trusted Governance Profile registry resolves `action` ×
+ * `resource` to an action class, a resource class and one versioned profile.
+ * Typed `parameters` are accepted only for dimensions that profile declares,
+ * parsed strictly by the dimension's declared type, and required ones must be
+ * present; an action no profile governs may carry no parameters and may expect
+ * no profile. A half-classified pair, or a classified pair no profile governs,
+ * is refused — never quietly evaluated as if unclassified.
  */
 export type GovernedActionIntentValidation =
   | { readonly valid: true; readonly intent: ClassifiedGovernedActionIntent }
   | { readonly valid: false; readonly violations: readonly string[] };
 
-const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'assertedContext', 'correlationId', 'idempotencyKey']);
+const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'parameters', 'governanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey']);
 
 /**
  * Keys an asserted context may not carry at its top level.
@@ -88,6 +107,13 @@ export const GOVERNED_ACTION_RESERVED_CONTEXT_KEYS: readonly string[] = [
   // top level (undeclared keys are refused already) and not here.
   'financial',
   'actionClass',
+  // CORE-03: the semantic classification and the typed parameters are the
+  // trusted resolver's and the declared `parameters` field's — never a context
+  // claim. (Declared dimension ids themselves are refused here too, whenever a
+  // registry declares them; see `validateGovernedActionIntent`.)
+  'resourceClass',
+  'governanceProfile',
+  'governedParameters',
   'classification',
   'scale',
   'assetScale',
@@ -207,14 +233,74 @@ const AMOUNT_VIOLATION_MESSAGES = {
   MONETARY_SCALE_EXCEEDED: 'amount.value states more fractional digits than amount.currency allows; it is refused, never rounded.',
 } as const;
 
-export function validateGovernedActionIntent(raw: unknown, trust: GovernedActionMonetaryTrust): GovernedActionIntentValidation {
+/** The resolution an absent registry gives: nothing is classified, which is the pre-CORE-03 world exactly. */
+const UNCLASSIFIED = { kind: 'unclassified' } as const;
+
+/**
+ * The declared, typed parameter list for one resolved profile, or `undefined`
+ * when there is nothing to carry. Every violation is reported; nothing is
+ * coerced, defaulted or dropped silently.
+ */
+function validateParameters(raw: unknown, profile: ResolvedGovernanceProfile, governance: GovernanceProfileRegistry, violations: string[]): readonly DeclaredGovernedParameter[] | undefined {
+  if (raw !== undefined && !isPlainObject(raw)) {
+    violations.push('parameters must be a plain object keyed by declared dimension id.');
+    return undefined;
+  }
+  const supplied: Record<string, unknown> = raw ?? {};
+  const keys = Object.keys(supplied);
+  if (keys.length > GOVERNED_PARAMETERS_MAX) {
+    violations.push(`parameters may state at most ${GOVERNED_PARAMETERS_MAX} dimensions.`);
+    return undefined;
+  }
+  const governed = new Set(profile.definition.parameters.map((parameter) => parameter.dimension));
+  // Exact names only. A differently-cased key is a different, undeclared name —
+  // never a second spelling of a declared one.
+  const undeclared = keys.filter((key) => !governed.has(key));
+  if (undeclared.length > 0) violations.push(`parameters carries dimensions the governing profile does not declare: ${undeclared.join(', ')}.`);
+
+  const declared: DeclaredGovernedParameter[] = [];
+  for (const parameter of profile.definition.parameters) {
+    if (!Object.prototype.hasOwnProperty.call(supplied, parameter.dimension)) {
+      // Absent is its own state — not null, not zero, not empty, not false.
+      if (parameter.required) violations.push(`parameters.${parameter.dimension} is required by the governing profile.`);
+      continue;
+    }
+    const dimension = governance.dimensions.get(parameter.dimension);
+    if (dimension === undefined) {
+      // Unreachable: the registry refused a profile naming an undeclared dimension.
+      violations.push(`parameters.${parameter.dimension} has no trusted declaration.`);
+      continue;
+    }
+    const parsed = parseGovernedParameterValue(dimension.type, supplied[parameter.dimension]);
+    if (!parsed.valid) {
+      violations.push(`parameters.${parameter.dimension} must be a ${dimension.type} (${parsed.violation}).`);
+      continue;
+    }
+    declared.push({ dimension: parameter.dimension, bound: dimension.bound, ...parsed.value } as DeclaredGovernedParameter);
+  }
+  declared.sort((left, right) => compareDimensionIds(left.dimension, right.dimension));
+  return declared.length > 0 ? Object.freeze(declared.map((entry) => Object.freeze(entry))) : undefined;
+}
+
+/** A caller's `{ id, version }` expectation against the profile the trusted resolver chose. Pinning is allowed; choosing is not. */
+function validateProfileExpectation(raw: unknown, profile: ResolvedGovernanceProfile, violations: string[]): void {
+  if (!isPlainObject(raw) || Object.keys(raw).some((key) => key !== 'id' && key !== 'version') || !isSemanticIdentifier(raw['id']) || !isGovernanceProfileVersion(raw['version'])) {
+    violations.push('governanceProfile must be exactly { id, version }: a semantic identifier and a positive integer.');
+    return;
+  }
+  if (raw['id'] !== profile.reference.id || raw['version'] !== profile.reference.version) {
+    violations.push('governanceProfile does not match the profile trusted configuration resolves for this action and resource; it can be pinned, never chosen.');
+  }
+}
+
+export function validateGovernedActionIntent(raw: unknown, trust: GovernedActionMonetaryTrust, governance?: GovernanceProfileRegistry): GovernedActionIntentValidation {
   if (!isPlainObject(raw)) return { valid: false, violations: ['The intent must be a plain object.'] };
 
   const violations: string[] = [];
   const undeclared = Object.keys(raw).filter((key) => !DECLARED_KEYS.has(key));
   if (undeclared.length > 0) violations.push(`The intent carries undeclared properties: ${undeclared.join(', ')}.`);
 
-  const { action, resource, counterparty, amount, assertedContext, correlationId, idempotencyKey } = raw;
+  const { action, resource, counterparty, amount, parameters, governanceProfile, assertedContext, correlationId, idempotencyKey } = raw;
 
   if (!isCanonicalCustomerIdentifier(action)) violations.push('action must be a canonical identifier.');
   if (!isCanonicalCustomerIdentifier(resource)) violations.push('resource must be a canonical identifier.');
@@ -231,12 +317,32 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
   if (actionClass === 'financial' && canonicalAmount !== undefined && !isPositiveMonetaryAmount(canonicalAmount)) violations.push('amount.value must be greater than zero.');
   if (actionClass === 'non-financial' && amount !== undefined) violations.push('This action does not move money and may not carry an amount.');
 
+  // CORE-03: the trusted semantic classification. Read only once both axes are
+  // known canonical identifiers, and only from the host's registry.
+  let semantics: GovernedActionSemantics | undefined;
+  let declaredParameters: readonly DeclaredGovernedParameter[] | undefined;
+  if (isCanonicalCustomerIdentifier(action) && isCanonicalCustomerIdentifier(resource)) {
+    const resolution = governance?.resolve(action, resource) ?? UNCLASSIFIED;
+    if (resolution.kind === 'refused') {
+      violations.push(`This action and resource are not governed by any trusted Governance Profile (${resolution.reason}).`);
+    } else if (resolution.kind === 'unclassified') {
+      if (parameters !== undefined) violations.push('No Governance Profile governs this action, so it may carry no parameters.');
+      if (governanceProfile !== undefined) violations.push('No Governance Profile governs this action, so no governanceProfile expectation can be met.');
+    } else if (governance !== undefined) {
+      if (governanceProfile !== undefined) validateProfileExpectation(governanceProfile, resolution.profile, violations);
+      declaredParameters = validateParameters(parameters, resolution.profile, governance, violations);
+      semantics = resolution.semantics;
+    }
+  }
+
   let canonicalContext: Readonly<Record<string, unknown>> | undefined;
   if (assertedContext !== undefined) {
     if (!isPlainObject(assertedContext) || !isContextValue(assertedContext, 0)) {
       violations.push(`assertedContext must be a plain JSON object of at most ${MAX_CONTEXT_KEYS} keys per level and depth ${MAX_CONTEXT_DEPTH}.`);
     } else {
-      const reserved = Object.keys(assertedContext).filter((key) => GOVERNED_ACTION_RESERVED_CONTEXT_KEYS.includes(key));
+      // Declared dimension ids are reserved too, in any case: one canonical
+      // value per dimension, and it is the declared parameter's.
+      const reserved = Object.keys(assertedContext).filter((key) => GOVERNED_ACTION_RESERVED_CONTEXT_KEYS.includes(key) || governance?.shadowsDeclaredDimension(key) === true);
       if (reserved.length > 0) violations.push(`assertedContext may not carry identity or authority keys: ${reserved.join(', ')}.`);
       else canonicalContext = copyContextValue(assertedContext) as Readonly<Record<string, unknown>>;
     }
@@ -249,6 +355,8 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
     resource: resource as string,
     idempotencyKey: idempotencyKey as string,
     ...(counterparty !== undefined ? { counterparty: counterparty as string } : {}),
+    ...(semantics !== undefined ? { semantics } : {}),
+    ...(declaredParameters !== undefined ? { parameters: declaredParameters } : {}),
     ...(canonicalContext !== undefined ? { assertedContext: canonicalContext } : {}),
     ...(correlationId !== undefined ? { correlationId: correlationId as string } : {}),
   };

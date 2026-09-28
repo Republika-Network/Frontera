@@ -12,7 +12,9 @@ import {
   type ExecutionOutcome,
   type GrantExerciseRequest,
 } from '../../features/execution-runtime/index.js';
+import { formatGovernanceProfileReference, type GovernedParameter } from '../../features/governed-parameter-runtime/index.js';
 import type { AuthorityEventRecorder } from '../authority-event-stream/recorder.js';
+import type { GovernanceProfileRegistry } from '../governance-profile/index.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import type { EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import { isExecutionGovernanceError, type AuthorityControlledExecutionService } from '../execution-governance/index.js';
@@ -160,6 +162,15 @@ export interface GovernedActionOrchestratorOptions {
    * under and the class its exercise is controlled under are one answer.
    */
   readonly monetary: GovernedActionMonetaryTrust;
+  /**
+   * CORE-03 — the trusted Governance Profile registry every intent is
+   * semantically classified against: declared parameter dimensions, action
+   * and resource classes, and versioned profiles. Optional: absent, nothing is
+   * classified and every intent is governed exactly as before CORE-03 (and may
+   * carry no parameters). Built once at composition and frozen; no request can
+   * extend, select or replace it.
+   */
+  readonly governance?: GovernanceProfileRegistry;
   readonly now: () => string;
   readonly enterpriseContext: () => GovernanceEnterpriseContext;
   readonly events: {
@@ -389,6 +400,13 @@ function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: 
     ...(request.action.counterpartyId !== undefined ? { counterparty: request.action.counterpartyId } : {}),
     ...(request.organization !== undefined ? { organization: request.organization.id } : {}),
     ...(request.action.amount !== undefined && request.action.currency !== undefined ? { amount: { value: request.action.amount, unit: request.action.currency } } : {}),
+    // CORE-03: the profile and typed parameters the *committed* decision was
+    // made on — the grant bounds them, and the exercise gate proves this
+    // attempt inside those bounds. Never re-read from the caller.
+    ...(request.action.semantics !== undefined ? { governanceProfile: formatGovernanceProfileReference(request.action.semantics.governanceProfile) } : {}),
+    ...(request.action.governedParameters !== undefined
+      ? { parameters: request.action.governedParameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) }
+      : {}),
     correlation: grant.correlation,
     executionId,
   };
@@ -434,6 +452,10 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       typeof executionResolution.reader?.read !== 'function')
   ) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Execution reconciliation, when enabled, requires a resolution-authority binder and a resolution reader.');
+  }
+  const governance = options.governance;
+  if (governance !== undefined && (governance === null || typeof governance !== 'object' || typeof governance.resolve !== 'function' || typeof governance.shadowsDeclaredDimension !== 'function')) {
+    throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed-action semantics, when supplied, must be a trusted Governance Profile registry.');
   }
   const hostRevalidateSource = options.revalidateSource;
   const emergencyControl = options.emergencyControl;
@@ -556,7 +578,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // Identity: trusted, read, never widened. Intent: untrusted, validated closed.
       const scope = boundScopeOf(identity, servedOrganizationId);
       if (scope === undefined) return result({ status: 'rejected', reasonCodes: [R.GOVERNED_ACTION_IDENTITY_INVALID] });
-      const validation = validateGovernedActionIntent(rawIntent, monetary);
+      const validation = validateGovernedActionIntent(rawIntent, monetary, governance);
       if (!validation.valid) return result({ status: 'rejected', reasonCodes: [R.GOVERNED_ACTION_INTENT_INVALID] });
       const intent = validation.intent;
 

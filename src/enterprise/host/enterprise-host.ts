@@ -122,6 +122,7 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
       required: true,
     },
     monetary: governed.monetary,
+    ...(governed.governance !== undefined ? { governance: governed.governance } : {}),
     emergencyControl: { enabled: true },
   };
 }

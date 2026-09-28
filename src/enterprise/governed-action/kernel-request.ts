@@ -53,6 +53,10 @@ export function buildGovernedActionKernelRequest(input: {
       ...(intent.counterparty !== undefined ? { counterpartyId: intent.counterparty } : {}),
       // Canonical decimal text and asset, exactly as the monetary boundary produced them.
       ...(intent.amount !== undefined ? { amount: intent.amount.value, currency: intent.amount.unit } : {}),
+      // CORE-03: the trusted classification and the declared, typed parameters —
+      // both digested with the request into the committed decision.
+      ...(intent.semantics !== undefined ? { semantics: intent.semantics } : {}),
+      ...(intent.parameters !== undefined ? { governedParameters: intent.parameters } : {}),
     },
     ...(intent.assertedContext !== undefined ? { context: intent.assertedContext } : {}),
     requestedAt: input.requestedAt,

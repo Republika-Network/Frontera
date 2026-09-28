@@ -60,6 +60,7 @@ import type { ExerciseControlLedgerPort } from '../../features/exercise-control-
 import { createFinancialActionClassifier, createMonetaryAssetRegistry, type MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
 import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
+import { createGovernanceProfileRegistry, type GovernanceConfiguration, type GovernanceProfileRegistry } from '../governance-profile/index.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
 import { createAuthorityEventStreamModule } from '../modules/authority-event-stream-module.js';
 import { createAuthorityEventProjector, type AuthorityEventProjector } from '../authority-event-stream/projector.js';
@@ -254,6 +255,21 @@ export interface CreateEnterpriseOptions {
    * `createEnterprise` with a `MonetaryConfigurationError`.
    */
   readonly monetary?: EnterpriseMonetaryOptions;
+  /**
+   * CORE-03 — the governed-action semantic model: declared parameter
+   * dimensions, domain-declared action and resource classes over the
+   * envelope's existing `action` / `resource` identifiers, and versioned,
+   * declarative Governance Profiles for each Action × Resource combination.
+   * Trusted host configuration; nothing a caller sends can extend, select or
+   * contradict it. See `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md`.
+   *
+   * Built once, here, into one frozen registry handed to the governed-action
+   * boundary. **Omitted, nothing is classified**: every governed intent is
+   * evaluated exactly as before CORE-03 and may carry no typed parameters.
+   * Malformed configuration fails `createEnterprise` with a
+   * `GovernanceProfileConfigurationError`.
+   */
+  readonly governance?: GovernanceConfiguration;
   /**
    * Opt-in durable emergency control: the operational safety interlock that
    * lets an operator stop execution on the bounded-grant path.
@@ -1180,6 +1196,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     assets: createMonetaryAssetRegistry(options.monetary?.assets ?? []),
     actionClassifier: createFinancialActionClassifier({ financialActions: options.monetary?.financialActions ?? [] }),
   });
+  // CORE-03: the trusted semantic configuration, built and validated with the
+  // same timing and for the same reason — before any store opens. Absent, it
+  // classifies nothing, which is the pre-CORE-03 behaviour exactly.
+  const governance: GovernanceProfileRegistry = createGovernanceProfileRegistry(options.governance);
 
   const governedActionOptions = options.governedActionOrchestrator?.enabled === true ? options.governedActionOrchestrator : undefined;
   if (governedActionOptions !== undefined) {
@@ -1700,6 +1720,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       grantPolicy: governedActionOptions.grantPolicy,
       // P9: the same registry and classifier instances the exercise gate holds.
       monetary,
+      // CORE-03: the one frozen semantic registry.
+      governance,
       now: kernelProviders.clock.now,
       enterpriseContext,
       events: { enabled: configuration.eventPublishing.enabled, publisher: eventPublisher, nextId: eventIdGenerator.nextId },
