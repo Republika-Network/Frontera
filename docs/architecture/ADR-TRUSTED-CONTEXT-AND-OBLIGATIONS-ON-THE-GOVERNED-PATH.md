@@ -47,8 +47,9 @@ Admission, in order, per reading (each failure is a recorded refusal, never a fa
 | The source's organization, and any organization the reading claims, is the request's | `organization_mismatch` |
 | The observation time is a valid instant, not after the resolution instant beyond declared skew (default 0, max 300 s) | `observation_time_invalid`, `future_dated` |
 | The value is admissible (boolean, **safe integer**, bounded non-empty string) | `value_malformed` |
-| An `attested` source produced an attestation reference | `attestation_missing` |
-| A `reference-digest` source's reading carries a reference and a provenance digest that recomputes over the whole reading | `provenance_invalid` |
+| An `attested` source produced a non-empty attestation reference | `attestation_missing` |
+| …and the configured attestation verifier accepted its evidence for exactly this source and reading (no verifier → refused) | `attestation_invalid` |
+| A `reference-digest` source's reading carries a reference and a provenance digest (`frontera:context-observation:v2`) that recomputes over the whole reading — every authority-affecting field it states, including its own `maxAgeSeconds` and `attestationRef` | `provenance_invalid` |
 
 Then: repeated identical readings collapse deterministically; readings that
 disagree are `conflicted` (never last-writer-wins); freshness is decided against
@@ -59,7 +60,8 @@ the strictest applicable bound; the declared minimum trust class is applied.
 A `ContextSource` now carries `attests: [{factClass, maxAgeSeconds}]` —
 **required and exhaustive**, no wildcard — an optional `organizationId`, and a
 `provenance` requirement. On the governed path (`composeGovernedTrust`) every
-source must be `authoritative` or `attested` (never `request`/`asserted`), must be
+source must be `authoritative` (never `request`/`asserted`; `attested` is refused
+on the Host — §2.11), must be
 scoped to the served organization, must bound the freshness of every class it
 attests, may attest only classes some profile declares, and is composed with
 `provenance: 'reference-digest'`. Every declared fact class must have at least
@@ -74,7 +76,9 @@ input to deterministic organization policy, read through a typed predicate.
 
 The source's per-class `maxAgeSeconds` is the canonical owner. A requirement's
 bound and a reading's own bound may only **tighten** it (stricter wins; a
-malformed self-stated bound is treated as already stale). The boundary is
+malformed self-stated bound is treated as already stale). A reading's own bound
+is inside its provenance digest (§2.11), so it cannot be stripped, raised or
+added in transit — only its producer states it. The boundary is
 exclusive: a reading exactly `maxAgeSeconds` old is stale. A stale fact is a
 `stale` read — never satisfied, its value never offered to policy.
 
@@ -112,7 +116,8 @@ Policy receives admitted facts only, in two typed lists (`contextFacts`,
 `restrictiveFacts`) with a single producer (the Kernel, from `satisfied` reads).
 A missing, stale, conflicted, refused or under-trusted fact is **absent** — never
 `false`, never a default. Raw `metadata` paths into `aoc.context` / `aoc.obligations`
-are refused at validation. A proposed parameter may be compared with an admitted
+/ `aoc.grant` are refused at validation (any case), and a path is parsed by one
+grammar shared with the evaluator, so no alias exists (§2.11). A proposed parameter may be compared with an admitted
 fact (`valueFrom: {field: 'contextFact', factClass}`) — neither value overwrites
 the other; an unadmitted comparand never matches.
 
@@ -262,6 +267,48 @@ sources. The secure profile refuses ephemeral obligations. `/health` posture add
 (`durable`/`ephemeral`/`not-configured`). Compatibility: profiles that declare no
 facts and no obligations need none of this and compose exactly as before.
 
+### 2.11 Review hardening (Codex review of PR #150)
+
+Six findings, each fixed at the boundary it concerned:
+
+- **Effective profile trust.** The profile a request's context requirements
+  and obligations are drawn from is resolved from its action × resource by the
+  trusted CORE-03 registry (`effective-profile.ts`), never read from
+  `request.action.semantics`, which a direct Kernel caller (e.g. ACE
+  `authorize()`) controls. The claim may only agree: a bogus id, another
+  version or digest, another configured profile, or a claim on an unclassified
+  action is refused — context denies `CONTEXT_PROFILE_UNTRUSTED` without
+  reading any source, and obligations stand under an undischargeable blocking
+  obligation without consulting the provider. There is no fallback to the
+  deployment-wide declaration. Profile-keyed declarations without a trusted
+  resolver are refused at construction.
+- **Attestation semantics.** `attested` means evidence *verified* for the
+  reading by a configured, deterministic `ContextAttestationVerifier`. A
+  reference is an opaque string and confers nothing: empty →
+  `attestation_missing`; no verifier, a rejection or a throw →
+  `attestation_invalid`. The Host composes no verifier, so it refuses
+  `trustClass: 'attested'` sources at startup; governed-path sources are
+  `authoritative`. A profile needing a genuinely attested fact therefore
+  cannot be satisfied on the Host today — it fails closed.
+- **Provenance freshness materiality.** The provenance digest (v2) covers every
+  authority-affecting field a reading states — `key`, `value`, `sourceId`,
+  `observedAt`, `reference`, `organizationId`, `maxAgeSeconds`,
+  `attestationRef`. An intermediary can no longer extend a producer's
+  intended freshness window; a bound that cannot be canonicalized is
+  `provenance_invalid`.
+- **Metadata paths.** One parser (`metadata-path.ts`) for validation and
+  evaluation; empty segments make a path invalid (`INVALID_METADATA_PATH`);
+  the reserved check runs on the canonical path in any case; the evaluator
+  also reads nothing reserved and only own properties.
+- **Fact comparands.** A `valueFrom` predicate is validated as a comparand
+  (plain object, exactly `{field: 'contextFact', factClass}`; equality or
+  ordering; ordering only on integer or monetary fields), never as a missing
+  literal, and never dereferenced before its shape is checked. Ordering stays
+  exact and uncoerced: an integer never orders against a boolean or text, and
+  a monetary amount only against canonical decimal text — an incomparable pair
+  does not match (residual: a deny rule phrased over an incomparable pair does
+  not fire; the fact types are the configured sources').
+
 ## 3. Failure model
 
 | Situation | Outcome |
@@ -294,7 +341,10 @@ annotates and does not relabel.
 | Fact-class confusion (material vs signal, case) | Mitigated | separate predicate families; case-fold uniqueness |
 | Stale fact replay | Mitigated | per-class freshness; grant capped at `validUntil` |
 | Future timestamp | Mitigated | `future_dated` |
-| Provenance tampering in transit | Mitigated (integrity) | provenance digest recompute; **authenticity residual** (a connector-level attacker can recompute) |
+| Provenance tampering in transit (incl. a producer's freshness bound) | Mitigated (integrity) | v2 provenance digest over every authority-affecting field; **authenticity residual** (a connector-level attacker can recompute) |
+| Caller-selected (permissive or bogus) Governance Profile | Mitigated | trusted effective-profile resolution; `CONTEXT_PROFILE_UNTRUSTED`; undischargeable obligation (§2.11) |
+| Opaque attestation reference as trust | Mitigated | verifier-only `attested`; Host refuses `attested` sources (§2.11) |
+| Reserved metadata read through a path alias | Mitigated | one path grammar, empty segments refused, evaluator-side refusal (§2.11) |
 | Conflicting trusted facts | Mitigated | `conflicted` → deny |
 | Duplicate facts | Mitigated | deterministic de-duplication; digest order-independent |
 | Reserved-key collision / nested smuggling | Mitigated | reservation + single producer |
@@ -330,6 +380,9 @@ annotates and does not relabel.
   grant is issued from it, e.g. its status or `validUntil`); bounded by the
   Host grant lifetime and every issuance/exercise gate, and owned by ASSURE-02.
 - No exercise-time re-fetch of facts (by design); the window is `maxAgeSeconds`.
+- No attestation verifier ships: `attested` sources are refused on the Host, so
+  genuinely attested facts are unavailable there (owner: ASSURE-04 / INTEL-05,
+  with a signed-evidence format).
 - Profile obligations have no own deadline; the grant lifetime bounds a withheld decision.
 - Policy packs have no durable store or file format on the Host; policy is in-process composition (CORE-08 / CTRL-02).
 - The shipped launcher composes no context provider and no policy: a file whose profiles declare facts refuses to start until an embedder supplies both (connectors: INTEL-04 / LDR).
