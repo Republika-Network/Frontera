@@ -10,6 +10,7 @@ import {
 } from '../../features/obligation-runtime/index.js';
 import { obligationIsSatisfied, obligationIsTerminal, obligationWithholdsExercise } from '../../features/obligation-runtime/index.js';
 import type { ObligationDischargeProvider } from '../contracts/ports.js';
+import { assertEffectiveProfileResolver, selectEffectiveProfile, type KernelEffectiveProfileResolver } from './effective-profile.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type {
   DisregardedObligationObservationEvaluation,
@@ -40,7 +41,22 @@ export interface KernelObligationOptions {
    * `declaration`. Built by trusted composition only.
    */
   readonly profileDeclarations?: readonly KernelProfileObligationDeclaration[];
+  /**
+   * CORE-04 — the trusted resolver of a request's **effective** profile from
+   * its action and resource (`effective-profile.ts`). Required whenever
+   * `profileDeclarations` is non-empty: a request's own semantics never select
+   * the obligations it stands under.
+   */
+  readonly resolveEffectiveProfile?: KernelEffectiveProfileResolver;
 }
+
+/**
+ * CORE-04 — the one obligation a request stands under when its effective
+ * profile cannot be established from trusted configuration: blocking, and
+ * never dischargeable — the provider is never consulted for it, so no report
+ * of any source can satisfy it.
+ */
+export const EFFECTIVE_PROFILE_UNTRUSTED_OBLIGATION = 'frontera.effectiveProfile.untrusted';
 
 /** CORE-04 — one Governance Profile's obligation declaration. */
 export interface KernelProfileObligationDeclaration {
@@ -52,6 +68,8 @@ export interface KernelProfileObligationDeclaration {
 export interface KernelObligationSelection {
   readonly service: ObligationLifecycleService;
   readonly requirements: readonly ObligationRequirement[];
+  /** The effective profile could not be established: every blocking obligation stays unsatisfied, and the provider is not consulted. */
+  readonly refused?: true;
 }
 
 /**
@@ -65,8 +83,14 @@ export class KernelObligationCapability {
   readonly service: ObligationLifecycleService;
   readonly requirements: readonly ObligationRequirement[];
   private readonly byProfile: ReadonlyMap<string, KernelObligationSelection>;
+  private readonly resolveEffectiveProfile: KernelEffectiveProfileResolver | undefined;
+  private readonly refusal: KernelObligationSelection;
 
   constructor(options: KernelObligationOptions) {
+    assertEffectiveProfileResolver(options.profileDeclarations?.length ?? 0, options.resolveEffectiveProfile, 'Obligations');
+    this.resolveEffectiveProfile = options.resolveEffectiveProfile;
+    const refusalDeclaration: ObligationDeclaration = { requirements: [{ obligationType: EFFECTIVE_PROFILE_UNTRUSTED_OBLIGATION, blocking: true }] };
+    this.refusal = { service: new ObligationLifecycleService({ sources: options.sources, declaration: refusalDeclaration }), requirements: refusalDeclaration.requirements, refused: true };
     this.provider = options.provider;
     this.service = new ObligationLifecycleService({ sources: options.sources, declaration: options.declaration });
     this.requirements = options.declaration.requirements;
@@ -79,9 +103,17 @@ export class KernelObligationCapability {
     this.byProfile = byProfile;
   }
 
+  /**
+   * The obligations this request stands under: its **trusted** effective
+   * profile's, the deployment-wide ones when it is unclassified (or its trusted
+   * profile declares none), and an undischargeable blocking obligation when the
+   * effective profile cannot be established or the request's semantics
+   * disagree with it. Never chosen by the request's claim.
+   */
   select(request: KernelEvaluationRequest): KernelObligationSelection {
-    const profile = request.action.semantics?.governanceProfile;
-    const selected = profile === undefined ? undefined : this.byProfile.get(`${profile.id}@${profile.version}#${profile.digest}`);
+    const effective = selectEffectiveProfile(this.resolveEffectiveProfile, request);
+    if (effective.kind === 'refused') return this.refusal;
+    const selected = effective.kind === 'profile' ? this.byProfile.get(effective.key) : undefined;
     return selected ?? { service: this.service, requirements: this.requirements };
   }
 }
@@ -129,11 +161,14 @@ export async function resolveKernelObligations(
 ): Promise<ObligationResolution | undefined> {
   if (capability === undefined) return undefined;
 
-  const { service } = capability.select(request);
+  const selection = capability.select(request);
+  const { service } = selection;
   const declaredTypes = service.declaredTypes();
   if (declaredTypes.length === 0) return undefined;
 
   const correlation = obligationCorrelationFor(request);
+  // Not consulted: nothing any source reports can discharge the refusal.
+  if (selection.refused === true) return unresolvedObligationResolution({ declaredTypes, obligations: service.declare(correlation, at), resolvedAt: at });
   const query = {
     obligationTypes: declaredTypes,
     correlation,

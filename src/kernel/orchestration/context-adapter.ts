@@ -12,6 +12,7 @@ import {
 } from '../../features/context-resolution-runtime/index.js';
 import { ContextResolutionService } from '../../features/context-resolution-runtime/index.js';
 import type { ContextProvider } from '../contracts/ports.js';
+import { assertEffectiveProfileResolver, selectEffectiveProfile, type KernelEffectiveProfileResolver } from './effective-profile.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type { ContextEvaluation, ContextFactEvaluation, ContextRequirementEvaluation, KernelEvaluationResult } from '../contracts/kernel-result.js';
 import { AOC_KERNEL_REASON_CODES, type AocKernelReasonCode } from '../reason-codes/reason-codes.js';
@@ -41,6 +42,13 @@ export interface KernelContextResolutionOptions {
    * and restrict-only fact classes; a request can neither select nor alter one.
    */
   readonly profileDeclarations?: readonly KernelProfileContextDeclaration[];
+  /**
+   * CORE-04 — the trusted resolver of a request's **effective** profile from
+   * its action and resource (`effective-profile.ts`). Required whenever
+   * `profileDeclarations` is non-empty: a request's own semantics never select
+   * a declaration.
+   */
+  readonly resolveEffectiveProfile?: KernelEffectiveProfileResolver;
 }
 
 /** CORE-04 — one Governance Profile's context declaration. */
@@ -55,6 +63,8 @@ export interface KernelContextSelection {
   readonly requirements: readonly ContextRequirement[];
   /** `<id>@<version>#<digest>` for a profile declaration; absent for the deployment-wide one. */
   readonly profile?: string;
+  /** The effective profile could not be established from trusted configuration: the request is denied `CONTEXT_PROFILE_UNTRUSTED`, never evaluated under a weaker declaration. */
+  readonly refused?: true;
 }
 
 function profileKey(profile: { readonly id: string; readonly version: number; readonly digest: string }): string {
@@ -73,8 +83,11 @@ export class KernelContextCapability {
   readonly service: ContextResolutionService;
   readonly requirements: readonly ContextRequirement[];
   private readonly byProfile: ReadonlyMap<string, KernelContextSelection>;
+  private readonly resolveEffectiveProfile: KernelEffectiveProfileResolver | undefined;
 
   constructor(options: KernelContextResolutionOptions) {
+    assertEffectiveProfileResolver(options.profileDeclarations?.length ?? 0, options.resolveEffectiveProfile, 'Context requirements');
+    this.resolveEffectiveProfile = options.resolveEffectiveProfile;
     this.provider = options.provider;
     this.service = new ContextResolutionService({ sources: options.sources, declaration: options.declaration });
     this.requirements = options.declaration.requirements;
@@ -91,10 +104,17 @@ export class KernelContextCapability {
     this.byProfile = byProfile;
   }
 
-  /** The declaration this request resolves against: its effective profile's when one is declared, the deployment-wide one otherwise. */
+  /**
+   * The declaration this request resolves against: its **trusted** effective
+   * profile's when that profile declares context, the deployment-wide one when
+   * the request is unclassified (or its trusted profile declares none), and a
+   * refusal when the effective profile cannot be established or the request's
+   * semantics disagree with it. Never chosen by the request's claim.
+   */
   select(request: KernelEvaluationRequest): KernelContextSelection {
-    const profile = request.action.semantics?.governanceProfile;
-    const selected = profile === undefined ? undefined : this.byProfile.get(profileKey(profile));
+    const effective = selectEffectiveProfile(this.resolveEffectiveProfile, request);
+    if (effective.kind === 'refused') return { service: this.service, requirements: [], refused: true };
+    const selected = effective.kind === 'profile' ? this.byProfile.get(effective.key) : undefined;
     return selected ?? { service: this.service, requirements: this.requirements };
   }
 }
@@ -134,7 +154,12 @@ export async function resolveKernelContext(
 ): Promise<ContextResolution | undefined> {
   if (capability === undefined) return undefined;
 
-  const { service } = capability.select(request);
+  const selection = capability.select(request);
+  // A request whose effective profile is not established resolves nothing and
+  // is denied by `resolveKernelContextFacts`; it never falls back to a
+  // declaration with fewer required facts.
+  if (selection.refused === true) return unresolvedContextResolution({ declaredKeys: [], resolvedAt: at });
+  const { service } = selection;
   const keys = service.requestedKeys();
   const declaredKeys = service.declaredKeys();
   if (declaredKeys.length === 0) return undefined;
@@ -258,6 +283,14 @@ export interface KernelContextFacts {
  */
 export function resolveKernelContextFacts(capability: KernelContextCapability, resolution: ContextResolution, request: KernelEvaluationRequest): KernelContextFacts {
   const selection = capability.select(request);
+  if (selection.refused === true) {
+    return {
+      evaluation: toContextEvaluation(resolution, selection, []),
+      reasonCodes: [AOC_KERNEL_REASON_CODES.CONTEXT_PROFILE_UNTRUSTED],
+      summary: "This request's effective Governance Profile could not be established from trusted configuration, or its semantics named a different one; it is not evaluated under any weaker declaration.",
+      admitted: { contextFacts: [], restrictiveFacts: [] },
+    };
+  }
   const reads = readContextFacts(resolution, selection.requirements);
   const evaluation = toContextEvaluation(resolution, selection, reads);
   const unsatisfied = evaluation.unsatisfiedRequirements ?? [];

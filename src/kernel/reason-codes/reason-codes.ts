@@ -104,6 +104,8 @@ export const AOC_KERNEL_REASON_CODES = {
   CONTEXT_REQUIRED_FACT_MALFORMED: 'CONTEXT_REQUIRED_FACT_MALFORMED',
   /** CORE-04: a restrict-only fact could not be read unambiguously (conflicting admitted readings, or context could not be resolved), so no restriction can be ruled out. */
   CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS: 'CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS',
+  /** CORE-04: the request's effective Governance Profile could not be established from trusted configuration, or its own semantics named a different one. Nothing the request claimed selects which facts it stands under. */
+  CONTEXT_PROFILE_UNTRUSTED: 'CONTEXT_PROFILE_UNTRUSTED',
 } as const;
 
 export type AocKernelReasonCode = (typeof AOC_KERNEL_REASON_CODES)[keyof typeof AOC_KERNEL_REASON_CODES];

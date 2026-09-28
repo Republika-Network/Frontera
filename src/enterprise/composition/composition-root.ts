@@ -72,7 +72,7 @@ import {
 } from '../obligation-discharge/index.js';
 import { createKernelAuthorityLineageRevalidator } from '../kernel-authority/authority-lineage-revalidator.js';
 import { KernelObligationCapability, resolveKernelObligationFacts, resolveKernelObligations } from '../../kernel/orchestration/obligation-adapter.js';
-import type { ContextProvider } from '../../kernel/index.js';
+import type { ContextProvider, KernelEffectiveProfileResolver } from '../../kernel/index.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
 import { createAuthorityEventStreamModule } from '../modules/authority-event-stream-module.js';
 import { createAuthorityEventProjector, type AuthorityEventProjector } from '../authority-event-stream/projector.js';
@@ -1510,9 +1510,18 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           : createInMemoryObligationDischargeStore({ organizationId: configuration.kernelAuthority.organizationId })));
   const obligationDischargeStoreOpenedHere = obligationDischargeStore !== undefined && options.obligations?.store === undefined;
   if (obligationDischargeStoreOpenedHere) opened.push(() => closeIfClosable(obligationDischargeStore));
+  // CORE-04: the one trusted answer to "which Governance Profile governs this
+  // request?" — the frozen registry resolving its action and resource. The
+  // Kernel's context and obligation capabilities select by this, never by the
+  // semantics a request carries (which a direct Kernel caller controls).
+  const resolveEffectiveProfile: KernelEffectiveProfileResolver = (action, resourceScope) => {
+    const resolution = governance.resolve(action, resourceScope);
+    if (resolution.kind === 'resolved') return { kind: 'resolved', profile: resolution.profile.reference };
+    return resolution.kind === 'unclassified' ? { kind: 'unclassified' } : { kind: 'refused' };
+  };
   // The one obligation capability shape the grant-aware Kernel decides with
   // and the orchestrator re-reads at issuance: same sources, same profile
-  // declarations, same store.
+  // declarations, same store, same trusted profile resolution.
   const governedObligationOptions =
     governedTrust?.obligations === undefined || obligationDischargeStore === undefined
       ? undefined
@@ -1521,6 +1530,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           sources: governedTrust.obligations.sources,
           declaration: { requirements: [] },
           profileDeclarations: governedTrust.obligations.profileDeclarations,
+          resolveEffectiveProfile,
         };
   // The write-only projector: the one object lifecycle modules are handed.
   const authorityEvents: AuthorityEventProjector | undefined =
@@ -1597,6 +1607,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
                       sources: governedTrust.context.sources,
                       declaration: { requirements: [] },
                       profileDeclarations: governedTrust.context.profileDeclarations,
+                      resolveEffectiveProfile,
                     },
                   }
                 : {}),

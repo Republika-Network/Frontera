@@ -14,6 +14,7 @@ import {
 } from '../../features/context-resolution-runtime/index.js';
 import { AocKernel } from '../AocKernel.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
+import type { KernelEffectiveProfileResolver } from '../orchestration/effective-profile.js';
 import type { PolicyPackProvider } from '../contracts/ports.js';
 import { AOC_KERNEL_REASON_CODES as R } from '../reason-codes/reason-codes.js';
 import { NOW, toKernelRequest } from './characterization/support.js';
@@ -31,13 +32,18 @@ const PROFILE = { id: 'invoice-settlement', version: 1, digest: `sha256:${'a'.re
 const ERP: ContextSource = { id: 'erp', kind: 'erp', name: 'ERP', trustClass: 'authoritative', organizationId: ORG, provenance: 'reference-digest', attests: [{ factClass: 'invoice.exists', maxAgeSeconds: 900 }] };
 const RISK: ContextSource = { id: 'risk', kind: 'risk_engine', name: 'Signals', trustClass: 'authoritative', organizationId: ORG, provenance: 'reference-digest', attests: [{ factClass: 'signal.x', maxAgeSeconds: 300 }] };
 const RISK_2: ContextSource = { ...RISK, id: 'risk-2' };
+/** A second configured profile that declares no required fact — the permissive one a caller would like to name. */
+const ANOTHER = { id: 'customer-data-read', version: 1, digest: `sha256:${'c'.repeat(64)}` } as const;
+/** Trusted classification (the CORE-03 registry's role): the fixture's action × resource is governed by PROFILE. */
+const CLASSIFIED: KernelEffectiveProfileResolver = () => ({ kind: 'resolved', profile: PROFILE });
+const UNCLASSIFIED: KernelEffectiveProfileResolver = () => ({ kind: 'unclassified' });
 
 function observed(key: string, value: string | boolean, sourceId: string): ContextFactObservation {
   const base = { key, value, sourceId, observedAt: new Date(Date.parse(NOW) - 5000).toISOString(), reference: `${sourceId}:${key}` };
   return { ...base, provenanceDigest: contextObservationProvenanceDigest(base) };
 }
 
-function kernel(resolver: ContextResolverPort, policyPackProvider?: PolicyPackProvider): AocKernel {
+function kernel(resolver: ContextResolverPort, policyPackProvider?: PolicyPackProvider, classify: KernelEffectiveProfileResolver = CLASSIFIED): AocKernel {
   const fixture = buildDatasysEnforcementFixture();
   return new AocKernel({
     recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
@@ -58,7 +64,9 @@ function kernel(resolver: ContextResolverPort, policyPackProvider?: PolicyPackPr
             ],
           },
         },
+        { profile: ANOTHER, declaration: { requirements: [] } },
       ],
+      resolveEffectiveProfile: classify,
     },
   });
 }
@@ -83,7 +91,7 @@ function recordingPolicy(seen: unknown[]): PolicyPackProvider {
 }
 
 describe('CORE-04 — the Kernel resolves the effective profile’s declaration, and only a matching one', () => {
-  it('a profiled request resolves its profile’s keys; an unprofiled one resolves nothing and its record carries no context', async () => {
+  it('a profiled request resolves its profile’s keys; an unclassified, unprofiled one resolves nothing and its record carries no context', async () => {
     const queries: string[][] = [];
     const resolver = createInMemoryContextResolver((query) => {
       queries.push([...query.keys]);
@@ -94,15 +102,67 @@ describe('CORE-04 — the Kernel resolves the effective profile’s declaration,
     assert.deepEqual(queries, [['invoice.exists', 'signal.x']]);
     assert.match(profiled.context?.digest ?? '', /^sha256:/);
     assert.equal(profiled.context?.profile, `${PROFILE.id}@1#${PROFILE.digest}`);
-    const unprofiled = await kernel(resolver).evaluate(request('unprofiled'));
+    const unprofiled = await kernel(resolver, undefined, UNCLASSIFIED).evaluate(request('unprofiled'));
     assert.equal(unprofiled.context, undefined);
     assert.equal(queries.length, 1);
   });
 
-  it('a profile edited under the same id and version (another digest) selects nothing — and the library declaration here is empty', async () => {
-    const resolver = createInMemoryContextResolver([observed('invoice.exists', true, 'erp')]);
-    const edited = await kernel(resolver).evaluate(request({ ...PROFILE, digest: `sha256:${'b'.repeat(64)}` }));
-    assert.equal(edited.context, undefined);
+});
+
+describe('CORE-04 review — a caller-supplied profile reference is never authoritative (Codex P1)', () => {
+  const claims: readonly [string, { readonly id: string; readonly version: number; readonly digest: string }][] = [
+    ['a bogus profile id', { ...PROFILE, id: 'no-such-profile' }],
+    ['the wrong profile version', { ...PROFILE, version: 2 }],
+    ['the wrong profile digest (edited under the same id and version)', { ...PROFILE, digest: `sha256:${'b'.repeat(64)}` }],
+    ['another configured, more permissive profile', ANOTHER],
+  ];
+  for (const [label, claimed] of claims) {
+    it(`${label}: denied CONTEXT_PROFILE_UNTRUSTED — never evaluated under a weaker or empty declaration, and no source is read`, async () => {
+      const queries: unknown[] = [];
+      const resolver = createInMemoryContextResolver((query) => {
+        queries.push(query);
+        return [observed('invoice.exists', true, 'erp')];
+      });
+      const result = await kernel(resolver).evaluate(request(claimed));
+      assert.equal(result.status, 'denied');
+      assert.deepEqual(result.reasonCodes, [R.CONTEXT_PROFILE_UNTRUSTED]);
+      assert.equal(queries.length, 0);
+    });
+  }
+
+  it('an unknown-profile fallback is impossible: semantics on an action the trusted registry does not classify are refused, not treated as unprofiled', async () => {
+    const result = await kernel(createInMemoryContextResolver([]), undefined, UNCLASSIFIED).evaluate(request({ ...PROFILE, id: 'invented' }));
+    assert.equal(result.status, 'denied');
+    assert.deepEqual(result.reasonCodes, [R.CONTEXT_PROFILE_UNTRUSTED]);
+  });
+
+  it('omitting semantics does not escape the trusted profile: a classified action stands under its facts anyway', async () => {
+    const missing = await kernel(createInMemoryContextResolver([])).evaluate(request('unprofiled'));
+    assert.equal(missing.status, 'denied');
+    assert.ok(missing.reasonCodes.includes(R.CONTEXT_REQUIRED_FACT_UNRESOLVED));
+    assert.equal(missing.context?.profile, `${PROFILE.id}@1#${PROFILE.digest}`);
+  });
+
+  it('a resolver that throws or refuses fails closed', async () => {
+    for (const classify of [(() => { throw new Error('registry down'); }) as KernelEffectiveProfileResolver, (() => ({ kind: 'refused' })) as KernelEffectiveProfileResolver]) {
+      const result = await kernel(createInMemoryContextResolver([observed('invoice.exists', true, 'erp')]), undefined, classify).evaluate(request());
+      assert.equal(result.status, 'denied');
+      assert.deepEqual(result.reasonCodes, [R.CONTEXT_PROFILE_UNTRUSTED]);
+    }
+  });
+
+  it('profile-keyed declarations without a trusted resolver are refused at construction', () => {
+    const fixture = buildDatasysEnforcementFixture();
+    assert.throws(
+      () =>
+        new AocKernel({
+          recognitionProvider: bridgeRecognitionRuntime(fixture.recognitionRuntime),
+          clock: createManualEnforcementClock(NOW),
+          idGenerator: createSequentialEnforcementIdGenerator(),
+          contextResolution: { provider: createInMemoryContextResolver([]), sources: [ERP], declaration: { requirements: [] }, profileDeclarations: [{ profile: PROFILE, declaration: { requirements: [] } }] },
+        }),
+      /trusted effective-profile resolver/,
+    );
   });
 });
 

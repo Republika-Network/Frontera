@@ -63,6 +63,7 @@ export { KERNEL_CONTRACT_IDS } from './contracts/index.js';
  * for byte unchanged.
  */
 export type { KernelContextResolutionOptions } from './orchestration/context-adapter.js';
+export type { KernelEffectiveProfileResolution, KernelEffectiveProfileResolver, KernelGovernanceProfileKey } from './orchestration/effective-profile.js';
 
 /**
  * The obligation capability's configuration shape, and the exercise reason-code
