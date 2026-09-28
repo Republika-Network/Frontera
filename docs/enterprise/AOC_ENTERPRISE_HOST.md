@@ -463,6 +463,7 @@ reviewed example: `examples/enterprise-host/governed-actions.example.json`.
 | `trustDomainId` | The trust domain governed actions are evaluated in |
 | `grantLifetimeSeconds` | Bounded-grant lifetime from the committed decision, 1 … 3600 |
 | `customerPrincipals[]` | `principalId`, `externalSubject {system, subjectId}`, `apiKeyEnv`. Each becomes a customer credential scoped to `AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID`, bound to the Kernel Authority actor carrying that external subject |
+| `administrators[]` | Optional (CTRL-01). `operatorId`, `apiKeyEnv`. Each becomes an **administrator** credential for `/api/admin/...` only — never an ordinary API key. Secret ≥ 32 characters. Absent: the administration API is not mounted. See `AOC_AUTHORITY_ADMINISTRATION_API.md` |
 | `monetary` | Optional. `assets [{assetId, scale}]`, `financialActions []` (P9) |
 | `genericHttpAdapters[]` | `EnterpriseGenericHttpExecutionAdapterOptions` (`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`), except `credential` is `{kind:'bearer', tokenEnv}` or `{kind:'header', name, valueEnv}` |
 | `routes[]` | `{action, adapterId}`. An action with no route reaches no adapter |
@@ -483,7 +484,8 @@ variable, never a value). A secret used by two credentials refuses
 | Authenticated durable bounded-grant store (signed, revocation-state verified, CORE-01) | **required**; its health is part of readiness |
 | P7 exercise controls, durable ledger; P10 authority-sourced ceilings | **required**; no host-imposed aggregate limits (the authority's own apply) |
 | P11 durable execution outcomes | **required** |
-| Durable emergency control (P4) | composed; operator surface in-process only (CTRL-01) |
+| Durable emergency control (P4) | composed; operable over `/api/admin/emergency-controls` when an administrator is configured (CTRL-01) |
+| Authority administration API (CTRL-01) | mounted only when `administrators[]` is configured (`posture.authorityAdministration`) |
 | P8 authority event stream | optional by design (evidence never blocks) |
 | Generic HTTP adapter(s) behind the trusted registry, routed by the file | composed as configured |
 | P12 reconciliation | not wired: no resolution authority implementation ships |
@@ -509,7 +511,8 @@ and fields, never values; no stack trace is printed.
 | `HOST_ENVIRONMENT_INVALID` | A variable does not parse strictly (includes malformed `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`) |
 | `HOST_UNAUTHENTICATED_NETWORK_BIND` | Authentication off and a non-loopback bind |
 | `HOST_CREDENTIALS_MISSING` | Authentication required, no credential |
-| `HOST_CREDENTIALS_AMBIGUOUS` | One secret configured for two credentials |
+| `HOST_CREDENTIALS_AMBIGUOUS` | One secret configured for two credentials (legacy, customer principal or administrator) |
+| `HOST_ADMINISTRATOR_INVALID` | An administrator secret shorter than 32 characters or with surrounding whitespace |
 | `HOST_PERSISTENCE_NOT_DURABLE` | Secure profile without explicit `sqlite` |
 | `HOST_AUTHENTICATION_REQUIRED` | Secure profile without `AOC_ENTERPRISE_REQUIRE_AUTH=true` |
 | `HOST_GOVERNED_ACTIONS_REQUIRED` | Secure profile without the governed-action file |
@@ -540,8 +543,10 @@ store.
   `environment`, `persistence` (`durable`/`ephemeral`), `authentication`,
   `governedActions`, `authorityStore`
   (`authenticated-durable`/`unauthenticated`/`not-composed`),
-  `kernelAuthority`, `emergencyControl`, `exerciseControls`, and a count of
-  execution adapters. No secret, key, path or adapter identity.
+  `kernelAuthority`, `emergencyControl`, `exerciseControls`, a count of
+  execution adapters, and `authorityAdministration` (`enabled` /
+  `not-configured`, CTRL-01). No secret, key, path, operator or adapter
+  identity.
 
 ### Shutdown
 
@@ -553,12 +558,13 @@ shutdown failed.
 
 ### What an operator still does by hand
 
-- **Provisioning authority** (actors, trust domain, grants, delegations) and
-  **revoking** it has no HTTP route yet: it is the trusted in-process
-  `AocEnterprise.kernelAuthorityProvisioning` surface (CTRL-01).
-- **Revoking a bounded grant** and **activating an emergency stop** are
-  in-process too (`authorityControlledExecution.revokeGrant`,
-  `emergencyControlAdministration`).
+- **Inspecting and revoking authority** (Kernel Authority entities and bounded
+  grants) and **emergency stop/release** are operated over the authority
+  administration API (CTRL-01) — `AOC_AUTHORITY_ADMINISTRATION_API.md`, which
+  includes the operator runbook. Configure `administrators[]` to enable it.
+- **Provisioning authority** (actors, trust domain, grants, delegations) still
+  has no HTTP route: it is the trusted in-process
+  `AocEnterprise.kernelAuthorityProvisioning` surface (CTRL-02).
 - **Backup/restore** covers four stores; the governed-action stores are
   PROD-02.
 - The authority signing key is process-resident (AA-001, CORE-02).

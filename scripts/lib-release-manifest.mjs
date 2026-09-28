@@ -71,7 +71,8 @@ export async function buildReleaseManifest() {
     api: {
       surface: 'aoc-enterprise-host-http.v1',
       documentation: 'docs/enterprise/API_STABILITY_V1.md',
-      endpointCount: 28,
+      // Read from the freeze file, the one place the frozen route count is kept.
+      endpointCount: JSON.parse(readFileSync(resolve(root, 'release/api-surface.v1.json'), 'utf8')).endpointCount,
     },
     compatibilityMatrix: {
       node: '>=22',

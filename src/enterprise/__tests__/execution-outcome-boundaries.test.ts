@@ -121,6 +121,10 @@ describe('P11 boundaries — who may hold it', () => {
     // records anything (`execution-reconciliation-boundaries.test.ts`).
     'src/enterprise/execution-reconciliation/binder.ts',
     'src/enterprise/execution-reconciliation/service.ts',
+    // CTRL-01: the authority administration service reads the verified record
+    // through the read-only reader it is handed (execution → grant) and
+    // classifies its errors. It prepares and records nothing.
+    'src/enterprise/authority-administration/service.ts',
     // P12: the resolution store reuses P11's identifier and instant primitives verbatim.
     'src/enterprise/execution-resolution-store/validation.ts',
   ]);

@@ -343,6 +343,8 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       emergencyControl: 'composed',
       exerciseControls: 'composed',
       executionAdapters: 2,
+      // CTRL-01: no administrator is configured here, so no administration route exists.
+      authorityAdministration: 'not-configured',
     });
     const health = await getJson(baseUrl, '/health');
     assert.equal(health.status, 200);

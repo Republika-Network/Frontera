@@ -42,6 +42,26 @@ export interface EnterpriseApiKeyCustomerIdentity {
   };
 }
 
+/**
+ * CTRL-01: one authority administrator credential.
+ *
+ * Deliberately **not** an `EnterpriseApiKey`, and never merged into
+ * `authentication.apiKeys`: an administrator secret authenticates the
+ * authority administration API (`/api/admin/...`) and nothing else, and no
+ * ordinary API key — legacy, organization-scoped or customer principal —
+ * authenticates there. Being able to call the Host is not authority over it.
+ *
+ * Supplied through the Host's governed-action file (`administrators`), whose
+ * secrets are environment-variable references; `AOC_ENTERPRISE_API_KEYS` has no
+ * syntax for it. `operatorId` is the trusted identity every administrative
+ * mutation is recorded under — it comes from this configuration, never from a
+ * request.
+ */
+export interface EnterpriseAdministrator {
+  readonly operatorId: string;
+  readonly key: string;
+}
+
 export interface EnterpriseFeatureFlags {
   readonly traceLevel: 'basic' | 'full';
   readonly requireAuthentication: boolean;
@@ -87,6 +107,14 @@ export interface EnterpriseConfiguration {
   readonly authentication: {
     /** Static bearer tokens accepted by the Enterprise Host's own authentication step. Never forwarded to the Kernel. */
     readonly apiKeys: readonly EnterpriseApiKey[];
+  };
+  /**
+   * CTRL-01: the authority administration API's credentials. Absent or empty
+   * means the API is not mounted — there is no default administrator and no
+   * fallback to any other credential.
+   */
+  readonly administration?: {
+    readonly administrators: readonly EnterpriseAdministrator[];
   };
   readonly features: EnterpriseFeatureFlags;
   readonly http: {
@@ -484,7 +512,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
  * flags, timeouts) with `authentication.apiKeys` replaced by a non-secret
  * count and per-key organization scoping. Never carries `EnterpriseApiKey.key`.
  */
-export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authentication' | 'authorityAuthenticity'> & {
+export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authentication' | 'authorityAuthenticity' | 'administration'> & {
+  /** CTRL-01: how many administrators are configured. A count, never an identity or a secret. */
+  readonly administration: { readonly administratorCount: number };
   readonly authentication: {
     readonly requireAuthentication: boolean;
     readonly apiKeyCount: number;
@@ -521,9 +551,10 @@ export function toPublicEnterpriseConfiguration(config: EnterpriseConfiguration)
   // `authorityAuthenticity` is destructured out alongside `authentication` so
   // the private signing key is removed by *construction* rather than by an
   // overwrite that a later spread could undo.
-  const { authentication, authorityAuthenticity, ...rest } = config;
+  const { authentication, authorityAuthenticity, administration, ...rest } = config;
   return {
     ...rest,
+    administration: { administratorCount: administration?.administrators.length ?? 0 },
     authentication: {
       requireAuthentication: config.features.requireAuthentication,
       apiKeyCount: authentication.apiKeys.length,

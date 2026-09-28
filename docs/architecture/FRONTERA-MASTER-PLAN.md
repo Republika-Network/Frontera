@@ -4,7 +4,7 @@
   architecture baseline, roadmap and milestones.
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
-- **Last status change:** PROD-01 → VERIFIED on branch `feat/prod-01-secure-production-host` (from `main` @ `4490648`), 2026-09-25. NEXT → CTRL-01 (§14).
+- **Last status change:** CTRL-01 → VERIFIED on branch `feat/ctrl-01-authority-admin-api` (from `main` @ `194a3e9`), 2026-09-26. Kernel-Authority provisioning over an API moved from CTRL-01 to CTRL-02 (§9). NEXT → CTRL-02 (§14).
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -141,10 +141,10 @@ wiring inventory is §3.8.
 | Bounded grants (attenuation-only) | VERIFIED | `src/features/grant-runtime/domain/grant-attenuation.ts:162`; `grant-attenuation.test.ts`, `bounded-grant-scenario.test.ts` |
 | Durable grant store with digests (Prompt 4) | VERIFIED (sqlite only) | `src/enterprise/bounded-grant-store/sqlite-bounded-grant-store.ts`; `bounded-grant-store-durability.test.ts` |
 | Grant expiry (checked at exercise, never scheduled) | VERIFIED | `governed-action/orchestrator.ts:547` |
-| Revocation (durable, signed) | **VERIFIED (sqlite only)** — revocation-state integrity closed by CORE-01 | `sqlite-bounded-grant-store.ts` (`verifiedRevocationState`); `revocation-state-integrity.test.ts`. Still in-process only, with no API (CTRL-01). Cross-restart rollback open (CORE-07) |
+| Revocation (durable, signed) | **VERIFIED (sqlite only)** — revocation-state integrity closed by CORE-01 | `sqlite-bounded-grant-store.ts` (`verifiedRevocationState`); `revocation-state-integrity.test.ts`. Operable over HTTP by configured administrators since CTRL-01 (`/api/admin/authority/...`; `authority-administration-api.test.ts`). Cross-restart rollback open (CORE-07) |
 | **Authority artifact authenticity (PRE-00 + CORE-01)** | **VERIFIED; required on the shipped secure Host** (PROD-01) | §3.7. The secure Host refuses to bind unless its grant store is `authenticated-durable` and its revocation state verifies. Embedding default still `memory`; key process-resident (CORE-02) |
 | No-bypass execution (single adapter call site) | VERIFIED, path-local | `no-bypass-effect-paths.test.ts`, `security-invariants.test.ts`. 3 of 46 effect paths are grant-controlled; the rest are excepted or separate models (`docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`) |
-| Emergency control / kill switch (P4) | VERIFIED (opt-in); durable and composed on the shipped secure Host | `composition-root.ts`; `emergency-control-*.test.ts`. Operator surface is in-process only (CTRL-01) |
+| Emergency control / kill switch (P4) | VERIFIED (opt-in); durable and composed on the shipped secure Host | `composition-root.ts`; `emergency-control-*.test.ts`. Operable over `/api/admin/emergency-controls` by configured administrators (CTRL-01) |
 | Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in); composed (required) on the shipped secure Host, with no host-imposed limits — the authority's own (P10) apply | `composition-root.ts`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
 | Authority-sourced payment ceilings (P10) | VERIFIED (requires P7) | `kernel-authority/monetary-constraints.ts:75-91`; `authority-payment-ceilings*.test.ts` |
 | Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts:1245`). No durable policy store, no default pack, unauthenticated registry writes (NB-008) |
@@ -229,8 +229,9 @@ wiring inventory is §3.8.
 
 | Item | Status |
 |---|---|
-| Enterprise API | Health, evaluate, governed-actions, governance reads, evidence, assurance, passports. **No** routes for grants, revocation, approvals, emergency control, authority provisioning, organizations, users or the event stream |
-| Authentication | Static bearer API keys, optionally org-scoped; customer principals configured in the governed-action file. **Required by the shipped secure Host** (SEC-INV-126); off only in the explicit development profile, and then loopback-only (SEC-INV-127). Embedding default still off (SC-001). No humans, RBAC or SSO in the enterprise runtime |
+| Enterprise API | Health, evaluate, governed-actions, governance reads, evidence, assurance, passports, and — since CTRL-01, when administrators are configured — **authority administration** (`/api/admin/...`: inspect/revoke bounded grants and Kernel-Authority entities, execution → grant lookup, emergency stop/release). **No** routes for authority provisioning, approvals, organizations, users or the event stream |
+| Authority administration (CTRL-01) | **VERIFIED; optional on the shipped Host** (mounted only when the governed-action file declares `administrators`). A separate administrator credential class (never an ordinary API key; ordinary keys get 403), operator identity from configuration, closed request schemas, single-organization scope. Calls only existing authoritative operations; no issuance, provisioning or un-revoke. `docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md`; `authority-administration-api.test.ts`, `authority-administration-service.test.ts` |
+| Authentication | Static bearer API keys, optionally org-scoped; customer principals and (CTRL-01) administrators configured in the governed-action file. **Required by the shipped secure Host** (SEC-INV-126); off only in the explicit development profile, and then loopback-only (SEC-INV-127). Embedding default still off (SC-001). Administrators are named operators behind shared bearer secrets: no humans, MFA, RBAC or SSO in the enterprise runtime (CTRL-02, PROD-04) |
 | `src/features/aoc-control-plane` (React panels) | LIBRARY-ONLY; rendered by no app |
 | `packages/control-plane` | SUPERSEDED / orphan |
 | `control-plane-sdk`, `tenant-governance`, `org-boundary` | DOCUMENTED ONLY |
@@ -345,9 +346,10 @@ MASTER-00 record.
 | Principal binding (customer admission) | WIRED INTO PRODUCTION HOST | Principals from the governed-action file; keys by env-var name |
 | Bounded grants | WIRED INTO PRODUCTION HOST | Lifetime from the file, 1 … 3600 s |
 | Authenticated durable authority store (CORE-01) | WIRED INTO PRODUCTION HOST | Required; verified before bind and on every `/ready` |
-| Revocation (bounded grant) | WIRED; operation EMBEDDING-ONLY | `authorityControlledExecution.revokeGrant`, in-process (CTRL-01) |
-| Revocation (Kernel Authority) | WIRED; operation EMBEDDING-ONLY | `kernelAuthorityProvisioning.revoke`, in-process (CTRL-01) |
-| Kill switch (P4) | WIRED INTO PRODUCTION HOST | Durable store; activation in-process only (CTRL-01) |
+| Revocation (bounded grant) | WIRED INTO PRODUCTION HOST (CTRL-01) | `POST /api/admin/authority/grants/{id}/revoke` → `authorityControlledExecution.revokeGrant`; administrators only |
+| Revocation (Kernel Authority) | WIRED INTO PRODUCTION HOST (CTRL-01) | `POST /api/admin/authority/entities/{kind}/{id}/revoke` → `kernelAuthorityProvisioning.revoke`; administrators only |
+| Kill switch (P4) | WIRED INTO PRODUCTION HOST | Durable store; activate/release over `/api/admin/emergency-controls` (CTRL-01) |
+| Kernel-Authority provisioning | WIRED; operation EMBEDDING-ONLY | `kernelAuthorityProvisioning.provision*`, in-process (CTRL-02) |
 | Monetary / exercise controls (P7, P9, P10) | WIRED INTO PRODUCTION HOST | No host-imposed aggregate policy; authority-sourced limits apply |
 | Authority event stream (P8) | WIRED INTO PRODUCTION HOST | Optional by design; no read route |
 | Execution outcomes (P11) | WIRED INTO PRODUCTION HOST | Required |
@@ -504,7 +506,7 @@ as a roadmap mechanism (§15).
 | Prompt 8: Workload identity | PROD | DEFERRED | Deployment guidance only |
 | Prompt 10: FS/process/network constraints | CORE | PARTIAL | Boundary tests exist; extend as layers are added |
 | Prompt 11: Egress allowlisting | PROD | PLANNED | → PROD-04 |
-| Prompt 12: Kill switch | CORE | VERIFIED (opt-in) | Delivered by P4 emergency control; operator API → CTRL-01 |
+| Prompt 12: Kill switch | CORE | VERIFIED (opt-in) | Delivered by P4 emergency control; operator API delivered by CTRL-01 |
 | Prompt 13 / P21: Behavioural abuse detection / intelligence | ASSURE | DEFERRED | → ASSURE-04; must stay outside the authorization path |
 | Prompt 14: Self-modification protection | CORE | PARTIAL | Policy-pack writes carry no caller identity (NB-008) → CORE-03 |
 | Prompt 15: Tamper-evident evidence | ASSURE | PARTIAL | Integrity yes, authenticity no → ASSURE-02 |
@@ -909,20 +911,25 @@ CORE obligations and generalized bound kinds, not payment fields.
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** |
+| Status | **VERIFIED** (2026-09-26, branch `feat/ctrl-01-authority-admin-api`) |
 | Depends on | CORE-01 (hard) — VERIFIED, PROD-01 (soft) — VERIFIED |
-| Purpose | HTTP surfaces for what is in-process only today: Kernel-Authority provisioning, grant revocation, emergency control, grant/decision reads |
-| Exit criteria | No pilot operation requires source code or direct DB edits |
+| Purpose | HTTP surfaces for what was in-process only: authority revocation, emergency control, grant/authority reads |
+| Exit criteria (as delivered) | No pilot **incident-response** operation — inspecting authority, revoking it, stopping and resuming execution — requires source code, a REPL or direct DB access. The original criterion ("no pilot operation") also covered provisioning, which is re-scoped to CTRL-02 (below) |
+| Delivered | `/api/admin/...` on the canonical Host (`bootEnterpriseHost()`; no second server): `GET /authority/grants/{id}`, `POST /authority/grants/{id}/revoke` (CORE-01 signed path via `revokeGrant`), `GET /authority/executions/{id}` (execution → grant, from P11), `GET /authority/entities/{kind}/{id}`, `POST /authority/entities/{kind}/{id}/revoke` (`kernelAuthorityProvisioning.revoke`), `GET /emergency-controls`, `POST /emergency-controls/{activate,release}` (P4 port). **Administrative authorization boundary:** a separate administrator credential class declared in the governed-action file (`administrators[] {operatorId, apiKeyEnv}`, secret ≥ 32 chars, unique across every credential, `HOST_ADMINISTRATOR_INVALID`), never merged into ordinary API keys; ordinary keys → 403, unknown → 401, the body read only after authorization. Operator identity (`operator:<operatorId>`) from configuration is what every store records (signed `issuerRef`, `provisionedBy`, emergency `issuer_ref`). Closed request schemas; single-organization scope fixed server-side. Status is the grant runtime's own `assessGrantExercise`; unverifiable state → `500 AUTHORITY_STATE_INTEGRITY_FAILED`, never 404/active. Optional: absent `administrators`, nothing is mounted; `/health` `posture.authorityAdministration` = `enabled`/`not-configured`. **Issuance intentionally not exposed** (grants are minted only from a committed Kernel decision). **Emergency control included** (mature durable port with a legitimate release). No un-revoke path exists. Docs: `AOC_AUTHORITY_ADMINISTRATION_API.md` (reference, threat review, runbook) |
+| Evidence | `authority-administration-api.test.ts` (27, real Host through `bootEnterpriseHost()`): reproduction (no administrator → no route, posture `not-configured`), 10 configuration refusals, authorization matrix (none/unknown/default-looking/truncated/non-Bearer → 401; customer and legacy keys → 403 on all eight routes; forged `X-Admin`/`?admin=true`/body flags ignored or refused; an administrator secret is 401 on customer and legacy routes), forged actor refused and the signed `issuerRef` = configured operator, single-organization scope, CORE-01 signed revocation + commitment advance + P8 `grant.revoked` + the real ACE exercise withheld with 0 adapter calls, idempotent repeat, 24-way concurrent revocation of two grants (exactly one commit each, verifies across restart), no un-revoke (17 method/path shapes → 404), input validation, fail-closed integrity (deleted revocation, tampered grant, tampered Kernel-Authority event → 500, never 404), emergency stop/release across restart with the operator in the store history, and the operator flow: inspect → revoke → inspect → governed action `denied`, adapter calls 0 → restart → still revoked and denied. `authority-administration-service.test.ts` (37): status from `assessGrantExercise` under a fixed clock (expiry without sleeps), integrity/unavailable mapping, body read only after authorization, closed schemas (15 smuggled fields), structural no-bypass (no driver/SQL/signer/issuance/provisioning/body spread; exact service surface; adapter verbs). Eleven deliberate-violation experiments (ordinary key as admin, customer principals as admins, closed schema removed, client `issuerRef` honoured, revocation faked without the store, integrity collapsed to 404, HTTP status ignoring revocation, `DELETE` routed, body read before auth, secret-strength check removed, unscoped Kernel-Authority reads) each failed focused tests (1–24 each); sources restored byte-for-byte. Three pre-existing structural pins that forbade any emergency/P11-reading HTTP surface were narrowed deliberately to their intent (no customer route reaches emergency control; admin routes only via the administration service), and the eight routes are registered in `release/api-surface.v1.json` (28 → 36; `check-api-freeze` green). Final run: typecheck, lint, build green; root 7592/7594 pass, 1 skipped (live Pinata, unconfigured), 1 failing — the known CRLF working-copy artifact in `structural-boundaries.test.ts` (64/64 against a `git archive` export of the LF tree); workspaces 1069/1069 |
+| Re-scoped | **Kernel-Authority provisioning over an API → CTRL-02.** Provisioning creates standing organizational authority (actors, trust domains, root issuers, grants, delegations). Exposing it behind a single shared administrator secret with no human operator identity would let one stolen bearer secret mint authority; CTRL-02 introduces human operator identity and the agent inventory that provisioning belongs to |
+| Residual (owned elsewhere) | Administrator credential theft = administrator (no MFA/SSO/quorum: CTRL-02, CTRL-04, PROD-04); no rate limiting (PROD-04); P8 `grant.revoked` carries no actor and Kernel-Authority/emergency mutations are not on the P8 stream (ASSURE-01); signer on the revocation critical path (AA-004, CORE-02); whole-store rollback (CORE-07); provisioning in-process (CTRL-02) |
 | Parallel | Yes, with CORE-03/04 |
 
 **CTRL-02: Organizations, Human Operators & Agent Inventory**
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
-| Depends on | CTRL-01 |
-| Existing reused | passport-web account/role model as reference; `BoundCustomerIdentity` |
-| Remaining work | Human operator identity + roles in the enterprise runtime. An agent inventory backed by Kernel-Authority actors. A passport reconciliation decision (§7) |
+| Status | **NEXT** |
+| Depends on | CTRL-01 — VERIFIED |
+| Existing reused | passport-web account/role model as reference; `BoundCustomerIdentity`; the CTRL-01 administration boundary (`authority-administration/`) and `kernelAuthorityProvisioning` |
+| Remaining work | Human operator identity + roles in the enterprise runtime, replacing CTRL-01's shared administrator secrets as the operator identity. An agent inventory backed by Kernel-Authority actors. **Kernel-Authority provisioning over the API** (actors, passports, capability tokens, authority grants, delegations — moved here from CTRL-01), authorized by operator role, under the Kernel's existing append rules (terminal revocation, no in-place rewrite) and monetary checks. A passport reconciliation decision (§7) |
+| Exit criteria | A pilot organization onboards an agent and assigns it bounded authority without source code, a REPL or direct DB access, as an identified human operator |
 
 **CTRL-03: Web Control Plane MVP**
 
@@ -1077,7 +1084,7 @@ Requires:
 
 - **Core:** GOVERNANCE CORE STABLE items 1, 2, 4, 5, 7 and 8. Item 3 is recommended but not required when the pilot's threat model accepts it in writing.
 - **Host:** PROD-01 (bootable, secure-default host) — **done** 2026-09-25 — and PROD-02 (complete backup/restore).
-- **Control plane:** CTRL-01 … CTRL-04, which cover organization setup, agent registration, authority assignment, limits/policies, approvals, activity and evidence via API + web.
+- **Control plane:** CTRL-01 … CTRL-04, which cover organization setup, agent registration, authority assignment, limits/policies, approvals, activity and evidence via API + web. CTRL-01 — **done** 2026-09-26 (inspect, revoke and emergency control over the API).
 - **Assurance:** ASSURE-01 (trace).
 - **Operations:** PROD-03 (runbooks, observability minimum, readiness gate).
 
@@ -1124,7 +1131,7 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 **PLAN.**
 
-- **After CORE-01:** three streams can run in parallel: CORE-02, CORE-03 and (PROD-01 → CTRL-01).
+- **After CORE-01:** three streams can run in parallel: CORE-02, CORE-03 and (PROD-01 → CTRL-01 → CTRL-02). PROD-01 and CTRL-01 are done.
 - **ASSURE-01** can run alongside CORE-03/04. It reads existing P8 data.
 - **CTRL-01 → CTRL-03** need stable authority/control APIs only. They do **not** need any PAY work.
 - **After CORE-03:**
@@ -1156,48 +1163,47 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 ## 14. Current NEXT Item
 
-**NEXT: CTRL-01 — Authority Administration API**
+**NEXT: CTRL-02 — Organizations, Human Operators & Agent Inventory**
 
-**Previous NEXT:** PROD-01 — **VERIFIED** 2026-09-25 (§9). Before it, CORE-01 —
-VERIFIED 2026-09-25.
+**Previous NEXT:** CTRL-01 — **VERIFIED** 2026-09-26 (§9). Before it, PROD-01
+and CORE-01 — VERIFIED 2026-09-25.
 
-**Why it is next (evidence from PROD-01, not position in the list):**
+**Why it is next (evidence from CTRL-01, not position in the list):**
 
-- After PROD-01, the unblocked candidates are CTRL-01 (hard dependency
-  CORE-01 and soft dependency PROD-01, both met), CORE-02, CORE-03,
-  PROD-02 and ASSURE-01. Exactly one is NEXT.
-- **The shipped Host now governs actions, but nobody can operate it without
-  code.** PROD-01's inventory (§3.8) shows every authority *operation* is
-  in-process only: provisioning actors, trust domains, grants and
-  delegations; revoking Kernel Authority; revoking a bounded grant;
-  activating an emergency stop. The PROD-01 tests had to call
-  `kernelAuthorityProvisioning` and `authorityControlledExecution.revokeGrant`
-  directly. A deployment whose revocation and kill switch require writing
-  code is not safe to operate in an incident — the security value of
-  CORE-01 and P4 is unreachable by the operator who needs it.
-- **It is on the critical path to PILOT READY**, which requires CTRL-01 …
-  CTRL-04; CTRL-02 … 04 hard-depend on CTRL-01. §12 names
-  "PROD-01 → CTRL-01" as one stream.
-- **It now lands on the right Host.** The Master Plan made PROD-01 a soft
-  prerequisite so the revocation API would sit on a host that composes the
-  signed store; that host now exists.
-- PROD-02 (backup of the six governed-action stores) is also pilot-critical
-  and may run in parallel; CORE-03 remains the longest chain to CORE PROVEN
-  and the recommended parallel stream; CORE-02 remains desirable, not
-  pilot-critical (§11.5).
+- After CTRL-01 the unblocked candidates are CTRL-02 (hard dependency CTRL-01,
+  met), PROD-02, CORE-02, CORE-03 and ASSURE-01. CORE-04 and CORE-05 remain
+  behind CORE-03. Exactly one is NEXT.
+- **PILOT READY means "without the founder operating source code or database
+  state" (§11.3), and the largest remaining violation is provisioning.** After
+  CTRL-01 an operator can inspect and revoke authority and stop or resume
+  execution over the API, but onboarding an agent — provisioning its actor,
+  passport, capability token, authority grant and delegation — still requires
+  in-process code (`kernelAuthorityProvisioning`; the CTRL-01 tests provision
+  that way). CTRL-01 deliberately did not expose it (§9, CTRL-01 "Re-scoped"):
+  a single shared bearer secret is the wrong identity for minting standing
+  authority. CTRL-02 owns exactly that — human operator identity and an agent
+  inventory, with provisioning behind them.
+- **It retires CTRL-01's main residual risk.** CTRL-01 administrators are named
+  operators behind shared secrets; CTRL-02's human operator identity is what the
+  administration boundary should authenticate.
+- **It is on the critical path**: CTRL-02 → CTRL-03 → CTRL-04 are all pilot
+  requirements, and CTRL-04 additionally waits on CORE-05.
+- PROD-02 (backup of the six governed-action stores) remains pilot-critical and
+  independent — the recommended parallel stream. CORE-03 remains the longest
+  chain to GOVERNANCE CORE STABLE and CORE PROVEN. CORE-02 remains desirable,
+  not pilot-critical (§11.5). ASSURE-01 is a soft input to CTRL-03, not a
+  blocker for CTRL-02.
 
 **Prerequisites already satisfied:**
 
-- CORE-01 (hard): signed revocation state, fail-closed durable reads.
-- PROD-01 (soft): a secure Host with authentication required, the durable
-  Kernel Authority world, the signed grant store and durable emergency
-  control composed, and an honest `/health` posture.
+- CTRL-01 (hard): the administrative authorization boundary on the canonical
+  Host — a separate administrator credential class, closed request schemas,
+  operator identity from configuration recorded by every store.
 
-**Out of scope for CTRL-01:**
+**Out of scope for CTRL-02:**
 
-- Human operator identity and RBAC (CTRL-02), web UI (CTRL-03), approvals
-  (CORE-05, CTRL-04), KMS/HSM (CORE-02), backup (PROD-02), any PAY or
-  CREDIT work.
+- Web UI (CTRL-03), approvals (CORE-05, CTRL-04), SSO / advanced RBAC
+  (PROD-04), KMS/HSM (CORE-02), backup (PROD-02), any PAY or CREDIT work.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
