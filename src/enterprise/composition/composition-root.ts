@@ -61,6 +61,18 @@ import { createFinancialActionClassifier, createMonetaryAssetRegistry, type Mone
 import { createSqliteExerciseControlLedger } from '../exercise-control-ledger/sqlite-exercise-control-ledger.js';
 import { createAuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import { createGovernanceProfileRegistry, type GovernanceConfiguration, type GovernanceProfileRegistry } from '../governance-profile/index.js';
+import { composeGovernedTrust, type GovernedTrustComposition, type ObligationConfiguration, type TrustedContextConfiguration } from '../trusted-context/index.js';
+import {
+  createInMemoryObligationDischargeStore,
+  createObligationDischargeRecorder,
+  createSqliteObligationDischargeStore,
+  createStoredObligationDischargeProvider,
+  type ObligationDischargeRecorder,
+  type ObligationDischargeStore,
+} from '../obligation-discharge/index.js';
+import { createKernelAuthorityLineageRevalidator } from '../kernel-authority/authority-lineage-revalidator.js';
+import { KernelObligationCapability, resolveKernelObligationFacts, resolveKernelObligations } from '../../kernel/orchestration/obligation-adapter.js';
+import type { ContextProvider } from '../../kernel/index.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
 import { createAuthorityEventStreamModule } from '../modules/authority-event-stream-module.js';
 import { createAuthorityEventProjector, type AuthorityEventProjector } from '../authority-event-stream/projector.js';
@@ -270,6 +282,29 @@ export interface CreateEnterpriseOptions {
    * `GovernanceProfileConfigurationError`.
    */
   readonly governance?: GovernanceConfiguration;
+  /**
+   * CORE-04 — the Trusted Context Boundary for governed actions: the trusted
+   * source registry (which source may **attest** which fact classes, for this
+   * organization, with what freshness) and the context `provider` that reads
+   * candidate facts from those sources. Trusted host configuration; a request
+   * can neither register a source, select one, nor state a trust class.
+   *
+   * Required — and refused if absent — when any Governance Profile declares
+   * material or restrict-only facts; with none declared it is not needed and
+   * nothing changes. Malformed configuration fails `createEnterprise` with a
+   * `GovernedActionConfigurationError` before any store opens. See
+   * `docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md`.
+   */
+  readonly trustedContext?: TrustedContextConfiguration & { readonly provider?: ContextProvider };
+  /**
+   * CORE-04 — obligations on the governed path: the configured discharge
+   * sources (each with its verification class) whose reports the obligation
+   * runtime derives state from. Required when any Governance Profile declares
+   * obligations. The discharge store is the durable SQLite one under `sqlite`
+   * persistence (`obligationDischarge.sqlitePath`), in-memory otherwise, unless
+   * a host supplies `store` (which the host then closes).
+   */
+  readonly obligations?: ObligationConfiguration & { readonly store?: ObligationDischargeStore };
   /**
    * Opt-in durable emergency control: the operational safety interlock that
    * lets an operator stop execution on the bounded-grant path.
@@ -704,6 +739,15 @@ export interface AocEnterprise {
    * credential. It issues nothing, provisions nothing and un-revokes nothing.
    */
   readonly authorityAdministration?: AuthorityAdministrationService;
+  /**
+   * CORE-04 — the trusted, **in-process** writer of obligation discharge
+   * reports, present when obligations are composed. It records what a
+   * configured discharge source reported, attributed to a trusted writer
+   * context; it cannot state an obligation's resulting state, which the
+   * obligation runtime derives from the source's configured verification
+   * class. No HTTP route, SDK method or CTRL-01 administration call reaches it.
+   */
+  readonly obligationDischarges?: ObligationDischargeRecorder;
   /**
    * P8 — the **read-only** surface over the canonical authority event stream,
    * present only when governed actions are composed and a stream store is
@@ -1229,6 +1273,26 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     }
   }
 
+  // CORE-04: the Trusted Context Boundary and obligations, validated and
+  // composed now — before any store opens — so a profile that declares a fact
+  // no source may attest, or obligations nothing can discharge, stops
+  // composition instead of failing every request that depends on it.
+  let governedTrust: GovernedTrustComposition | undefined;
+  if (governedActionOptions !== undefined) {
+    const { provider: contextProvider, ...trustedContextConfiguration } = options.trustedContext ?? { sources: [] };
+    const { store: _obligationStore, ...obligationConfiguration } = options.obligations ?? { sources: [] };
+    governedTrust = composeGovernedTrust({
+      governance,
+      organizationId: configuration.kernelAuthority.organizationId,
+      ...(options.trustedContext !== undefined ? { trustedContext: trustedContextConfiguration } : {}),
+      ...(contextProvider !== undefined ? { contextProvider } : {}),
+      ...(options.obligations !== undefined ? { obligations: obligationConfiguration } : {}),
+      policyComposed: options.policyPackProvider !== undefined,
+    });
+  } else if (options.trustedContext !== undefined || options.obligations !== undefined) {
+    throw new GovernedActionConfigurationError('GOVERNED_ACTION_TRUSTED_CONTEXT_INVALID', 'trustedContext and obligations configure the governed-action path, and governed actions are not enabled.');
+  }
+
   // P12: execution reconciliation, validated and snapshotted before any store
   // is opened. The authorities and the selector are read here, once; nothing
   // later discovers, adds or swaps one.
@@ -1424,6 +1488,32 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     resolutionAuthorities === undefined ? undefined : (options.executionReconciliation?.store ?? (await buildExecutionResolutionStore(configuration, kernelProviders.clock.now)));
   const executionResolutionStoreOpenedHere = executionResolutionStore !== undefined && options.executionReconciliation?.store === undefined;
   if (executionResolutionStoreOpenedHere) opened.push(() => closeIfClosable(executionResolutionStore));
+  // CORE-04: the obligation discharge store, only when obligations are
+  // composed — the durable SQLite file under `sqlite` persistence (an
+  // obligation that forgot its verified discharge on restart would withhold
+  // forever; one that forgot a pending one would be harmless — but a durable
+  // deployment never silently downgrades either way), in-memory otherwise.
+  const obligationDischargeStore: ObligationDischargeStore | undefined =
+    governedTrust?.obligations === undefined
+      ? undefined
+      : (options.obligations?.store ??
+        (persistence.providerKind === 'sqlite'
+          ? await createSqliteObligationDischargeStore(configuration.obligationDischarge.sqlitePath, { now: kernelProviders.clock.now, busyTimeoutMs: configuration.persistence.busyTimeoutMs })
+          : createInMemoryObligationDischargeStore()));
+  const obligationDischargeStoreOpenedHere = obligationDischargeStore !== undefined && options.obligations?.store === undefined;
+  if (obligationDischargeStoreOpenedHere) opened.push(() => closeIfClosable(obligationDischargeStore));
+  // The one obligation capability shape the grant-aware Kernel decides with
+  // and the orchestrator re-reads at issuance: same sources, same profile
+  // declarations, same store.
+  const governedObligationOptions =
+    governedTrust?.obligations === undefined || obligationDischargeStore === undefined
+      ? undefined
+      : {
+          provider: createStoredObligationDischargeProvider(obligationDischargeStore, configuration.kernelAuthority.organizationId),
+          sources: governedTrust.obligations.sources,
+          declaration: { requirements: [] },
+          profileDeclarations: governedTrust.obligations.profileDeclarations,
+        };
   // The write-only projector: the one object lifecycle modules are handed.
   const authorityEvents: AuthorityEventProjector | undefined =
     governedActionOptions === undefined || grantStore === undefined || customerIdentityAdmission === undefined
@@ -1489,6 +1579,20 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
               idGenerator: kernelProviders.idGenerator,
               ...(options.policyPackProvider !== undefined ? { policyPackProvider: options.policyPackProvider } : {}),
               grants: { declaration: options.authorityControlledExecution.grantCapability.declaration },
+              // CORE-04: the Trusted Context Boundary — admission, per effective
+              // Governance Profile, before deterministic policy — and the
+              // profile-declared obligations, on the one grant-aware Kernel.
+              ...(governedTrust?.context !== undefined
+                ? {
+                    contextResolution: {
+                      provider: governedTrust.context.provider,
+                      sources: governedTrust.context.sources,
+                      declaration: { requirements: [] },
+                      profileDeclarations: governedTrust.context.profileDeclarations,
+                    },
+                  }
+                : {}),
+              ...(governedObligationOptions !== undefined ? { obligations: governedObligationOptions } : {}),
             }),
           grantCapability: options.authorityControlledExecution.grantCapability,
           grantStore,
@@ -1523,6 +1627,28 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
                     authority: () => kernelProviders.authorityRuntime,
                   }),
                 },
+              }
+            : {}),
+          // CORE-04: exercise-time lineage revalidation for non-financial
+          // grants, from the same authority world — composed wherever P10's
+          // financial revalidation is.
+          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined && governedActionOptions !== undefined
+            ? {
+                authorityLineage: (() => {
+                  const revalidate = createKernelAuthorityLineageRevalidator({
+                    organizationId: configuration.kernelAuthority.organizationId,
+                    trustDomainId: governedActionOptions.trustDomainId,
+                    authority: () => kernelProviders.authorityRuntime,
+                  });
+                  return (query: { readonly subject: string; readonly organization?: string; readonly at: string; readonly correlation: { readonly action: string; readonly resourceScope: string } }) =>
+                    revalidate({
+                      subject: query.subject,
+                      action: query.correlation.action,
+                      resourceScope: query.correlation.resourceScope,
+                      ...(query.organization !== undefined ? { organizationId: query.organization } : {}),
+                      at: query.at,
+                    });
+                })(),
               }
             : {}),
           // P8: write-only evidence of revocations and reservation facts.
@@ -1722,6 +1848,21 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       monetary,
       // CORE-03: the one frozen semantic registry.
       governance,
+      // CORE-04: the obligations a committed decision stands under, re-read
+      // from the discharge store at issuance — never from the request.
+      ...(governedObligationOptions !== undefined
+        ? {
+            obligations: (() => {
+              const capability = new KernelObligationCapability(governedObligationOptions);
+              return {
+                async satisfiedNow(request: import('../../kernel/index.js').KernelEvaluationRequest): Promise<boolean> {
+                  const resolution = await resolveKernelObligations(capability, request, kernelProviders.clock.now());
+                  return resolution === undefined ? true : resolveKernelObligationFacts(resolution).evaluation.allBlockingObligationsSatisfied;
+                },
+              };
+            })(),
+          }
+        : {}),
       now: kernelProviders.clock.now,
       enterpriseContext,
       events: { enabled: configuration.eventPublishing.enabled, publisher: eventPublisher, nextId: eventIdGenerator.nextId },
@@ -1870,6 +2011,9 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           ? genericHttpAdapters.length + (Array.isArray(options.authorityControlledExecution.executionAdapterRouting.adapters) ? options.authorityControlledExecution.executionAdapterRouting.adapters.length : 0)
           : 1,
     authorityAdministration: authorityAdministration !== undefined ? 'enabled' : 'not-configured',
+    // CORE-04: from the composed objects, never from what was asked for.
+    trustedContext: governedTrust?.context !== undefined && governedActionOrchestrator !== undefined ? 'composed' : 'not-configured',
+    obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind,
   });
 
   const enterprise: AocEnterprise = {
@@ -1905,6 +2049,16 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       : {}),
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     ...(authorityAdministration !== undefined ? { authorityAdministration } : {}),
+    ...(obligationDischargeStore !== undefined && governedTrust?.obligations !== undefined && governedActionOrchestrator !== undefined
+      ? {
+          obligationDischarges: createObligationDischargeRecorder({
+            store: obligationDischargeStore,
+            sources: governedTrust.obligations.sources,
+            organizationId: configuration.kernelAuthority.organizationId,
+            now: kernelProviders.clock.now,
+          }),
+        }
+      : {}),
     ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
     ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
     ...(executionResolutionStore !== undefined ? { executionResolutions: createExecutionResolutionReader(executionResolutionStore) } : {}),

@@ -345,6 +345,9 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       executionAdapters: 2,
       // CTRL-01: no administrator is configured here, so no administration route exists.
       authorityAdministration: 'not-configured',
+      // CORE-04: no profile here declares facts or obligations, so neither is composed — and nothing else changes.
+      trustedContext: 'not-configured',
+      obligations: 'not-configured',
     });
     const health = await getJson(baseUrl, '/health');
     assert.equal(health.status, 200);

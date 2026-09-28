@@ -9,6 +9,8 @@ import {
 } from '../configuration/enterprise-configuration.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
+import { GovernedActionConfigurationError } from '../governed-action/errors.js';
+import { composeGovernedTrust, type ObligationConfiguration, type TrustedContextConfiguration } from '../trusted-context/index.js';
 import type { MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
 
 /**
@@ -84,6 +86,17 @@ export interface EnterpriseHostGovernedActionConfiguration {
    * malformed profile refuses startup; absent, nothing is classified.
    */
   readonly governance?: GovernanceConfiguration;
+  /**
+   * CORE-04 — the trusted context source registry: which source may attest
+   * which fact classes, for this organization, with what freshness. Validated
+   * in full here (and again at composition), so a malformed or over-broad
+   * source refuses startup. The retrieval side — the context provider — is
+   * trusted in-process composition (`BootEnterpriseHostOptions.contextProvider`),
+   * never file content.
+   */
+  readonly trustedContext?: TrustedContextConfiguration;
+  /** CORE-04 — the obligation discharge sources, validated here. */
+  readonly obligations?: ObligationConfiguration;
   readonly genericHttpAdapters: readonly EnterpriseGenericHttpExecutionAdapterOptions[];
   /** Trusted routing: governed action → adapter id. An action with no route is authorized by nothing and reaches no adapter. */
   readonly routes: ReadonlyMap<string, string>;
@@ -198,7 +211,7 @@ function parseAdministrators(env: Env, value: unknown): readonly EnterpriseAdmin
   });
 }
 
-function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActionsFile {
+function parseGovernedActionsFile(env: Env, path: string, organizationId: string): ParsedGovernedActionsFile {
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
@@ -213,7 +226,7 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
     invalid('the file is not valid JSON.');
   }
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
-  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'monetary', 'governance', 'genericHttpAdapters', 'routes'], 'the file');
+  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'monetary', 'governance', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes'], 'the file');
   if (parsed.version !== 1) invalid('version must be 1.');
 
   const trustDomainId = text(parsed.trustDomainId, 'trustDomainId');
@@ -262,6 +275,29 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
     governance = parsed.governance as GovernanceConfiguration;
   }
 
+  // CORE-04: the trusted source registry and the obligation discharge sources,
+  // validated completely now — against the one organization this Host serves
+  // and the fact classes and obligations its profiles declare — by the same
+  // builder the composition root runs. A profile that declares a fact no source
+  // may attest, a source scoped to another organization, an attestation with no
+  // freshness bound, or obligations nothing can discharge, stops the Host here.
+  // (Whether a context provider and a policy are composed is the composition's
+  // question: they are in-process inputs, not file content.)
+  const trustedContext = parsed.trustedContext as TrustedContextConfiguration | undefined;
+  const obligations = parsed.obligations as ObligationConfiguration | undefined;
+  try {
+    composeGovernedTrust({
+      governance: createGovernanceProfileRegistry(governance),
+      organizationId,
+      ...(trustedContext !== undefined ? { trustedContext, contextProvider: { resolveContext: () => Promise.resolve({ observations: [] }) } } : {}),
+      ...(obligations !== undefined ? { obligations } : {}),
+      policyComposed: true,
+    });
+  } catch (error) {
+    if (error instanceof GovernedActionConfigurationError) invalid(`${error.code}: ${error.message}`);
+    throw error;
+  }
+
   // Everything but the credential is handed to the Generic HTTP adapter's own
   // snapshot validation at composition, which refuses unknown keys, non-HTTPS
   // origins, redirects and private-network options.
@@ -292,6 +328,8 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
       customerPrincipals: customerPrincipals.map(({ principal }) => principal),
       monetary,
       ...(governance !== undefined ? { governance } : {}),
+      ...(trustedContext !== undefined ? { trustedContext } : {}),
+      ...(obligations !== undefined ? { obligations } : {}),
       genericHttpAdapters,
       routes,
     },
@@ -327,7 +365,7 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
   const base = loadEnterpriseConfiguration(env);
   const secureProfile = SECURE_ENVIRONMENTS.has(base.environment);
   const file = env[GOVERNED_ACTIONS_FILE_VARIABLE];
-  const parsed = file !== undefined && file.trim().length > 0 ? parseGovernedActionsFile(env, file) : undefined;
+  const parsed = file !== undefined && file.trim().length > 0 ? parseGovernedActionsFile(env, file, base.kernelAuthority.organizationId) : undefined;
   const governed = parsed?.governedActions;
 
   // A customer principal belongs to the one organization this instance serves.

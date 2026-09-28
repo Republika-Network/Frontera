@@ -238,6 +238,17 @@ export interface EnterpriseConfiguration {
    * durable binding. See
    * `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
    */
+  /**
+   * CORE-04 — the durable obligation discharge store: the append-only,
+   * digest-verified log of reports about the obligations governed decisions
+   * stand under. Opened only when governed actions configure obligation
+   * discharge sources, and then the SQLite file under `sqlite` persistence.
+   * Its own file, so the reports that release withheld executions are backed
+   * up and restored on their own terms.
+   */
+  readonly obligationDischarge: {
+    readonly sqlitePath: string;
+  };
   readonly executionResolution: {
     /** SQLite path for the execution resolution store. */
     readonly sqlitePath: string;
@@ -489,6 +500,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     executionOutcome: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH ?? '.data/execution-outcomes.sqlite',
+    },
+    obligationDischarge: {
+      sqlitePath: env.AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH ?? '.data/obligation-discharges.sqlite',
     },
     executionResolution: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',

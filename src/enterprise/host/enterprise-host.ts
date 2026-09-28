@@ -1,4 +1,5 @@
 import type { ExecutionAdapter, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
+import type { ContextProvider, PolicyPackProvider } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import type { AocEnterprise, CreateEnterpriseOptions } from '../composition/composition-root.js';
 import type { GrantAuthorityBinding } from '../execution-governance/index.js';
@@ -65,6 +66,24 @@ export interface BootEnterpriseHostOptions {
    * configures.
    */
   readonly executionAdapters?: readonly ExecutionAdapter[];
+  /**
+   * CORE-04 — the retrieval side of the Trusted Context Boundary: trusted
+   * in-process code that reads **candidate** observations from the sources the
+   * governed-action file registers. Being composed confers no trust — every
+   * observation it returns is admitted or refused by the boundary against the
+   * file's source registry. Required when the file declares `trustedContext`.
+   * The launcher passes none, so a started process whose profiles declare
+   * facts refuses to start until an embedder supplies one.
+   */
+  readonly contextProvider?: ContextProvider;
+  /**
+   * CORE-04 — the organization's deterministic policy, composed in-process
+   * (policy packs have no durable store or file format on the Host yet; the
+   * pack writer is the NB-008-protected one). Required when any profile
+   * declares facts: an admitted fact informs policy, and without policy there
+   * is nothing to decide with it.
+   */
+  readonly policyPackProvider?: PolicyPackProvider;
   readonly logger?: EnterpriseLogger;
 }
 
@@ -80,7 +99,11 @@ export interface EnterpriseHost {
 
 function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions): CreateEnterpriseOptions {
   const governed = host.governedActions;
-  const base: CreateEnterpriseOptions = { configuration: host.configuration, ...(options.logger !== undefined ? { logger: options.logger } : {}) };
+  const base: CreateEnterpriseOptions = {
+    configuration: host.configuration,
+    ...(options.logger !== undefined ? { logger: options.logger } : {}),
+    ...(options.policyPackProvider !== undefined ? { policyPackProvider: options.policyPackProvider } : {}),
+  };
   if (governed === undefined) return base;
 
   const extra = options.executionAdapters ?? [];
@@ -123,6 +146,11 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
     },
     monetary: governed.monetary,
     ...(governed.governance !== undefined ? { governance: governed.governance } : {}),
+    // CORE-04: the file's source registry, with the in-process provider.
+    ...(governed.trustedContext !== undefined
+      ? { trustedContext: { ...governed.trustedContext, ...(options.contextProvider !== undefined ? { provider: options.contextProvider } : {}) } }
+      : {}),
+    ...(governed.obligations !== undefined ? { obligations: governed.obligations } : {}),
     emergencyControl: { enabled: true },
   };
 }
@@ -138,9 +166,14 @@ function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly str
     emergencyControl: 'composed',
     exerciseControls: 'composed',
   };
-  return Object.entries(expected)
+  const shortfalls = Object.entries(expected)
     .filter(([key, value]) => posture[key as keyof EnterpriseHealthPosture] !== value)
     .map(([key, value]) => `${key} is '${String(posture[key as keyof EnterpriseHealthPosture])}', expected '${value}'`);
+  // CORE-04: obligations, when composed, are durable on a secure Host — a
+  // verified discharge forgotten on restart would withhold forever, and a
+  // secure Host never runs authority-relevant state in memory.
+  if (posture.obligations === 'ephemeral') shortfalls.push(`obligations is 'ephemeral', expected 'durable' or 'not-configured'`);
+  return shortfalls;
 }
 
 /**
