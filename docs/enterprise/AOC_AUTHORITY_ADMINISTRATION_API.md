@@ -183,11 +183,13 @@ No digest, signature, key id or storage field is returned.
 
 `bounds` lists every axis the grant states, derived from the grant runtime's
 own axis list (so an axis the exercise gate enforces can never be missing
-here). Since CORE-03 that includes `governanceProfile` — an identity bound on
-`<profileId>@<version>#sha256:…` for an action a Governance Profile governs —
-and, when the grant bounds typed parameters, `bounds.parameters`:
+here). Since CORE-03 a semantic grant also shows `actionClass`,
+`resourceClass` and `governanceProfile` (an identity bound on
+`<profileId>@<version>#sha256:…`), the top-level `semanticsFormat`
+(`frontera.grant-semantics.v1`) and, when the grant bounds typed parameters,
+`bounds.parameters`:
 `[{ dimension, kind: "exact", type, value } | { dimension, kind: "maximum", type: "integer", limit }]`
-in canonical dimension order. A grant issued before CORE-03 shows neither.
+in canonical dimension order. A grant issued before CORE-03 shows none of these.
 
 ### 4.2 `GET /api/admin/authority/executions/{executionId}` — which grant an execution ran under
 

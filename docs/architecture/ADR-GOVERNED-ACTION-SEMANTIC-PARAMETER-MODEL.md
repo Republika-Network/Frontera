@@ -18,7 +18,7 @@ Before CORE-03 the governed-action control flow was action-neutral but its
 | `ActionDescriptor.amount` / `currency` on every Kernel request | `kernel/contracts/kernel-request.ts` | **Legitimate specialization** — the monetary dimension, exact, P9/P10-owned; kept |
 | `spending_limit` / `max_amount` authority constraints | `authority-graph`, `kernel-authority/monetary-constraints.ts` | **Legitimate specialization** (P10) — kept; a generic authority-sourced parameter limit is future work (§9) |
 | P7 aggregate controls keyed on money | `exercise-control-runtime` | **Legitimate specialization** — kept |
-| Reserved context-key names (`paymentCeiling`, `spendingLimit`, …) | `governed-action/intent.ts` | Denylist names, not logic — kept; CORE-03 adds its own names and **dynamically** reserves every declared dimension id |
+| Reserved context-key names (`paymentCeiling`, `spendingLimit`, …) | `governed-action/intent.ts` | Denylist names, not logic — kept; CORE-03 adds a **registry** trusted configuration extends (§2.7) and reserves every declared dimension id |
 | `ActionDescriptor.parameters` (untyped bag) | Kernel request | **Not authority** — legacy mandate metadata; CORE-03 builds nothing on it and documents it as never authority-material |
 
 ## 2. Decision
@@ -62,13 +62,29 @@ Identifiers (dimension, class, profile) share one grammar
 (`^[a-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$`, ≤ 64), are case-sensitive, and a
 registry refuses two that differ only by case.
 
-### 2.3 The generic bound model
+### 2.3 The generic bound model and the grant format
 
-The grant scope gains two **additive** axes, both omitted when absent:
+A semantic grant carries four **additive** scope axes and one **explicit,
+signed format marker**:
 
-- `governanceProfile` — an `identity` bound on `<id>@<version>#<sha256 digest>`;
-- `parameters` — a list (never a map) of typed bounds, strictly ascending by dimension:
-  `{ dimension, kind: 'exact', type, value }` or `{ dimension, kind: 'maximum', type: 'integer', limit }`.
+| Field | Shape | Meaning |
+|---|---|---|
+| `scope.actionClass` | `identity` | the effective action class |
+| `scope.resourceClass` | `identity` | the effective resource class |
+| `scope.governanceProfile` | `identity` on `<id>@<version>#<sha256 digest>` | the effective profile, pinned to its content |
+| `scope.parameters` | list (never a map) of typed bounds, strictly ascending by dimension: `{ dimension, kind: 'exact', type, value }` or `{ dimension, kind: 'maximum', type: 'integer', limit }` | what the decision evaluated, under each dimension's declared bound kind |
+| `semanticsFormat` (top-level) | `"frontera.grant-semantics.v1"` | the grant is in the CORE-03 semantic format |
+
+**Marker/axes agreement is a well-formedness rule** (`isConsistentGrantSemantics`),
+enforced at issuance, by both stores before signing or keeping a grant, on
+every durable read (after signature verification) and at every exercise:
+
+- no marker → none of the four semantic axes may be present (a pre-CORE-03 grant);
+- the v1 marker → `actionClass`, `resourceClass` and `governanceProfile` all
+  present; `parameters` only beside them (a profile may govern no parameter);
+- any other marker, or any partial combination → refused
+  (`GRANT_SEMANTICS_FORMAT_INVALID` / `GRANT_EXERCISE_INTEGRITY_INVALID` /
+  `BOUNDED_GRANT_STORE_STATE_CORRUPT`).
 
 Comparison is total and exact; different kinds, types or malformed values are
 `incomparable`, which fails closed exactly like `broader`. Attenuation applies
@@ -78,8 +94,10 @@ parameters: a child that drops a parent's parameter bound is broader. The
 Kernel projects each evaluated parameter under its *declared* bound kind
 (`exact` pins the value; `maximum` admits it and below); a parameter no declared
 kind can bound projects an empty (malformed) list, so no grant derives. The
-exercise gate requires every granted dimension to be stated and admitted, and
-refuses any stated dimension the grant does not bound, and a profile mismatch.
+exercise gate requires every granted dimension to be stated and admitted,
+refuses any stated dimension the grant does not bound, and refuses an attempt
+under another action class, resource class or profile
+(`GRANT_EXERCISE_SEMANTIC_CLASS_MISMATCH`, `GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH`).
 
 `maximum` is a statement a *domain* makes about a dimension ("less is always
 within the authority for more") in trusted configuration — never a caller.
@@ -101,14 +119,14 @@ relevantPolicies [policy reference]   — references, never inline rules
   via the Governance Store's existing canonicalizer (no new canonicalizer). An
   edit under an unchanged version changes the reference.
 - **One active version per profile id, one profile per action class × resource class.**
-  Lifecycle (draft → active → retired) is future work (§9).
+  Lifecycle (draft → active → retired) is future work (§8).
 - **Trusted source only:** `CreateEnterpriseOptions.governance` or the shipped
   Host's governed-action file (`governance` key). Built and validated once at
   composition; a malformed profile refuses Host startup
   (`HOST_GOVERNED_ACTIONS_FILE_INVALID`).
 - **A profile is not policy.** It says what matters; policy decides what is allowed.
 
-### 2.5 Selection boundary
+### 2.5 Selection boundary: the effective profile is server-resolved
 
 `resolve(action, resource)`:
 
@@ -118,40 +136,102 @@ relevantPolicies [policy reference]   — references, never inline rules
 | `resolved` | both classified, exactly one profile | parameters validated against that profile |
 | `refused` | half-classified, or classified with no profile | **rejected** — never downgraded to unclassified |
 
-The caller may send `governanceProfile: { id, version }` as an **expectation**.
-A mismatch (substitution, downgrade, upgrade) is refused. There is no field
-through which a caller can supply, select or edit a profile.
+The **effective** profile is always the resolver's: it is what
+`action.semantics` carries, what the committed decision records and what the
+grant binds (`<id>@<version>#<digest>`). The caller may send
+`expectedGovernanceProfile: { id, version }` — a **hint that pins**. A mismatch
+(substitution, downgrade, upgrade) is refused before the Kernel runs; a match
+or an absent hint changes nothing. `governanceProfile` is not an envelope
+field, and neither name may be asserted as context. There is no field through
+which a caller can supply, select or edit a profile.
 
-### 2.6 Parameter vs bound vs context
+### 2.6 One parameter model; parameter vs bound vs context
 
-| | Owner | Where |
+| Datum | Class | Where |
 |---|---|---|
-| Parameter (what the action proposes) | caller, typed by the declared dimension | `intent.parameters` → Kernel `action.governedParameters` → policy `governedParameters` |
-| Bound (what authority permits) | the committed decision's projection, narrowed only by the trusted host | grant `scope.parameters` |
-| Trusted context (verified facts) | CORE-04 (not here) | policy `metadata['aoc.context']`, unchanged |
+| Typed declared parameters | **authority material** | `intent.parameters` (untrusted wire) → validated declared list → Kernel `action.governedParameters` → policy `governedParameters` → grant `scope.parameters` → exercise `parameters` |
+| Effective profile id/version/digest, action class, resource class | **authority material** | Kernel `action.semantics` → policy fields → grant axes + `semanticsFormat` → exercise |
+| Typed parameters for adapters | **execution material** — none in CORE-03 | §8 |
+| Profile `materialFacts` | declared references to future **trusted context** (CORE-04) | policy `metadata['aoc.context']`, unchanged |
+| `assertedContext`, legacy `ActionDescriptor.parameters` | **metadata**, never authority | recognition metadata only |
 
-Proposed parameters never enter the resolved-facts `metadata` namespace. Every
-declared dimension id (any case) is reserved in `assertedContext`, as are
-`resourceClass`, `governanceProfile`, `governedParameters`.
+There is one canonical authority-relevant parameter model
+(`src/features/governed-parameter-runtime`). The profile's `parameters` declare
+*which* dimensions it governs; they hold no values. The legacy untyped
+`ActionDescriptor.parameters` bag is `@deprecated` and non-authoritative: its
+only reader is the recognition metadata copy, the governed path never sets it,
+and a test proves it changes no policy input, no grant source and no decision
+(`kernel-legacy-parameters.test.ts`).
 
-### 2.7 Policy integration
+Proposed parameters never enter the resolved-facts `metadata` namespace.
 
-Four closed predicate fields: `actionClass`, `resourceClass`,
-`governanceProfile` (profile id) and `parameter` + `parameterId` (exact dimension
-id, looked up in a list — no path, no prototype read). The validator refuses a
-parameter predicate without a valid id, with a path, or with an ordered
-threshold that is not a safe integer. Deterministic; no expression language.
+### 2.7 The reserved-key registry
+
+`GOVERNED_ACTION_RESERVED_CONTEXT_KEYS` stays the built-in list (now also
+`resourceClass`, `governanceProfile`, `expectedGovernanceProfile`,
+`governedParameters`). Trusted configuration extends it through
+`governance.reservedContextKeys` (validated key grammar, case-insensitive,
+no case-only duplicates) — the registry verticals such as a payment-protocol
+pack use (L-7, PAY-02). Every declared dimension id is reserved too, in any
+case. A request can neither add, name nor remove a reserved key.
+
+### 2.8 Policy integration
+
+Five closed, generic predicate fields: `actionClass`, `resourceClass`,
+`governanceProfile` (effective profile id), `governanceProfileVersion`
+(effective version, ordered numerically) and `parameter` + `parameterId` (exact
+dimension id, looked up in a list — no path, no prototype read). The validator
+refuses a parameter predicate without a valid id, with a path, or with an
+ordered threshold that is not a safe integer. Deterministic; no expression
+language. The engine knows no domain name: `recordCount`, `export` and
+`customer_dataset` exist only in profile and policy data
+(`governed-action-neutrality-structure.test.ts`).
+
+### 2.9 `currency` and `unit`: one canonical mapping point
+
+Not renamed. `currency` stays the frozen v1 wire name and the Kernel/policy
+contract name; `unit` stays P9's canonical name. Every translation between
+them happens in `governed-action/monetary-naming.ts` and nowhere else
+(structurally tested).
+
+### 2.10 NB-008 — policy-pack writes are attributed and freezable
+
+Policy-pack writes (`registerPolicyPack`, `registerPolicyPackVersion`,
+`activate`/`deprecate`/`revoke`/`supersede`, `freeze`) take a trusted
+`PolicyPackWriterContext { system: true, actorId }` first — the shape
+`KernelAuthorityProvisioningService` requires — and are refused without one
+(`POLICY_PACK_WRITER_REQUIRED`), changing nothing. The writer is recorded on
+the pack (`registeredBy`, `lastWrittenBy`), the version (`registeredBy`,
+`statusChangedBy`) and every lifecycle event (`payload.actorId`).
+`PolicyPackRuntime` keeps its store and registry `#private` and exposes a
+frozen read-only store facade, so there is no write path around the gate.
+`freeze(writer)` makes packs and versions read-only for the rest of the
+process (`POLICY_PACK_REGISTRY_FROZEN`), at the registry and at the store.
+Residual (SEC-TRUST-001): code in the same process can construct a writer
+context, exactly as it can a Kernel-Authority system context — the guarantee
+is attribution and an explicit, freezable boundary, not isolation from the host.
 
 ## 3. Canonicalization, authenticity, identity
 
-- `serializeGrantScope` emits `governanceProfile` and `parameters` at their
-  canonical-JSON positions; bytes are pinned against
-  `governance-store/canonical-json.ts` (`pre-core-03-compatibility.test.ts`).
-- Both axes are inside `serializeBoundedGrant` → the grant `digest`, the grant
-  `id`, the `sourceDigest`, and the Ed25519 signing bytes
-  (`frontera:authority-artifact:bounded-grant:v1\n` + stored record). Tampering
-  with a parameter bound, the profile, a type or a dimension name is refused on
-  read.
+- `serializeGrantScope` emits every semantic axis at its canonical-JSON
+  position; `serializeBoundedGrant` emits `semanticsFormat` between `scope` and
+  `sourceDigest`. Bytes are pinned against `governance-store/canonical-json.ts`.
+- `semanticsFormat`, `actionClass`, `resourceClass`, the effective profile
+  reference and every parameter bound are inside the grant `id`, `digest`,
+  `sourceDigest` and the Ed25519 signing bytes. Tampering with, stripping or
+  adding any of them is refused on read.
+- **Signing domain: kept (`frontera:authority-artifact:bounded-grant:v1\n`),
+  deliberately.** A domain tag separates *artifact kinds* (grant, revocation,
+  revocation state); it is not needed to separate grant *formats* because:
+  (1) `semanticsFormat` and every semantic axis are inside the signed payload,
+  so no byte of a signed grant can be reinterpreted under the other format
+  without breaking the signature; (2) the marker/axes agreement rule is checked
+  after verification, so even an authentic but inconsistent grant is refused;
+  (3) legacy signed bytes contain no marker and no axis, and are exactly the
+  pre-CORE-03 bytes, so legacy signatures stay valid with no re-signing.
+  Bumping the domain would instead have required dual-domain verification and
+  still needed the marker to choose between them. Tested in
+  `pre-core-03-compatibility.test.ts` ("signing domain (§7)").
 - The Kernel request carries `semantics` and `governedParameters` (ids as values,
   never keys, so key-name redaction can never collapse two requests), digested
   into the Governance Store payload digest: different parameters never share an
@@ -159,14 +239,23 @@ threshold that is not a safe integer. Deterministic; no expression language.
 
 ## 4. Versioning and migration
 
-- **No schema version change.** Bounded-grant store stays
-  `aoc.bounded-grant-store.schema.v3`; signing domain stays `…:bounded-grant:v1`;
-  Governance Store and P11 schemas unchanged.
+| Artifact | Legacy (pre-CORE-03) | New (CORE-03 semantic) |
+|---|---|---|
+| Bounded-grant store schema | `aoc.bounded-grant-store.schema.v3` | unchanged |
+| Record envelope format | `aoc.bounded-grant-store.record.v2` | unchanged |
+| Signing domain | `…bounded-grant:v1` | unchanged (§3) |
+| Grant semantic format | *absent* | `semanticsFormat: "frontera.grant-semantics.v1"` (signed) |
+| Semantic axes | none | `actionClass`, `resourceClass`, `governanceProfile` required; `parameters` optional |
+
 - **Legacy grants** are read unchanged: identical bytes, id, digest and
   signature (proven against a real pre-CORE-03 signed SQLite store generated by
   the unmodified `2ee659b` build, `src/enterprise/__tests__/fixtures/pre-core-03/`).
-  They bound no profile and no parameter, so an attempt stating either is
+  They bound no class, profile or parameter, so an attempt stating any is
   refused. Nothing is translated, re-signed or widened.
+- **Downgrade and mixing prevention:** stripping the marker, stripping any
+  semantic axis, adding a marker to a legacy grant, or changing the marker is
+  refused on read (signature and agreement rule); a store refuses to sign a
+  grant whose marker and axes disagree. All tested.
 - **Legacy requests** (no semantics) digest byte-identically, so idempotent
   replay across the upgrade holds.
 - **Profile change and idempotent retry:** the request is rebuilt from the
@@ -175,36 +264,42 @@ threshold that is not a safe integer. Deterministic; no expression language.
   idempotency key, the rebuilt request digests differently and the retry is an
   idempotency **conflict** (`rejected`) — never a silent re-decision under the
   new profile. The committed decision stands as recorded.
-- **Rollback constraint:** a grant carrying the new axes is unreadable by
-  pre-CORE-03 code (its round-trip re-serialization drops the unknown key and the
-  row is refused). Rolling back after issuing such grants fails **closed** for
-  those grants only. Documented, not mitigated.
+- **Rollback constraint:** pre-CORE-03 code refuses a semantic grant — its
+  canonical re-serialization drops the unknown fields, so the row fails the
+  round-trip and reads as `BOUNDED_GRANT_STORE_STATE_CORRUPT`. Verified by
+  running the actual `2ee659b` build against a store written by the CORE-03
+  build: the legacy-shaped grant reads, the semantic grant is refused. Rolling
+  back after issuing semantic grants fails **closed** for those grants only.
 
 ## 5. API
 
 - `POST /api/governed-actions`: two optional request fields (`parameters`,
-  `governanceProfile`). No new route; `release/api-surface.v1.json` unchanged.
-  Existing clients are unaffected: an unprofiled deployment behaves exactly as
-  before, and the fields are refused where no profile governs.
-- CTRL-01 grant view: `bounds` now derives from `GRANT_BOUND_KEYS` (it
-  previously hard-coded five keys and would have hidden a new axis) and adds
-  `bounds.parameters`. No new admin route; no route mints or expands authority.
+  `expectedGovernanceProfile`). No new route; `release/api-surface.v1.json`
+  unchanged. An unprofiled deployment behaves exactly as before, and the fields
+  are refused where no profile governs.
+- CTRL-01 grant view: `bounds` derives from `GRANT_BOUND_KEYS` (it previously
+  hard-coded five keys and would have hidden a new axis) and adds
+  `bounds.parameters`; `semanticsFormat` is shown when present. No new admin
+  route; no route mints or expands authority.
 - SDK types: two optional fields on `GovernedActionIntent`.
 
 ## 6. Threat review
 
 | Threat | Mitigation | Residual |
 |---|---|---|
-| Parameter smuggling (metadata, context, shadow keys) | Closed envelope; only declared dimensions; case-variant keys undeclared; declared ids reserved in context (any case); policy reads only the typed list | Context is still caller claims to recognition (unchanged; CORE-04) |
+| Parameter smuggling (metadata, context, shadow keys) | Closed envelope; only declared dimensions; case-variant keys undeclared; declared ids and registered keys reserved in context (any case); policy reads only the typed list | Context is still caller claims to recognition (unchanged; CORE-04) |
 | Undeclared dimensions | Registry is closed; profile may reference only declared dimensions; envelope refuses others; exercise refuses unbounded stated dimensions | — |
 | Type confusion | Typed values and typed bounds; no coercion; token `"5"` never integer `5` | — |
 | Comparator confusion | Comparator fixed by the dimension declaration; kind/type mismatch = incomparable | A domain that wrongly declares `maximum` for a non-monotone dimension mis-bounds its own grants (configuration trust, AA-002) |
-| Profile substitution / downgrade / version confusion | Trusted resolver chooses; caller may only pin; mismatch refused; profile reference (with digest) bound into the signed grant and checked at exercise | No profile lifecycle or signing of profile content (§9) |
+| Profile substitution / downgrade / version confusion | Effective profile server-resolved; caller may only pin; mismatch refused; the valid follow-up commits and binds the real id/version/digest; exercise refuses another profile | No profile lifecycle or signing of profile content (§8) |
+| Action-class / resource-class substitution | Classes are explicit signed grant axes checked at exercise | — |
+| Format downgrade / mixing | Signed `semanticsFormat`; marker/axes agreement at issue, store, read and exercise | — |
 | Canonicalization collision | Lists sorted and duplicate-free as a well-formedness rule; ids as values; pinned against the canonicalizer | — |
 | Legacy/new mismatch, migration expansion | No translation; legacy grants carry no new axes; stating one against them is refused | Rollback constraint (§4) |
-| Action / resource substitution | Grant `action` identity and `resources` set checked at exercise (pre-existing, re-proven through ACE) | — |
-| Metadata as authority | `ActionDescriptor.parameters` documented and tested as never authority-material; policy `metadata` stays resolved-facts only | — |
-| Financial regression | P9/P10 suites unchanged; money not routed through profiles | — |
+| Action / resource substitution | Grant `action` identity and `resources` set checked at exercise (re-proven through ACE) | — |
+| Metadata as authority | Legacy `ActionDescriptor.parameters` deprecated and proven inert; policy `metadata` stays resolved-facts only | — |
+| Policy self-modification (NB-008) | Attributed writes behind a trusted writer; no write path around the registry; freeze | In-process code can construct a writer (SEC-TRUST-001); packs stay in-process (no durable policy store) |
+| Financial regression | P7/P9/P10/P11 behaviour unchanged; money not routed through profiles | One P9 test file gained the writer argument at its registration call sites (§2.10), assertions untouched |
 | Profile configuration tampering | Profiles are host configuration; a malformed set refuses startup | Whoever controls configuration controls governance (AA-002) |
 
 ## 7. Consequences
@@ -212,25 +307,25 @@ threshold that is not a safe integer. Deterministic; no expression language.
 - Materially different actions over the same resource can be governed
   differently by policy and profile data alone, with no Kernel change
   (`governed-action-thesis-read-export.test.ts`).
-- The Kernel, orchestrator, grant and execution runtimes stay domain-free,
-  enforced structurally (`governed-action-neutrality-structure.test.ts`).
+- The Kernel, orchestrator, grant and execution runtimes and the policy engine
+  stay domain-free, enforced structurally (`governed-action-neutrality-structure.test.ts`).
 - PAY/CREDIT/INTEL get a typed target: action class, resource class, profile
-  id/version, declared parameters.
+  id/version, declared parameters; PAY-02 gets the reserved-key registry.
 
 ## 8. Not done here (owned elsewhere)
 
-- **Adapter transmission of parameters.** `ValidatedExecutionAction` does not
-  carry typed parameters yet: P11's prepared attempt records the exact adapter
-  context under a closed v1 schema, and adding parameters needs an explicit P11
-  schema version. Parameters are governed (policy, grant, exercise) but not
-  handed to adapters. Owner: CORE-08 (first domain adapter that needs them).
+- **Adapter transmission of parameters (execution material).**
+  `ValidatedExecutionAction` does not carry typed parameters: P11's prepared
+  attempt records the exact adapter context under a closed v1 schema, and CORE-03
+  deliberately does not expand P11. Parameters are fully governed (policy,
+  grant, exercise) on the one canonical path; they are not handed to adapters.
+  Owner: CORE-08 (first domain adapter that needs them).
 - **Authority-sourced non-money limits** (a generic counterpart of P10's
   `spending_limit`): today a non-money bound comes from the decision's
   projection and trusted host narrowing. Owner: CTRL-02 (provisioning schema)
   with CORE-04.
-- **NB-008** (policy-pack writes carry no caller identity): unchanged. It is a
-  policy-administration identity problem that needs the operator identity model;
-  re-homed to CTRL-02. Policy packs remain unwired on the shipped Host.
-- **Profile lifecycle, promotion and signing** (OQ-2, who may promote): CTRL-02.
+- **Durable policy store** and wiring policy packs into the shipped Host: not
+  CORE-03 (NB-008's attribution and freeze are closed here).
+- **Profile lifecycle, promotion identity and signing** (OQ-2, who may promote): CTRL-02.
 - **Material-fact admission:** CORE-04.
 - **Profile resolution by interpretation:** INTEL-02.

@@ -406,7 +406,7 @@ property is rejected, never ignored):
   dimension id (an integer as a JSON number that is a safe integer, a token as
   a string, a boolean as a boolean; no coercion). Refused when no profile
   governs the action, when a key is undeclared, when a required dimension is
-  absent or when a value has the wrong type. `governanceProfile` —
+  absent or when a value has the wrong type. `expectedGovernanceProfile` —
   `{ id, version }`, an *expectation* that pins the profile the Host resolves;
   a mismatch is refused, and it never selects a profile. A Host without a
   `governance` configuration behaves exactly as before.
