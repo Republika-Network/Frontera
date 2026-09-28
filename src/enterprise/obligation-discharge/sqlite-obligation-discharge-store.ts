@@ -117,6 +117,11 @@ function tableExists(db: import('better-sqlite3').Database, name: string): boole
   return db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name) !== undefined;
 }
 
+/** Whether the file holds no schema object at all — the only state in which a new genesis may be created. */
+function isEmptyDatabase(db: import('better-sqlite3').Database): boolean {
+  return db.prepare(`SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1`).get() === undefined;
+}
+
 function toStored(row: Row): StoredObligationDischarge {
   return {
     organizationId: row.organization_id,
@@ -156,7 +161,10 @@ export async function createSqliteObligationDischargeStore(path: string, options
   // detection is CORE-07.
   let witnessed = -1;
 
-  function verifiedState(): { readonly state: ObligationDischargeStateCommitment; readonly rows: readonly StoredObligationDischarge[] } {
+  function verifiedState(): { readonly state: ObligationDischargeStateCommitment; readonly rows: readonly StoredObligationDischarge[]; readonly keyId: string } {
+    for (const table of ['obligation_discharge_store_meta', 'obligation_discharge_head', 'obligation_discharges']) {
+      if (!tableExists(db, table)) corrupt(`The obligation discharge store is missing '${table}'; it is refused, never re-initialized.`);
+    }
     const meta = db.prepare('SELECT schema_version, store_id, organization_id FROM obligation_discharge_store_meta WHERE id = 1').get() as
       | { readonly schema_version: number; readonly store_id: string; readonly organization_id: string }
       | undefined;
@@ -178,11 +186,12 @@ export async function createSqliteObligationDischargeStore(path: string, options
     }
     const verification = verifier.verifyObligationDischargeState(state, signature);
     if (!verification.verified) corrupt(`The obligation discharge store's committed state is not authentic (${verification.failure}).`);
+    const keyId = verification.keyId;
     const rows = (db.prepare('SELECT * FROM obligation_discharges ORDER BY sequence ASC').all() as Row[]).map(toStored);
     verifyObligationDischargeHistory(rows, state);
     if (state.sequence < witnessed) corrupt('The obligation discharge store regressed to an earlier committed state while this process was running.');
     witnessed = Math.max(witnessed, state.sequence);
-    return { state, rows };
+    return { state, rows, keyId };
   }
 
   try {
@@ -193,6 +202,11 @@ export async function createSqliteObligationDischargeStore(path: string, options
       throw new ObligationDischargeError('OBLIGATION_DISCHARGE_STORE_UNSUPPORTED', 'This obligation discharge store uses the unauthenticated v1 format, which is never upgraded into trusted authority. Remove it; no shipped release wrote it.');
     }
     if (!tableExists(db, 'obligation_discharge_store_meta')) {
+      // A genesis is created only for a file that holds nothing at all. A file
+      // that already has tables — rows, a head, anything — but no identity is
+      // never re-initialized: that would sign a fresh, empty authority state
+      // over whatever someone left there.
+      if (!isEmptyDatabase(db)) corrupt('The obligation discharge store has content but no authenticated identity; it is never re-initialized.');
       // A new store: its identity and signed genesis are created together, and
       // the signature is produced before anything is written.
       const storeId = `obligation-discharge-store:${randomUUID()}`;
@@ -207,7 +221,26 @@ export async function createSqliteObligationDischargeStore(path: string, options
     }
     // Verified before the store is handed to anything: a forged or foreign
     // store refuses the Host at startup, not at the first issuance.
-    verifiedState();
+    const opened = verifiedState();
+    // Key rotation — the CORE-01 rule, reused unchanged: a state that verifies
+    // under a trusted key other than the active one is re-signed, *unchanged*,
+    // under the active key, inside a transaction that verifies it again and
+    // writes only if it is still exactly that state; then read back. Best
+    // effort: an unavailable signer leaves a still-valid state, and the next
+    // append signs under the active key anyway.
+    if (opened.keyId !== signer.activeKeyId) {
+      try {
+        const signature = await signer.signObligationDischargeState(opened.state);
+        db.transaction(() => {
+          const current = verifiedState().state;
+          if (current.sequence !== opened.state.sequence || current.chainDigest !== opened.state.chainDigest || current.storeId !== opened.state.storeId) return;
+          db.prepare('UPDATE obligation_discharge_head SET signature_json = ? WHERE id = 1').run(JSON.stringify(signature));
+          verifiedState();
+        }).immediate();
+      } catch {
+        // Nothing was written unless the re-signed state verified on read-back.
+      }
+    }
   } catch (error) {
     db.close();
     throw error;
@@ -217,7 +250,6 @@ export async function createSqliteObligationDischargeStore(path: string, options
     `INSERT INTO obligation_discharges (sequence, organization_id, request_id, action, resource_scope, obligation_type, source_id, outcome, observed_at, reference, subject_id, recorded_by, recorded_at, row_digest)
      VALUES (@sequence, @organization_id, @request_id, @action, @resource_scope, @obligation_type, @source_id, @outcome, @observed_at, @reference, @subject_id, @recorded_by, @recorded_at, @row_digest)`,
   );
-  const selectHead = db.prepare('SELECT sequence, chain_digest FROM obligation_discharge_head WHERE id = 1');
   const updateHead = db.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ?, updated_at = ? WHERE id = 1');
 
   let closed = false;
@@ -239,8 +271,12 @@ export async function createSqliteObligationDischargeStore(path: string, options
     const signature = await signer.signObligationDischargeState(next);
     const recordedAt = options.now();
     db.transaction(() => {
-      const current = selectHead.get() as { readonly sequence: number; readonly chain_digest: string } | undefined;
-      if (current === undefined || current.sequence !== state.sequence || current.chain_digest !== state.chainDigest) {
+      // Under the write lock, the whole history is verified again — signature,
+      // exact row set and chain — and must still be exactly the state the new
+      // head was signed over. A row tampered between planning and commit can
+      // therefore never be laundered into a new valid signature.
+      const current = verifiedState().state;
+      if (current.sequence !== state.sequence || current.chainDigest !== state.chainDigest || current.storeId !== state.storeId) {
         corrupt('The obligation discharge store changed while a report was being recorded; nothing was written.');
       }
       insert.run({
@@ -260,7 +296,7 @@ export async function createSqliteObligationDischargeStore(path: string, options
         row_digest: digest,
       });
       updateHead.run(sequence, next.chainDigest, JSON.stringify(signature), recordedAt);
-    })();
+    }).immediate();
     witnessed = Math.max(witnessed, sequence);
     return Object.freeze({ ...content, correlation: Object.freeze({ ...content.correlation }), sequence, digest });
   }

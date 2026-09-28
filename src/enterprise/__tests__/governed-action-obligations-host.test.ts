@@ -9,6 +9,7 @@ import { toKernelEvaluationResult } from '../governance-store/store-common.js';
 import {
   ObligationDischargeError,
   nextObligationDischargeChainDigest,
+  obligationDischargeGenesisDigest,
   obligationDischargeRowDigest,
   type ObligationDischargeRecordInput,
   type ObligationDischargeWriterContext,
@@ -299,6 +300,79 @@ describe('CORE-04 — a database-only writer cannot manufacture obligation satis
     const released = await govern(third.baseUrl, deploy('release-forgery'), key);
     assert.equal(released.body['status'], 'executed', released.text);
     assert.equal(third.calls.length, 1);
+  });
+
+  it('the real attack, permanently: Host stopped → forged verified discharge with every unkeyed digest recomputed → restart refused, no grant, no adapter; the legitimate recorder then releases exactly once', async () => {
+    const first = await started();
+    await provision(first.host);
+    const key = nextKey('attack');
+    const withheld = await govern(first.baseUrl, deploy('release-attack'), key);
+    assertWithheldForObligations(withheld, 'blocked');
+    assert.equal(first.calls.length, 0);
+    const remediate = snapshot(first.dir);
+    await first.host.close();
+
+    await forgeVerifiedDischarge(first.dir, withheld.body['requestId'] as string);
+    await assert.rejects(() => started(first.dir), (error: unknown) => error instanceof ObligationDischargeError && error.code === 'OBLIGATION_DISCHARGE_STORE_CORRUPT');
+
+    // Separately, the legitimate path on the authentic state.
+    remediate();
+    const second = await started(first.dir);
+    assertWithheldForObligations(await govern(second.baseUrl, deploy('release-attack'), key), 'authentic, not yet discharged');
+    await recorder(second).record(WRITER, report(withheld));
+    await second.host.close();
+    const third = await started(first.dir);
+    assert.equal((await govern(third.baseUrl, deploy('release-attack'), key)).body['status'], 'executed');
+    assert.equal(third.calls.length, 1);
+    assert.equal(second.calls.length, 0);
+  });
+
+  it('deleting a genuine self-reported row — so a genuine later independent waiver would apply — is refused at restart; no grant, no adapter', async () => {
+    for (const mode of ['attacker-key', 'head-untouched'] as const) {
+      const booted = await started();
+      await provision(booted.host);
+      const key = nextKey('delete');
+      const withheld = await govern(booted.baseUrl, deploy(`release-delete-${mode}`), key);
+      await recorder(booted).record(WRITER, report(withheld, { sourceId: 'ticket-notes', reference: 'TICKET-DEL' }));
+      await recorder(booted).record(WRITER, report(withheld, { outcome: 'waived', reference: 'CAB-WAIVE-LATE' }));
+      assertWithheldForObligations(await govern(booted.baseUrl, deploy(`release-delete-${mode}`), key), 'discharged then waived: the lifecycle refuses the waiver');
+      await booted.host.close();
+
+      const db = new Database(join(booted.dir, 'obligation-discharges.sqlite'));
+      try {
+        const meta = db.prepare('SELECT store_id, organization_id FROM obligation_discharge_store_meta WHERE id = 1').get() as { store_id: string; organization_id: string };
+        const rows = db.prepare('SELECT * FROM obligation_discharges ORDER BY sequence').all() as Record<string, unknown>[];
+        const kept = rows.filter((row) => row['source_id'] !== 'ticket-notes');
+        let chain = obligationDischargeGenesisDigest(meta.store_id, meta.organization_id);
+        db.exec('DROP TRIGGER IF EXISTS obligation_discharges_no_delete; DROP TRIGGER IF EXISTS obligation_discharges_no_update;');
+        db.prepare('DELETE FROM obligation_discharges').run();
+        kept.forEach((row, index) => {
+          const sequence = index + 1;
+          const digest = obligationDischargeRowDigest(meta.store_id, sequence, {
+            organizationId: row['organization_id'] as string,
+            correlation: { requestId: row['request_id'] as string, action: row['action'] as string, resourceScope: row['resource_scope'] as string },
+            obligationType: row['obligation_type'] as string,
+            sourceId: row['source_id'] as string,
+            outcome: row['outcome'] as string,
+            observedAt: row['observed_at'] as string,
+            ...(row['reference'] !== null ? { reference: row['reference'] as string } : {}),
+            ...(row['subject_id'] !== null ? { subjectId: row['subject_id'] as string } : {}),
+            recordedBy: row['recorded_by'] as string,
+            recordedAt: row['recorded_at'] as string,
+          });
+          db.prepare('INSERT INTO obligation_discharges VALUES (@sequence, @organization_id, @request_id, @action, @resource_scope, @obligation_type, @source_id, @outcome, @observed_at, @reference, @subject_id, @recorded_by, @recorded_at, @row_digest)').run({ ...row, sequence, row_digest: digest });
+          chain = nextObligationDischargeChainDigest(chain, digest);
+        });
+        if (mode === 'attacker-key') {
+          const signature = await testSigner(AUTHORITY_KEY_UNTRUSTED).signObligationDischargeState({ storeId: meta.store_id, organizationId: meta.organization_id, sequence: kept.length, chainDigest: chain });
+          db.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(kept.length, chain, JSON.stringify(signature));
+        }
+      } finally {
+        db.close();
+      }
+      await assert.rejects(() => started(booted.dir), (error: unknown) => error instanceof ObligationDischargeError && error.code === 'OBLIGATION_DISCHARGE_STORE_CORRUPT', mode);
+      assert.equal(booted.calls.length, 0);
+    }
   });
 
   it('the append-only triggers still refuse UPDATE and DELETE — defense in depth, not the boundary', async () => {
