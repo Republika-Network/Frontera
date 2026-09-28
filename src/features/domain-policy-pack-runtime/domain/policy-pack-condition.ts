@@ -81,6 +81,18 @@ export interface PolicyPredicateCondition {
    * only restrict (validator: no `allow`/`no_op` effect, no negation).
    */
   readonly factClass?: string;
+  /**
+   * CORE-04 — compare against an **admitted material fact** instead of a
+   * literal `value`: "the proposed `invoiceTotal` parameter equals the
+   * attested `invoice.amount`". Mutually exclusive with `value`. Only a
+   * `contextFact` may be a comparand (never a restrict-only fact, never the
+   * request), and when it is not admitted the comparand is absent — an ordered
+   * or equality comparison against an absent comparand never matches.
+   *
+   * The proposed value and the attested one stay distinct: nothing overwrites
+   * either with the other.
+   */
+  readonly valueFrom?: { readonly field: 'contextFact'; readonly factClass: string };
 }
 
 export type PolicyCondition = PolicyGroupCondition | PolicyPredicateCondition;

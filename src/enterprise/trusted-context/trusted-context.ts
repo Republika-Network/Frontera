@@ -34,7 +34,7 @@ import { GovernedActionConfigurationError, type GovernedActionConfigurationError
  * Kernel the governed-action path evaluates through. This module does not
  * admit anything itself. It turns trusted configuration — the source registry
  * below and each Governance Profile's material and restrict-only fact classes —
- * into that boundary's declarations, and refuses, at composition and before any
+ * into that boundary's declarations, and refuses, at composition and before a
  * store opens, every configuration under which a declared fact could not be
  * admitted or could be admitted from somewhere it should not.
  *
@@ -102,7 +102,7 @@ export interface ObligationConfiguration {
 
 /** What the composition root hands the Kernel and the orchestrator. */
 export interface GovernedTrustComposition {
-  /** Present when any profile declares facts. The context provider is composed alongside. */
+  /** Present when a profile declares facts. The context provider is composed alongside. */
   readonly context?: {
     readonly sources: readonly ContextSource[];
     readonly profileDeclarations: readonly KernelProfileContextDeclaration[];
@@ -113,7 +113,7 @@ export interface GovernedTrustComposition {
     readonly sources: readonly ObligationDischargeSource[];
     readonly profileDeclarations: readonly KernelProfileObligationDeclaration[];
   };
-  /** Every fact class any profile declares — what the reserved-key registry already refuses from callers. */
+  /** Every fact class the profiles declare — what the reserved-key registry already refuses from callers. */
   readonly factClasses: readonly string[];
 }
 
@@ -261,7 +261,7 @@ export interface ComposeGovernedTrustInput {
 
 /**
  * Validates and composes CORE-04 for the governed-action path, or throws a
- * `GovernedActionConfigurationError` — at composition, before any store opens.
+ * `GovernedActionConfigurationError` — at composition, before a store opens.
  *
  * Compatibility is explicit: a deployment whose profiles declare no facts and
  * no obligations, and that configures neither, composes exactly as before.

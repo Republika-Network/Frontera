@@ -107,7 +107,7 @@ export interface ContextSource {
   readonly trustClass: TerminalContextTrustClass;
   /**
    * CORE-04 — the fact classes this source has authority to attest.
-   * Exhaustive and required: a reading of any other class from this source is
+   * Exhaustive and required: a reading of another class from this source is
    * refused (`fact_class_not_attested`), whatever its value. There is no
    * wildcard.
    */

@@ -512,7 +512,16 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     } catch {
       return undefined;
     }
-    return terms !== undefined && typeof terms.grantExpiresAt === 'string' && terms.grantExpiresAt.length > 0 ? terms : undefined;
+    if (terms === undefined || typeof terms.grantExpiresAt !== 'string' || terms.grantExpiresAt.length === 0) return undefined;
+    // CORE-04 §46: a decision that relied on admitted trusted context is valid
+    // only until its earliest material fact goes stale, and the grant carries
+    // that instant as a `decision` validity ceiling. The trusted issuer
+    // therefore proposes no later than it — the grant runtime contains a
+    // proposal and never clamps one. A ceiling already in the past yields a
+    // proposal the runtime refuses: stale context never becomes authority.
+    const validUntil = verified.decision.context?.validUntil;
+    if (typeof validUntil === 'string' && Date.parse(validUntil) < Date.parse(terms.grantExpiresAt)) return { ...terms, grantExpiresAt: validUntil };
+    return terms;
   }
 
   /**

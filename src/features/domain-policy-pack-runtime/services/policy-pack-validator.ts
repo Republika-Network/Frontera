@@ -208,6 +208,7 @@ export class PolicyPackValidator {
         condition.operator !== 'exists' &&
         condition.operator !== 'not_exists' &&
         condition.value === undefined &&
+        condition.valueFrom === undefined &&
         condition.metadataPath === undefined
       ) {
         issues.push({ code: 'INVALID_PREDICATE', message: `Rule ${ruleId} has a predicate on ${condition.field} missing a value.` });
@@ -245,6 +246,18 @@ export class PolicyPackValidator {
           code: 'INVALID_CONTEXT_PREDICATE',
           message: `Rule ${ruleId} reads the reserved '${condition.metadataPath ?? ''}' namespace by path; trusted context is read only through 'contextFact' / 'restrictiveFact', which see admitted facts and nothing else.`,
         });
+      }
+      if (condition.valueFrom !== undefined) {
+        const from = condition.valueFrom as { readonly field?: unknown; readonly factClass?: unknown };
+        if (from.field !== 'contextFact' || !isFactClass(from.factClass) || Object.keys(condition.valueFrom).some((key) => key !== 'field' && key !== 'factClass')) {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} names a comparand other than an admitted material fact ({ field: 'contextFact', factClass }).` });
+        }
+        if (condition.value !== undefined) {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} states both a literal value and a fact comparand; a predicate compares against one.` });
+        }
+        if (condition.operator === 'exists' || condition.operator === 'not_exists' || condition.field === 'restrictiveFact') {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} gives a fact comparand to an existence test or a restrict-only fact.` });
+        }
       }
       if (condition.field === 'restrictiveFact' && (negated || NEGATED_OPERATORS.has(condition.operator))) {
         issues.push({

@@ -42,7 +42,13 @@ export class PolicyConditionEvaluator {
 
   private evaluatePredicate(condition: PolicyPredicateCondition, input: PolicyEvaluationInput): PolicyConditionEvaluationResult {
     const fieldValue = this.getFieldValue(condition, input);
-    const matched = this.applyOperator(condition.operator, fieldValue, condition.value);
+    // CORE-04: an admitted fact as the comparand. Absent when not admitted,
+    // and an absent comparand never satisfies an equality or an ordering.
+    const expected = condition.valueFrom !== undefined ? this.readFact(input.contextFacts, condition.valueFrom.factClass) : condition.value;
+    if (condition.valueFrom !== undefined && (expected === undefined || fieldValue === undefined)) {
+      return { matched: false, reason: `${condition.field} ${condition.operator} contextFact.${condition.valueFrom.factClass} -> false (comparand not admitted)` };
+    }
+    const matched = this.applyOperator(condition.operator, fieldValue, expected);
     return {
       matched,
       reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''}${condition.parameterId ? `.${condition.parameterId}` : ''}${condition.factClass ? `.${condition.factClass}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
