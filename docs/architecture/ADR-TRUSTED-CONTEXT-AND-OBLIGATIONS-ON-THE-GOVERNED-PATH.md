@@ -211,6 +211,14 @@ mode. The in-memory store (memory persistence only) keeps the same chain but
 signs nothing — there is no database for a writer to reach — and the secure
 profile refuses it.
 
+**Write discipline.** An append never signs over unverified state: it verifies
+the signed head and the exact row set, plans and signs the next head, then
+re-verifies the whole history under the write lock and persists row and signed
+head in one transaction. A genesis is created only for an empty file; missing
+identity, head or tables refuse the store. Key rotation reuses the CORE-01 rule
+(re-sign the unchanged, verified state under the active key at open). Details:
+`docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §27.
+
 **Rollback.** A restore of an older genuine signed state after a restart is not
 detected (CORE-07); an in-process witness refuses regression while the process
 lives. The trusted writer records reports for one obligation of one decision in

@@ -715,9 +715,24 @@ state (one new structured method, `signObligationDischargeState`; no byte
 signing, no new key, no HMAC). Every authoritative read — at open, and before
 every issuance decision — verifies the signature against the trusted
 verification registry and recomputes the chain over every row; an in-process
-witness refuses a regression while the process lives. The genesis head is
-signed when the store is created; an append is signed before its write
-transaction and refused if the head moved or the current state does not verify.
+witness refuses a regression while the process lives.
+
+- **Never signs over unverified state.** An append verifies the signed head and
+  the exact row set (count = sequence, contiguous from 1, every position-bound
+  row digest, the recomputed chain, store id, organization) before planning the
+  next head; signs it before the write transaction; then, under the write lock
+  (`BEGIN IMMEDIATE`), verifies the whole history *again* and requires it to be
+  exactly the planned base before persisting row and signed head in **one**
+  transaction. A history tampered before or during signing is refused and
+  nothing is persisted.
+- **Genesis only for an empty file.** A store whose identity, head or tables are
+  missing is refused, never re-initialized; the unauthenticated v1 format is
+  refused, never upgraded.
+- **Key rotation — the CORE-01 rule, reused.** A state that verifies under a
+  trusted key other than the active one is re-signed **unchanged** under the
+  active key at open, inside a transaction that re-verifies it and writes only if
+  it is still exactly that state, then read back; best-effort (an unavailable
+  signer leaves a still-valid state). After that the previous key can be retired.
 
 ### 27.3 What is blocked, and what is not
 
