@@ -254,6 +254,14 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       // financial action classifier and the single amount ingress. Pure data
       // and logic with no imports of its own (`monetary-boundaries.test.ts`).
       '../../features/monetary-runtime/index.js',
+      // CORE-03: the pure governed-parameter primitive — semantic identifiers,
+      // typed parameter values and bounds, the profile reference format. It
+      // imports nothing (`governed-parameter-boundaries.test.ts`).
+      '../../features/governed-parameter-runtime/index.js',
+      // CORE-03: the trusted Governance Profile registry, **type-only** here:
+      // the orchestrator is handed the frozen registry by the composition root
+      // and only asks it to resolve; it never builds, extends or replaces one.
+      '../governance-profile/index.js',
       '../../kernel/index.js',
       '../customer-identity/index.js',
       '../events/enterprise-events.js',

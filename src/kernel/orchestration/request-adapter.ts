@@ -9,6 +9,7 @@ import {
   type ContextResolution,
 } from '../../features/context-resolution-runtime/index.js';
 import { isReservedGrantKey } from '../../features/grant-runtime/index.js';
+import { isWellFormedDeclaredGovernedParameters, isWellFormedGovernedActionSemantics, type GovernedParameter } from '../../features/governed-parameter-runtime/index.js';
 import { isReservedObligationKey } from '../../features/obligation-runtime/index.js';
 import type { GuardActionRequestInput } from '../../features/action-enforcement/sdk/aoc-guard.js';
 import type { EnforcementPolicyEvaluationInput } from '../../features/action-enforcement/domain/enforcement-request.js';
@@ -51,6 +52,21 @@ export function validateKernelEvaluationRequest(request: KernelEvaluationRequest
   if (!request.requestedAt || Number.isNaN(Date.parse(request.requestedAt))) {
     throw new KernelValidationError('KernelEvaluationRequest.requestedAt must be a valid ISO-8601 timestamp.');
   }
+  // CORE-03: typed semantics are shape-checked here, closed, so a malformed
+  // classification or parameter list never reaches policy or the grant
+  // projection. Whether they were *declared* is the trusted boundary's
+  // question, answered before this request was built.
+  if (request.action.semantics !== undefined && !isWellFormedGovernedActionSemantics(request.action.semantics)) {
+    throw new KernelValidationError('KernelEvaluationRequest.action.semantics must carry a semantic actionClass, resourceClass and a well-formed governanceProfile reference.');
+  }
+  if (request.action.governedParameters !== undefined) {
+    if (request.action.semantics === undefined) {
+      throw new KernelValidationError('KernelEvaluationRequest.action.governedParameters require action.semantics: a typed parameter is always declared by a governing profile.');
+    }
+    if (!isWellFormedDeclaredGovernedParameters(request.action.governedParameters)) {
+      throw new KernelValidationError('KernelEvaluationRequest.action.governedParameters must be a non-empty list of well-formed typed parameters in strictly ascending dimension order.');
+    }
+  }
 }
 
 /**
@@ -86,7 +102,8 @@ function buildPolicyEvaluationInput(
     action.currency !== undefined ||
     action.counterpartyId !== undefined ||
     action.dataDomains !== undefined ||
-    action.evidenceIds !== undefined;
+    action.evidenceIds !== undefined ||
+    action.semantics !== undefined;
 
   if (!hasPolicyPackFields) {
     return undefined;
@@ -105,6 +122,20 @@ function buildPolicyEvaluationInput(
     ...(action.counterpartyId !== undefined ? { counterpartyId: action.counterpartyId } : {}),
     ...(action.dataDomains !== undefined ? { dataDomains: action.dataDomains } : {}),
     ...(action.evidenceIds !== undefined ? { evidenceIds: action.evidenceIds } : {}),
+    // CORE-03: typed fields of their own, copied from typed `ActionDescriptor`
+    // fields only — never merged into `metadata`, which stays the resolved-facts
+    // namespace. A proposed parameter is not a trusted fact.
+    ...(action.semantics !== undefined
+      ? {
+          actionClass: action.semantics.actionClass,
+          resourceClass: action.semantics.resourceClass,
+          governanceProfile: action.semantics.governanceProfile.id,
+          governanceProfileVersion: action.semantics.governanceProfile.version,
+        }
+      : {}),
+    ...(action.governedParameters !== undefined
+      ? { governedParameters: action.governedParameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) }
+      : {}),
     ...(metadata !== undefined ? { metadata } : {}),
   };
 }

@@ -19,17 +19,26 @@ export type {
 export {
   GRANT_BOUND_KEYS,
   GRANT_BOUND_KINDS_BY_KEY,
+  GRANT_PARAMETER_BOUNDS_MAX,
+  GRANT_SEMANTICS_FORMAT_V1,
+  GRANT_SEMANTIC_AXES,
+  canonicalGrantParameterBounds,
+  grantScopeCarriesSemantics,
+  hasCompleteGrantSemantics,
+  isConsistentGrantSemantics,
   canonicalGrantScope,
+  grantParameterBound,
   grantScopeBound,
   grantScopeEquals,
+  isWellFormedGrantParameterBounds,
   isWellFormedGrantScope,
   serializeGrantScope,
   statedGrantBoundKeys,
 } from './grant-scope.js';
-export type { GrantBoundKey, GrantScope } from './grant-scope.js';
+export type { GrantBoundKey, GrantParameterBound, GrantParameterBounds, GrantScope } from './grant-scope.js';
 
 export { attenuateGrantScope, grantScopeIsWithin } from './grant-attenuation.js';
-export type { GrantAttenuationOutcome, GrantAttenuationViolation, GrantBoundAttenuation, RequestedGrantBounds } from './grant-attenuation.js';
+export type { GrantAttenuationKey, GrantAttenuationOutcome, GrantAttenuationViolation, GrantBoundAttenuation, RequestedGrantBounds } from './grant-attenuation.js';
 
 export { grantCorrelationMatches, isWellFormedGrantCorrelation, serializeGrantCorrelation } from './grant-correlation.js';
 export type { GrantCorrelation } from './grant-correlation.js';
@@ -51,7 +60,7 @@ export type { GrantValidityCeiling, GrantValidityCeilingSource, GrantValidityRes
 export { assessGrantEligibility, unstatedMandatoryBounds } from './grant-eligibility.js';
 export type { GrantEligibility, GrantEligibilityAssessment } from './grant-eligibility.js';
 
-export { boundedGrantDigest, boundedGrantDigestMatches, boundedGrantId, grantSourceDigest, serializeBoundedGrant } from './bounded-grant.js';
+export { boundedGrantDigest, boundedGrantDigestMatches, boundedGrantId, grantSourceDigest, isWellFormedBoundedGrantSemantics, serializeBoundedGrant } from './bounded-grant.js';
 export type { BoundedGrant } from './bounded-grant.js';
 
 export { GRANT_REVOCATION_REASONS, isGrantRevocationReason } from './grant-revocation.js';

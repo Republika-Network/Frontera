@@ -2,6 +2,7 @@ import type { KernelEvaluationRequest } from '../../kernel/index.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/index.js';
 import type { ClassifiedGovernedActionIntent } from './contracts.js';
+import { kernelMonetaryFields } from './monetary-naming.js';
 
 /**
  * The identity → Kernel-request trust boundary.
@@ -52,7 +53,11 @@ export function buildGovernedActionKernelRequest(input: {
       resourceScope: intent.resource,
       ...(intent.counterparty !== undefined ? { counterpartyId: intent.counterparty } : {}),
       // Canonical decimal text and asset, exactly as the monetary boundary produced them.
-      ...(intent.amount !== undefined ? { amount: intent.amount.value, currency: intent.amount.unit } : {}),
+      ...(intent.amount !== undefined ? kernelMonetaryFields(intent.amount) : {}),
+      // CORE-03: the trusted classification and the declared, typed parameters —
+      // both digested with the request into the committed decision.
+      ...(intent.semantics !== undefined ? { semantics: intent.semantics } : {}),
+      ...(intent.parameters !== undefined ? { governedParameters: intent.parameters } : {}),
     },
     ...(intent.assertedContext !== undefined ? { context: intent.assertedContext } : {}),
     requestedAt: input.requestedAt,

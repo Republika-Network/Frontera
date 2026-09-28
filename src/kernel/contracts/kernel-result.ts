@@ -373,6 +373,12 @@ export interface GrantBoundEvaluation {
   readonly unit?: string;
   /** Present for a `window` bound. */
   readonly notAfter?: string;
+  /** CORE-03 — present for a typed parameter bound (`key` = `parameters.<dimension>`, `kind` = `exact` | `maximum`): the dimension's value type. */
+  readonly parameterType?: string;
+  /** CORE-03 — the exact value an `exact` parameter bound pins. */
+  readonly parameterValue?: number | string | boolean;
+  /** CORE-03 — the inclusive limit of a `maximum` parameter bound. */
+  readonly parameterLimit?: number;
 }
 
 /** One upstream bound a grant derived from this authorization may not outlive. `source` is widened to `string` for the reason every other feature-owned union on this contract is: the frozen result must not pin a feature's closed union. */

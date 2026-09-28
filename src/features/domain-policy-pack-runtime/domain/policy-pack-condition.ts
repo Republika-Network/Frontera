@@ -38,7 +38,13 @@ export type PolicyPredicateField =
   | 'hasAuthorityProof'
   | 'hasHandshakeProof'
   | 'hasRequiredEvidence'
-  | 'metadata';
+  | 'metadata'
+  // CORE-03: the trusted semantic classification and the typed parameters.
+  | 'actionClass'
+  | 'resourceClass'
+  | 'governanceProfile'
+  | 'governanceProfileVersion'
+  | 'parameter';
 
 export interface PolicyGroupCondition {
   readonly type: 'group';
@@ -52,6 +58,14 @@ export interface PolicyPredicateCondition {
   readonly operator: PolicyPredicateOperator;
   readonly value?: unknown;
   readonly metadataPath?: string;
+  /**
+   * CORE-03 — the declared parameter dimension a `field: 'parameter'`
+   * predicate reads, exactly (case-sensitive, no path). Required with that
+   * field and refused with any other. Reads the typed value — a JSON number
+   * for an integer dimension, a string for a token, a boolean — and an
+   * undeclared or absent dimension reads as absent, never as a default.
+   */
+  readonly parameterId?: string;
 }
 
 export type PolicyCondition = PolicyGroupCondition | PolicyPredicateCondition;

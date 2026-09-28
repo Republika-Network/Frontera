@@ -46,3 +46,13 @@ export class PolicyPackProofNotFoundError extends PolicyPackRuntimeError {
     super(`Policy pack proof not found: ${proofId}`);
   }
 }
+
+/** NB-008: a policy-pack write without a trusted writer context, or after the registry was frozen. Nothing was changed. */
+export class PolicyPackWriteRefusedError extends PolicyPackRuntimeError {
+  constructor(
+    readonly code: 'POLICY_PACK_WRITER_REQUIRED' | 'POLICY_PACK_REGISTRY_FROZEN',
+    message: string,
+  ) {
+    super(message);
+  }
+}

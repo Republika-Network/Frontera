@@ -213,6 +213,11 @@ export class PolicyPackEnforcementService {
       ...(evalInput?.counterpartyId !== undefined ? { counterpartyId: evalInput.counterpartyId } : {}),
       ...(evalInput?.dataDomains !== undefined ? { dataDomains: evalInput.dataDomains } : {}),
       ...(evalInput?.evidenceIds !== undefined ? { evidenceIds: evalInput.evidenceIds } : {}),
+      ...(evalInput?.actionClass !== undefined ? { actionClass: evalInput.actionClass } : {}),
+      ...(evalInput?.resourceClass !== undefined ? { resourceClass: evalInput.resourceClass } : {}),
+      ...(evalInput?.governanceProfile !== undefined ? { governanceProfile: evalInput.governanceProfile } : {}),
+      ...(evalInput?.governanceProfileVersion !== undefined ? { governanceProfileVersion: evalInput.governanceProfileVersion } : {}),
+      ...(evalInput?.governedParameters !== undefined ? { governedParameters: evalInput.governedParameters } : {}),
       ...(evalInput?.metadata !== undefined ? { metadata: evalInput.metadata } : {}),
     };
   }

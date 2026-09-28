@@ -35,4 +35,8 @@ export interface PolicyPack {
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** NB-008: the trusted writer that registered this pack. */
+  readonly registeredBy?: string;
+  /** NB-008: the trusted writer behind this pack's latest change. */
+  readonly lastWrittenBy?: string;
 }

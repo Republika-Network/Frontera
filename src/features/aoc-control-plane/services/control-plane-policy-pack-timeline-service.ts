@@ -23,6 +23,7 @@ const POLICY_EVENT_STATUS: Readonly<Record<PolicyPackEventType, AocTimelineStatu
   policy_pack_version_deprecated: 'warning',
   policy_pack_version_revoked: 'danger',
   policy_pack_version_superseded: 'warning',
+  policy_pack_registry_frozen: 'warning',
   policy_evaluation_started: 'info',
   policy_pack_applicability_resolved: 'info',
   policy_rule_matched: 'info',

@@ -14,6 +14,9 @@ import {
   GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1,
 } from '../../packs/global-legal-baseline.policy-pack.js';
 
+/** NB-008: the trusted policy author these tests write as. */
+const POLICY_WRITER = { system: true, actorId: 'operator:policy-pack-test' } as const;
+
 /** Phrases that would constitute a compliance/completeness overclaim -- never allowed in this pack's own text. */
 const PROHIBITED_OVERCLAIM_PHRASES = [
   'legally compliant',
@@ -336,10 +339,10 @@ describe('global-legal-baseline policy pack', () => {
 
   it('19. registering this pack demoOnly with legalCompleteness=verified_by_counsel is rejected by the runtime validator', () => {
     const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext(GLOBAL_LEGAL_BASELINE_DEMO_NOW));
-    runtime.registerPolicyPack({ ...GLOBAL_LEGAL_BASELINE_POLICY_PACK, id: 'aoc.global_legal_baseline.v1-test-invalid' });
+    runtime.registerPolicyPack(POLICY_WRITER, { ...GLOBAL_LEGAL_BASELINE_POLICY_PACK, id: 'aoc.global_legal_baseline.v1-test-invalid' });
 
     assert.throws(() =>
-      runtime.registerPolicyPackVersion({
+      runtime.registerPolicyPackVersion(POLICY_WRITER, {
         ...GLOBAL_LEGAL_BASELINE_POLICY_PACK_VERSION_V1,
         id: 'aoc.global_legal_baseline.v1-test-invalid-r1',
         policyPackId: 'aoc.global_legal_baseline.v1-test-invalid',

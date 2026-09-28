@@ -5,7 +5,7 @@
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
 - **Reconciled by:** MASTER-01 (governed action intelligence & roadmap reconciliation), 2026-09-27, against `main` @ `c66e0c7` (CTRL-01 merged). Architecture and roadmap only; no runtime change.
-- **Last status change:** MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
+- **Last status change:** CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -74,15 +74,22 @@ and feeds the core; it never replaces it (§4.4, invariants 24–32):
   `PaymentIntent`, `settlement` and `receipt` in core layers
   (`src/enterprise/__tests__/authority-payment-ceilings-structure.test.ts`).
   However, no second rail exists to prove neutrality against.
-- **Action neutrality is structural in control flow but not in parameters, and
-  is not demonstrated.** The orchestrator is action-agnostic, but its only
-  parameter axes are `amount` and `counterparty`, `GrantBoundKey` is a closed
-  money-shaped list, and "financial" is a first-class branch (§4.1, L-2 … L-6).
-  The envelope already carries required `action` and `resource` strings
-  (`governed-action/contracts.ts:52-54` → Kernel `action.type` / `resourceScope`
-  and the grant's `action` / `resources` bounds), but as opaque identifiers:
-  the only action classification is `financial` / `non-financial`, and there is
-  no resource class at all. The only execution adapter is Generic HTTP.
+- **Action neutrality is structural in control flow *and* parameters since
+  CORE-03, and demonstrated for two non-financial domains on one composition —
+  not yet qualified (CORE-08).** The envelope keeps its required `action` and
+  `resource` identifiers and gains typed, declared `parameters`
+  (`integer`/`token`/`boolean`, `src/features/governed-parameter-runtime`);
+  trusted configuration classifies each action × resource into a
+  domain-declared action class, resource class and one versioned Governance
+  Profile (`src/enterprise/governance-profile`). Grants bind the action class,
+  resource class, effective profile and typed parameter bounds under an explicit
+  signed `semanticsFormat`. Money is one dimension (`amount`, P9/P10),
+  unchanged. `governed-action-thesis-read-export.test.ts` governs read vs export
+  of one dataset, and deploy to production, differently by policy and profile
+  data alone, with no Kernel change; `governed-action-neutrality-structure.test.ts`
+  forbids domain vocabulary and branching in the generic core. Typed parameters
+  are not yet handed to adapters (P11 schema; CORE-08). The only execution
+  adapter is Generic HTTP.
 - **No intelligence component exists.** No model call, agent, RiskSignal or
   behavioural detector exists anywhere; a structural test forbids intelligence
   vocabulary in Kernel sources (`src/enterprise/__tests__/security-invariants.test.ts`,
@@ -201,8 +208,8 @@ path" (§13) with a precise rule.
 | POLICY | Answered only if the host injects a policy pack | — |
 | LIMITS | Answered only if P7 is composed | P7 / P10 |
 | OBLIGATIONS | **Not answered** on the governed path | — |
-| ACTION | Partly answered | Required `action` identifier + host-trusted `financial`/`non-financial` classifier; parameters limited to `amount`/`counterparty` (CORE-03) |
-| RESOURCE | Partly answered | Required `resource` identifier on the envelope → Kernel `resourceScope` and grant `resources` bound; no resource class, so governance cannot depend on *what kind* of resource it is (CORE-03) |
+| ACTION | Answered (CORE-03) | Required `action` identifier + trusted domain-declared action class + typed declared parameters; host-trusted `financial`/`non-financial` classifier kept for money (P9) |
+| RESOURCE | Answered (CORE-03) | Required `resource` reference → `resourceScope` and grant `resources` bound, + trusted domain-declared resource class; governance can depend on *what kind* of resource it is |
 | ADMITTED CONTEXT | **Not answered** | `assertedContext` reaches the Kernel as caller claims (CORE-04) |
 | MECHANISM | Answered | Adapter id |
 | RESULT | Answered | P11 / P12 |
@@ -247,7 +254,8 @@ wiring inventory is §3.8.
 | Emergency control / kill switch (P4) | VERIFIED (opt-in); durable and composed on the shipped secure Host | `composition-root.ts`; `emergency-control-*.test.ts`. Operable over `/api/admin/emergency-controls` by configured administrators (CTRL-01) |
 | Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in); composed (required) on the shipped secure Host, with no host-imposed limits — the authority's own (P10) apply | `composition-root.ts`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
 | Authority-sourced payment ceilings (P10) | VERIFIED (requires P7) | `kernel-authority/monetary-constraints.ts:75-91`; `authority-payment-ceilings*.test.ts` |
-| Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts:1245`). No durable policy store, no default pack, unauthenticated registry writes (NB-008) |
+| Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts`). No durable policy store, no default pack. Since CORE-03: writes require a trusted writer, are attributed and freezable (NB-008 closed, SEC-INV-133), and rules can read `actionClass`, `resourceClass`, `governanceProfile`, `governanceProfileVersion` and typed `parameter` fields |
+| Governed action semantic & parameter model (CORE-03) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `governance`** | `features/governed-parameter-runtime`, `enterprise/governance-profile`; `governed-action-thesis-read-export.test.ts`, `governed-action-semantics-host.test.ts`, `pre-core-03-compatibility.test.ts`; ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL |
 | Delegation lineage | **PARTIAL** | Enforced at decision when the actor is an agent. Re-resolved at issue, commit and exercise **only for financial actions** (`kernel-authority/financial-authority-resolver.ts`). Non-financial revalidation is a host callback |
 | Obligation lifecycle (discharge/verify/waive) | **LIBRARY-ONLY** | `src/features/obligation-runtime` is tested. The governed-action Kernel is built with `grants` only (`composition-root.ts:1370-1376`), and a host Kernel is refused (`:1113`), so obligations **cannot reach** governed actions |
 | Trusted context provenance (layer C) | **LIBRARY-ONLY** | `src/features/context-resolution-runtime` is tested. It is not composed; `assertedContext` reaches the Kernel as caller claims |
@@ -456,7 +464,8 @@ MASTER-00 record.
 | Reconciliation (P12) | NOT WIRED (intentional) | No resolution-authority implementation ships (PAY-03/04) |
 | Governed-action API | WIRED INTO PRODUCTION HOST | `POST /api/governed-actions` |
 | Generic HTTP adapter (P6) | WIRED INTO PRODUCTION HOST | Only as configured in the file; routed by action |
-| Policy packs | NOT WIRED | No durable policy store; unauthenticated registry writes (CORE-03, NB-008) |
+| Governance Profiles / typed parameters (CORE-03) | WIRED INTO PRODUCTION HOST (optional) | From the governed-action file's `governance` key; validated at startup; absent → nothing classified |
+| Policy packs | NOT WIRED | No durable policy store. Registry writes attributed and freezable since CORE-03 (NB-008 closed) |
 | Obligations | NOT WIRED | CORE-04 |
 | Trusted context | NOT WIRED | CORE-04 |
 | Approvals | NOT WIRED | `approval_required` stays withheld (CORE-05) |
@@ -539,8 +548,11 @@ above the envelope.
   (`src/enterprise/governed-action/contracts.ts:52`) plus the orchestrator is
   action-agnostic: classification is host-trusted, and the adapter receives only a
   validated action.
-- Its **parameter axes** are payment-shaped: `amount` and `counterparty` are the only
-  parameters, and `GrantBoundKey` is a closed list (L-2 … L-5).
+- ~~Its **parameter axes** are payment-shaped: `amount` and `counterparty` are the only
+  parameters, and `GrantBoundKey` is a closed list (L-2 … L-5).~~ **Resolved by
+  CORE-03:** typed, declared parameter dimensions and a typed parameter bound
+  list beside the axes; `amount`/`counterparty` remain as the monetary dimension
+  and a party axis.
 
 **DECISION:**
 
@@ -670,7 +682,19 @@ Ownership: the profile **schema**, validation, versioning and provenance are
 CORE-03 (generic, no domain vocabulary). Binding a profile's material facts to
 trusted sources is CORE-04. Profile **resolution** is INTEL-02. Profile
 **content** belongs to domain packs (PAY, CREDIT, verticals) and organizations.
-Nothing is implemented by MASTER-01.
+
+**FACT (CORE-03).** Implemented as a separate artifact, not a policy-pack
+extension (OQ-1): closed schema `{profileId, version, owner, provenance
+{authoredBy, approvedBy}, actionClass, resourceClass, parameters [{dimension,
+required}], materialFacts [], relevantPolicies []}`; identity = SHA-256 of its
+canonical content under `frontera.governance-profile.v1`; one active version per
+profile id and one profile per action class × resource class; from trusted host
+configuration only. A deterministic exact-match resolver chooses; a caller may
+pin `{id, version}` and is refused on mismatch. The committed decision records
+the profile id/version/digest and the grant binds it (OQ-2, format half).
+`requiredEvidence`, `potentialApprovalRequirements`, `applicableConstraints` and
+the draft → active → retired lifecycle are not implemented (CTRL-02 / CORE-04).
+`docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md`.
 
 ### 4.4 The Frontera Agent and the intelligence boundary
 
@@ -911,7 +935,7 @@ as a roadmap mechanism (§15).
 | Prompt 11: Egress allowlisting | PROD | PLANNED | → PROD-04 |
 | Prompt 12: Kill switch | CORE | VERIFIED (opt-in) | Delivered by P4 emergency control; operator API delivered by CTRL-01 |
 | Prompt 13 / P21: Behavioural abuse detection / intelligence | ASSURE / INTEL | PLANNED | → ASSURE-04 (evidence substrate) + INTEL-05 (analysis, candidate RiskSignals); affects authority only restrictively via CORE-04 + INTEL-06 (MASTER-01, §4.4) |
-| Prompt 14: Self-modification protection | CORE | PARTIAL | Policy-pack writes carry no caller identity (NB-008) → CORE-03 |
+| Prompt 14: Self-modification protection | CORE | VERIFIED for policy packs (CORE-03) | NB-008 closed: policy-pack writes require a trusted writer, are attributed and freezable (SEC-INV-133). Durable policy store remains absent |
 | Prompt 15: Tamper-evident evidence | ASSURE | PARTIAL | Integrity yes, authenticity no → ASSURE-02 |
 | Prompt 17 / P17: Deployment topology / store-set durability | PROD | PARTIAL | Host topology VERIFIED by PROD-01 (NB-005, GS-003 closed for the shipped Host); store-set backup → PROD-02 |
 | Prompt 18 / 19: Adversarial suite; rogue-agent scenarios | ASSURE | PARTIAL | → CORE-06 qualification, ASSURE-03 |
@@ -947,7 +971,7 @@ as a roadmap mechanism (§15).
 | Grants | `grant-runtime` BoundedGrant (canonical) · `packages/access-grant` + `grant-revocation` (Sovereign Access, excepted model) · `packages/capability-tokens` (0 consumers) · recognition capability tokens (standing capability) | BoundedGrant vs recognition capability: Intentional. Access-grant: Reconcile or formally scope as a separate product. Capability-tokens package: Reconcile (deprecate) | CORE |
 | Principal | `BoundCustomerIdentity`, Kernel `actor`, Recognition `Actor`, Authority-Graph node (intentional layering) · `packages/identity` (legacy runtime) · Enterprise `AgentPassport` (composed, never consulted) · `pmfreak-agent-passport-foundation` · `agent-governance` passport (passport-web) | Layering: Intentional. Passport shapes: Reconcile | CORE / CTRL-02 |
 | Obligations | `obligation-runtime` (Kernel) · `packages/access-obligation` (0 consumers) · credit/payment obligations (future) | Access-obligation: Reconcile (deprecate). Future payment and credit obligations must **reuse** `obligation-runtime` | CORE-04 |
-| Money | `MonetaryAmount {value, unit}` (canonical) · ingress `amount {value, currency}` · Kernel request `amount/currency` strings · authority-graph `spending_limit.currency` · `collateralization-mandate {minorUnits: safe integer, currency}` | **Reconcile.** The `currency`/`unit` naming split, and collateralization's off-spine money | CORE-03 (naming), CREDIT-01 (collateral) |
+| Money | `MonetaryAmount {value, unit}` (canonical) · ingress `amount {value, currency}` · Kernel request `amount/currency` strings · authority-graph `spending_limit.currency` · `collateralization-mandate {minorUnits: safe integer, currency}` | **Reconcile.** Collateralization's off-spine money. The `currency`/`unit` split is **decided, not renamed (CORE-03)**: `currency` stays the frozen v1 wire and Kernel/policy name, `unit` the canonical P9 name, and every translation happens in one mapping point (`governed-action/monetary-naming.ts`, structurally tested) | CREDIT-01 (collateral) |
 | Canonical serialization / hashing | `governance-store/canonical-json.ts` canonicalSerialize (enterprise stores) · 9 `stableStringify` copies in feature proofs · `agent-governance canonicalizeJson` · 22 `createHash('sha256')` sites | **Reconcile.** Identifiers are not interchangeable across proof types | ASSURE-02 |
 | Signatures | Ed25519 authority-authenticity (grants/revocations) · HMAC passport issuer (`apps/agent-passport-web`) · unkeyed digests everywhere else | **Reconcile.** Converge on the CORE-02 signer boundary | CORE-02, ASSURE-02 |
 | Evidence | Event stream (P8, runtime trace) · evidence bundle (one decision) · assurance runtime · verifiable export · `evidence-correlation` contract · `usage-event` | Bundle vs stream: Reconcile (ASSURE-01). Correlation / usage-event: SUPERSEDED by the stream | ASSURE-01 |
@@ -974,12 +998,12 @@ Real leakage:
 | # | Where | Why it is leakage | Severity | Owner |
 |---|---|---|---|---|
 | L-1 | `src/enterprise/access-governance/service.ts` (imports `@aoc-enterprise/pinata-adapter`, branches on `PINATA_PROVIDER_SYSTEM`); `contracts.ts` (`providerCid`, `providerFileId`) | A generic access-governance service is hard-wired to one storage provider. A second provider means editing the core service | Medium-High | CORE (or scope Sovereign Access out as a vertical) |
-| L-2 | `src/kernel/contracts/kernel-request.ts:49-50` (`amount?`, `currency?` on every action) | Money is a first-class axis of the generic Kernel request, rather than a typed parameter | Medium | CORE-03 |
-| L-3 | `src/features/grant-runtime/domain/grant-scope.ts` (`GrantBoundKey = 'action'\|'amount'\|'counterparty'\|'organization'\|'resources'`) | The grant is quantity-generic in form but money-specific in semantics. There is no pluggable bound kind. Credit bounds (exposure, tenor, LTV) cannot be expressed | Medium | CORE-03 |
-| L-4 | `src/enterprise/governed-action/contracts.ts` (`amount {value, currency}`, `actionClass: 'financial'\|'non-financial'`) | Financial is a first-class branch of the generic spine. Well bounded (host-trusted classifier), but payment-first | Medium | CORE-03 |
-| L-5 | `src/features/authority-graph/domain/authority-grant.ts` (`spending_limit {currency, maximum, window}`) | A money-typed constraint in the authority definition layer. Defensible as a quantity limit, but named and typed for payments | Low-Medium | CORE-03 |
-| L-6 | `governed-action/intent.ts:94-139` reserved keys (`paymentCeiling`, `spendingLimit`, `providerRef`, `finalOutcome`) | Denylist names, not logic | Low | CORE-03 |
-| L-7 | P13 branch adds `mppChallenge`, `mppRealm`, `paymentCredential`, `merchantRealm`, … to the generic `intent.ts` reserved list | Protocol vocabulary in the generic intent validator | Medium, **if merged as-is** | PAY-02 must supply reserved keys through a registry |
+| L-2 | `src/kernel/contracts/kernel-request.ts` (`amount?`, `currency?` on every action) | Money is a first-class axis of the generic Kernel request, rather than a typed parameter | ~~Medium~~ **Resolved as specialization (CORE-03):** non-monetary quantities travel as typed `governedParameters`; `amount`/`currency` remain the exact monetary dimension (P9/P10) | — |
+| L-3 | `src/features/grant-runtime/domain/grant-scope.ts` (closed `GrantBoundKey`) | The grant is quantity-generic in form but money-specific in semantics. There is no pluggable bound kind | ~~Medium~~ **Resolved (CORE-03):** typed parameter bounds (`exact`, `maximum`) over declared dimensions; credit bounds are expressible as integer maxima or tokens, and a decimal-quantity type is additive when CREDIT needs it | CREDIT-01 (decimal quantity type, if needed) |
+| L-4 | `src/enterprise/governed-action/contracts.ts` (`amount {value, currency}`, `actionClass: 'financial'\|'non-financial'`) | Financial is a first-class branch of the generic spine | ~~Medium~~ **Resolved (CORE-03):** domain-declared `semantics.actionClass`/`resourceClass` generalize classification; the P9 binary remains the host-trusted financial classifier for money only | — |
+| L-5 | `src/features/authority-graph/domain/authority-grant.ts` (`spending_limit {currency, maximum, window}`) | A money-typed constraint in the authority definition layer | Low-Medium — **retained as P10 specialization**; a generic authority-sourced parameter limit is not built (CORE-03 ADR §8) | CTRL-02 (provisioning schema) with CORE-04 |
+| L-6 | `governed-action/intent.ts` reserved keys (`paymentCeiling`, `spendingLimit`, `providerRef`, `finalOutcome`) | Denylist names, not logic | Low — **resolved (CORE-03):** the built-in list stays and is now a registry trusted configuration extends (`governance.reservedContextKeys`, SEC-INV-135); declared dimension ids are reserved in any case | — (PAY-02 registers its keys there, L-7) |
+| L-7 | P13 branch adds `mppChallenge`, `mppRealm`, `paymentCredential`, `merchantRealm`, … to the generic `intent.ts` reserved list | Protocol vocabulary in the generic intent validator | Medium, **if merged as-is** | PAY-02 must supply reserved keys through the CORE-03 registry (`governance.reservedContextKeys`), never the built-in list |
 | L-8 | `monetary-asset.ts:24-29` examples `xrpl:USD/rIssuer` | Comment only. The `/issuer` segment is XRPL-shaped by convention, not by grammar | Low | PAY-01 |
 | L-9 | `content-protection/pinata-storage-adapter.ts` exported from a core barrel | An adapter living inside a core folder | Low | CORE |
 | L-10 | `providerRef` | **Not leakage.** It is a handle, never identity or proof | — | — |
@@ -1059,20 +1083,24 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** (MASTER-01) |
-| Depends on | CORE-01 (soft) |
+| Status | **VERIFIED** (2026-09-27, branch `feat/core-03-governed-action-semantic-parameter-model`) |
+| Depends on | CORE-01 (soft) — VERIFIED |
 | Purpose | Keep **one** generic governed-action envelope, and make it express the Governed Action semantic model (§4.2) — actor, action, resource, structured and arbitrary bounded parameters, non-financial semantics — without coercing everything into `amount`/`counterparty`. Establish that a GovernedAction is **not inherently monetary**. Provide the generic, domain-extensible Governance Profile format (§4.3) |
 | Existing reused | `GovernedActionIntent`, the orchestrator, P9 `MonetaryAmount`, the host-trusted classifier, grant attenuation |
 | Remaining work | Action class and resource class, as opaque domain-declared identifiers (no CORE taxonomy, no universal enums), declared over the envelope's **existing** `action` and `resource` fields (which stay; no replacement envelope) and generalizing today's `financial`/`non-financial` classifier. Typed, host-declared action parameter dimensions (quantity, party, reference, duration), with attenuation rules per dimension, so a `GrantBoundKey` is no longer a closed money list (L-2 to L-6); money becomes one dimension. Unify `currency`/`unit` naming. Move reserved context keys to a registry that verticals extend (prerequisite for L-7). Give policy-pack writes a caller identity (NB-008). **Governance Profile schema** (MASTER-01): declarative, versioned, owner + provenance recorded, validated, keyed by action class × resource class, referencing policies and constraint kinds by id — data only, no resolver, no executable content |
 | Exit criteria | A non-financial action with a structured parameter, and a quantity bound that is not money, are governed and attenuated end to end, with its action class and resource class recorded in the decision and the evidence. The same resource under two action classes (e.g. read one record vs export all) is governed differently by policy alone. Existing P9/P10 suites pass unchanged. A Governance Profile validates, versions and records provenance; an executable or unknown-field profile is refused. No payment, credit, database, Kubernetes or other domain term is added to CORE |
 | Non-goals | `PaymentIntent` or `CreditIntent` (PAY-01, CREDIT-01); a universal "EconomicIntent" or replacement envelope; a resource/action taxonomy in CORE; profile resolution (INTEL-02); any AI component |
+| Delivered | **Envelope preserved and generalized:** `GovernedActionIntent` keeps `action`/`resource`; gains optional typed `parameters` and an `expectedGovernanceProfile {id, version}` *hint* that pins and never selects — the **effective** profile is always server-resolved, recorded by the decision and bound by the grant. **Semantics:** trusted `actionClasses`/`resourceClasses` over exact identifiers (opaque, domain-declared; no enum) → `semantics {actionClass, resourceClass, governanceProfile {id, version, digest}}` on the Kernel request. **One typed parameter model** (`src/features/governed-parameter-runtime`, pure): `integer`/`token`/`boolean`, declared `{id, type, bound: exact\|maximum}`, strict parsing, no coercion, no floats; ids travel as values. The legacy untyped `ActionDescriptor.parameters` is `@deprecated` and proven inert. **Grant format:** additive signed axes `actionClass`, `resourceClass`, `governanceProfile`, `parameters` under an explicit signed `semanticsFormat: frontera.grant-semantics.v1`; marker/axes agreement enforced at issuance, in both stores, on read and at exercise; signing domain kept by explicit decision (ADR §3); legacy grants byte- and signature-identical; pre-CORE-03 code refuses semantic grants. **Governance Profiles** (`src/enterprise/governance-profile`): closed schema, versioned, content-digested, owner + provenance, references only; from `CreateEnterpriseOptions.governance` or the Host file's `governance` key (validated at startup). **Policy:** generic closed predicate fields `actionClass`, `resourceClass`, `governanceProfile`, `governanceProfileVersion`, `parameter`+`parameterId`. **NB-008 closed:** policy-pack writes require a trusted `PolicyPackWriterContext {system: true, actorId}`, record the writer on pack/version/lifecycle events, can be frozen; the runtime's store and registry are private behind a read-only facade (SEC-INV-133). **Reserved-key registry:** built-in keys + trusted extensions (`governance.reservedContextKeys`) + declared dimension ids (SEC-INV-135). **`currency`/`unit`:** one canonical mapping point (`governed-action/monetary-naming.ts`). **CTRL-01:** grant view derives `bounds` from `GRANT_BOUND_KEYS` (fixing a hard-coded five-key list) and shows `bounds.parameters` and `semanticsFormat`. No new route (36). ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL; SEC-INV-129 … 135 |
+| Evidence | 176 tests in 13 dedicated suites: `governed-parameter-runtime` + boundaries, `grant-parameter-attenuation` (≤1000→≤100 attenuates, ≤100→≤1000 refused; semantic axes all-or-none; the marker is part of the grant identity), `execution-parameter-exercise` (within/over/missing/extra/wrong-type; action, resource, class and profile substitution; marker/axes disagreement is an integrity failure; legacy grants refuse new axes), `kernel-governed-semantics`, `kernel-legacy-parameters` (the deprecated untyped bag changes no policy input, grant source or decision on a real Kernel), `policy-governed-parameter-predicates`, `policy-pack-writer-nb008` (writes without a trusted writer refused and change nothing; writer recorded on pack, version and lifecycle events; no public write path; freeze), `governance-profile-registry`, `governed-action-semantic-envelope` (smuggling, no coercion, missing≠null, pin-never-choose, retired `governanceProfile` field, reserved-key registry), `governed-action-thesis-read-export` (one `createEnterprise` composition with a real `PolicyPackRuntime`: read vs export and deploy governed differently by policy + profile data; a substituted profile is refused and the valid follow-up commits and binds the effective profile id/version/digest; ACE refuses action, resource, class, parameter and profile substitution with 0 adapter calls; host narrowing; unprofiled money unchanged), `pre-core-03-compatibility` (a real pre-CORE-03 signed store from the unmodified `2ee659b` build reads byte-identically and stays revoked; stripping the marker, the parameters axis or either class, changing or adding the marker, and every bound/profile/type tamper are refused on read; stores refuse to sign a grant whose marker and axes disagree; signing-domain decision pinned), `governed-action-semantics-host` (`bootEnterpriseHost()` production profile end to end with CTRL-01 inspection, restart and revocation), `governed-action-neutrality-structure` (no domain vocabulary/branching/taxonomy/INTEL in the Kernel, orchestrator, grant/execution runtimes or the policy engine; one currency/unit mapping point). The actual pre-CORE-03 build, run against a store written by the CORE-03 build, reads the legacy-shaped grant and refuses the semantic grant (`BOUNDED_GRANT_STORE_STATE_CORRUPT`). Twenty-six deliberate-violation experiments, each restored byte-for-byte (SHA-256) and each failing focused tests: undeclared dimension (5), coercion (4), open profile schema (2), action mismatch at exercise (2), half-classified pair (2), wider child bound (4), over-bound admitted (4), parameters out of canonical bytes (11), money-only projection (12), profile substitution (5), profile axis unchecked (4), context shadowing (3), Kernel domain branch (1), NB-008 writer check (7), writer attribution (1), freeze (1), writable store exposed (1), no marker issued (23), agreement rule skipped (2), class mismatch ignored (2), marker out of signed bytes (14), reserved-key extensions ignored (1), legacy bag reaching policy (2), profile version hidden (1), currency/unit translated elsewhere (1), policy-engine domain branch (2). Pre-existing tests changed deliberately: two import allowlists (the pure parameter primitive; the registry type-only), the attenuation fixture (states the new axes), and NB-008 call sites (writer argument added; assertions untouched — including one P9 file, `policy-monetary-precision.test.ts`). Validation on `4af30f4`: typecheck, lint, build green; `check-api-freeze` (36, unchanged), `check-release-docs`, `check-sdk-surface` green; `git diff --check` clean, no conflict markers; workspaces 1069/1069; root suite against a `git archive` export of the committed LF tree **7770 tests, 7769 pass, 1 skipped (live Pinata, unconfigured), 0 failing** (the working copy additionally shows the two known CRLF artifacts in untouched files). `legal:check:strict` reports one pre-existing lockfile finding (busboy/streamsearch license metadata), unchanged by CORE-03 |
+| Re-scoped | **Adapter transmission of typed parameters** (execution material) → CORE-08: CORE-03 does not expand P11; parameters are authority material, fully governed on the one canonical path. **Authority-sourced non-money limits** (generic counterpart of P10) → CTRL-02 with CORE-04 |
+| Residual (owned elsewhere) | Material facts are declared, not admitted (CORE-04). Profile lifecycle, promotion identity and content signing (CTRL-02; OQ-2). No durable policy store; in-process code can construct a policy writer context, as it can a Kernel-Authority system context (SEC-TRUST-001). Exact-match class membership only. Rollback after issuing semantic grants fails closed for those grants. A domain that declares `maximum` for a non-monotone dimension mis-bounds its own grants (AA-002). Structural neutrality tests are lexical |
 
 **CORE-04: Trusted Context & Obligations on the Governed Path**
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
-| Depends on | CORE-03 (hard: context facts and obligations bind to envelope parameters) |
+| Status | **NEXT** (set by CORE-03, 2026-09-27) |
+| Depends on | CORE-03 (hard: context facts and obligations bind to envelope parameters) — VERIFIED |
 | Purpose | Make layers C and D reachable from governed actions (both are LIBRARY-ONLY today). Answer the OBLIGATIONS and ADMITTED CONTEXT questions of invariant 23. Own the deterministic **Trusted Context Boundary** (§4.4.3) through which observations — including Agent observations and RiskSignals — become admissible facts, and the risk-input boundary |
 | Existing reused | `context-resolution-runtime`, `obligation-runtime`, `GRANT_OBLIGATIONS_UNSATISFIED` mapping (`orchestrator.ts:671`), FR-REC-02 trusted context provider as a pattern |
 | Remaining work | Compose `contextResolution` and `obligations` into the grant-aware Kernel (`composition-root.ts:1370`). Trusted-input registry: which sources may **attest** which fact classes (authority to attest ≠ authority to authorize, invariant 30), with source identity, provenance, freshness and organization trust rules. Binding a Governance Profile's material facts to `ContextRequirement`s and trusted sources. The canonical **admitted RiskSignal** input contract (candidate → admitted lifecycle, §4.4.4), named generically (no intelligence vocabulary in CORE), with a policy-pack rule that signal keys may drive only restrictive effects. Durable obligation state. Non-financial exercise-time lineage revalidation (closing the host-callback gap). Decision on the two authority worlds (§7) |
@@ -1401,7 +1429,7 @@ No INTEL item is required for PILOT READY (§11.3).
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | INTEL-05 (hard); CORE-04 (hard: admission, restrict-only signal rule); CORE-05 (hard: durable approvals as an effect); CORE-03 (hard: attributable policy-pack writes, NB-008 — containment rules are organization policy); CORE-01 revocation and P4 emergency control (VERIFIED); CTRL-04 (soft: the human side of an approval requirement); CTRL-02 (soft: an organizational identity for policy-driven revocation, §16) |
+| Depends on | INTEL-05 (hard); CORE-04 (hard: admission, restrict-only signal rule); CORE-05 (hard: durable approvals as an effect); CORE-03 (hard: attributable policy-pack writes, NB-008 — containment rules are organization policy) — VERIFIED; CORE-01 revocation and P4 emergency control (VERIFIED); CTRL-04 (soft: the human side of an approval requirement); CTRL-02 (soft: an organizational identity for policy-driven revocation, §16) |
 | Purpose | Let admitted RiskSignals cause deterministic organization policy to apply more restrictive controls: added obligation, shorter grant lifetime, lower ceiling, approval requirement, suspension, revocation, emergency stop (§4.4.5). Any generic restrict-only policy effect not yet in CORE is added in CORE under CORE's rules (generic name, non-intelligence test), not in INTEL |
 | Verification | Admitted signals trigger deterministic restrictive responses through existing authority mechanisms only. The monotonicity property (§4.4.6) is a test across the reference domains: removing all producers yields the baseline; any signal set yields equal or more restrictive decisions. A policy rule using a signal key to widen, allow or lengthen is refused at validation. AI cannot independently expand authority under any tested configuration. The superseding ADR for ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY hard invariants 4/7 and §7 is accepted |
 | Non-goals | Expanding authority; AI-performed transitions; learned thresholds becoming policy; alerts delivery (CTRL-05) |
@@ -1427,7 +1455,7 @@ No INTEL item is required for PILOT READY (§11.3).
 | Field | Content |
 |---|---|
 | Status | PLANNED (unblocked; the recommended parallel stream, §14) |
-| Depends on | CTRL-01 — VERIFIED; CORE-03 (soft, MASTER-01: authority-grant provisioning schemas enter the frozen v1 API surface, and should expose CORE-03's generalized bounds rather than today's money-typed `spending_limit` (L-5)) |
+| Depends on | CTRL-01 — VERIFIED; CORE-03 (soft) — VERIFIED: provisioning schemas can now expose typed parameter bounds rather than only the money-typed `spending_limit` (L-5). Also owns the Governance Profile promotion identity (OQ-2) |
 | Existing reused | passport-web account/role model as reference; `BoundCustomerIdentity`; the CTRL-01 administration boundary (`authority-administration/`) and `kernelAuthorityProvisioning` |
 | Remaining work | Human operator identity + roles in the enterprise runtime, replacing CTRL-01's shared administrator secrets as the operator identity. An agent inventory backed by Kernel-Authority actors. **Kernel-Authority provisioning over the API** (actors, passports, capability tokens, authority grants, delegations — moved here from CTRL-01), authorized by operator role, under the Kernel's existing append rules (terminal revocation, no in-place rewrite) and monetary checks. A passport reconciliation decision (§7) |
 | Exit criteria | A pilot organization onboards an agent and assigns it bounded authority without source code, a REPL or direct DB access, as an identified human operator |
@@ -1530,7 +1558,7 @@ CORE-01✓ ──► CORE-02 ──► CORE-07
    ├──► CTRL-01✓ ──► CTRL-02 ──► CTRL-03 ──► CTRL-04 ◄── CORE-05
    │                   ▲ ┄┄ CORE-03 (provisioning schemas)
    ├┄┄► ASSURE-01 ──► ASSURE-04
-   └┄┄► CORE-03 ──► CORE-04 ┄┄► CORE-05
+   └┄┄► CORE-03✓ ──► CORE-04 ┄┄► CORE-05
            │           │
            │           └───────────────────────────┐
            ├──► PAY-01 ──► PAY-02 ──► PAY-08       │
@@ -1593,7 +1621,7 @@ All of the following must be true:
    - An unsigned substitute is refused (CORE-01, PROD-01). **Done** (2026-09-25): durable grants are signed and required on the shipped secure Host.
 3. **External signer boundary.** Authority keys are not required to be process-resident (CORE-02).
 4. **One generic envelope.**
-   - It expresses non-money parameters and non-money bounds (CORE-03).
+   - It expresses non-money parameters and non-money bounds (CORE-03). **Done** (2026-09-27).
    - No payment or credit vocabulary exists in CORE; this is enforced by structural tests.
 5. **Obligations and trusted context are reachable** on the governed path (CORE-04).
 6. **Lineage is revalidated at exercise** for all action classes (CORE-04).
@@ -1714,6 +1742,20 @@ Requires CORE-03, CORE-04 and CORE-05 VERIFIED, plus:
 6. No intelligence component is required (invariant 32). INTEL is proven
    separately by INTEL-06 verification.
 
+**FACT (CORE-03 delta, 2026-09-27).** Items 2–4 now have their semantic
+foundation: one envelope with typed, declared parameters; domain-declared
+action/resource classes and Governance Profiles as data; typed, signed,
+attenuation-only parameter bounds; and a structural test forbidding domain
+vocabulary and branching in the Kernel, orchestrator, grant and execution
+runtimes. Two non-financial domains (data read vs export; deploy to
+production) and the monetary domain are governed on one composition by
+policy and profile data alone (`governed-action-thesis-read-export.test.ts`).
+**Still missing for §11.6:** admitted material facts and missing-fact
+behaviour (CORE-04, item 5); durable approvals (CORE-05); typed parameters
+handed to domain adapters, and three domains end to end on the shipped Host
+with policy composed there (CORE-08 — policy packs are not wired on the
+shipped Host); revoked-mid-flight cases per domain (CORE-08).
+
 ---
 
 ## 12. Parallelization Opportunities
@@ -1771,50 +1813,46 @@ Requires CORE-03, CORE-04 and CORE-05 VERIFIED, plus:
 
 ## 14. Current NEXT Item
 
-**NEXT: CORE-03 — Governed Action Semantic & Parameter Model (Actor · Action · Resource; envelope generalization)**
+**NEXT: CORE-04 — Trusted Context & Obligations on the Governed Path**
 
-**Previous NEXT:** CTRL-02 (set 2026-09-26 after CTRL-01 → VERIFIED; before it
-PROD-01 and CORE-01 — VERIFIED 2026-09-25). MASTER-01 recalculated NEXT on
-2026-09-27 once INTEL, CORE-08 and the revised CORE-03/04 dependencies were
-included. CTRL-02's purpose is unchanged; it is not NEXT.
+**Previous NEXT:** CORE-03 — **VERIFIED** 2026-09-27 (§9). Before it CTRL-02
+(set 2026-09-26, displaced by MASTER-01), PROD-01 and CORE-01.
 
-**Candidates (unblocked):** CORE-03, CTRL-02, PROD-02, CORE-02, ASSURE-01. Every
-INTEL item, CORE-04, CORE-05 and CORE-08 are blocked (directly or transitively)
-by CORE-03.
+**Candidates (unblocked after CORE-03):** CORE-04, CTRL-02, PAY-01, CREDIT-01
+(design), INTEL-01, INTEL-02, PROD-02, CORE-02, ASSURE-01. CORE-05, CORE-06,
+CORE-08, INTEL-03 … 06, PAY-05 and CREDIT-02/05 remain blocked, each through
+CORE-04.
 
-**Why CORE-03:**
+**Why CORE-04:**
 
-- **Dependency criticality.** CORE-03 is the single root of the CORE-04 → CORE-05
-  chain (pilot critical path: CORE-05 gates CTRL-04 and CORE-06), of PAY-01 and
-  CREDIT-01, of all six INTEL items, and of CORE-08. The CORE chain
-  (CORE-03 → 04 → 05 → 06) is now the longest pole to PILOT READY; the CTRL chain
-  (CTRL-02 → 03 → 04) cannot finish before CORE-05 anyway.
-- **Security correctness.** CORE-03 closes NB-008 (policy-pack writes carry no
-  caller identity — an open self-modification finding, Prompt 14) and the
-  L-2 … L-6 leakage, and it defines the Governance Profile format as
-  declarative data before any intelligence component could be tempted to
-  supply executable governance.
-- **Avoiding API churn.** CTRL-02 exposes Kernel-Authority provisioning,
-  including authority grants, over the frozen v1 API (`release/api-surface.v1.json`).
-  Today an authority grant's limit is money-typed (`spending_limit`, L-5).
-  Freezing that shape into public provisioning schemas before CORE-03
-  generalizes bounds would make the thesis correction a breaking API change.
-- **Governed Action thesis leverage.** MASTER-01's product thesis ("not
-  inherently monetary", action × resource) is false in the envelope until CORE-03
-  lands. It is the first step of the thesis path and of the intelligence path.
-- **Avoiding premature AI.** CORE-03 is deterministic, needs no model and makes
-  INTEL-01/02 possible without letting them shape CORE.
-- **Pilot leverage is preserved.** CTRL-02 remains unblocked and is the
-  recommended parallel stream; PROD-02 remains independent and pilot-critical.
+- **Longest dependency chain.** CORE-04 is the next link of both remaining
+  CORE paths: the pilot critical path (CORE-04 → CORE-05 → CORE-06, which
+  CTRL-04 and PROD-03 wait on) and the Governed Action Thesis path
+  (CORE-04 → CORE-05 → CORE-08). The CTRL chain (CTRL-02 → 03 → 04) cannot
+  finish before CORE-05 anyway, so CTRL-02 first would not shorten the pilot.
+- **Security dependency made sharper by CORE-03.** Governance Profiles now
+  *declare* material facts (`materialFacts`), but nothing *admits* one: policy
+  still sees caller-asserted context as claims, obligations cannot reach the
+  governed path, and exercise-time lineage is revalidated only for financial
+  actions — while CORE-03 has just made non-financial governed actions
+  expressive and parameterized. CORE-04 closes exactly that gap.
+- **It is the gate for every intelligence item that could touch authority.**
+  INTEL-03 … 06 need the Trusted Context Boundary and the admitted-signal
+  contract; building them first would invite exactly the premature-AI coupling
+  invariant 32 forbids.
+- **Pilot leverage is preserved.** CTRL-02 (human operators, agent inventory,
+  provisioning — and now profile promotion identity) is unblocked
+  and remains the recommended parallel stream; PROD-02 remains independent and
+  pilot-critical. PAY-01 / INTEL-01 / INTEL-02 are unblocked but not on the
+  pilot critical path.
 
-**Prerequisites already satisfied:** CORE-01 (soft) — VERIFIED. The envelope,
-orchestrator, P9 monetary semantics, grant attenuation and host-trusted
-classifier exist (§4.1).
+**Prerequisites already satisfied:** CORE-03 (hard) — VERIFIED: context facts and
+obligations can now bind to declared, typed envelope parameters and to a
+profile's declared material fact classes.
 
-**Out of scope for CORE-03:** `PaymentIntent` / `CreditIntent` (PAY-01,
-CREDIT-01); trusted context, obligations and RiskSignal admission (CORE-04);
-profile resolution and any AI component (INTEL); provisioning APIs (CTRL-02);
-any change to CTRL-01.
+**Out of scope for CORE-04:** retrieving context (INTEL-04); generating
+RiskSignals (INTEL-05); containment policies (INTEL-06); durable approvals
+(CORE-05); provisioning and operator identity (CTRL-02); any change to CTRL-01.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
@@ -1845,8 +1883,8 @@ roadmap owner who must decide it before or during that item.
 
 | # | Question | Owner |
 |---|---|---|
-| OQ-1 | Governance Profile schema: an extension of the policy-pack format or a separate artifact? Its field set, lifecycle states and cross-version compatibility rules | CORE-03 |
-| OQ-2 | Profile versioning and activation: who may promote a profile, and how a decision records the profile version in force | CORE-03 (format), CTRL-02 (who) |
+| OQ-1 | Governance Profile schema: an extension of the policy-pack format or a separate artifact? Its field set, lifecycle states and cross-version compatibility rules | **Answered by CORE-03** (separate closed artifact, one active version per id, content-digested; lifecycle states deferred to CTRL-02) — ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL |
+| OQ-2 | Profile versioning and activation: who may promote a profile, and how a decision records the profile version in force | Format **answered by CORE-03** (decision records id/version/digest; grant binds `<id>@<version>#<digest>`); who promotes → CTRL-02 |
 | OQ-3 | Canonical RiskSignal schema: exact fields, closed vs open type set, and whether a candidate is an `Advisory` kind (§7 duplication table says it should be) | CORE-04 (admitted contract), INTEL-05 (candidate) |
 | OQ-4 | Candidate → admitted lifecycle: admission rules, the trust class an admitted signal carries (`derived` inheritance?), expiry and withdrawal of an admitted signal | CORE-04 |
 | OQ-5 | Context freshness: default `maxAgeSeconds` per fact class, and behaviour when a fact goes stale between decision and exercise | CORE-04 |

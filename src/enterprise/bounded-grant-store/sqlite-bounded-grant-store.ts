@@ -7,6 +7,7 @@ import {
   GRANT_REASON_CODES,
   boundedGrantDigestMatches,
   isGrantRevocationReason,
+  isWellFormedBoundedGrantSemantics,
   serializeBoundedGrant,
   type BoundedGrant,
   type BoundedGrantStorePort,
@@ -519,6 +520,11 @@ function parseStoredGrant(grantJson: string): BoundedGrant | undefined {
   const hasProvenance = Object.prototype.hasOwnProperty.call(parsed, 'authorityBindingDigest');
   const authorityBindingDigest = stringField(parsed, 'authorityBindingDigest');
   if (hasProvenance && authorityBindingDigest === undefined) return undefined;
+  // CORE-03: the optional semantic format marker, the same way — absent on
+  // every pre-CORE-03 row, and when present a string proven by the round trip.
+  const hasSemanticsFormat = Object.prototype.hasOwnProperty.call(parsed, 'semanticsFormat');
+  const semanticsFormat = stringField(parsed, 'semanticsFormat');
+  if (hasSemanticsFormat && semanticsFormat === undefined) return undefined;
 
   if (
     id === undefined ||
@@ -545,6 +551,7 @@ function parseStoredGrant(grantJson: string): BoundedGrant | undefined {
     correlation: { requestId, decisionId, action, resourceScope },
     subject,
     scope: scope as BoundedGrant['scope'],
+    ...(semanticsFormat !== undefined ? { semanticsFormat } : {}),
     issuedAt,
     expiresAt,
     sourceDigest,
@@ -789,6 +796,9 @@ export async function createSqliteBoundedGrantStore(
     // the row happens to be stored.
     const verification = verifier.verifyGrant(grant, storeId, signatureEnvelopeOf(row));
     if (!verification.verified) throw unauthentic(row.grant_id, 'grant signature', verification.failure);
+    // CORE-03: even an authentic grant is refused if its semantic marker and
+    // axes disagree — it is interpretable in neither format.
+    if (!isWellFormedBoundedGrantSemantics(grant)) throw corrupt(row.grant_id, 'the grant semantic format and its semantic axes disagree');
     return grant;
   }
 
@@ -1201,6 +1211,8 @@ export async function createSqliteBoundedGrantStore(
      */
     async issue(input: IssueBoundedGrantInput): Promise<IssueBoundedGrantOutcome> {
       assertOpen();
+      // CORE-03: never sign or store a grant whose semantic marker and axes disagree.
+      if (!isWellFormedBoundedGrantSemantics(input.grant)) return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_SEMANTICS_FORMAT_INVALID] };
       const before = runVerifyRevocationState();
       noteVerified(before);
       const signature = await signOrFail(input.grant.id, () => signer.signGrant(input.grant, before.storeId));

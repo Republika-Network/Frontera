@@ -1,5 +1,5 @@
-import type { BoundedGrant, GrantBound, GrantExerciseAssessment, GrantRevocation, GrantRevocationReason, GrantScope } from '../../features/grant-runtime/index.js';
-import { GRANT_REVOCATION_REASONS, isGrantRevocationReason } from '../../features/grant-runtime/index.js';
+import type { BoundedGrant, GrantBound, GrantBoundKey, GrantExerciseAssessment, GrantParameterBound, GrantRevocation, GrantRevocationReason } from '../../features/grant-runtime/index.js';
+import { GRANT_BOUND_KEYS, GRANT_REVOCATION_REASONS, isGrantRevocationReason } from '../../features/grant-runtime/index.js';
 import { EMERGENCY_CONTROL_SCOPES, type EmergencyControlScope, type EmergencyControlScopeMatch } from '../../features/emergency-control-runtime/index.js';
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
 import { KERNEL_AUTHORITY_ENTITY_KINDS, type KernelAuthorityEntityKind, type KernelAuthorityRecord } from '../kernel-authority/contracts.js';
@@ -129,6 +129,19 @@ export type AdministeredGrantBound =
   | { readonly kind: 'ceiling'; readonly limit: string; readonly unit: string }
   | { readonly kind: 'window'; readonly notAfter: string };
 
+/** CORE-03 — one typed parameter bound, as an operator sees it: the declared dimension, its type, and the exact value or inclusive maximum. */
+export type AdministeredParameterBound =
+  | { readonly dimension: string; readonly kind: 'exact'; readonly type: 'integer' | 'token' | 'boolean'; readonly value: number | string | boolean }
+  | { readonly dimension: string; readonly kind: 'maximum'; readonly type: 'integer'; readonly limit: number };
+
+/**
+ * Every bound a grant carries: one entry per stated axis (including the
+ * CORE-03 `governanceProfile` identity), and the typed `parameters` list when
+ * the grant bounds any. Derived from the grant runtime's own key list, so an
+ * axis the runtime enforces can never be missing from what an operator sees.
+ */
+export type AdministeredGrantBounds = Readonly<Partial<Record<GrantBoundKey, AdministeredGrantBound>>> & { readonly parameters?: readonly AdministeredParameterBound[] };
+
 export interface AdministeredGrantRevocation {
   readonly revokedAt: string;
   readonly reason: GrantRevocationReason;
@@ -143,7 +156,9 @@ export interface AdministeredGrantView {
   readonly subject: string;
   /** What it was derived from: the committed governance request and decision, and the act they covered. */
   readonly provenance: { readonly requestId: string; readonly decisionId: string; readonly action: string; readonly resourceScope: string };
-  readonly bounds: Readonly<Partial<Record<keyof GrantScope, AdministeredGrantBound>>>;
+  readonly bounds: AdministeredGrantBounds;
+  /** CORE-03 — the grant's explicit, signed semantic format (`frontera.grant-semantics.v1`) when its bounds include the semantic axes; absent on every other grant. */
+  readonly semanticsFormat?: string;
   readonly issuedAt: string;
   readonly expiresAt: string;
   /**
@@ -168,16 +183,23 @@ function toBound(bound: GrantBound): AdministeredGrantBound {
   }
 }
 
+function toParameterBound(bound: GrantParameterBound): AdministeredParameterBound {
+  return bound.kind === 'maximum'
+    ? { dimension: bound.dimension, kind: 'maximum', type: 'integer', limit: bound.limit }
+    : { dimension: bound.dimension, kind: 'exact', type: bound.type, value: bound.value };
+}
+
 export function toAdministeredGrantRevocation(revocation: GrantRevocation): AdministeredGrantRevocation {
   return { revokedAt: revocation.revokedAt, reason: revocation.reason, revokedBy: revocation.issuerRef };
 }
 
 export function toAdministeredGrantView(grant: BoundedGrant, revocation: GrantRevocation | undefined, assessment: GrantExerciseAssessment, assessedAt: string): AdministeredGrantView {
-  const bounds: Partial<Record<keyof GrantScope, AdministeredGrantBound>> = {};
-  for (const key of ['action', 'amount', 'counterparty', 'organization', 'resources'] as const) {
+  const bounds: Partial<Record<GrantBoundKey, AdministeredGrantBound>> & { parameters?: readonly AdministeredParameterBound[] } = {};
+  for (const key of GRANT_BOUND_KEYS) {
     const bound = grant.scope[key];
     if (bound !== undefined) bounds[key] = toBound(bound);
   }
+  if (grant.scope.parameters !== undefined) bounds.parameters = grant.scope.parameters.map(toParameterBound);
   return {
     grantId: grant.id,
     subject: grant.subject,
@@ -188,6 +210,7 @@ export function toAdministeredGrantView(grant: BoundedGrant, revocation: GrantRe
       resourceScope: grant.correlation.resourceScope,
     },
     bounds,
+    ...(grant.semanticsFormat !== undefined ? { semanticsFormat: grant.semanticsFormat } : {}),
     issuedAt: grant.issuedAt,
     expiresAt: grant.expiresAt,
     status: { eligibility: assessment.eligibility, reasonCodes: [...assessment.reasonCodes], assessedAt },

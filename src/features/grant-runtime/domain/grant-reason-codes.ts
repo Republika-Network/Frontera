@@ -44,6 +44,8 @@ export const GRANT_REASON_CODES = {
   GRANT_REVOKED: 'GRANT_REVOKED',
   /** No grant with that identity is held by the authoritative store. */
   GRANT_NOT_FOUND: 'GRANT_NOT_FOUND',
+  /** CORE-03: the grant's semantic marker and semantic axes disagree — axes without `semanticsFormat`, the marker without its required axes, or an unknown marker. Refused at issuance, on read and at exercise; never interpreted in either format. */
+  GRANT_SEMANTICS_FORMAT_INVALID: 'GRANT_SEMANTICS_FORMAT_INVALID',
 } as const;
 
 export type GrantReasonCode = (typeof GRANT_REASON_CODES)[keyof typeof GRANT_REASON_CODES];

@@ -356,11 +356,26 @@ interface GovernedActionIntent {
   counterparty?: string;          // → action.counterpartyId, grant counterparty bound
   amount?: { value; currency };   // P9: decimal text + registry asset → canonical action.amount/currency — the proposed effect; P10: compared against, never the source of, the authority ceiling
                                   //     required for a host-classified financial action, refused for any other
+  parameters?: object;            // CORE-03: typed values for the governing profile's declared dimensions → action.governedParameters, grant parameter bounds
+  expectedGovernanceProfile?: { id; version }; // CORE-03: a hint that pins the effective, server-resolved profile; a mismatch is refused, it never selects one
   assertedContext?: object;       // → request.context (verified by the Kernel, never reaches an adapter)
   correlationId?: string;
   idempotencyKey: string;         // required; scoped to (organization, principal)
 }
 ```
+
+**Semantic classification (CORE-03).** The host's trusted Governance Profile
+registry resolves `action` × `resource` to an action class, a resource class
+and one versioned profile, carried as `action.semantics` on the Kernel request,
+recorded with the committed decision, read by policy as `actionClass` /
+`resourceClass` / `governanceProfile`, and bound into the grant as the
+`actionClass`, `resourceClass` and `governanceProfile` axes, under the signed
+`semanticsFormat` marker. An action no profile governs is evaluated exactly as
+before and may carry no `parameters`; a half-classified or ungoverned pair is
+rejected. Typed parameters are handed to policy, bounded by the grant and
+proven at exercise, but are **not yet** part of the `ValidatedExecutionAction`
+an adapter receives (P11 records the exact adapter context under a closed
+schema; see `ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` §8).
 
 Validation is **closed**. An intent carrying any undeclared property is
 rejected with `GOVERNED_ACTION_INTENT_INVALID` before the Kernel runs, and

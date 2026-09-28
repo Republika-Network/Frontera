@@ -1,7 +1,9 @@
 import type { ExecutionFailureReason } from '../../features/execution-runtime/index.js';
+import type { DeclaredGovernedParameter, GovernedActionSemantics } from '../../features/governed-parameter-runtime/index.js';
 import type { RequestedGrantBounds } from '../../features/grant-runtime/index.js';
 import type { FinancialActionClassifier, MonetaryAmount, MonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import type { KernelDecisionStatus } from '../../kernel/index.js';
+import type { GovernanceProfileRegistry } from '../governance-profile/index.js';
 
 /**
  * The Governed Action contract: what a caller may *ask for*, and what it is
@@ -45,15 +47,46 @@ export interface GovernedActionAmount {
  * Every field maps onto an existing canonical axis: `action` → the Kernel's
  * `action.type` and the grant's `action` bound; `resource` → `resourceScope`
  * and `resources`; `counterparty` → `counterpartyId` and `counterparty`;
- * `amount` → `amount`/`currency` and the grant's `amount` ceiling. There is no
- * payload, no provider body and no metadata that could reach an adapter
- * without passing grant containment.
+ * `amount` → `amount`/`currency` and the grant's `amount` ceiling;
+ * `parameters` → typed `governedParameters` and the grant's parameter bounds
+ * (CORE-03). There is no payload, no provider body and no metadata that could
+ * reach an adapter without passing grant containment.
+ *
+ * ## Actor · Action · Resource (CORE-03)
+ *
+ * The actor is never here — it is the bound customer identity. `action` and
+ * `resource` stay the concrete identifier and reference they always were; what
+ * *kind* of action and resource they are (`actionClass`, `resourceClass`) and
+ * which versioned Governance Profile governs the pair are resolved by trusted
+ * configuration, never stated by the caller. A GovernedAction is not
+ * inherently monetary: `amount` is one dimension, present only for an action
+ * the host classifies as financial.
  */
 export interface GovernedActionIntent {
   readonly action: string;
   readonly resource: string;
   readonly counterparty?: string;
   readonly amount?: GovernedActionAmount;
+  /**
+   * CORE-03 — typed values for the parameter dimensions the governing profile
+   * declares, keyed by exact dimension id: a JSON number (a safe integer) for
+   * an integer dimension, a string for a token, a boolean for a boolean. No
+   * coercion: `"100"` is not 100. A key the profile does not declare — or a
+   * differently-cased spelling of one it does — is refused, a required
+   * dimension that is absent is refused, and an action no profile governs may
+   * carry none at all.
+   */
+  readonly parameters?: Readonly<Record<string, unknown>>;
+  /**
+   * CORE-03 — a **hint that pins**, never a selector: the profile the caller
+   * *expects* to govern this action, `{ id, version }`. The **effective**
+   * profile is always the one the trusted resolver chooses from `action` ×
+   * `resource`; it is what the decision records and the grant binds. An
+   * expectation that disagrees with it (another id, an older or newer
+   * version) is refused rather than honoured, and an absent expectation
+   * changes nothing.
+   */
+  readonly expectedGovernanceProfile?: GovernedActionProfileExpectation;
   /**
    * Context the caller *asserts* — evidence references such as a passport or
    * capability-token id. It reaches the Kernel as `request.context`, where it
@@ -68,6 +101,11 @@ export interface GovernedActionIntent {
 /**
  * An intent after validation **and** host-trusted classification (P9).
  *
+ * `actionClass` here is P9's financial / non-financial answer, and predates
+ * CORE-03. It is **not** the domain-declared semantic class, which lives at
+ * `semantics.actionClass` (CORE-03): kept under its P9 name so every P9 suite
+ * passes unchanged.
+ *
  * The class is not something the intent says; it is what the deployment's
  * financial action classifier says about `action`, and the two arms make the
  * only legal combinations the only representable ones:
@@ -80,8 +118,25 @@ export interface GovernedActionIntent {
  * and cannot move money under a non-financial one by adding an amount (refused).
  */
 export type ClassifiedGovernedActionIntent =
-  | (Omit<GovernedActionIntent, 'amount'> & { readonly actionClass: 'financial'; readonly amount: MonetaryAmount })
-  | (Omit<GovernedActionIntent, 'amount'> & { readonly actionClass: 'non-financial'; readonly amount?: undefined });
+  | (GovernedActionIntentCommon & { readonly actionClass: 'financial'; readonly amount: MonetaryAmount })
+  | (GovernedActionIntentCommon & { readonly actionClass: 'non-financial'; readonly amount?: undefined });
+
+/** What a caller may state about the profile it expects. */
+export interface GovernedActionProfileExpectation {
+  readonly id: string;
+  readonly version: number;
+}
+
+/**
+ * The validated intent's fields other than money. `semantics` and `parameters`
+ * are present together or not at all: exactly when a trusted Governance
+ * Profile governs the action (CORE-03). `parameters` is the declared, typed,
+ * canonically ordered list — never the caller's object.
+ */
+type GovernedActionIntentCommon = Omit<GovernedActionIntent, 'amount' | 'parameters' | 'expectedGovernanceProfile'> & {
+  readonly semantics?: GovernedActionSemantics;
+  readonly parameters?: readonly DeclaredGovernedParameter[];
+};
 
 /**
  * The trusted monetary configuration a governed-action boundary validates
@@ -94,6 +149,14 @@ export interface GovernedActionMonetaryTrust {
   /** Which actions are financial. An unlisted action is non-financial and may carry no amount. */
   readonly actionClassifier: FinancialActionClassifier;
 }
+
+/**
+ * CORE-03 — the trusted semantic configuration an intent is classified
+ * against: declared parameter dimensions, action classes, resource classes and
+ * Governance Profiles. Host composition only. The monetary trust above is P9's
+ * specialized financial classification and is unchanged beside it.
+ */
+export type GovernedActionSemanticTrust = GovernanceProfileRegistry;
 
 /**
  * What the trusted host decides about the grant a governed action may receive.

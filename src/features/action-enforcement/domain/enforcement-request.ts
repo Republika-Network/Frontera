@@ -1,6 +1,7 @@
 import type { EnforcementTarget } from './enforcement-target.js';
 import type { ExecutionIntent } from './execution-intent.js';
 import type { SideEffectDescriptor } from './side-effect.js';
+import type { GovernedParameter } from '../../governed-parameter-runtime/index.js';
 
 export type EnforcementMode = 'preflight' | 'execute' | 'dry_run';
 
@@ -27,6 +28,20 @@ export interface EnforcementPolicyEvaluationInput {
   readonly dataDomains?: readonly string[];
 
   readonly evidenceIds?: readonly string[];
+
+  /**
+   * CORE-03 — the action's trusted semantic classification: domain-declared
+   * action class, resource class and the id of the Governance Profile that
+   * classified it. Opaque identifiers; policy compares them, nothing branches
+   * on them.
+   */
+  readonly actionClass?: string;
+  readonly resourceClass?: string;
+  readonly governanceProfile?: string;
+  /** CORE-03 — the effective (trusted, server-resolved) Governance Profile's version. An integer; ordered predicates compare it numerically. */
+  readonly governanceProfileVersion?: number;
+  /** CORE-03 — the typed parameter values the action proposes, one per declared dimension, in canonical order. Proposed values, not trusted facts. */
+  readonly governedParameters?: readonly GovernedParameter[];
 
   readonly metadata?: Readonly<Record<string, unknown>>;
 }

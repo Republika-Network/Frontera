@@ -8,6 +8,7 @@ import {
   type EnterpriseConfiguration,
 } from '../configuration/enterprise-configuration.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
+import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
 import type { MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
 
 /**
@@ -77,6 +78,12 @@ export interface EnterpriseHostGovernedActionConfiguration {
   readonly grantLifetimeSeconds: number;
   readonly customerPrincipals: readonly EnterpriseHostCustomerPrincipal[];
   readonly monetary: { readonly assets: readonly MonetaryAssetDefinition[]; readonly financialActions: readonly string[] };
+  /**
+   * CORE-03 — the governed-action semantic model (parameter dimensions, action
+   * and resource classes, Governance Profiles). Validated in full here, so a
+   * malformed profile refuses startup; absent, nothing is classified.
+   */
+  readonly governance?: GovernanceConfiguration;
   readonly genericHttpAdapters: readonly EnterpriseGenericHttpExecutionAdapterOptions[];
   /** Trusted routing: governed action → adapter id. An action with no route is authorized by nothing and reaches no adapter. */
   readonly routes: ReadonlyMap<string, string>;
@@ -206,7 +213,7 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
     invalid('the file is not valid JSON.');
   }
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
-  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'monetary', 'genericHttpAdapters', 'routes'], 'the file');
+  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'monetary', 'governance', 'genericHttpAdapters', 'routes'], 'the file');
   if (parsed.version !== 1) invalid('version must be 1.');
 
   const trustDomainId = text(parsed.trustDomainId, 'trustDomainId');
@@ -240,6 +247,21 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
     };
   }
 
+  // CORE-03: validated completely, now, by the same registry builder the
+  // composition root runs — so a profile that could not be believed stops the
+  // Host at startup with a configuration error, never at the first request.
+  let governance: GovernanceConfiguration | undefined;
+  if (parsed.governance !== undefined) {
+    if (!isRecord(parsed.governance)) invalid('governance must be an object.');
+    try {
+      createGovernanceProfileRegistry(parsed.governance as GovernanceConfiguration);
+    } catch (error) {
+      if (error instanceof GovernanceProfileConfigurationError) invalid(`governance: ${error.message}`);
+      throw error;
+    }
+    governance = parsed.governance as GovernanceConfiguration;
+  }
+
   // Everything but the credential is handed to the Generic HTTP adapter's own
   // snapshot validation at composition, which refuses unknown keys, non-HTTPS
   // origins, redirects and private-network options.
@@ -269,6 +291,7 @@ function parseGovernedActionsFile(env: Env, path: string): ParsedGovernedActions
       grantLifetimeSeconds: lifetime as number,
       customerPrincipals: customerPrincipals.map(({ principal }) => principal),
       monetary,
+      ...(governance !== undefined ? { governance } : {}),
       genericHttpAdapters,
       routes,
     },

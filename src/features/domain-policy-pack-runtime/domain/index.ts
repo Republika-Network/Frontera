@@ -41,3 +41,5 @@ export type {
   PolicyPackRuntimeIdGenerator,
   PolicyPackRuntimeContext,
 } from './policy-pack-runtime-context.js';
+export { isTrustedPolicyPackWriter } from './policy-pack-writer.js';
+export type { PolicyPackWriterContext } from './policy-pack-writer.js';

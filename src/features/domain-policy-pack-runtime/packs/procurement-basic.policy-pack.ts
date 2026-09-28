@@ -1,3 +1,4 @@
+import type { PolicyPackWriterContext } from '../domain/policy-pack-writer.js';
 import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
 import type { PolicyPackSource } from '../domain/policy-pack-source.js';
 import type { PolicyPackVersion } from '../domain/policy-pack-version.js';
@@ -147,8 +148,8 @@ export const PROCUREMENT_BASIC_POLICY_PACK_VERSION_V1: RegisterPolicyPackVersion
   legalCompleteness: 'not_legal_advice',
 };
 
-export function registerProcurementBasicPolicyPack(runtime: PolicyPackRuntime): PolicyPackVersion {
-  runtime.registerPolicyPack(PROCUREMENT_BASIC_POLICY_PACK);
-  runtime.registerPolicyPackVersion(PROCUREMENT_BASIC_POLICY_PACK_VERSION_V1);
-  return runtime.activatePolicyPackVersion(PROCUREMENT_BASIC_POLICY_PACK_VERSION_V1.id);
+export function registerProcurementBasicPolicyPack(runtime: PolicyPackRuntime, writer: PolicyPackWriterContext): PolicyPackVersion {
+  runtime.registerPolicyPack(writer, PROCUREMENT_BASIC_POLICY_PACK);
+  runtime.registerPolicyPackVersion(writer, PROCUREMENT_BASIC_POLICY_PACK_VERSION_V1);
+  return runtime.activatePolicyPackVersion(writer, PROCUREMENT_BASIC_POLICY_PACK_VERSION_V1.id);
 }

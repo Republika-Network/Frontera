@@ -1,0 +1,27 @@
+{
+  "request": {
+    "requestId": "aoc.governed-request:legacy",
+    "actor": {
+      "id": "agent-a",
+      "trustDomainId": "trust-domain-a"
+    },
+    "organization": {
+      "id": "org-a"
+    },
+    "action": {
+      "type": "payment.send",
+      "resourceScope": "resource-treasury-1",
+      "counterpartyId": "vendor-v123",
+      "amount": "75.50",
+      "currency": "USD"
+    },
+    "context": {
+      "passportId": "passport-agent-a"
+    },
+    "requestedAt": "2026-01-01T12:00:00.000Z",
+    "correlationId": "corr-legacy"
+  },
+  "payloadDigest": "sha256:9eb0653242a4ef5f8f980746b1171bb943e7a8f6d3162d05cf48b099ade7cbda",
+  "sourceScope": "{\"action\":{\"kind\":\"identity\",\"value\":\"payment.send\"},\"counterparty\":{\"kind\":\"identity\",\"value\":\"vendor-v123\"},\"organization\":{\"kind\":\"identity\",\"value\":\"org-a\"},\"resources\":{\"kind\":\"set\",\"values\":[\"resource-treasury-1\"]}}",
+  "sourceDigest": "sha256:64b9212a1bfae07dd93762105f4cdc30d6684041173062cd34629b365af7ad72"
+}

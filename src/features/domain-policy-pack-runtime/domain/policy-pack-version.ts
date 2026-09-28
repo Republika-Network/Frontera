@@ -27,4 +27,8 @@ export interface PolicyPackVersion {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  /** NB-008: the trusted writer that registered this version. */
+  readonly registeredBy?: string;
+  /** NB-008: the trusted writer behind this version's latest lifecycle transition (activate, deprecate, revoke, supersede). */
+  readonly statusChangedBy?: string;
 }

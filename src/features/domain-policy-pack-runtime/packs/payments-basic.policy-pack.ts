@@ -1,3 +1,4 @@
+import type { PolicyPackWriterContext } from '../domain/policy-pack-writer.js';
 import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
 import type { PolicyPackSource } from '../domain/policy-pack-source.js';
 import type { PolicyPackVersion } from '../domain/policy-pack-version.js';
@@ -180,8 +181,8 @@ export const PAYMENTS_BASIC_POLICY_PACK_VERSION_V1: RegisterPolicyPackVersionPar
   legalCompleteness: 'not_legal_advice',
 };
 
-export function registerPaymentsBasicPolicyPack(runtime: PolicyPackRuntime): PolicyPackVersion {
-  runtime.registerPolicyPack(PAYMENTS_BASIC_POLICY_PACK);
-  runtime.registerPolicyPackVersion(PAYMENTS_BASIC_POLICY_PACK_VERSION_V1);
-  return runtime.activatePolicyPackVersion(PAYMENTS_BASIC_POLICY_PACK_VERSION_V1.id);
+export function registerPaymentsBasicPolicyPack(runtime: PolicyPackRuntime, writer: PolicyPackWriterContext): PolicyPackVersion {
+  runtime.registerPolicyPack(writer, PAYMENTS_BASIC_POLICY_PACK);
+  runtime.registerPolicyPackVersion(writer, PAYMENTS_BASIC_POLICY_PACK_VERSION_V1);
+  return runtime.activatePolicyPackVersion(writer, PAYMENTS_BASIC_POLICY_PACK_VERSION_V1.id);
 }

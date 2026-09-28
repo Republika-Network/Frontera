@@ -1,3 +1,10 @@
+import {
+  compareDimensionIds,
+  isSemanticIdentifier,
+  isWellFormedGovernedParameterBound,
+  serializeGovernedParameterBound,
+  type GovernedParameterBound,
+} from '../../governed-parameter-runtime/index.js';
 import { canonicalGrantBound, isWellFormedGrantBound, type GrantBound, type GrantBoundKind } from './grant-bound.js';
 
 /**
@@ -13,6 +20,17 @@ import { canonicalGrantBound, isWellFormedGrantBound, type GrantBound, type Gran
  * | `counterparty` | `identity` | the counterparty the authorization evaluated |
  * | `organization` | `identity` | the tenant the authorization was scoped to |
  * | `amount` | `ceiling` | the quantity the authorization evaluated, with its currency |
+ * | `actionClass` | `identity` | the trusted, domain-declared class of the evaluated action (CORE-03) |
+ * | `resourceClass` | `identity` | the trusted, domain-declared class of the evaluated resource (CORE-03) |
+ * | `governanceProfile` | `identity` | the trusted Governance Profile (id, version and content digest) the action was classified under (CORE-03) |
+ *
+ * Beside these axes a scope may carry `parameters`: typed bounds over the
+ * declared parameter dimensions the authorization evaluated (CORE-03,
+ * `src/features/governed-parameter-runtime`). They are a list rather than an
+ * axis because their names are domain-declared, not CORE's; each entry is
+ * attenuated, contained and exercised by exactly the same fail-closed rules as
+ * an axis. `amount` stays the monetary dimension, with its own exact
+ * representation and its authority-sourced ceiling (P9, P10).
  *
  * `ADR-OBLIGATION-DISCHARGE-AND-BOUNDED-GRANT.md` §4 names two of these
  * explicitly — resource identity (§4.3) and the evaluated scope (§4.4). The
@@ -37,7 +55,7 @@ import { canonicalGrantBound, isWellFormedGrantBound, type GrantBound, type Gran
  * Temporal bounds now live in `grant-validity.ts`, where the issuer proposes
  * and the ceilings contain.
  */
-export type GrantBoundKey = 'action' | 'amount' | 'counterparty' | 'organization' | 'resources';
+export type GrantBoundKey = 'action' | 'actionClass' | 'amount' | 'counterparty' | 'governanceProfile' | 'organization' | 'resourceClass' | 'resources';
 
 /**
  * Every key, in canonical order.
@@ -47,7 +65,7 @@ export type GrantBoundKey = 'action' | 'amount' | 'counterparty' | 'organization
  * built. Iterating this constant — never `Object.keys` — is what keeps
  * `serializeGrantScope` deterministic across runtimes.
  */
-export const GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'amount', 'counterparty', 'organization', 'resources'];
+export const GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'actionClass', 'amount', 'counterparty', 'governanceProfile', 'organization', 'resourceClass', 'resources'];
 
 /**
  * Which bound shape each axis is expressed in. Total over the closed key set.
@@ -58,11 +76,66 @@ export const GRANT_BOUND_KEYS: readonly GrantBoundKey[] = ['action', 'amount', '
  */
 export const GRANT_BOUND_KINDS_BY_KEY: Readonly<Record<GrantBoundKey, GrantBoundKind>> = {
   action: 'identity',
+  actionClass: 'identity',
   amount: 'ceiling',
   counterparty: 'identity',
+  governanceProfile: 'identity',
   organization: 'identity',
+  resourceClass: 'identity',
   resources: 'set',
 };
+
+/**
+ * CORE-03 — the explicit semantic format of a grant that carries the semantic
+ * axes. A grant states it as a signed top-level field
+ * (`BoundedGrant.semanticsFormat`), and the axes and the marker must agree:
+ *
+ * - no marker → none of `actionClass`, `resourceClass`, `governanceProfile`,
+ *   `parameters` may be present (a pre-CORE-03 grant, read exactly as before);
+ * - this marker → `actionClass`, `resourceClass` and `governanceProfile` are
+ *   all required (`parameters` only when the profile governs any);
+ * - any other marker → refused.
+ *
+ * So a legacy reading can never be applied to a semantic grant, and a semantic
+ * reading can never be applied to a legacy one.
+ */
+export const GRANT_SEMANTICS_FORMAT_V1 = 'frontera.grant-semantics.v1';
+
+/** The identity axes a semantic grant must state together. */
+export const GRANT_SEMANTIC_AXES: readonly GrantBoundKey[] = ['actionClass', 'governanceProfile', 'resourceClass'];
+
+/** Whether a scope states any CORE-03 semantic axis at all. */
+export function grantScopeCarriesSemantics(scope: GrantScope): boolean {
+  return GRANT_SEMANTIC_AXES.some((key) => scope[key] !== undefined) || scope.parameters !== undefined;
+}
+
+/**
+ * Whether a scope's semantic axes are complete: the three identity axes all
+ * together or none, and parameter bounds only beside them. Total, fail-closed.
+ */
+export function hasCompleteGrantSemantics(scope: GrantScope): boolean {
+  const stated = GRANT_SEMANTIC_AXES.filter((key) => scope[key] !== undefined).length;
+  if (stated === 0) return scope.parameters === undefined;
+  return stated === GRANT_SEMANTIC_AXES.length;
+}
+
+/** The marker/axes agreement rule above. */
+export function isConsistentGrantSemantics(scope: GrantScope, semanticsFormat: string | undefined): boolean {
+  if (semanticsFormat === undefined) return !grantScopeCarriesSemantics(scope);
+  return semanticsFormat === GRANT_SEMANTICS_FORMAT_V1 && grantScopeCarriesSemantics(scope) && hasCompleteGrantSemantics(scope);
+}
+
+/** One typed bound over one declared parameter dimension. */
+export type GrantParameterBound = { readonly dimension: string } & GovernedParameterBound;
+
+/**
+ * Typed parameter bounds, one per dimension, in canonical order (dimension id,
+ * code-unit order). Never empty: a scope bounding no parameter omits the list,
+ * so one meaning has one spelling and every pre-CORE-03 grant keeps its bytes.
+ */
+export type GrantParameterBounds = readonly GrantParameterBound[];
+
+export const GRANT_PARAMETER_BOUNDS_MAX = 64;
 
 /**
  * A set of bounds, at most one per axis.
@@ -75,9 +148,13 @@ export const GRANT_BOUND_KINDS_BY_KEY: Readonly<Record<GrantBoundKey, GrantBound
  */
 export interface GrantScope {
   readonly action?: GrantBound;
+  readonly actionClass?: GrantBound;
   readonly amount?: GrantBound;
   readonly counterparty?: GrantBound;
+  readonly governanceProfile?: GrantBound;
   readonly organization?: GrantBound;
+  readonly parameters?: GrantParameterBounds;
+  readonly resourceClass?: GrantBound;
   readonly resources?: GrantBound;
 }
 
@@ -92,20 +169,55 @@ export function statedGrantBoundKeys(scope: GrantScope): readonly GrantBoundKey[
 
 /** Whether every stated bound carries the shape its axis requires and is itself well formed. Total; fail-closed on anything unrecognized. */
 export function isWellFormedGrantScope(scope: GrantScope): boolean {
-  return statedGrantBoundKeys(scope).every((key) => {
+  const axes = statedGrantBoundKeys(scope).every((key) => {
     const bound = scope[key];
     if (bound === undefined) return false;
     return bound.kind === GRANT_BOUND_KINDS_BY_KEY[key] && isWellFormedGrantBound(bound);
   });
+  return axes && hasCompleteGrantSemantics(scope) && (scope.parameters === undefined || isWellFormedGrantParameterBounds(scope.parameters));
+}
+
+/**
+ * Whether a parameter bound list is well formed *as stored*: non-empty, at most
+ * `GRANT_PARAMETER_BOUNDS_MAX`, every dimension a semantic identifier, strictly
+ * ascending (so sorted and duplicate-free — a list that is merely equivalent to
+ * a canonical one is not accepted as one), and every bound well formed.
+ */
+export function isWellFormedGrantParameterBounds(parameters: GrantParameterBounds): boolean {
+  if (!Array.isArray(parameters) || parameters.length === 0 || parameters.length > GRANT_PARAMETER_BOUNDS_MAX) return false;
+  return parameters.every(
+    (entry, index) =>
+      entry !== null &&
+      typeof entry === 'object' &&
+      isSemanticIdentifier(entry.dimension) &&
+      isWellFormedGovernedParameterBound(entry) &&
+      (index === 0 || compareDimensionIds((parameters[index - 1] as GrantParameterBound).dimension, entry.dimension) < 0),
+  );
+}
+
+/** The canonical form of a parameter bound list: sorted by dimension, each entry rebuilt from its declared fields only. */
+export function canonicalGrantParameterBounds(parameters: GrantParameterBounds): GrantParameterBounds {
+  return [...parameters].map(canonicalGrantParameterBound).sort((left, right) => compareDimensionIds(left.dimension, right.dimension));
+}
+
+function canonicalGrantParameterBound(entry: GrantParameterBound): GrantParameterBound {
+  if (entry.kind === 'maximum') return { dimension: entry.dimension, kind: 'maximum', type: 'integer', limit: entry.limit };
+  return { dimension: entry.dimension, kind: 'exact', type: entry.type, value: entry.value } as GrantParameterBound;
+}
+
+/** The parameter bound for one dimension, if the list states one. */
+export function grantParameterBound(parameters: GrantParameterBounds | undefined, dimension: string): GrantParameterBound | undefined {
+  return parameters?.find((entry) => entry.dimension === dimension);
 }
 
 /** The canonical form of a scope: canonical bounds, keys emitted in `GRANT_BOUND_KEYS` order, unstated axes omitted rather than written as `undefined`. */
 export function canonicalGrantScope(scope: GrantScope): GrantScope {
-  const canonical: { -readonly [K in GrantBoundKey]?: GrantBound } = {};
+  const canonical: { -readonly [K in GrantBoundKey]?: GrantBound } & { parameters?: GrantParameterBounds } = {};
   for (const key of GRANT_BOUND_KEYS) {
     const bound = scope[key];
     if (bound !== undefined) canonical[key] = canonicalGrantBound(bound);
   }
+  if (scope.parameters !== undefined) canonical.parameters = canonicalGrantParameterBounds(scope.parameters);
   return canonical;
 }
 
@@ -135,16 +247,37 @@ function serializeBound(bound: GrantBound): string {
  * layer importing it. Layer E may not depend on layer F
  * (`ADR-AUTHORITY-CONTROL-LAYERING.md` §2: "F reads A B C D E", never the
  * reverse), and the governance canonicalizer lives inside the evidence-bearing
- * store. `tests/grant-canonicalization.test.ts` pins the byte equality against
+ * store. `src/enterprise/__tests__/pre-core-03-compatibility.test.ts` pins the byte equality against
  * the real canonicalizer so the two can never drift silently.
  */
 export function serializeGrantScope(scope: GrantScope): string {
   const canonical = canonicalGrantScope(scope);
-  const parts = GRANT_BOUND_KEYS.filter((key) => canonical[key] !== undefined).map((key) => {
+  const parts: string[] = [];
+  for (const key of SERIALIZED_SCOPE_KEYS) {
+    if (key === 'parameters') {
+      // Omitted, never written as `[]` or `null`: a scope without parameter
+      // bounds serializes to exactly the bytes every pre-CORE-03 scope did.
+      if (canonical.parameters !== undefined) parts.push(`"parameters":[${canonical.parameters.map(serializeGrantParameterBound).join(',')}]`);
+      continue;
+    }
     const bound = canonical[key];
-    return `${JSON.stringify(key)}:${bound === undefined ? '{}' : serializeBound(bound)}`;
-  });
+    if (bound !== undefined) parts.push(`${JSON.stringify(key)}:${serializeBound(bound)}`);
+  }
   return `{${parts.join(',')}}`;
+}
+
+/**
+ * Every serialized scope key, in the lexicographic order canonical JSON emits.
+ * `parameters` sits between `organization` and `resourceClass`, and
+ * `actionClass` / `resourceClass` just before `amount` / `resources` —
+ * exactly where a canonicalizer sorting keys would put them.
+ */
+const SERIALIZED_SCOPE_KEYS: readonly (GrantBoundKey | 'parameters')[] = ['action', 'actionClass', 'amount', 'counterparty', 'governanceProfile', 'organization', 'parameters', 'resourceClass', 'resources'];
+
+/** One entry, keys in lexicographic order: `dimension` first, then the bound's own canonical keys. */
+function serializeGrantParameterBound(entry: GrantParameterBound): string {
+  const bound = serializeGovernedParameterBound(entry);
+  return `{"dimension":${JSON.stringify(entry.dimension)},${bound.slice(1)}`;
 }
 
 /** Whether two scopes state exactly the same bounds. Canonical on both sides, so set order never makes two equal scopes differ. */

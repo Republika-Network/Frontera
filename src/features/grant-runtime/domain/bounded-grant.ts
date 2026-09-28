@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 
 import { serializeGrantCorrelation, type GrantCorrelation } from './grant-correlation.js';
-import { serializeGrantScope, type GrantScope } from './grant-scope.js';
+import { isConsistentGrantSemantics, serializeGrantScope, type GrantScope } from './grant-scope.js';
 import { serializeGrantSourceAuthorization, type GrantSourceAuthorization } from './grant-source-authorization.js';
 
 /**
@@ -91,8 +91,23 @@ export interface BoundedGrant {
    * integrity.
    */
   readonly authorityBindingDigest?: string;
+  /**
+   * CORE-03 — the explicit semantic format (`GRANT_SEMANTICS_FORMAT_V1`) of a
+   * grant whose scope carries the semantic axes (action class, resource class,
+   * governance profile, typed parameter bounds). Present exactly when those
+   * axes are, part of the canonical bytes, identity, digest and signature, so
+   * it can be neither added to a legacy grant nor stripped from a semantic one
+   * without failing verification. Absent on every pre-CORE-03 grant, whose
+   * bytes are therefore unchanged.
+   */
+  readonly semanticsFormat?: string;
   /** A fingerprint of the grant's own canonical form. Integrity, not a signature — see the README. */
   readonly digest: string;
+}
+
+/** Whether a grant's semantic marker and semantic axes agree (`isConsistentGrantSemantics`). A grant that fails this is refused wherever it is read or exercised. */
+export function isWellFormedBoundedGrantSemantics(grant: Pick<BoundedGrant, 'scope' | 'semanticsFormat'>): boolean {
+  return isConsistentGrantSemantics(grant.scope, grant.semanticsFormat);
 }
 
 /**
@@ -127,9 +142,12 @@ export function boundedGrantId(input: {
    * identified by, so no existing identity moves.
    */
   readonly authorityBindingDigest?: string;
+  /** CORE-03: part of the identity when present; absent, the canonical string is exactly the pre-CORE-03 one. */
+  readonly semanticsFormat?: string;
 }): string {
   const provenance = input.authorityBindingDigest !== undefined ? `"authorityBindingDigest":${JSON.stringify(input.authorityBindingDigest)},` : '';
-  const canonical = `{${provenance}${serializeGrantCorrelation(input.correlation)},"expiresAt":${JSON.stringify(input.expiresAt)},"scope":${serializeGrantScope(input.scope)},"subject":${JSON.stringify(input.subject)}}`;
+  const format = input.semanticsFormat !== undefined ? `"semanticsFormat":${JSON.stringify(input.semanticsFormat)},` : '';
+  const canonical = `{${provenance}${serializeGrantCorrelation(input.correlation)},"expiresAt":${JSON.stringify(input.expiresAt)},"scope":${serializeGrantScope(input.scope)},${format}"subject":${JSON.stringify(input.subject)}}`;
   return `aoc.grant:${createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`;
 }
 
@@ -140,7 +158,7 @@ export function boundedGrantId(input: {
  * `Object.keys`, undefined is omitted rather than written as `null`, and there
  * is no whitespace — the same rules `aoc.canonical-json.v1` applies, so a grant
  * canonicalized here and a grant canonicalized by the Governance Store produce
- * the same bytes. `tests/grant-canonicalization.test.ts` pins that equality
+ * the same bytes. `src/enterprise/__tests__/pre-core-03-compatibility.test.ts` pins that equality
  * against the real canonicalizer rather than asserting it in prose, because
  * layer E may not import layer F and a rule restated by hand is a rule that can
  * drift.
@@ -158,6 +176,8 @@ export function serializeBoundedGrant(grant: BoundedGrant): string {
       `"id":${JSON.stringify(grant.id)}`,
       `"issuedAt":${JSON.stringify(grant.issuedAt)}`,
       `"scope":${serializeGrantScope(grant.scope)}`,
+      // CORE-03: only when present, so every pre-CORE-03 grant keeps its bytes.
+      ...(grant.semanticsFormat !== undefined ? [`"semanticsFormat":${JSON.stringify(grant.semanticsFormat)}`] : []),
       `"sourceDigest":${JSON.stringify(grant.sourceDigest)}`,
       `"subject":${JSON.stringify(grant.subject)}`,
     ].join(','),

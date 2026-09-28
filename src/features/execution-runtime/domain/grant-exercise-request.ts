@@ -1,3 +1,4 @@
+import { compareDimensionIds, isWellFormedGovernedParameter, type GovernedParameter } from '../../governed-parameter-runtime/index.js';
 import type { GrantCorrelation } from '../../grant-runtime/index.js';
 import { isWellFormedMonetaryAmount, type MonetaryAmount } from '../../monetary-runtime/index.js';
 
@@ -53,6 +54,23 @@ export interface GrantExerciseRequest {
   readonly organization?: string;
   /** The quantity being attempted, with the unit it is denominated in. Compared against the grant's ceiling exactly, never converted. */
   readonly amount?: GrantExerciseAmount;
+  /**
+   * The Governance Profile reference (`<id>@<version>#<digest>`) the action was
+   * classified under, where it was classified (CORE-03). Must equal the
+   * profile the grant is bound to, under the same three-way rule as every
+   * identity axis.
+   */
+  readonly governanceProfile?: string;
+  /** CORE-03 — the trusted action class and resource class the action was classified under. Each must equal the class the grant is bound to, under the same three-way rule. */
+  readonly actionClass?: string;
+  readonly resourceClass?: string;
+  /**
+   * The typed parameter values being attempted, one per declared dimension, in
+   * canonical dimension order (CORE-03). Every dimension the grant bounds must
+   * be stated and inside its bound; a dimension the grant does not bound may
+   * not be stated at all.
+   */
+  readonly parameters?: readonly GovernedParameter[];
   /** The authorization this exercise claims to be under. Exact on all four fields. */
   readonly correlation: GrantCorrelation;
   /** This attempt's own identity, preserved into the outcome for later correlation. */
@@ -118,10 +136,26 @@ export function isWellFormedGrantExerciseRequest(request: GrantExerciseRequest):
   if (request.counterparty !== undefined && request.counterparty.length === 0) return false;
   if (request.organization !== undefined && request.organization.length === 0) return false;
   if (request.amount !== undefined && !isWellFormedGrantExerciseAmount(request.amount)) return false;
+  if (request.governanceProfile !== undefined && request.governanceProfile.length === 0) return false;
+  if (request.actionClass !== undefined && request.actionClass.length === 0) return false;
+  if (request.resourceClass !== undefined && request.resourceClass.length === 0) return false;
+  if (request.parameters !== undefined && !isWellFormedExerciseParameters(request.parameters)) return false;
   return (
     request.correlation.requestId.length > 0 &&
     request.correlation.decisionId.length > 0 &&
     request.correlation.action.length > 0 &&
     request.correlation.resourceScope.length > 0
+  );
+}
+
+/**
+ * A stated parameter list: non-empty, every entry well formed, strictly
+ * ascending by dimension — so two values for one dimension can never both be
+ * "the" value an assessment compares.
+ */
+function isWellFormedExerciseParameters(parameters: readonly GovernedParameter[]): boolean {
+  if (!Array.isArray(parameters) || parameters.length === 0) return false;
+  return parameters.every(
+    (parameter, index) => isWellFormedGovernedParameter(parameter) && (index === 0 || compareDimensionIds((parameters[index - 1] as GovernedParameter).dimension, parameter.dimension) < 0),
   );
 }

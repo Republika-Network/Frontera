@@ -1,4 +1,4 @@
-import { boundedGrantDigestMatches, type BoundedGrant } from './bounded-grant.js';
+import { boundedGrantDigestMatches, isWellFormedBoundedGrantSemantics, type BoundedGrant } from './bounded-grant.js';
 import { GRANT_REASON_CODES, type GrantReasonCode } from './grant-reason-codes.js';
 import type { GrantRevocation } from './grant-revocation.js';
 
@@ -59,6 +59,7 @@ export function assessGrantExercise(input: {
   const reasonCodes: GrantReasonCode[] = [];
 
   if (!boundedGrantDigestMatches(input.grant)) reasonCodes.push(GRANT_REASON_CODES.GRANT_CORRELATION_INVALID);
+  if (!isWellFormedBoundedGrantSemantics(input.grant)) reasonCodes.push(GRANT_REASON_CODES.GRANT_SEMANTICS_FORMAT_INVALID);
   if (input.revocation !== undefined) reasonCodes.push(GRANT_REASON_CODES.GRANT_REVOKED);
 
   const expiry = Date.parse(input.grant.expiresAt);

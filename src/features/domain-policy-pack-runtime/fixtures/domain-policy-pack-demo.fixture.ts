@@ -1,3 +1,4 @@
+import type { PolicyPackWriterContext } from '../domain/policy-pack-writer.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
 import { createPolicyPackRuntimeContext } from '../runtime/policy-pack-runtime-context.js';
 import { createPolicyPackRuntime, type PolicyPackRuntime } from '../services/policy-pack-runtime.js';
@@ -14,14 +15,17 @@ export const DEMO_ACTOR_ID = 'actor-demo-policy-packs';
 export const DEMO_RESOURCE_SCOPE = 'project:demo-policy-packs';
 
 /** A PolicyPackRuntime with every sample pack registered and activated -- the shared seed for demo scenarios and integration tests. */
+/** NB-008: the trusted writer the demo packs are registered by. A demo operator identity, recorded on every pack, version and lifecycle event. */
+export const DEMO_POLICY_PACK_WRITER: PolicyPackWriterContext = Object.freeze({ system: true, actorId: 'operator:policy-pack-demo' });
+
 export function buildDemoPolicyPackRuntime(initialIso: string = DEMO_POLICY_PACK_NOW): PolicyPackRuntime {
   const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext(initialIso));
-  registerPaymentsBasicPolicyPack(runtime);
-  registerProcurementBasicPolicyPack(runtime);
-  registerDataBoundaryBasicPolicyPack(runtime);
-  registerSportsEventSettlementBasicPolicyPack(runtime);
-  registerFinancialApprovalBasicPolicyPack(runtime);
-  registerJurisdictionalBaselineDemoPolicyPack(runtime);
+  registerPaymentsBasicPolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
+  registerProcurementBasicPolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
+  registerDataBoundaryBasicPolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
+  registerSportsEventSettlementBasicPolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
+  registerFinancialApprovalBasicPolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
+  registerJurisdictionalBaselineDemoPolicyPack(runtime, DEMO_POLICY_PACK_WRITER);
   return runtime;
 }
 
