@@ -1,3 +1,4 @@
+import type { GovernedParameter } from '../../governed-parameter-runtime/index.js';
 import type { ExecutionRiskLevel } from './execution-intent.js';
 
 /**
@@ -42,6 +43,12 @@ export interface EnforcementPolicyPackEvaluationInput {
   readonly approvalProofId?: string;
   readonly handshakeProofId?: string;
   readonly evidenceIds?: readonly string[];
+
+  /** CORE-03 — trusted semantic classification (domain-declared, opaque) and the typed parameter values the action proposes. */
+  readonly actionClass?: string;
+  readonly resourceClass?: string;
+  readonly governanceProfile?: string;
+  readonly governedParameters?: readonly GovernedParameter[];
 
   readonly metadata?: Readonly<Record<string, unknown>>;
 }

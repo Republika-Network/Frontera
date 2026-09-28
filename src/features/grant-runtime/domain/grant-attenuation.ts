@@ -1,6 +1,17 @@
+import { compareDimensionIds, compareGovernedParameterBound, governedParameterBoundComparisonPermits } from '../../governed-parameter-runtime/index.js';
 import { compareGrantBound, grantBoundComparisonPermits, isWellFormedGrantBound, type GrantBound, type GrantBoundComparison } from './grant-bound.js';
 import { GRANT_REASON_CODES, type GrantReasonCode } from './grant-reason-codes.js';
-import { GRANT_BOUND_KEYS, GRANT_BOUND_KINDS_BY_KEY, canonicalGrantScope, type GrantBoundKey, type GrantScope } from './grant-scope.js';
+import {
+  GRANT_BOUND_KEYS,
+  GRANT_BOUND_KINDS_BY_KEY,
+  canonicalGrantScope,
+  grantParameterBound,
+  isWellFormedGrantParameterBounds,
+  type GrantBoundKey,
+  type GrantParameterBound,
+  type GrantParameterBounds,
+  type GrantScope,
+} from './grant-scope.js';
 
 /**
  * The attenuation engine.
@@ -48,9 +59,16 @@ import { GRANT_BOUND_KEYS, GRANT_BOUND_KINDS_BY_KEY, canonicalGrantScope, type G
  * evaluation against the sources themselves.
  */
 
+/**
+ * What one attenuation report entry is about: an axis, the parameter list as a
+ * whole (`parameters`, when the list itself is unusable), or one declared
+ * parameter dimension (`parameters.<dimension>`).
+ */
+export type GrantAttenuationKey = GrantBoundKey | 'parameters' | `parameters.${string}`;
+
 /** One axis's comparison, reported whether it passed or failed, so an operator sees the whole picture rather than the first refusal. */
 export interface GrantBoundAttenuation {
-  readonly key: GrantBoundKey;
+  readonly key: GrantAttenuationKey;
   readonly comparison: GrantBoundComparison;
   /** `true` when the requester stated this bound; `false` when the grant inherited the source's. */
   readonly narrowingRequested: boolean;
@@ -58,7 +76,7 @@ export interface GrantBoundAttenuation {
 }
 
 export interface GrantAttenuationViolation {
-  readonly key: GrantBoundKey;
+  readonly key: GrantAttenuationKey;
   readonly reasonCode: GrantReasonCode;
   readonly comparison: GrantBoundComparison;
 }
@@ -67,10 +85,14 @@ export type GrantAttenuationOutcome =
   | { readonly outcome: 'attenuated'; readonly scope: GrantScope; readonly bounds: readonly GrantBoundAttenuation[] }
   | { readonly outcome: 'refused'; readonly violations: readonly GrantAttenuationViolation[]; readonly bounds: readonly GrantBoundAttenuation[] };
 
-/** A requested narrowing: at most one bound per axis, every axis optional. */
-export type RequestedGrantBounds = { readonly [K in GrantBoundKey]?: GrantBound };
+/**
+ * A requested narrowing: at most one bound per axis, every axis optional, and
+ * optionally a parameter bound list — at most one bound per declared dimension,
+ * each attenuated exactly like an axis.
+ */
+export type RequestedGrantBounds = { readonly [K in GrantBoundKey]?: GrantBound } & { readonly parameters?: GrantParameterBounds };
 
-function violationFor(key: GrantBoundKey, comparison: GrantBoundComparison): GrantAttenuationViolation {
+function violationFor(key: GrantAttenuationKey, comparison: GrantBoundComparison): GrantAttenuationViolation {
   return {
     key,
     comparison,
@@ -145,8 +167,66 @@ export function attenuateGrantScope(source: GrantScope, requested: RequestedGran
     derived[key] = requestedBound;
   }
 
+  const parameters = attenuateParameterBounds(source.parameters, requested.parameters, bounds, violations);
+
   if (violations.length > 0) return { outcome: 'refused', violations, bounds };
-  return { outcome: 'attenuated', scope: canonicalGrantScope(derived), bounds };
+  return { outcome: 'attenuated', scope: canonicalGrantScope({ ...derived, ...(parameters !== undefined ? { parameters } : {}) }), bounds };
+}
+
+/**
+ * The parameter half of attenuation — the same four fail-closed rules, one
+ * declared dimension at a time, in canonical dimension order:
+ *
+ * 1. a requested bound broader than its source bound — refused;
+ * 2. an incomparable one (another kind, another type, a malformed value) — refused;
+ * 3. a requested bound on a dimension the source never bounded — refused;
+ * 4. an unusable list on either side (unsorted, duplicated, malformed) — refused
+ *    as a whole, because "which of the two `recordCount` bounds is the real
+ *    one?" has no safe answer.
+ *
+ * A dimension the requester says nothing about inherits the source bound
+ * unchanged — never "unbounded".
+ */
+function attenuateParameterBounds(
+  source: GrantParameterBounds | undefined,
+  requested: GrantParameterBounds | undefined,
+  bounds: GrantBoundAttenuation[],
+  violations: GrantAttenuationViolation[],
+): GrantParameterBounds | undefined {
+  if (source === undefined && requested === undefined) return undefined;
+  if ((source !== undefined && !isWellFormedGrantParameterBounds(source)) || (requested !== undefined && !isWellFormedGrantParameterBounds(requested))) {
+    violations.push(violationFor('parameters', 'incomparable'));
+    bounds.push({ key: 'parameters', comparison: 'incomparable', narrowingRequested: requested !== undefined, permitted: false });
+    return undefined;
+  }
+  const dimensions = [...new Set([...(source ?? []), ...(requested ?? [])].map((entry) => entry.dimension))].sort(compareDimensionIds);
+  const derived: GrantParameterBound[] = [];
+  for (const dimension of dimensions) {
+    const key: GrantAttenuationKey = `parameters.${dimension}`;
+    const sourceBound = grantParameterBound(source, dimension);
+    const requestedBound = grantParameterBound(requested, dimension);
+    if (requestedBound === undefined) {
+      if (sourceBound !== undefined) {
+        derived.push(sourceBound);
+        bounds.push({ key, comparison: 'equal', narrowingRequested: false, permitted: true });
+      }
+      continue;
+    }
+    if (sourceBound === undefined) {
+      violations.push(violationFor(key, 'incomparable'));
+      bounds.push({ key, comparison: 'incomparable', narrowingRequested: true, permitted: false });
+      continue;
+    }
+    const comparison = compareGovernedParameterBound(sourceBound, requestedBound);
+    const permitted = governedParameterBoundComparisonPermits(comparison);
+    bounds.push({ key, comparison, narrowingRequested: true, permitted });
+    if (!permitted) {
+      violations.push(violationFor(key, comparison));
+      continue;
+    }
+    derived.push(requestedBound);
+  }
+  return derived.length > 0 ? derived : undefined;
 }
 
 /**
@@ -160,11 +240,29 @@ export function attenuateGrantScope(source: GrantScope, requested: RequestedGran
  * artifact, not of the process that made it.
  */
 export function grantScopeIsWithin(parent: GrantScope, child: GrantScope): boolean {
-  return GRANT_BOUND_KEYS.every((key) => {
+  const axes = GRANT_BOUND_KEYS.every((key) => {
     const parentBound = parent[key];
     const childBound = child[key];
     if (childBound === undefined) return true;
     if (parentBound === undefined) return false;
     return grantBoundComparisonPermits(compareGrantBound(parentBound, childBound));
+  });
+  return axes && parameterBoundsAreWithin(parent.parameters, child.parameters);
+}
+
+/**
+ * Parameter containment, strictly: the child must bound **every** dimension the
+ * parent bounds (dropping a parameter bound is a broadening — the child would
+ * then admit any value on that dimension), may bound no dimension the parent
+ * does not, and each bound must be equal or narrower.
+ */
+function parameterBoundsAreWithin(parent: GrantParameterBounds | undefined, child: GrantParameterBounds | undefined): boolean {
+  if (child === undefined) return parent === undefined;
+  if (parent === undefined) return false;
+  if (!isWellFormedGrantParameterBounds(parent) || !isWellFormedGrantParameterBounds(child)) return false;
+  if (child.length !== parent.length) return false;
+  return parent.every((parentBound) => {
+    const childBound = grantParameterBound(child, parentBound.dimension);
+    return childBound !== undefined && governedParameterBoundComparisonPermits(compareGovernedParameterBound(parentBound, childBound));
   });
 }

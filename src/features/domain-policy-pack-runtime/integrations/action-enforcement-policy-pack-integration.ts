@@ -1,3 +1,4 @@
+import type { GovernedParameter } from '../../governed-parameter-runtime/index.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
 import type { PolicyPackDecisionType } from '../domain/policy-pack-decision.js';
 import type { PolicyEvidenceRequirement } from '../domain/policy-pack-evidence.js';
@@ -39,6 +40,12 @@ export interface PolicyEnforcementEvaluationInput {
   readonly approvalProofId?: string;
   readonly handshakeProofId?: string;
   readonly evidenceIds?: readonly string[];
+
+  /** CORE-03 — trusted semantic classification (domain-declared, opaque) and the typed parameter values the action proposes. */
+  readonly actionClass?: string;
+  readonly resourceClass?: string;
+  readonly governanceProfile?: string;
+  readonly governedParameters?: readonly GovernedParameter[];
 
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
@@ -144,6 +151,10 @@ export function createActionEnforcementPolicyPackIntegration(runtime: PolicyPack
         ...(input.approvalProofId !== undefined ? { approvalProofId: input.approvalProofId } : {}),
         ...(input.handshakeProofId !== undefined ? { handshakeProofId: input.handshakeProofId } : {}),
         ...(input.evidenceIds !== undefined ? { evidenceIds: input.evidenceIds } : {}),
+        ...(input.actionClass !== undefined ? { actionClass: input.actionClass } : {}),
+        ...(input.resourceClass !== undefined ? { resourceClass: input.resourceClass } : {}),
+        ...(input.governanceProfile !== undefined ? { governanceProfile: input.governanceProfile } : {}),
+        ...(input.governedParameters !== undefined ? { governedParameters: input.governedParameters } : {}),
         ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
       };
 

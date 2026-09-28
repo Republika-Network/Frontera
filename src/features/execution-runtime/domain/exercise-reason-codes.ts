@@ -52,6 +52,10 @@ export const GRANT_EXERCISE_REASON_CODES = {
   GRANT_EXERCISE_ORGANIZATION_OUT_OF_SCOPE: 'GRANT_EXERCISE_ORGANIZATION_OUT_OF_SCOPE',
   /** The attempted amount is above the grant's ceiling, denominated in a different unit, or absent where the grant states a ceiling. Never converted between units — a conversion table is a place for a rate to be wrong, and a wrong rate here widens authority. */
   GRANT_EXERCISE_AMOUNT_EXCEEDED: 'GRANT_EXERCISE_AMOUNT_EXCEEDED',
+  /** The attempt claims a Governance Profile the grant was not issued under — or the grant is bound to one and the attempt states none, or the reverse. The same three-way rule as every identity axis (CORE-03). */
+  GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH: 'GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH',
+  /** A typed parameter is outside the grant's bound for its dimension (a different exact value, above a maximum, another type), is absent where the grant bounds its dimension, or is stated for a dimension the grant never bounded (CORE-03). */
+  GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE: 'GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE',
 } as const;
 
 export type GrantExerciseReasonCode = (typeof GRANT_EXERCISE_REASON_CODES)[keyof typeof GRANT_EXERCISE_REASON_CODES];

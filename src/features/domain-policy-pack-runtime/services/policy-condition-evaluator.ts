@@ -45,11 +45,14 @@ export class PolicyConditionEvaluator {
     const matched = this.applyOperator(condition.operator, fieldValue, condition.value);
     return {
       matched,
-      reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
+      reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''}${condition.parameterId ? `.${condition.parameterId}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
     };
   }
 
   private getFieldValue(condition: PolicyPredicateCondition, input: PolicyEvaluationInput): unknown {
+    if (condition.field === 'parameter') {
+      return this.readParameter(input, condition.parameterId);
+    }
     if (condition.field === 'metadata') {
       if (!condition.metadataPath) {
         return input.metadata;
@@ -105,9 +108,21 @@ export class PolicyConditionEvaluator {
         return input.hasRequiredEvidence;
       case 'metadata':
         return input.metadata;
+      case 'actionClass':
+        return input.actionClass;
+      case 'resourceClass':
+        return input.resourceClass;
+      case 'governanceProfile':
+        return input.governanceProfile;
       default:
         return undefined;
     }
+  }
+
+  /** A typed parameter by exact dimension id, found in a list — never by property access, so no prototype member can answer for an undeclared name. */
+  private readParameter(input: PolicyEvaluationInput, parameterId: string | undefined): unknown {
+    if (parameterId === undefined || input.governedParameters === undefined) return undefined;
+    return input.governedParameters.find((parameter) => parameter.dimension === parameterId)?.value;
   }
 
   private readMetadataPath(metadata: Readonly<Record<string, unknown>> | undefined, path: string): unknown {

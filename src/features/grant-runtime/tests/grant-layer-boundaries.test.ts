@@ -121,12 +121,16 @@ describe('Grant layer boundaries — E reads A, B and D, and never the reverse',
     }
   });
 
-  it('imports nothing outside its own module except the one hashing primitive and the pure monetary primitive', () => {
+  it('imports nothing outside its own module except the one hashing primitive and the two pure primitives (monetary, governed parameters)', () => {
     for (const file of PRODUCTION_SOURCES) {
       for (const match of readFileSync(file, 'utf8').matchAll(/from '([^']+)'/g)) {
         const specifier = match[1] ?? '';
         if (specifier === 'crypto' || specifier === 'node:crypto') continue;
         if (specifier === '../../monetary-runtime/index.js') continue;
+        // CORE-03: the typed parameter bound algebra. Like the monetary
+        // primitive it imports nothing at all (`governed-parameter-boundaries.test.ts`),
+        // so allowing it adds a comparison, never a dependency.
+        if (specifier === '../../governed-parameter-runtime/index.js') continue;
         assert.equal(specifier.startsWith('./') || specifier.startsWith('../domain/') || specifier.startsWith('../services/'), true, `${file} imports '${specifier}'; the grant runtime is self-contained pure data and logic`);
       }
     }

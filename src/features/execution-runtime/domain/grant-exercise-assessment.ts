@@ -1,11 +1,14 @@
+import { governedParameterBoundAdmits, type GovernedParameter } from '../../governed-parameter-runtime/index.js';
 import {
   boundedGrantDigestMatches,
   compareGrantBound,
   grantBoundComparisonPermits,
   grantCorrelationMatches,
+  grantParameterBound,
   type BoundedGrant,
   type GrantBound,
   type GrantCorrelation,
+  type GrantParameterBounds,
   type GrantRevocation,
 } from '../../grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODES, type GrantExerciseReasonCode } from './exercise-reason-codes.js';
@@ -154,6 +157,14 @@ export function assessBoundedGrantExercise(input: {
   if (!axisAgrees(grant.scope.amount, request.amount === undefined ? undefined : { kind: 'ceiling', limit: request.amount.value, unit: request.amount.unit })) {
     reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_AMOUNT_EXCEEDED);
   }
+  // 11-12. CORE-03: the Governance Profile the grant was issued under, and the
+  //    typed parameters, under the same both-directions absence rule.
+  if (!axisAgrees(grant.scope.governanceProfile, request.governanceProfile === undefined ? undefined : { kind: 'identity', value: request.governanceProfile })) {
+    reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_GOVERNANCE_PROFILE_MISMATCH);
+  }
+  if (!parametersAgree(grant.scope.parameters, request.parameters)) {
+    reasonCodes.push(GRANT_EXERCISE_REASON_CODES.GRANT_EXERCISE_PARAMETER_OUT_OF_SCOPE);
+  }
 
   return reasonCodes.length === 0 ? usable(identity) : unusable(identity, reasonCodes);
 }
@@ -176,4 +187,21 @@ export function assessBoundedGrantExercise(input: {
 function axisAgrees(granted: GrantBound | undefined, attempted: GrantBound | undefined): boolean {
   if (granted === undefined && attempted === undefined) return true;
   return attemptIsWithin(granted, attempted);
+}
+
+/**
+ * The typed parameters, in both directions. Every dimension the grant bounds
+ * must be stated and admitted by its bound — a bound that cannot be proven
+ * satisfied by an absent value is not satisfied — and every stated dimension
+ * must be one the grant bounds: a value for a dimension nothing evaluated is an
+ * unassessed channel, not an extra detail.
+ */
+function parametersAgree(granted: GrantParameterBounds | undefined, attempted: readonly GovernedParameter[] | undefined): boolean {
+  if (granted === undefined && attempted === undefined) return true;
+  if (granted === undefined || attempted === undefined) return false;
+  if (attempted.length !== granted.length) return false;
+  return attempted.every((parameter) => {
+    const bound = grantParameterBound(granted, parameter.dimension);
+    return bound !== undefined && governedParameterBoundAdmits(bound, parameter);
+  });
 }

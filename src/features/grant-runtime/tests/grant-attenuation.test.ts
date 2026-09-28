@@ -154,6 +154,8 @@ const SOURCE: GrantScope = {
   action: { kind: 'identity', value: 'payment' },
   amount: { kind: 'ceiling', limit: '10000', unit: 'USD' },
   counterparty: { kind: 'identity', value: 'V123' },
+  // CORE-03: the profile axis, so this scope still states every axis.
+  governanceProfile: { kind: 'identity', value: `payment-profile@1#sha256:${'a'.repeat(64)}` },
   organization: { kind: 'identity', value: 'org-1' },
   resources: { kind: 'set', values: ['record:contract'] },
 };

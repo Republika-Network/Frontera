@@ -19,17 +19,21 @@ export type {
 export {
   GRANT_BOUND_KEYS,
   GRANT_BOUND_KINDS_BY_KEY,
+  GRANT_PARAMETER_BOUNDS_MAX,
+  canonicalGrantParameterBounds,
   canonicalGrantScope,
+  grantParameterBound,
   grantScopeBound,
   grantScopeEquals,
+  isWellFormedGrantParameterBounds,
   isWellFormedGrantScope,
   serializeGrantScope,
   statedGrantBoundKeys,
 } from './grant-scope.js';
-export type { GrantBoundKey, GrantScope } from './grant-scope.js';
+export type { GrantBoundKey, GrantParameterBound, GrantParameterBounds, GrantScope } from './grant-scope.js';
 
 export { attenuateGrantScope, grantScopeIsWithin } from './grant-attenuation.js';
-export type { GrantAttenuationOutcome, GrantAttenuationViolation, GrantBoundAttenuation, RequestedGrantBounds } from './grant-attenuation.js';
+export type { GrantAttenuationKey, GrantAttenuationOutcome, GrantAttenuationViolation, GrantBoundAttenuation, RequestedGrantBounds } from './grant-attenuation.js';
 
 export { grantCorrelationMatches, isWellFormedGrantCorrelation, serializeGrantCorrelation } from './grant-correlation.js';
 export type { GrantCorrelation } from './grant-correlation.js';

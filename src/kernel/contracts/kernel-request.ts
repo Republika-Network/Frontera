@@ -1,6 +1,7 @@
 import type { GovernedRightType, GovernedRightsScope } from '@aoc-enterprise/governed-authorization';
 
 import type { ExecutionRiskLevel } from '../../features/action-enforcement/domain/execution-intent.js';
+import type { DeclaredGovernedParameter, GovernedActionSemantics } from '../../features/governed-parameter-runtime/index.js';
 import type { SideEffectType } from '../../features/action-enforcement/domain/side-effect.js';
 
 /**
@@ -51,7 +52,41 @@ export interface ActionDescriptor {
   readonly counterpartyId?: string;
   readonly dataDomains?: readonly string[];
   readonly evidenceIds?: readonly string[];
+  /**
+   * Legacy, untyped, **never authority-material**: serialized terms some
+   * mandate services attach for the wrapped engine's own metadata. Nothing on
+   * the grant, policy-pack or exercise path reads it. Typed, declared,
+   * authority-material parameters are `governedParameters` below (CORE-03).
+   */
   readonly parameters?: Readonly<Record<string, unknown>>;
+
+  /**
+   * CORE-03 — what kind of action this is, over what kind of resource, and
+   * which versioned Governance Profile classified it. Resolved by trusted
+   * configuration, never stated by the caller; absent for an action no
+   * profile governs, which is then evaluated exactly as before CORE-03.
+   *
+   * Carried into the policy input (`actionClass`, `resourceClass`,
+   * `governanceProfile`), recorded with the committed decision, and bound into
+   * every grant derived from it as the `governanceProfile` identity axis.
+   */
+  readonly semantics?: GovernedActionSemantics;
+
+  /**
+   * CORE-03 — the typed parameter values the action proposes, one per declared
+   * dimension, each with the bound kind its trusted declaration gives it. In
+   * canonical dimension order; present only together with `semantics`.
+   *
+   * A list of entries rather than a map keyed by dimension id, on purpose: an
+   * id travels as a *value*, so it can never collide with a reserved or
+   * redacted key name on its way into the Governance Store, and two requests
+   * that differ in any parameter can never digest alike.
+   *
+   * Every one is authority-material: the decision is made on it, and a grant
+   * derived from the decision bounds it (`exact` pins the evaluated value,
+   * `maximum` admits it and anything below it).
+   */
+  readonly governedParameters?: readonly DeclaredGovernedParameter[];
 
   /**
    * The governed rights this action is trying to engage, declared as typed

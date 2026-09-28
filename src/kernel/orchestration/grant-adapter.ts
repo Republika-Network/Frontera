@@ -8,10 +8,13 @@ import {
   type GrantCorrelation,
   type GrantDeclaration,
   type GrantEligibilityAssessment,
+  type GrantParameterBound,
+  type GrantParameterBounds,
   type GrantScope,
   type GrantSourceAuthorization,
   type GrantValidityCeiling,
 } from '../../features/grant-runtime/index.js';
+import { formatGovernanceProfileReference, governedParameterBoundFor } from '../../features/governed-parameter-runtime/index.js';
 import type { KernelEvaluationRequest } from '../contracts/kernel-request.js';
 import type { GrantBoundEvaluation, GrantEvaluation, KernelEvaluationResult } from '../contracts/kernel-result.js';
 
@@ -114,12 +117,37 @@ function authorizationPermitsExercise(status: KernelEvaluationResult['status']):
  */
 function sourceScopeFor(request: KernelEvaluationRequest): GrantScope {
   const action = request.action.capability ?? request.action.type;
+  const semantics = request.action.semantics;
+  const parameters = request.action.governedParameters === undefined ? undefined : parameterBoundsFor(request.action.governedParameters);
   return {
     ...(action.length > 0 ? { action: { kind: 'identity' as const, value: action } } : {}),
     ...(request.action.counterpartyId !== undefined ? { counterparty: { kind: 'identity' as const, value: request.action.counterpartyId } } : {}),
+    ...(semantics !== undefined ? { governanceProfile: { kind: 'identity' as const, value: formatGovernanceProfileReference(semantics.governanceProfile) } } : {}),
     ...(request.organization?.id !== undefined ? { organization: { kind: 'identity' as const, value: request.organization.id } } : {}),
+    ...(parameters !== undefined ? { parameters } : {}),
     ...(request.action.resourceScope.length > 0 ? { resources: { kind: 'set' as const, values: [request.action.resourceScope] } } : {}),
   };
+}
+
+/**
+ * CORE-03 — the typed parameter bounds the decision stood under: for each
+ * declared parameter the decision evaluated, the bound its trusted declaration
+ * gives it (`exact` pins the evaluated value; `maximum` admits it and anything
+ * below). The same "a grant ⊆ what was evaluated" projection as `counterparty`
+ * and `resources`, over dimensions CORE does not name.
+ *
+ * A parameter no declared bound can express projects to an **empty** list,
+ * which is not a well-formed scope, so the source is not derivable and no grant
+ * issues — never a scope that silently leaves the dimension unbounded.
+ */
+function parameterBoundsFor(parameters: NonNullable<KernelEvaluationRequest['action']['governedParameters']>): GrantParameterBounds {
+  const bounds: GrantParameterBound[] = [];
+  for (const parameter of parameters) {
+    const bound = governedParameterBoundFor(parameter.bound, parameter);
+    if (bound === undefined) return [];
+    bounds.push({ dimension: parameter.dimension, ...bound });
+  }
+  return bounds;
 }
 
 /**
@@ -178,6 +206,17 @@ export function deriveGrantSourceAuthorization(
 }
 
 function toBoundEvaluations(scope: GrantScope): readonly GrantBoundEvaluation[] {
+  return [...axisBoundEvaluations(scope), ...(scope.parameters ?? []).map(parameterBoundEvaluation)];
+}
+
+function parameterBoundEvaluation(bound: GrantParameterBound): GrantBoundEvaluation {
+  const key = `parameters.${bound.dimension}`;
+  return bound.kind === 'maximum'
+    ? { key, kind: bound.kind, parameterType: bound.type, parameterLimit: bound.limit }
+    : { key, kind: bound.kind, parameterType: bound.type, parameterValue: bound.value };
+}
+
+function axisBoundEvaluations(scope: GrantScope): readonly GrantBoundEvaluation[] {
   return statedGrantBoundKeys(scope).map((key: GrantBoundKey) => {
     const bound = scope[key];
     if (bound === undefined) return { key, kind: 'identity' };

@@ -140,7 +140,7 @@ export function boundedGrantId(input: {
  * `Object.keys`, undefined is omitted rather than written as `null`, and there
  * is no whitespace — the same rules `aoc.canonical-json.v1` applies, so a grant
  * canonicalized here and a grant canonicalized by the Governance Store produce
- * the same bytes. `tests/grant-canonicalization.test.ts` pins that equality
+ * the same bytes. `src/enterprise/__tests__/pre-core-03-compatibility.test.ts` pins that equality
  * against the real canonicalizer rather than asserting it in prose, because
  * layer E may not import layer F and a rule restated by hand is a rule that can
  * drift.

@@ -1,3 +1,4 @@
+import type { GovernedParameter } from '../../governed-parameter-runtime/index.js';
 import type { PolicyRiskLevel } from './policy-pack-effect.js';
 import type { PolicyEffectType } from './policy-pack-effect.js';
 import type { PolicyObligation } from './policy-pack-obligation.js';
@@ -38,6 +39,12 @@ export interface PolicyEvaluationInput {
   readonly authorityProofId?: string;
   readonly handshakeProofId?: string;
   readonly evidenceIds?: readonly string[];
+
+  /** CORE-03 — trusted semantic classification (domain-declared, opaque) and the typed parameter values the action proposes. */
+  readonly actionClass?: string;
+  readonly resourceClass?: string;
+  readonly governanceProfile?: string;
+  readonly governedParameters?: readonly GovernedParameter[];
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 

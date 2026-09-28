@@ -4,6 +4,10 @@ import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
 import type { PolicyCondition, PolicyPredicateCondition } from '../domain/policy-pack-condition.js';
 import { PolicyPackValidationError } from '../runtime/policy-pack-runtime-errors.js';
 import { isCanonicalDecimal } from '../../monetary-runtime/index.js';
+import { isSemanticIdentifier } from '../../governed-parameter-runtime/index.js';
+
+/** CORE-03: the operators that order a value. On a parameter they are valid only against a safe-integer threshold. */
+const ORDERED_OPERATORS: ReadonlySet<string> = new Set(['greater_than', 'greater_than_or_equal', 'less_than', 'less_than_or_equal']);
 
 /**
  * P9: the only predicates on `amount` a pack may state, and what they compare
@@ -157,6 +161,21 @@ export class PolicyPackValidator {
         condition.metadataPath === undefined
       ) {
         issues.push({ code: 'INVALID_PREDICATE', message: `Rule ${ruleId} has a predicate on ${condition.field} missing a value.` });
+      }
+      if (condition.field === 'parameter' && !isSemanticIdentifier(condition.parameterId)) {
+        issues.push({ code: 'INVALID_PARAMETER_PREDICATE', message: `Rule ${ruleId} reads a parameter without naming its declared dimension (parameterId).` });
+      }
+      if (condition.field !== 'parameter' && condition.parameterId !== undefined) {
+        issues.push({ code: 'INVALID_PARAMETER_PREDICATE', message: `Rule ${ruleId} names a parameterId on a predicate over ${condition.field}; only field 'parameter' reads a parameter.` });
+      }
+      if (condition.field === 'parameter' && condition.metadataPath !== undefined) {
+        issues.push({ code: 'INVALID_PARAMETER_PREDICATE', message: `Rule ${ruleId} gives a parameter predicate a metadataPath; a parameter is read by its exact dimension id, never by path.` });
+      }
+      if (condition.field === 'parameter' && ORDERED_OPERATORS.has(condition.operator) && !(typeof condition.value === 'number' && Number.isSafeInteger(condition.value))) {
+        issues.push({
+          code: 'INVALID_PARAMETER_THRESHOLD',
+          message: `Rule ${ruleId} orders a parameter against something other than a safe integer. Only integer dimensions are ordered, and a threshold is never text.`,
+        });
       }
       if (condition.field === 'amount' && !isMonetaryPredicateValue(condition)) {
         issues.push({
