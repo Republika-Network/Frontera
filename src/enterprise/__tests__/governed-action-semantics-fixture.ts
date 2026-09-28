@@ -1,4 +1,7 @@
+import { contextObservationProvenanceDigest } from '../../features/context-resolution-runtime/index.js';
+import type { ContextProvider } from '../../kernel/index.js';
 import type { GovernanceConfiguration } from '../governance-profile/index.js';
+import type { TrustedContextConfiguration } from '../trusted-context/index.js';
 
 /**
  * CORE-03 test fixture: a synthetic deployment's semantic configuration.
@@ -86,4 +89,52 @@ export const SEMANTIC_CONFIGURATION: GovernanceConfiguration = {
       relevantPolicies: ['change-management-policy'],
     },
   ],
+};
+
+/**
+ * CORE-04 — the trusted context the fixture's material facts are admitted
+ * from. The export and deploy profiles declare material facts; since CORE-04 a
+ * governed decision under them requires every one to be admitted (fresh, from a
+ * source with authority to attest it, with valid provenance), and composition
+ * refuses a profile declaring facts that no source may attest. One synthetic
+ * system of record attests all four here, and answers every query fresh: the
+ * CORE-03 suites measure semantics, not context.
+ */
+export const CORE03_FACT_SOURCE_ID = 'ctx.src.core03-systems';
+const CORE03_FACTS = ['approvedChangeWindow', 'dataResidency', 'destinationClassification', 'incidentStatus'] as const;
+
+export function core03TrustedContext(organizationId: string): TrustedContextConfiguration & { readonly provider: ContextProvider } {
+  return {
+    sources: [
+      {
+        sourceId: CORE03_FACT_SOURCE_ID,
+        kind: 'internal_store',
+        name: 'CORE-03 synthetic systems of record',
+        trustClass: 'authoritative',
+        organizationId,
+        attests: CORE03_FACTS.map((factClass) => ({ factClass, maxAgeSeconds: 3600 })),
+      },
+    ],
+    provider: {
+      resolveContext(query) {
+        return Promise.resolve({
+          observations: query.keys.map((key) => {
+            const reading = { key, value: true, sourceId: CORE03_FACT_SOURCE_ID, observedAt: query.at, reference: `core03:${key}` };
+            return { ...reading, provenanceDigest: contextObservationProvenanceDigest(reading) };
+          }),
+        });
+      },
+    },
+  };
+}
+
+/**
+ * CORE-04 — the same semantic configuration with no material facts, for a
+ * Host that composes no policy. A profile that declares facts needs policy to
+ * decide with them, and a Host without one now refuses to start; the CORE-03
+ * Host suite never exercised facts, so it runs on this variant.
+ */
+export const SEMANTIC_CONFIGURATION_WITHOUT_FACTS: GovernanceConfiguration = {
+  ...SEMANTIC_CONFIGURATION,
+  profiles: (SEMANTIC_CONFIGURATION.profiles ?? []).map((profile) => ({ ...profile, materialFacts: [] })),
 };

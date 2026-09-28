@@ -168,6 +168,16 @@ export interface ContextFactEvaluation {
   readonly staleAt?: string;
   /** Present only for a conflicted fact: the other sources that answered this key differently. */
   readonly conflictingSourceIds?: readonly string[];
+  /** CORE-04 — the reading's provenance reference and verified provenance digest, when its source requires them. Never the value. */
+  readonly reference?: string;
+  readonly provenanceDigest?: string;
+}
+
+/** CORE-04 — one reading the Trusted Context Boundary refused: which key, which cited source, and why. Never its value. */
+export interface ContextRefusalEvaluation {
+  readonly key: string;
+  readonly sourceId: string;
+  readonly reason: string;
 }
 
 /**
@@ -199,6 +209,34 @@ export interface ContextEvaluation {
   readonly assertedFactReads?: readonly string[];
   /** Declared-required keys whose requirement was not met, with the read status that explains why. Empty on a pass. */
   readonly unsatisfiedRequirements?: readonly ContextRequirementEvaluation[];
+  /**
+   * CORE-04 — every reading the Trusted Context Boundary refused. Absent when
+   * none was.
+   */
+  readonly refused?: readonly ContextRefusalEvaluation[];
+  /**
+   * CORE-04 — the restrict-only fact classes this decision declared. Absent
+   * when none were.
+   */
+  readonly restrictiveKeys?: readonly string[];
+  /**
+   * CORE-04 — the admitted-context digest (`frontera.admitted-context.v1`):
+   * the canonical snapshot of every admitted fact **including its value**, and
+   * of every unresolved, stale, conflicted and refused key, at the instant it
+   * was resolved. It is what binds this decision — and, through the grant's
+   * source, the grant — to the exact context it relied on, while the values
+   * themselves stay out of the record.
+   */
+  readonly digest?: string;
+  /**
+   * CORE-04 — the instant the earliest admitted *material* fact this decision
+   * relied on goes stale. A grant derived from this decision can be valid no
+   * longer (it is the decision's validity ceiling). Absent when no admitted
+   * material fact carries a freshness bound.
+   */
+  readonly validUntil?: string;
+  /** CORE-04 — the Governance Profile whose material facts were resolved, `<id>@<version>#<digest>`. Absent for the deployment-wide declaration. */
+  readonly profile?: string;
 }
 
 /** One declared-required key that was not satisfied, and the facts-level reason. */
@@ -206,6 +244,8 @@ export interface ContextRequirementEvaluation {
   readonly key: string;
   readonly status: string;
   readonly minimumTrustClass: string;
+  /** CORE-04 — present when the key went unanswered because every reading of it was refused: the distinct refusal reasons, sorted. */
+  readonly refusalReasons?: readonly string[];
 }
 
 /**

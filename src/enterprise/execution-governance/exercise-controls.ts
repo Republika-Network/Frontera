@@ -92,6 +92,15 @@ export interface AuthorityControlledExerciseControls {
    * spending limits added to the policy's answer.
    */
   readonly financialAuthority?: FinancialAuthorityResolver;
+  /**
+   * CORE-04 — exercise-time lineage revalidation for non-financial grants,
+   * supplied by the composition (never a host exercise-control option). When
+   * present, a non-financial exercise whose actor's authority chain for the
+   * grant's action and resource is no longer valid and live is
+   * `UNVERIFIABLE`, before the policy and before any capacity is reserved.
+   * (Financial grants are revalidated by `financialAuthority`.)
+   */
+  readonly authorityLineage?: (query: ExerciseControlQuery) => boolean;
 }
 
 function readOwn(source: object, key: string): unknown {
@@ -138,7 +147,11 @@ function snapshotBinding(returned: unknown): GrantAuthorityBinding | undefined {
  * well-formed binding becomes its canonical digest, which the runtime compares
  * to the grant's.
  */
-export function exerciseAuthorityBindingDigestResolver(resolver: ExerciseAuthorityBindingResolver, financialAuthority?: FinancialAuthorityResolver): ExerciseAuthorityBindingDigestResolver {
+export function exerciseAuthorityBindingDigestResolver(
+  resolver: ExerciseAuthorityBindingResolver,
+  financialAuthority?: FinancialAuthorityResolver,
+  authorityLineage?: (query: ExerciseControlQuery) => boolean,
+): ExerciseAuthorityBindingDigestResolver {
   return (query) => {
     let binding: GrantAuthorityBinding | undefined;
     try {
@@ -155,6 +168,18 @@ export function exerciseAuthorityBindingDigestResolver(resolver: ExerciseAuthori
     if (query.actionClass === 'financial') {
       const financial = exerciseFinancialAuthority(financialAuthority, query);
       return financial.resolved ? grantAuthorityProvenanceDigest(binding, financial.authority) : undefined;
+    }
+    // CORE-04: a non-financial grant's lineage is re-resolved from the live
+    // authority world too. Revoked, expired or re-lineaged — or a revalidator
+    // that throws — is UNVERIFIABLE, never "unchanged".
+    if (authorityLineage !== undefined) {
+      let live = false;
+      try {
+        live = authorityLineage(query) === true;
+      } catch {
+        live = false;
+      }
+      if (!live) return undefined;
     }
     return grantAuthorityBindingDigest(binding);
   };
@@ -230,7 +255,7 @@ export function createAuthorityControlledExerciseControlGate(controls: Authority
   assertValidExerciseControlStore(controls.reservationLedger, 'exerciseControls.reservationLedger');
   return createExerciseControlGate({
     policy: financialAuthorityExercisePolicy(controls.policy, controls.financialAuthority),
-    authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding, controls.financialAuthority),
+    authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding, controls.financialAuthority, controls.authorityLineage),
     reservationLedger: controls.reservationLedger,
     actionClassifier: controls.actionClassifier,
     now,

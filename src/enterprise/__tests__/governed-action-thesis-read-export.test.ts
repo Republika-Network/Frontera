@@ -33,6 +33,7 @@ import {
   PRODUCTION_ENVIRONMENT,
   READ_ACTION,
   SEMANTIC_CONFIGURATION,
+  core03TrustedContext,
   TREASURY,
 } from './governed-action-semantics-fixture.js';
 
@@ -220,6 +221,9 @@ async function openHost(options: { readonly narrowing?: (query: GovernedActionGr
     },
     monetary: { assets: [{ assetId: 'USD', scale: 2 }], financialActions: [PAYMENT_ACTION] },
     governance: SEMANTIC_CONFIGURATION,
+    // CORE-04: the export and deploy profiles' material facts are admitted
+    // through the Trusted Context Boundary (fresh, attested, provenance-valid).
+    trustedContext: core03TrustedContext(ORG),
   });
   enterprises.push(enterprise);
   assert.ok(enterprise.kernelAuthorityProvisioning !== undefined);

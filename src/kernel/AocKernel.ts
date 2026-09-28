@@ -338,9 +338,13 @@ export class AocKernel {
     // input a policy rule could turn on.
     const obligationResolution = await resolveKernelObligations(this.obligationCapability, request, this.ctx.clock.now());
 
+    // CORE-04: what policy may read of that context — admitted facts only.
+    const admittedContext =
+      this.contextCapability === undefined || contextResolution === undefined ? undefined : resolveKernelContextFacts(this.contextCapability, contextResolution, request).admitted;
+
     let decision: EnforcementDecision;
     try {
-      decision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution));
+      decision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution, admittedContext));
     } catch (error) {
       return this.buildIndeterminateResult(request, new KernelDependencyError('recognitionProvider failed during evaluation', error));
     }
@@ -363,7 +367,7 @@ export class AocKernel {
     // denied is annotated with what context was resolved and is otherwise left
     // exactly as it was: a denial has one reason, and re-labelling it with a
     // second would misreport why the request actually stopped.
-    const contextResult = applyContextStep(this.contextCapability, contextResolution, authorityResult);
+    const contextResult = applyContextStep(this.contextCapability, contextResolution, authorityResult, request);
 
     // Last of all, and the only step in this pipeline that cannot change the
     // outcome it is handed. `applyObligationStep` adds a field and reads
@@ -476,7 +480,7 @@ export class AocKernel {
     const contextResolution = await resolveKernelContext(this.contextCapability, request, this.ctx.clock.now());
     let contextFacts: KernelContextFacts | undefined;
     if (this.contextCapability !== undefined && contextResolution !== undefined) {
-      contextFacts = resolveKernelContextFacts(this.contextCapability, contextResolution);
+      contextFacts = resolveKernelContextFacts(this.contextCapability, contextResolution, request);
       if (contextFacts.reasonCodes.length > 0) {
         const decisionId = this.ctx.ids.nextId('kernel-context-denied');
         const denied: KernelEvaluationResult = {
@@ -528,7 +532,7 @@ export class AocKernel {
       // already must after an `approval_required`.
       let withheldDecision: EnforcementDecision;
       try {
-        withheldDecision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution));
+        withheldDecision = this.guard.preflight(toGuardActionRequestInput(request, options, constraintContext, contextResolution, contextFacts?.admitted));
       } catch (error) {
         const indeterminate = this.buildIndeterminateResult(request, new KernelDependencyError('recognitionProvider failed during enforcement', error));
         return { ...indeterminate, execution: { status: 'not_executed', executed: false } };
@@ -573,7 +577,7 @@ export class AocKernel {
 
     let outcome;
     try {
-      outcome = await this.guard.enforce(toGuardActionRequestInput(request, options, constraintContext, contextResolution), executor);
+      outcome = await this.guard.enforce(toGuardActionRequestInput(request, options, constraintContext, contextResolution, contextFacts?.admitted), executor);
     } catch (error) {
       if (error instanceof PostExecutionRecordMissingError) {
         throw new KernelExecutionError(

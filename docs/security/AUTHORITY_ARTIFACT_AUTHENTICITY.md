@@ -193,6 +193,7 @@ Four fields, all required, no free-form metadata. What is **absent** is as load-
 grant:            "frontera:authority-artifact:bounded-grant:v1\n"    + serializeStoredGrantRecord(grant, storeId)
 revocation:       "frontera:authority-artifact:grant-revocation:v1\n" + serializeStoredRevocationRecord(revocation, storeId)
 revocation state: "frontera:authority-artifact:revocation-state:v1\n" + serializeRevocationStateCommitment(state)     (CORE-01)
+obligation discharge state: "frontera:authority-artifact:obligation-discharge-state:v1\n" + serializeObligationDischargeStateCommitment(state)     (CORE-04)
 ```
 
 There is exactly **one** function producing each — signing and verification call the same one, so the two sides cannot drift.
@@ -685,6 +686,72 @@ The commitment is one row, re-signed only on revocation. So on open, a commitmen
 ### 26.9 Health
 
 `DurableBoundedGrantStore.health()` verifies the commitment and reports `revocationState: 'verified' | 'failed'`, the failure code, and the verified sequence. A store whose revocation state cannot be proven is never `healthy`. The Authority-Controlled Execution module surfaces this (optional criticality, so it does not take the Host out of `ready`; every read it cannot serve withholds).
+
+## 27. CORE-04 — Obligation Discharge State
+
+### 27.1 Why it is an authority artifact
+
+A blocking obligation withholds grant issuance until a configured independent
+source's discharge (or waiver) is on record. The discharge store therefore
+decides whether authority may be issued: it is authority-material. Before this
+section existed the store was protected by an unkeyed per-row digest only, and a
+database-only writer could insert a row citing the independent source, recompute
+the digest, and make a withheld action execute — reproduced on the canonical
+Host before the fix. Deleting a genuine row could also manufacture satisfaction:
+the obligation lifecycle orders reports by observation time and refuses
+`discharged → waived`, so removing an earlier self-reported discharge could let a
+later independent waiver apply. Set completeness is part of the property.
+
+### 27.2 The model (the CORE-01 pattern)
+
+Schema v2 (`obligation-discharges.sqlite`): a store identity
+`{storeId (random), organizationId}`; rows with a contiguous `sequence` and a
+row digest over the canonical row bound to the store and the position; a hash
+chain from a genesis bound to `(storeId, organizationId)`; and one signed head
+`{storeId, organizationId, sequence, chainDigest}` — Ed25519 under
+`frontera:authority-artifact:obligation-discharge-state:v1`, by the same
+`AuthorityArtifactSigner` that signs grants, revocations and the revocation
+state (one new structured method, `signObligationDischargeState`; no byte
+signing, no new key, no HMAC). Every authoritative read — at open, and before
+every issuance decision — verifies the signature against the trusted
+verification registry and recomputes the chain over every row; an in-process
+witness refuses a regression while the process lives.
+
+- **Never signs over unverified state.** An append verifies the signed head and
+  the exact row set (count = sequence, contiguous from 1, every position-bound
+  row digest, the recomputed chain, store id, organization) before planning the
+  next head; signs it before the write transaction; then, under the write lock
+  (`BEGIN IMMEDIATE`), verifies the whole history *again* and requires it to be
+  exactly the planned base before persisting row and signed head in **one**
+  transaction. A history tampered before or during signing is refused and
+  nothing is persisted.
+- **Genesis only for an empty file.** A store whose identity, head or tables are
+  missing is refused, never re-initialized; the unauthenticated v1 format is
+  refused, never upgraded.
+- **Key rotation — the CORE-01 rule, reused.** A state that verifies under a
+  trusted key other than the active one is re-signed **unchanged** under the
+  active key at open, inside a transaction that re-verifies it and writes only if
+  it is still exactly that state, then read back; best-effort (an unavailable
+  signer leaves a still-valid state). After that the previous key can be retired.
+
+### 27.3 What is blocked, and what is not
+
+Blocked **for a writer without a trusted signing key**: inserting, altering,
+deleting, reordering or transplanting a discharge row; re-signing a forged head
+with an untrusted key; copying a genuine row or a genuine signed head from
+another store (same key, same organization) or another organization; re-labelling
+a row's source, outcome, correlation or organization; upgrading the
+unauthenticated v1 format. Tested in `obligation-discharge-authenticity.test.ts`
+and end to end in `governed-action-obligations-host.test.ts`.
+
+Not blocked: restoring an older, genuinely signed state after a restart
+(rollback — CORE-07). Its effect is bounded: the trusted writer records reports
+for one obligation in strictly increasing observation time, so every committed
+prefix is a prefix of the lifecycle sequence, and because a satisfied obligation
+is terminal, a rollback can remove satisfaction but never manufacture it. A
+holder of the signing key, or of this process, can sign anything (AA-001,
+CORE-02). CORE-02 will move `signObligationDischargeState` behind the external
+signer exactly as it moves the other three operations.
 
 ---
 

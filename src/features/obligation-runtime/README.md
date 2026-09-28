@@ -196,15 +196,24 @@ declaration: {
 }
 ```
 
-`ObligationType` is a closed union of **two** representative types —
-`finance.approval` and `second.signer`. Two, on purpose: the first is the
-brief's own worked example and exercises every state, the second exists so that
-blocking and non-blocking can be shown on one decision and so nothing in the
-implementation can assume there is only ever one obligation. The ADR's wider
-list (`require-mfa`, `record-usage`, `watermark-content`, `require-acceptance`)
-is deliberately not built here — each is a real integration, and building eight
-of them would be building the approval catalogue the ADR spends a section
-refusing.
+`ObligationType` is a **declared identifier** (CORE-04). It began as a closed
+union of two representative types — `finance.approval` and `second.signer` —
+which proved the architecture but put domain vocabulary in CORE. CORE-04 moved
+*which kinds exist* into trusted configuration, exactly as CORE-03 did for
+action and resource classes: a deployment's declaration, or a Governance
+Profile's `obligations`, names the kinds; CORE owns only the grammar and the
+lifecycle. The lifecycle, the transition table, the satisfaction rule and every
+trust rule are unchanged, and a request still cannot name, add or remove a
+kind. The two historical kinds remain valid identifiers. There is still no
+catalogue of obligation *integrations* here: obtaining an approval is the
+deployment's business.
+
+On the governed path (CORE-04) obligations are declared per Governance Profile,
+reports are recorded by a trusted in-process writer into a durable, append-only,
+digest-verified discharge store (`src/enterprise/obligation-discharge`), and a
+committed decision withheld for an unmet blocking obligation is issued only when
+a retry finds it satisfied *now*. See
+`docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md`.
 
 `blocking` is declared explicitly and is never defaulted: "not stated" must
 never be read as "not blocking".

@@ -1,3 +1,4 @@
+import { metadataPathIsReserved, parseMetadataPath } from '../domain/metadata-path.js';
 import type { PolicyPack } from '../domain/policy-pack.js';
 import type { PolicyPackVersion } from '../domain/policy-pack-version.js';
 import type { PolicyPackRule } from '../domain/policy-pack-rule.js';
@@ -45,6 +46,55 @@ export interface PolicyPackValidationResult {
   readonly issues: readonly PolicyPackValidationIssue[];
 }
 
+/** CORE-04: the fact-class grammar policy may name (the Trusted Context Boundary's own). */
+const FACT_CLASS = /^[a-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$/;
+
+function isFactClass(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 96 && FACT_CLASS.test(value);
+}
+
+/** CORE-04: the operators that are true when something is *absent* or *different*. A restrict-only fact may never be read through one. */
+const NEGATED_OPERATORS: ReadonlySet<string> = new Set(['not_equals', 'not_includes', 'not_in', 'not_exists']);
+
+/** CORE-04: the effects a rule reading a restrict-only fact may not have — anything that allows, or that decides nothing. */
+const NON_RESTRICTIVE_EFFECTS: ReadonlySet<string> = new Set(['allow', 'no_op']);
+
+/** A plain data object: not null, not an array, not a class instance. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * CORE-04 review: a fact comparand, validated as untyped data before anything
+ * reads a property of it — exactly `{ field: 'contextFact', factClass }`.
+ */
+function isFactComparand(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 2 && keys.includes('field') && keys.includes('factClass') && value['field'] === 'contextFact' && isFactClass(value['factClass']);
+}
+
+/** CORE-04 review: the operators a fact comparand may be used with — equality and ordering. Membership and text operators have no meaning against one fact value. */
+const FACT_COMPARAND_OPERATORS: ReadonlySet<string> = new Set(['equals', 'not_equals', 'greater_than', 'greater_than_or_equal', 'less_than', 'less_than_or_equal']);
+
+/**
+ * CORE-04 review: the fields that may be *ordered* against a fact. Each holds
+ * a safe integer (`parameter`, `governanceProfileVersion`, an integer
+ * `contextFact`) or canonical decimal text (`amount`); the evaluator orders a
+ * pair only when both sides are the same kind — never coercing one into the
+ * other — so every other field is refused here instead of silently never
+ * matching.
+ */
+const FACT_ORDERABLE_FIELDS: ReadonlySet<string> = new Set(['parameter', 'amount', 'governanceProfileVersion', 'contextFact']);
+
+/** Whether a condition tree reads a restrict-only fact anywhere. */
+function readsRestrictiveFact(condition: PolicyCondition): boolean {
+  if (condition.type === 'group') return condition.conditions.some(readsRestrictiveFact);
+  return condition.field === 'restrictiveFact';
+}
+
 const DENY_LIKE_EFFECTS = new Set([
   'deny',
   'require_evidence',
@@ -70,6 +120,7 @@ export class PolicyPackValidator {
     for (const rule of version.rules) {
       this.validateCondition(rule.condition, rule.id, issues);
       this.validateEffect(rule, issues);
+      this.validateRestrictiveMonotonicity(rule, issues);
     }
 
     const result: PolicyPackValidationResult = { valid: issues.length === 0, issues };
@@ -143,13 +194,34 @@ export class PolicyPackValidator {
     }
   }
 
-  private validateCondition(condition: PolicyCondition, ruleId: string, issues: PolicyPackValidationIssue[]): void {
+  /**
+   * CORE-04 — the restrict-only rule (Master Plan §4.4.6; OQ-14, pack half).
+   *
+   * A restrict-only fact (the admitted form of a RiskSignal) may make a
+   * decision equal or more restrictive than its no-fact baseline, never less.
+   * Structurally: the fact is read only in monotone position — never under a
+   * `not` group and never through a negated operator — so its *presence* can
+   * only make a condition true, never false; and the rule that reads it must
+   * restrict — never `allow` and never `no_op`. Together these make "adding an
+   * admitted restrict-only fact widens authority" inexpressible in a valid pack.
+   */
+  private validateRestrictiveMonotonicity(rule: PolicyPackRule, issues: PolicyPackValidationIssue[]): void {
+    if (!readsRestrictiveFact(rule.condition)) return;
+    if (NON_RESTRICTIVE_EFFECTS.has(rule.effect.type)) {
+      issues.push({
+        code: 'RESTRICTIVE_FACT_WIDENING',
+        message: `Rule ${rule.id} reads a restrict-only fact with effect ${rule.effect.type}; a restrict-only fact may only drive a restrictive effect.`,
+      });
+    }
+  }
+
+  private validateCondition(condition: PolicyCondition, ruleId: string, issues: PolicyPackValidationIssue[], negated = false): void {
     if (condition.type === 'group') {
       if (condition.conditions.length === 0) {
         issues.push({ code: 'EMPTY_CONDITION_GROUP', message: `Rule ${ruleId} has an empty condition group.` });
       }
       for (const nested of condition.conditions) {
-        this.validateCondition(nested, ruleId, issues);
+        this.validateCondition(nested, ruleId, issues, negated || condition.operator === 'not');
       }
       return;
     }
@@ -158,6 +230,7 @@ export class PolicyPackValidator {
         condition.operator !== 'exists' &&
         condition.operator !== 'not_exists' &&
         condition.value === undefined &&
+        condition.valueFrom === undefined &&
         condition.metadataPath === undefined
       ) {
         issues.push({ code: 'INVALID_PREDICATE', message: `Rule ${ruleId} has a predicate on ${condition.field} missing a value.` });
@@ -171,16 +244,66 @@ export class PolicyPackValidator {
       if (condition.field === 'parameter' && condition.metadataPath !== undefined) {
         issues.push({ code: 'INVALID_PARAMETER_PREDICATE', message: `Rule ${ruleId} gives a parameter predicate a metadataPath; a parameter is read by its exact dimension id, never by path.` });
       }
-      if (condition.field === 'parameter' && ORDERED_OPERATORS.has(condition.operator) && !(typeof condition.value === 'number' && Number.isSafeInteger(condition.value))) {
+      // A literal threshold is validated as a literal; a fact comparand
+      // (`valueFrom`) has no literal and is validated as a comparand below.
+      const literal = condition.valueFrom === undefined;
+      if (literal && condition.field === 'parameter' && ORDERED_OPERATORS.has(condition.operator) && !(typeof condition.value === 'number' && Number.isSafeInteger(condition.value))) {
         issues.push({
           code: 'INVALID_PARAMETER_THRESHOLD',
           message: `Rule ${ruleId} orders a parameter against something other than a safe integer. Only integer dimensions are ordered, and a threshold is never text.`,
         });
       }
-      if (condition.field === 'governanceProfileVersion' && ORDERED_OPERATORS.has(condition.operator) && !(typeof condition.value === 'number' && Number.isSafeInteger(condition.value))) {
+      if (literal && condition.field === 'governanceProfileVersion' && ORDERED_OPERATORS.has(condition.operator) && !(typeof condition.value === 'number' && Number.isSafeInteger(condition.value))) {
         issues.push({ code: 'INVALID_PARAMETER_THRESHOLD', message: `Rule ${ruleId} orders governanceProfileVersion against something other than a safe integer.` });
       }
-      if (condition.field === 'amount' && !isMonetaryPredicateValue(condition)) {
+      const readsFact = condition.field === 'contextFact' || condition.field === 'restrictiveFact';
+      if (readsFact && !isFactClass(condition.factClass)) {
+        issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} reads trusted context without naming its fact class (factClass).` });
+      }
+      if (!readsFact && condition.factClass !== undefined) {
+        issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} names a factClass on a predicate over ${condition.field}; only 'contextFact' and 'restrictiveFact' read a fact.` });
+      }
+      if (readsFact && (condition.metadataPath !== undefined || condition.parameterId !== undefined)) {
+        issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} gives a fact predicate a path or parameter id; a fact is read by its exact class, never by path.` });
+      }
+      if (condition.field === 'metadata' && condition.metadataPath !== undefined) {
+        // One grammar for validation and evaluation: no empty segment, so no
+        // alias of a reserved path can exist; then the reserved check on the
+        // canonical path, in any case.
+        const segments = parseMetadataPath(condition.metadataPath);
+        if (segments === undefined) {
+          issues.push({ code: 'INVALID_METADATA_PATH', message: `Rule ${ruleId} reads metadata by a malformed path (empty, too long, or with an empty segment — a leading, trailing or repeated dot).` });
+        } else if (metadataPathIsReserved(segments)) {
+          issues.push({
+            code: 'INVALID_CONTEXT_PREDICATE',
+            message: `Rule ${ruleId} reads the reserved '${segments.join('.')}' namespace by path; trusted context is read only through 'contextFact' / 'restrictiveFact', which see admitted facts and nothing else.`,
+          });
+        }
+      }
+      if (condition.valueFrom !== undefined) {
+        // Untyped policy data: shape first, before any property is read.
+        if (!isFactComparand(condition.valueFrom)) {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} names a comparand other than an admitted material fact ({ field: 'contextFact', factClass }).` });
+        }
+        if (!FACT_COMPARAND_OPERATORS.has(condition.operator)) {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} compares against a fact with ${condition.operator}; a fact comparand supports equality and ordering only.` });
+        } else if (ORDERED_OPERATORS.has(condition.operator) && !FACT_ORDERABLE_FIELDS.has(condition.field)) {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} orders ${condition.field} against a fact; only integer or monetary fields are ordered.` });
+        }
+        if (condition.value !== undefined) {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} states both a literal value and a fact comparand; a predicate compares against one.` });
+        }
+        if (condition.operator === 'exists' || condition.operator === 'not_exists' || condition.field === 'restrictiveFact') {
+          issues.push({ code: 'INVALID_CONTEXT_PREDICATE', message: `Rule ${ruleId} gives a fact comparand to an existence test or a restrict-only fact.` });
+        }
+      }
+      if (condition.field === 'restrictiveFact' && (negated || NEGATED_OPERATORS.has(condition.operator))) {
+        issues.push({
+          code: 'RESTRICTIVE_FACT_NOT_MONOTONE',
+          message: `Rule ${ruleId} reads a restrict-only fact in negated position (${negated ? 'under a not group' : condition.operator}); its presence could then relax the rule.`,
+        });
+      }
+      if (literal && condition.field === 'amount' && !isMonetaryPredicateValue(condition)) {
         issues.push({
           code: 'INVALID_MONETARY_THRESHOLD',
           message: `Rule ${ruleId} compares amount against something other than canonical decimal text (e.g. "10000", "123.45"). A monetary threshold is never a number.`,

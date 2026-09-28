@@ -47,6 +47,15 @@ export interface EnterpriseHealthPosture {
    * kind reaches authority administration over HTTP.
    */
   readonly authorityAdministration: 'enabled' | 'not-configured';
+  /**
+   * CORE-04: whether the Trusted Context Boundary is composed on the governed
+   * path (sources, a context provider, profile declarations). `not-configured`
+   * means no profile declares facts — composition refuses a profile that does
+   * without one.
+   */
+  readonly trustedContext: 'composed' | 'not-configured';
+  /** CORE-04: the obligation discharge store's kind, or `not-configured` when no obligations are composed. */
+  readonly obligations: 'durable' | 'ephemeral' | 'not-configured';
 }
 
 /**

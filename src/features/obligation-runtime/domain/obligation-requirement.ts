@@ -17,23 +17,32 @@
  */
 
 /**
- * The closed obligation vocabulary this phase implements.
+ * The obligation kind: an opaque, **declared** identifier.
  *
- * Two, on purpose. `finance.approval` is the brief's own worked example and the
- * one that exercises every state; `second.signer` exists so that "blocking" and
- * "non-blocking" can be shown on the same decision, and so nothing in the
- * implementation can quietly assume there is only ever one obligation. The
- * ADR's wider list — `require-mfa`, `record-usage`, `watermark-content`,
- * `require-acceptance` — is deliberately not built here: each is a real
- * integration, and building eight of them would be building the approval
- * catalogue the ADR spends a section refusing.
+ * CORE-04 generalizes the closed two-member vocabulary this layer started with
+ * (`finance.approval`, `second.signer`) into declared identifiers, for the
+ * reason CORE-03 did the same for action and resource classes: CORE owns the
+ * lifecycle and the grammar, never a domain's catalogue of obligations. The
+ * six-state lifecycle, the eight transitions, the satisfaction rule and every
+ * trust rule are unchanged — only *which kinds exist* moves out of CORE and
+ * into trusted configuration (a deployment's declaration, or a Governance
+ * Profile). A requester still cannot name, add or remove one: the declaration
+ * is operator-provisioned, exactly as before, and there is still no `REQUIRE`
+ * keyword, expression or parser.
+ *
+ * The two historical kinds remain valid identifiers and keep working.
  */
-export type ObligationType = 'finance.approval' | 'second.signer';
+export type ObligationType = string;
 
+/** The two kinds this layer was first proved with. Retained as reference identifiers; not a closed list. */
 export const OBLIGATION_TYPES: readonly ObligationType[] = ['finance.approval', 'second.signer'];
 
+export const OBLIGATION_TYPE_MAX_LENGTH = 64;
+const OBLIGATION_TYPE = /^[a-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$/;
+
+/** Whether `value` is a well-formed obligation kind identifier. Grammar only: which kinds a deployment requires is its declaration's business. */
 export function isObligationType(value: string): value is ObligationType {
-  return (OBLIGATION_TYPES as readonly string[]).includes(value);
+  return typeof value === 'string' && value.length > 0 && value.length <= OBLIGATION_TYPE_MAX_LENGTH && OBLIGATION_TYPE.test(value);
 }
 
 export interface ObligationRequirement {
@@ -102,11 +111,11 @@ export function validateObligationDeclaration(declaration: ObligationDeclaration
 
   for (const requirement of declaration.requirements) {
     if (typeof requirement.obligationType !== 'string' || !isObligationType(requirement.obligationType)) {
-      violations.push(`ObligationRequirement: obligationType '${String(requirement.obligationType)}' is not a declared obligation type.`);
+      violations.push(`ObligationRequirement: obligationType '${String(requirement.obligationType)}' is not a well-formed obligation kind identifier.`);
       continue;
     }
-    if (seen.has(requirement.obligationType)) violations.push(`ObligationRequirement '${requirement.obligationType}': declared more than once.`);
-    seen.add(requirement.obligationType);
+    if (seen.has(requirement.obligationType.toLowerCase())) violations.push(`ObligationRequirement '${requirement.obligationType}': declared more than once.`);
+    seen.add(requirement.obligationType.toLowerCase());
     if (typeof requirement.blocking !== 'boolean') {
       violations.push(`ObligationRequirement '${requirement.obligationType}': blocking must be declared explicitly — "not stated" must never be read as "not blocking".`);
     }

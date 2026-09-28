@@ -47,6 +47,7 @@ describe('Context sources are operator configuration, not requester input', () =
     kind: 'erp',
     name: 'Test ERP',
     trustClass: 'authoritative',
+    attests: [{ factClass: 'vendor.status' }],
     ...overrides,
   });
 
@@ -55,17 +56,17 @@ describe('Context sources are operator configuration, not requester input', () =
   });
 
   it('refuses to let a deployment configure the requester as authoritative', () => {
-    const violations = validateContextSource(source({ id: 'ctx.src.request', kind: 'request', trustClass: 'authoritative' }));
+    const violations = validateContextSource(source({ id: 'ctx.src.request', kind: 'request', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] }));
     assert.equal(violations.length, 1);
     assert.match(violations[0] ?? '', /may only be 'asserted'/);
   });
 
   it('a source of kind request is valid at asserted', () => {
-    assert.deepEqual(validateContextSource(source({ id: 'ctx.src.request', kind: 'request', trustClass: 'asserted' })), []);
+    assert.deepEqual(validateContextSource(source({ id: 'ctx.src.request', kind: 'request', trustClass: 'asserted', attests: [{ factClass: 'vendor.status' }] })), []);
   });
 
   it('refuses attested on anything that is not a verified attestation', () => {
-    const violations = validateContextSource(source({ trustClass: 'attested' }));
+    const violations = validateContextSource(source({ trustClass: 'attested', attests: [{ factClass: 'vendor.status' }] }));
     assert.equal(violations.length, 1);
     assert.match(violations[0] ?? '', /requires kind 'signed_attestation'/);
   });

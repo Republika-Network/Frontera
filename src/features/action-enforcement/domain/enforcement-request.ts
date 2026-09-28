@@ -42,6 +42,15 @@ export interface EnforcementPolicyEvaluationInput {
   readonly governanceProfileVersion?: number;
   /** CORE-03 — the typed parameter values the action proposes, one per declared dimension, in canonical order. Proposed values, not trusted facts. */
   readonly governedParameters?: readonly GovernedParameter[];
+  /**
+   * CORE-04 — trusted context, admitted by the Trusted Context Boundary and
+   * only that: one entry per material fact class whose reading was admitted,
+   * fresh, unambiguous and at the declared trust class. A stale, conflicted,
+   * refused or missing fact is simply absent. Never caller input.
+   */
+  readonly contextFacts?: readonly { readonly factClass: string; readonly value: string | number | boolean }[];
+  /** CORE-04 — admitted restrict-only facts, on the same terms; readable only by restrict-only rules. */
+  readonly restrictiveFacts?: readonly { readonly factClass: string; readonly value: string | number | boolean }[];
 
   readonly metadata?: Readonly<Record<string, unknown>>;
 }

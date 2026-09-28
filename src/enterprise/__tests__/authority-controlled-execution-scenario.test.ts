@@ -90,7 +90,7 @@ const AT_T_PLUS_5 = '2026-01-01T12:05:00.000Z';
 const MANDATE_EXPIRES = '2026-01-01T12:30:00.000Z';
 const MANDATE_REF = 'mandate-transfer-0001';
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] };
 const CONTEXT_DECLARATION: ContextDeclaration = { requirements: [{ key: 'vendor.status', minimumTrustClass: 'authoritative', required: false }] };
 const RESOLVER_SAYS_APPROVED: readonly ContextFactObservation[] = [{ key: 'vendor.status', value: 'approved', sourceId: ERP.id, observedAt: NOW }];
 

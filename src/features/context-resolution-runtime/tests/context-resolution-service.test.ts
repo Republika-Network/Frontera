@@ -9,10 +9,10 @@ import { ContextConfigurationError } from '../services/context-resolution-errors
 
 const NOW = '2026-01-01T12:00:00.000Z';
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
-const CRM: ContextSource = { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative' };
-const REQUEST: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted' };
-const ATTESTOR: ContextSource = { id: 'ctx.src.attest.issuer', kind: 'signed_attestation', name: 'Issuer', trustClass: 'attested' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
+const CRM: ContextSource = { id: 'ctx.src.crm.salesforce', kind: 'crm', name: 'Salesforce', trustClass: 'authoritative', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
+const REQUEST: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
+const ATTESTOR: ContextSource = { id: 'ctx.src.attest.issuer', kind: 'signed_attestation', name: 'Issuer', trustClass: 'attested', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] };
 
 const SOURCES = [ERP, CRM, REQUEST, ATTESTOR];
 
@@ -82,13 +82,23 @@ describe('Context resolution — trust classification comes from configuration',
     assert.deepEqual(resolution.unresolved, ['vendor.status']);
   });
 
-  it('an attested source with its attestation reference produces an attested fact', () => {
+  it('an attestation reference alone confers nothing: with no attestation verifier the reading is refused, never attested (CORE-04 review)', () => {
     const resolution = service({ requirements: [{ key: 'vendor.status', minimumTrustClass: 'attested', required: false }] }).classify(
       [observation({ key: 'vendor.status', value: 'approved', sourceId: ATTESTOR.id, attestationRef: 'att-1' })],
       NOW,
     );
-    assert.equal(resolution.facts[0]?.trustClass, 'attested');
-    assert.equal(resolution.facts[0]?.attestationRef, 'att-1');
+    assert.deepEqual(resolution.facts, []);
+    assert.deepEqual(resolution.refused, [{ key: 'vendor.status', sourceId: ATTESTOR.id, reason: 'attestation_invalid' }]);
+  });
+
+  it('an attested source whose evidence the configured verifier accepts produces an attested fact', () => {
+    const verified = new ContextResolutionService({
+      sources: SOURCES,
+      declaration: { requirements: [{ key: 'vendor.status', minimumTrustClass: 'attested', required: false }] },
+      attestationVerifier: ({ source, observation: reading }) => source.id === ATTESTOR.id && reading.attestationRef === 'att-1',
+    }).classify([observation({ key: 'vendor.status', value: 'approved', sourceId: ATTESTOR.id, attestationRef: 'att-1' })], NOW);
+    assert.equal(verified.facts[0]?.trustClass, 'attested');
+    assert.equal(verified.facts[0]?.attestationRef, 'att-1');
   });
 
   it('an unparseable observation time is discarded rather than dated', () => {
@@ -285,7 +295,7 @@ describe('Context configuration is rejected at wiring time', () => {
 
   it('refuses a configured source claiming the reserved derived-source id', () => {
     assert.throws(
-      () => service(VENDOR_STATUS, [{ id: CONTEXT_DERIVED_SOURCE_ID, kind: 'erp', name: 'Impostor', trustClass: 'authoritative' }]),
+      () => service(VENDOR_STATUS, [{ id: CONTEXT_DERIVED_SOURCE_ID, kind: 'erp', name: 'Impostor', trustClass: 'authoritative', attests: [{ factClass: 'a' }, { factClass: 'c' }, { factClass: 'invoice.amount' }, { factClass: 'invoice.status' }, { factClass: 'vendor.creditLimit' }, { factClass: 'vendor.monthlySpend' }, { factClass: 'vendor.projectedSpend' }, { factClass: 'vendor.status' }] }]),
       ContextConfigurationError,
     );
   });

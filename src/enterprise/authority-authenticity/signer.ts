@@ -2,6 +2,7 @@ import { createPrivateKey, createPublicKey, sign as cryptoSign, type KeyObject }
 
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
+import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
@@ -9,6 +10,7 @@ import {
   grantSigningBytes,
   isSupportedAuthoritySignatureAlgorithm,
   revocationSigningBytes,
+  obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
   type AuthoritySignatureAlgorithm,
@@ -71,6 +73,13 @@ export interface AuthorityArtifactSigner {
    * two, it takes a structured artifact, never bytes.
    */
   signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature>;
+  /**
+   * Signs an obligation discharge store's state commitment (CORE-04). A
+   * verified discharge releases grant issuance, so the discharge log's head is
+   * an authority artifact like a revocation state: same key, its own domain,
+   * a structured artifact — never bytes.
+   */
+  signObligationDischargeState(state: ObligationDischargeStateCommitment): Promise<AuthoritySignature>;
 }
 
 export interface SoftwareAuthorityArtifactSignerOptions {
@@ -140,6 +149,9 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
     },
     async signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature> {
       return signBytes(revocationStateSigningBytes(state));
+    },
+    async signObligationDischargeState(state: ObligationDischargeStateCommitment): Promise<AuthoritySignature> {
+      return signBytes(obligationDischargeStateSigningBytes(state));
     },
   });
 }

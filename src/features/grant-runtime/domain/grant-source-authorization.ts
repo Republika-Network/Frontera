@@ -91,6 +91,16 @@ export interface GrantSourceAuthorization {
    * the mandate's own expiry".
    */
   readonly validityCeilings: readonly GrantValidityCeiling[];
+  /**
+   * CORE-04 — the admitted-context digest (`frontera.admitted-context.v1`) of
+   * the decision this source was projected from, when that decision relied on
+   * trusted context. Part of the canonical source bytes, and so of every grant's
+   * `sourceDigest` — which is itself inside the grant's identity, digest and
+   * signature — so a grant can never rely on context its own provenance
+   * ignores. **Additive:** absent, the serialization is byte-identical to every
+   * source that existed before CORE-04.
+   */
+  readonly contextDigest?: string;
 }
 
 /**
@@ -144,6 +154,8 @@ export function serializeGrantSourceAuthorization(source: GrantSourceAuthorizati
   return [
     `"allBlockingObligationsSatisfied":${String(source.allBlockingObligationsSatisfied)}`,
     `"authorizationPermitsExercise":${String(source.authorizationPermitsExercise)}`,
+    // CORE-04: only when present, so every pre-CORE-04 source keeps its bytes.
+    ...(source.contextDigest !== undefined ? [`"contextDigest":${JSON.stringify(source.contextDigest)}`] : []),
     `"correlation":{${[
       `"action":${JSON.stringify(source.correlation.action)}`,
       `"decisionId":${JSON.stringify(source.correlation.decisionId)}`,

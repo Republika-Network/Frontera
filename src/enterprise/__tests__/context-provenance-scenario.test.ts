@@ -44,13 +44,13 @@ import { compareCanonicalDecimals, isCanonicalDecimal } from '../../features/mon
 
 const NOW = '2026-01-01T12:00:00.000Z';
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] };
 /**
  * Registered so the scenario can show a deployment that *does* admit the
  * requester as a source — and show that admitting it still does not let a
  * request satisfy a rule that asked for a system of record.
  */
-const REQUEST_SOURCE: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted' };
+const REQUEST_SOURCE: ContextSource = { id: 'ctx.src.request', kind: 'request', name: 'The requester', trustClass: 'asserted', attests: [{ factClass: 'vendor.status' }] };
 
 const DECLARATION: ContextDeclaration = {
   requirements: [{ key: 'vendor.status', minimumTrustClass: 'authoritative', required: false }],

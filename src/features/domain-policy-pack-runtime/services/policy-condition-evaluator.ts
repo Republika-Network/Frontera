@@ -1,6 +1,7 @@
 import { compareCanonicalDecimals, isCanonicalDecimal } from '../../monetary-runtime/index.js';
 import type { PolicyCondition, PolicyPredicateCondition, PolicyPredicateField } from '../domain/policy-pack-condition.js';
 import type { PolicyEvaluationInput } from '../domain/policy-pack-evaluation.js';
+import { metadataPathIsReserved, parseMetadataPath } from '../domain/metadata-path.js';
 
 export interface PolicyConditionEvaluationResult {
   readonly matched: boolean;
@@ -42,16 +43,28 @@ export class PolicyConditionEvaluator {
 
   private evaluatePredicate(condition: PolicyPredicateCondition, input: PolicyEvaluationInput): PolicyConditionEvaluationResult {
     const fieldValue = this.getFieldValue(condition, input);
-    const matched = this.applyOperator(condition.operator, fieldValue, condition.value);
+    // CORE-04: an admitted fact as the comparand. Absent when not admitted,
+    // and an absent comparand never satisfies an equality or an ordering.
+    const expected = condition.valueFrom !== undefined ? this.readFact(input.contextFacts, condition.valueFrom.factClass) : condition.value;
+    if (condition.valueFrom !== undefined && (expected === undefined || fieldValue === undefined)) {
+      return { matched: false, reason: `${condition.field} ${condition.operator} contextFact.${condition.valueFrom.factClass} -> false (comparand not admitted)` };
+    }
+    const matched = this.applyOperator(condition.operator, fieldValue, expected);
     return {
       matched,
-      reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''}${condition.parameterId ? `.${condition.parameterId}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
+      reason: `${condition.field}${condition.metadataPath ? `.${condition.metadataPath}` : ''}${condition.parameterId ? `.${condition.parameterId}` : ''}${condition.factClass ? `.${condition.factClass}` : ''} ${condition.operator} ${JSON.stringify(condition.value)} -> ${String(matched)}`,
     };
   }
 
   private getFieldValue(condition: PolicyPredicateCondition, input: PolicyEvaluationInput): unknown {
     if (condition.field === 'parameter') {
       return this.readParameter(input, condition.parameterId);
+    }
+    if (condition.field === 'contextFact') {
+      return this.readFact(input.contextFacts, condition.factClass);
+    }
+    if (condition.field === 'restrictiveFact') {
+      return this.readFact(input.restrictiveFacts, condition.factClass);
     }
     if (condition.field === 'metadata') {
       if (!condition.metadataPath) {
@@ -127,14 +140,27 @@ export class PolicyConditionEvaluator {
     return input.governedParameters.find((parameter) => parameter.dimension === parameterId)?.value;
   }
 
+  /** CORE-04: an admitted fact by exact class, found in a list — never by property access, so no prototype member can answer for an unadmitted class. */
+  private readFact(facts: PolicyEvaluationInput['contextFacts'], factClass: string | undefined): unknown {
+    if (factClass === undefined || facts === undefined) return undefined;
+    return facts.find((fact) => fact.factClass === factClass)?.value;
+  }
+
+  /**
+   * CORE-04 review: the same grammar the validator checks (`metadata-path.ts`)
+   * — a malformed path reads nothing rather than being normalized into another
+   * one — and a reserved namespace reads nothing even from a pack that was
+   * never validated. Own properties only, so no prototype member answers.
+   */
   private readMetadataPath(metadata: Readonly<Record<string, unknown>> | undefined, path: string): unknown {
     if (!metadata) {
       return undefined;
     }
-    const segments = path.split('.').filter((segment) => segment.length > 0);
+    const segments = parseMetadataPath(path);
+    if (segments === undefined || metadataPathIsReserved(segments)) return undefined;
     let current: unknown = metadata;
     for (const segment of segments) {
-      if (current === null || typeof current !== 'object') {
+      if (current === null || typeof current !== 'object' || !Object.prototype.hasOwnProperty.call(current, segment)) {
         return undefined;
       }
       current = (current as Record<string, unknown>)[segment];

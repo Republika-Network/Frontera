@@ -89,7 +89,7 @@ const NOW = '2026-01-01T12:00:00.000Z';
 const HORIZON = '2026-01-01T12:10:00.000Z';
 const GRANT_LIFETIME_SECONDS = 600;
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] };
 const CONTEXT_DECLARATION: ContextDeclaration = { requirements: [{ key: 'vendor.status', minimumTrustClass: 'authoritative', required: false }] };
 
 const FINANCE_APPROVALS: ObligationDischargeSource = { id: 'obl.src.approval.finance', kind: 'approval_runtime', name: 'Finance approvals', verificationClass: 'independent' };

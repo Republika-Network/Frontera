@@ -5,7 +5,7 @@
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
 - **Reconciled by:** MASTER-01 (governed action intelligence & roadmap reconciliation), 2026-09-27, against `main` @ `c66e0c7` (CTRL-01 merged). Architecture and roadmap only; no runtime change.
-- **Last status change:** CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
+- **Last status change:** CORE-04 → **VERIFIED**, 2026-09-28 (branch `feat/core-04-trusted-context-obligations`): one Trusted Context Boundary on the governed path (fact-class-scoped authority to attest, organization scope, provenance, per-class freshness); admitted-only policy input; restrict-only admitted RiskSignal contract; admitted-context digest bound to the decision and the signed grant, grant validity capped at context validity; obligations reachable with a durable, **authenticated** discharge store (signed state commitment, CORE-01 pattern — a database-only writer cannot manufacture satisfaction) and trusted writer; exercise-time lineage for every action class; NEXT → CORE-05 (§14). Previous: CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -90,8 +90,9 @@ and feeds the core; it never replaces it (§4.4, invariants 24–32):
   forbids domain vocabulary and branching in the generic core. Typed parameters
   are not yet handed to adapters (P11 schema; CORE-08). The only execution
   adapter is Generic HTTP.
-- **No intelligence component exists.** No model call, agent, RiskSignal or
-  behavioural detector exists anywhere; a structural test forbids intelligence
+- **No intelligence component exists.** No model call, agent, signal producer or
+  behavioural detector exists anywhere (CORE-04 adds only the deterministic
+  *admitted* signal contract — a restrict-only fact class — with no producer); a structural test forbids intelligence
   vocabulary in Kernel sources (`src/enterprise/__tests__/security-invariants.test.ts`,
   "names no AI, model or inference dependency").
 - **The shipped host composes the spine (since PROD-01; corrected by MASTER-01 —
@@ -107,8 +108,10 @@ and feeds the core; it never replaces it (§4.4, invariants 24–32):
   `authenticated-durable` authority store (§3.8, PROD-01). CTRL-01's
   administration API is mounted on this same Host and was qualified through
   `bootEnterpriseHost()` (`authority-administration-api.test.ts`). What the
-  shipped Host does **not** compose: policy packs, trusted context, obligations,
-  approvals and P12 (§3.8). `createEnterprise()` remains a lenient embedding
+  shipped Host does **not** compose: a durable policy store (policy is
+  in-process composition since CORE-04), approvals and P12 (§3.8). Since
+  CORE-04 it composes the Trusted Context Boundary and obligations when the
+  governed-action file declares them. `createEnterprise()` remains a lenient embedding
   surface that defaults to `memory` and composes nothing unless asked.
 - **The README positioning is stale.** It still describes "Frontera Systems … built on
   Soberanía Protocol" for "programmable consent, scoped machine access".
@@ -204,13 +207,13 @@ path" (§13) with a precise rule.
 | Question | Status | Where it is answered |
 |---|---|---|
 | WHO / ORGANIZATION | Answered | Customer principal binding (P2) |
-| WHOSE AUTHORITY | Partly answered | Kernel-Authority world + Authority Graph. Lineage is re-checked at exercise only for financial actions |
-| POLICY | Answered only if the host injects a policy pack | — |
+| WHOSE AUTHORITY | Answered | Kernel-Authority world + Authority Graph. Lineage re-checked at exercise for every action class (CORE-04) |
+| POLICY | Answered when a policy pack is composed (in-process; required whenever a profile declares facts, CORE-04) | Domain Policy Pack Runtime, NB-008 writer |
 | LIMITS | Answered only if P7 is composed | P7 / P10 |
-| OBLIGATIONS | **Not answered** on the governed path | — |
+| OBLIGATIONS | Answered (CORE-04) | Profile-declared obligations, durable discharge store, issuance gated on verified discharge |
 | ACTION | Answered (CORE-03) | Required `action` identifier + trusted domain-declared action class + typed declared parameters; host-trusted `financial`/`non-financial` classifier kept for money (P9) |
 | RESOURCE | Answered (CORE-03) | Required `resource` reference → `resourceScope` and grant `resources` bound, + trusted domain-declared resource class; governance can depend on *what kind* of resource it is |
-| ADMITTED CONTEXT | **Not answered** | `assertedContext` reaches the Kernel as caller claims (CORE-04) |
+| ADMITTED CONTEXT | Answered (CORE-04) | Trusted Context Boundary: fact-class-scoped source authority, provenance, freshness; admitted-context digest bound to decision and signed grant. `assertedContext` stays caller claims and can never occupy a trusted-fact key |
 | MECHANISM | Answered | Adapter id |
 | RESULT | Answered | P11 / P12 |
 | EVIDENCE | Answered, integrity-only | Event stream |
@@ -254,16 +257,16 @@ wiring inventory is §3.8.
 | Emergency control / kill switch (P4) | VERIFIED (opt-in); durable and composed on the shipped secure Host | `composition-root.ts`; `emergency-control-*.test.ts`. Operable over `/api/admin/emergency-controls` by configured administrators (CTRL-01) |
 | Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in); composed (required) on the shipped secure Host, with no host-imposed limits — the authority's own (P10) apply | `composition-root.ts`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
 | Authority-sourced payment ceilings (P10) | VERIFIED (requires P7) | `kernel-authority/monetary-constraints.ts:75-91`; `authority-payment-ceilings*.test.ts` |
-| Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts`). No durable policy store, no default pack. Since CORE-03: writes require a trusted writer, are attributed and freezable (NB-008 closed, SEC-INV-133), and rules can read `actionClass`, `resourceClass`, `governanceProfile`, `governanceProfileVersion` and typed `parameter` fields |
+| Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts`; on the shipped Host via `bootEnterpriseHost({ policyPackProvider })` since CORE-04). No durable policy store, no default pack. Since CORE-03: writes require a trusted writer, are attributed and freezable (NB-008 closed, SEC-INV-133), and rules can read `actionClass`, `resourceClass`, `governanceProfile`, `governanceProfileVersion` and typed `parameter` fields |
 | Governed action semantic & parameter model (CORE-03) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `governance`** | `features/governed-parameter-runtime`, `enterprise/governance-profile`; `governed-action-thesis-read-export.test.ts`, `governed-action-semantics-host.test.ts`, `pre-core-03-compatibility.test.ts`; ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL |
-| Delegation lineage | **PARTIAL** | Enforced at decision when the actor is an agent. Re-resolved at issue, commit and exercise **only for financial actions** (`kernel-authority/financial-authority-resolver.ts`). Non-financial revalidation is a host callback |
-| Obligation lifecycle (discharge/verify/waive) | **LIBRARY-ONLY** | `src/features/obligation-runtime` is tested. The governed-action Kernel is built with `grants` only (`composition-root.ts:1370-1376`), and a host Kernel is refused (`:1113`), so obligations **cannot reach** governed actions |
-| Trusted context provenance (layer C) | **LIBRARY-ONLY** | `src/features/context-resolution-runtime` is tested. It is not composed; `assertedContext` reaches the Kernel as caller claims |
-| Risk signals | ABSENT | Boundary tests ban `riskScore`/`anomal` from Kernel sources by design. That ban stays: a future admitted RiskSignal reaches the Kernel only as a generic trusted-context fact (CORE-04), never by name (§4.4) |
+| Delegation lineage | **VERIFIED** (CORE-04) | Enforced at decision when the actor is an agent. Financial actions re-resolved at issue, commit and exercise (P10); **every** action class re-resolved at exercise since CORE-04 (`kernel-authority/authority-lineage-revalidator.ts`, SEC-INV-141; `governed-action-obligations-host.test.ts`) |
+| Obligation lifecycle (discharge/verify/waive) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `obligations`** (CORE-04) | The unchanged six-state lifecycle, per-profile declarations, durable append-only discharge store with a trusted in-process writer; a withheld decision is issued only after verified discharge (SEC-INV-140; `governed-action-obligations-host.test.ts`) |
+| Trusted context provenance (layer C) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `trustedContext`** (CORE-04) | One Trusted Context Boundary (`context-resolution-service.ts`) per effective profile; admitted-only policy input; context digest bound to decision and signed grant (SEC-INV-136 … 139; `governed-action-trusted-context-host.test.ts`) |
+| Risk signals | **Admitted contract VERIFIED (CORE-04); no producer exists** | An admitted RiskSignal is a restrict-only fact class (`restrictiveFacts`), admitted by the one boundary and readable only by restrictive, monotone policy (SEC-INV-138; `governed-action-restrictive-signal-host.test.ts`). The Kernel intelligence-vocabulary ban stays |
 | Approvals | **PARTIAL** | `approval_required` always ends `withheld:'approval'` (`orchestrator.ts:593`). The approval store is in-memory. There is no way to present an approval proof on the governed path |
 | Escalation | LIBRARY-ONLY | `approval-runtime.ts:203` (domain code only) |
 | Holder-bound representative / right-scoped Governed Authority | LIBRARY-ONLY | Kernel providers exist (`AocKernel.ts:70-101`); no enterprise wiring |
-| Deterministic AI boundary | PARTIAL | Lexical negative test only; the ADR is architecture-only. Amended in direction by MASTER-01 for restrict-only admitted RiskSignals (§4.4.6); the ADR's prohibitions remain in force until CORE-04 + INTEL-06 deliver |
+| Deterministic AI boundary | PARTIAL | Lexical negative tests (now also over every CORE-04 source). CORE-04 delivered the deterministic half of §4.4.6 (restrict-only admission + pack validation); the ADR's prohibitions on model output remain in force until INTEL-06 |
 | Legacy `src/runtime/authorization` (protocol capability tokens) | SUPERSEDED | Serves the SDK host only |
 | Kernel `emergencyDeny` | SUPERSEDED | Replaced by P4 durable emergency control |
 
@@ -465,9 +468,9 @@ MASTER-00 record.
 | Governed-action API | WIRED INTO PRODUCTION HOST | `POST /api/governed-actions` |
 | Generic HTTP adapter (P6) | WIRED INTO PRODUCTION HOST | Only as configured in the file; routed by action |
 | Governance Profiles / typed parameters (CORE-03) | WIRED INTO PRODUCTION HOST (optional) | From the governed-action file's `governance` key; validated at startup; absent → nothing classified |
-| Policy packs | NOT WIRED | No durable policy store. Registry writes attributed and freezable since CORE-03 (NB-008 closed) |
-| Obligations | NOT WIRED | CORE-04 |
-| Trusted context | NOT WIRED | CORE-04 |
+| Policy packs | WIRED (in-process, optional) | `bootEnterpriseHost({ policyPackProvider })` since CORE-04; required when a profile declares facts. No durable policy store or file format |
+| Obligations | WIRED INTO PRODUCTION HOST (optional, CORE-04) | From the governed-action file's `obligations`; durable discharge store (secure profile refuses ephemeral); in-process trusted writer only |
+| Trusted context | WIRED INTO PRODUCTION HOST (optional, CORE-04) | Source registry from the file's `trustedContext`; context provider and policy are in-process inputs; refused at startup when profiles declare facts without them |
 | Approvals | NOT WIRED | `approval_required` stays withheld (CORE-05) |
 | Mandates (`packages/*-mandate`, `*-governance`) | EMBEDDING-ONLY / LIBRARY-ONLY | Not composed, not HTTP-exposed (CREDIT) |
 | Evidence bundle store | WIRED, in-memory | Not durable on any Host (ASSURE) |
@@ -488,6 +491,7 @@ MASTER-00 record.
         │
         ├── Customer identity admission (P2) ─────────── principal → subject → authority actor
         ├── Kernel (src/kernel) ── Recognition · Authority Graph · Approval(mem) · Policy packs(host)
+        │     · Trusted Context Boundary (CORE-04, per profile) · Obligations (CORE-04) ◄─ durable discharge store
         │     └── Kernel-Authority durable world (SQLite, digest-only)
         ├── Governance Store (decision commit / re-read)
         ├── Governed-Action Orchestrator (P3) ── intent + P9 monetary classification
@@ -499,7 +503,7 @@ MASTER-00 record.
         │     └── Authority event stream (P8, hash-chained, best-effort)
         └── Evidence bundle (mem) · Assurance (SQLite) · Passport store
 
-  LIBRARY-ONLY (tested, not composed): obligations · context resolution · governed authority /
+  LIBRARY-ONLY (tested, not composed): governed authority /
   mandates (collateralize, tokenize, transfer, license, encumbrance) · Capital Discovery ·
   control-plane React panels · verifiable export · Sovereign Access (Pinata)
 ```
@@ -515,7 +519,7 @@ restated against what exists:
                     │ provenance/lineage             │  partial
                     │ bounded grants · revocation    │  exists; tamper-evident (CORE-01)
                     │ policy · ceilings · controls   │  exists (opt-in)
-                    │ obligations · trusted context  │  library-only → CORE-03/04
+                    │ obligations · trusted context  │  exists (CORE-04)
                     │ approvals (engine side)        │  partial → CORE-05
                     │ authenticity · signer boundary │  durable store: done; key custody → CORE-02
                     │ governed-action envelope       │  exists (P3/P5)
@@ -768,8 +772,12 @@ decides that a source is trustworthy.
 A source can have **authority to attest** a fact class (ERP → invoice
 existence; wallet registry → destination registration; blockchain → chain
 state; HR → employment status) without any **authority to authorize** the
-action (invariant 30). The existing `ContextSource` + trust-class model (FACT:
-LIBRARY-ONLY, `context-resolution-runtime`) is the intended vehicle.
+action (invariant 30). The existing `ContextSource` + trust-class model is the
+vehicle. **FACT (CORE-04):** composed on the governed path; a source carries
+fact-class-scoped `attests [{factClass, maxAgeSeconds}]` (no wildcard), an
+organization scope and a provenance requirement, and
+`ContextResolutionService.classify` is the one admission point
+(`docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md`).
 
 **Live Data Rail (LDR)** is one possible context source / transport for ERP,
 organizational, operational and external facts: Agent / Context Resolver → LDR
@@ -795,6 +803,22 @@ Lifecycle:
 Admission evaluates the *producer and its evidence*, not the model's
 self-assessment: **model confidence ≠ trust** (invariant 29). A RiskSignal
 never directly ALLOWs, DENYs, creates a grant, increases authority or executes.
+
+**FACT (CORE-04, OQ-3 admitted half / OQ-4).** The admitted contract is generic:
+a Governance Profile's `restrictiveFacts` names restrict-only fact classes; a
+candidate reading is admitted by the same boundary as any fact (configured
+producer with authority to attest that class, organization, provenance digest,
+freshness — the source's bound is the signal's expiry); its value is a bounded
+token or safe integer (severity; a confidence, if a producer sends one, is not
+part of admission and never reaches policy). Absent or stale is the baseline;
+conflicting admitted readings or no resolution deny
+(`CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS`). Its
+admitted form is digested into the decision and the signed grant (values are
+not stored in the record). **Not delivered by CORE-04:** resolving
+`supportingEvidenceRefs` against a verifiable history (ASSURE-04 / INTEL-05) —
+CORE-04 binds a provenance reference and digest only — and recording
+detector/model identity (INTEL-05). Whether a candidate is an `Advisory` kind is
+INTEL-05's to settle (CORE never sees a candidate).
 
 #### 4.4.5 Adaptive Authority Containment
 
@@ -845,7 +869,11 @@ admitted RiskSignals. DECISION:
   signal is persisted and digested as a decision input, so the decision is
   reproducible from its recorded inputs, exactly as an authoritative ERP fact is.
 - **Until CORE-04 and INTEL-06 deliver this with tests, the ADR's prohibitions
-  remain fully in force.** INTEL-06 owns a superseding ADR for the narrowed
+  remain fully in force.** *(CORE-04, 2026-09-28: the deterministic half is
+  delivered — restrict-only admission, the pack-validation rule and a Host
+  monotonicity test; OQ-14's pack half is answered without a separate Kernel
+  check. No producer exists, so the prohibitions on model output stand until
+  INTEL-06.)* INTEL-06 owns a superseding ADR for the narrowed
   clauses. The Kernel-source intelligence-vocabulary ban stays unchanged.
 
 #### 4.4.7 Evidence feedback loop
@@ -967,18 +995,18 @@ as a roadmap mechanism (§15).
 
 | Concept | Representations | Class | Owner |
 |---|---|---|---|
-| Authority world | (a) Kernel-Authority records → Authority Graph (canonical for governed actions). (b) `packages/governed-authority` + `authority-governance` mandates (right-scoped holdings, encumbrances), never consulted by governed actions | **Reconcile.** This is the largest gap: two authority worlds | CORE-04 decision; CREDIT-01 consumer |
+| Authority world | (a) Kernel-Authority records → Authority Graph (canonical for governed actions). (b) `packages/governed-authority` + `authority-governance` mandates (right-scoped holdings, encumbrances), never consulted by governed actions | **Reconcile.** This is the largest gap: two authority worlds. **DECISION (CORE-04):** the Kernel-Authority world is the only authority source on the governed path; `governed-authority` mandates stay domain primitives (LIBRARY-ONLY) that CREDIT-01 may compile into envelope parameters, constraints or trusted facts — never a second authority source consulted by the Kernel | CREDIT-01 consumer |
 | Grants | `grant-runtime` BoundedGrant (canonical) · `packages/access-grant` + `grant-revocation` (Sovereign Access, excepted model) · `packages/capability-tokens` (0 consumers) · recognition capability tokens (standing capability) | BoundedGrant vs recognition capability: Intentional. Access-grant: Reconcile or formally scope as a separate product. Capability-tokens package: Reconcile (deprecate) | CORE |
 | Principal | `BoundCustomerIdentity`, Kernel `actor`, Recognition `Actor`, Authority-Graph node (intentional layering) · `packages/identity` (legacy runtime) · Enterprise `AgentPassport` (composed, never consulted) · `pmfreak-agent-passport-foundation` · `agent-governance` passport (passport-web) | Layering: Intentional. Passport shapes: Reconcile | CORE / CTRL-02 |
-| Obligations | `obligation-runtime` (Kernel) · `packages/access-obligation` (0 consumers) · credit/payment obligations (future) | Access-obligation: Reconcile (deprecate). Future payment and credit obligations must **reuse** `obligation-runtime` | CORE-04 |
+| Obligations | `obligation-runtime` (Kernel; composed on the governed path by CORE-04) · policy-pack `PolicyObligation` (advisory rule annotations, no lifecycle) · `packages/access-obligation` (0 consumers) · credit/payment obligations (future) | `obligation-runtime` is the one canonical model (CORE-04). Access-obligation: Reconcile (deprecate). Future payment and credit obligations must **reuse** it | CORE-04 (done); PAY-05, CREDIT-05 consumers |
 | Money | `MonetaryAmount {value, unit}` (canonical) · ingress `amount {value, currency}` · Kernel request `amount/currency` strings · authority-graph `spending_limit.currency` · `collateralization-mandate {minorUnits: safe integer, currency}` | **Reconcile.** Collateralization's off-spine money. The `currency`/`unit` split is **decided, not renamed (CORE-03)**: `currency` stays the frozen v1 wire and Kernel/policy name, `unit` the canonical P9 name, and every translation happens in one mapping point (`governed-action/monetary-naming.ts`, structurally tested) | CREDIT-01 (collateral) |
 | Canonical serialization / hashing | `governance-store/canonical-json.ts` canonicalSerialize (enterprise stores) · 9 `stableStringify` copies in feature proofs · `agent-governance canonicalizeJson` · 22 `createHash('sha256')` sites | **Reconcile.** Identifiers are not interchangeable across proof types | ASSURE-02 |
 | Signatures | Ed25519 authority-authenticity (grants/revocations) · HMAC passport issuer (`apps/agent-passport-web`) · unkeyed digests everywhere else | **Reconcile.** Converge on the CORE-02 signer boundary | CORE-02, ASSURE-02 |
 | Evidence | Event stream (P8, runtime trace) · evidence bundle (one decision) · assurance runtime · verifiable export · `evidence-correlation` contract · `usage-event` | Bundle vs stream: Reconcile (ASSURE-01). Correlation / usage-event: SUPERSEDED by the stream | ASSURE-01 |
 | Execution outcomes | P11 outcome store · P12 resolution store · governance-store attempt row | Intentional: claim, observation and resolution are distinct facts | — |
 | Idempotency | `requestId` from `idempotencyKey` (spine) · P13 business-operation identity (unmerged) · Stripe webhook idempotency (passport-web) | Spine vs P13: Intentional (request vs business operation), must be reconciled when P13 lands. Stripe: separate product | PAY-02 |
-| Policy context | Kernel `request.context`, Recognition `PolicyContext`, domain-pack `aoc.context`, `ExerciseControlPolicy`, `GovernedActionGrantPolicy` | Mostly intentional (one per gate). There is no single trusted-context object | CORE-03 |
-| Advisory vs RiskSignal (future) | `Advisory` (ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY §3, unimplemented) · RiskSignal (§4.4.4, unimplemented) · assurance-runtime typed signals (§7.14 of the threat model; assessment-scoped) | Not yet duplicated. A candidate RiskSignal must be an `Advisory` kind, not a second advisory shape; assurance signals stay assessment-scoped | CORE-04 (admitted schema), INTEL-05 |
+| Policy context | Kernel `request.context`, Recognition `PolicyContext`, domain-pack `aoc.context`, `ExerciseControlPolicy`, `GovernedActionGrantPolicy` | Mostly intentional (one per gate). Since CORE-04 the trusted-context object policy reads is the admitted-facts list (`contextFacts` / `restrictiveFacts`); the caller bag stays recognition metadata only | CORE-04 (done) |
+| Advisory vs RiskSignal (future) | `Advisory` (ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY §3, unimplemented) · RiskSignal (§4.4.4, unimplemented) · assurance-runtime typed signals (§7.14 of the threat model; assessment-scoped) | Not duplicated. The admitted schema is a restrict-only fact (CORE-04, done); a candidate RiskSignal must be an `Advisory` kind, not a second advisory shape; assurance signals stay assessment-scoped | INTEL-05 |
 | Challenge normalization / payment intents | Only P13 (unmerged) | Not yet duplicated. Keep it that way | PAY-01/02 |
 | Control plane | `src/features/aoc-control-plane` · `packages/control-plane` (orphan) · `control-plane-sdk` (types) · passport-web admin | Reconcile. Pick one base | CTRL-03 |
 
@@ -1099,20 +1127,23 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** (set by CORE-03, 2026-09-27) |
+| Status | **VERIFIED** (2026-09-28, branch `feat/core-04-trusted-context-obligations`) |
 | Depends on | CORE-03 (hard: context facts and obligations bind to envelope parameters) — VERIFIED |
 | Purpose | Make layers C and D reachable from governed actions (both are LIBRARY-ONLY today). Answer the OBLIGATIONS and ADMITTED CONTEXT questions of invariant 23. Own the deterministic **Trusted Context Boundary** (§4.4.3) through which observations — including Agent observations and RiskSignals — become admissible facts, and the risk-input boundary |
 | Existing reused | `context-resolution-runtime`, `obligation-runtime`, `GRANT_OBLIGATIONS_UNSATISFIED` mapping (`orchestrator.ts:671`), FR-REC-02 trusted context provider as a pattern |
 | Remaining work | Compose `contextResolution` and `obligations` into the grant-aware Kernel (`composition-root.ts:1370`). Trusted-input registry: which sources may **attest** which fact classes (authority to attest ≠ authority to authorize, invariant 30), with source identity, provenance, freshness and organization trust rules. Binding a Governance Profile's material facts to `ContextRequirement`s and trusted sources. The canonical **admitted RiskSignal** input contract (candidate → admitted lifecycle, §4.4.4), named generically (no intelligence vocabulary in CORE), with a policy-pack rule that signal keys may drive only restrictive effects. Durable obligation state. Non-financial exercise-time lineage revalidation (closing the host-callback gap). Decision on the two authority worlds (§7) |
 | Exit criteria | A governed action is withheld for an unsatisfied obligation and admitted after verified discharge, durably, across restart. Caller-asserted context cannot occupy a trusted-fact key. A source configured to attest one fact class cannot attest another. An observation without source identity or provenance, or stale beyond its freshness, is not admitted. Lineage is revalidated at exercise for non-financial actions. All of it passes with no intelligence component present |
+| Delivered | **One boundary, reused:** `ContextResolutionService.classify` composed into the one grant-aware Kernel per effective profile (`<id>@<version>#<digest>`); sources carry required `attests [{factClass, maxAgeSeconds}]` (no wildcard), `organizationId`, `provenance: 'reference-digest'`; admission refuses and records `source_untrusted`, `fact_class_not_attested`, `organization_mismatch`, `observation_time_invalid`, `future_dated`, `value_malformed` (safe integers only, no floats), `attestation_missing`, `provenance_invalid`; deterministic de-duplication; conflicts never resolved to a winner; the source's per-class bound is the canonical freshness owner (exclusive boundary). **Profiles:** `materialFacts` required, new `restrictiveFacts` (restrict-only, the admitted RiskSignal contract) and `obligations` (digest-stable when absent); every declared fact class reserved in `assertedContext` (any case), as are `aoc.context`/`aoc.obligations`/`aoc.grant`. **Policy:** admitted facts only via `contextFact`/`restrictiveFact`; `valueFrom` compares a proposed parameter with an attested fact; raw `aoc.context` paths refused; restrict-only facts only in monotone position under restrictive effects (SEC-INV-138). **Materiality:** admitted-context digest (`frontera.admitted-context.v1`) + `validUntil` on the committed decision; additive `contextDigest` in the grant source (so in the signed `sourceDigest`); `decision` validity ceiling; issuer proposes ≤ `validUntil`. **Obligations:** kinds become declared identifiers (lifecycle unchanged); per-profile declarations; durable append-only discharge store **authenticated by a signed state commitment** — a hash chain over the whole history from a genesis bound to a random store id and the organization, head `{storeId, organizationId, sequence, chainDigest}` Ed25519-signed by the existing authority signer under `frontera:authority-artifact:obligation-discharge-state:v1`, verified with the chain at open and before every issuance (schema v2; the never-shipped unauthenticated v1 is refused; no unauthenticated durable mode); trusted in-process writer `obligationDischarges.record` (no route) that never extends an unverifiable history and records reports in strictly increasing observation time per obligation (so a rollback cannot manufacture satisfaction); issuance re-reads obligation state from trusted configuration, never re-making the decision and never gated on the integrity-only committed record. **Lineage:** exercise-time revalidation for every action class. **Two authority worlds (§7):** decided — Kernel-Authority is the only governed-path authority source. **Host:** file `trustedContext`/`obligations`; in-process `contextProvider`/`policyPackProvider`; refusals before listen; posture `trustedContext`/`obligations`; secure profile refuses ephemeral obligations. **Review hardening (PR #150, six Codex findings, ADR §2.11):** the effective profile for context and obligations is resolved by the trusted registry from action × resource, never from `request.action.semantics` (a disagreeing, bogus or unclassified claim denies `CONTEXT_PROFILE_UNTRUSTED` / stands under an undischargeable obligation — no fallback; SEC-INV-142); `attested` requires a configured attestation verifier (`attestation_invalid`; the Host refuses `attested` sources — a reference alone confers nothing); provenance digest v2 covers every authority-affecting reading field incl. `maxAgeSeconds` and `attestationRef`; one metadata-path grammar for validator and evaluator (empty segments invalid, `aoc.grant` reserved too); `valueFrom` validated as an untyped comparand, never as a missing literal. New reason codes `CONTEXT_REQUIRED_FACT_{SOURCE_NOT_AUTHORIZED,PROVENANCE_INVALID,TIME_INVALID,MALFORMED}`, `CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS`, `CONTEXT_PROFILE_UNTRUSTED`. No new route (36). ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH; SEC-INV-136 … 142 |
+| Evidence | **Review fixes (PR #150):** 56 tests in 5 new suites — `kernel-effective-profile`, `core04-review-profile-binding-host` (canonical Host, ACE `authorize()` with a bogus/other-version/other-digest/other-profile claim: denied, no grant, 0 adapter calls), `context-attestation-verification` (real Ed25519 evidence), `context-provenance-freshness`, `policy-core04-review-fixes` — plus corrected expectations where a pre-existing test encoded a defect (an edited profile digest "selects nothing"; an `attested` reading admitted on `attestationRef: 'att-1'` with no verifier). Seven deliberate-violation experiments, each restored byte-for-byte, fail focused tests: caller claim selects the profile (15), attestation reference accepted unverified (8), `maxAgeSeconds` outside the digest (5), validator accepts malformed paths (1), evaluator normalizes and reads reserved paths (1), literal required despite `valueFrom` (1), `valueFrom` dereferenced before its shape check (2). Validation: typecheck, lint, build green; `check-api-freeze` (36), `check-release-docs`, `check-sdk-surface` green; root **7932 tests, 7930 pass, 1 skipped, 1 failing** (the same CRLF working-copy artifact; its committed LF bytes match); workspaces 1069/1069. **Pre-fix attack reproduced:** at `920fd59` a direct SQLite insert citing the independent source with a recomputed unkeyed digest made the canonical Host execute a withheld action (adapter called once); CORE-04 was reopened and fixed. 97 tests in 9 new suites, including `obligation-discharge-authenticity` (21: forged insert with the genuine head kept or re-signed with an attacker key, self-reported → independent, pending → waiver, copy to another request/action/resource, genuine row and head copied from another store, foreign organization, deletion that would let a waiver apply, rows rewritten under the untouched signed head, v1 refused, no unauthenticated mode, in-process rollback refused and the post-restart rollback residual stated, time-ordered recording; an append over tampered rows — before or during signing — refused with the head byte-identical; row and commitment rolled back together on a simulated crash and a half-written state refused; genesis never over an existing file; the exact-set matrix (insertion, deletion, reorder, duplicate, gap, foreign store, foreign organization); key rotation re-attesting the unchanged state under the active key (CORE-01 rule) and surviving retirement of the old key, never re-attesting an unverified state) and `governed-action-obligations-host` (8, incl. the permanent stopped-Host forgery attack and deletion of a genuine self-reported row, both refused at restart with 0 adapter calls). Previously: `trusted-context-admission` (15), `policy-trusted-context-predicates` (12), `kernel-trusted-context-profiles` (6), `trusted-context-structure` (7), `obligation-discharge-store` (3), and on the canonical Host through `bootEnterpriseHost()` (production profile, SQLite, signed grants, real listener): `governed-action-trusted-context-host` (18: right source executes once, wrong source/overreach/other org/stale/boundary/future/tamper/malformed/conflict/missing/false/amount mismatch denied with 0 adapter calls, smuggling refused, read vs export, signed `sourceDigest` recomputed with and without the context digest, grant expiry ≤ context validity, restart, startup refusals, posture), `governed-action-restrictive-signal-host` (6: no AI; admitted high denies, elevated withholds, unauthorized/tampered/stale signals change nothing, conflicting producers deny, Host monotonicity, grant bounds unchanged, widening policy refused), `governed-action-obligations-host` (5: withheld → forged/self-reported/replayed/untrusted-writer refused → verified discharge → restart → executed exactly once, decision never re-made; waiver; refused verification; append-only + tampered row fails closed; lineage revoked after decision → exercise withheld, adapter 0). Twenty-six deliberate-violation experiments, each restored byte-for-byte (SHA-256); twenty-five fail focused tests: discharge signature unverified (9), discharge chain unverified (7 — vacuous at first, closed by the untouched-head attack), out-of-order reports accepted (1), obligation gate read from the committed record (1), no re-verification under the write lock (1), genesis over an existing file (1), no key-rotation re-attestation (1). The twenty-sixth — removing the explicit contiguity check — fails none, by construction: every row digest is bound to its position, so a gap or reorder already fails the digest and chain (the gap/reorder attacks are refused either way); the check is kept as defense in depth. The original nineteen: bypass admission (12), every source attests every class (5), freshness disabled (6), future-dated accepted (3), provenance ignored (4), organization scope ignored (4), context digest dropped from grant source (2), request bag shadows facts (1), candidate/stale signal into policy (1), restrict-only ambiguity ignored (3), signal allow permitted (2), signal negation permitted (2), obligation gating bypassed (5), self-reported discharge verifies (3), untrusted writer accepted (2), discharge digest unverified (1), non-financial lineage skipped (1), unattested profile fact accepted (1), grant outliving context (13). Pre-existing tests changed deliberately: library `ContextSource` fixtures gain explicit `attests` covering the keys each used; one closed-vocabulary obligation test becomes an identifier-grammar test; the PROD-01 posture assertion gains the two new fields; the CORE-03 embedding thesis suite admits its declared facts through a trusted source and the policy-less CORE-03 Host suite uses a facts-free profile variant. Validation: typecheck, lint, build green; `check-api-freeze` (36, unchanged), `check-release-docs`, `check-sdk-surface` green; `git diff --check` clean, no conflict markers; root **7867 tests, 7865 pass, 1 skipped (live Pinata, unconfigured), 1 failing** — the known CRLF working-copy artifact in `authority-administration-service.test.ts` (37/37 against a `git archive` export of the committed LF tree); workspaces 1069/1069. `legal:check:strict` reports the one pre-existing lockfile finding (busboy/streamsearch), unchanged |
+| Residual (owned elsewhere) | *Authenticity* holds for the discharge store's committed state and for issued grants (with their context digest). *Integrity only:* the committed Governance Record incl. its context evaluation (pre-existing §3.7 item 4, ASSURE-02; bounded by the grant lifetime and every issuance/exercise gate) and reading-level provenance digests (a connector-level attacker can recompute them). *Rollback* of either store to an older genuine state after restart is not detected (CORE-07; for discharges it cannot manufacture satisfaction). *Process/key compromise* (CORE-02, which will move `signObligationDischargeState` out of process with the other three operations); `supportingEvidenceRefs` resolution and producer/model identity (ASSURE-04/INTEL-05); facts not re-fetched at exercise — TOCTOU bounded by each source's `maxAgeSeconds`; source trust change affects new decisions only (issued grants stand until their capped expiry; CTRL-01 revocation); no durable policy store and no file format for policy (CORE-08/CTRL-02); the launcher composes no context provider (connectors: INTEL-04/LDR); discharge recording in-process only (CTRL-02/CTRL-04); profile obligations have no own deadline (grant lifetime bounds a withheld decision); discharge store not in backup (PROD-02); one organization per Host |
 | Non-goals | Retrieving context (INTEL-04); generating RiskSignals (INTEL-05); containment policies (INTEL-06); payment receipts as obligation discharge (PAY-05); credit repayment (CREDIT-05) |
 
 **CORE-05: Durable Approvals (engine side)**
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
-| Depends on | CORE-04 (soft), CORE-03 (soft) |
+| Status | **NEXT** (set by CORE-04, 2026-09-28) |
+| Depends on | CORE-04 (soft) — VERIFIED, CORE-03 (soft) — VERIFIED |
 | Purpose | `approval_required` must become resumable, not terminal |
 | Existing reused | `approval-runtime` (quorum, escalate), Kernel `approvalProofId` handling, orchestrator withheld path |
 | Remaining work | Approvals as a durable authority record kind. An approval proof bound to `requestId` + decision. Resume semantics on the governed path. Expiry. Tests |
@@ -1147,7 +1178,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | CORE-03 (hard), CORE-04 (hard), CORE-05 (hard), CORE-06 (soft: reuse its adversarial and no-bypass harness); one monetary execution path (PAY-04 preferred, Generic HTTP acceptable — §11.6) |
+| Depends on | CORE-03 (hard) — VERIFIED, CORE-04 (hard) — VERIFIED, CORE-05 (hard), CORE-06 (soft: reuse its adversarial and no-bypass harness); one monetary execution path (PAY-04 preferred, Generic HTTP acceptable — §11.6) |
 | Purpose | The gate for **GOVERNED ACTION THESIS PROVEN** (§11.6): prove action neutrality — the same deterministic core governs materially different action/resource domains |
 | Existing reused | Generic HTTP adapter (P6) for non-monetary domains; P9/P10 for the monetary domain; structural boundary tests; the orchestrator scenario suites |
 | Remaining work | Three reference domains expressed only through Governance Profiles, organization policy, context sources, domain validation and adapters. A structural test that the Kernel and orchestrator contain no domain branching. Cross-domain denial, over-bound, revoked-mid-flight and missing-context cases |
@@ -1207,7 +1238,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | PAY-04, CORE-04 |
+| Depends on | PAY-04, CORE-04 — VERIFIED |
 | Purpose | Former P15: receipts, a settlement state machine, finality, refunds, payment obligations discharged through CORE-04 obligations |
 | Exit criteria | "settled" means funds finality with evidence, distinct from P7 capacity settlement |
 
@@ -1269,7 +1300,7 @@ port), and P11 certainty mapping for in-flight HTLCs. A second
 | Field | Content |
 |---|---|
 | Status | PLANNED (design may start after CORE-03) |
-| Depends on | CORE-03 (hard), CORE-04 (soft) |
+| Depends on | CORE-03 (hard) — VERIFIED, CORE-04 (soft) — VERIFIED |
 | Purpose | A credit-specific intent that compiles to the same envelope. Decide reuse of collateralization mandates and `governed-authority` encumbrances (§7, two authority worlds) |
 | Existing reused | Envelope; `MonetaryAmount`; P7 ledger; `EnterpriseCollateralizationTerms`; `governed-authority` positions/encumbrances; Capital Discovery boundary (FR-REC-01/02) as an integration pattern |
 | Exit criteria | A credit intent governs through the unchanged spine. No credit term exists in CORE. Collateral money is reconciled to `MonetaryAmount` |
@@ -1280,7 +1311,7 @@ port), and P11 certainty mapping for in-flight HTLCs. A second
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | CREDIT-01, CORE-04 (trusted valuation inputs) |
+| Depends on | CREDIT-01, CORE-04 (trusted valuation inputs) — VERIFIED |
 | Purpose | Credit-side aggregate controls, built on generalized P7 bound kinds from CORE-03 |
 
 **CREDIT-03: Credit Execution Adapter Boundary**
@@ -1302,7 +1333,7 @@ port), and P11 certainty mapping for in-flight HTLCs. A second
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | CREDIT-04, CORE-04 (obligations), PAY-05 (soft: receipts) |
+| Depends on | CREDIT-04, CORE-04 (obligations) — VERIFIED, PAY-05 (soft: receipts) |
 
 **CREDIT-06: Governed Reverse Carry Reference Workflow**
 
@@ -1399,7 +1430,7 @@ No INTEL item is required for PILOT READY (§11.3).
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | INTEL-02 (hard); CORE-04 (soft: reads `unresolved` / `stale` / `conflicted` resolutions to know what is still open) |
+| Depends on | INTEL-02 (hard); CORE-04 (soft: reads `unresolved` / `stale` / `conflicted` resolutions to know what is still open) — VERIFIED |
 | Purpose | Given action, resource, profile and known context, identify which material facts remain unresolved and turn each into a bounded question or retrieval task: "Does invoice 8819 exist?", "Does the amount match?", "Has this destination been used before?", "Is the deployment inside the approved change window?", "Is rollback available?", "Is this actor normally permitted this class of action?" |
 | Verification | Every unresolved material fact becomes a bounded, explainable, traceable question or retrieval task linked to the profile fact it serves. The planner has no decision output; a structural test proves it cannot reach the Kernel or the grant path |
 | Non-goals | Answering the questions (INTEL-04, humans); deciding authority; asking humans what a machine source can answer |
@@ -1409,7 +1440,7 @@ No INTEL item is required for PILOT READY (§11.3).
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | CORE-04 (hard: the admission boundary and source registry); INTEL-02 (hard: what to fetch); INTEL-03 (soft) |
+| Depends on | CORE-04 (hard: the admission boundary and source registry) — VERIFIED; INTEL-02 (hard: what to fetch); INTEL-03 (soft) |
 | Purpose | **Machine-speed due diligence.** Before asking a human, resolve material facts from authorized machine sources (ERP, CRM, LDR, internal APIs, registries, blockchains, the evidence stream, operational systems): required fact → machine source available? → retrieve, else unresolved / human path. Every observation carries value, source, timestamp, provenance, fact type, confidence and correlation |
 | Verification | Context is retrieved only through bounded, least-privilege, read-only tools whose permissions are separate from any execution authority (invariant 30). Source identity and provenance are retained on every observation. Facts affect authority only after CORE-04 admission; a test proves an un-admitted observation never reaches policy |
 | Non-goals | Deciding a source is trustworthy (CORE-04); write access to any source; claiming all due diligence is automatable |
@@ -1419,7 +1450,7 @@ No INTEL item is required for PILOT READY (§11.3).
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | ASSURE-04 (hard: behavioural evidence substrate); CORE-04 (hard: the RiskSignal contract a candidate must conform to) |
+| Depends on | ASSURE-04 (hard: behavioural evidence substrate); CORE-04 (hard: the RiskSignal contract a candidate must conform to) — VERIFIED |
 | Purpose | Former P21 / Prompt 13, analysis half. Analyse governed actions, outcomes, denials, actors, resources, destinations, amounts, timing, frequency, sequences, failed attempts, prior relationships and baselines, and emit **candidate** RiskSignals: novel destination, velocity anomaly, near-ceiling repetition, threshold circumvention, unusual time/resource/action, repeated-denial probing, behavioural deviation, unexpected sequence, correlated actions. Detectors may be rules, statistics or models |
 | Verification | Every observation is derived from ASSURE-04 evidence/history, and every candidate RiskSignal carries resolvable `supportingEvidenceRefs` and producer provenance. No direct authority decision occurs: a test proves candidate signals cannot reach policy |
 | Non-goals | Admission (CORE-04); containment (INTEL-06); storing canonical evidence (ASSURE); autonomous policy change |
@@ -1429,7 +1460,7 @@ No INTEL item is required for PILOT READY (§11.3).
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | INTEL-05 (hard); CORE-04 (hard: admission, restrict-only signal rule); CORE-05 (hard: durable approvals as an effect); CORE-03 (hard: attributable policy-pack writes, NB-008 — containment rules are organization policy) — VERIFIED; CORE-01 revocation and P4 emergency control (VERIFIED); CTRL-04 (soft: the human side of an approval requirement); CTRL-02 (soft: an organizational identity for policy-driven revocation, §16) |
+| Depends on | INTEL-05 (hard); CORE-04 (hard: admission, restrict-only signal rule) — VERIFIED; CORE-05 (hard: durable approvals as an effect); CORE-03 (hard: attributable policy-pack writes, NB-008 — containment rules are organization policy) — VERIFIED; CORE-01 revocation and P4 emergency control (VERIFIED); CTRL-04 (soft: the human side of an approval requirement); CTRL-02 (soft: an organizational identity for policy-driven revocation, §16) |
 | Purpose | Let admitted RiskSignals cause deterministic organization policy to apply more restrictive controls: added obligation, shorter grant lifetime, lower ceiling, approval requirement, suspension, revocation, emergency stop (§4.4.5). Any generic restrict-only policy effect not yet in CORE is added in CORE under CORE's rules (generic name, non-intelligence test), not in INTEL |
 | Verification | Admitted signals trigger deterministic restrictive responses through existing authority mechanisms only. The monotonicity property (§4.4.6) is a test across the reference domains: removing all producers yields the baseline; any signal set yields equal or more restrictive decisions. A policy rule using a signal key to widen, allow or lengthen is refused at validation. AI cannot independently expand authority under any tested configuration. The superseding ADR for ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY hard invariants 4/7 and §7 is accepted |
 | Non-goals | Expanding authority; AI-performed transitions; learned thresholds becoming policy; alerts delivery (CTRL-05) |
@@ -1517,7 +1548,7 @@ inventory, provisioning) is unchanged.
 | Exit criteria | `npm run start:enterprise`, with documented config, runs governed actions with signed grants. Insecure config refuses to boot |
 | Delivered | One canonical bootstrap, `bootEnterpriseHost()` (`src/enterprise/host/`); the launcher only delegates and prints posture. Strict environment parsing (`validateEnterpriseEnvironment`) and a closed-schema governed-action file (`AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`) whose secrets are env-var references. Secure profile (`production`/`staging`) refuses: non-`sqlite`, auth off or credential-less, no governed-action file, disabled/optional Kernel Authority, no signing key. Any profile refuses an unauthenticated non-loopback bind; default bind `127.0.0.1`. Composes existing capabilities only (customer admission, grant-aware Kernel over durable Kernel Authority, authenticated grant store, P7 + P10, durable P4, P8, P11, Generic HTTP via the trusted registry). Composition root: signing keys resolved before any store opens; atomic startup; governed spine registrable `required`; `/health` `posture`. Post-composition posture + health gate before `listen()` (a tampered revocation state refuses the start); `/ready` requires health not `unhealthy`; idempotent close. SEC-INV-126 … 128; NB-005, GS-003 closed for the shipped Host |
 | Evidence | `enterprise-host.test.ts` (53) and `tests/enterprise-host-launcher.test.mjs` (4): reproduction of the pre-PROD-01 gap, end-to-end governed action over SQLite with a signed grant, denial/no-bypass, Generic HTTP reached only after authorization (no request sent), revocation (Kernel Authority and bounded grant, including a CORE-01 tamper refusing restart and failing `/ready` at runtime), restart durability, 34 configuration refusals (including invalid ports, a malformed log level and the literal pre-PROD-01 production/SQLite/auth-off/`0.0.0.0` combination), default-looking credentials (`admin`, `changeme`, …) refused with 401, atomic startup and shutdown without leaked handles. Twelve deliberate-violation experiments each failed the expected tests; one of them exposed that a launcher spawn could hang the suite, fixed by a per-spawn kill deadline. The launcher test also caught a real signal race (handlers installed after the listen banner), fixed. Final run: typecheck, lint, build green; root 7516/7518 pass, 1 skipped (live Pinata, unconfigured), 1 failing — the pre-existing CRLF working-copy artifact in `structural-boundaries.test.ts` (64/64 against a `git archive` export of the committed LF tree); workspaces 1069/1069. Re-verification (11 added host cases, each failing under a deliberate port/loopback-check breakage): root 7528/7529 pass, 1 skipped, 0 failing; workspaces 1069/1069 |
-| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). *(Update: revocation and emergency stop/release are exposed over the admin API by CTRL-01, VERIFIED 2026-09-26; provisioning remains in-process → CTRL-02.)* Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04); the grant lifetime (≤ 1 h) is the bound meanwhile. Approvals withheld (CORE-05). Policy packs not wired (CORE-03 / NB-008). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
+| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). *(Update: revocation and emergency stop/release are exposed over the admin API by CTRL-01, VERIFIED 2026-09-26; provisioning remains in-process → CTRL-02.)* Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04 — delivered 2026-09-28). Approvals withheld (CORE-05). Policy packs in-process only (no durable store). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
 | Parallel | Yes, with CORE-02/03 |
 
 **PROD-02: Complete Backup / Restore Coverage**
@@ -1558,7 +1589,7 @@ CORE-01✓ ──► CORE-02 ──► CORE-07
    ├──► CTRL-01✓ ──► CTRL-02 ──► CTRL-03 ──► CTRL-04 ◄── CORE-05
    │                   ▲ ┄┄ CORE-03 (provisioning schemas)
    ├┄┄► ASSURE-01 ──► ASSURE-04
-   └┄┄► CORE-03✓ ──► CORE-04 ┄┄► CORE-05
+   └┄┄► CORE-03✓ ──► CORE-04✓ ┄┄► CORE-05
            │           │
            │           └───────────────────────────┐
            ├──► PAY-01 ──► PAY-02 ──► PAY-08       │
@@ -1623,8 +1654,8 @@ All of the following must be true:
 4. **One generic envelope.**
    - It expresses non-money parameters and non-money bounds (CORE-03). **Done** (2026-09-27).
    - No payment or credit vocabulary exists in CORE; this is enforced by structural tests.
-5. **Obligations and trusted context are reachable** on the governed path (CORE-04).
-6. **Lineage is revalidated at exercise** for all action classes (CORE-04).
+5. **Obligations and trusted context are reachable** on the governed path (CORE-04). **Done** (2026-09-28).
+6. **Lineage is revalidated at exercise** for all action classes (CORE-04). **Done** (2026-09-28).
 7. **Approvals are durable and resumable** (CORE-05).
 8. **The no-bypass proof is re-run** against the composed default host (CORE-06).
 9. **Every "BLOCKED" security claim has a test.**
@@ -1750,11 +1781,21 @@ vocabulary and branching in the Kernel, orchestrator, grant and execution
 runtimes. Two non-financial domains (data read vs export; deploy to
 production) and the monetary domain are governed on one composition by
 policy and profile data alone (`governed-action-thesis-read-export.test.ts`).
-**Still missing for §11.6:** admitted material facts and missing-fact
-behaviour (CORE-04, item 5); durable approvals (CORE-05); typed parameters
-handed to domain adapters, and three domains end to end on the shipped Host
-with policy composed there (CORE-08 — policy packs are not wired on the
-shipped Host); revoked-mid-flight cases per domain (CORE-08).
+**Still missing for §11.6:** durable approvals (CORE-05); typed parameters
+handed to domain adapters, three domains end to end on the shipped Host
+(CORE-08); revoked-mid-flight cases per domain (CORE-08).
+
+**FACT (CORE-04 delta, 2026-09-28).** Item 5's missing-required-fact behaviour
+now exists and is the same for every domain (denied by the one boundary, never
+allowed by default), and item 3's "context sources" vary by configuration
+only: payables (invoice facts from an ERP, a destination from a registry, a
+restrict-only signal), data read vs export (different material facts for the
+same resource) and change (a blocking obligation) run on one canonical Host,
+one Kernel and one policy with no Kernel change
+(`governed-action-trusted-context-host.test.ts`,
+`governed-action-restrictive-signal-host.test.ts`,
+`governed-action-obligations-host.test.ts`). Policy on the Host is in-process
+composition (`bootEnterpriseHost({ policyPackProvider })`).
 
 ---
 
@@ -1813,46 +1854,38 @@ shipped Host); revoked-mid-flight cases per domain (CORE-08).
 
 ## 14. Current NEXT Item
 
-**NEXT: CORE-04 — Trusted Context & Obligations on the Governed Path**
+**NEXT: CORE-05 — Durable Approvals (engine side)**
 
-**Previous NEXT:** CORE-03 — **VERIFIED** 2026-09-27 (§9). Before it CTRL-02
-(set 2026-09-26, displaced by MASTER-01), PROD-01 and CORE-01.
+**Previous NEXT:** CORE-04 — **VERIFIED** 2026-09-28 (§9). Before it CORE-03,
+CTRL-02 (displaced by MASTER-01), PROD-01 and CORE-01.
 
-**Candidates (unblocked after CORE-03):** CORE-04, CTRL-02, PAY-01, CREDIT-01
-(design), INTEL-01, INTEL-02, PROD-02, CORE-02, ASSURE-01. CORE-05, CORE-06,
-CORE-08, INTEL-03 … 06, PAY-05 and CREDIT-02/05 remain blocked, each through
-CORE-04.
+**Candidates (unblocked after CORE-04):** CORE-05, CTRL-02, PAY-01, CREDIT-01
+(design), INTEL-01, INTEL-02, INTEL-04 (needs INTEL-02), ASSURE-01, PROD-02,
+CORE-02. CORE-06, CORE-08, CTRL-04, INTEL-06 and PROD-03 remain blocked, each
+through CORE-05.
 
-**Why CORE-04:**
+**Why CORE-05:**
 
-- **Longest dependency chain.** CORE-04 is the next link of both remaining
-  CORE paths: the pilot critical path (CORE-04 → CORE-05 → CORE-06, which
-  CTRL-04 and PROD-03 wait on) and the Governed Action Thesis path
-  (CORE-04 → CORE-05 → CORE-08). The CTRL chain (CTRL-02 → 03 → 04) cannot
-  finish before CORE-05 anyway, so CTRL-02 first would not shorten the pilot.
-- **Security dependency made sharper by CORE-03.** Governance Profiles now
-  *declare* material facts (`materialFacts`), but nothing *admits* one: policy
-  still sees caller-asserted context as claims, obligations cannot reach the
-  governed path, and exercise-time lineage is revalidated only for financial
-  actions — while CORE-03 has just made non-financial governed actions
-  expressive and parameterized. CORE-04 closes exactly that gap.
-- **It is the gate for every intelligence item that could touch authority.**
-  INTEL-03 … 06 need the Trusted Context Boundary and the admitted-signal
-  contract; building them first would invite exactly the premature-AI coupling
-  invariant 32 forbids.
-- **Pilot leverage is preserved.** CTRL-02 (human operators, agent inventory,
-  provisioning — and now profile promotion identity) is unblocked
-  and remains the recommended parallel stream; PROD-02 remains independent and
-  pilot-critical. PAY-01 / INTEL-01 / INTEL-02 are unblocked but not on the
-  pilot critical path.
+- **Longest dependency chain, both remaining CORE paths.** CORE-05 is the next
+  link of the pilot critical path (CORE-05 → CORE-06; CTRL-04 → PROD-03 wait on
+  it) and of the Governed Action Thesis path (CORE-05 → CORE-08). No other
+  candidate unblocks as much.
+- **Security/availability sharpened by CORE-04.** `approval_required` is still
+  terminal (`withheld: 'approval'`). CORE-04 made that outcome reachable from
+  admitted context — a restrict-only fact may require review — so every such
+  action is now withheld forever. The resume path is the missing half; CORE-04's
+  issuance-time re-read of a committed decision (obligations) is the pattern it
+  can reuse (bind to `requestId` + decision, never re-make the decision).
+- **Pilot leverage preserved.** CTRL-02 stays the recommended parallel stream
+  (human operators, agent inventory, provisioning, and now a human surface for
+  recording obligation discharges and approving); PROD-02 stays independent and
+  should add the obligation discharge store to backup. INTEL-01/02/04 are
+  unblocked but not on the pilot path (§11.3).
 
-**Prerequisites already satisfied:** CORE-03 (hard) — VERIFIED: context facts and
-obligations can now bind to declared, typed envelope parameters and to a
-profile's declared material fact classes.
+**Prerequisites already satisfied:** CORE-04 (soft) and CORE-03 (soft) — VERIFIED.
 
-**Out of scope for CORE-04:** retrieving context (INTEL-04); generating
-RiskSignals (INTEL-05); containment policies (INTEL-06); durable approvals
-(CORE-05); provisioning and operator identity (CTRL-02); any change to CTRL-01.
+**Out of scope for CORE-05:** UI and notification (CTRL-04); human operator
+identity (CTRL-02); any INTEL component.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
@@ -1885,9 +1918,9 @@ roadmap owner who must decide it before or during that item.
 |---|---|---|
 | OQ-1 | Governance Profile schema: an extension of the policy-pack format or a separate artifact? Its field set, lifecycle states and cross-version compatibility rules | **Answered by CORE-03** (separate closed artifact, one active version per id, content-digested; lifecycle states deferred to CTRL-02) — ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL |
 | OQ-2 | Profile versioning and activation: who may promote a profile, and how a decision records the profile version in force | Format **answered by CORE-03** (decision records id/version/digest; grant binds `<id>@<version>#<digest>`); who promotes → CTRL-02 |
-| OQ-3 | Canonical RiskSignal schema: exact fields, closed vs open type set, and whether a candidate is an `Advisory` kind (§7 duplication table says it should be) | CORE-04 (admitted contract), INTEL-05 (candidate) |
-| OQ-4 | Candidate → admitted lifecycle: admission rules, the trust class an admitted signal carries (`derived` inheritance?), expiry and withdrawal of an admitted signal | CORE-04 |
-| OQ-5 | Context freshness: default `maxAgeSeconds` per fact class, and behaviour when a fact goes stale between decision and exercise | CORE-04 |
+| OQ-3 | Canonical RiskSignal schema: exact fields, closed vs open type set, and whether a candidate is an `Advisory` kind (§7 duplication table says it should be) | Admitted half **answered by CORE-04** (a restrict-only fact class: open, declared per profile; value a bounded token or safe integer; confidence not admitted); candidate half INTEL-05 |
+| OQ-4 | Candidate → admitted lifecycle: admission rules, the trust class an admitted signal carries (`derived` inheritance?), expiry and withdrawal of an admitted signal | **Answered by CORE-04**: the one boundary's rules; the configured source's class (`authoritative`/`attested`, never derived); expiry = the source's per-class `maxAgeSeconds`; withdrawal = the reading no longer returned (a grant already issued stands until its capped expiry) |
+| OQ-5 | Context freshness: default `maxAgeSeconds` per fact class, and behaviour when a fact goes stale between decision and exercise | **Answered by CORE-04**: no default — every attestation states it; the grant's validity is capped at the earliest admitted material fact's staleness, so a stale fact cannot be exercised on; no re-fetch at exercise (bounded TOCTOU) |
 | OQ-6 | Tool permission model for the Agent: how retrieval credentials are provisioned, scoped and audited separately from execution authority | INTEL-04 (with CORE-04 source registry) |
 | OQ-7 | Model/provider abstraction: whether one is needed at all, and where it lives (never in CORE) | INTEL-01 |
 | OQ-8 | Model provenance and multi-model provenance: how producer, model id/version, prompt/template version and inputs are recorded on an observation or signal | INTEL-05 (format), ASSURE-02 (authenticity) |
@@ -1896,5 +1929,5 @@ roadmap owner who must decide it before or during that item.
 | OQ-11 | False-positive handling: how an organization dismisses or suppresses a signal, and the audit trail for doing so | INTEL-06, CTRL-04 |
 | OQ-12 | Human appeal / override of containment: which human authority may lift a restriction, through which durable mechanism (approval, emergency release, re-issuance) | INTEL-06, CORE-05, CTRL-04 |
 | OQ-13 | The identity under which policy-driven revocation or suspension is recorded (today every revocation carries a configured operator, CTRL-01) | INTEL-06, CTRL-02 |
-| OQ-14 | Whether the restrict-only rule for signal keys can be enforced purely by policy-pack validation or also needs a Kernel-side monotonicity check | CORE-04, INTEL-06 |
+| OQ-14 | Whether the restrict-only rule for signal keys can be enforced purely by policy-pack validation or also needs a Kernel-side monotonicity check | **Pack half answered by CORE-04**: validation (no allow/no_op, monotone position only) plus the structural facts that a pack cannot grant and context cannot shape grant scope; no Kernel-side check added. INTEL-06 re-examines with real producers |
 | OQ-15 | Physical-system actuation: what additional safety qualification a physical-systems profile family requires | Unassigned (future milestone; not claimed) |

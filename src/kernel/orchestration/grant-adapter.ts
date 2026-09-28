@@ -173,9 +173,17 @@ function parameterBoundsFor(parameters: NonNullable<KernelEvaluationRequest['act
  * answer: the issuer's finite `expiresAt` is what bounds the grant, and
  * `resolveGrantValidity` still requires one.
  */
-function validityCeilingsFor(declaration: GrantDeclaration, evaluatedAt: string): readonly GrantValidityCeiling[] {
-  const deployment = deploymentGrantValidityCeiling(declaration, evaluatedAt);
-  return deployment === undefined ? [] : [deployment];
+function validityCeilingsFor(declaration: GrantDeclaration, result: KernelEvaluationResult): readonly GrantValidityCeiling[] {
+  const ceilings: GrantValidityCeiling[] = [];
+  // CORE-04: a decision that relied on admitted trusted context now *does*
+  // carry a validity window — the instant its earliest admitted material fact
+  // goes stale — and this is where the rule above said it would join the
+  // list. A grant derived from the decision can outlive neither.
+  const validUntil = result.context?.validUntil;
+  if (typeof validUntil === 'string' && !Number.isNaN(Date.parse(validUntil))) ceilings.push({ source: 'decision', notAfter: validUntil });
+  const deployment = deploymentGrantValidityCeiling(declaration, result.evaluatedAt);
+  if (deployment !== undefined) ceilings.push(deployment);
+  return ceilings;
 }
 
 /**
@@ -203,7 +211,9 @@ export function deriveGrantSourceAuthorization(
     authorizationPermitsExercise: authorizationPermitsExercise(result.status),
     allBlockingObligationsSatisfied: result.obligations === undefined ? true : result.obligations.allBlockingObligationsSatisfied,
     evaluatedAt: result.evaluatedAt,
-    validityCeilings: validityCeilingsFor(capability.declaration, result.evaluatedAt),
+    validityCeilings: validityCeilingsFor(capability.declaration, result),
+    // CORE-04: the context this decision relied on, bound into the source.
+    ...(result.context?.digest !== undefined ? { contextDigest: result.context.digest } : {}),
   };
 }
 

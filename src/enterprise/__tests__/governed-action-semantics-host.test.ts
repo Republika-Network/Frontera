@@ -9,7 +9,7 @@ import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host
 import { EnterpriseHostConfigurationError } from '../host/host-configuration.js';
 import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
-import { CUSTOMER_DATA, EXPORT_ACTION, READ_ACTION, SEMANTIC_CONFIGURATION, APPROVED_DESTINATION } from './governed-action-semantics-fixture.js';
+import { CUSTOMER_DATA, EXPORT_ACTION, READ_ACTION, SEMANTIC_CONFIGURATION, SEMANTIC_CONFIGURATION_WITHOUT_FACTS, APPROVED_DESTINATION } from './governed-action-semantics-fixture.js';
 
 /**
  * CORE-03 §63 / §66 — the semantic model through the **canonical shipped
@@ -56,7 +56,10 @@ function governedFile(overrides: Record<string, unknown> = {}): Record<string, u
     grantLifetimeSeconds: 300,
     customerPrincipals: [{ principalId: 'principal-agent', externalSubject: AGENT_SUBJECT, apiKeyEnv: 'FRONTERA_TEST_AGENT_KEY' }],
     administrators: [{ operatorId: 'ops-primary', apiKeyEnv: 'FRONTERA_TEST_ADMIN_KEY' }],
-    governance: SEMANTIC_CONFIGURATION,
+    // CORE-04: this Host composes no policy, and a profile declaring material
+    // facts now needs one (an admitted fact informs policy); this suite never
+    // exercised facts, so it runs on the facts-free variant of the fixture.
+    governance: SEMANTIC_CONFIGURATION_WITHOUT_FACTS,
     routes: [
       { action: READ_ACTION, adapterId: ADAPTER_ID },
       { action: EXPORT_ACTION, adapterId: ADAPTER_ID },

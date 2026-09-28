@@ -167,8 +167,10 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
   it('a constructed verifier has no signing member at runtime, and a constructed signer no key member', () => {
     const verifier = testVerifier();
     const signer = testSigner();
-    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyGrant', 'verifyRevocation', 'verifyRevocationState']);
-    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signGrant', 'signRevocation', 'signRevocationState']);
+    // CORE-04 added exactly one artifact kind to each side: the obligation
+    // discharge store's signed state (authority-material — it releases issuance).
+    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
+    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
   });
 
   it('the signer offers no generic "sign arbitrary bytes" capability', () => {

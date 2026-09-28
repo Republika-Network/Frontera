@@ -13,7 +13,9 @@
  * What kind of claim a fact is.
  *
  * ```
- * attested        signed by an issuer this deployment trusts; signature verified here
+ * attested        evidence from an issuer this deployment trusts, accepted by the configured
+ *                 attestation verifier for exactly this reading (CORE-04 review: an
+ *                 attestation *reference* alone confers nothing; no verifier, no attested reading)
  * authoritative   read by Frontera directly from a configured system of record
  * derived         computed by Frontera from other facts
  * asserted        supplied by the requester

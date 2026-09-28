@@ -16,6 +16,7 @@ export {
   isSupportedAuthoritySignatureAlgorithm,
   isWellFormedAuthoritySignature,
   revocationSigningBytes,
+  obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
 } from './authority-signature.js';
 export type { AuthorityArtifactKind, AuthoritySignature, AuthoritySignatureAlgorithm } from './authority-signature.js';

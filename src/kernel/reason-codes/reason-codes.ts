@@ -94,6 +94,18 @@ export const AOC_KERNEL_REASON_CODES = {
   CONTEXT_REQUIRED_FACT_CONFLICTED: 'CONTEXT_REQUIRED_FACT_CONFLICTED',
   /** A declared-required key was answered at a trust class below the declared minimum -- including a requester-asserted value for a key this deployment has not declared assertable. */
   CONTEXT_REQUIRED_FACT_UNTRUSTED: 'CONTEXT_REQUIRED_FACT_UNTRUSTED',
+  /** CORE-04: a required fact's only readings came from a source not authorized to attest it here — unconfigured, not configured for this fact class, or scoped to another organization. */
+  CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED: 'CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED',
+  /** CORE-04: a required fact's only readings carried missing or non-recomputing provenance (or no attestation from an attested source). */
+  CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID: 'CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID',
+  /** CORE-04: a required fact's only readings carried an impossible or future observation time. */
+  CONTEXT_REQUIRED_FACT_TIME_INVALID: 'CONTEXT_REQUIRED_FACT_TIME_INVALID',
+  /** CORE-04: a required fact's only readings carried a value that is not an admissible fact value. */
+  CONTEXT_REQUIRED_FACT_MALFORMED: 'CONTEXT_REQUIRED_FACT_MALFORMED',
+  /** CORE-04: a restrict-only fact could not be read unambiguously (conflicting admitted readings, or context could not be resolved), so no restriction can be ruled out. */
+  CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS: 'CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS',
+  /** CORE-04: the request's effective Governance Profile could not be established from trusted configuration, or its own semantics named a different one. Nothing the request claimed selects which facts it stands under. */
+  CONTEXT_PROFILE_UNTRUSTED: 'CONTEXT_PROFILE_UNTRUSTED',
 } as const;
 
 export type AocKernelReasonCode = (typeof AOC_KERNEL_REASON_CODES)[keyof typeof AOC_KERNEL_REASON_CODES];

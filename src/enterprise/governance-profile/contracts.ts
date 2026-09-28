@@ -49,6 +49,28 @@ export interface GovernanceProfileDefinition {
   readonly materialFacts: readonly string[];
   /** References to the policy packs relevant to this combination — never inline rules. */
   readonly relevantPolicies: readonly string[];
+  /**
+   * CORE-04 — restrict-only fact classes (the admitted form of a RiskSignal):
+   * facts whose *presence* policy may use only to restrict. Their absence is
+   * the baseline and never fails a request; an ambiguous reading denies. A
+   * class is either material or restrict-only, never both. Present only when
+   * non-empty, so a profile without any keeps its CORE-03 digest.
+   */
+  readonly restrictiveFacts?: readonly string[];
+  /**
+   * CORE-04 — the obligations a decision under this profile stands under, in
+   * the obligation runtime's own vocabulary (declared kind, blocking or not).
+   * A blocking obligation withholds grant issuance — never the decision —
+   * until it is satisfied (`verified` or `waived`). Present only when
+   * non-empty.
+   */
+  readonly obligations?: readonly GovernanceProfileObligation[];
+}
+
+/** CORE-04 — one obligation a profile declares. */
+export interface GovernanceProfileObligation {
+  readonly obligationType: string;
+  readonly blocking: boolean;
 }
 
 /** Where a resolved profile came from. One source exists in CORE-03. */
@@ -126,6 +148,14 @@ export interface GovernanceProfileRegistry {
   shadowsDeclaredDimension(key: string): boolean;
   /** The configured reserved-key extensions, sorted. */
   readonly reservedContextKeys: readonly string[];
-  /** Whether `key` is reserved by configuration: a registered extension or a declared dimension, regardless of case. The built-in list is checked by the envelope beside this. */
+  /**
+   * Whether `key` is reserved by configuration: a registered extension, a
+   * declared dimension, or (CORE-04) a fact class any profile declares or a
+   * key in a reserved internal namespace (`aoc.context`, `aoc.obligations`,
+   * `aoc.grant`) — all regardless of case. The built-in list is checked by the
+   * envelope beside this.
+   */
   reservesContextKey(key: string): boolean;
+  /** CORE-04 — every fact class any profile declares (material and restrict-only), sorted. */
+  readonly factClasses: readonly string[];
 }

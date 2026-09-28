@@ -26,7 +26,7 @@ import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js'
  * unchanged when the capability is absent, and value-free when it is present.
  */
 
-const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative' };
+const ERP: ContextSource = { id: 'ctx.src.erp.sap-prod', kind: 'erp', name: 'SAP production', trustClass: 'authoritative', attests: [{ factClass: 'vendor.status' }] };
 const DECLARATION: ContextDeclaration = { requirements: [{ key: 'vendor.status', minimumTrustClass: 'authoritative', required: false }] };
 const OBSERVATIONS: readonly ContextFactObservation[] = [{ key: 'vendor.status', value: 'approved-and-commercially-sensitive', sourceId: ERP.id, observedAt: '2026-01-01T00:00:00.000Z' }];
 

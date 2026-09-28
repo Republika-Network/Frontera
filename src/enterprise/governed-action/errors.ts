@@ -8,7 +8,18 @@ export type GovernedActionConfigurationErrorCode =
   /** The Governance Store handed to this Host cannot append, re-read, verify and reference decisions. */
   | 'GOVERNED_ACTION_GOVERNANCE_STORE_UNAVAILABLE'
   /** The trust domain, grant policy or monetary configuration (asset registry, financial actions) the host supplied is missing or malformed. */
-  | 'GOVERNED_ACTION_CONFIGURATION_INVALID';
+  | 'GOVERNED_ACTION_CONFIGURATION_INVALID'
+  // CORE-04: trusted context and obligations on the governed path.
+  /** The trusted-context or obligation configuration is malformed (schema, identifiers, bounds, duplicates, organization scope). */
+  | 'GOVERNED_ACTION_TRUSTED_CONTEXT_INVALID'
+  /** A Governance Profile declares material or restrict-only facts, and no Trusted Context Boundary (sources + a context provider) is composed. */
+  | 'GOVERNED_ACTION_TRUSTED_CONTEXT_REQUIRED'
+  /** A declared fact class has no configured source with authority to attest it. */
+  | 'GOVERNED_ACTION_TRUSTED_CONTEXT_INCOMPLETE'
+  /** Facts are declared but no policy pack is composed to decide anything with them. */
+  | 'GOVERNED_ACTION_CONTEXT_POLICY_REQUIRED'
+  /** A Governance Profile declares obligations, and no obligation discharge sources are configured. */
+  | 'GOVERNED_ACTION_OBLIGATIONS_REQUIRED';
 
 /**
  * Raised while **composing** the Governed Action Orchestrator, never while
