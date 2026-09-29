@@ -225,9 +225,16 @@ describe('Authority authenticity — no unsigned path exists', () => {
 
   it('no configuration flag can switch authenticity off', () => {
     const config = codeOf('src/enterprise/configuration/enterprise-configuration.ts');
-    const section = config.slice(config.indexOf('readonly authorityAuthenticity'));
-    const body = section.slice(0, section.indexOf('};') + 2);
-    assert.equal(/enabled|disabled|required:\s*boolean|allowUnsigned|skipVerification/.test(body), false, 'authenticity must not be expressible as a feature flag');
+    // CORE-02: the section is a closed choice of custody; every variant is measured.
+    const bodies = ['readonly authorityAuthenticity', 'export interface SoftwareAuthorityAuthenticityConfiguration', 'export interface ExternalAuthorityAuthenticityConfiguration'].map((marker) => {
+      const start = config.indexOf(marker);
+      assert.ok(start !== -1, `${marker} must exist`);
+      const section = config.slice(start);
+      return section.slice(0, marker.startsWith('export interface') ? section.indexOf('\n}') + 2 : section.indexOf(';') + 1);
+    });
+    for (const body of bodies) {
+      assert.equal(/enabled|disabled|required:\s*boolean|allowUnsigned|skipVerification|fallback|optional/i.test(body), false, `authenticity must not be expressible as a feature flag: ${body.slice(0, 80)}`);
+    }
   });
 
   it('the store verifies on every authoritative read, with no branch that skips it', () => {
