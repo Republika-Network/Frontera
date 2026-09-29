@@ -1,6 +1,6 @@
 # ADR — External Authority Signer & Key Custody Boundary (CORE-02)
 
-- **Status:** Accepted — CORE-02, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`, merged as PR #152); amended by the post-merge review hardening **CORE-02R**, 2026-09-29 (branch `fix/core-02-review-hardening`, §6)
+- **Status:** Accepted — CORE-02, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`, merged as PR #152); amended by the post-merge review hardening **CORE-02R**, 2026-09-29 (branch `fix/core-02-review-hardening`, §6); and by **CORE-02R review round 2** (post-merge hotfix), 2026-09-29 (branch `fix/core-02-review-round2`, §6.8, including its Codex follow-up §6.8.1)
 - **Roadmap item:** `docs/architecture/FRONTERA-MASTER-PLAN.md` §9 CORE-02
 - **Security detail:** `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29
 - **Code:** `src/enterprise/external-authority-signer/`, `src/enterprise/authority-authenticity/custody.ts`, the authenticity boundary in `src/enterprise/composition/composition-root.ts`, `scripts/run-reference-authority-signer.mjs`
@@ -441,3 +441,111 @@ share one identity call. They are also **rate-bounded** by
 - Structure rules: the shared retry loop, and "only a verified signature clears
   a signing failure".
 - Deliberate-violation experiments are recorded in the Master Plan.
+
+### 6.8 Review round 2 — post-merge hotfix (CORE-02R round 2)
+
+Two P2 findings on the code merged by PR #153, reproduced on
+`main @ 58f0334` before any change.
+
+**A — external custody + memory persistence (split brain).**
+`buildBoundedGrantStore` signed only under `persistence.provider = 'sqlite'`,
+and the early authenticity establishment had the same condition. The obligation
+and approval stores followed the composed Governance Store's `providerKind`.
+Reproduced: external custody, memory persistence and authority-controlled
+execution composed. With an unreachable signer composition still succeeded,
+and with a healthy signer that signer received zero identity calls. The grant
+store was the unsigned in-memory one (`authorityStore: unauthenticated`), and
+posture reported `authoritySigner: not-composed` with `status: healthy`. The
+canonical Host refused the combination, but only through its post-composition
+custody check, after stores had been opened.
+
+*Decision.* Refuse; do not invent an externally signed in-memory store.
+External custody requires authenticated persistence for each authority-bearing
+store actually composed. When `authorityControlledExecution` is composed under
+external custody, `createEnterprise` throws
+`AuthorityAuthenticityConfigurationError` before any store opens and before
+the signer is contacted in either of these cases:
+
+- `persistence.provider` is not `sqlite`. The grant/revocation store would be
+  the unsigned in-memory one;
+- the composed Governance Store (supplied or configured) is not `sqlite`
+  **and** governed actions compose an obligation discharge store (obligations
+  configured) or an approval store (some Governance Profile declares an
+  approval). Either store would be selected in memory, unsigned (§6.8.1).
+
+The rule is narrow on purpose:
+
+- **External custody without ACE** still composes. No grant, obligation or
+  approval store exists, nothing is signed, and posture truthfully reports
+  `authorityStore` / `authoritySigner: not-composed`. The same holds under
+  SQLite, where the signer is also established only with ACE.
+- **Software custody + memory** is unchanged.
+- **The Host's post-composition check** stays as defense in depth.
+- **The supplied-store refusal (§6.1)** is still checked first.
+
+**B — clock rollback of the identity-probe cache.** `probe()` served the cache
+while `now() - identityCheckedAt < probeIntervalMs`, and a clock moved
+backwards makes that age negative. Reproduced with a 5 000 ms interval and a
+1 h rollback: after the rollback the service became unreachable or answered as
+another key, yet there were zero identity calls and the stale `ready` was
+served for about an hour.
+
+*Decision.* Keep the injectable clock and add the minimal rule: the cache is
+used only when `0 ≤ age < probeIntervalMs`.
+
+- A negative age means freshness is unknown, so the monitor re-probes at once.
+  The probe is still single-flight, and the result re-anchors the cache.
+- A monotonic clock was not introduced. The rule already bounds staleness to
+  one interval against any backwards step, and deterministic tests keep their
+  injected clock.
+- Signing-failure stickiness (§6.2) is untouched: an identity success,
+  including one forced by a rollback, never clears `lastSigning`.
+
+*Scope.* This fix covers signer-health cache freshness only. It does not
+address persisted authority-state rollback across restart, which remains
+CORE-07.
+
+*Evidence.* `external-authority-signer-review-round2.test.ts` (22 tests):
+A1 … A8b and B1 … B8, plus the rollback signing-stickiness case. Five
+deliberate violations each failed focused tests and were each restored
+byte-for-byte:
+
+- M14 removed the refusal;
+- M15 skipped the configured-memory branch;
+- M15b skipped the supplied-store branch;
+- M16 removed `age ≥ 0`;
+- M17 treated a negative age as cache-valid.
+
+#### 6.8.1 Codex follow-up — scope the Governance Store refusal
+
+Codex (P2, on `545306b`) found the supplied-store branch too broad. It refused
+**any** supplied non-SQLite Governance Store whenever ACE was composed. But the
+Governance Store selects obligation and approval persistence only when governed
+actions compose those stores. Legacy ACE without governed actions keeps its
+grant/revocation authority on the configured authenticated SQLite grant store.
+Reproduced: external custody, `persistence.provider = sqlite`, ACE, a supplied
+in-memory Governance Store and no governed actions was refused
+(`AuthorityAuthenticityConfigurationError`), although no in-memory authority
+store would have been composed.
+
+*Decision.* The `persistence.provider` rule is unchanged. The Governance Store
+rule is derived from the same predicates that later compose the stores,
+computed once, before any store opens and before the signer is established:
+
+- obligation discharge store composed ⇔ `governedTrust.obligations` is defined
+  (governed actions enabled **and** `obligations` configured);
+- approval store composed ⇔ governed actions enabled **and** some Governance
+  Profile declares `approval`.
+
+Legacy ACE may therefore run over an ephemeral Governance Store; grant and
+revocation authority stays signed, durable and external, and posture reports
+`obligations` / `approvals: not-configured`. The eager signer establishment
+now follows the pure governed-action validation, so a refused composition still
+never contacts the signer.
+
+*Evidence.* `external-authority-signer-review-round2.test.ts` C1 … C8 (C2 is
+the Codex regression; C9/C10 are asserted inside it). The original A8, which
+pinned the broad refusal, is replaced by a pointer to C2 … C5. Mutations, each
+restored byte-for-byte: M18 (broad rule restored) fails C2, C3; M19 (obligations
+ignored) fails C4; M20 (approvals ignored) fails C5; M21 (configured-memory
+refusal weakened) fails C1 and A1 … A2b, A7, A7b.

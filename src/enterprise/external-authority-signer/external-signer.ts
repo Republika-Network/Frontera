@@ -89,7 +89,9 @@ import { ExternalAuthoritySignerTransportError, type ExternalAuthoritySignerTran
  * Probes are single-flight (concurrent callers share one identity call) and
  * rate-bounded by `probeIntervalMs`: within it, the last identity result
  * stands. That bounds how stale an identity `ready` can be; it never delays a
- * signing failure, which is recorded the moment it happens.
+ * signing failure, which is recorded the moment it happens. The bound holds
+ * against a wall clock that moves backwards: a negative age invalidates the
+ * cached result and the next probe asks the service (CORE-02R round 2).
  *
  * A timed-out call may have been signed remotely. That signature was never
  * persisted, so it confers nothing: authority is committed, verified state —
@@ -120,7 +122,7 @@ export interface ExternalAuthorityArtifactSignerOptions {
    * probes share one call either way.
    */
   readonly probeIntervalMs?: number;
-  /** Milliseconds, monotonic enough for interval arithmetic. Defaults to `Date.now`. For tests. */
+  /** Milliseconds. Defaults to `Date.now`, which may move backwards: an identity result that appears to be from the future is treated as stale and re-probed. For tests. */
   readonly now?: () => number;
 }
 
@@ -487,7 +489,10 @@ export async function establishExternalAuthorityArtifactSigner(options: External
     status,
     probe(): Promise<ExternalAuthoritySignerStatus> {
       if (probeInFlight !== undefined) return probeInFlight;
-      if (now() - identityCheckedAt < probeIntervalMs) return Promise.resolve(status());
+      // A negative age means the clock moved backwards: the cached result's
+      // freshness is unknown, so it is not used (CORE-02R round 2).
+      const elapsed = now() - identityCheckedAt;
+      if (elapsed >= 0 && elapsed < probeIntervalMs) return Promise.resolve(status());
       probeInFlight = probeIdentity().finally(() => {
         probeInFlight = undefined;
       });
