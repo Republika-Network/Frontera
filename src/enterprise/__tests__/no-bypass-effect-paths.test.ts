@@ -405,6 +405,8 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     // `isIP` / `isIPv4` / `isIPv6` from `node:net` — syntax checks, no socket.
     'src/enterprise/execution-adapters/generic-http/configuration.ts',
     'src/enterprise/execution-adapters/generic-http/public-address-policy.ts',
+    // CORE-02: `node:https` (and `node:http` to loopback) — the external authority signer transport (EP-056).
+    'src/enterprise/external-authority-signer/http-transport.ts',
   ];
 
   it('the detection patterns match a real client import or call and not a mention of one', () => {
@@ -427,14 +429,18 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     );
   });
 
-  it('exactly one production source performs outbound network I/O, and it is the Generic HTTP transport (EP-050)', () => {
+  it('exactly two production sources perform outbound network I/O: the Generic HTTP transport (EP-050) and the external authority signer transport (EP-056)', () => {
     const transport = 'src/enterprise/execution-adapters/generic-http/node-https-transport.ts';
+    const signerTransport = 'src/enterprise/external-authority-signer/http-transport.ts';
     const importsClient = (file: string): boolean => /from\s+['"]node:(?:https|dns)['"]/.test(valueCode(file));
     // `fetch(` is counted under src/ only: packages/ holds the customer-side
     // SDK, whose fetch is the caller reaching Frontera, not Frontera reaching a provider.
     const fetches = (file: string): boolean => file.startsWith('src/') && /\bfetch\s*\(/.test(codeOf(file));
     const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && (importsClient(file) || CLIENT_CALL.test(codeOf(file)) || fetches(file)));
-    assert.deepEqual(sites, [transport], 'a second outbound network call site fails the build: add it to the inventory with its own EP id first');
+    assert.deepEqual(sites.slice().sort(), [transport, signerTransport].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    const signer = codeOf(signerTransport);
+    assert.equal([...signer.matchAll(/\bsend\s*\(/g)].length, 1, 'the signer transport issues its request from exactly one place');
+    assert.ok(DOC.includes('EP-056') && DOC.includes(signerTransport), 'EP-056 is inventoried');
     const code = codeOf(transport);
     assert.equal([...code.matchAll(/\bprimitive\s*\(/g)].length, 1, 'the transport invokes its request primitive from exactly one place');
     assert.equal([...code.matchAll(/\bhttpsRequest\b/g)].length, 2, 'node:https request is imported once and bound once, in the production runtime');
@@ -584,13 +590,14 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Eight of fifty-five effect paths are under bounded-grant control.'),
+      DOC.includes('Eight of fifty-six effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
         'and P6 added EP-050, the Generic HTTP adapter\'s outbound call below that same path — which is why both numbers moved by one each time, and only for those paths. ' +
         'P7 added EP-051 … EP-053, the exercise-control reserve / settle / release writes reachable only inside the bounded-grant gate — local authority-state writes, not provider effects — so both moved by three. ' +
-        'P12 added EP-054 (a host resolution authority\'s status query) and EP-055 (the P7 resolution row), both deployment-gated trusted in-process paths outside the bounded-grant gate, so only the denominator moved, by two.',
+        'P12 added EP-054 (a host resolution authority\'s status query) and EP-055 (the P7 resolution row), both deployment-gated trusted in-process paths outside the bounded-grant gate, so only the denominator moved, by two. ' +
+        'CORE-02 added EP-056, the external authority signer transport — a deployment-gated signing request outside the bounded-grant gate, not a governed-action provider effect — so only the denominator moved, by one.',
     );
   });
 
