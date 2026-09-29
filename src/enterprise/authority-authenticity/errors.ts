@@ -51,9 +51,13 @@ export type AuthoritySignatureFailure = (typeof AUTHORITY_SIGNATURE_FAILURES)[nu
  * does not get a durable authority store.
  */
 export class AuthorityAuthenticityConfigurationError extends Error {
-  constructor(message: string) {
+  /** CORE-02: when an external signer's identity handshake refused the deployment, which closed reason. */
+  readonly reason: AuthoritySigningFailureReason | undefined;
+
+  constructor(message: string, reason?: AuthoritySigningFailureReason) {
     super(message);
     this.name = 'AuthorityAuthenticityConfigurationError';
+    this.reason = reason;
   }
 }
 
@@ -68,8 +72,56 @@ export class AuthorityAuthenticityConfigurationError extends Error {
  * fallback.
  */
 export class AuthoritySigningUnavailableError extends Error {
-  constructor(message: string) {
+  /**
+   * Why, when the signer can say (CORE-02). A closed, repository-owned code —
+   * never a provider exception, status text or response body. Absent for a
+   * signer that does not classify its failures (the in-process one).
+   */
+  readonly reason: AuthoritySigningFailureReason | undefined;
+
+  constructor(message: string, reason?: AuthoritySigningFailureReason) {
     super(message);
     this.name = 'AuthoritySigningUnavailableError';
+    this.reason = reason;
   }
+}
+
+/**
+ * CORE-02: why an **external** authority signer did not produce a signature
+ * this deployment will persist. Vendor-neutral and closed, so a provider's own
+ * vocabulary (a KMS error class, an HTTP status, an SDK exception) never leaks
+ * into the authority domain — the adapter at the edge maps onto these.
+ *
+ * Two families, kept apart because an operator answers them differently:
+ * *availability* (`TIMEOUT`, `UNREACHABLE`, `UNAVAILABLE`) — the signer may
+ * answer later, a bounded retry is permitted — and *integrity/configuration*
+ * (everything else) — the signer answered and what it said is not acceptable;
+ * retrying cannot help and is never attempted.
+ */
+export const AUTHORITY_SIGNING_FAILURE_REASONS = [
+  /** No answer within the per-attempt budget. The remote may or may not have signed; nothing it signed was persisted, so it confers nothing. */
+  'EXTERNAL_SIGNER_TIMEOUT',
+  /** The transport could not reach the signer (connection refused, reset, DNS). */
+  'EXTERNAL_SIGNER_UNREACHABLE',
+  /** The signer said it cannot sign now (5xx, rate-limited / throttled). */
+  'EXTERNAL_SIGNER_UNAVAILABLE',
+  /** The signer refused this deployment's credential. Never retried, never reported as a key or signature problem. */
+  'EXTERNAL_SIGNER_AUTHENTICATION_FAILED',
+  /** The signer understood the request and refused it (4xx other than authentication). */
+  'EXTERNAL_SIGNER_REFUSED',
+  /** The signer answered under a key id, algorithm or public key other than the one this deployment pinned. */
+  'EXTERNAL_SIGNER_IDENTITY_MISMATCH',
+  /** The answer was not the protocol's shape: not JSON, missing or extra fields, malformed signature encoding or width. */
+  'EXTERNAL_SIGNER_MALFORMED_RESPONSE',
+  /** The signer does not offer the protocol version, artifact version or one of the five authority operations this deployment requires. */
+  'EXTERNAL_SIGNER_CAPABILITY_UNSUPPORTED',
+  /** A well-formed signature that does not verify, under the pinned trusted key, over the exact artifact that was sent. */
+  'EXTERNAL_SIGNER_SIGNATURE_INVALID',
+] as const;
+
+export type AuthoritySigningFailureReason = (typeof AUTHORITY_SIGNING_FAILURE_REASONS)[number];
+
+/** The availability family: the only reasons a bounded retry may be attempted for. */
+export function isRetryableAuthoritySigningFailure(reason: AuthoritySigningFailureReason): boolean {
+  return reason === 'EXTERNAL_SIGNER_TIMEOUT' || reason === 'EXTERNAL_SIGNER_UNREACHABLE' || reason === 'EXTERNAL_SIGNER_UNAVAILABLE';
 }

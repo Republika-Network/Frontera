@@ -4,6 +4,7 @@ import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import { registerAuthoritySignerCustody } from './custody.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
@@ -24,7 +25,7 @@ import {
  * ## The interface is the boundary
  *
  * Everything a deployment can do with the authority signing key, it does
- * through the three methods below, and all are **domain-aware**: they take an
+ * through the five methods below, and all are **domain-aware**: they take an
  * artifact and produce that artifact's signature. There is deliberately no
  * `sign(bytes)`. A generic byte-signing capability would let any holder produce
  * a signature over bytes of its own choosing, which for a key whose whole
@@ -36,8 +37,9 @@ import {
  * ## Asynchronous on purpose
  *
  * Nothing about Ed25519 in-process needs to be `async`. The signature is
- * `Promise`-returning anyway so that deferred external key custody can replace
- * the implementation below with a KMS/HSM call without changing a single call site, and — more
+ * `Promise`-returning anyway so that external key custody (CORE-02,
+ * `src/enterprise/external-authority-signer/`) replaces the implementation
+ * below with a call across a custody boundary without changing a single call site, and — more
  * importantly — so that every caller is *already written* to tolerate a signer
  * that takes time. That is what makes the ordering in the durable store safe to
  * keep: signing happens **before** the transaction opens, and the commit guard
@@ -51,8 +53,10 @@ import {
  * That is not a hardware boundary, not a KMS, not an HSM, and nothing in this
  * repository may describe it as one. Anything that can read this process's
  * memory can read the key and mint authority that verifies perfectly — recorded
- * as **AA-001** in `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §21, and
- * the exact residual risk that deferred external key custody must close.
+ * as **AA-001** in `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §21. It
+ * remains an explicit, supported mode (development, embedding, tests, and any
+ * deployment that chooses it); a deployment configured for external custody
+ * never constructs it and never falls back to it (CORE-02, §29).
  *
  * What it *does* buy, today, is the property unkeyed digests alone could not: a writer
  * with access to the database file — a DBA, a backup, a restored snapshot, a
@@ -146,7 +150,7 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
     return { algorithm, keyId, signature: signature.toString('base64url'), artifactVersion: AUTHORITY_ARTIFACT_VERSION };
   }
 
-  return Object.freeze({
+  const signer: AuthorityArtifactSigner = Object.freeze({
     activeKeyId: keyId,
     algorithm,
     async signGrant(grant: BoundedGrant, storeId: string): Promise<AuthoritySignature> {
@@ -165,6 +169,8 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
       return signBytes(approvalStateSigningBytes(state));
     },
   });
+  registerAuthoritySignerCustody(signer, 'software');
+  return signer;
 }
 
 /**

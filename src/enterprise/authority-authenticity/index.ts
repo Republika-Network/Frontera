@@ -22,8 +22,17 @@ export {
 } from './authority-signature.js';
 export type { AuthorityArtifactKind, AuthoritySignature, AuthoritySignatureAlgorithm } from './authority-signature.js';
 
-export { AUTHORITY_SIGNATURE_FAILURES, AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
-export type { AuthoritySignatureFailure } from './errors.js';
+export {
+  AUTHORITY_SIGNATURE_FAILURES,
+  AUTHORITY_SIGNING_FAILURE_REASONS,
+  AuthorityAuthenticityConfigurationError,
+  AuthoritySigningUnavailableError,
+  isRetryableAuthoritySigningFailure,
+} from './errors.js';
+export type { AuthoritySignatureFailure, AuthoritySigningFailureReason } from './errors.js';
+
+export { authoritySignerCustody, bindStoreSignerCustody, registerAuthoritySignerCustody, storeSignerCustody } from './custody.js';
+export type { AuthoritySignerCustody } from './custody.js';
 
 export { authorityVerificationKeyFromPrivateKey, createSoftwareAuthorityArtifactSigner } from './signer.js';
 export type { AuthorityArtifactSigner, SoftwareAuthorityArtifactSignerOptions } from './signer.js';

@@ -138,10 +138,13 @@ import {
   createAuthorityArtifactVerifier,
   createSoftwareAuthorityArtifactSigner,
   isSupportedAuthoritySignatureAlgorithm,
+  storeSignerCustody,
   type AuthorityArtifactSigner,
   type AuthorityArtifactVerifier,
+  type AuthoritySignerCustody,
   type TrustedVerificationKey,
 } from '../authority-authenticity/index.js';
+import { createHttpExternalAuthoritySignerTransport, establishExternalAuthorityArtifactSigner, type ExternalAuthoritySignerMonitor } from '../external-authority-signer/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -914,12 +917,9 @@ async function buildKernelAuthorityStore(configuration: EnterpriseConfiguration,
  * the Host reported itself healthy, which is the fail-open shape this whole
  * store exists to remove.
  */
-async function buildBoundedGrantStore(
-  configuration: EnterpriseConfiguration,
-  authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier } | undefined,
-): Promise<BoundedGrantStorePort> {
+async function buildBoundedGrantStore(configuration: EnterpriseConfiguration, authenticity: () => Promise<AuthorityAuthenticityBoundary>): Promise<BoundedGrantStorePort> {
   if (configuration.persistence.provider === 'sqlite') {
-    const { signer, verifier } = authenticity ?? buildAuthorityAuthenticity(configuration);
+    const { signer, verifier } = await authenticity();
     return createSqliteBoundedGrantStore(configuration.boundedGrant.sqlitePath, {
       busyTimeoutMs: configuration.persistence.busyTimeoutMs,
       authenticity: { signer, verifier },
@@ -1042,12 +1042,33 @@ function createAuthorityEventStreamReader(store: AuthorityEventStreamStore): Aut
  * third is a security posture, so only the third is implemented. There is no
  * flag that selects either of the others.
  */
-function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier } {
-  const { activeSigningKeyId, signingKeyPem, verificationKeys } = configuration.authorityAuthenticity;
+/** The two halves of the authenticity boundary, plus — under external custody — the non-signing monitor of the custody service (CORE-02). */
+interface AuthorityAuthenticityBoundary {
+  readonly signer: AuthorityArtifactSigner;
+  readonly verifier: AuthorityArtifactVerifier;
+  readonly custody: AuthoritySignerCustody;
+  readonly monitor: ExternalAuthoritySignerMonitor | undefined;
+}
 
-  if (activeSigningKeyId === undefined || signingKeyPem === undefined) {
+async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): Promise<AuthorityAuthenticityBoundary> {
+  const authenticity = configuration.authorityAuthenticity;
+  const { activeSigningKeyId, verificationKeys } = authenticity;
+
+  // CORE-02: external custody holds no private key, so there is nothing to
+  // parse and nothing to fall back to. Checked first, so a contradictory
+  // configuration is refused before any key or network is touched.
+  if (authenticity.mode === 'external') {
+    if (authenticity.conflictingSigningKeyPresent || 'signingKeyPem' in authenticity) {
+      throw new AuthorityAuthenticityConfigurationError(
+        'External authority-key custody is configured, and an authority signing private key (AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM) is present in this process as well. External custody means this process holds no authority private key; remove it. There is no mixed or fallback mode.',
+      );
+    }
+    if (activeSigningKeyId === undefined || activeSigningKeyId.length === 0) {
+      throw new AuthorityAuthenticityConfigurationError('External authority-key custody requires AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID: the key id the external signer must answer as.');
+    }
+  } else if (activeSigningKeyId === undefined || authenticity.signingKeyPem === undefined) {
     throw new AuthorityAuthenticityConfigurationError(
-      'The durable bounded-grant store requires an authority signing key. Configure AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID and AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM, or do not select the durable store. There is no unsigned durable authority mode.',
+      'The durable bounded-grant store requires an authority signing key. Configure AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID and AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM, or external custody (AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external), or do not select the durable store. There is no unsigned durable authority mode.',
     );
   }
 
@@ -1067,6 +1088,33 @@ function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): { r
       `The active authority signing key '${activeSigningKeyId}' names algorithm '${active.algorithm}', which is outside the supported registry.`,
     );
   }
+
+  const trusted: readonly TrustedVerificationKey[] = verificationKeys.map((entry) => {
+    if (!isSupportedAuthoritySignatureAlgorithm(entry.algorithm)) {
+      throw new AuthorityAuthenticityConfigurationError(
+        `Trusted authority verification key '${entry.keyId}' names algorithm '${entry.algorithm}', which is outside the supported registry.`,
+      );
+    }
+    return { keyId: entry.keyId, algorithm: entry.algorithm, publicKeyPem: entry.publicKeyPem };
+  });
+  const verifier = createAuthorityArtifactVerifier(trusted);
+
+  if (authenticity.mode === 'external') {
+    // The pin is this deployment's own trusted entry for the key id — key id,
+    // algorithm and public key together. The custody service's identity is
+    // checked against it before this returns (no TOFU), and every signature it
+    // later returns is verified locally under it before any store sees it.
+    const { signer, monitor } = await establishExternalAuthorityArtifactSigner({
+      transport: createHttpExternalAuthoritySignerTransport({ endpoint: authenticity.externalSigner.endpoint, credential: authenticity.externalSigner.credential }),
+      pinned: { keyId: active.keyId, algorithm: active.algorithm, publicKeyPem: active.publicKeyPem },
+      verifier,
+      timeoutMs: authenticity.externalSigner.timeoutMs,
+      maxAttempts: authenticity.externalSigner.maxAttempts,
+    });
+    return { signer, verifier, custody: 'external', monitor };
+  }
+
+  const signingKeyPem = authenticity.signingKeyPem as string;
   // The configured public half must be the public half of the configured
   // private key. Without this, a deployment could sign with one key pair while
   // trusting another's public key under the same id, and every issuance would
@@ -1077,18 +1125,45 @@ function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): { r
     );
   }
 
-  const trusted: readonly TrustedVerificationKey[] = verificationKeys.map((entry) => {
-    if (!isSupportedAuthoritySignatureAlgorithm(entry.algorithm)) {
-      throw new AuthorityAuthenticityConfigurationError(
-        `Trusted authority verification key '${entry.keyId}' names algorithm '${entry.algorithm}', which is outside the supported registry.`,
-      );
-    }
-    return { keyId: entry.keyId, algorithm: entry.algorithm, publicKeyPem: entry.publicKeyPem };
-  });
-
   return {
-    signer: createSoftwareAuthorityArtifactSigner({ keyId: activeSigningKeyId, algorithm: active.algorithm, privateKeyPem: signingKeyPem }),
-    verifier: createAuthorityArtifactVerifier(trusted),
+    signer: createSoftwareAuthorityArtifactSigner({ keyId: activeSigningKeyId as string, algorithm: active.algorithm, privateKeyPem: signingKeyPem }),
+    verifier,
+    custody: 'software',
+    monitor: undefined,
+  };
+}
+
+/**
+ * CORE-02: the authority signer's state on `/health`. Under external custody
+ * it is probed with the service's **identity** call — never a signature, so a
+ * health check never spends a metered signing operation — and an unreachable,
+ * refusing or re-keyed service makes the Host `degraded`, not `unhealthy`:
+ * every existing grant, revocation state, discharge and approval still reads
+ * and verifies locally; only new authority mutations (issuance, revocation,
+ * discharge and approval appends) cannot be signed. Signer availability is not
+ * verifier trust. No credential, endpoint path or key material appears here.
+ */
+async function withAuthoritySignerHealth(report: EnterpriseHealthReport, authenticity: AuthorityAuthenticityBoundary | undefined): Promise<EnterpriseHealthReport> {
+  if (authenticity === undefined) return report;
+  if (authenticity.monitor === undefined) {
+    return { ...report, authoritySigner: { custody: 'software', keyId: authenticity.signer.activeKeyId, algorithm: authenticity.signer.algorithm, state: 'ready' } };
+  }
+  const probed = await authenticity.monitor.probe();
+  const signing = Object.values(probed.operations).reduce(
+    (total, counters) => ({ calls: total.calls + counters.calls, attempts: total.attempts + counters.attempts, succeeded: total.succeeded + counters.succeeded, failed: total.failed + counters.failed, retried: total.retried + counters.retried }),
+    { calls: 0, attempts: 0, succeeded: 0, failed: 0, retried: 0 },
+  );
+  return {
+    ...report,
+    status: probed.state === 'unavailable' && report.status === 'healthy' ? 'degraded' : report.status,
+    authoritySigner: {
+      custody: 'external',
+      keyId: probed.keyId,
+      algorithm: probed.algorithm,
+      state: probed.state,
+      ...(probed.reason !== undefined ? { reason: probed.reason } : {}),
+      signing,
+    },
   };
 }
 
@@ -1207,14 +1282,38 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     );
   }
 
+  // CORE-02: a deployment configured for external custody must not be handed
+  // a durable store signed by anything else — a store built with a software
+  // signer (or no recorded custody) would put signing back in this process
+  // while the configuration says it is not. Same boundary as the grant-store
+  // brand above: an honest composition mistake, not a malicious host.
+  if (configuration.authorityAuthenticity.mode === 'external' && configuration.persistence.provider === 'sqlite') {
+    const supplied: readonly [string, unknown][] = [
+      ['authorityControlledExecution.grantStore', suppliedGrantStore],
+      ['obligations.store', options.obligations?.store],
+      ['approvals.store', options.approvals?.store],
+    ];
+    for (const [name, store] of supplied) {
+      if (store !== undefined && storeSignerCustody(store) !== 'external') {
+        throw new AuthorityAuthenticityConfigurationError(
+          `This Host is configured for external authority-key custody, and the supplied ${name} is not signed through an external signer. Omit it so the Host opens the store with its external signer. There is no mixed custody.`,
+        );
+      }
+    }
+  }
+
   // PROD-01: the authenticity boundary is resolved before any store is opened,
   // so a missing, mismatched or untrusted signing key refuses the Host before a
   // single SQLite file exists — not after the Governance, Passport, Assurance
-  // and Kernel Authority stores have been opened. Pure: key parsing only.
-  const authorityAuthenticity =
-    options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite'
-      ? buildAuthorityAuthenticity(configuration)
-      : undefined;
+  // and Kernel Authority stores have been opened. Software custody: key parsing
+  // only. External custody (CORE-02): the custody service's pinned identity is
+  // proven here — before any store is opened — or the Host does not start.
+  // Resolved at most once: every store this root opens shares one boundary.
+  let authorityAuthenticityOnce: Promise<AuthorityAuthenticityBoundary> | undefined;
+  const resolveAuthorityAuthenticity = (): Promise<AuthorityAuthenticityBoundary> => (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration));
+  if (options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite') {
+    await resolveAuthorityAuthenticity();
+  }
 
   // Adapter composition is checked before anything is opened: a deployment that
   // states both a single adapter and a routing table, or neither, has not said
@@ -1463,7 +1562,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   const grantStore: BoundedGrantStorePort | undefined =
     options.authorityControlledExecution === undefined
       ? undefined
-      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration, authorityAuthenticity)));
+      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration, resolveAuthorityAuthenticity)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
   if (grantStoreOpenedHere) opened.push(() => closeIfClosable(grantStore));
 
@@ -1537,7 +1636,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
               // The same authority signer and trusted verifier the grant store
               // uses: a verified discharge releases issuance, so its store's
               // committed state is an authority artifact.
-              authenticity: authorityAuthenticity ?? buildAuthorityAuthenticity(configuration),
+              authenticity: await resolveAuthorityAuthenticity(),
             })
           : createInMemoryObligationDischargeStore({ organizationId: configuration.kernelAuthority.organizationId })));
   const obligationDischargeStoreOpenedHere = obligationDischargeStore !== undefined && options.obligations?.store === undefined;
@@ -1568,7 +1667,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             // The same authority signer and trusted verifier the grant store
             // uses: a completed approval resumes a decision into a grant, so
             // its store's committed state is an authority artifact.
-            authenticity: authorityAuthenticity ?? buildAuthorityAuthenticity(configuration),
+            authenticity: await resolveAuthorityAuthenticity(),
           })
         : createInMemoryApprovalStore({ organizationId: configuration.kernelAuthority.organizationId })));
   const approvalStoreOpenedHere = approvalStore !== undefined && options.approvals?.store === undefined;
@@ -2106,6 +2205,18 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
         });
 
+  // CORE-02: the authenticity boundary this root built, if any — for the
+  // posture and for the custody service's non-signing health probe.
+  const authorityAuthenticity = authorityAuthenticityOnce === undefined ? undefined : await authorityAuthenticityOnce;
+  // Which custody actually signs for the composed grant store — read from the
+  // store's own brand when it is the authenticated durable store (so a
+  // host-supplied store reports its own custody), never from configuration.
+  const composedSignerCustody: 'software' | 'external' | 'not-composed' = (() => {
+    if (grantStore === undefined || !isAuthenticatedDurableBoundedGrantStore(grantStore)) return authorityAuthenticity?.custody ?? 'not-composed';
+    const custody = storeSignerCustody(grantStore);
+    return custody === 'unknown' ? 'software' : custody;
+  })();
+
   // PROD-01: what this Host actually composed, stated in `/health` so a
   // deployment on ephemeral state, disabled authentication or unauthenticated
   // authority storage never looks identical to one that is not. Computed from
@@ -2131,6 +2242,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind === 'durable-authenticated' ? 'durable' : 'ephemeral',
     // CORE-05: likewise.
     approvals: approvalAuthority === undefined || governedActionOrchestrator === undefined ? 'not-configured' : approvalAuthority.storeKind === 'durable-authenticated' ? 'durable' : 'ephemeral',
+    // CORE-02: where the authority private key lives — `external` means not in this process.
+    authoritySigner: composedSignerCustody,
   });
 
   const enterprise: AocEnterprise = {
@@ -2221,7 +2334,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     },
     async health() {
       const lifecycleSnapshot = await lifecycle.healthSnapshot();
-      return computeEnterpriseHealth({
+      const report = await computeEnterpriseHealth({
         configuration,
         store: persistence,
         hasPolicyPackProvider: options.policyPackProvider !== undefined,
@@ -2230,6 +2343,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         lifecycle: lifecycleSnapshot,
         posture,
       });
+      return withAuthoritySignerHealth(report, authorityAuthenticity);
     },
     start: () => lifecycle.start(),
     isLive: () => lifecycle.isLive(),

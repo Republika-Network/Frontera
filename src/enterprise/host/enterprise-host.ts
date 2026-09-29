@@ -196,6 +196,13 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
     if (host.governedActions !== undefined && (posture.governedActions !== 'composed' || enterprise.governAction === undefined)) {
       throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'Governed actions were configured but the composed Enterprise does not expose them.');
     }
+    // CORE-02: a Host configured for external custody runs on an external
+    // signer, or not at all — in any profile. Checked against the composed
+    // object, so nothing between configuration and composition can have put a
+    // process-resident signer back.
+    if (host.configuration.authorityAuthenticity.mode === 'external' && posture.authorityStore !== 'not-composed' && posture.authoritySigner !== 'external') {
+      throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', `External authority-key custody was configured but the composed authority signer is '${posture.authoritySigner}'.`);
+    }
     if (host.secureProfile) {
       const shortfalls = secureProfileShortfalls(posture);
       if (shortfalls.length > 0) {

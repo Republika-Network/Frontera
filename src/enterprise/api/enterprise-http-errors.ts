@@ -88,6 +88,8 @@ export type EnterpriseHttpErrorCode =
   | 'AUTHORITY_ADMIN_CAPABILITY_NOT_COMPOSED'
   | 'AUTHORITY_ADMIN_OPERATION_REFUSED'
   | 'AUTHORITY_STATE_UNAVAILABLE'
+  /** CORE-02: the authority signer could not sign, so nothing was recorded (AA-004). */
+  | 'AUTHORITY_SIGNER_UNAVAILABLE'
   | 'AUTHORITY_STATE_INTEGRITY_FAILED';
 
 export class EnterpriseHttpError extends Error {

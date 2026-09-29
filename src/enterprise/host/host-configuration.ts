@@ -355,7 +355,7 @@ function isLoopback(host: string): boolean {
  * Additional rules for the secure profile (`AOC_ENTERPRISE_ENV` = `production`
  * or `staging`): SQLite persistence, required authentication, the
  * governed-action file, a required Kernel Authority source and a configured
- * authority signing key. A secure Host is Frontera's governed-action control
+ * authority signer — software or external custody (CORE-02). A secure Host is Frontera's governed-action control
  * plane or it does not start.
  */
 export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfiguration {
@@ -427,11 +427,18 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     if (!configuration.kernelAuthority.required) {
       throw new EnterpriseHostConfigurationError('HOST_KERNEL_AUTHORITY_REQUIRED', `AOC_ENTERPRISE_ENV=${base.environment} requires AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED=true.`);
     }
+    // Durable authority is always signed — by exactly one, explicitly stated
+    // custody. `external` (CORE-02) needs no private key here and is refused
+    // with one (validateEnterpriseEnvironment); `software` needs the key.
     const authenticity = configuration.authorityAuthenticity;
-    if (authenticity.activeSigningKeyId === undefined || authenticity.signingKeyPem === undefined || authenticity.verificationKeys.length === 0) {
+    const signerReady =
+      authenticity.mode === 'external'
+        ? authenticity.activeSigningKeyId !== undefined && authenticity.verificationKeys.length > 0 && authenticity.externalSigner.endpoint.length > 0 && authenticity.externalSigner.credential.length > 0
+        : authenticity.activeSigningKeyId !== undefined && authenticity.signingKeyPem !== undefined && authenticity.verificationKeys.length > 0;
+    if (!signerReady) {
       throw new EnterpriseHostConfigurationError(
         'HOST_AUTHORITY_SIGNING_KEY_REQUIRED',
-        `AOC_ENTERPRISE_ENV=${base.environment} requires AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID, AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM and AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS. Durable authority is always signed.`,
+        `AOC_ENTERPRISE_ENV=${base.environment} requires an authority signer: either AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external with AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT, AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN, AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID and AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS (no private key in this process), or software custody with AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID, AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM and AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS. Durable authority is always signed.`,
       );
     }
   }

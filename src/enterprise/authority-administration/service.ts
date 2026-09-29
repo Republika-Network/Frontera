@@ -129,6 +129,34 @@ function stateUnavailable(): EnterpriseHttpError {
   return new EnterpriseHttpError(503, 'AUTHORITY_STATE_UNAVAILABLE', 'The authoritative store is unavailable. Nothing was read or changed.');
 }
 
+/**
+ * CORE-02 / AA-004: the authority signer could not sign, so **nothing was
+ * recorded**. For a revocation that means the grant is still exercisable — the
+ * message says so, and names the one control that does not depend on the
+ * signer (an emergency stop). The reason is a closed code; never a credential,
+ * endpoint or provider message.
+ */
+/**
+ * Recognized by its stable error name rather than by importing the signer
+ * module: the administration layer is structurally barred from reaching
+ * anything signing-related (CTRL-01), and needs only to know that nothing was
+ * written. The reason is read only if it is a closed-vocabulary-shaped code.
+ */
+function isAuthoritySigningUnavailable(error: unknown): error is Error & { readonly reason: string | undefined } {
+  return error instanceof Error && error.name === 'AuthoritySigningUnavailableError';
+}
+
+function signerUnavailable(reason: unknown): EnterpriseHttpError {
+  const failure = typeof reason === 'string' && /^[A-Z][A-Z_]{2,63}$/.test(reason) ? reason : 'AUTHORITY_SIGNER_UNAVAILABLE';
+  return new EnterpriseHttpError(
+    503,
+    'AUTHORITY_SIGNER_UNAVAILABLE',
+    'The authority signer is unavailable, so nothing was recorded: a revocation that cannot be signed is not a revocation, and this grant remains exercisable until one is. Retry when the signer is available; to halt execution now, declare an emergency stop (it does not depend on the signer).',
+    undefined,
+    { failure, recorded: false },
+  );
+}
+
 /** An integrity incident is never a 404 and never a success: the operator is told the state cannot be vouched for, and which store condition fired — a code, never contents. */
 function integrityFailed(failure: string): EnterpriseHttpError {
   return new EnterpriseHttpError(
@@ -174,6 +202,10 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
       if (error.code === 'BOUNDED_GRANT_STORE_UNAVAILABLE') throw stateUnavailable();
       throw integrityFailed(error.code);
     }
+    // CORE-02 / AA-004: the signer could not sign. Nothing was written, and the
+    // operator is told so in as many words — never a success, never a generic
+    // fault that could be read as "probably done".
+    if (isAuthoritySigningUnavailable(error)) throw signerUnavailable(error.reason);
     throw error;
   }
 

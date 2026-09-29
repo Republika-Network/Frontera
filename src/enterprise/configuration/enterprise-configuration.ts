@@ -272,38 +272,13 @@ export interface EnterpriseConfiguration {
    * configuration must not offer is a supported way to run durable authority
    * unsigned. Keys are either configured, or the durable store is refused at
    * composition. See `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §12.
+   *
+   * CORE-02: a closed choice of **custody** — `software` (the key is in this
+   * process, AA-001) or `external` (it is not; see §29). The two are
+   * exclusive by type: the external variant has no field a private key could be
+   * placed in.
    */
-  readonly authorityAuthenticity: {
-    /** Which configured key signs new artifacts. Must also appear in `verificationKeys`, or composition refuses. */
-    readonly activeSigningKeyId: string | undefined;
-    /**
-     * PKCS#8 PEM for the active signing key. **Secret.**
-     *
-     * Redacted from `PublicEnterpriseConfiguration` exactly as `apiKeys` are,
-     * and a security test pins that it never appears there. It is also, today,
-     * a private key resident in application process memory — recorded as AA-001.
-     * External key custody, which would replace this field with a handle to an
-     * external signing boundary, remains deferred.
-     */
-    readonly signingKeyPem: string | undefined;
-    /**
-     * The trusted verification set: every key whose signatures this deployment
-     * will accept, including historical keys that signed still-live artifacts.
-     *
-     * Public material, so it is safe on the public configuration surface. The
-     * set is the root of trust — an artifact naming a key id absent from here is
-     * refused, and an artifact's own claim about its key is never consulted for
-     * material. Removing an entry makes every artifact signed by it unreadable;
-     * §13 of the security document states why that is a key-trust operation and
-     * not a revocation.
-     */
-    readonly verificationKeys: readonly {
-      readonly keyId: string;
-      readonly algorithm: string;
-      /** SPKI PEM. */
-      readonly publicKeyPem: string;
-    }[];
-  };
+  readonly authorityAuthenticity: SoftwareAuthorityAuthenticityConfiguration | ExternalAuthorityAuthenticityConfiguration;
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -312,6 +287,76 @@ export interface EnterpriseConfiguration {
     readonly required: boolean;
   };
 }
+
+/**
+ * The trusted verification set: every key whose signatures this deployment
+ * will accept, including historical keys that signed still-live artifacts.
+ *
+ * Public material, so it is safe on the public configuration surface. The set
+ * is the root of trust — an artifact naming a key id absent from here is
+ * refused, and an artifact's own claim about its key is never consulted for
+ * material. Removing an entry makes every artifact signed by it unreadable;
+ * §13 of the security document states why that is a key-trust operation and
+ * not a revocation.
+ */
+export type AuthorityVerificationKeyConfiguration = {
+  readonly keyId: string;
+  readonly algorithm: string;
+  /** SPKI PEM. */
+  readonly publicKeyPem: string;
+};
+
+/** Software custody: the authority private key is parsed into this process (AA-001). The historical, and still supported, mode. */
+export interface SoftwareAuthorityAuthenticityConfiguration {
+  /** Absent means `software` — the historical shape, unchanged for embedders. External custody is only ever selected explicitly. */
+  readonly mode?: 'software';
+  /** Which configured key signs new artifacts. Must also appear in `verificationKeys`, or composition refuses. */
+  readonly activeSigningKeyId: string | undefined;
+  /**
+   * PKCS#8 PEM for the active signing key. **Secret.**
+   *
+   * Redacted from `PublicEnterpriseConfiguration` exactly as `apiKeys` are,
+   * and a security test pins that it never appears there. In this mode it is a
+   * private key resident in application process memory — AA-001. External
+   * custody (`mode: 'external'`) is the mode without it.
+   */
+  readonly signingKeyPem: string | undefined;
+  readonly verificationKeys: readonly AuthorityVerificationKeyConfiguration[];
+}
+
+/**
+ * External custody (CORE-02): the authority private key is held by a custody
+ * service outside this process; this process holds its pinned **public**
+ * identity and a service credential. There is no private-key field — the type
+ * cannot carry one — and no fallback to software signing exists.
+ */
+export interface ExternalAuthorityAuthenticityConfiguration {
+  readonly mode: 'external';
+  /** The **pinned** key id the custody service must answer as. Must appear in `verificationKeys`; its entry there pins the algorithm and public key too. */
+  readonly activeSigningKeyId: string | undefined;
+  readonly verificationKeys: readonly AuthorityVerificationKeyConfiguration[];
+  readonly externalSigner: {
+    /** Base URL of the custody service. `https:`, or `http:` to loopback for the local reference signer. */
+    readonly endpoint: string;
+    /** Bearer credential for the custody service. **Secret** — it authorizes use of the key, though it is not the key. Never on public configuration. */
+    readonly credential: string;
+    /** Per-attempt time budget for every call. */
+    readonly timeoutMs: number;
+    /** Bounded attempts; only availability failures are retried. */
+    readonly maxAttempts: number;
+  };
+  /**
+   * Whether `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` was present in the
+   * environment this was read from. The key itself is never read into this
+   * object; its presence alongside external custody is a contradiction the
+   * composition refuses, because the key would still be resident in this
+   * process's environment.
+   */
+  readonly conflictingSigningKeyPresent: boolean;
+}
+
+export const DEFAULT_EXTERNAL_SIGNER_TIMEOUT_MS = 5_000;
+export const DEFAULT_EXTERNAL_SIGNER_MAX_ATTEMPTS = 2;
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -427,11 +472,119 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
   if (verificationKeys !== undefined && verificationKeys.trim().length > 0 && parseAuthorityVerificationKeys(verificationKeys).length === 0) {
     problems.push('AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS must be a JSON array of {keyId, algorithm, publicKeyPem} objects.');
   }
+  problems.push(...authoritySignerEnvironmentProblems(env));
   const apiKeys = env.AOC_ENTERPRISE_API_KEYS;
   if (apiKeys !== undefined && parseApiKeys(apiKeys).some((apiKey) => apiKey.key.length === 0)) {
     problems.push('AOC_ENTERPRISE_API_KEYS contains an entry with an empty key.');
   }
   return problems;
+}
+
+const EXTERNAL_SIGNER_VARIABLES = [
+  'AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT',
+  'AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN',
+  'AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS',
+  'AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS',
+] as const;
+
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * CORE-02: the strict reading of the authority-signer custody variables. One
+ * custody, stated explicitly, with nothing belonging to the other lying around:
+ *
+ * - `external` with `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` present is
+ *   refused — the key would be resident in this process's environment while
+ *   the operator believes it is not;
+ * - `external` without endpoint, credential, pinned key id or trusted
+ *   verification keys is refused;
+ * - an external-signer variable without `external` is refused — never guessed.
+ *
+ * Names variables and rules, never values.
+ */
+function authoritySignerEnvironmentProblems(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const problems: string[] = [];
+  const mode = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE;
+  if (mode !== undefined && mode !== 'software' && mode !== 'external') {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE must be one of: software, external.');
+    return problems;
+  }
+  const present = (name: string): boolean => env[name] !== undefined && (env[name] ?? '').length > 0;
+  if (mode !== 'external') {
+    for (const name of EXTERNAL_SIGNER_VARIABLES) {
+      if (env[name] !== undefined) problems.push(`${name} is set but AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE is not 'external'. Refusing to guess which authority-key custody was meant.`);
+    }
+    return problems;
+  }
+  if (env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM !== undefined) {
+    problems.push(
+      "AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM must not be set when AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external: external custody means this process holds no authority private key. Remove it from this process's environment.",
+    );
+  }
+  if (!present('AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID')) problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external requires AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID: the key id the external signer must answer as.');
+  if (!present('AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS')) problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external requires AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: the pinned signer key is checked against them.');
+  const endpoint = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT;
+  if (endpoint === undefined || endpoint.length === 0) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external requires AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT.');
+  } else {
+    let url: URL | undefined;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      url = undefined;
+    }
+    if (url === undefined || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+      problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT must be an absolute https URL (or http to a loopback address for the local reference signer).');
+    } else if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {
+      problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT uses plain http to a non-loopback address; only https is accepted beyond loopback.');
+    } else if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || (url.pathname !== '/' && url.pathname !== '')) {
+      problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT must be a base URL with no credentials, path, query or fragment.');
+    }
+  }
+  const token = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN;
+  if (token === undefined || token.length < 32 || /\s/.test(token)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external requires AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN: a credential of at least 32 characters with no whitespace.');
+  }
+  const timeout = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS;
+  if (timeout !== undefined && (!/^\d{1,5}$/.test(timeout) || Number.parseInt(timeout, 10) < 1 || Number.parseInt(timeout, 10) > 60_000)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS must be an integer from 1 to 60000.');
+  }
+  const attempts = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS;
+  if (attempts !== undefined && !['1', '2', '3'].includes(attempts)) problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS must be 1, 2 or 3.');
+  return problems;
+}
+
+/**
+ * CORE-02: the authority-signer custody as read from `env`. In `external`
+ * mode `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` is **never read** into the
+ * configuration — only whether it was present, so composition can refuse the
+ * contradiction instead of ignoring a key that is still in the environment.
+ */
+function loadAuthorityAuthenticity(env: Readonly<Record<string, string | undefined>>): EnterpriseConfiguration['authorityAuthenticity'] {
+  const verificationKeys = parseAuthorityVerificationKeys(env.AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS);
+  if (env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE === 'external') {
+    const attempts = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS;
+    return {
+      mode: 'external',
+      activeSigningKeyId: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID,
+      verificationKeys,
+      externalSigner: {
+        endpoint: env.AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT ?? '',
+        credential: env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN ?? '',
+        timeoutMs: parsePositiveIntMs(env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS, DEFAULT_EXTERNAL_SIGNER_TIMEOUT_MS),
+        maxAttempts: attempts !== undefined && /^\d+$/.test(attempts) ? Number.parseInt(attempts, 10) : DEFAULT_EXTERNAL_SIGNER_MAX_ATTEMPTS,
+      },
+      conflictingSigningKeyPresent: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM !== undefined,
+    };
+  }
+  return {
+    activeSigningKeyId: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID,
+    signingKeyPem: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM,
+    verificationKeys,
+  };
 }
 
 /**
@@ -519,11 +672,7 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     executionResolution: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',
     },
-    authorityAuthenticity: {
-      activeSigningKeyId: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID,
-      signingKeyPem: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM,
-      verificationKeys: parseAuthorityVerificationKeys(env.AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS),
-    },
+    authorityAuthenticity: loadAuthorityAuthenticity(env),
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',
       required: parseBoolean(env.AOC_ENTERPRISE_ASSURANCE_REQUIRED, false),
@@ -559,10 +708,20 @@ export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authe
    * diagnose a rotation without being handed the ability to sign.
    */
   readonly authorityAuthenticity: {
+    /** CORE-02: which custody signs: `software` (a key in this process) or `external` (none). */
+    readonly signerMode: 'software' | 'external';
     readonly activeSigningKeyId: string | undefined;
-    /** Whether a signing key is configured at all. A boolean, never the key. */
+    /** Whether a signing key is configured at all. A boolean, never the key. Always `false` under external custody. */
     readonly signingKeyConfigured: boolean;
     readonly verificationKeys: readonly { readonly keyId: string; readonly algorithm: string; readonly publicKeyPem: string }[];
+    /** CORE-02, external custody only: where signatures come from, and the bounds on asking. The origin only — never a credential. */
+    readonly externalSigner?: {
+      readonly origin: string;
+      readonly timeoutMs: number;
+      readonly maxAttempts: number;
+      /** Whether a service credential is configured. A boolean, never the credential. */
+      readonly credentialConfigured: boolean;
+    };
   };
 };
 
@@ -586,12 +745,37 @@ export function toPublicEnterpriseConfiguration(config: EnterpriseConfiguration)
       apiKeyCount: authentication.apiKeys.length,
       apiKeyOrganizationScopes: authentication.apiKeys.map((apiKey) => apiKey.organizationId),
     },
-    authorityAuthenticity: {
-      activeSigningKeyId: authorityAuthenticity.activeSigningKeyId,
-      signingKeyConfigured: authorityAuthenticity.signingKeyPem !== undefined,
-      verificationKeys: authorityAuthenticity.verificationKeys,
-    },
+    authorityAuthenticity:
+      authorityAuthenticity.mode === 'external'
+        ? {
+            signerMode: 'external',
+            activeSigningKeyId: authorityAuthenticity.activeSigningKeyId,
+            signingKeyConfigured: false,
+            verificationKeys: authorityAuthenticity.verificationKeys,
+            externalSigner: {
+              origin: originOf(authorityAuthenticity.externalSigner.endpoint),
+              timeoutMs: authorityAuthenticity.externalSigner.timeoutMs,
+              maxAttempts: authorityAuthenticity.externalSigner.maxAttempts,
+              credentialConfigured: authorityAuthenticity.externalSigner.credential.length > 0,
+            },
+          }
+        : {
+            signerMode: 'software',
+            activeSigningKeyId: authorityAuthenticity.activeSigningKeyId,
+            signingKeyConfigured: authorityAuthenticity.signingKeyPem !== undefined,
+            verificationKeys: authorityAuthenticity.verificationKeys,
+          },
   };
+}
+
+/** The scheme, host and port of an endpoint — never a path, query, fragment or userinfo, any of which could hold a secret by mistake. */
+function originOf(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    return url.origin === 'null' ? 'invalid' : url.origin;
+  } catch {
+    return 'invalid';
+  }
 }
 
 /**

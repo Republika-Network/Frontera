@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { bindStoreSignerCustody } from '../authority-authenticity/custody.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
 import { APPROVAL_STORE_SCHEMA_VERSION, type ApprovalStore, type StoredApprovalRecord } from './contracts.js';
@@ -279,12 +280,17 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
         row_digest: digest,
       });
       updateHead.run(sequence, next.chainDigest, JSON.stringify(signature), updatedAt);
+      // Read back through the same verification every later read runs
+      // (CORE-02): a head signature this deployment would refuse — from any
+      // signer — rolls the whole append back rather than leaving a store that
+      // every later read refuses.
+      verifiedState();
     }).immediate();
     witnessed = Math.max(witnessed, sequence);
     return Object.freeze({ ...content, sequence, digest });
   }
 
-  return {
+  const store: ApprovalStore = {
     kind: 'durable-authenticated',
     append(content: ApprovalRowContent): Promise<StoredApprovalRecord> {
       const result = tail.then(() => appendOnce(content));
@@ -308,4 +314,7 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
       return Promise.resolve();
     },
   };
+  // CORE-02: which custody signs for this store (software or external).
+  bindStoreSignerCustody(store, signer);
+  return store;
 }
