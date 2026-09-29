@@ -240,6 +240,26 @@ export const GOVERNED_ACTION_REASON_CODES = {
   GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED: 'GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED',
   /** The adapter ran, but its canonical durable outcome (the P11 initial observation) could not be recorded. Reported beside the outcome — never instead of it; a later replay reports the attempt as `…_ALREADY_ATTEMPTED`. */
   GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED: 'GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED',
+  /**
+   * CORE-05 — beside the Kernel's own codes on a `withheld: 'approval'`
+   * result, when the decision's profile declares how it can be approved: the
+   * approval request is recorded and open. A retry of the same request (same
+   * idempotency key) resumes it once a durable, attributable approval of
+   * exactly this decision completes.
+   */
+  GOVERNED_ACTION_APPROVAL_PENDING: 'GOVERNED_ACTION_APPROVAL_PENDING',
+  /** CORE-05 — an eligible approver rejected exactly this decision. Final: no later approval resumes it. */
+  GOVERNED_ACTION_APPROVAL_REJECTED: 'GOVERNED_ACTION_APPROVAL_REJECTED',
+  /** CORE-05 — nobody completed the approval within the profile's request window. Final. */
+  GOVERNED_ACTION_APPROVAL_REQUEST_EXPIRED: 'GOVERNED_ACTION_APPROVAL_REQUEST_EXPIRED',
+  /** CORE-05 — the approval completed but lapsed (the profile's approval validity) before it was used. Final. */
+  GOVERNED_ACTION_APPROVAL_EXPIRED: 'GOVERNED_ACTION_APPROVAL_EXPIRED',
+  /** CORE-05 — an eligible actor revoked the approval request or its completed approval. Final: no grant is minted from it again, and an issued grant not yet exercised is not exercised. */
+  GOVERNED_ACTION_APPROVAL_REVOKED: 'GOVERNED_ACTION_APPROVAL_REVOKED',
+  /** CORE-05 — the request was opened under a Governance Profile or approval requirement trusted configuration no longer holds. Invalidated, never reinterpreted: a new governed request starts a new lifecycle. */
+  GOVERNED_ACTION_APPROVAL_SUPERSEDED: 'GOVERNED_ACTION_APPROVAL_SUPERSEDED',
+  /** CORE-05 — the durable approval store could not be read, verified or written. Never read optimistically: the decision stays withheld. */
+  GOVERNED_ACTION_APPROVAL_UNAVAILABLE: 'GOVERNED_ACTION_APPROVAL_UNAVAILABLE',
 } as const;
 
 export type GovernedActionReasonCode = (typeof GOVERNED_ACTION_REASON_CODES)[keyof typeof GOVERNED_ACTION_REASON_CODES];

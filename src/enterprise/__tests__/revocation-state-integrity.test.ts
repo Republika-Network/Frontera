@@ -606,6 +606,9 @@ describe('CORE-01 — revocation is monotonic, idempotent and deterministic', ()
       async signObligationDischargeState(state) {
         return inner.signObligationDischargeState(state);
       },
+      async signApprovalState(state) {
+        return inner.signApprovalState(state);
+      },
     };
   }
 

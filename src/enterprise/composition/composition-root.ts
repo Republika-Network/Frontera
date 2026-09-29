@@ -71,6 +71,16 @@ import {
   type ObligationDischargeStore,
 } from '../obligation-discharge/index.js';
 import { createKernelAuthorityLineageRevalidator } from '../kernel-authority/authority-lineage-revalidator.js';
+import {
+  createApprovalAuthority,
+  createInMemoryApprovalStore,
+  createSqliteApprovalStore,
+  type ApprovalAuthority,
+  type ApprovalCommandPort,
+  type ApprovalStore,
+} from '../approval-authority/index.js';
+import { createActorRegistryRecognitionIntegration } from '../../features/approval-runtime/services/approval-actor-recognition-integration.js';
+import { createApprovalAuthorityGraphIntegration } from '../../features/approval-runtime/services/approval-authority-graph-integration.js';
 import { KernelObligationCapability, resolveKernelObligationFacts, resolveKernelObligations } from '../../kernel/orchestration/obligation-adapter.js';
 import type { ContextProvider, KernelEffectiveProfileResolver } from '../../kernel/index.js';
 import { createGovernedActionOrchestratorModule } from '../modules/governed-action-orchestrator-module.js';
@@ -305,6 +315,16 @@ export interface CreateEnterpriseOptions {
    * a host supplies `store` (which the host then closes).
    */
   readonly obligations?: ObligationConfiguration & { readonly store?: ObligationDischargeStore };
+  /**
+   * CORE-05 — durable approvals on the governed path. Composed whenever a
+   * Governance Profile declares an `approval` requirement; nothing to
+   * configure here but, optionally, the store. The approval store is the
+   * durable, authenticated SQLite one under `sqlite` persistence
+   * (`approval.sqlitePath`), in-memory otherwise, unless a host supplies
+   * `store` (which the host then closes). Approver authority is read from the
+   * durable Kernel-Authority world — the one governed-path authority source.
+   */
+  readonly approvals?: { readonly store?: ApprovalStore };
   /**
    * Opt-in durable emergency control: the operational safety interlock that
    * lets an operator stop execution on the bounded-grant path.
@@ -748,6 +768,18 @@ export interface AocEnterprise {
    * class. No HTTP route, SDK method or CTRL-01 administration call reaches it.
    */
   readonly obligationDischarges?: ObligationDischargeRecorder;
+  /**
+   * CORE-05 — the engine-side, **in-process** approval command port, present
+   * when durable approvals are composed: open approval requests, what each
+   * one is (the canonical subject — with its requirement snapshot — an
+   * approver is shown), and approve / reject / requestChanges / escalate /
+   * revoke by an authenticated actor context on exactly that subject. It
+   * cannot write a state, a quorum or a proof: those are derived from the
+   * authenticated verdicts through approval-runtime's policies and the
+   * actors' live Kernel-Authority. No HTTP route, SDK method or CTRL-01
+   * administration call reaches it (CTRL-04 owns the human surface).
+   */
+  readonly approvals?: ApprovalCommandPort;
   /**
    * P8 — the **read-only** surface over the canonical authority event stream,
    * present only when governed actions are composed and a stream store is
@@ -1519,6 +1551,68 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     if (resolution.kind === 'resolved') return { kind: 'resolved', profile: resolution.profile.reference };
     return resolution.kind === 'unclassified' ? { kind: 'unclassified' } : { kind: 'refused' };
   };
+  // CORE-05: the durable approval store, only when some Governance Profile
+  // declares how its decisions can be approved — the authenticated SQLite
+  // file under `sqlite` persistence (an approval that forgot itself on
+  // restart would withhold forever, and one that forgot a rejection could be
+  // re-approved), in-memory otherwise.
+  const approvalsDeclared = governedActionOptions !== undefined && governance.profiles.some((profile) => profile.definition.approval !== undefined);
+  const approvalStore: ApprovalStore | undefined = !approvalsDeclared
+    ? undefined
+    : (options.approvals?.store ??
+      (persistence.providerKind === 'sqlite'
+        ? await createSqliteApprovalStore(configuration.approval.sqlitePath, {
+            now: kernelProviders.clock.now,
+            busyTimeoutMs: configuration.persistence.busyTimeoutMs,
+            organizationId: configuration.kernelAuthority.organizationId,
+            // The same authority signer and trusted verifier the grant store
+            // uses: a completed approval resumes a decision into a grant, so
+            // its store's committed state is an authority artifact.
+            authenticity: authorityAuthenticity ?? buildAuthorityAuthenticity(configuration),
+          })
+        : createInMemoryApprovalStore({ organizationId: configuration.kernelAuthority.organizationId })));
+  const approvalStoreOpenedHere = approvalStore !== undefined && options.approvals?.store === undefined;
+  if (approvalStoreOpenedHere) opened.push(() => closeIfClosable(approvalStore));
+  // Approver standing is Kernel-Authority — the one governed-path authority
+  // source — read live from the same world the Kernel decides against, through
+  // approval-runtime's own recognition and authority integrations (so its
+  // policies judge exactly what they judge everywhere else), and additionally
+  // required to be live on every hop (the CORE-04 lineage revalidator). Never
+  // taken from a command. The world handles are read through the provider
+  // getters on every call: a Kernel-Authority revocation reloads the world and
+  // is seen by the next approval read.
+  const approvalAuthority: ApprovalAuthority | undefined =
+    approvalStore === undefined || governedActionOptions === undefined
+      ? undefined
+      : (() => {
+          const organizationId = configuration.kernelAuthority.organizationId;
+          const trustDomainId = governedActionOptions.trustDomainId;
+          const lineage = createKernelAuthorityLineageRevalidator({ organizationId, trustDomainId, authority: () => kernelProviders.authorityRuntime });
+          return createApprovalAuthority({
+            store: approvalStore,
+            governance,
+            resolveEffectiveProfile,
+            organizationId,
+            authority: {
+              recognition: (actorId) => createActorRegistryRecognitionIntegration(kernelProviders.recognitionRuntime.actorRegistry).getApproverRecognitionStatus(actorId),
+              authority: ({ actorId, capability, resourceScope, at }) => {
+                const check = createApprovalAuthorityGraphIntegration(kernelProviders.authorityRuntime).verifyAuthority({
+                  requestId: 'approval-authority:check',
+                  actorId,
+                  trustDomainId,
+                  action: capability,
+                  resourceScope,
+                  requestedAt: at,
+                });
+                if (check.valid && !lineage({ subject: actorId, action: capability, resourceScope, organizationId, at })) {
+                  return { ...check, valid: false, type: 'authority_missing', reasonCode: 'APPROVER_AUTHORITY_NOT_LIVE', reason: 'A hop of the approver authority chain is no longer active.' };
+                }
+                return check;
+              },
+            },
+            now: kernelProviders.clock.now,
+          });
+        })();
   // The one obligation capability shape the grant-aware Kernel decides with
   // and the orchestrator re-reads at issuance: same sources, same profile
   // declarations, same store, same trusted profile resolution.
@@ -1882,6 +1976,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             })(),
           }
         : {}),
+      // CORE-05: the approval authority's assess port only — never its recorder.
+      ...(approvalAuthority !== undefined ? { approvals: { assess: (input) => approvalAuthority.assess(input) } } : {}),
       now: kernelProviders.clock.now,
       enterpriseContext,
       events: { enabled: configuration.eventPublishing.enabled, publisher: eventPublisher, nextId: eventIdGenerator.nextId },
@@ -2033,6 +2129,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     // CORE-04: from the composed objects, never from what was asked for.
     trustedContext: governedTrust?.context !== undefined && governedActionOrchestrator !== undefined ? 'composed' : 'not-configured',
     obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind === 'durable-authenticated' ? 'durable' : 'ephemeral',
+    // CORE-05: likewise.
+    approvals: approvalAuthority === undefined || governedActionOrchestrator === undefined ? 'not-configured' : approvalAuthority.storeKind === 'durable-authenticated' ? 'durable' : 'ephemeral',
   });
 
   const enterprise: AocEnterprise = {
@@ -2075,6 +2173,19 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             sources: governedTrust.obligations.sources,
             organizationId: configuration.kernelAuthority.organizationId,
             now: kernelProviders.clock.now,
+          }),
+        }
+      : {}),
+    ...(approvalAuthority !== undefined && governedActionOrchestrator !== undefined
+      ? {
+          approvals: Object.freeze<ApprovalCommandPort>({
+            pending: () => approvalAuthority.pending(),
+            describe: (requestId: string) => approvalAuthority.describe(requestId),
+            approve: (context, command) => approvalAuthority.approve(context, command),
+            reject: (context, command) => approvalAuthority.reject(context, command),
+            requestChanges: (context, command) => approvalAuthority.requestChanges(context, command),
+            escalate: (context, command) => approvalAuthority.escalate(context, command),
+            revoke: (context, command) => approvalAuthority.revoke(context, command),
           }),
         }
       : {}),

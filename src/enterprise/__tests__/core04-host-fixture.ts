@@ -339,6 +339,7 @@ export function secureEnv(dir: string, file: Record<string, unknown> = governedF
     AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: join(dir, 'execution-outcomes.sqlite'),
     AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH: join(dir, 'execution-resolutions.sqlite'),
     AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH: join(dir, 'obligation-discharges.sqlite'),
+    AOC_ENTERPRISE_APPROVAL_SQLITE_PATH: join(dir, 'approvals.sqlite'),
     ...authorityAuthenticityEnv(),
     AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: filePath,
     FRONTERA_TEST_AGENT_KEY: AGENT_KEY,

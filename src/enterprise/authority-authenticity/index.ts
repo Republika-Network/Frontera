@@ -10,6 +10,7 @@ export {
   AUTHORITY_ARTIFACT_VERSION,
   AUTHORITY_SIGNING_DOMAINS,
   SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS,
+  approvalStateSigningBytes,
   authoritySigningBytes,
   decodeAuthoritySignatureBytes,
   grantSigningBytes,

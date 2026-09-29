@@ -83,7 +83,9 @@ export function grantCorrelationFor(request: KernelEvaluationRequest, decisionId
  * `allowed` and nothing else. `approval_required` is not an authorization to
  * exercise, it is a decision that more has to happen first; `denied` and
  * `indeterminate` speak for themselves. Identical in value and in intent to
- * `isExecutableStatus` in `obligation-adapter.ts`.
+ * `isExecutableStatus` in `obligation-adapter.ts`. The one route by which an
+ * `approval_required` decision's source can permit exercise is
+ * `withVerifiedHumanApproval` below (CORE-05), and never this projection.
  */
 function authorizationPermitsExercise(status: KernelEvaluationResult['status']): boolean {
   return status === 'allowed';
@@ -215,6 +217,55 @@ export function deriveGrantSourceAuthorization(
     // CORE-04: the context this decision relied on, bound into the source.
     ...(result.context?.digest !== undefined ? { contextDigest: result.context.digest } : {}),
   };
+}
+
+/**
+ * The reason codes that make an `approval_required` decision one a human
+ * approval cannot answer: it is waiting on evidence or on an external
+ * handshake, which the coarse status does not distinguish from a review
+ * (`kernel-result.ts`). No approval of any quorum resumes one of those.
+ */
+const NOT_ANSWERABLE_BY_APPROVAL: ReadonlySet<string> = new Set(['EVIDENCE_REQUIRED', 'EVIDENCE_INVALID', 'RECOGNITION_HANDSHAKE_INVALID']);
+const AWAITING_APPROVAL: ReadonlySet<string> = new Set(['APPROVAL_REQUIRED', 'APPROVAL_PENDING']);
+
+/**
+ * CORE-05 — whether a decision is waiting on a human approval, and on nothing
+ * else a human approval cannot supply.
+ *
+ * Read here, in the Kernel, for the reason `authorizationPermitsExercise` is:
+ * the Kernel is the only reader of its own decision vocabulary. The status is
+ * `approval_required` **and** its reason codes name an approval — never
+ * evidence, never an external handshake. Anything else — an allow, a denial,
+ * an indeterminate result, an evidence or handshake requirement — is not
+ * answerable by an approval, whoever gives it.
+ */
+export function decisionAwaitsHumanApproval(result: Pick<KernelEvaluationResult, 'status' | 'reasonCodes'>): boolean {
+  if (result.status !== 'approval_required') return false;
+  if (result.reasonCodes.some((code) => NOT_ANSWERABLE_BY_APPROVAL.has(code))) return false;
+  return result.reasonCodes.some((code) => AWAITING_APPROVAL.has(code));
+}
+
+/**
+ * CORE-05 — the grant source of a decision that awaited a human approval,
+ * resumed under a durable approval that trusted composition has verified for
+ * **exactly** this decision.
+ *
+ * The decision is not re-made and not rewritten: its status stays
+ * `approval_required` wherever it is recorded. What changes is the one boolean
+ * layer E turns on — `authorizationPermitsExercise` — and it changes only
+ * here, from the Kernel's reading of its own decision, and only together with
+ * the approval's digest, which then sits in the source's canonical bytes (and
+ * so in every resumed grant's signed `sourceDigest`). A decision that did not
+ * await a human approval is returned unchanged: an approval never turns a
+ * denial, an evidence requirement or an indeterminate result into authority.
+ */
+export function withVerifiedHumanApproval(
+  source: GrantSourceAuthorization,
+  result: Pick<KernelEvaluationResult, 'status' | 'reasonCodes'>,
+  approvalDigest: string,
+): GrantSourceAuthorization {
+  if (!decisionAwaitsHumanApproval(result) || typeof approvalDigest !== 'string' || approvalDigest.length === 0) return source;
+  return { ...source, authorizationPermitsExercise: true, approvalDigest };
 }
 
 function toBoundEvaluations(scope: GrantScope): readonly GrantBoundEvaluation[] {

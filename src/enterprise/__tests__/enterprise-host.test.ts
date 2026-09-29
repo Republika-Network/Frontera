@@ -348,6 +348,8 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       // CORE-04: no profile here declares facts or obligations, so neither is composed — and nothing else changes.
       trustedContext: 'not-configured',
       obligations: 'not-configured',
+      // CORE-05: no profile here declares an approval requirement.
+      approvals: 'not-configured',
     });
     const health = await getJson(baseUrl, '/health');
     assert.equal(health.status, 200);

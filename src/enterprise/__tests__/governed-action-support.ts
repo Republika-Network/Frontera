@@ -230,6 +230,8 @@ export interface WorldOptions {
   readonly financialAuthority?: { readonly constraints: readonly AuthorityConstraint[] } | { readonly resolver: FinancialAuthorityResolver };
   /** P11 — the execution outcome store. Defaults to a fresh in-memory one; hand the same store to a second world to model a restart. */
   readonly executionOutcomes?: ExecutionOutcomeStore;
+  /** CORE-05 — the durable-approval port, handed to the orchestrator exactly as the composition root hands it. */
+  readonly approvals?: GovernedActionOrchestratorOptions['approvals'];
 }
 
 /** P10 — a generous durable monetary authority for suites whose subject is not payment ceilings themselves. */
@@ -449,6 +451,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     executionOutcomes: outcomes,
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
+    ...(options.approvals !== undefined ? { approvals: options.approvals } : {}),
     ...(hostRevalidate !== undefined
       ? {
           revalidateSource: (correlation: GrantCorrelation) => {

@@ -169,8 +169,10 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
     const signer = testSigner();
     // CORE-04 added exactly one artifact kind to each side: the obligation
     // discharge store's signed state (authority-material — it releases issuance).
-    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
-    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
+    // CORE-05 added exactly one more: the approval store's signed state (it
+    // resumes a withheld decision into a grant).
+    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
+    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signApprovalState', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
   });
 
   it('the signer offers no generic "sign arbitrary bytes" capability', () => {

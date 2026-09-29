@@ -29,5 +29,5 @@ export {
 } from './contracts.js';
 export { GOVERNED_ACTION_RESERVED_CONTEXT_KEYS, validateGovernedActionIntent, type GovernedActionIntentValidation } from './intent.js';
 export { deriveGovernedActionExecutionId, deriveGovernedActionRequestId, governedActionIdempotencyScope } from './identifiers.js';
-export { createGovernedActionOrchestrator, type GovernedActionOrchestrator, type GovernedActionOrchestratorOptions } from './orchestrator.js';
+export { createGovernedActionOrchestrator, type GovernedActionApprovalAssessment, type GovernedActionOrchestrator, type GovernedActionOrchestratorOptions } from './orchestrator.js';
 export { GovernedActionConfigurationError, type GovernedActionConfigurationErrorCode } from './errors.js';

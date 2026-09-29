@@ -188,6 +188,29 @@ export interface GovernedActionOrchestratorOptions {
    * nothing from any obligation state.
    */
   readonly obligations?: { satisfiedNow(request: KernelEvaluationRequest): Promise<boolean> };
+  /**
+   * CORE-05 — durable approvals: what makes `approval_required` resumable
+   * rather than terminal.
+   *
+   * Absent, an `approval_required` decision ends `withheld: 'approval'`
+   * exactly as before. Present, a decision that awaits a human approval under
+   * a profile declaring an approval requirement is recorded as a durable
+   * approval request the first time it is withheld, and a retry of the same
+   * request (same idempotency key → the same committed decision) is issued
+   * once a durable, attributable approval of **exactly that decision** has
+   * completed and not lapsed. The decision is never re-made and never
+   * rewritten; the grant's source records the approval it was resumed under.
+   * Unreadable is withheld.
+   */
+  readonly approvals?: {
+    assess(input: {
+      readonly request: KernelEvaluationRequest;
+      readonly decision: VerifiedDecision['decision'];
+      readonly evaluationId: string;
+      /** The Governance Store's canonical digests of the committed record — what the approval binds, beside its content. */
+      readonly decisionDigest: { readonly requestDigest: string; readonly evaluationDigest: string };
+    }): Promise<GovernedActionApprovalAssessment>;
+  };
   readonly now: () => string;
   readonly enterpriseContext: () => GovernanceEnterpriseContext;
   readonly events: {
@@ -253,6 +276,17 @@ export interface GovernedActionOrchestratorOptions {
     readonly reader: ExecutionResolutionReader;
   };
 }
+
+/**
+ * CORE-05 — the approval authority's answer about one committed decision, as
+ * the orchestrator reads it (`approval-authority/service.ts` owns it):
+ * nothing can resume it, it is withheld for a stated reason, or a durable
+ * approval of exactly this decision is usable until `notAfter`.
+ */
+export type GovernedActionApprovalAssessment =
+  | { readonly kind: 'not-applicable' }
+  | { readonly kind: 'withheld'; readonly status: 'pending' | 'rejected' | 'revoked' | 'request-expired' | 'approval-expired' | 'superseded' | 'unavailable' }
+  | { readonly kind: 'approved'; readonly approvalDigest: string; readonly notAfter: string };
 
 export interface GovernedActionOrchestrator {
   readonly organizationId: string;
@@ -450,6 +484,7 @@ function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: 
 export function createGovernedActionOrchestrator(options: GovernedActionOrchestratorOptions): GovernedActionOrchestrator {
   const { organizationId: servedOrganizationId, issuance, execution, governanceStore: store, grantPolicy, monetary, now } = options;
   const obligationState = options.obligations;
+  const approvals = options.approvals;
   if (
     monetary === null ||
     typeof monetary !== 'object' ||
@@ -478,6 +513,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   ) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Execution reconciliation, when enabled, requires a resolution-authority binder and a resolution reader.');
   }
+  if (approvals !== undefined && (approvals === null || typeof approvals !== 'object' || typeof approvals.assess !== 'function')) {
+    throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Durable approvals, when composed, require an approval authority that can assess a committed decision.');
+  }
   const governance = options.governance;
   if (governance !== undefined && (governance === null || typeof governance !== 'object' || typeof governance.resolve !== 'function' || typeof governance.reservesContextKey !== 'function')) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_CONFIGURATION_INVALID', 'Governed-action semantics, when supplied, must be a trusted Governance Profile registry.');
@@ -496,7 +534,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   });
 
   /** Trusted grant terms. A throwing or empty policy establishes no expiry, and no expiry means no grant. */
-  function termsFor(scope: BoundActorScope, verified: VerifiedDecision): GovernedActionGrantTerms | undefined {
+  function termsFor(scope: BoundActorScope, verified: VerifiedDecision, approvalNotAfter: string | undefined): GovernedActionGrantTerms | undefined {
     let terms: GovernedActionGrantTerms | undefined;
     try {
       terms = grantPolicy({
@@ -520,8 +558,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     // proposal and never clamps one. A ceiling already in the past yields a
     // proposal the runtime refuses: stale context never becomes authority.
     const validUntil = verified.decision.context?.validUntil;
-    if (typeof validUntil === 'string' && Date.parse(validUntil) < Date.parse(terms.grantExpiresAt)) return { ...terms, grantExpiresAt: validUntil };
-    return terms;
+    let proposed = terms;
+    if (typeof validUntil === 'string' && Date.parse(validUntil) < Date.parse(proposed.grantExpiresAt)) proposed = { ...proposed, grantExpiresAt: validUntil };
+    // CORE-05: a resumed decision is valid only while its approval is, and
+    // issuance carries that instant as a `decision` ceiling — so the proposal
+    // stays inside it for the same reason.
+    if (approvalNotAfter !== undefined && Date.parse(approvalNotAfter) < Date.parse(proposed.grantExpiresAt)) proposed = { ...proposed, grantExpiresAt: approvalNotAfter };
+    return proposed;
   }
 
   /**
@@ -536,7 +579,9 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
    */
   function persistedSourceGuard(verified: VerifiedDecision, obligationsSatisfied: boolean | undefined): (correlation: GrantCorrelation) => GrantSourceAuthorization | undefined {
     // CORE-04: the committed source, with the obligation aggregate as it
-    // stands at issuance — the one field issuance re-reads.
+    // stands at issuance — the one field issuance re-reads. (CORE-05: an
+    // approval is applied by issuance itself, to this source and to the one it
+    // measured alike.)
     const source = obligationsSatisfied === undefined ? verified.source : { ...verified.source, allBlockingObligationsSatisfied: obligationsSatisfied };
     return (correlation) => {
       if (!grantCorrelationMatches(correlation, source.correlation)) return undefined;
@@ -544,6 +589,26 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const current = hostRevalidateSource(correlation);
       return current === undefined || obligationsSatisfied === undefined ? current : { ...current, allBlockingObligationsSatisfied: obligationsSatisfied && current.allBlockingObligationsSatisfied };
     };
+  }
+
+  /** CORE-05: the governed reason code for an approval that is not usable now. */
+  function approvalReasonCode(status: Extract<GovernedActionApprovalAssessment, { kind: 'withheld' }>['status']): string {
+    switch (status) {
+      case 'pending':
+        return R.GOVERNED_ACTION_APPROVAL_PENDING;
+      case 'rejected':
+        return R.GOVERNED_ACTION_APPROVAL_REJECTED;
+      case 'request-expired':
+        return R.GOVERNED_ACTION_APPROVAL_REQUEST_EXPIRED;
+      case 'approval-expired':
+        return R.GOVERNED_ACTION_APPROVAL_EXPIRED;
+      case 'revoked':
+        return R.GOVERNED_ACTION_APPROVAL_REVOKED;
+      case 'superseded':
+        return R.GOVERNED_ACTION_APPROVAL_SUPERSEDED;
+      default:
+        return R.GOVERNED_ACTION_APPROVAL_UNAVAILABLE;
+    }
   }
 
   /**
@@ -649,7 +714,10 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // The Kernel's status, restated — never reinterpreted.
       if (persisted.status === 'denied') return result({ status: 'denied', ...decided, reasonCodes: persisted.reasonCodes });
       if (persisted.status === 'indeterminate') return result({ status: 'indeterminate', ...decided, reasonCodes: persisted.reasonCodes });
-      if (persisted.status === 'approval_required') return result({ status: 'withheld', withheldBy: 'approval', ...decided, reasonCodes: persisted.reasonCodes });
+      // Terminal without durable approvals, exactly as before CORE-05. With
+      // them, it waits for the approval gate below — after replay, so a
+      // request already resumed and executed is answered from its record.
+      if (persisted.status === 'approval_required' && approvals === undefined) return result({ status: 'withheld', withheldBy: 'approval', ...decided, reasonCodes: persisted.reasonCodes });
 
       // Phase: replay. An execution identity already on the committed record is
       // answered from that record, before any mutable gate runs: grant terms,
@@ -663,6 +731,34 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const executed: ResultContext = { ...decided, executionId };
       const known = ledger.prior(record, executionId);
       if (known.attempted) return replayExecution(outcomeScope, executed, executionId, known, persisted.reasonCodes);
+
+      // Phase: approval (CORE-05). A decision that awaits a human approval is
+      // resumed only by a durable, attributable approval of exactly this
+      // committed decision — bound to its request id, decision id and subject
+      // digest — that has completed and not lapsed. The decision itself is
+      // never re-made: what issuance receives is the committed decision plus
+      // the approval, and the Kernel alone decides whether the one answers the
+      // other. Anything short of that is withheld, in the approval's own words.
+      let approval: { readonly digest: string; readonly notAfter: string } | undefined;
+      const assessApproval = async (): Promise<GovernedActionApprovalAssessment> => {
+        if (approvals === undefined) return { kind: 'not-applicable' };
+        try {
+          return await approvals.assess({
+            request: verified.request,
+            decision: persisted,
+            evaluationId,
+            decisionDigest: { requestDigest: record.integrity.requestDigest, evaluationDigest: record.integrity.evaluationDigest },
+          });
+        } catch {
+          return { kind: 'withheld', status: 'unavailable' };
+        }
+      };
+      if (persisted.status === 'approval_required' && approvals !== undefined) {
+        const assessment = await assessApproval();
+        if (assessment.kind === 'not-applicable') return result({ status: 'withheld', withheldBy: 'approval', ...decided, reasonCodes: persisted.reasonCodes });
+        if (assessment.kind === 'withheld') return result({ status: 'withheld', withheldBy: 'approval', ...decided, reasonCodes: [...persisted.reasonCodes, approvalReasonCode(assessment.status)] });
+        approval = { digest: assessment.approvalDigest, notAfter: assessment.notAfter };
+      }
 
       // Phase: emergency-control admission. Deliberately **after** replay and
       // **before** grantPolicy.
@@ -691,7 +787,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: admission.reasonCodes });
       }
 
-      const terms = termsFor(scope, verified);
+      const terms = termsFor(scope, verified, approval?.notAfter);
       if (terms === undefined) return result({ status: 'withheld', withheldBy: 'grant-terms', ...decided, reasonCodes: [R.GOVERNED_ACTION_GRANT_TERMS_UNAVAILABLE] });
 
       // CORE-04: a decision is issued on the state of its obligations *now*.
@@ -720,6 +816,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
           grantExpiresAt: terms.grantExpiresAt,
           ...(terms.requestedBounds !== undefined ? { requestedBounds: terms.requestedBounds } : {}),
           ...(obligationsSatisfied !== undefined ? { obligationsSatisfied } : {}),
+          ...(approval !== undefined ? { approval } : {}),
           revalidateSource: persistedSourceGuard(verified, obligationsSatisfied),
         });
       } catch (error) {
@@ -768,6 +865,20 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (!assessment.usable) {
         if (observedExpiry(assessment)) report((recorder) => recorder.grantExpiryObserved(grant));
         return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: assessment.reasonCodes });
+      }
+
+      // CORE-05: approval is live lineage, not history. A grant resumed under
+      // an approval is exercised only while that exact approval still stands
+      // — not revoked, not lapsed, its approvers still holding their authority
+      // — read again immediately before the claim, so a revocation between
+      // issuance and exercise leaves the adapter uncalled. A retry of the
+      // request meets the approval gate above and is withheld there.
+      if (approval !== undefined) {
+        const again = await assessApproval();
+        if (again.kind !== 'approved' || again.approvalDigest !== approval.digest) {
+          const code = again.kind === 'withheld' ? approvalReasonCode(again.status) : R.GOVERNED_ACTION_APPROVAL_UNAVAILABLE;
+          return result({ status: 'withheld', withheldBy: 'approval', ...executed, reasonCodes: [...persisted.reasonCodes, code] });
+        }
       }
 
       // P11 preparation, BEFORE the claim and therefore before any adapter: the

@@ -620,7 +620,7 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 
 | Question | Answer |
 |---|---|
-| Signing interface to preserve | `AuthorityArtifactSigner` — `activeKeyId`, `algorithm`, `signGrant(grant, storeId)`, `signRevocation(revocation, storeId)`, `signRevocationState(state)` (CORE-01). Domain-aware; do **not** widen it to `sign(bytes)` |
+| Signing interface to preserve | `AuthorityArtifactSigner` — `activeKeyId`, `algorithm`, `signGrant(grant, storeId)`, `signRevocation(revocation, storeId)`, `signRevocationState(state)` (CORE-01), `signObligationDischargeState(state)` (CORE-04), `signApprovalState(state)` (CORE-05). Domain-aware; do **not** widen it to `sign(bytes)`. The complete operation set an external signer (CORE-02) must implement is these five |
 | Already async? | **Yes.** Both methods return `Promise`. No call site needs restructuring for a network signer |
 | Algorithm | `ed25519-v1`. Closed registry in `authority-signature.ts`. **Verify the target provider supports Ed25519** — several managed KMS products offer only ECDSA/RSA. Adding `ecdsa-p256-v1` is deliberate code + config work; there must be no negotiation or fallback |
 | Key id model | opaque string; artifacts record theirs; registry resolves it. A KMS key ARN/resource name can be the key id directly |
@@ -752,6 +752,64 @@ is terminal, a rollback can remove satisfaction but never manufacture it. A
 holder of the signing key, or of this process, can sign anything (AA-001,
 CORE-02). CORE-02 will move `signObligationDischargeState` behind the external
 signer exactly as it moves the other three operations.
+
+## 28. CORE-05 — Approval State
+
+### 28.1 Why it is an authority artifact
+
+A completed human approval resumes a committed `approval_required` decision
+into a bounded grant: the Kernel adapter turns the grant source's
+`authorizationPermitsExercise` on only together with the approval's digest. The
+approval store therefore decides whether authority may be issued. Insertion
+(a forged approval or quorum), deletion (a rejection, a revocation, an
+approval that a later one's count depended on, the request carrying the
+requirement snapshot) and rewriting (approver, verdict, the instant that fixes
+the proof's expiry) would each widen authority.
+
+### 28.2 The model (the CORE-01 / CORE-04 pattern, unchanged)
+
+Schema v1 (`approvals.sqlite`, the first durable approval format — there is no
+unauthenticated predecessor to accept): a store identity `{storeId (random),
+organizationId}`; append-only rows `requested` / `approved` / `rejected` /
+`requested_changes` / `escalated` / `revoked`, each with a contiguous
+`sequence` and a digest over the canonical row (organization, request,
+decision, subject digest, kind, subject text, authenticated actor, reviewed
+evidence references, reason, recorder, instant) bound to the store and the
+position; a hash chain from a genesis bound to `(storeId, organizationId)`;
+one signed head `{storeId, organizationId, sequence, chainDigest}` — Ed25519
+under `frontera:authority-artifact:approval-state:v1` by the same
+`AuthorityArtifactSigner` (one new structured method, `signApprovalState`; the
+verifier gains `verifyApprovalState`; no byte signing, no new key, no HMAC).
+Every authoritative read — at open, before every command and before every
+resumption — verifies the signature and recomputes the exact set. Verified
+state before write, genesis only for an empty file, CORE-01 key-rotation
+re-attestation and the in-process regression witness are exactly §27.2's.
+
+State, quorum and the approval proof are never stored: they are derived on
+every read by replaying the verified rows through approval-runtime's policies
+(`ADR-DURABLE-APPROVALS-ON-THE-GOVERNED-PATH.md`). The proof digest is identity,
+not authenticity; authenticity comes from the signed head, and the proof
+becomes authority only inside a signed grant's `sourceDigest`.
+
+### 28.3 What is blocked, and what is not
+
+Blocked **for a writer without a trusted signing key**: inserting, altering,
+deleting, reordering, duplicating or gapping rows; re-signing a forged head
+with an untrusted key; transplanting a genuine history (with or without its
+genuine head) from another store; a store or row of another organization;
+genesis over existing content; laundering a tampered base through a
+legitimate later command (before or during signing); a half-written row
+without its head. Tested in `approval-authenticity.test.ts` and end to end in
+`governed-action-approvals-adversarial-host.test.ts`.
+
+Not blocked: restoring an older, genuinely signed state after a restart
+(rollback — CORE-07). Unlike discharges, a prefix **can** be more permissive
+than its whole — an approval later revoked, or a request before its rejection
+— so a restored earlier genuine state can make a revoked approval usable again
+until its own `approvalValiditySeconds` lapse; pinned by a test and assigned to
+CORE-07. A holder of the signing key, or of this process, can sign anything
+(AA-001, CORE-02); CORE-02 moves `signApprovalState` behind the external signer
+with the other four operations.
 
 ---
 
