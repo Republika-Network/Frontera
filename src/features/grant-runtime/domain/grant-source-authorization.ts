@@ -101,6 +101,17 @@ export interface GrantSourceAuthorization {
    * source that existed before CORE-04.
    */
   readonly contextDigest?: string;
+  /**
+   * CORE-05 — the digest of the durable, attributable human approval a
+   * decision that awaited one was resumed under. Present only on a source whose
+   * `authorizationPermitsExercise` the Kernel adapter derived from an
+   * `approval_required` decision *and* a verified approval of exactly that
+   * decision (`withVerifiedHumanApproval`). Part of the canonical source bytes,
+   * so a resumed grant's `sourceDigest` — inside its identity, digest and
+   * signature — names the approval it rests on. **Additive:** absent, the
+   * serialization is byte-identical to every source that existed before CORE-05.
+   */
+  readonly approvalDigest?: string;
 }
 
 /**
@@ -153,6 +164,8 @@ export function isDerivableGrantSource(source: GrantSourceAuthorization): boolea
 export function serializeGrantSourceAuthorization(source: GrantSourceAuthorization): string {
   return [
     `"allBlockingObligationsSatisfied":${String(source.allBlockingObligationsSatisfied)}`,
+    // CORE-05: only when present, so every pre-CORE-05 source keeps its bytes.
+    ...(source.approvalDigest !== undefined ? [`"approvalDigest":${JSON.stringify(source.approvalDigest)}`] : []),
     `"authorizationPermitsExercise":${String(source.authorizationPermitsExercise)}`,
     // CORE-04: only when present, so every pre-CORE-04 source keeps its bytes.
     ...(source.contextDigest !== undefined ? [`"contextDigest":${JSON.stringify(source.contextDigest)}`] : []),

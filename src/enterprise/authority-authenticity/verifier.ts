@@ -2,6 +2,7 @@ import { createPublicKey, verify as cryptoVerify, type KeyObject } from 'node:cr
 
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
+import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { AuthorityAuthenticityConfigurationError, type AuthoritySignatureFailure } from './errors.js';
 import {
@@ -12,6 +13,7 @@ import {
   isSupportedAuthoritySignatureAlgorithm,
   isWellFormedAuthoritySignature,
   revocationSigningBytes,
+  approvalStateSigningBytes,
   obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
@@ -76,6 +78,8 @@ export interface AuthorityArtifactVerifier {
   verifyRevocationState(state: RevocationStateCommitment, signature: unknown): AuthoritySignatureVerification;
   /** CORE-04: verifies an obligation discharge store's signed state commitment. */
   verifyObligationDischargeState(state: ObligationDischargeStateCommitment, signature: unknown): AuthoritySignatureVerification;
+  /** CORE-05: verifies an approval store's signed state commitment. */
+  verifyApprovalState(state: ApprovalStateCommitment, signature: unknown): AuthoritySignatureVerification;
   /** The key ids this verifier trusts, for composition checks and diagnostics. Ids only — never key material. */
   readonly trustedKeyIds: readonly string[];
 }
@@ -236,6 +240,9 @@ export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificati
     },
     verifyObligationDischargeState(state: ObligationDischargeStateCommitment, signature: unknown): AuthoritySignatureVerification {
       return verify(obligationDischargeStateSigningBytes(state), signature);
+    },
+    verifyApprovalState(state: ApprovalStateCommitment, signature: unknown): AuthoritySignatureVerification {
+      return verify(approvalStateSigningBytes(state), signature);
     },
   });
 }

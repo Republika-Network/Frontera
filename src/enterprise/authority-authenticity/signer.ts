@@ -2,6 +2,7 @@ import { createPrivateKey, createPublicKey, sign as cryptoSign, type KeyObject }
 
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
+import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
 import {
@@ -10,6 +11,7 @@ import {
   grantSigningBytes,
   isSupportedAuthoritySignatureAlgorithm,
   revocationSigningBytes,
+  approvalStateSigningBytes,
   obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
@@ -80,6 +82,12 @@ export interface AuthorityArtifactSigner {
    * a structured artifact — never bytes.
    */
   signObligationDischargeState(state: ObligationDischargeStateCommitment): Promise<AuthoritySignature>;
+  /**
+   * Signs an approval store's state commitment (CORE-05). A completed approval
+   * resumes a withheld decision into a grant, so the approval log's head is an
+   * authority artifact: same key, its own domain, a structured artifact.
+   */
+  signApprovalState(state: ApprovalStateCommitment): Promise<AuthoritySignature>;
 }
 
 export interface SoftwareAuthorityArtifactSignerOptions {
@@ -152,6 +160,9 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
     },
     async signObligationDischargeState(state: ObligationDischargeStateCommitment): Promise<AuthoritySignature> {
       return signBytes(obligationDischargeStateSigningBytes(state));
+    },
+    async signApprovalState(state: ApprovalStateCommitment): Promise<AuthoritySignature> {
+      return signBytes(approvalStateSigningBytes(state));
     },
   });
 }

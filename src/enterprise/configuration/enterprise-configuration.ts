@@ -249,6 +249,15 @@ export interface EnterpriseConfiguration {
   readonly obligationDischarge: {
     readonly sqlitePath: string;
   };
+  /**
+   * CORE-05 — the durable approval store: the append-only, signed log of
+   * approval requests and approver verdicts that resume withheld decisions.
+   * Opened only when a Governance Profile declares an approval requirement,
+   * and then the SQLite file under `sqlite` persistence. Its own file.
+   */
+  readonly approval: {
+    readonly sqlitePath: string;
+  };
   readonly executionResolution: {
     /** SQLite path for the execution resolution store. */
     readonly sqlitePath: string;
@@ -503,6 +512,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     obligationDischarge: {
       sqlitePath: env.AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH ?? '.data/obligation-discharges.sqlite',
+    },
+    approval: {
+      sqlitePath: env.AOC_ENTERPRISE_APPROVAL_SQLITE_PATH ?? '.data/approvals.sqlite',
     },
     executionResolution: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',

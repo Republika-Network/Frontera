@@ -17,7 +17,7 @@ import {
 } from '../../features/grant-runtime/index.js';
 import { compareMonetaryAmounts, type FinancialActionClassifier } from '../../features/monetary-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
-import { KernelGrantCapability, deriveGrantSourceAuthorization } from '../../kernel/orchestration/grant-adapter.js';
+import { KernelGrantCapability, deriveGrantSourceAuthorization, withVerifiedHumanApproval } from '../../kernel/orchestration/grant-adapter.js';
 import { grantValidityCeilingsFor, isWellFormedGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
 import { ExecutionGovernanceError } from './errors.js';
 import {
@@ -124,6 +124,18 @@ export interface IssueFromDecisionInput {
    * committed value stands (the pre-CORE-04 behaviour).
    */
   readonly obligationsSatisfied?: boolean;
+  /**
+   * CORE-05 — a durable, attributable human approval of **exactly** this
+   * decision, verified by trusted composition at issuance (never read from the
+   * request, never from the committed record). The Kernel's own
+   * `withVerifiedHumanApproval` decides whether it can resume the decision at
+   * all — only an `approval_required` decision awaiting a human approval is
+   * resumed; anything else is left exactly as projected — and binds `digest`
+   * into the source. `notAfter`, when the approval lapses, becomes a
+   * `decision` validity ceiling: a resumed grant never outlives its approval.
+   * Absent, nothing about issuance changes.
+   */
+  readonly approval?: { readonly digest: string; readonly notAfter: string };
 }
 
 export interface AuthorityControlledIssuanceCore {
@@ -387,7 +399,18 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
       // adapter from an already-frozen result. Never assembled from request
       // data, and never mutated here.
       const projected = deriveGrantSourceAuthorization(grantCapability, request, decision);
-      const measured = input.obligationsSatisfied === undefined ? projected : { ...projected, allBlockingObligationsSatisfied: input.obligationsSatisfied };
+      const obligated = input.obligationsSatisfied === undefined ? projected : { ...projected, allBlockingObligationsSatisfied: input.obligationsSatisfied };
+      // CORE-05: the Kernel resumes the decision under the verified approval —
+      // or returns the source unchanged when the decision did not await one —
+      // and a resumed decision is valid only while its approval is. Applied to
+      // the measured source and, identically, to whatever source the commit
+      // guard re-reads, so the two can never disagree about the approval.
+      const approval = input.approval;
+      const resume = (source: GrantSourceAuthorization): GrantSourceAuthorization => {
+        if (approval === undefined) return source;
+        const resumed = withVerifiedHumanApproval(source, decision, approval.digest);
+        return resumed.approvalDigest === undefined ? resumed : withGrantValidityCeiling(resumed, { source: 'decision', notAfter: approval.notAfter });
+      };
 
       // The Kernel evaluated under *its* grant declaration and reported the
       // ceilings that declaration produced; the projection above recomputed
@@ -402,7 +425,7 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
       // instead of silently widening one grant at a time. This is the error
       // `EXECUTION_GRANT_DECLARATION_MISMATCH` was declared for.
       const reported = serializeValidityCeilings(decision.grants.validityCeilings);
-      const derived = serializeValidityCeilings(measured.validityCeilings);
+      const derived = serializeValidityCeilings(obligated.validityCeilings);
       if (reported !== derived) {
         throw new ExecutionGovernanceError(
           'EXECUTION_GRANT_DECLARATION_MISMATCH',
@@ -410,6 +433,17 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
           { decisionId: decision.decisionId, reportedByKernel: reported, derivedFromCapability: derived },
         );
       }
+      // After the comparison above, which is about the deployment declaration
+      // the Kernel and this composition share — the approval is neither's.
+      const measured = resume(obligated);
+      const revalidateSource = input.revalidateSource;
+      const revalidateResumed =
+        revalidateSource === undefined
+          ? undefined
+          : (correlation: GrantCorrelation): GrantSourceAuthorization | undefined => {
+              const current = revalidateSource(correlation);
+              return current === undefined ? undefined : resume(current);
+            };
 
       const binding = resolveAuthorityBinding({ request, correlation: measured.correlation, evaluatedAt: measured.evaluatedAt, phase: 'issuance' });
       if (binding === undefined) {
@@ -448,7 +482,7 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         request,
         measured,
         binding,
-        input.revalidateSource,
+        revalidateResumed,
         captureEmergencyRefusal,
         financial.kind === 'financial' ? { authority: financial.authority, asset: financial.asset } : undefined,
         captureFinancialRefusal,

@@ -56,6 +56,8 @@ export interface EnterpriseHealthPosture {
   readonly trustedContext: 'composed' | 'not-configured';
   /** CORE-04: the obligation discharge store's kind, or `not-configured` when no obligations are composed. */
   readonly obligations: 'durable' | 'ephemeral' | 'not-configured';
+  /** CORE-05: the approval store's kind, or `not-configured` when no Governance Profile declares an approval requirement. */
+  readonly approvals: 'durable' | 'ephemeral' | 'not-configured';
 }
 
 /**

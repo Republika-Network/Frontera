@@ -173,6 +173,9 @@ function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly str
   // verified discharge forgotten on restart would withhold forever, and a
   // secure Host never runs authority-relevant state in memory.
   if (posture.obligations === 'ephemeral') shortfalls.push(`obligations is 'ephemeral', expected 'durable' or 'not-configured'`);
+  // CORE-05: approvals too — an approval that forgot itself would withhold
+  // forever, and one that forgot a rejection could be approved again.
+  if (posture.approvals === 'ephemeral') shortfalls.push(`approvals is 'ephemeral', expected 'durable' or 'not-configured'`);
   return shortfalls;
 }
 

@@ -2,6 +2,7 @@ export { GOVERNANCE_PROFILE_REFUSALS } from './contracts.js';
 export type {
   GovernanceActionClassDeclaration,
   GovernanceConfiguration,
+  GovernanceProfileApproval,
   GovernanceProfileDefinition,
   GovernanceProfileObligation,
   GovernanceProfileParameter,

@@ -14,6 +14,7 @@ import {
   GOVERNANCE_PROFILE_REFUSALS,
   type GovernanceActionClassDeclaration,
   type GovernanceConfiguration,
+  type GovernanceProfileApproval,
   type GovernanceProfileDefinition,
   type GovernanceProfileObligation,
   type GovernanceProfileParameter,
@@ -117,7 +118,7 @@ function validateProfile(
   resourceClasses: ReadonlySet<string>,
 ): GovernanceProfileDefinition {
   const where = `profiles[${index}]`;
-  const entry = closed(raw, ['profileId', 'version', 'owner', 'provenance', 'actionClass', 'resourceClass', 'parameters', 'materialFacts', 'relevantPolicies', 'restrictiveFacts', 'obligations'], where);
+  const entry = closed(raw, ['profileId', 'version', 'owner', 'provenance', 'actionClass', 'resourceClass', 'parameters', 'materialFacts', 'relevantPolicies', 'restrictiveFacts', 'obligations', 'approval'], where);
   const { profileId, version, owner, actionClass, resourceClass } = entry;
   if (!isSemanticIdentifier(profileId)) fail(`${where}.profileId is not a semantic identifier.`);
   if (!isGovernanceProfileVersion(version)) fail(`${where}.version must be a positive integer.`);
@@ -152,6 +153,7 @@ function validateProfile(
     factFolds.add(fold);
   }
   const obligations = validateProfileObligations(entry['obligations'], `${where}.obligations`);
+  const approval = entry['approval'] === undefined ? undefined : validateProfileApproval(entry['approval'], `${where}.approval`);
 
   return Object.freeze({
     profileId,
@@ -166,6 +168,69 @@ function validateProfile(
     // CORE-04: only when non-empty, so every CORE-03 profile keeps its digest.
     ...(restrictiveFacts.length > 0 ? { restrictiveFacts } : {}),
     ...(obligations.length > 0 ? { obligations } : {}),
+    // CORE-05: only when declared, so every earlier profile keeps its digest.
+    ...(approval !== undefined ? { approval } : {}),
+  });
+}
+
+/** CORE-05 — bounds on an approval requirement. Finite on every axis: no approval is open forever, usable forever or satisfied by nobody. */
+const APPROVAL_LIMITS = {
+  minimumApprovals: { min: 1, max: 16 },
+  requestTtlSeconds: { min: 60, max: 30 * 24 * 60 * 60 },
+  approvalValiditySeconds: { min: 60, max: 7 * 24 * 60 * 60 },
+} as const;
+
+function boundedInteger(value: unknown, bounds: { readonly min: number; readonly max: number }, where: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < bounds.min || value > bounds.max) {
+    fail(`${where} must be an integer from ${String(bounds.min)} to ${String(bounds.max)}.`);
+  }
+  return value;
+}
+
+/**
+ * approval-runtime's closed evidence vocabulary (`ApprovalEvidenceType`). A
+ * profile may require any of them to have been reviewed; the runtime's own
+ * `ApprovalEvidencePolicy` enforces it.
+ */
+const APPROVAL_EVIDENCE_TYPES: ReadonlySet<string> = new Set([
+  'draft_action',
+  'email_draft',
+  'project_context',
+  'source_document',
+  'authority_proof',
+  'recognition_decision',
+  'policy_result',
+  'human_comment',
+  'system_log',
+  'external_reference',
+  'approval_proof',
+]);
+
+/** CORE-05 — a profile's approval requirement: closed, every bound stated, required evidence drawn from the runtime's vocabulary. */
+function validateProfileApproval(raw: unknown, where: string): GovernanceProfileApproval {
+  const entry = closed(raw, ['approverAction', 'minimumApprovals', 'requestTtlSeconds', 'approvalValiditySeconds', 'requiredEvidence'], where);
+  const approverAction = entry['approverAction'];
+  if (!isCanonicalCustomerIdentifier(approverAction)) fail(`${where}.approverAction is not a canonical action identifier.`);
+  const minimumApprovals = boundedInteger(entry['minimumApprovals'], APPROVAL_LIMITS.minimumApprovals, `${where}.minimumApprovals`);
+  const requestTtlSeconds = boundedInteger(entry['requestTtlSeconds'], APPROVAL_LIMITS.requestTtlSeconds, `${where}.requestTtlSeconds`);
+  const approvalValiditySeconds = boundedInteger(entry['approvalValiditySeconds'], APPROVAL_LIMITS.approvalValiditySeconds, `${where}.approvalValiditySeconds`);
+  const rawEvidence = entry['requiredEvidence'];
+  const requiredEvidence: string[] = [];
+  if (rawEvidence !== undefined) {
+    if (!Array.isArray(rawEvidence) || rawEvidence.length === 0) fail(`${where}.requiredEvidence must be a non-empty array when present.`);
+    for (const [index, type] of (rawEvidence as unknown[]).entries()) {
+      if (typeof type !== 'string' || !APPROVAL_EVIDENCE_TYPES.has(type)) fail(`${where}.requiredEvidence[${index}] is not an approval evidence type.`);
+      if (requiredEvidence.includes(type)) fail(`${where}.requiredEvidence names '${type}' twice.`);
+      requiredEvidence.push(type);
+    }
+  }
+  return Object.freeze({
+    approverAction,
+    minimumApprovals,
+    requestTtlSeconds,
+    approvalValiditySeconds,
+    // Only when non-empty, sorted: order carries no meaning and must not change the profile digest.
+    ...(requiredEvidence.length > 0 ? { requiredEvidence: Object.freeze([...requiredEvidence].sort()) } : {}),
   });
 }
 
@@ -244,6 +309,11 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
     profileFolds.add(fold);
     const combination = `${definition.actionClass}\u0000${definition.resourceClass}`;
     if (byCombination.has(combination)) fail(`profiles[${index}] governs ${definition.actionClass} × ${definition.resourceClass}, which another profile already governs.`);
+    // CORE-05: authority to approve is not authority to act. An approver
+    // action that is also a governed action would let the authority to take an
+    // action double as the standing to approve it.
+    const approverAction = definition.approval?.approverAction;
+    if (approverAction !== undefined && actions.classOf.has(approverAction)) fail(`profiles[${index}].approval names '${approverAction}', which is a governed action; an approver action must never be one.`);
     const resolved: ResolvedGovernanceProfile = Object.freeze({
       definition,
       reference: Object.freeze({ id: definition.profileId, version: definition.version, digest: governanceProfileDigest(definition) }),

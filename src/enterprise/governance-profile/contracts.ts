@@ -65,12 +65,51 @@ export interface GovernanceProfileDefinition {
    * non-empty.
    */
   readonly obligations?: readonly GovernanceProfileObligation[];
+  /**
+   * CORE-05 — how a decision under this profile that awaits a human approval
+   * can be approved: who (by durable Kernel-Authority), how many, and for how
+   * long. It never decides *whether* approval is required — deterministic
+   * policy does — and a profile without it leaves an approval-required
+   * decision withheld, exactly as before CORE-05. Present only when declared,
+   * so every earlier profile keeps its digest.
+   */
+  readonly approval?: GovernanceProfileApproval;
 }
 
 /** CORE-04 — one obligation a profile declares. */
 export interface GovernanceProfileObligation {
   readonly obligationType: string;
   readonly blocking: boolean;
+}
+
+/**
+ * CORE-05 — a profile's approval requirement: organization-controlled trusted
+ * configuration, never request data. It maps onto approval-runtime's own
+ * `ApprovalRequirement` (a `quorum_approval` with segregation of duties always
+ * required), whose policies judge every verdict.
+ */
+export interface GovernanceProfileApproval {
+  /**
+   * The Kernel-Authority action an approver must hold live authority for —
+   * over the approved request's resource — when approving and again when the
+   * approval is used (approval-runtime's `requiredAuthorityCapability`).
+   * **Never a governed action** (the registry refuses one): authority to
+   * approve is not authority to act, and an actor able to take the action
+   * gains no standing to approve it.
+   */
+  readonly approverAction: string;
+  /** Distinct approvers required. The same approver never counts twice. */
+  readonly minimumApprovals: number;
+  /** Seconds after the decision was made within which an approval counts. After it, the request has expired and no approval resumes it. */
+  readonly requestTtlSeconds: number;
+  /** Seconds a completed approval stays usable. A resumed grant never outlives it. */
+  readonly approvalValiditySeconds: number;
+  /**
+   * The evidence types (approval-runtime's `ApprovalEvidenceType`) every
+   * approving verdict must cite as reviewed, each by a `sha256:` content hash.
+   * Present only when non-empty.
+   */
+  readonly requiredEvidence?: readonly string[];
 }
 
 /** Where a resolved profile came from. One source exists in CORE-03. */
