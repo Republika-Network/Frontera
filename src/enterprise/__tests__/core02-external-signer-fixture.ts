@@ -9,6 +9,7 @@ import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.j
 import {
   ExternalAuthoritySignerTransportError,
   EXTERNAL_AUTHORITY_SIGNER_OPERATIONS,
+  EXTERNAL_AUTHORITY_SIGNER_PATHS,
   EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
   createHttpExternalAuthoritySignerTransport,
   establishExternalAuthorityArtifactSigner,
@@ -285,12 +286,44 @@ export interface FaultProxy {
   redirectTarget: string | undefined;
   identityCalls: number;
   signCalls: number;
+  /** Inbound requests refused locally (unknown path, wrong method) — each made zero upstream requests. */
+  readonly refused: number;
   close(): Promise<void>;
 }
 
-function forward(target: string, method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<{ status: number; body: Buffer }> {
+/** One protocol route the proxy may forward: the method and the canonical path, both server-owned constants. */
+interface ProxyRoute {
+  readonly method: 'GET' | 'POST';
+  readonly path: string;
+  readonly signing: boolean;
+}
+
+/**
+ * The closed route table, built from the protocol's own declared paths
+ * (`EXTERNAL_AUTHORITY_SIGNER_PATHS`): `GET /v1/identity` and `POST` on each of
+ * the five signing paths. Nothing else is ever forwarded.
+ */
+const PROXY_ROUTES: readonly ProxyRoute[] = Object.freeze(
+  (Object.keys(EXTERNAL_AUTHORITY_SIGNER_PATHS) as (keyof typeof EXTERNAL_AUTHORITY_SIGNER_PATHS)[]).map((operation) =>
+    Object.freeze({ method: operation === 'identity' ? ('GET' as const) : ('POST' as const), path: EXTERNAL_AUTHORITY_SIGNER_PATHS[operation], signing: operation !== 'identity' }),
+  ),
+);
+
+/**
+ * Resolves an inbound request-target to a route of the closed table by
+ * **exact** string equality, so a query, a fragment, an absolute-form or
+ * scheme-relative target, a dot-segment or any unknown path matches nothing.
+ * The route returned carries the table's own constant path: the inbound string
+ * never reaches an outbound URL.
+ */
+function resolveProxyRoute(requestTarget: string | undefined): ProxyRoute | undefined {
+  return PROXY_ROUTES.find((route) => route.path === requestTarget);
+}
+
+/** Forwards to `target` (a fixture-owned base URL) at the route's constant method and path. */
+function forward(target: string, route: ProxyRoute, headers: Record<string, string>, body: Buffer): Promise<{ status: number; body: Buffer }> {
   return new Promise((resolveForward, reject) => {
-    const req = request(new URL(path, target), { method, agent: false, headers }, (res) => {
+    const req = request(new URL(route.path, target), { method: route.method, agent: false, headers }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => resolveForward({ status: res.statusCode ?? 502, body: Buffer.concat(chunks) }));
@@ -307,15 +340,34 @@ function forward(target: string, method: string, path: string, headers: Record<s
  * hanging, or redirected to another service. It separates "the identity
  * endpoint is reachable" from "signing works" — the distinction the health
  * model must keep.
+ *
+ * It forwards only the six protocol routes, each with its protocol method, to
+ * `identityTarget` or (for signing under the `redirect` fault) the
+ * test-controlled `redirectTarget`. An unknown request-target is refused with
+ * 404 and a known path with the wrong method with 405, locally, with no
+ * upstream request: an inbound request can never choose, or change, where the
+ * proxy connects.
  */
 export async function startFaultProxy(identityTarget: string): Promise<FaultProxy> {
   const hanging: import('node:http').ServerResponse[] = [];
-  const state = { fault: 'pass' as SigningFault, redirectTarget: undefined as string | undefined, identityCalls: 0, signCalls: 0 };
+  const state = { fault: 'pass' as SigningFault, redirectTarget: undefined as string | undefined, identityCalls: 0, signCalls: 0, refused: 0 };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
-      const path = req.url ?? '/';
+      const route = resolveProxyRoute(req.url);
+      if (route === undefined) {
+        state.refused += 1;
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end('{"error":"not a protocol route"}');
+        return;
+      }
+      if (req.method !== route.method) {
+        state.refused += 1;
+        res.writeHead(405, { 'content-type': 'application/json', allow: route.method });
+        res.end('{"error":"method not allowed"}');
+        return;
+      }
       const headers: Record<string, string> = {};
       for (const name of ['authorization', 'accept', 'content-type']) {
         const value = req.headers[name];
@@ -323,20 +375,19 @@ export async function startFaultProxy(identityTarget: string): Promise<FaultProx
       }
       const body = Buffer.concat(chunks);
       if (body.length > 0) headers['content-length'] = String(body.length);
-      const isSign = path.startsWith('/v1/sign/');
-      if (path === '/v1/identity') state.identityCalls += 1;
-      if (isSign) state.signCalls += 1;
-      if (isSign && state.fault === 'unavailable') {
+      if (route.signing) state.signCalls += 1;
+      else state.identityCalls += 1;
+      if (route.signing && state.fault === 'unavailable') {
         res.writeHead(503, { 'content-type': 'application/json' });
         res.end('{"error":"unavailable"}');
         return;
       }
-      if (isSign && state.fault === 'hang') {
+      if (route.signing && state.fault === 'hang') {
         hanging.push(res);
         return;
       }
-      const target = isSign && state.fault === 'redirect' && state.redirectTarget !== undefined ? state.redirectTarget : identityTarget;
-      forward(target, req.method ?? 'GET', path, headers, body).then(
+      const target = route.signing && state.fault === 'redirect' && state.redirectTarget !== undefined ? state.redirectTarget : identityTarget;
+      forward(target, route, headers, body).then(
         (answer) => {
           res.writeHead(answer.status, { 'content-type': 'application/json' });
           res.end(answer.body);
@@ -375,6 +426,9 @@ export async function startFaultProxy(identityTarget: string): Promise<FaultProx
     },
     set signCalls(value: number) {
       state.signCalls = value;
+    },
+    get refused() {
+      return state.refused;
     },
     close: () =>
       new Promise<void>((resolveClose) => {
