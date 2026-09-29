@@ -445,13 +445,63 @@ AOC_ENTERPRISE_HTTP_HOST=0.0.0.0                  # or 127.0.0.1 behind a TLS pr
 AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED=true
 AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID=org-acme
 AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID=authority-key-2026-01
-AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM=<secret, PKCS#8>
 AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS='[{"keyId":"authority-key-2026-01","algorithm":"ed25519-v1","publicKeyPem":"..."}]'
+# authority-key custody — ONE of (CORE-02):
+AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external                     # no private key in this process
+AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT=https://authority-signer.internal.example:8443
+AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN=<secret, >= 32 chars>
+#   or software custody (key in process memory, AA-001):
+# AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM=<secret, PKCS#8>
 AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE=/etc/frontera/governed-actions.json
 # every AOC_ENTERPRISE_*_SQLITE_PATH on a persistent volume (see .env.example)
 # plus each secret variable the governed-action file names
 npm run start:enterprise
 ```
+
+### Authority-key custody (CORE-02)
+
+The Host signs five authority artifacts (grants, revocations, the revocation
+state, the obligation discharge state, the approval state) and verifies them
+locally against `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`. Where the private
+key lives is an explicit choice:
+
+| | `software` (default when no mode is set) | `external` (`AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external`) |
+|---|---|---|
+| Private key in the Host process | yes (`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`, AA-001) | **no** — refused if present |
+| Signs | in-process | a custody service over `frontera.external-authority-signer.v1` |
+| Startup | key parsed, paired with its trusted public key | the service must answer as the pinned key id, algorithm **and** public key, with all five operations — or the Host does not start |
+| Verification | local | local (every returned signature verified before it is stored) |
+| Posture | `authoritySigner: software` | `authoritySigner: external` |
+
+External-mode variables: `AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT` (https, or
+http to loopback only), `AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN` (secret, ≥ 32
+characters — it authorizes *use* of the key), optional `…_TIMEOUT_MS` (per
+attempt, default 5000) and `…_MAX_ATTEMPTS` (default 2, max 3; only
+availability failures retry). The pinned key id is
+`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID`.
+
+**Signer outage.** Existing authority keeps reading and verifying; `/health`
+reports `authoritySigner.state: unavailable` and the Host `degraded` (`/ready`
+unaffected). Issuance, revocation, obligation discharge and approval fail and
+write nothing. `POST /api/admin/authority/grants/{id}/revoke` answers `503
+AUTHORITY_SIGNER_UNAVAILABLE` with `recorded: false`: **the grant remains
+exercisable** until a revocation can be signed. An emergency stop
+(`/api/admin/emergency-controls/activate`) does not depend on the signer and
+withholds execution meanwhile. A Host restarted while its signer is
+unreachable does not start (its signer identity cannot be proven).
+
+**Reference signer.** `npm run start:reference-authority-signer`
+(`FRONTERA_REFERENCE_SIGNER_KEY_FILE`, `…_KEY_ID`, `…_TOKEN`, `…_PORT`) runs a
+local, loopback-only custody service that owns its key file and writes the
+public half to `<file>.pub` for you to install in the trusted set. It is a
+reference and qualification boundary — **not an HSM**, not a KMS, not
+hardware-backed. Details: `docs/architecture/ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY.md`.
+
+**Migration.** Keep the verification keys. Moving the same key into a custody
+service needs no re-signing (signatures are byte-identical). Moving to a new
+key: add its public key, keep the old one trusted until the grants it signed
+have expired or been dealt with; state heads are re-attested under the new key
+at open.
 
 ### The governed-action file
 
@@ -524,7 +574,8 @@ and fields, never values; no stack trace is printed.
 | `HOST_AUTHENTICATION_REQUIRED` | Secure profile without `AOC_ENTERPRISE_REQUIRE_AUTH=true` |
 | `HOST_GOVERNED_ACTIONS_REQUIRED` | Secure profile without the governed-action file |
 | `HOST_KERNEL_AUTHORITY_REQUIRED` | Governed actions without the durable Kernel Authority source, or secure profile with it optional |
-| `HOST_AUTHORITY_SIGNING_KEY_REQUIRED` | Secure profile without signing key and trusted set |
+| `HOST_AUTHORITY_SIGNING_KEY_REQUIRED` | Secure profile without an authority signer (external endpoint + credential, or a software key) and trusted set |
+| `HOST_ENVIRONMENT_INVALID` (CORE-02) | Contradictory custody: external mode with `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`, external-signer variables without external mode, a non-https non-loopback endpoint, a short credential |
 | `HOST_GOVERNED_ACTIONS_FILE_UNREADABLE` / `_INVALID` | The file cannot be read, or breaks the schema |
 | `HOST_SECRET_REFERENCE_UNRESOLVED` | A named secret variable is unset or empty |
 | `HOST_EXECUTION_ROUTE_INVALID` | No route, or a route to an unconfigured adapter |
@@ -533,6 +584,9 @@ and fields, never values; no stack trace is printed.
 
 Composition's own refusals pass through unchanged: a signing key absent from
 the trusted set or not matching it (`AuthorityAuthenticityConfigurationError`),
+an external signer that cannot be reached, refuses the credential or does not
+answer as the pinned identity (`AuthorityAuthenticityConfigurationError` with
+`reason: EXTERNAL_SIGNER_*`),
 invalid Generic HTTP configuration (`GenericHttpConfigurationError`), invalid
 customer credentials (`CustomerIdentityConfigurationError`), an unopenable
 store.
@@ -554,8 +608,12 @@ store.
   execution adapters, `authorityAdministration` (`enabled` /
   `not-configured`, CTRL-01), `trustedContext` (`composed` / `not-configured`,
   CORE-04), `obligations` (`durable` / `ephemeral` / `not-configured`,
-  CORE-04) and `approvals` (`durable` / `ephemeral` / `not-configured`,
-  CORE-05). No secret, key, path, operator, source or adapter identity.
+  CORE-04), `approvals` (`durable` / `ephemeral` / `not-configured`,
+  CORE-05) and `authoritySigner` (`external` / `software` / `not-composed`,
+  CORE-02). Beside the posture, `authoritySigner` reports the signer's live
+  state (`custody`, `keyId`, `algorithm`, `state: ready|unavailable`,
+  `reason`, and, for external custody, signing totals) from a non-signing
+  identity probe. No secret, key, path, operator, source or adapter identity.
 
 ### Shutdown
 
