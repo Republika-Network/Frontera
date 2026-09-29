@@ -342,8 +342,10 @@ export interface ExternalAuthorityAuthenticityConfiguration {
     readonly credential: string;
     /** Per-attempt time budget for every call. */
     readonly timeoutMs: number;
-    /** Bounded attempts; only availability failures are retried. */
+    /** Bounded attempts, for the startup identity handshake and every signature; only availability failures are retried. */
     readonly maxAttempts: number;
+    /** CORE-02R: minimum age of an identity result before `/health` probes the service again (0 = every health check). Bounds signer fanout; never delays a signing failure. */
+    readonly probeIntervalMs: number;
   };
   /**
    * Whether `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` was present in the
@@ -357,6 +359,7 @@ export interface ExternalAuthorityAuthenticityConfiguration {
 
 export const DEFAULT_EXTERNAL_SIGNER_TIMEOUT_MS = 5_000;
 export const DEFAULT_EXTERNAL_SIGNER_MAX_ATTEMPTS = 2;
+export const DEFAULT_EXTERNAL_SIGNER_PROBE_INTERVAL_MS = 5_000;
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -485,6 +488,7 @@ const EXTERNAL_SIGNER_VARIABLES = [
   'AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN',
   'AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS',
   'AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS',
+  'AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS',
 ] as const;
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -554,6 +558,10 @@ function authoritySignerEnvironmentProblems(env: Readonly<Record<string, string 
   }
   const attempts = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS;
   if (attempts !== undefined && !['1', '2', '3'].includes(attempts)) problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS must be 1, 2 or 3.');
+  const probeInterval = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS;
+  if (probeInterval !== undefined && (!/^\d{1,5}$/.test(probeInterval) || Number.parseInt(probeInterval, 10) > 60_000)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS must be an integer from 0 to 60000.');
+  }
   return problems;
 }
 
@@ -567,6 +575,7 @@ function loadAuthorityAuthenticity(env: Readonly<Record<string, string | undefin
   const verificationKeys = parseAuthorityVerificationKeys(env.AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS);
   if (env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE === 'external') {
     const attempts = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS;
+    const probeInterval = env.AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS;
     return {
       mode: 'external',
       activeSigningKeyId: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID,
@@ -576,6 +585,7 @@ function loadAuthorityAuthenticity(env: Readonly<Record<string, string | undefin
         credential: env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN ?? '',
         timeoutMs: parsePositiveIntMs(env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS, DEFAULT_EXTERNAL_SIGNER_TIMEOUT_MS),
         maxAttempts: attempts !== undefined && /^\d+$/.test(attempts) ? Number.parseInt(attempts, 10) : DEFAULT_EXTERNAL_SIGNER_MAX_ATTEMPTS,
+        probeIntervalMs: probeInterval !== undefined && /^\d+$/.test(probeInterval) ? Number.parseInt(probeInterval, 10) : DEFAULT_EXTERNAL_SIGNER_PROBE_INTERVAL_MS,
       },
       conflictingSigningKeyPresent: env.AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM !== undefined,
     };
@@ -719,6 +729,7 @@ export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authe
       readonly origin: string;
       readonly timeoutMs: number;
       readonly maxAttempts: number;
+      readonly probeIntervalMs: number;
       /** Whether a service credential is configured. A boolean, never the credential. */
       readonly credentialConfigured: boolean;
     };
@@ -756,6 +767,7 @@ export function toPublicEnterpriseConfiguration(config: EnterpriseConfiguration)
               origin: originOf(authorityAuthenticity.externalSigner.endpoint),
               timeoutMs: authorityAuthenticity.externalSigner.timeoutMs,
               maxAttempts: authorityAuthenticity.externalSigner.maxAttempts,
+              probeIntervalMs: authorityAuthenticity.externalSigner.probeIntervalMs,
               credentialConfigured: authorityAuthenticity.externalSigner.credential.length > 0,
             },
           }

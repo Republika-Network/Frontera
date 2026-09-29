@@ -149,8 +149,22 @@ describe('CORE-02 — the custody boundary stays structured: no generic signing,
     assert.ok(/!verification\.verified \|\| verification\.keyId !== pinned\.keyId/.test(accept), 'under the pinned key, not merely a trusted one');
     assert.ok(/envelope\.keyId !== pinned\.keyId/.test(accept) && /envelope\.algorithm !== pinned\.algorithm/.test(accept));
     const sign = block(adapter, 'async function sign(');
-    assert.ok(sign.indexOf('accept(request, answer)') !== -1 && sign.indexOf('return signature') > sign.indexOf('accept(request, answer)'), 'nothing is returned that accept() did not approve');
-    assert.equal(/isRetryableAuthoritySigningFailure\(reason\)/.test(sign), true, 'only the availability family is retried');
+    assert.ok(sign.indexOf('accept(request, answered.value)') !== -1 && sign.indexOf('return signature') > sign.indexOf('accept(request, answered.value)'), 'nothing is returned that accept() did not approve');
+    // CORE-02R: one bounded-attempt loop for signing and the startup handshake; it retries the availability family only.
+    const attempts = block(adapter, 'async function withBoundedAttempts');
+    assert.equal(/if \(!isRetryableAuthoritySigningFailure\(reason\)\) break;/.test(attempts), true, 'only the availability family is retried');
+    assert.ok(/withBoundedAttempts\(maxAttempts,/.test(sign), 'signing uses the shared loop');
+    assert.ok(/withBoundedAttempts\(maxAttempts, \(\) => transport\.identity/.test(block(adapter, 'export async function establishExternalAuthorityArtifactSigner(')), 'the startup handshake uses the shared loop');
+  });
+
+  it('CORE-02R: a signing failure is cleared only by a verified signature — never by an identity probe', () => {
+    const adapter = codeOf(`${EXTERNAL_ROOT}/external-signer.ts`);
+    const probe = block(adapter, 'async function probeIdentity(');
+    assert.equal(/signingFailure\s*=/.test(probe), false, 'the identity probe never writes the signing state');
+    const clears = [...adapter.matchAll(/signingFailure = undefined;/g)].length;
+    assert.equal(clears, 1, 'exactly one place clears a signing failure');
+    const sign = block(adapter, 'async function sign(');
+    assert.ok(sign.indexOf('signingFailure = undefined;') > sign.indexOf('accept(request, answered.value)'), '…after accept() verified the signature');
   });
 
   it('the handshake compares the advertised public key with the pinned one — it never adds or trusts it', () => {

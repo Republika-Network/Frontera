@@ -1110,6 +1110,7 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
       verifier,
       timeoutMs: authenticity.externalSigner.timeoutMs,
       maxAttempts: authenticity.externalSigner.maxAttempts,
+      probeIntervalMs: authenticity.externalSigner.probeIntervalMs,
     });
     return { signer, verifier, custody: 'external', monitor };
   }
@@ -1136,8 +1137,12 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
 /**
  * CORE-02: the authority signer's state on `/health`. Under external custody
  * it is probed with the service's **identity** call — never a signature, so a
- * health check never spends a metered signing operation — and an unreachable,
- * refusing or re-keyed service makes the Host `degraded`, not `unhealthy`:
+ * health check never spends a metered signing operation (single-flight, and at
+ * most once per `probeIntervalMs`). The probe proves reachability and identity
+ * only: an unresolved signing failure — unreachable, throttled, timed out, or a
+ * signature that did not verify — keeps the signer `unavailable` however the
+ * identity endpoint answers, until a real signature succeeds (CORE-02R).
+ * Either failure makes the Host `degraded`, not `unhealthy`:
  * every existing grant, revocation state, discharge and approval still reads
  * and verifies locally; only new authority mutations (issuance, revocation,
  * discharge and approval appends) cannot be signed. Signer availability is not
@@ -1162,6 +1167,8 @@ async function withAuthoritySignerHealth(report: EnterpriseHealthReport, authent
       algorithm: probed.algorithm,
       state: probed.state,
       ...(probed.reason !== undefined ? { reason: probed.reason } : {}),
+      identity: probed.identity,
+      lastSigning: probed.lastSigning,
       signing,
     },
   };
@@ -1282,21 +1289,32 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     );
   }
 
-  // CORE-02: a deployment configured for external custody must not be handed
-  // a durable store signed by anything else — a store built with a software
-  // signer (or no recorded custody) would put signing back in this process
-  // while the configuration says it is not. Same boundary as the grant-store
-  // brand above: an honest composition mistake, not a malicious host.
-  if (configuration.authorityAuthenticity.mode === 'external' && configuration.persistence.provider === 'sqlite') {
+  // CORE-02 / CORE-02R: under external custody the composition root builds
+  // every authority-bearing store itself, over the one boundary it establishes
+  // against the *configured* signer (pinned key id, algorithm and public key,
+  // proven by the identity handshake) and the *configured* trust registry — and
+  // accepts none from the host. A custody brand says only where a store's key
+  // lives, not which key or which trust set: a supplied store branded
+  // `external` could be signed by another custody service (signer
+  // substitution), by another key under the same id, or read through a wider
+  // verifier (trust substitution), and adopting it would let the configured
+  // signer go uncontacted while posture still said `external`. No supplied
+  // store is safe to adopt on the strength of what it can say about itself, so
+  // none is adopted — in any persistence mode. Software custody keeps host
+  // injection (CORE-01's authenticated-store rule above); it makes no external
+  // claim. Same boundary as every brand here: this stops a supported
+  // composition API from contradicting the configuration, not a malicious
+  // in-process host.
+  if (configuration.authorityAuthenticity.mode === 'external') {
     const supplied: readonly [string, unknown][] = [
       ['authorityControlledExecution.grantStore', suppliedGrantStore],
       ['obligations.store', options.obligations?.store],
       ['approvals.store', options.approvals?.store],
     ];
     for (const [name, store] of supplied) {
-      if (store !== undefined && storeSignerCustody(store) !== 'external') {
+      if (store !== undefined) {
         throw new AuthorityAuthenticityConfigurationError(
-          `This Host is configured for external authority-key custody, and the supplied ${name} is not signed through an external signer. Omit it so the Host opens the store with its external signer. There is no mixed custody.`,
+          `This Host is configured for external authority-key custody, and a ${name} was supplied. Under external custody the Host composes its authority stores itself, over the signer and trust registry it was configured with and has proven; it adopts none. Omit ${name}. There is no mixed custody.`,
         );
       }
     }
@@ -2211,6 +2229,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // Which custody actually signs for the composed grant store — read from the
   // store's own brand when it is the authenticated durable store (so a
   // host-supplied store reports its own custody), never from configuration.
+  // Under external custody no store is supplied (CORE-02R), so this is the
+  // custody of the boundary this root established against the configured signer.
   const composedSignerCustody: 'software' | 'external' | 'not-composed' = (() => {
     if (grantStore === undefined || !isAuthenticatedDurableBoundedGrantStore(grantStore)) return authorityAuthenticity?.custody ?? 'not-composed';
     const custody = storeSignerCustody(grantStore);

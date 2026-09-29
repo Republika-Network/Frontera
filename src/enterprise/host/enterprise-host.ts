@@ -54,7 +54,11 @@ export const HOST_ORGANIZATIONAL_AUTHORITY_BINDING: GrantAuthorityBinding = Obje
 });
 
 export interface BootEnterpriseHostOptions {
-  /** Defaults to `process.env`. */
+  /**
+   * Defaults to `process.env`. Under external authority-key custody the real
+   * `process.env` is checked as well, whatever map is passed here: the claim is
+   * that this **process** holds no authority private key (CORE-02R).
+   */
   readonly env?: Readonly<Record<string, string | undefined>>;
   /**
    * Additional in-process provider adapters, as members of the same trusted
@@ -179,12 +183,36 @@ function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly str
   return shortfalls;
 }
 
+/** The declared authority private-key input. Under external custody the Host process must not carry it at all. */
+const AUTHORITY_SIGNING_KEY_VARIABLE = 'AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM';
+
+/**
+ * CORE-02R: external custody is a claim about this **process**, so it is
+ * checked against the process's real environment — not only against the
+ * configuration map, which an embedder may have sanitized while `process.env`
+ * still carries the key. Presence is enough (an empty value included), the same
+ * rule the environment validation applies to the map: the variable must not be
+ * part of this process at all. The value is never read, compared, logged or
+ * serialized. Only the declared authority-key input is checked; this is not a
+ * scan of the environment or of process memory for key-shaped text.
+ */
+function assertProcessHoldsNoAuthorityKey(host: EnterpriseHostConfiguration): void {
+  if (host.configuration.authorityAuthenticity.mode !== 'external') return;
+  if (process.env[AUTHORITY_SIGNING_KEY_VARIABLE] === undefined) return;
+  throw new EnterpriseHostConfigurationError(
+    'HOST_ENVIRONMENT_INVALID',
+    `${AUTHORITY_SIGNING_KEY_VARIABLE} is present in this process environment while external authority-key custody is configured. External custody means this process holds no authority private key; remove it from the process environment (a sanitized configuration map does not change what the process holds).`,
+  );
+}
+
 /**
  * Boots the Enterprise Host, or refuses. On refusal nothing is left open and
  * no socket was bound. On success the caller calls `listen()`.
  */
 export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}): Promise<EnterpriseHost> {
   const host = loadEnterpriseHostConfiguration(options.env ?? process.env);
+  // Before composition: nothing is opened and the signer is not contacted.
+  assertProcessHoldsNoAuthorityKey(host);
   const server = await createEnterpriseServer(toCreateEnterpriseOptions(host, options));
   const { enterprise } = server;
 

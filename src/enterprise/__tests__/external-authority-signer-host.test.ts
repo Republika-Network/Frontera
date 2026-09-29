@@ -224,7 +224,16 @@ describe('CORE-02 / AA-004 — signer outage: reads continue, every mutation fai
     await signer.kill();
     const health = await call(host.baseUrl, 'GET', '/health');
     assert.equal(health.body['status'], 'degraded', health.text);
-    assert.deepEqual(health.body['authoritySigner'], { custody: 'external', keyId: KEY_ID, algorithm: 'ed25519-v1', state: 'unavailable', reason: 'EXTERNAL_SIGNER_UNREACHABLE', signing: (health.body['authoritySigner'] as Record<string, unknown>)['signing'] });
+    assert.deepEqual(health.body['authoritySigner'], {
+      custody: 'external',
+      keyId: KEY_ID,
+      algorithm: 'ed25519-v1',
+      state: 'unavailable',
+      reason: 'EXTERNAL_SIGNER_UNREACHABLE',
+      identity: { state: 'unavailable', reason: 'EXTERNAL_SIGNER_UNREACHABLE' },
+      lastSigning: { state: 'ready' },
+      signing: (health.body['authoritySigner'] as Record<string, unknown>)['signing'],
+    });
     const inspected = await call(host.baseUrl, 'GET', grantPath(grantId), { authorization: ADMIN });
     assert.equal(inspected.status, 200, inspected.text);
     assert.equal(inspected.body['revocation'] ?? null, null, 'not revoked');

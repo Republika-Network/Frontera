@@ -156,8 +156,12 @@ A note on #7, because it is the kind of thing that gets quietly conflated: `issu
 | **AA-INV-032** (CORE-02) | Every external signer call is time-bounded, and only availability failures are retried, within a fixed bound | adapter + transport | timeout and retry-class tests |
 | **AA-INV-033** (CORE-02) | Signer availability never gates verification: every read verifies locally with the signer down | verifier independent of signer | real-outage store and canonical-Host tests |
 | **AA-INV-034** (CORE-02) | The custody protocol is structured: one operation per artifact kind, no generic byte signing, no key export | protocol, transport port, reference service | structure tests, reference-service route tests |
+| **AA-INV-035** (CORE-02R) | Under external custody every authority store is built by the composition root over the configured, proven boundary; no supplied store is adopted | composition refusal before anything opens | review-hardening A1 … A6 |
+| **AA-INV-036** (CORE-02R) | A signing failure is cleared only by a successful, locally verified signature — never by an identity probe | separate `identity` / `lastSigning` monitor states | review-hardening B; structure rule |
+| **AA-INV-037** (CORE-02R) | The startup identity handshake honours `maxAttempts` for availability failures and never retries an answer | shared `withBoundedAttempts` | review-hardening C1 … C7 |
+| **AA-INV-038** (CORE-02R) | The canonical external Host refuses the authority-key variable in its real process environment | `bootEnterpriseHost` pre-composition check | process-env suite |
 
-AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's. AA-INV-028 … AA-INV-034 are CORE-02's.
+AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's. AA-INV-028 … AA-INV-034 are CORE-02's; AA-INV-035 … AA-INV-038 are its post-merge review hardening (CORE-02R, §29.11).
 
 ## 6. Signature Algorithm
 
@@ -915,7 +919,7 @@ discharge and approval appends, which previously wrote their head unverified.
 | Create a new store (genesis) | fails; the file is left uninitialized |
 | Re-attest on rotation | skipped; the old-key state stays valid while that key is trusted |
 | Emergency stop | **works** — independent of the signer; withholds exercise; not a revocation |
-| `/health` | `degraded`, `authoritySigner.state: unavailable` + reason (identity probe, no signature); `/ready` unaffected |
+| `/health` | `degraded`, `authoritySigner.state: unavailable` + reason; `identity` and `lastSigning` shown separately. No signature is spent. A signing failure persists until a verified signature succeeds (CORE-02R, §29.11). `/ready` unaffected |
 | Host restart | refused until the signer's identity can be proven (AA-011) |
 
 Every call is bounded: per-attempt `AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS`
@@ -949,6 +953,33 @@ for the same key needs no re-signing; moving to a new key follows §13.
 - AA-006: `ed25519-v1` only.
 - The reference custody service is **not an HSM**: a file-backed key in a
   loopback process. No mTLS or workload identity in the shipped transport.
+
+### 29.11 Post-merge review hardening (CORE-02R)
+
+Four defects in the code as merged by PR #152, each reproduced on
+`main @ 0778b74` and then fixed. None required a format, protocol, domain,
+version or schema change. Full record in ADR §6.
+
+- **Supplied stores (P2-A).** The custody brand said where a store's key
+  lives, not which key or trust set it uses. A supplied store signed by
+  another custody service was adopted, and the configured signer went
+  uncontacted. Under external custody, `createEnterprise` now refuses every
+  supplied grant, obligation and approval store and builds all three over the
+  configured, proven boundary (AA-INV-035). Software custody keeps injection.
+- **Truthful signing health (P2-B).** A successful identity probe erased a
+  signing failure. Now `identity` and `lastSigning` are separate, and only a
+  verified signature clears `lastSigning` (AA-INV-036). Probes are
+  single-flight and rate-bounded by
+  `AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS` (default 5 s).
+- **Startup retries (P2-C).** The handshake shares the signing retry loop:
+  availability failures are retried up to `maxAttempts`, answers never are
+  (AA-INV-037). A runtime probe is one attempt.
+- **Real process environment (P2-D).** `bootEnterpriseHost` under external
+  custody refuses when `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` is present
+  in `process.env`, whatever `options.env` says (AA-INV-038).
+
+Residuals are unchanged: AA-010, AA-002 (narrowed), AA-004 and AA-011. The
+bounded retry tolerates a transient blip, not an outage.
 
 ---
 

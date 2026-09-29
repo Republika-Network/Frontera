@@ -215,7 +215,7 @@ Scoped to the same store. Canonical detail: `AUTHORITY_ARTIFACT_AUTHENTICITY.md`
 
 ### 7.16d External authority signer & key custody (added by CORE-02)
 
-Scoped to the five authority artifacts (grants, revocations, revocation state, obligation discharge state, approval state). Canonical detail: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29; decision: `ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY.md`; invariants SEC-INV-147 … SEC-INV-154.
+Scoped to the five authority artifacts (grants, revocations, revocation state, obligation discharge state, approval state). Canonical detail: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29; decision: `ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY.md`; invariants SEC-INV-147 … SEC-INV-154, and SEC-INV-155 … SEC-INV-159 from the post-merge review hardening (CORE-02R, ADR §6).
 
 Under `AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external` the Host holds an endpoint, a service credential and the pinned **public** identity; a separate custody service holds the key and answers five structured operations; the Host verifies every answer locally before persisting it.
 
@@ -236,7 +236,13 @@ Under `AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external` the Host holds an endpoint
 | Endpoint + registry + Host configuration rewritten together | **NOT ADDRESSED** (AA-002) | No independent configuration trust root |
 | Custody service compromise | **OUT OF SCOPE** | The reference service is a file-backed key in a loopback process — explicitly not an HSM |
 | Plain-HTTP interception | **BLOCKED beyond loopback** | `http:` accepted only to loopback (reference signer); otherwise `https:`. No mTLS in the shipped transport |
-| Restart during a signer outage | **Availability risk** (AA-011) | The Host does not start until its signer's identity can be proven |
+| Restart during a signer outage | **Availability risk** (AA-011) | The Host does not start until its signer's identity can be proven. Since CORE-02R the handshake retries availability failures up to `maxAttempts` (no delay; worst case `timeoutMs × maxAttempts`), so a transient blip does not refuse startup, but an outage still does |
+| **External store substitution** (CORE-02R): a supplied grant/obligation/approval store built over another signer, another key under the same id, or a wider verifier, under a Host configured for signer A | **BLOCKED** (composition) | Under external custody every supplied authority store is refused; the root builds all three over the configured, proven boundary (SEC-INV-155). As merged in PR #152 a store branded `external` was adopted and A was never contacted. Not a defense against malicious in-process code |
+| **Signer / config / store split-brain** (CORE-02R): configuration says A, runtime signs with B, posture says `external` | **BLOCKED** | No supplied store is adopted, so every genesis and mutation goes through the configured signer, and posture derives from the established boundary (SEC-INV-156). AA-002 residual: whoever controls configuration defines A |
+| **Identity endpoint healthy while signing is broken** (CORE-02R): `/v1/identity` answers; `/v1/sign/*` is unavailable, hangs or returns signatures that do not verify | **BLOCKED** (truthful health) | Separate `identity` and `lastSigning` states. Only a verified signature clears a signing failure, and `/health` stays `degraded` with the signing reason (SEC-INV-157). As merged, the next identity probe reported `ready`. `/ready` stays 200 by design. AA-004 unchanged |
+| **Transient signer unavailability at startup** (CORE-02R) | **MITIGATED** (bounded) | Availability failures (timeout, unreachable, 429/5xx) are retried up to `maxAttempts`. Authentication failures, refusals, malformed answers and mismatches are one call, so a bad credential never hammers the signer (SEC-INV-158) |
+| **Sanitized configuration map hiding a dirty process environment** (CORE-02R): `bootEnterpriseHost({ env: clean })` while `process.env` holds `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` | **BLOCKED** (canonical Host) | The Host checks the real `process.env` too and refuses before composition, empty value included (SEC-INV-159). Declared variable only, with no memory or environment scanning. `createEnterprise` (embedding) judges only its configuration |
+| **Health-probe fanout** (CORE-02R): unauthenticated `/health` and `/ready` amplifying into authenticated signer identity calls | **MITIGATED** (bounded) | Single-flight probes, at most one per `AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS` (default 5 s) per Host process. A signing failure is visible at once regardless. Setting `0` restores probe-per-request |
 
 ### 7.17 Automated backup/restore tooling (`backup:v1`/`restore:v1`)
 

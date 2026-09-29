@@ -467,22 +467,34 @@ key lives is an explicit choice:
 
 | | `software` (default when no mode is set) | `external` (`AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external`) |
 |---|---|---|
-| Private key in the Host process | yes (`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`, AA-001) | **no** — refused if present |
+| Private key in the Host process | yes (`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`, AA-001) | **no**: refused if present in the configuration **or in the real process environment** (CORE-02R) |
 | Signs | in-process | a custody service over `frontera.external-authority-signer.v1` |
 | Startup | key parsed, paired with its trusted public key | the service must answer as the pinned key id, algorithm **and** public key, with all five operations — or the Host does not start |
 | Verification | local | local (every returned signature verified before it is stored) |
 | Posture | `authoritySigner: software` | `authoritySigner: external` |
+| Authority stores | the Host's, or host-supplied authenticated ones (embedding) | always the Host's own, built over the configured, proven signer; a supplied store is refused (CORE-02R) |
 
 External-mode variables: `AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT` (https, or
 http to loopback only), `AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN` (secret, ≥ 32
 characters — it authorizes *use* of the key), optional `…_TIMEOUT_MS` (per
-attempt, default 5000) and `…_MAX_ATTEMPTS` (default 2, max 3; only
-availability failures retry). The pinned key id is
-`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID`.
+attempt, default 5000), `…_MAX_ATTEMPTS` (default 2, max 3) and
+`…_PROBE_INTERVAL_MS` (default 5000, 0 … 60000). `…_MAX_ATTEMPTS` applies to
+the startup identity handshake and to every signature. Only availability
+failures (timeout, unreachable, 429/5xx) are retried, with no delay, so the
+worst case is `TIMEOUT_MS × MAX_ATTEMPTS`. An authentication failure, a
+refusal or an identity mismatch is one call. `…_PROBE_INTERVAL_MS` bounds how
+often `/health` and `/ready` ask the signer who it is: probes are single-flight
+and repeat at most once per interval, and `0` means every health check. The
+pinned key id is `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID`.
 
 **Signer outage.** Existing authority keeps reading and verifying; `/health`
 reports `authoritySigner.state: unavailable` and the Host `degraded` (`/ready`
-unaffected). Issuance, revocation, obligation discharge and approval fail and
+unaffected). Health tracks two things separately: `identity`, whether the
+signer answers as the pinned key, and `lastSigning`, whether the last signature
+succeeded. If signing fails while the identity endpoint still answers
+(signing unavailable, timing out, or returning signatures that do not verify),
+the Host stays `degraded` with the signing reason. Only a later successful
+signature clears it; a successful identity probe does not. Issuance, revocation, obligation discharge and approval fail and
 write nothing. `POST /api/admin/authority/grants/{id}/revoke` answers `503
 AUTHORITY_SIGNER_UNAVAILABLE` with `recorded: false`: **the grant remains
 exercisable** until a revocation can be signed. An emergency stop
@@ -575,7 +587,7 @@ and fields, never values; no stack trace is printed.
 | `HOST_GOVERNED_ACTIONS_REQUIRED` | Secure profile without the governed-action file |
 | `HOST_KERNEL_AUTHORITY_REQUIRED` | Governed actions without the durable Kernel Authority source, or secure profile with it optional |
 | `HOST_AUTHORITY_SIGNING_KEY_REQUIRED` | Secure profile without an authority signer (external endpoint + credential, or a software key) and trusted set |
-| `HOST_ENVIRONMENT_INVALID` (CORE-02) | Contradictory custody: external mode with `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`, external-signer variables without external mode, a non-https non-loopback endpoint, a short credential |
+| `HOST_ENVIRONMENT_INVALID` (CORE-02) | Contradictory custody: external mode with `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` in the configuration or, since CORE-02R, anywhere in the real process environment (empty value included, even when `bootEnterpriseHost({ env })` was given a sanitized map); external-signer variables without external mode; a non-https non-loopback endpoint; a short credential; an out-of-range probe interval |
 | `HOST_GOVERNED_ACTIONS_FILE_UNREADABLE` / `_INVALID` | The file cannot be read, or breaks the schema |
 | `HOST_SECRET_REFERENCE_UNRESOLVED` | A named secret variable is unset or empty |
 | `HOST_EXECUTION_ROUTE_INVALID` | No route, or a route to an unconfigured adapter |
@@ -612,8 +624,14 @@ store.
   CORE-05) and `authoritySigner` (`external` / `software` / `not-composed`,
   CORE-02). Beside the posture, `authoritySigner` reports the signer's live
   state (`custody`, `keyId`, `algorithm`, `state: ready|unavailable`,
-  `reason`, and, for external custody, signing totals) from a non-signing
-  identity probe. No secret, key, path, operator, source or adapter identity.
+  `reason`; for external custody also `identity` and `lastSigning`, each
+  `{state, reason?}`, and signing totals). Under external custody `ready`
+  means the identity is acceptable **and** no signing failure is unresolved.
+  The identity probe never signs, and it cannot clear a signing failure.
+  Probes are single-flight and repeat at most once per
+  `…_PROBE_INTERVAL_MS`. `/ready` answering 200 while the Host is `degraded`
+  means existing authority is being served; it does not mean new authority can
+  be signed. No secret, key, path, operator, source or adapter identity.
 
 ### Shutdown
 
@@ -634,7 +652,7 @@ shutdown failed.
   `AocEnterprise.kernelAuthorityProvisioning` surface (CTRL-02).
 - **Backup/restore** covers four stores; the governed-action stores are
   PROD-02.
-- The authority signing key is process-resident (AA-001, CORE-02).
+- The authority signing key is process-resident under software custody (AA-001); external custody (CORE-02) removes it from the process.
 
 Embedding without `node:http` (e.g. a Next.js route handler):
 

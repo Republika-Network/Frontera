@@ -32,6 +32,7 @@ export type { HttpExternalAuthoritySignerTransportOptions } from './http-transpo
 
 export {
   MAXIMUM_EXTERNAL_SIGNER_ATTEMPTS,
+  MAXIMUM_EXTERNAL_SIGNER_PROBE_INTERVAL_MS,
   MAXIMUM_EXTERNAL_SIGNER_TIMEOUT_MS,
   establishExternalAuthorityArtifactSigner,
   isExternalAuthorityArtifactSigner,
@@ -39,6 +40,7 @@ export {
 export type {
   ExternalAuthorityArtifactSigner,
   ExternalAuthorityArtifactSignerOptions,
+  ExternalAuthoritySignerComponentState,
   ExternalAuthoritySignerMonitor,
   ExternalAuthoritySignerOperationCounters,
   ExternalAuthoritySignerStatus,

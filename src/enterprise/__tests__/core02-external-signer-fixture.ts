@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -9,6 +9,7 @@ import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.j
 import {
   ExternalAuthoritySignerTransportError,
   EXTERNAL_AUTHORITY_SIGNER_OPERATIONS,
+  EXTERNAL_AUTHORITY_SIGNER_PATHS,
   EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
   createHttpExternalAuthoritySignerTransport,
   establishExternalAuthorityArtifactSigner,
@@ -245,7 +246,11 @@ export function operationCounts(endpoint: string, credential = SIGNER_TOKEN): Pr
   });
 }
 
-/** The environment a Host needs for external custody — endpoint, credential, the pinned key id and the trusted public keys. No private key. */
+/**
+ * The environment a Host needs for external custody — endpoint, credential, the pinned key id and the trusted public keys. No private key.
+ * The probe interval is 0 so every `/health` probes identity: these suites assert that an outage is visible on the next health check.
+ * The default interval (and the fanout bound it buys) is qualified in `external-authority-signer-review-hardening.test.ts`.
+ */
 export function externalCustodyEnv(signer: { readonly endpoint: string; readonly keyId: string }, trusted: readonly { readonly keyId: string; readonly algorithm: string; readonly publicKeyPem: string }[], extra: Record<string, string> = {}): Record<string, string> {
   return {
     AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE: 'external',
@@ -255,6 +260,7 @@ export function externalCustodyEnv(signer: { readonly endpoint: string; readonly
     AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: JSON.stringify(trusted),
     AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS: '2000',
     AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS: '1',
+    AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS: '0',
     ...extra,
   };
 }
@@ -266,4 +272,170 @@ export function withoutSoftwareCustody(env: Record<string, string | undefined>):
   void _pem;
   void _keys;
   return rest;
+}
+
+// ── a fault-injecting proxy in front of a custody service (CORE-02R) ──────────
+
+/** What the proxy does to signing calls. Identity calls always pass through to `identityTarget`. */
+export type SigningFault = 'pass' | 'unavailable' | 'hang' | 'redirect';
+
+export interface FaultProxy {
+  readonly endpoint: string;
+  /** How signing requests are answered from now on. `redirect` forwards them to `redirectTarget`. */
+  fault: SigningFault;
+  redirectTarget: string | undefined;
+  identityCalls: number;
+  signCalls: number;
+  /** Inbound requests refused locally (unknown path, wrong method) — each made zero upstream requests. */
+  readonly refused: number;
+  close(): Promise<void>;
+}
+
+/** One protocol route the proxy may forward: the method and the canonical path, both server-owned constants. */
+interface ProxyRoute {
+  readonly method: 'GET' | 'POST';
+  readonly path: string;
+  readonly signing: boolean;
+}
+
+/**
+ * The closed route table, built from the protocol's own declared paths
+ * (`EXTERNAL_AUTHORITY_SIGNER_PATHS`): `GET /v1/identity` and `POST` on each of
+ * the five signing paths. Nothing else is ever forwarded.
+ */
+const PROXY_ROUTES: readonly ProxyRoute[] = Object.freeze(
+  (Object.keys(EXTERNAL_AUTHORITY_SIGNER_PATHS) as (keyof typeof EXTERNAL_AUTHORITY_SIGNER_PATHS)[]).map((operation) =>
+    Object.freeze({ method: operation === 'identity' ? ('GET' as const) : ('POST' as const), path: EXTERNAL_AUTHORITY_SIGNER_PATHS[operation], signing: operation !== 'identity' }),
+  ),
+);
+
+/**
+ * Resolves an inbound request-target to a route of the closed table by
+ * **exact** string equality, so a query, a fragment, an absolute-form or
+ * scheme-relative target, a dot-segment or any unknown path matches nothing.
+ * The route returned carries the table's own constant path: the inbound string
+ * never reaches an outbound URL.
+ */
+function resolveProxyRoute(requestTarget: string | undefined): ProxyRoute | undefined {
+  return PROXY_ROUTES.find((route) => route.path === requestTarget);
+}
+
+/** Forwards to `target` (a fixture-owned base URL) at the route's constant method and path. */
+function forward(target: string, route: ProxyRoute, headers: Record<string, string>, body: Buffer): Promise<{ status: number; body: Buffer }> {
+  return new Promise((resolveForward, reject) => {
+    const req = request(new URL(route.path, target), { method: route.method, agent: false, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolveForward({ status: res.statusCode ?? 502, body: Buffer.concat(chunks) }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(body.length > 0 ? body : undefined);
+  });
+}
+
+/**
+ * A loopback proxy that answers `GET /v1/identity` from the genuine service
+ * (always healthy) while signing requests are passed, refused with 503, left
+ * hanging, or redirected to another service. It separates "the identity
+ * endpoint is reachable" from "signing works" — the distinction the health
+ * model must keep.
+ *
+ * It forwards only the six protocol routes, each with its protocol method, to
+ * `identityTarget` or (for signing under the `redirect` fault) the
+ * test-controlled `redirectTarget`. An unknown request-target is refused with
+ * 404 and a known path with the wrong method with 405, locally, with no
+ * upstream request: an inbound request can never choose, or change, where the
+ * proxy connects.
+ */
+export async function startFaultProxy(identityTarget: string): Promise<FaultProxy> {
+  const hanging: import('node:http').ServerResponse[] = [];
+  const state = { fault: 'pass' as SigningFault, redirectTarget: undefined as string | undefined, identityCalls: 0, signCalls: 0, refused: 0 };
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const route = resolveProxyRoute(req.url);
+      if (route === undefined) {
+        state.refused += 1;
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end('{"error":"not a protocol route"}');
+        return;
+      }
+      if (req.method !== route.method) {
+        state.refused += 1;
+        res.writeHead(405, { 'content-type': 'application/json', allow: route.method });
+        res.end('{"error":"method not allowed"}');
+        return;
+      }
+      const headers: Record<string, string> = {};
+      for (const name of ['authorization', 'accept', 'content-type']) {
+        const value = req.headers[name];
+        if (typeof value === 'string') headers[name] = value;
+      }
+      const body = Buffer.concat(chunks);
+      if (body.length > 0) headers['content-length'] = String(body.length);
+      if (route.signing) state.signCalls += 1;
+      else state.identityCalls += 1;
+      if (route.signing && state.fault === 'unavailable') {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end('{"error":"unavailable"}');
+        return;
+      }
+      if (route.signing && state.fault === 'hang') {
+        hanging.push(res);
+        return;
+      }
+      const target = route.signing && state.fault === 'redirect' && state.redirectTarget !== undefined ? state.redirectTarget : identityTarget;
+      forward(target, route, headers, body).then(
+        (answer) => {
+          res.writeHead(answer.status, { 'content-type': 'application/json' });
+          res.end(answer.body);
+        },
+        () => {
+          res.writeHead(502);
+          res.end();
+        },
+      );
+    });
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  const port = (server.address() as import('node:net').AddressInfo).port;
+  const proxy: FaultProxy = {
+    endpoint: `http://127.0.0.1:${port}`,
+    get fault() {
+      return state.fault;
+    },
+    set fault(value: SigningFault) {
+      state.fault = value;
+    },
+    get redirectTarget() {
+      return state.redirectTarget;
+    },
+    set redirectTarget(value: string | undefined) {
+      state.redirectTarget = value;
+    },
+    get identityCalls() {
+      return state.identityCalls;
+    },
+    set identityCalls(value: number) {
+      state.identityCalls = value;
+    },
+    get signCalls() {
+      return state.signCalls;
+    },
+    set signCalls(value: number) {
+      state.signCalls = value;
+    },
+    get refused() {
+      return state.refused;
+    },
+    close: () =>
+      new Promise<void>((resolveClose) => {
+        for (const res of hanging.splice(0)) res.destroy();
+        server.closeAllConnections();
+        server.close(() => resolveClose());
+      }),
+  };
+  return proxy;
 }
