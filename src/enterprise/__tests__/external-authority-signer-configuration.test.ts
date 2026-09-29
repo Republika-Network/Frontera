@@ -157,7 +157,7 @@ describe('CORE-02 — composition: identity before stores, no fallback, no mixed
     await assert.rejects(() => compose(flagged), (error: unknown) => error instanceof AuthorityAuthenticityConfigurationError && /no mixed or fallback mode/.test(error.message));
   });
 
-  it('a host-supplied grant store signed in-process is refused under external custody (CORE-02R: any supplied authority store is)', async () => {
+  it('a host-supplied grant store signed in-process is refused under external custody (CORE-02R — every supplied authority store is)', async () => {
     const directory = dir('mixed');
     const softwareStore = await openDurableStore(join(work, 'mixed-supplied.sqlite'));
     cleanups.push(() => softwareStore.close());
