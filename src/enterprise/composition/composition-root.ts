@@ -916,6 +916,10 @@ async function buildKernelAuthorityStore(configuration: EnterpriseConfiguration,
  * in-memory one. That substitution would drop every committed revocation while
  * the Host reported itself healthy, which is the fail-open shape this whole
  * store exists to remove.
+ *
+ * The in-memory branch is never reached under external custody: that
+ * configuration is refused before anything is opened (CORE-02R round 2), so
+ * external custody never silently means an unsigned in-process store.
  */
 async function buildBoundedGrantStore(configuration: EnterpriseConfiguration, authenticity: () => Promise<AuthorityAuthenticityBoundary>): Promise<BoundedGrantStorePort> {
   if (configuration.persistence.provider === 'sqlite') {
@@ -1315,6 +1319,25 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       if (store !== undefined) {
         throw new AuthorityAuthenticityConfigurationError(
           `This Host is configured for external authority-key custody, and a ${name} was supplied. Under external custody the Host composes its authority stores itself, over the signer and trust registry it was configured with and has proven; it adopts none. Omit ${name}. There is no mixed custody.`,
+        );
+      }
+    }
+    // CORE-02R round 2: every authority-bearing store is signed only on the
+    // durable path — the grant store when `persistence.provider` is `sqlite`,
+    // the obligation and approval stores when the composed Governance Store is.
+    // Anywhere else they are in-process and unsigned, and the configured signer
+    // would never be contacted while the configuration still said `external`.
+    // There is no externally signed in-memory authority store, so that
+    // combination is refused rather than silently meaning "external under
+    // SQLite, unsigned otherwise". Only where authority-controlled execution is
+    // composed: without it no authority store exists and nothing is signed.
+    if (options.authorityControlledExecution !== undefined) {
+      let selected: string | undefined;
+      if (configuration.persistence.provider !== 'sqlite') selected = `persistence.provider '${configuration.persistence.provider}'`;
+      else if (options.persistence !== undefined && options.persistence.providerKind !== 'sqlite') selected = `a supplied '${options.persistence.providerKind}' Governance Store`;
+      if (selected !== undefined) {
+        throw new AuthorityAuthenticityConfigurationError(
+          `This Host is configured for external authority-key custody with authority-controlled execution, and ${selected} would place its authority stores in process memory, unsigned — the configured signer would never be contacted. External custody requires durable persistence (AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite). There is no unsigned external mode.`,
         );
       }
     }

@@ -160,8 +160,10 @@ A note on #7, because it is the kind of thing that gets quietly conflated: `issu
 | **AA-INV-036** (CORE-02R) | A signing failure is cleared only by a successful, locally verified signature — never by an identity probe | separate `identity` / `lastSigning` monitor states | review-hardening B; structure rule |
 | **AA-INV-037** (CORE-02R) | The startup identity handshake honours `maxAttempts` for availability failures and never retries an answer | shared `withBoundedAttempts` | review-hardening C1 … C7 |
 | **AA-INV-038** (CORE-02R) | The canonical external Host refuses the authority-key variable in its real process environment | `bootEnterpriseHost` pre-composition check | process-env suite |
+| **AA-INV-039** (CORE-02R round 2) | Under external custody, authority-controlled execution never composes an unsigned in-memory authority store: memory persistence (or a supplied in-memory Governance Store) is refused before anything opens | composition refusal before signer establishment | review-round2 A1 … A8b |
+| **AA-INV-040** (CORE-02R round 2) | A negative identity-probe age invalidates the cached identity; a clock moved backwards cannot extend signer identity freshness | `probe()` age rule `0 ≤ age < interval` | review-round2 B1 … B8 |
 
-AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's. AA-INV-028 … AA-INV-034 are CORE-02's; AA-INV-035 … AA-INV-038 are its post-merge review hardening (CORE-02R, §29.11).
+AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's. AA-INV-028 … AA-INV-034 are CORE-02's; AA-INV-035 … AA-INV-038 are its post-merge review hardening (CORE-02R, §29.11); AA-INV-039 … AA-INV-040 are its review round 2 (§29.12).
 
 ## 6. Signature Algorithm
 
@@ -980,6 +982,29 @@ version or schema change. Full record in ADR §6.
 
 Residuals are unchanged: AA-010, AA-002 (narrowed), AA-004 and AA-011. The
 bounded retry tolerates a transient blip, not an outage.
+
+### 29.12 Review round 2 — post-merge hotfix (CORE-02R round 2)
+
+Two further defects in the code as merged by PR #153, each reproduced on
+`main @ 58f0334` and then fixed. No format, protocol, domain, version or schema
+change. Full record in ADR §6.8.
+
+- **External custody + memory persistence (split brain).** Authenticity was
+  established, and the grant, obligation and approval stores signed, only on the
+  SQLite path. `createEnterprise` with external custody, memory persistence and
+  authority-controlled execution therefore composed, never contacted the
+  configured signer, ran the unsigned in-memory grant store and reported
+  `authoritySigner: not-composed`. That combination is now refused before any
+  store opens (AA-INV-039). There is no externally signed in-memory store, and
+  none was invented. External custody without authority-controlled execution
+  still composes: no authority store exists and nothing is signed.
+- **Clock rollback of the identity-probe cache.** A negative age satisfied the
+  cache rule, so a clock moved backwards kept a stale identity `ready` until
+  wall time caught up. A negative age now invalidates the cache (AA-INV-040).
+  Signing-failure stickiness (AA-INV-036) is unchanged.
+
+Residuals are unchanged. Persisted authority-state rollback across restart is
+CORE-07's, not this cache's.
 
 ---
 
