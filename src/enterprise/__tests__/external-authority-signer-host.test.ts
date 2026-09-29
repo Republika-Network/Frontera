@@ -229,6 +229,9 @@ describe('CORE-02 / AA-004 — signer outage: reads continue, every mutation fai
     assert.equal(inspected.status, 200, inspected.text);
     assert.equal(inspected.body['revocation'] ?? null, null, 'not revoked');
     assert.equal(host.host.enterprise.isReady(), true);
+    const ready = await call(host.baseUrl, 'GET', '/ready');
+    assert.equal(ready.status, 200, `a signer outage is not unreadiness: ${ready.text}`);
+    assert.equal(ready.body['status'], 'degraded');
   });
 
   it('revocation fails honestly: 503 AUTHORITY_SIGNER_UNAVAILABLE, recorded: false, no row, no head change — the grant stays exercisable and the operator is told so', async () => {
