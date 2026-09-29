@@ -468,6 +468,7 @@ reviewed example: `examples/enterprise-host/governed-actions.example.json`.
 | `governance` | Optional (CORE-03). `parameterDimensions [{id, type: integer\|token\|boolean, bound: exact\|maximum}]`, `actionClasses [{id, actions[]}]`, `resourceClasses [{id, resources[]}]`, `profiles [{profileId, version, owner, provenance {authoredBy, approvedBy}, actionClass, resourceClass, parameters [{dimension, required}], materialFacts [], relevantPolicies [], restrictiveFacts? [], obligations? [{obligationType, blocking}]}]`, `reservedContextKeys []` (trusted extensions of the reserved `assertedContext` keys). Validated completely at startup; anything malformed, undeclared or executable-looking refuses to boot (`HOST_GOVERNED_ACTIONS_FILE_INVALID`). Absent: nothing is classified and no governed action may carry `parameters`. See `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` |
 | `trustedContext` | Required when a profile declares `materialFacts` or `restrictiveFacts` (CORE-04); otherwise omit it. `sources [{sourceId, kind, name, trustClass: authoritative\|attested, organizationId, attests [{factClass, maxAgeSeconds}]}]`, `maxFutureSkewSeconds` (0 … 300, default 0). The **source registry**: which source may attest which fact classes, for this organization only, and how long each reading stays fresh. A `request` kind, an `asserted` class, another organization, a missing freshness bound, an attestation of an undeclared fact class, or a declared fact no source attests refuses to boot. Every reading must carry a provenance reference and digest. The retrieval side — the **context provider** — and the **policy** are trusted in-process inputs (`bootEnterpriseHost({ contextProvider, policyPackProvider })`); without both, a file declaring facts refuses to start. See `docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md` |
 | `obligations` | Required when a profile declares `obligations` (CORE-04). `sources [{sourceId, kind, name, verificationClass: independent\|self_reported}]` — who may report discharges and what each report is worth. Reports are recorded durably (`AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH`, default `.data/obligation-discharges.sqlite`) only through the trusted in-process writer `enterprise.obligationDischarges.record(...)`; no HTTP route exists. The store is authenticated: its history is committed to a hash chain whose head is signed with the authority signing key and verified at startup and before every issuance, so a forged or foreign store refuses the Host (`AUTHORITY_ARTIFACT_AUTHENTICITY.md` §27) |
+| `governance.profiles[].approval` | Optional (CORE-05). `{approverAction, minimumApprovals (1 … 16), requestTtlSeconds (60 … 30 d), approvalValiditySeconds (60 … 7 d), requiredEvidence? []}` — **how** a decision under this profile that policy sends to review can be approved; deterministic policy (`require_approval`) still decides **whether**. `approverAction` is the Kernel-Authority action an approver must hold live authority for over the resource, and must not be a governed action (refused at startup). Approval requests and verdicts are recorded durably (`AOC_ENTERPRISE_APPROVAL_SQLITE_PATH`, default `.data/approvals.sqlite`) in an authenticated store (signed state commitment, verified at startup and on every read; `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §28). Approvers act only through the in-process command port `enterprise.approvals` (`approve` / `reject` / `requestChanges` / `escalate` / `revoke`, with an authenticated actor context); no HTTP route exists (CTRL-04). A retry of the withheld request (same idempotency key) resumes the same committed decision once approved. See `docs/architecture/ADR-DURABLE-APPROVALS-ON-THE-GOVERNED-PATH.md` |
 | `genericHttpAdapters[]` | `EnterpriseGenericHttpExecutionAdapterOptions` (`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`), except `credential` is `{kind:'bearer', tokenEnv}` or `{kind:'header', name, valueEnv}` |
 | `routes[]` | `{action, adapterId}`. An action with no route reaches no adapter |
 
@@ -496,7 +497,7 @@ variable, never a value). A secret used by two credentials refuses
 | Trusted context (CORE-04) | composed when the file declares `trustedContext`; the Trusted Context Boundary admits facts per effective profile (`posture.trustedContext`) |
 | Obligations (CORE-04) | composed when the file declares `obligations`; durable discharge store, required durable on the secure profile (`posture.obligations`) |
 | Exercise-time lineage revalidation (CORE-04) | composed with P7/P10: every action class, not only financial |
-| Durable approvals | not wired: `approval_required` stays withheld (CORE-05) |
+| Durable approvals (CORE-05) | composed when a profile declares `approval`; authenticated durable approval store, required durable on the secure profile (`posture.approvals`); a profile without `approval` leaves `approval_required` withheld |
 | Evidence bundle store | in-memory on every Host (ASSURE) |
 
 The authority binding every grant states is
@@ -552,8 +553,9 @@ store.
   `kernelAuthority`, `emergencyControl`, `exerciseControls`, a count of
   execution adapters, `authorityAdministration` (`enabled` /
   `not-configured`, CTRL-01), `trustedContext` (`composed` / `not-configured`,
-  CORE-04) and `obligations` (`durable` / `ephemeral` / `not-configured`,
-  CORE-04). No secret, key, path, operator, source or adapter identity.
+  CORE-04), `obligations` (`durable` / `ephemeral` / `not-configured`,
+  CORE-04) and `approvals` (`durable` / `ephemeral` / `not-configured`,
+  CORE-05). No secret, key, path, operator, source or adapter identity.
 
 ### Shutdown
 

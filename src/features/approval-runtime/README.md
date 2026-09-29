@@ -262,3 +262,26 @@ injected `ApprovalRuntimeContext` (`clock` + `ids`) rather than reading
 - No LLM, model call, or heuristic ever decides whether an approval is
   valid -- every policy in `policies/` is a pure function of its typed
   context.
+
+## On the governed-action path (CORE-05)
+
+The canonical governed-action path reuses this runtime's **semantics** — its
+domain shapes and its policies — and not its in-memory services:
+
+- `createAdmissionApprovalPolicyChain()` and `QuorumPolicy` judge every
+  approval, rejection, request for changes and escalation, verbatim, over an
+  `ApprovalRequest` built from the request's snapshotted requirement;
+- approver standing comes through `createActorRegistryRecognitionIntegration`
+  and `createApprovalAuthorityGraphIntegration`, pointed at the durable
+  Kernel-Authority world (the one governed-path authority source);
+- the authoritative record is `src/enterprise/approval-authority`'s
+  append-only, **signed** approval log. `ApprovalStore`, `ApprovalProofService`
+  (whose `proofHash` is an unkeyed integrity digest, not authenticity),
+  `ApprovalLedger`, the sequential id generator and the
+  `createApprovalRequestForDecision` one-approver fallback are **not** used
+  there: they are in-memory and rebuilt with every Kernel-Authority world.
+
+Library and legacy consumers (Recognition Runtime's `approvalProofId`
+verification, `/api/governance/evaluate`, the control-plane panels) keep using
+this runtime unchanged. See
+`docs/architecture/ADR-DURABLE-APPROVALS-ON-THE-GOVERNED-PATH.md`.

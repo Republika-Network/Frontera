@@ -5,7 +5,7 @@
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
 - **Reconciled by:** MASTER-01 (governed action intelligence & roadmap reconciliation), 2026-09-27, against `main` @ `c66e0c7` (CTRL-01 merged). Architecture and roadmap only; no runtime change.
-- **Last status change:** CORE-04 → **VERIFIED**, 2026-09-28 (branch `feat/core-04-trusted-context-obligations`): one Trusted Context Boundary on the governed path (fact-class-scoped authority to attest, organization scope, provenance, per-class freshness); admitted-only policy input; restrict-only admitted RiskSignal contract; admitted-context digest bound to the decision and the signed grant, grant validity capped at context validity; obligations reachable with a durable, **authenticated** discharge store (signed state commitment, CORE-01 pattern — a database-only writer cannot manufacture satisfaction) and trusted writer; exercise-time lineage for every action class; NEXT → CORE-05 (§14). Previous: CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
+- **Last status change:** CORE-05 → **VERIFIED**, 2026-09-28 (branch `feat/core-05-durable-approvals`): `approval_required` is resumable, not terminal — one canonical approval request per committed decision, bound to the decision's content, the Governance Store's record digests and a snapshot of the trusted requirement (selected only through the CORE-04 effective profile); approval-runtime's own policies (recognition, authority, scope, evidence, segregation of duties, expiry, revocation, duplicates, quorum) with Kernel-Authority approver standing re-resolved at submission and at use; an append-only approval log **authenticated** by a signed state commitment (`approval-state:v1`, CORE-01/CORE-04 pattern); the same committed decision resumed into a grant whose signed `sourceDigest` binds the approval and whose expiry is capped by it; re-assessment before the claim; in-process command port only (no route; 36 endpoints); NEXT → CORE-02 (§14). Previous: CORE-04 → **VERIFIED**, 2026-09-28 (branch `feat/core-04-trusted-context-obligations`): one Trusted Context Boundary on the governed path (fact-class-scoped authority to attest, organization scope, provenance, per-class freshness); admitted-only policy input; restrict-only admitted RiskSignal contract; admitted-context digest bound to the decision and the signed grant, grant validity capped at context validity; obligations reachable with a durable, **authenticated** discharge store (signed state commitment, CORE-01 pattern — a database-only writer cannot manufacture satisfaction) and trusted writer; exercise-time lineage for every action class; NEXT → CORE-05 (§14). Previous: CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
 
 Every statement in this document is labelled with one of four kinds:
@@ -263,8 +263,8 @@ wiring inventory is §3.8.
 | Obligation lifecycle (discharge/verify/waive) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `obligations`** (CORE-04) | The unchanged six-state lifecycle, per-profile declarations, durable append-only discharge store with a trusted in-process writer; a withheld decision is issued only after verified discharge (SEC-INV-140; `governed-action-obligations-host.test.ts`) |
 | Trusted context provenance (layer C) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `trustedContext`** (CORE-04) | One Trusted Context Boundary (`context-resolution-service.ts`) per effective profile; admitted-only policy input; context digest bound to decision and signed grant (SEC-INV-136 … 139; `governed-action-trusted-context-host.test.ts`) |
 | Risk signals | **Admitted contract VERIFIED (CORE-04); no producer exists** | An admitted RiskSignal is a restrict-only fact class (`restrictiveFacts`), admitted by the one boundary and readable only by restrictive, monotone policy (SEC-INV-138; `governed-action-restrictive-signal-host.test.ts`). The Kernel intelligence-vocabulary ban stays |
-| Approvals | **PARTIAL** | `approval_required` always ends `withheld:'approval'` (`orchestrator.ts:593`). The approval store is in-memory. There is no way to present an approval proof on the governed path |
-| Escalation | LIBRARY-ONLY | `approval-runtime.ts:203` (domain code only) |
+| Approvals | **VERIFIED (opt-in); composed on the shipped Host when a Governance Profile declares `approval`** (CORE-05) | `approval_required` is resumable: one canonical approval request per committed decision, an authenticated append-only approval log (signed state commitment), approval-runtime's policies with Kernel-Authority approver standing at submission and at use, the same committed decision resumed into a grant whose signed `sourceDigest` binds the approval (SEC-INV-143 … 146; `approval-authority/*`; `governed-action-approvals-host.test.ts`, `governed-action-approvals-adversarial-host.test.ts`). No route: in-process command port only (CTRL-04) |
+| Escalation | **Recorded (CORE-05); not approval** | An `escalated` verdict is durable and attributable and changes nothing (approval-runtime semantics); notification/routing is CTRL-04 |
 | Holder-bound representative / right-scoped Governed Authority | LIBRARY-ONLY | Kernel providers exist (`AocKernel.ts:70-101`); no enterprise wiring |
 | Deterministic AI boundary | PARTIAL | Lexical negative tests (now also over every CORE-04 source). CORE-04 delivered the deterministic half of §4.4.6 (restrict-only admission + pack validation); the ADR's prohibitions on model output remain in force until INTEL-06 |
 | Legacy `src/runtime/authorization` (protocol capability tokens) | SUPERSEDED | Serves the SDK host only |
@@ -471,7 +471,7 @@ MASTER-00 record.
 | Policy packs | WIRED (in-process, optional) | `bootEnterpriseHost({ policyPackProvider })` since CORE-04; required when a profile declares facts. No durable policy store or file format |
 | Obligations | WIRED INTO PRODUCTION HOST (optional, CORE-04) | From the governed-action file's `obligations`; durable discharge store (secure profile refuses ephemeral); in-process trusted writer only |
 | Trusted context | WIRED INTO PRODUCTION HOST (optional, CORE-04) | Source registry from the file's `trustedContext`; context provider and policy are in-process inputs; refused at startup when profiles declare facts without them |
-| Approvals | NOT WIRED | `approval_required` stays withheld (CORE-05) |
+| Approvals (CORE-05) | WIRED INTO PRODUCTION HOST (optional) | Per profile `approval` in the file; authenticated durable approval store (secure profile refuses ephemeral); in-process command port `enterprise.approvals` only — no HTTP route (CTRL-04) |
 | Mandates (`packages/*-mandate`, `*-governance`) | EMBEDDING-ONLY / LIBRARY-ONLY | Not composed, not HTTP-exposed (CREDIT) |
 | Evidence bundle store | WIRED, in-memory | Not durable on any Host (ASSURE) |
 
@@ -1099,10 +1099,10 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 
 | Field | Content |
 |---|---|
-| Status | PLANNED (unblocked: CORE-01 VERIFIED; the commitment format is settled — `signRevocationState(state)`) |
+| Status | **NEXT** (set by CORE-05, 2026-09-28; unblocked: CORE-01 VERIFIED; every commitment format is settled — five structured signing operations, §9 CORE-05) |
 | Depends on | CORE-01 (hard: the revocation-state commitment format must be settled before its signer moves out of process) |
 | Purpose | Remove AA-001 (a process-resident key can mint authority) and design around AA-004 (signer availability on revocation) |
-| Existing reused | `AuthorityArtifactSigner` is already async and narrow (`signGrant`/`signRevocation`, no generic byte signing). Configuration redaction exists |
+| Existing reused | `AuthorityArtifactSigner` is already async and narrow — no generic byte signing. Its complete operation set, all of which must move out of process: `signGrant`, `signRevocation`, `signRevocationState` (CORE-01), `signObligationDischargeState` (CORE-04), `signApprovalState` (CORE-05). Configuration redaction exists |
 | Remaining work | A vendor-neutral external signer port (the adapter lives outside CORE). Key-id / algorithm negotiation (AA-006). Signer-outage semantics for revocation (AA-004). Cost/rate semantics (AA-005). A reference adapter against a local HSM emulator or a generic KMS API. Trusted-key configuration integrity (AA-002, narrowed). A decision on the Agent Passport HMAC signer (TD-5) |
 | Exit criteria | No production composition holds an authority private key in process memory when an external signer is configured. Refusal paths are tested. CORE imports no KMS vendor SDK |
 | Non-goals | Customer transaction-signing keys for rails (PAY-03); signing evidence (ASSURE-02); a PKI |
@@ -1142,13 +1142,14 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 
 | Field | Content |
 |---|---|
-| Status | **NEXT** (set by CORE-04, 2026-09-28) |
+| Status | **VERIFIED** (2026-09-28, branch `feat/core-05-durable-approvals`) |
 | Depends on | CORE-04 (soft) — VERIFIED, CORE-03 (soft) — VERIFIED |
 | Purpose | `approval_required` must become resumable, not terminal |
-| Existing reused | `approval-runtime` (quorum, escalate), Kernel `approvalProofId` handling, orchestrator withheld path |
-| Remaining work | Approvals as a durable authority record kind. An approval proof bound to `requestId` + decision. Resume semantics on the governed path. Expiry. Tests |
-| Exit criteria | A withheld action proceeds after a durable, attributable approval, and only for the exact request approved. Replay-safe |
-| Non-goals | UI and notification (CTRL-04) |
+| Existing reused | `approval-runtime` — its domain model and policies are the approval semantics, run verbatim (`createAdmissionApprovalPolicyChain()`, `QuorumPolicy`, `createActorRegistryRecognitionIntegration`, `createApprovalAuthorityGraphIntegration`); its in-memory store, proof service, ledger, sequential ids and one-approver fallback are **not** used on the governed path (in-memory, unauthenticated, rebuilt with every Kernel-Authority world). The Kernel's own `approval_required` vocabulary; the orchestrator withheld path; CORE-04's effective-profile selector, resumable-decision pattern and signed-state-commitment pattern; the authority signer/verifier. Kernel `approvalProofId` handling is untouched and unreachable from the governed path (the envelope never forwards it) |
+| Delivered | **Lifecycle:** a committed `approval_required` decision the Kernel reads as awaiting a human (`decisionAwaitsHumanApproval`: approval codes, never evidence/handshake) whose **trusted** effective profile declares `approval` opens exactly one canonical request (`approval-request:<sha256(org, requestId, decisionId, subjectDigest)>`; idempotent and serialized); no requirement → no lifecycle → withheld (no synthesized default). **Subject** `frontera.approval-subject.v1`: org, request, decision, evaluation, the Governance Store's own `requestDigest`/`evaluationDigest`, actor, principal, action, resource, counterparty, amount, trusted profile key and classes, typed parameters, context digest/validity, Kernel status/codes/instant, the **requirement snapshot** and its digest; anything else under the same `requestId` is `superseded`; a configuration change supersedes an open or completed request (never reinterpreted). **Requirement:** profile `approval {approverAction (never a governed action), minimumApprovals 1…16, requestTtlSeconds, approvalValiditySeconds, requiredEvidence?}` — bogus, other-version and other-configured (weaker) claims select nothing. **Commands:** in-process port `enterprise.approvals` (`pending`, `describe`, `approve`, `reject`, `requestChanges`, `escalate`, `revoke`) with an authenticated `ApprovalCommandContext`; closed command (no actor field); no store, state or proof writer; no route (36 endpoints); CTRL-01 credential reaches nothing. **Authority:** Kernel-Authority recognition + approver authority over exactly the resource + every hop live, re-resolved at submission **and at use** (decision: approval is live lineage — revoked approver withdraws the approval; restrictive verdicts stay final). **SOD** (requester/target never approve; principal may), distinct-approver quorum, no pooling, rejection final, changes/escalation recorded and inert, evidence types by `sha256:` hash bound into rows and proof. **Expiry:** request strictly before `evaluatedAt + ttl`, proof strictly before `approvedAt + validity`, grant ≤ min(lifetime, context `validUntil`, `notAfter`). **Resume:** the same committed decision (never re-made or rewritten); Kernel `withVerifiedHumanApproval` flips only `authorizationPermitsExercise` and adds `approvalDigest` to the canonical source bytes (additive) → inside the signed `sourceDigest`; obligations re-read independently; approval re-assessed immediately before the claim (revocation between issuance and exercise → adapter 0). **Durable state:** `approvals.sqlite` schema v1 (the first durable format), append-only rows + position-bound digests + chain from a store/org-bound genesis + head signed under `frontera:authority-artifact:approval-state:v1` (`signApprovalState` / `verifyApprovalState`), exact-set verified on every read; verified-state-before-write; one transaction; genesis only on an empty file; CORE-01 re-attestation on rotation; in-process regression witness. **Host:** `AOC_ENTERPRISE_APPROVAL_SQLITE_PATH`; composed when a profile declares `approval`; posture `approvals: durable/ephemeral/not-configured`; secure profile refuses ephemeral. ADR-DURABLE-APPROVALS-ON-THE-GOVERNED-PATH; SEC-INV-143 … 146; `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §28 |
+| Evidence | **WIP reconciliation:** the pre-review CORE-05 WIP (stash on `aefd4da`, before the PR #150 hardening) selected the requirement from `request.action.semantics` (violating SEC-INV-142), took the approver from the command payload, invented escalation *tiers* and hand-rolled the fold; redesigned (trusted resolver, authenticated context, runtime semantics, snapshot, record digests, revoke/requestChanges/evidence); the signed store, signer domain, Kernel resume and grant materiality kept. **Tests:** 80 in 6 new suites — `approval-lifecycle` (21), `approval-authenticity` (15: forged quorum under kept/attacker head; approver/verdict/expiry rewrites under the untouched head; deletion of rejection/revocation/approval/request; reorder/duplicate/gap; transplant with and without the genuine head; foreign organization; genesis over content/headless; unauthenticated/unknown schema; laundering before and during signing with the head byte-identical; crash rolls row and head back together and a half-written state is refused; key rotation re-attests unchanged state and never tampered state; the rollback residual pinned), `approval-structure` (11), `governed-action-approval-gate` (8, real Kernel/Store/ACE: resume without re-making the decision, every withheld status, never for DENY/allowed, revoked or replaced between issuance and exercise → adapter 0, lapsed → no grant, obligation stays independent), and on the canonical Host through `bootEnterpriseHost()` (production profile, SQLite, signed grants, real listener): `governed-action-approvals-host` (18: quorum 1 and 2 across restarts, duplicate, rejection across restart, changes/escalation inert, ineligible approvers incl. requester/owner/other scope/other action, approver revoked pending and after approving, proof revoked, no cross-request/amount/action replay, caller cannot name a proof or requirement, DENY and high signal open no lifecycle while an elevated signal is approvable, obligation+approval in both orders on the same decision, signed `sourceDigest` recomputed with and without the approval, posture, no route, startup refusal) and `governed-action-approvals-adversarial-host` (7: the permanent stopped-Host forgery with recomputed digests and an attacker key → restart refused, adapter 0, then the legitimate path executes exactly once; laundering; revocation deletion; key rotation; request/proof/context expiry with a mocked clock). **Non-vacuity:** 25 deliberate violations of compiled code, each restored byte-for-byte (SHA-256); all 25 fail focused tests: request `approvalProofId` trusted (1), subject binding skipped (2), pooling (1), approver authority off (6), SOD off (1), duplicate counted (3), mutable requirement (2), request expiry (2), proof expiry (2), context validity (1), approval out of `sourceDigest` (1), approval drops validity ceilings (1) / widens scope (1), signature unverified (5), chain unverified (10), both (13), no re-verify under the lock (1), genesis over existing (1), no rotation re-attestation (2), revocation ignored (3), approval over DENY (3), approval over obligation (2), no pre-claim re-assessment (2), caller semantics selects the requirement (1), authority at submission only (2). Two were vacuous at first — both test weaknesses, fixed: the widening fixture had no validity ceiling to drop, and the during-signing tamper collided on the primary key instead of rewriting history. **Validation:** typecheck, lint, build green; `check-api-freeze` (36 endpoints, unchanged), `check-release-docs`, `check-sdk-surface` green; `git diff --check` clean, no conflict markers; root **8012 tests, 8009 pass, 1 skipped (live Pinata, unconfigured), 2 failing** — both source-text regexes over Windows CRLF working-copy files (`authority-administration-service.test.ts`, the known CORE-04 artifact, and `structural-boundaries.test.ts` R004.B over `enterprise-configuration.ts`, which CORE-05 edits); both pass against a `git archive` export of the committed LF tree; workspaces 1069/1069. `legal:check:strict` reports only the pre-existing lockfile finding (busboy/streamsearch), unchanged. |
+| Residual (owned elsewhere) | Genuine-state **rollback** across restart (CORE-07): a prefix can be more permissive than its whole (approved before revocation/rejection) — pinned by test, bounded by `approvalValiditySeconds`. **Key/process compromise** (CORE-02 moves `signApprovalState` out of process with the other four operations). In-process code can construct a command context (SEC-TRUST-001); human authentication, inbox, notification (CTRL-04); human identity/roles (CTRL-02). External evidence artifacts are referenced by hash, not verified (ASSURE). The Governance Store is integrity-only (§3.7 item 4) — a rewrite after the request opened supersedes it. A grant issued immediately before a pre-claim refusal stays unexercised until its capped expiry. Approval store not in backup (PROD-02). One organization per Host |
+| Non-goals | UI and notification (CTRL-04); human CRUD/roles/provisioning (CTRL-02); any INTEL component; portable evidence (ASSURE-01..03) |
 
 **CORE-06: Governance Core Qualification**
 
@@ -1548,7 +1549,7 @@ inventory, provisioning) is unchanged.
 | Exit criteria | `npm run start:enterprise`, with documented config, runs governed actions with signed grants. Insecure config refuses to boot |
 | Delivered | One canonical bootstrap, `bootEnterpriseHost()` (`src/enterprise/host/`); the launcher only delegates and prints posture. Strict environment parsing (`validateEnterpriseEnvironment`) and a closed-schema governed-action file (`AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`) whose secrets are env-var references. Secure profile (`production`/`staging`) refuses: non-`sqlite`, auth off or credential-less, no governed-action file, disabled/optional Kernel Authority, no signing key. Any profile refuses an unauthenticated non-loopback bind; default bind `127.0.0.1`. Composes existing capabilities only (customer admission, grant-aware Kernel over durable Kernel Authority, authenticated grant store, P7 + P10, durable P4, P8, P11, Generic HTTP via the trusted registry). Composition root: signing keys resolved before any store opens; atomic startup; governed spine registrable `required`; `/health` `posture`. Post-composition posture + health gate before `listen()` (a tampered revocation state refuses the start); `/ready` requires health not `unhealthy`; idempotent close. SEC-INV-126 … 128; NB-005, GS-003 closed for the shipped Host |
 | Evidence | `enterprise-host.test.ts` (53) and `tests/enterprise-host-launcher.test.mjs` (4): reproduction of the pre-PROD-01 gap, end-to-end governed action over SQLite with a signed grant, denial/no-bypass, Generic HTTP reached only after authorization (no request sent), revocation (Kernel Authority and bounded grant, including a CORE-01 tamper refusing restart and failing `/ready` at runtime), restart durability, 34 configuration refusals (including invalid ports, a malformed log level and the literal pre-PROD-01 production/SQLite/auth-off/`0.0.0.0` combination), default-looking credentials (`admin`, `changeme`, …) refused with 401, atomic startup and shutdown without leaked handles. Twelve deliberate-violation experiments each failed the expected tests; one of them exposed that a launcher spawn could hang the suite, fixed by a per-spawn kill deadline. The launcher test also caught a real signal race (handlers installed after the listen banner), fixed. Final run: typecheck, lint, build green; root 7516/7518 pass, 1 skipped (live Pinata, unconfigured), 1 failing — the pre-existing CRLF working-copy artifact in `structural-boundaries.test.ts` (64/64 against a `git archive` export of the committed LF tree); workspaces 1069/1069. Re-verification (11 added host cases, each failing under a deliberate port/loopback-check breakage): root 7528/7529 pass, 1 skipped, 0 failing; workspaces 1069/1069 |
-| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). *(Update: revocation and emergency stop/release are exposed over the admin API by CTRL-01, VERIFIED 2026-09-26; provisioning remains in-process → CTRL-02.)* Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04 — delivered 2026-09-28). Approvals withheld (CORE-05). Policy packs in-process only (no durable store). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
+| Residual (owned elsewhere) | Provisioning, revocation and emergency stop are in-process only (CTRL-01). *(Update: revocation and emergency stop/release are exposed over the admin API by CTRL-01, VERIFIED 2026-09-26; provisioning remains in-process → CTRL-02.)* Six governed-action stores outside backup (PROD-02). Key process-resident (CORE-02). Obligations, trusted context and non-financial exercise-time lineage (CORE-04 — delivered 2026-09-28). Approvals resumable (CORE-05 — delivered 2026-09-28; store not in backup, PROD-02). Policy packs in-process only (no durable store). P12 not wired (no resolver ships). Evidence bundles in-memory (ASSURE). `createEnterprise()` stays a lenient embedding surface by design |
 | Parallel | Yes, with CORE-02/03 |
 
 **PROD-02: Complete Backup / Restore Coverage**
@@ -1557,7 +1558,7 @@ inventory, provisioning) is unchanged.
 |---|---|
 | Status | PLANNED |
 | Depends on | PROD-01 (soft) |
-| Purpose | Former P17. Cover the 6 unbacked stores, plus key-material procedures |
+| Purpose | Former P17. Cover the unbacked stores — the 6 governed-action stores, plus the obligation discharge store (CORE-04) and the approval store (`approvals.sqlite`, CORE-05; its signed head must be restored with its rows) — plus key-material procedures |
 | Exit criteria | A clean-room drill restores exercisable grants, revocations, ledgers and trace |
 
 **PROD-03: Pilot Onboarding & Operational Qualification**
@@ -1586,10 +1587,10 @@ Rebuilt by MASTER-01 to include INTEL and CORE-08.
 CORE-01✓ ──► CORE-02 ──► CORE-07
    │            └┄┄► ASSURE-02 ──► ASSURE-03
    ├──► PROD-01✓ ┄┄► PROD-02
-   ├──► CTRL-01✓ ──► CTRL-02 ──► CTRL-03 ──► CTRL-04 ◄── CORE-05
+   ├──► CTRL-01✓ ──► CTRL-02 ──► CTRL-03 ──► CTRL-04 ◄── CORE-05✓
    │                   ▲ ┄┄ CORE-03 (provisioning schemas)
    ├┄┄► ASSURE-01 ──► ASSURE-04
-   └┄┄► CORE-03✓ ──► CORE-04✓ ┄┄► CORE-05
+   └┄┄► CORE-03✓ ──► CORE-04✓ ┄┄► CORE-05✓
            │           │
            │           └───────────────────────────┐
            ├──► PAY-01 ──► PAY-02 ──► PAY-08       │
@@ -1656,7 +1657,7 @@ All of the following must be true:
    - No payment or credit vocabulary exists in CORE; this is enforced by structural tests.
 5. **Obligations and trusted context are reachable** on the governed path (CORE-04). **Done** (2026-09-28).
 6. **Lineage is revalidated at exercise** for all action classes (CORE-04). **Done** (2026-09-28).
-7. **Approvals are durable and resumable** (CORE-05).
+7. **Approvals are durable and resumable** (CORE-05). **Done** (2026-09-28).
 8. **The no-bypass proof is re-run** against the composed default host (CORE-06).
 9. **Every "BLOCKED" security claim has a test.**
 10. **CORE is independent of INTEL** (MASTER-01, invariant 32): every item above is
@@ -1781,7 +1782,7 @@ vocabulary and branching in the Kernel, orchestrator, grant and execution
 runtimes. Two non-financial domains (data read vs export; deploy to
 production) and the monetary domain are governed on one composition by
 policy and profile data alone (`governed-action-thesis-read-export.test.ts`).
-**Still missing for §11.6:** durable approvals (CORE-05); typed parameters
+**Still missing for §11.6:** typed parameters
 handed to domain adapters, three domains end to end on the shipped Host
 (CORE-08); revoked-mid-flight cases per domain (CORE-08).
 
@@ -1854,38 +1855,41 @@ composition (`bootEnterpriseHost({ policyPackProvider })`).
 
 ## 14. Current NEXT Item
 
-**NEXT: CORE-05 — Durable Approvals (engine side)**
+**NEXT: CORE-02 — External Signer & Key Custody Boundary**
 
-**Previous NEXT:** CORE-04 — **VERIFIED** 2026-09-28 (§9). Before it CORE-03,
-CTRL-02 (displaced by MASTER-01), PROD-01 and CORE-01.
+**Previous NEXT:** CORE-05 — **VERIFIED** 2026-09-28 (§9). Before it CORE-04,
+CORE-03, CTRL-02 (displaced by MASTER-01), PROD-01 and CORE-01.
 
-**Candidates (unblocked after CORE-04):** CORE-05, CTRL-02, PAY-01, CREDIT-01
-(design), INTEL-01, INTEL-02, INTEL-04 (needs INTEL-02), ASSURE-01, PROD-02,
-CORE-02. CORE-06, CORE-08, CTRL-04, INTEL-06 and PROD-03 remain blocked, each
-through CORE-05.
+**Candidates (unblocked after CORE-05):** CORE-02, CORE-06, CORE-08, CTRL-02,
+PAY-01, CREDIT-01 (design), INTEL-01, INTEL-02, INTEL-04 (needs INTEL-02),
+ASSURE-01, PROD-02.
 
-**Why CORE-05:**
+**Why CORE-02, not CORE-06:**
 
-- **Longest dependency chain, both remaining CORE paths.** CORE-05 is the next
-  link of the pilot critical path (CORE-05 → CORE-06; CTRL-04 → PROD-03 wait on
-  it) and of the Governed Action Thesis path (CORE-05 → CORE-08). No other
-  candidate unblocks as much.
-- **Security/availability sharpened by CORE-04.** `approval_required` is still
-  terminal (`withheld: 'approval'`). CORE-04 made that outcome reachable from
-  admitted context — a restrict-only fact may require review — so every such
-  action is now withheld forever. The resume path is the missing half; CORE-04's
-  issuance-time re-read of a committed decision (obligations) is the pattern it
-  can reuse (bind to `requestId` + decision, never re-make the decision).
-- **Pilot leverage preserved.** CTRL-02 stays the recommended parallel stream
-  (human operators, agent inventory, provisioning, and now a human surface for
-  recording obligation discharges and approving); PROD-02 stays independent and
-  should add the obligation discharge store to backup. INTEL-01/02/04 are
-  unblocked but not on the pilot path (§11.3).
+- **CORE-06 cannot yet be VERIFIED.** Its exit is "§11.1 all true". After
+  CORE-05, §11.1 items 2, 4, 5, 6 and 7 are done; item 3 is CORE-02 itself and
+  item 1 needs CORE-07 (or a documented acceptance), which hard-depends on
+  CORE-02. Starting CORE-06 now would end NOT VERIFIED.
+- **Longest remaining critical chain.** CORE-02 → CORE-07 → CORE-06 is the
+  core half of the pilot path (PILOT READY needs §11.1 items 1 and 8), and the
+  road to GOVERNANCE CORE STABLE.
+- **The signer's operation set is now settled.** With CORE-05 the authority
+  signer has its complete set — `signGrant`, `signRevocation`,
+  `signRevocationState`, `signObligationDischargeState`, `signApprovalState` —
+  every one already async and structured (no byte signing); moving it out of
+  process no longer risks chasing a moving interface.
+- **Parallel streams preserved.** CORE-08 (all hard dependencies VERIFIED;
+  soft on CORE-06's harness) and CTRL-02 → CTRL-03 → CTRL-04 (the human surface
+  CORE-05 was built for) remain the recommended parallel streams; PROD-02 should
+  now cover the obligation discharge and approval stores.
 
-**Prerequisites already satisfied:** CORE-04 (soft) and CORE-03 (soft) — VERIFIED.
+**Prerequisites already satisfied:** CORE-01 (hard) — VERIFIED; the commitment
+formats are settled.
 
-**Out of scope for CORE-05:** UI and notification (CTRL-04); human operator
-identity (CTRL-02); any INTEL component.
+**Out of scope for CORE-02:** customer transaction-signing keys (PAY-03);
+signing evidence (ASSURE-02); rollback detection (CORE-07); a PKI.
+
+**Validation (CORE-05, 2026-09-28).** typecheck, lint, build green; `check-api-freeze` (36 endpoints, unchanged), `check-release-docs`, `check-sdk-surface` green; `git diff --check` clean, no conflict markers; root **8012 tests, 8009 pass, 1 skipped (live Pinata, unconfigured), 2 failing** — both source-text regexes over Windows CRLF working-copy files (`authority-administration-service.test.ts`, the known CORE-04 artifact, and `structural-boundaries.test.ts` R004.B over `enterprise-configuration.ts`, which CORE-05 edits); both pass against a `git archive` export of the committed LF tree; workspaces 1069/1069. `legal:check:strict` reports only the pre-existing lockfile finding (busboy/streamsearch), unchanged.
 
 ## 15. Superseded Roadmaps / Source-of-Truth Rule
 
