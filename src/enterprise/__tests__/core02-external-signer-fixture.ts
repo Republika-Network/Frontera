@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -271,4 +271,117 @@ export function withoutSoftwareCustody(env: Record<string, string | undefined>):
   void _pem;
   void _keys;
   return rest;
+}
+
+// ── a fault-injecting proxy in front of a custody service (CORE-02R) ──────────
+
+/** What the proxy does to signing calls. Identity calls always pass through to `identityTarget`. */
+export type SigningFault = 'pass' | 'unavailable' | 'hang' | 'redirect';
+
+export interface FaultProxy {
+  readonly endpoint: string;
+  /** How signing requests are answered from now on. `redirect` forwards them to `redirectTarget`. */
+  fault: SigningFault;
+  redirectTarget: string | undefined;
+  identityCalls: number;
+  signCalls: number;
+  close(): Promise<void>;
+}
+
+function forward(target: string, method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<{ status: number; body: Buffer }> {
+  return new Promise((resolveForward, reject) => {
+    const req = request(new URL(path, target), { method, agent: false, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolveForward({ status: res.statusCode ?? 502, body: Buffer.concat(chunks) }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(body.length > 0 ? body : undefined);
+  });
+}
+
+/**
+ * A loopback proxy that answers `GET /v1/identity` from the genuine service
+ * (always healthy) while signing requests are passed, refused with 503, left
+ * hanging, or redirected to another service. It separates "the identity
+ * endpoint is reachable" from "signing works" — the distinction the health
+ * model must keep.
+ */
+export async function startFaultProxy(identityTarget: string): Promise<FaultProxy> {
+  const hanging: import('node:http').ServerResponse[] = [];
+  const state = { fault: 'pass' as SigningFault, redirectTarget: undefined as string | undefined, identityCalls: 0, signCalls: 0 };
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const path = req.url ?? '/';
+      const headers: Record<string, string> = {};
+      for (const name of ['authorization', 'accept', 'content-type']) {
+        const value = req.headers[name];
+        if (typeof value === 'string') headers[name] = value;
+      }
+      const body = Buffer.concat(chunks);
+      if (body.length > 0) headers['content-length'] = String(body.length);
+      const isSign = path.startsWith('/v1/sign/');
+      if (path === '/v1/identity') state.identityCalls += 1;
+      if (isSign) state.signCalls += 1;
+      if (isSign && state.fault === 'unavailable') {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end('{"error":"unavailable"}');
+        return;
+      }
+      if (isSign && state.fault === 'hang') {
+        hanging.push(res);
+        return;
+      }
+      const target = isSign && state.fault === 'redirect' && state.redirectTarget !== undefined ? state.redirectTarget : identityTarget;
+      forward(target, req.method ?? 'GET', path, headers, body).then(
+        (answer) => {
+          res.writeHead(answer.status, { 'content-type': 'application/json' });
+          res.end(answer.body);
+        },
+        () => {
+          res.writeHead(502);
+          res.end();
+        },
+      );
+    });
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  const port = (server.address() as import('node:net').AddressInfo).port;
+  const proxy: FaultProxy = {
+    endpoint: `http://127.0.0.1:${port}`,
+    get fault() {
+      return state.fault;
+    },
+    set fault(value: SigningFault) {
+      state.fault = value;
+    },
+    get redirectTarget() {
+      return state.redirectTarget;
+    },
+    set redirectTarget(value: string | undefined) {
+      state.redirectTarget = value;
+    },
+    get identityCalls() {
+      return state.identityCalls;
+    },
+    set identityCalls(value: number) {
+      state.identityCalls = value;
+    },
+    get signCalls() {
+      return state.signCalls;
+    },
+    set signCalls(value: number) {
+      state.signCalls = value;
+    },
+    close: () =>
+      new Promise<void>((resolveClose) => {
+        for (const res of hanging.splice(0)) res.destroy();
+        server.closeAllConnections();
+        server.close(() => resolveClose());
+      }),
+  };
+  return proxy;
 }
