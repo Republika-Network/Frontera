@@ -486,7 +486,7 @@ export type {
 export { createKernelAuthorityModule, KERNEL_AUTHORITY_MODULE_ID } from './modules/kernel-authority-module.js';
 
 export { computeEnterpriseHealth } from './health/health-check.js';
-export type { EnterpriseHealthReport, EnterpriseHealthState, EnterpriseHealthDependencies, EnterpriseHealthPosture } from './health/health-check.js';
+export type { EnterpriseAuthoritySignerHealth, EnterpriseHealthReport, EnterpriseHealthState, EnterpriseHealthDependencies, EnterpriseHealthPosture } from './health/health-check.js';
 
 export {
   validateGovernanceEvaluateRequestBody,
@@ -776,12 +776,17 @@ export type {
  * The authority-artifact authenticity boundary -- type-only, for the same
  * reason the store above is.
  *
- * A deployment adopts it by configuration
+ * A deployment adopts it by configuration — software custody
  * (`AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID`,
  * `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`,
- * `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`), and the composition root builds
- * the signer and the verifier from it. A host that constructs its own durable
- * store imports the factories from `src/enterprise/authority-authenticity`.
+ * `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`) or, since CORE-02, external
+ * custody with no private key in this process
+ * (`AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external`,
+ * `AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT`, `AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN`,
+ * the pinned key id and the verification keys) — and the composition root
+ * builds the signer and the verifier from it. A host that constructs its own
+ * durable store imports the factories from `src/enterprise/authority-authenticity`
+ * and `src/enterprise/external-authority-signer`.
  *
  * Exported as types so a host can *name* the boundary it satisfies. Note which
  * way the two halves point: a component handed an `AuthorityArtifactVerifier`
@@ -795,8 +800,15 @@ export type {
   AuthoritySignatureAlgorithm,
   AuthoritySignatureFailure,
   AuthoritySignatureVerification,
+  AuthoritySignerCustody,
+  AuthoritySigningFailureReason,
   TrustedVerificationKey,
 } from './authority-authenticity/index.js';
+export type {
+  ExternalAuthoritySignerTransport,
+  ExternalAuthoritySignerStatus,
+  PinnedAuthoritySignerIdentity,
+} from './external-authority-signer/index.js';
 
 export { createEnterpriseRequestListener } from './adapters/node-http-adapter.js';
 

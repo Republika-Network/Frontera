@@ -889,16 +889,21 @@ describe('Authority artifact authenticity — Prompt 4 semantics are unchanged',
         sourceDigest: 'sha256:aaaa',
         digest: 'sha256:bbbb',
       },
+      // CORE-02 / AA-005: the store asks the guard once *before* signing (a
+      // non-authoritative cost preflight) and again inside the transaction.
+      // Eligibility is withdrawn while the signer works — the race the
+      // commit-time guard exists for — so the preflight permits and the
+      // commit refuses.
       commitGuard: () => {
         order.push('guard');
-        return { permitted: false, reasonCodes: [] };
+        const permitted = order.filter((entry) => entry === 'guard').length === 1;
+        return { permitted, reasonCodes: [] };
       },
     });
     assert.equal(outcome.outcome, 'refused');
-    // Signing happened before the guard ran: the guard is the *last* thing
-    // before the commit, which is what makes the signing window safe.
-    assert.equal(order.at(-2), 'sign');
-    assert.equal(order.at(-1), 'guard');
+    // Signing happened before the commit guard ran: the guard is the *last*
+    // thing before the commit, which is what makes the signing window safe.
+    assert.deepEqual(order.slice(-3), ['guard', 'sign', 'guard']);
     await guarded.close();
   });
 

@@ -46,7 +46,7 @@ try {
     const p = host.posture;
     console.log(`Frontera Enterprise Host listening on http://${address}:${port}`);
     console.log(
-      `posture: environment=${p.environment} persistence=${p.persistence} authentication=${p.authentication} governedActions=${p.governedActions} authorityStore=${p.authorityStore} executionAdapters=${p.executionAdapters} authorityAdministration=${p.authorityAdministration} trustedContext=${p.trustedContext} obligations=${p.obligations}`,
+      `posture: environment=${p.environment} persistence=${p.persistence} authentication=${p.authentication} governedActions=${p.governedActions} authorityStore=${p.authorityStore} executionAdapters=${p.executionAdapters} authorityAdministration=${p.authorityAdministration} trustedContext=${p.trustedContext} obligations=${p.obligations} approvals=${p.approvals} authoritySigner=${p.authoritySigner}`,
     );
     if (p.persistence === 'ephemeral') {
       console.log('WARNING: ephemeral in-memory state (development only). Every grant, revocation and ledger entry is lost when this process exits.');

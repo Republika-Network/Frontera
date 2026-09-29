@@ -188,7 +188,7 @@ Each persisted grant and revocation now carries a detached **Ed25519** signature
 
 | Threat | Status | Note |
 |---|---|---|
-| **Private signing key theft** | **NOT ADDRESSED** | The key is resident in application process memory, loaded from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`. AA-001, asset A-32. External key custody — **deferred** |
+| **Private signing key theft** | **NOT ADDRESSED** under software custody; **moved out of the process** under external custody (CORE-02, §7.16d) | Software custody: the key is resident in application process memory, loaded from `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` (AA-001, asset A-32). External custody: no authority private key in the Frontera process |
 | **Process compromise** | **NOT ADDRESSED** | Implies the above. Cryptography does not help here |
 | **Trusted key registry replacement** | **NOT ADDRESSED** | Configuration is a trusted input; whoever writes it decides what is believed. AA-002, asset A-33 |
 | **Snapshot rollback** | **NOT ADDRESSED** (narrowed by CORE-01, §7.16c) | Every artifact in an older snapshot is validly signed, revocations included. Signatures authenticate, they do not timestamp. GS-002 / AA-003, and §7.17's rollback row still applies |
@@ -212,6 +212,31 @@ Scoped to the same store. Canonical detail: `AUTHORITY_ARTIFACT_AUTHENTICITY.md`
 | **Residual risk** | **Full historical rollback.** A writer who captured the complete earlier signed state (commitment and rows) and restores it is detected by a process that already verified the newer state, but **not** across a restart: using the file alone, "never revoked" and "restored to before the revocation" look the same. Old commitment bytes may also survive in SQLite WAL frames or free pages. → **CORE-07** (external freshness / anchoring). Also unchanged: key theft / process compromise (AA-001 → CORE-02), key-configuration control (AA-002), and a malicious in-process host, which can bypass the composition check (SEC-INV-125 boundary). New but intended: tampering with revocation state makes every read refuse, a fail-closed denial of service (AA-007) |
 
 **Composition downgrade.** A Host configured for durable persistence now refuses a host-supplied grant store that is not the authenticated durable store (the in-memory store, a shape-compatible object, or a wrapper), with `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED`. This guards composition mistakes, not a malicious host.
+
+### 7.16d External authority signer & key custody (added by CORE-02)
+
+Scoped to the five authority artifacts (grants, revocations, revocation state, obligation discharge state, approval state). Canonical detail: `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29; decision: `ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY.md`; invariants SEC-INV-147 … SEC-INV-154.
+
+Under `AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external` the Host holds an endpoint, a service credential and the pinned **public** identity; a separate custody service holds the key and answers five structured operations; the Host verifies every answer locally before persisting it.
+
+| Threat | Status | Mitigation / note |
+|---|---|---|
+| Read the authority private key from Host memory, configuration or environment | **BLOCKED** (external custody) | No key field, key variable refused, no parsing; proven on the canonical Host and via `/proc/<pid>/environ` on the shipped launcher. Software custody: unchanged (AA-001) |
+| Operator believes custody is external while the key is still in the environment | **BLOCKED** | External mode + `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` refuses to start |
+| Silent fallback to in-process signing on signer outage | **BLOCKED** | No fallback code; mixed-custody stores refused; Host checks the composed custody |
+| Endpoint substitution (endpoint serves another key) / same key id with other material | **BLOCKED** | Startup handshake pins key id, algorithm and SPKI public key to the trusted registry |
+| Verification-registry substitution alone | **BLOCKED** | The signer's advertised key must equal the registry's entry; mismatch refuses startup |
+| Trust-on-first-use of the signer's key | **BLOCKED** | Remote material is compared, never added to the registry |
+| Malicious signer: attacker-key, other-key, other-artifact, cross-domain, malformed, truncated, other-version signatures | **BLOCKED** | Local verification under the pinned key before any write; store read-back |
+| Unannounced key change mid-process (even to a still-trusted key) | **BLOCKED** | Signatures must name and verify under the pinned key; the identity probe reports the change |
+| Signer hangs | **BLOCKED** (bounded) | Per-attempt timeout × bounded attempts; no await inside a DB transaction |
+| Signer outage during issuance / discharge / approval / genesis | **BLOCKED** (fails closed) | Nothing written; nothing acknowledged |
+| Signer outage during **revocation** | **PARTIALLY BLOCKED** (AA-004) | Fails honestly (`503 AUTHORITY_SIGNER_UNAVAILABLE`, `recorded: false`); the grant stays exercisable; the durable emergency stop (signer-independent) withholds exercise; `/health` degraded |
+| Credential theft from the Host / compromised Host requesting signatures | **NOT ADDRESSED** (AA-010) | The credential authorizes use of the key; external custody prevents extraction, not use while compromised. No independent service-side authorization ships |
+| Endpoint + registry + Host configuration rewritten together | **NOT ADDRESSED** (AA-002) | No independent configuration trust root |
+| Custody service compromise | **OUT OF SCOPE** | The reference service is a file-backed key in a loopback process — explicitly not an HSM |
+| Plain-HTTP interception | **BLOCKED beyond loopback** | `http:` accepted only to loopback (reference signer); otherwise `https:`. No mTLS in the shipped transport |
+| Restart during a signer outage | **Availability risk** (AA-011) | The Host does not start until its signer's identity can be proven |
 
 ### 7.17 Automated backup/restore tooling (`backup:v1`/`restore:v1`)
 
@@ -354,7 +379,7 @@ P12 lets a host-composed, trusted **resolution authority** later establish wheth
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.
-2. **No signatures / non-repudiation** — digests provide integrity, not authorship proof; constitutional constraint (no external signing infra) — revisit post-v1.
+2. **No signatures / non-repudiation** — digests provide integrity, not authorship proof; constitutional constraint (no external signing infra) — revisit post-v1. *Superseded for the five authority artifacts:* Ed25519 signatures (Prompt 5, CORE-01/04/05) with an external-custody option (CORE-02, §7.16d); still true for every other store.
 3. **Filesystem-level attacker with full re-seal capability** — out of software scope; mitigated by backups, exported artifacts, and independent verification. *Extended by Prompt 4:* this now explicitly includes the bounded-grant authority store — a writer who can rewrite a grant or revocation record and recompute its unkeyed digest defeats every check there (GS-001), and restoring an older snapshot of it restores revoked authority (GS-002). Neither is claimed to be prevented.
 4. **No in-process rate limiting / no per-field length caps / lenient Content-Type / unbounded collection reads** — bounded by the 1 MiB cap and reverse-proxy guidance; additive fixes possible in v1.x without breaking the API.
 5. **Reads don't re-verify digests** — verification is explicit; scheduled verification is an operational control.

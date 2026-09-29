@@ -58,6 +58,32 @@ export interface EnterpriseHealthPosture {
   readonly obligations: 'durable' | 'ephemeral' | 'not-configured';
   /** CORE-05: the approval store's kind, or `not-configured` when no Governance Profile declares an approval requirement. */
   readonly approvals: 'durable' | 'ephemeral' | 'not-configured';
+  /**
+   * CORE-02: the custody of the authority signing key behind the composed
+   * durable grant store. `external` — this process holds no authority private
+   * key (signatures come from an external custody service and are verified
+   * locally); `software` — the key is resident in this process (AA-001);
+   * `not-composed` — no signed authority store is composed.
+   */
+  readonly authoritySigner: 'external' | 'software' | 'not-composed';
+}
+
+/**
+ * CORE-02: the authority signer's live state. Signing availability only — a
+ * signer that is `unavailable` stops new authority mutations (issuance,
+ * revocation, discharge and approval appends) and nothing else: every
+ * existing artifact still verifies locally. Never carries a credential, an
+ * endpoint path, a payload or key material.
+ */
+export interface EnterpriseAuthoritySignerHealth {
+  readonly custody: 'software' | 'external';
+  readonly keyId: string;
+  readonly algorithm: string;
+  readonly state: 'ready' | 'unavailable';
+  /** Closed, repository-owned reason (`AUTHORITY_SIGNING_FAILURE_REASONS`) when `unavailable`. */
+  readonly reason?: string;
+  /** External custody only: low-cardinality totals across the five operations. */
+  readonly signing?: { readonly calls: number; readonly attempts: number; readonly succeeded: number; readonly failed: number; readonly retried: number };
 }
 
 /**
@@ -89,6 +115,8 @@ export interface EnterpriseHealthReport {
   readonly modules?: Readonly<Record<EnterpriseModuleId, EnterpriseModuleHealthEntry>>;
   /** PROD-01 — present whenever the caller supplied `EnterpriseHealthDependencies.posture` (every `AocEnterprise.health()`). */
   readonly posture?: EnterpriseHealthPosture;
+  /** CORE-02: present when a signed authority store's signer was composed by this Host. */
+  readonly authoritySigner?: EnterpriseAuthoritySignerHealth;
 }
 
 export interface EnterpriseHealthDependencies {

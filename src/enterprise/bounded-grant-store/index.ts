@@ -22,7 +22,7 @@ export {
 } from './bounded-grant-record.js';
 export type { RevocationSetEntry, RevocationStateCommitment } from './bounded-grant-record.js';
 
-export { createSqliteBoundedGrantStore, isAuthenticatedDurableBoundedGrantStore } from './sqlite-bounded-grant-store.js';
+export { createSqliteBoundedGrantStore, isAuthenticatedDurableBoundedGrantStore, parseStoredGrant as parseCanonicalBoundedGrant } from './sqlite-bounded-grant-store.js';
 export type {
   BoundedGrantStoreHealth,
   CreateSqliteBoundedGrantStoreOptions,

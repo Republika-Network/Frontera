@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { bindStoreSignerCustody } from '../authority-authenticity/custody.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
 import {
@@ -296,12 +297,17 @@ export async function createSqliteObligationDischargeStore(path: string, options
         row_digest: digest,
       });
       updateHead.run(sequence, next.chainDigest, JSON.stringify(signature), recordedAt);
+      // Read back through the same verification every later read runs
+      // (CORE-02): a head signature this deployment would refuse — from any
+      // signer — rolls the whole append back rather than leaving a store that
+      // every later read refuses.
+      verifiedState();
     }).immediate();
     witnessed = Math.max(witnessed, sequence);
     return Object.freeze({ ...content, correlation: Object.freeze({ ...content.correlation }), sequence, digest });
   }
 
-  return {
+  const store: ObligationDischargeStore = {
     kind: 'durable-authenticated',
     append(content: ObligationDischargeContent): Promise<StoredObligationDischarge> {
       const result = tail.then(() => appendOnce(content));
@@ -325,4 +331,7 @@ export async function createSqliteObligationDischargeStore(path: string, options
       return Promise.resolve();
     },
   };
+  // CORE-02: which custody signs for this store (software or external).
+  bindStoreSignerCustody(store, signer);
+  return store;
 }

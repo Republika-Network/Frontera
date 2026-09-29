@@ -350,6 +350,8 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       obligations: 'not-configured',
       // CORE-05: no profile here declares an approval requirement.
       approvals: 'not-configured',
+      // CORE-02: the canonical fixture still configures software custody.
+      authoritySigner: 'software',
     });
     const health = await getJson(baseUrl, '/health');
     assert.equal(health.status, 200);

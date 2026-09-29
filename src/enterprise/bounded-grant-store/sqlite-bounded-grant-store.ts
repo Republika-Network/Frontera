@@ -28,6 +28,7 @@ import {
 } from './bounded-grant-record.js';
 import {
   AuthoritySigningUnavailableError,
+  bindStoreSignerCustody,
   type AuthorityArtifactSigner,
   type AuthorityArtifactVerifier,
   type AuthoritySignature,
@@ -491,7 +492,7 @@ function stringField(source: Readonly<Record<string, unknown>>, key: string): st
  * quietly normalize into a usable grant. That is `GS-INV-011`, "no silent
  * repair", expressed as code rather than as a promise.
  */
-function parseStoredGrant(grantJson: string): BoundedGrant | undefined {
+export function parseStoredGrant(grantJson: string): BoundedGrant | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(grantJson);
@@ -985,6 +986,40 @@ export async function createSqliteBoundedGrantStore(
     return settle({ outcome: 'issued', grant: verifiedGrant(selectGrant.get(input.grant.id) as GrantRow, storeId) });
   });
 
+  /**
+   * CORE-02 / AA-005 — the cost preflight. **Not authoritative.**
+   *
+   * The same three questions `runIssue` asks before its insert — already
+   * issued? precluded by a revocation? still eligible (`commitGuard`)? — asked
+   * once *before* the signer is called, so an obviously useless signature is
+   * never requested from a signer that may be metered, rate-limited or remote.
+   * A settled answer here is exactly the answer `runIssue` would have given for
+   * the same state, because it is the same checks in the same order over the
+   * same verified revocation state.
+   *
+   * It decides nothing on its own: `runIssue` asks all three again, inside the
+   * write transaction, after signing — so a state that changes between this
+   * preflight and the commit is still caught there. The only cost of that race
+   * is one wasted signature, which is the price of correctness (§20 of the
+   * CORE-02 ADR), never a stale commit.
+   */
+  const runPreflightIssue = db.transaction((input: IssueBoundedGrantInput): { readonly settled: IssueBoundedGrantOutcome | undefined; readonly state: RevocationStateCommitment } => {
+    const state = verifiedRevocationState();
+    const existingRow = selectGrant.get(input.grant.id) as GrantRow | undefined;
+    if (existingRow !== undefined) return { settled: { outcome: 'already-issued', grant: verifiedGrant(existingRow, state.commitment.storeId) }, state: state.commitment };
+    if (state.byGrantId.has(input.grant.id) || (selectRevocation.get(input.grant.id) as RevocationRow | undefined) !== undefined) {
+      return { settled: { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_REVOKED] }, state: state.commitment };
+    }
+    const precondition = input.commitGuard();
+    if (!precondition.permitted) {
+      return {
+        settled: { outcome: 'refused', reasonCodes: precondition.reasonCodes.length > 0 ? precondition.reasonCodes : [GRANT_REASON_CODES.GRANT_ELIGIBILITY_CHANGED] },
+        state: state.commitment,
+      };
+    }
+    return { settled: undefined, state: state.commitment };
+  });
+
   const runRead = db.transaction((grantId: string): { readonly result: ReadBoundedGrantResult; readonly state: RevocationStateCommitment } => {
     // The revocation state first, for every read — including a read of a grant
     // that does not exist. There is one answer to "is this store's revocation
@@ -1213,8 +1248,12 @@ export async function createSqliteBoundedGrantStore(
       assertOpen();
       // CORE-03: never sign or store a grant whose semantic marker and axes disagree.
       if (!isWellFormedBoundedGrantSemantics(input.grant)) return { outcome: 'refused', reasonCodes: [GRANT_REASON_CODES.GRANT_SEMANTICS_FORMAT_INVALID] };
-      const before = runVerifyRevocationState();
-      noteVerified(before);
+      // AA-005: settle what can be settled without a signature first. Not
+      // authoritative — `runIssue` re-asks every question after signing.
+      const preflight = runPreflightIssue(input);
+      noteVerified(preflight.state);
+      if (preflight.settled !== undefined) return preflight.settled;
+      const before = preflight.state;
       const signature = await signOrFail(input.grant.id, () => signer.signGrant(input.grant, before.storeId));
       assertOpen();
       // `runIssue` returns only after COMMIT. With `synchronous = FULL` the
@@ -1323,5 +1362,8 @@ export async function createSqliteBoundedGrantStore(
 
   Object.freeze(store);
   AUTHENTICATED_DURABLE_STORES.add(store);
+  // CORE-02: which custody signs for this store, so a composition configured
+  // for external custody can refuse a store built with a software signer.
+  bindStoreSignerCustody(store, signer);
   return store;
 }

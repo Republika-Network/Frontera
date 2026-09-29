@@ -15,6 +15,7 @@
     "test:workspaces": "npm test --workspaces --if-present",
     "start:enterprise": "node scripts/run-enterprise-host.mjs",
     "start:kernel-host": "node scripts/run-enterprise-host.mjs",
+    "start:reference-authority-signer": "node scripts/run-reference-authority-signer.mjs",
     "demo:commercial": "npm run demo --workspace=@aoc-enterprise/commercial-demo",
     "clean": "node scripts/clean.mjs",
     "validate:invalid-imports": "node scripts/assert-invalid-imports.mjs",

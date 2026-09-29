@@ -1,9 +1,9 @@
 # Authority Artifact Authenticity
 
 - **Track:** Security & Containment Architecture. Authored as the historical security-track **Prompt 5** (commit `03c1eb2`) and forward-ported onto current main as **PRE-00**.
-- **Numbering:** "Prompt N" in this document is the legacy security-hardening prompt series — the same labels `SECURITY_INVARIANTS.md` and `AUTHORITATIVE_GRANT_STORE.md` use — kept as provenance, not as the active roadmap. Work described here as *deferred* (notably external key custody) has no owner assigned by this document.
-- **Scope:** the authority artifacts the bounded-grant execution path trusts — `BoundedGrant`, `GrantRevocation` and, since **CORE-01**, the store's signed **revocation-state commitment** — and nothing else.
-- **Status:** implemented for the durable bounded-grant store. Signing key **process-resident** (AA-001); external key custody is **CORE-02**. Revocation-state integrity (removal of a revocation by a database-only writer) closed by **CORE-01** — §26.
+- **Numbering:** "Prompt N" in this document is the legacy security-hardening prompt series — the same labels `SECURITY_INVARIANTS.md` and `AUTHORITATIVE_GRANT_STORE.md` use — kept as provenance, not as the active roadmap. Sections written before CORE-02 describe external key custody as *deferred*; that work is delivered by **CORE-02** (§29).
+- **Scope:** the authority artifacts the governed path trusts — `BoundedGrant`, `GrantRevocation`, the grant store's signed **revocation-state commitment** (CORE-01), the obligation discharge store's signed state (CORE-04, §27) and the approval store's signed state (CORE-05, §28) — five artifacts, five structured signing operations, one key role.
+- **Status:** implemented for the durable stores. Key custody is a configuration choice since **CORE-02** (§29): **external** — no authority private key in the Frontera process (AA-001 closed *for this mode*) — or **software** — the key is process-resident (AA-001 remains for this mode). Revocation-state integrity (removal of a revocation by a database-only writer) closed by **CORE-01** — §26.
 - **Predecessor:** `AUTHORITATIVE_GRANT_STORE.md` (Prompt 4).
 
 ---
@@ -149,7 +149,15 @@ A note on #7, because it is the kind of thing that gets quietly conflated: `issu
 | **AA-INV-026** (CORE-01) | Nothing is ever signed over a revocation state that has not just verified — tampering cannot be laundered into a new signature | revocation plans and re-attestation build only from `verifiedRevocationState()` | no-laundering, re-attestation-never-signs-tampered tests |
 | **AA-INV-027** (CORE-01) | A durable deployment never silently runs on an unauthenticated grant store | runtime brand checked at composition; `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED` | O tests (in-memory, shape-alike, wrapper refused) |
 
-AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's.
+| **AA-INV-028** (CORE-02) | Under external custody no authority private key enters the Frontera process: no configuration field, no environment variable, no parsing | external variant has no key field; key variable refused; external composition returns before any private-key code | configuration, structure, canonical-Host and launcher (`/proc/<pid>/environ`) tests |
+| **AA-INV-029** (CORE-02) | The external signer's identity is pinned to the trusted registry — key id, algorithm and public key — and proven before any store opens; remote material never becomes trust | `establishExternalAuthorityArtifactSigner` | handshake matrix, endpoint/registry substitution, no-TOFU tests |
+| **AA-INV-030** (CORE-02) | No signature reaches a store unless it verifies locally, over the exact artifact, under the pinned key | adapter `accept()` + store read-back | malicious-signer and cross-domain matrices |
+| **AA-INV-031** (CORE-02) | There is no fallback between custodies and no mixed custody | no fallback code; custody brand on signer and stores; Host posture check | fallback, mixed-custody and structure tests |
+| **AA-INV-032** (CORE-02) | Every external signer call is time-bounded, and only availability failures are retried, within a fixed bound | adapter + transport | timeout and retry-class tests |
+| **AA-INV-033** (CORE-02) | Signer availability never gates verification: every read verifies locally with the signer down | verifier independent of signer | real-outage store and canonical-Host tests |
+| **AA-INV-034** (CORE-02) | The custody protocol is structured: one operation per artifact kind, no generic byte signing, no key export | protocol, transport port, reference service | structure tests, reference-service route tests |
+
+AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's. AA-INV-028 … AA-INV-034 are CORE-02's.
 
 ## 6. Signature Algorithm
 
@@ -194,7 +202,10 @@ grant:            "frontera:authority-artifact:bounded-grant:v1\n"    + serializ
 revocation:       "frontera:authority-artifact:grant-revocation:v1\n" + serializeStoredRevocationRecord(revocation, storeId)
 revocation state: "frontera:authority-artifact:revocation-state:v1\n" + serializeRevocationStateCommitment(state)     (CORE-01)
 obligation discharge state: "frontera:authority-artifact:obligation-discharge-state:v1\n" + serializeObligationDischargeStateCommitment(state)     (CORE-04)
+approval state:   "frontera:authority-artifact:approval-state:v1\n"   + serializeApprovalStateCommitment(state)       (CORE-05)
 ```
+
+Custody does not change these bytes (CORE-02): a software and an external signer holding the same key produce identical signatures (§29.9).
 
 There is exactly **one** function producing each — signing and verification call the same one, so the two sides cannot drift.
 
@@ -247,19 +258,23 @@ interface AuthorityArtifactSigner {
   readonly algorithm: AuthoritySignatureAlgorithm;
   signGrant(grant: BoundedGrant, storeId: string): Promise<AuthoritySignature>;
   signRevocation(revocation: GrantRevocation, storeId: string): Promise<AuthoritySignature>;
-  signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature>; // CORE-01
+  signRevocationState(state: RevocationStateCommitment): Promise<AuthoritySignature>;                   // CORE-01
+  signObligationDischargeState(state: ObligationDischargeStateCommitment): Promise<AuthoritySignature>; // CORE-04
+  signApprovalState(state: ApprovalStateCommitment): Promise<AuthoritySignature>;                       // CORE-05
 }
 ```
+
+Five operations, all structured. Two implementations exist: the **software** signer (§10.3) and, since CORE-02, the **external** signer (§29), which implements exactly these five methods over a custody boundary outside the process.
 
 **Domain-aware, never generic.** There is no `sign(bytes)`. A generic byte-signing capability would let any holder produce a signature over bytes of its own choosing — for a key whose meaning is "this artifact is authoritative", that is the ability to mint authority in a shape the signer has never seen. Least authority applies to a crypto API exactly as it applies to a store port. A structural test asserts the interface exposes no raw signing operation.
 
 ### 10.2 Why `async`
 
-Nothing about in-process Ed25519 needs to be asynchronous. The interface is `Promise`-returning so that (a) deferred external key custody can substitute a KMS/HSM call without changing a call site, and (b) — more importantly — every caller is *already written* to tolerate a signer that takes time. §14.1 explains why that makes the commit ordering safe rather than merely convenient.
+Nothing about in-process Ed25519 needs to be asynchronous. The interface is `Promise`-returning so that (a) external key custody (CORE-02, §29) substitutes a call across a custody boundary without changing a call site — which is what happened: no store call site changed — and (b) — more importantly — every caller is *already written* to tolerate a signer that takes time. §14.1 explains why that makes the commit ordering safe rather than merely convenient.
 
 ### 10.3 The implementation, named honestly
 
-`createSoftwareAuthorityArtifactSigner` holds a **private key in application process memory**, loaded from configuration. It is not a hardware boundary, not a KMS, not an HSM. Recorded as **AA-001**. The key is parsed once into a `KeyObject` held in a closure: never returned, never placed on the object, never serialized into a record, never logged, and never included in an error message — the parse failure paths discard the underlying error precisely because it can quote the material it failed to parse.
+`createSoftwareAuthorityArtifactSigner` holds a **private key in application process memory**, loaded from configuration. It is not a hardware boundary, not a KMS, not an HSM. Recorded as **AA-001**. Since CORE-02 it is one of two explicit custodies (`software`); a deployment configured for `external` custody never constructs it and never falls back to it (§29). The key is parsed once into a `KeyObject` held in a closure: never returned, never placed on the object, never serialized into a record, never logged, and never included in an error message — the parse failure paths discard the underlying error precisely because it can quote the material it failed to parse.
 
 ### 10.4 The existing Agent Passport signer — evaluated, not reused
 
@@ -275,6 +290,8 @@ Nothing about in-process Ed25519 needs to be asynchronous. The interface is `Pro
 | Public-key-shaped config | present, but cannot independently verify an HMAC | public key genuinely verifies |
 
 Sharing the code would have meant either weakening bounded-grant authenticity to the HMAC model or widening the Passport signer into something its own callers do not need. The two systems are kept separate. **Standardising by lowering this boundary to match that one would be a regression, not consistency.** Prompt 0 and Prompt 2.5's findings against the Passport signer are untouched by this prompt and remain open.
+
+**CORE-02 decision (TD-5).** The authority key is not extended to passports: `AuthorityArtifactSigner` gains no passport operation (structurally tested), because that would widen what the authority key vouches for. The Enterprise Host composes no passport signer; the HMAC `createTestSigner` is used only by the standalone `apps/agent-passport-web` issuer. A publicly verifiable passport needs its own asymmetric key role — owned by **CTRL-02**, which may reuse the CORE-02 custody pattern and transport. Until then, passports are not publicly verifiable (§24).
 
 ## 11. Verifier Boundary
 
@@ -485,7 +502,9 @@ This is the pre-production disposition the prompt prefers, and it is the right o
 | `EXECUTION_GRANT_STORE_NOT_AUTHENTICATED` | a durable Host was handed a grant store that is not the authenticated durable store | **CORE-01**, composition only |
 | `BOUNDED_GRANT_STORE_UNAVAILABLE` | cannot open / closed / foreign schema version | Prompt 4, unchanged |
 | `AuthorityAuthenticityConfigurationError` | the key boundary cannot be built | composition only |
-| `AuthoritySigningUnavailableError` | the signer could not produce a signature | issue / revoke |
+| `AuthoritySigningUnavailableError` | the signer could not produce a signature. Since CORE-02 it carries a closed `reason` (`EXTERNAL_SIGNER_*`, §29.6) when the signer is external | issue / revoke / append / genesis |
+| `AuthorityAuthenticityConfigurationError` with `reason` | CORE-02: the external signer's identity could not be proven at startup (unreachable, credential refused, identity mismatch, capability unsupported, malformed) | composition only |
+| HTTP `503 AUTHORITY_SIGNER_UNAVAILABLE` (`recorded: false`) | CORE-02: the admin revocation could not be signed; nothing was recorded and the grant remains exercisable | admin API |
 
 Corruption and authenticity are separate codes because they call for opposite operator responses: restore the data, versus find out who wrote it. Reporting a forgery attempt as a disk fault would send an operator looking in the wrong place.
 
@@ -506,6 +525,8 @@ The revocation case is stated plainly because it is a genuine availability/secur
 
 Only (3) is honest. **Signer availability is therefore now on the critical path of the emergency operation.** Recorded as **AA-004**, and an explicit input to the deferred external key-custody work: an external signing boundary makes this a *network* dependency, which is strictly worse, and is something that prompt must design for rather than discover.
 
+**CORE-02 update.** Designed for, not discovered (§29.7): every signer call is time-bounded and retried only for availability failures, within a fixed attempt bound; an outage writes nothing for issuance, revocation, discharge, approval or genesis; the admin revocation answers `503 AUTHORITY_SIGNER_UNAVAILABLE` with `recorded: false` and says the grant remains exercisable; `/health` reports the signer `unavailable` and the Host `degraded`; reads and exercise of existing authority continue on local verification; and the durable **emergency stop**, which does not depend on the signer, still withholds exercise (it is not a revocation). AA-004 remains **open** — revocation still needs the signer; there are no redundant signers and no signer-independent revocation path.
+
 ## 20. Threat Model
 
 | # | Threat | Status | Note |
@@ -520,8 +541,12 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | H | Change the algorithm field | **BLOCKED** | closed registry; must match the registry's entry for that key |
 | I | Change keyId to an unknown one | **BLOCKED** | fails closed; no fallback to another trusted key |
 | J | Replace the trusted public key config | **NOT ADDRESSED** | config is a trusted input; an attacker who controls it controls trust. AA-002 |
-| K | Steal the private signing key | **NOT ADDRESSED** | cryptography cannot help. AA-001 → external key custody (deferred) |
-| L | Read the private key from process memory | **NOT ADDRESSED** | it is resident there. AA-001 → external key custody (deferred) |
+| K | Steal the private signing key | **External custody: moved out of the process** (CORE-02); software custody: NOT ADDRESSED | external: the key is in the custody service, never in Frontera; a compromise of the custody service itself is out of scope. Software: AA-001 |
+| L | Read the private key from process memory | **BLOCKED for external custody** (CORE-02); **NOT ADDRESSED for software custody** | external: no private key is in the Host process — configuration, environment or memory (§29.4); software: resident (AA-001) |
+| L2 | A compromised Host asks the external signer to sign | **NOT ADDRESSED** (CORE-02 residual) | the Host's service credential authorizes signing requests; external custody prevents key extraction, not use while compromised (AA-010, §29.10) |
+| L3 | A substituted or re-keyed external signer | **BLOCKED** (CORE-02) | identity pinned to the trusted registry at startup (key id, algorithm, public key); every returned signature verified locally under the pinned key before persistence; mid-process key change refused |
+| L4 | A malicious signer returns a wrong-key, cross-domain, other-artifact or malformed signature | **BLOCKED** (CORE-02) | local pre-commit verification + store read-back; nothing is persisted |
+| L5 | Silent fallback from external to in-process signing | **BLOCKED** (CORE-02) | no fallback exists; a private key alongside external custody refuses the Host |
 | M | DB-only write access | **BLOCKED** (since CORE-01) — including removal of a revocation | the central test; §26. A *restore of a previously captured, genuinely signed state* is threat R, not M |
 | N | DB + config write access | **NOT ADDRESSED** | equivalent to J + M |
 | O | An old signing key is compromised | **PARTIALLY BLOCKED** | remove it from the verification set; artifacts it signed become unreadable (§13.1). No per-key revocation list |
@@ -538,7 +563,7 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | V | Verifier accepts the wrong artifact domain | **BLOCKED** | domain separation, tested both directions |
 | W | Algorithm confusion | **BLOCKED** | closed registry; no iteration, no fallback |
 | X | Signing failure during issuance | **BLOCKED** | no grant, no row |
-| Y | Signing failure during revocation | **PARTIALLY BLOCKED** | fails closed but withholds the revocation. AA-004, §19.2 |
+| Y | Signing failure during revocation | **PARTIALLY BLOCKED** | fails closed but withholds the revocation; since CORE-02 bounded, observable, reported as not recorded, mitigated by emergency stop. AA-004, §19.2, §29.7 |
 | Z | Signer latency racing commitGuard | **BLOCKED** | guard runs after signing, inside the transaction, before commit. §14.1 |
 
 > **MASTER-00 correction (2026-09-25), resolved by CORE-01.** MASTER-00 found threat M was not fully
@@ -552,15 +577,17 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 
 | ID | Severity | Risk | Owner |
 |---|---|---|---|
-| **AA-001** | **HIGH** | The authority signing private key is **resident in application process memory**, loaded from configuration. Anything that can read this process — a memory disclosure, a debugger, a core dump, a malicious dependency — can mint authority that verifies perfectly | external key custody (deferred) |
-| **AA-002** | MEDIUM | The trusted verification registry is deployment-controlled configuration. An attacker who can write it can install their own key and make their own artifacts authentic. Host/config compromise defeats this boundary | deployment; external key custody (deferred) narrows it |
+| **AA-001** | **HIGH** (software custody) · **CLOSED for external custody** (CORE-02) | Under **software** custody the authority signing private key is **resident in application process memory**, loaded from configuration; anything that can read this process can mint authority that verifies perfectly. Under **external** custody no authority private key is in the Frontera process (proven by the canonical-Host and launcher E2E, §29.4). What external custody does **not** remove — a compromised Host asking the signer to sign while it holds the credential — is recorded separately as AA-010 | CORE-02 (external mode); software mode remains by choice |
+| **AA-002** | MEDIUM | The trusted verification registry is deployment-controlled configuration. An attacker who can write it can install their own key and make their own artifacts authentic. **Narrowed by CORE-02:** the external signer's identity is proven against the registry at startup (key id, algorithm, public key), so substituting or miswiring *either* half alone is refused. An attacker who can rewrite the signer endpoint **and** the registry **and** the Host configuration still controls trust — there is no independent configuration trust root | deployment; independent configuration trust root unassigned |
 | **AA-003** | MEDIUM | Signatures carry no freshness. A wholesale rollback to an earlier snapshot — or a restore of a previously *captured* commitment together with the rows it covered — restores artifacts that are all validly signed, including grants whose revocations are rolled back with them. Since CORE-01 this requires a copy of the earlier signed state (removing rows no longer suffices), and a running process detects it; a restarted one does not. Old commitment bytes can also persist in WAL frames or free pages of the file. Same shape as **GS-002** | **CORE-07** |
-| **AA-004** | MEDIUM | Signer availability is required to **revoke**. A signer outage cannot withdraw authority and correctly refuses to pretend it did (§19.2) | deferred — external key custody; durable kill-switch convergence (legacy labels Prompt 6 / Prompt 12) |
-| **AA-005** | LOW | Every issuance and revocation attempt invokes the signer, including ones subsequently refused. Free today; a metered or rate-limited external signer makes it a cost | external key custody (deferred) |
-| **AA-006** | LOW | One algorithm is registered. Adding a second is deliberate work — correct, but it means a provider that cannot do Ed25519 requires a code change, not configuration | external key custody (deferred) |
+| **AA-004** | MEDIUM | Signer availability is required to **revoke**. A signer outage cannot withdraw authority and correctly refuses to pretend it did (§19.2). **CORE-02:** designed and observable — bounded time and attempts, `503 AUTHORITY_SIGNER_UNAVAILABLE` / `recorded: false`, `/health` degraded, nothing written, emergency stop independent of the signer (§29.7). Still **open**: no redundant signers, no quorum, no signer-independent revocation | OPEN — future (redundant custody / signer-independent revocation), unassigned |
+| **AA-005** | LOW | Every signer call may be metered or rate-limited. **CORE-02:** issuance preflight settles already-issued, precluded and already-ineligible grants before signing; revocation already settled unknown and already-revoked grants before signing; health probes never sign; expected call counts are documented and tested (§29.8). Unavoidable waste remains: a signature for an issuance whose eligibility changes in flight, a stale revocation plan, a retried lost response | partially addressed; provider pricing/limits are deployment-dependent |
+| **AA-006** | LOW | One algorithm (`ed25519-v1`). **CORE-02:** the deployment pins and proves its signer's algorithm exactly (no negotiation); a provider must support Ed25519 or sit behind a custody server that does. Adding a second algorithm remains deliberate cryptographic work | portability constraint, unchanged |
 | **AA-007** (CORE-01) | LOW | A database-only writer who tampers with the revocation state makes **every** read refuse — a denial of service against the store. This is the intended fail-closed direction; recovery is a restore from a trusted copy, never an automatic repair | deployment (PROD-02 backup/restore) |
 | **AA-008** (CORE-01) | LOW | Every authoritative read recomputes the revocation-set digest over all committed revocations: O(number of revocations). Revocations are rare relative to grants; a very large revocation history would need an authenticated index (e.g. a Merkle structure) | future, if measured |
-| **AA-009** (CORE-01) | LOW | Revocation now needs **two** signatures (revocation + commitment) and opening a **new** store needs one (genesis). AA-004 and AA-005 therefore apply to both | CORE-02 |
+| **AA-009** (CORE-01) | LOW | Revocation now needs **two** signatures (revocation + commitment) and opening a **new** store needs one (genesis). AA-004 and AA-005 therefore apply to both | CORE-02: both are external under external custody, time-bounded, and a failed genesis leaves no initialized file (§29) |
+| **AA-010** (CORE-02) | MEDIUM | Under external custody the Host holds a **service credential** that authorizes structured signing requests. A fully compromised Host can use it to obtain signatures over artifacts of its choosing while it is compromised; it cannot extract the key, and rotating the credential ends its use. The reference custody service enforces no independent policy. The credential is a secret (never logged, echoed or published) but is not the key | future: independent service-side authorization; deployment credential hygiene |
+| **AA-011** (CORE-02) | LOW | A Host restarted while its external signer is unreachable does not start (its signer identity cannot be proven), so reads are unavailable until the signer answers. Deliberate (§29.7); a degraded read-only boot is not offered | deployment (signer availability) |
 
 ## 22. Findings
 
@@ -576,7 +603,7 @@ AA-001 … AA-006 above. Each is supported by the implementation, not anticipate
 | **GS-002** — snapshot rollback can restore revoked authority | OPEN | **STILL OPEN.** Narrowed by CORE-01: needs a *captured* earlier signed state rather than row deletion, and is detected while the process runs; not detected across a restart. Restated as AA-003 → CORE-07 |
 | **GS-003** — durable store available but not default | OPEN | **CLOSED for the shipped Host by PROD-01**: the secure profile refuses anything but `sqlite`, and a secure Host refuses to bind unless its grant store is `authenticated-durable` (SEC-INV-126). The embedding default (`createEnterprise`) is still `memory` |
 | **GS-004** — revocation records carried no integrity | CLOSED (integrity) | now also **authenticated**, at the same strength as grants |
-| **NB-009** — the store was in-memory, singly implemented, unkeyed | PARTIALLY CLOSED | *in-memory*: closed (Prompt 4). *singly implemented*: closed (Prompt 4). *unkeyed*: **closed for the durable store** by this prompt. **NOT fully closed** — the key is process-resident, so "authority the application cannot forge" is not yet true (AA-001) |
+| **NB-009** — the store was in-memory, singly implemented, unkeyed | PARTIALLY CLOSED | *in-memory*: closed (Prompt 4). *singly implemented*: closed (Prompt 4). *unkeyed*: **closed for the durable store** by this prompt. *Process-resident key*: closed **for external custody** by CORE-02. **Still not** "authority the application cannot forge": a compromised Host can ask the external signer to sign (AA-010), and software custody keeps the key in process (AA-001) |
 | **NB-006** — no consumption model | OPEN, unchanged | no counter, quota or decrement column added |
 | **NB-008** — authority-policy integrity | OPEN, unchanged | untouched. A signature proves a trusted key vouched for a grant's bytes; it proves nothing about whether the policy that produced it was legitimate |
 
@@ -602,26 +629,27 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 | Must not say | Why |
 |---|---|
 | "Authority is tamper-proof" | it is not. An attacker with the signing key, the process, or the key configuration forges freely |
-| "Host compromise cannot forge authority" | host compromise yields the private key (AA-001) |
+| "Host compromise cannot forge authority" | software custody: host compromise yields the private key (AA-001). External custody: it does not yield the key, but a compromised Host can still *ask* the custody service to sign while it holds the credential (AA-010) |
 | "Rollback cannot resurrect old authority" | it can. Signatures carry no freshness (AA-003 / GS-002). CORE-01 detects it only within a running process |
 | "Database compromise cannot un-revoke a grant" | only a database-only writer *without a captured earlier signed state* is blocked. A restore of such a state across a restart is not detected (CORE-07) |
 | "A malicious host cannot bypass the signed store" | the composition check guards mistakes. Code in the same process can replace the check (§26.8) |
-| "The signing key cannot be stolen" | it is in process memory, loaded from configuration |
+| "The signing key cannot be stolen" | under software custody it is in process memory; under external custody it is in the custody service, whose own compromise is out of scope — and the reference service is a plain file-backed key |
 | "Cryptographic authenticity proves the policy was legitimate" | it proves a trusted key vouched for these bytes. NB-008 is untouched |
-| "The application process cannot access signing material" | **false today.** This becomes sayable only once external key custody lands (deferred) |
-| "Frontera uses KMS/HSM" | no KMS or HSM is implemented |
+| "The application process cannot access signing material" | sayable **only** with the scope "under external custody, the Frontera process holds no authority private key" (CORE-02). False for software custody, and never means the process cannot *request* signatures (AA-010) |
+| "Frontera uses KMS/HSM" / "HSM-protected authority keys" | no KMS or HSM integration ships. CORE-02 ships a vendor-neutral external-signer boundary and a **reference** custody service that is neither hardware-backed nor an HSM |
+| "Revocation works during a signer outage" | it does not: it fails honestly (AA-004). An emergency stop withholds exercise without the signer; it is not a revocation |
 | "All Frontera authority artifacts are signed" | this covers the bounded-grant path only. Agent Passport still uses HMAC (§10.4) |
 | "Signatures replace the digests" | both are checked; they detect different things |
 | "Key rotation revokes grants" | key-trust removal and revocation are different operations (§13.1) |
 
-## 25. Inputs to deferred external key custody
+## 25. Inputs to external key custody (historical — delivered by CORE-02, §29)
 
-**Deferred work — replace process-resident signing secrets with KMS/HSM boundaries** (legacy label: security Prompt 6). This document assigns it no owner; it is recorded here so that whoever takes it inherits the constraints below.
+**Historical work item — replace process-resident signing secrets with KMS/HSM boundaries** (legacy label: security Prompt 6), owned and delivered by **CORE-02** (§29). The table records the constraints CORE-02 inherited; where a row says "today", read it as "before CORE-02".
 
 | Question | Answer |
 |---|---|
 | Signing interface to preserve | `AuthorityArtifactSigner` — `activeKeyId`, `algorithm`, `signGrant(grant, storeId)`, `signRevocation(revocation, storeId)`, `signRevocationState(state)` (CORE-01), `signObligationDischargeState(state)` (CORE-04), `signApprovalState(state)` (CORE-05). Domain-aware; do **not** widen it to `sign(bytes)`. The complete operation set an external signer (CORE-02) must implement is these five |
-| Already async? | **Yes.** Both methods return `Promise`. No call site needs restructuring for a network signer |
+| Already async? | **Yes.** All five methods return `Promise`. No call site needed restructuring for a network signer (confirmed by CORE-02) |
 | Algorithm | `ed25519-v1`. Closed registry in `authority-signature.ts`. **Verify the target provider supports Ed25519** — several managed KMS products offer only ECDSA/RSA. Adding `ecdsa-p256-v1` is deliberate code + config work; there must be no negotiation or fallback |
 | Key id model | opaque string; artifacts record theirs; registry resolves it. A KMS key ARN/resource name can be the key id directly |
 | Current implementation | `createSoftwareAuthorityArtifactSigner` in `authority-authenticity/signer.ts` — the **only** file naming `createPrivateKey`, pinned by a structural test |
@@ -633,7 +661,7 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 | Error semantics to preserve | `AuthoritySigningUnavailableError` must stay a **hard failure**. No unsigned fallback, no "signed later", no optimistic acknowledgement |
 | commitGuard race | already handled: sign → BEGIN → commitGuard → INSERT → COMMIT. **Preserve this order.** A KMS call inside the transaction would be a correctness and availability regression |
 | Rotation | registry holds active + historical. A KMS adapter must keep recording the *signing* key id on each artifact |
-| **The target invariant** | **No production authority-signing private key is resident in application process memory.** Today: FALSE. `SEC-INV-U02` stays NOT IMPLEMENTED until it is true |
+| **The target invariant** | **No production authority-signing private key is resident in application process memory.** CORE-02: TRUE under external custody (SEC-INV-147); software custody remains an explicit, supported mode where it is false. `SEC-INV-U02` is now PARTIALLY IMPLEMENTED |
 
 ## 26. CORE-01 — Revocation-State Integrity
 
@@ -750,8 +778,8 @@ for one obligation in strictly increasing observation time, so every committed
 prefix is a prefix of the lifecycle sequence, and because a satisfied obligation
 is terminal, a rollback can remove satisfaction but never manufacture it. A
 holder of the signing key, or of this process, can sign anything (AA-001,
-CORE-02). CORE-02 will move `signObligationDischargeState` behind the external
-signer exactly as it moves the other three operations.
+CORE-02, AA-010). CORE-02 moved `signObligationDischargeState` behind the
+external signer with the other four operations (§29).
 
 ## 28. CORE-05 — Approval State
 
@@ -808,8 +836,121 @@ than its whole — an approval later revoked, or a request before its rejection
 — so a restored earlier genuine state can make a revoked approval usable again
 until its own `approvalValiditySeconds` lapse; pinned by a test and assigned to
 CORE-07. A holder of the signing key, or of this process, can sign anything
-(AA-001, CORE-02); CORE-02 moves `signApprovalState` behind the external signer
-with the other four operations.
+(AA-001, AA-010); CORE-02 moved `signApprovalState` behind the external signer
+with the other four operations (§29).
+
+## 29. CORE-02 — External Signer & Key Custody
+
+Decision record: `docs/architecture/ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY.md`.
+Code: `src/enterprise/external-authority-signer/`, `authority-authenticity/custody.ts`.
+
+### 29.1 What changed, and what did not
+
+Only **where the private key lives**. The five structured operations, their
+domains, the envelope, `AUTHORITY_ARTIFACT_VERSION`, every schema and every
+verification path are unchanged; the verifier stays local and public-key-only.
+
+### 29.2 Custody is explicit
+
+`authorityAuthenticity` is `software` (default when no mode is stated; the key
+in process, AA-001) or `external` (`AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external`).
+The external variant has no private-key field; the key variable is never read
+under it, and its presence refuses the Host and the composition. External
+variables without the mode are refused. No auto-detection, no fallback.
+
+### 29.3 The external signer
+
+An `AuthorityArtifactSigner` with the same five methods, built by
+`establishExternalAuthorityArtifactSigner` over an `ExternalAuthoritySignerTransport`
+(shipped: HTTP — https anywhere, http to loopback only, bearer credential, no
+redirects, response cap). Protocol `frontera.external-authority-signer.v1`: a
+non-signing `GET /v1/identity` and one `POST /v1/sign/<artifact>` per operation.
+A grant travels as its canonical bytes and must round-trip; commitments as
+their closed fields. **There is no byte-signing operation anywhere on the
+boundary.** A provider that only offers generic signing sits behind a custody
+server that speaks this protocol.
+
+### 29.4 No private key in the Host (AA-001, external custody)
+
+The composition's external branch returns before any code that parses a
+private key, and has no fallback branch (structural test). Proven end to end
+on the canonical Host (`bootEnterpriseHost()`, production profile) with the
+signer as a **separate process** that generated its own key file — the test
+process reads only its public half — and through the **shipped launcher**,
+where the running Host's `/proc/<pid>/environ` holds no private key. All five
+operations run; every persisted artifact then verifies with public keys alone.
+
+### 29.5 Identity is pinned, never learned
+
+The pin is the trusted-registry entry for the configured key id: key id,
+algorithm and SPKI public key. Before any store opens, the service's identity
+must match all three and offer exactly the protocol, the artifact version and
+the five operations; otherwise the Host does not start. The advertised public
+key is compared, never trusted or added (no TOFU). Rotation is configuration
+and restart; a signature under any other key — even a still-trusted historical
+one — is refused at runtime.
+
+### 29.6 Returned signatures are verified before persistence
+
+An answer is accepted only as the exact four-field envelope, under the pinned
+key id and algorithm, current artifact version, exact encoding and width, and
+only if it **verifies locally over the exact artifact sent, under the pinned
+key**. Refusals carry a closed reason: `EXTERNAL_SIGNER_TIMEOUT`,
+`_UNREACHABLE`, `_UNAVAILABLE` (5xx, 429), `_AUTHENTICATION_FAILED`,
+`_REFUSED`, `_IDENTITY_MISMATCH`, `_MALFORMED_RESPONSE`,
+`_CAPABILITY_UNSUPPORTED`, `_SIGNATURE_INVALID` — no provider text, body,
+credential or payload. The stores' read-back remains; CORE-02 added it to the
+discharge and approval appends, which previously wrote their head unverified.
+
+### 29.7 Outage semantics (AA-004)
+
+| Operation during a signer outage | Result |
+|---|---|
+| Read / verify any grant, revocation state, discharge, approval | **works** — local verification |
+| Exercise an existing grant | governed by the normal rules; no signer involved |
+| Issue a grant | fails; nothing written |
+| Revoke a grant | fails; nothing written; admin API `503 AUTHORITY_SIGNER_UNAVAILABLE`, `recorded: false`, "remains exercisable" |
+| Record a discharge / an approval command | fails; nothing written; not accepted |
+| Open an approval request | withheld `unavailable` |
+| Create a new store (genesis) | fails; the file is left uninitialized |
+| Re-attest on rotation | skipped; the old-key state stays valid while that key is trusted |
+| Emergency stop | **works** — independent of the signer; withholds exercise; not a revocation |
+| `/health` | `degraded`, `authoritySigner.state: unavailable` + reason (identity probe, no signature); `/ready` unaffected |
+| Host restart | refused until the signer's identity can be proven (AA-011) |
+
+Every call is bounded: per-attempt `AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS`
+(default 5 000) × `…_MAX_ATTEMPTS` (default 2, max 3); only timeout /
+unreachable / unavailable are retried. A timed-out call may have been signed
+remotely; that signature was never persisted and confers nothing — authority is
+committed, verified state.
+
+### 29.8 Cost (AA-005)
+
+Issuance preflight (already issued, precluded, `commitGuard`) before signing;
+the transaction re-asks everything after signing. Expected calls: genesis 1 per
+store; grant 1; duplicate/precluded/ineligible issuance 0; revocation 2;
+duplicate/unknown revocation 0; discharge 1; approval event 1; rotation 1 per
+store; health 0. Unavoidable waste: eligibility changing in flight, a stale
+revocation plan (re-plan, sign again), a retried lost response.
+
+### 29.9 Byte compatibility
+
+External and software signers produce identical signatures for all five
+artifacts under the same key (tested). Moving a deployment between custodies
+for the same key needs no re-signing; moving to a new key follows §13.
+
+### 29.10 What external custody does not give
+
+- A compromised Host can **request** signatures while it holds the service
+  credential (AA-010). No independent service-side authorization ships.
+- AA-002 is narrowed, not closed: rewriting endpoint, registry and
+  configuration together still controls trust.
+- AA-004 is designed, bounded and observable, not closed.
+- AA-006: `ed25519-v1` only.
+- The reference custody service is **not an HSM**: a file-backed key in a
+  loopback process. No mTLS or workload identity in the shipped transport.
+
+---
 
 ---
 
@@ -819,6 +960,7 @@ with the other four operations.
 2. An AA-INV may only be strengthened by evidence. Editing the prose is not promotion.
 3. §23's claims travel with their scope. A restatement omitting "in the durable authority store" or "without access to a trusted signing key" is an overclaim.
 4. §24 is not advisory. Adding a §23 claim that contradicts a §24 row requires deleting that row, and deleting it requires the evidence that makes it false.
-5. Findings close on evidence, not documentation. AA-001 closes when the signing key is provably outside the process, not when this file is edited.
+5. Findings close on evidence, not documentation. AA-001 closed **for external custody** when the canonical-Host and launcher E2E proved the key outside the process (CORE-02); it remains open for software custody. AA-004 closes only with a signer-independent revocation path.
 6. Any new algorithm entry must be justified against AA-INV-008 and AA-INV-018, and must not introduce negotiation, fallback, or try-until-one-verifies.
 7. No unsigned or verification-optional mode may be added to the durable store. If backwards compatibility ever appears to require one, that is a design review, not a patch.
+8. A new custody (a new `ExternalAuthoritySignerTransport`, a KMS/HSM adapter) must keep the five structured operations, the pinned-identity handshake, local pre-commit verification and the closed failure taxonomy (§29), and must not introduce a fallback between custodies.
