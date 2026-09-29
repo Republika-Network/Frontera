@@ -79,9 +79,18 @@ export interface EnterpriseAuthoritySignerHealth {
   readonly custody: 'software' | 'external';
   readonly keyId: string;
   readonly algorithm: string;
+  /**
+   * `ready`: new authority can be signed. Under external custody that means the
+   * last identity result is acceptable **and** no signing failure is
+   * unresolved. `unavailable`: either is not (CORE-02R).
+   */
   readonly state: 'ready' | 'unavailable';
-  /** Closed, repository-owned reason (`AUTHORITY_SIGNING_FAILURE_REASONS`) when `unavailable`. */
+  /** Closed, repository-owned reason (`AUTHORITY_SIGNING_FAILURE_REASONS`) when `unavailable`: the unresolved signing failure if any, else the identity failure. */
   readonly reason?: string;
+  /** External custody only: the last identity result — reachability and the pinned identity, never proof that signing works. */
+  readonly identity?: { readonly state: 'ready' | 'unavailable'; readonly reason?: string };
+  /** External custody only: the last signing outcome — cleared only by a successful, locally verified signature, never by a probe. */
+  readonly lastSigning?: { readonly state: 'ready' | 'unavailable'; readonly reason?: string };
   /** External custody only: low-cardinality totals across the five operations. */
   readonly signing?: { readonly calls: number; readonly attempts: number; readonly succeeded: number; readonly failed: number; readonly retried: number };
 }

@@ -1110,6 +1110,7 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
       verifier,
       timeoutMs: authenticity.externalSigner.timeoutMs,
       maxAttempts: authenticity.externalSigner.maxAttempts,
+      probeIntervalMs: authenticity.externalSigner.probeIntervalMs,
     });
     return { signer, verifier, custody: 'external', monitor };
   }
@@ -1136,8 +1137,12 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
 /**
  * CORE-02: the authority signer's state on `/health`. Under external custody
  * it is probed with the service's **identity** call — never a signature, so a
- * health check never spends a metered signing operation — and an unreachable,
- * refusing or re-keyed service makes the Host `degraded`, not `unhealthy`:
+ * health check never spends a metered signing operation (single-flight, and at
+ * most once per `probeIntervalMs`). The probe proves reachability and identity
+ * only: an unresolved signing failure — unreachable, throttled, timed out, or a
+ * signature that did not verify — keeps the signer `unavailable` however the
+ * identity endpoint answers, until a real signature succeeds (CORE-02R).
+ * Either failure makes the Host `degraded`, not `unhealthy`:
  * every existing grant, revocation state, discharge and approval still reads
  * and verifies locally; only new authority mutations (issuance, revocation,
  * discharge and approval appends) cannot be signed. Signer availability is not
@@ -1162,6 +1167,8 @@ async function withAuthoritySignerHealth(report: EnterpriseHealthReport, authent
       algorithm: probed.algorithm,
       state: probed.state,
       ...(probed.reason !== undefined ? { reason: probed.reason } : {}),
+      identity: probed.identity,
+      lastSigning: probed.lastSigning,
       signing,
     },
   };

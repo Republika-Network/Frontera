@@ -93,6 +93,9 @@ describe('CORE-02 — external mode never parses, stores or ignores a private ke
       ['external with a path', { ...external(), AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT: 'https://signer.example/v1/sign' }, /no credentials, path, query or fragment/],
       ['external with an out-of-range timeout', { ...external(), AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS: '0' }, /TIMEOUT_MS must be an integer from 1 to 60000/],
       ['external with unbounded attempts', { ...external(), AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS: '10' }, /MAX_ATTEMPTS must be 1, 2 or 3/],
+      ['external with an out-of-range probe interval', { ...external(), AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS: '60001' }, /PROBE_INTERVAL_MS must be an integer from 0 to 60000/],
+      ['external with a non-numeric probe interval', { ...external(), AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS: '-1' }, /PROBE_INTERVAL_MS must be an integer from 0 to 60000/],
+      ['software + a probe interval', { ...authorityAuthenticityEnv(), AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS: '0' }, /Refusing to guess/],
       ['software + an external endpoint only', { ...authorityAuthenticityEnv(), AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT: 'https://signer.example' }, /Refusing to guess/],
       ['no mode + an external credential', { AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN: SIGNER_TOKEN }, /Refusing to guess/],
       ['an unknown mode', { AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE: 'hsm' }, /must be one of: software, external/],
@@ -127,7 +130,7 @@ describe('CORE-02 — external mode never parses, stores or ignores a private ke
     const text = JSON.stringify(published);
     assert.equal(published.authorityAuthenticity.signerMode, 'external');
     assert.equal(published.authorityAuthenticity.signingKeyConfigured, false);
-    assert.deepEqual(published.authorityAuthenticity.externalSigner, { origin: 'https://signer.internal.example:8443', timeoutMs: 2000, maxAttempts: 1, credentialConfigured: true });
+    assert.deepEqual(published.authorityAuthenticity.externalSigner, { origin: 'https://signer.internal.example:8443', timeoutMs: 2000, maxAttempts: 1, probeIntervalMs: 0, credentialConfigured: true });
     for (const secret of [SIGNER_TOKEN, 'PRIVATE KEY', 'credential"', 'signingKeyPem', 'conflictingSigningKeyPresent']) assert.equal(text.includes(secret), false, secret);
     const software = toPublicEnterpriseConfiguration(loadEnterpriseConfiguration(authorityAuthenticityEnv()));
     assert.equal(software.authorityAuthenticity.signerMode, 'software');

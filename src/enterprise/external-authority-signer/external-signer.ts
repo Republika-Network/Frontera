@@ -58,12 +58,38 @@ import { ExternalAuthoritySignerTransportError, type ExternalAuthoritySignerTran
  *
  * ## Time, retries, and what an outage means
  *
- * Every call is bounded (`timeoutMs` per attempt, `maxAttempts` attempts). Only
- * the availability family (timeout, unreachable, unavailable/throttled) is
- * retried; nothing that the service *answered* is. A failure is always an
- * `AuthoritySigningUnavailableError` carrying a closed reason — the stores turn
- * that into "nothing was written", exactly as for the in-process signer. There
- * is no fallback to any other signer, and none can be configured.
+ * Every call is bounded (`timeoutMs` per attempt). The startup identity
+ * handshake and every signature make at most `maxAttempts` attempts, through
+ * one bounded-attempt loop (`withBoundedAttempts`), with no delay between them:
+ * the worst case is `timeoutMs × maxAttempts`. Only the availability family
+ * (timeout, unreachable, unavailable/throttled) is retried; nothing that the
+ * service *answered* is — an authentication failure, a refusal, a malformed
+ * answer or an identity mismatch is one call. A runtime health probe is one
+ * attempt (it reports; the next probe is the retry). A signing failure is always
+ * an `AuthoritySigningUnavailableError` carrying a closed reason — the stores
+ * turn that into "nothing was written", exactly as for the in-process signer.
+ * There is no fallback to any other signer, and none can be configured.
+ *
+ * ## Health: identity reachability is not signing readiness (CORE-02R)
+ *
+ * The monitor keeps two states, each changed only by the event that can prove
+ * it:
+ *
+ * - `identity` — set by the startup handshake and by non-signing probes. A probe
+ *   proves the service is reachable and still answers as the pin; nothing more.
+ * - `lastSigning` — set only by signing operations. A failed signature makes it
+ *   `unavailable`; only a later **successful, locally verified** signature
+ *   makes it `ready` again.
+ *
+ * The effective `state` is `ready` only when both are. So an identity endpoint
+ * that answers while signing is broken (unreachable, throttled, hanging, or
+ * returning signatures that do not verify) keeps health `unavailable`, and a
+ * health check never has to spend a signature to stay truthful.
+ *
+ * Probes are single-flight (concurrent callers share one identity call) and
+ * rate-bounded by `probeIntervalMs`: within it, the last identity result
+ * stands. That bounds how stale an identity `ready` can be; it never delays a
+ * signing failure, which is recorded the moment it happens.
  *
  * A timed-out call may have been signed remotely. That signature was never
  * persisted, so it confers nothing: authority is committed, verified state —
@@ -86,12 +112,21 @@ export interface ExternalAuthorityArtifactSignerOptions {
   readonly verifier: AuthorityArtifactVerifier;
   /** Per-attempt budget. 1 … 60 000 ms. */
   readonly timeoutMs: number;
-  /** 1 … 3. Only availability failures are retried. */
+  /** 1 … 3, for the startup identity handshake and for every signature. Only availability failures are retried. */
   readonly maxAttempts: number;
+  /**
+   * 0 … 60 000 ms: the minimum age of an identity result before a health probe
+   * asks the service again. 0 (the default) probes on every call; concurrent
+   * probes share one call either way.
+   */
+  readonly probeIntervalMs?: number;
+  /** Milliseconds, monotonic enough for interval arithmetic. Defaults to `Date.now`. For tests. */
+  readonly now?: () => number;
 }
 
 export const MAXIMUM_EXTERNAL_SIGNER_TIMEOUT_MS = 60_000;
 export const MAXIMUM_EXTERNAL_SIGNER_ATTEMPTS = 3;
+export const MAXIMUM_EXTERNAL_SIGNER_PROBE_INTERVAL_MS = 60_000;
 
 /** Low-cardinality counters: per operation, never per artifact, subject or key. Nothing here is secret. */
 export interface ExternalAuthoritySignerOperationCounters {
@@ -103,20 +138,41 @@ export interface ExternalAuthoritySignerOperationCounters {
   readonly lastLatencyMs: number | undefined;
 }
 
+/** One half of the signer's health: `ready`, or `unavailable` with the closed reason of the failure that has not yet been disproven. */
+export interface ExternalAuthoritySignerComponentState {
+  readonly state: 'ready' | 'unavailable';
+  readonly reason?: AuthoritySigningFailureReason;
+}
+
 export interface ExternalAuthoritySignerStatus {
   readonly custody: 'external';
   readonly keyId: string;
   readonly algorithm: AuthoritySignatureAlgorithm;
-  /** `ready` when the last contact (probe or signature) succeeded; `unavailable` otherwise. Signing availability only — never verification. */
+  /**
+   * `ready` only when `identity` is ready **and** no signing failure is
+   * unresolved; `unavailable` otherwise. Signing availability only — never
+   * verification: existing authority verifies locally either way.
+   */
   readonly state: 'ready' | 'unavailable';
+  /** When `unavailable`: the unresolved signing failure if there is one (it is what stops new authority), else the identity failure. */
   readonly reason?: AuthoritySigningFailureReason;
+  /** The last identity result (startup handshake or probe). Proves reachability and the pinned identity — never that signing works. */
+  readonly identity: ExternalAuthoritySignerComponentState;
+  /** The last signing outcome. Cleared only by a successful, locally verified signature. */
+  readonly lastSigning: ExternalAuthoritySignerComponentState;
   readonly operations: Readonly<Record<ExternalAuthoritySignerOperation, ExternalAuthoritySignerOperationCounters>>;
 }
 
 export interface ExternalAuthoritySignerMonitor {
   /** The last observed state and counters. No network call. */
   status(): ExternalAuthoritySignerStatus;
-  /** A **non-signing** probe (identity only — never spends a metered signature): reachable, and still answering as the pinned identity? Updates `status()`. */
+  /**
+   * A **non-signing** probe (identity only — never spends a metered
+   * signature): reachable, and still answering as the pinned identity? One
+   * attempt; single-flight; skipped while the last identity result is younger
+   * than `probeIntervalMs`. Updates `identity` only — it can never clear a
+   * signing failure.
+   */
   probe(): Promise<ExternalAuthoritySignerStatus>;
 }
 
@@ -204,6 +260,34 @@ function checkIdentity(answer: unknown, pinned: PinnedAuthoritySignerIdentity, p
   }
 }
 
+/** The closed reason a transport failure carries; anything else a transport throws is treated as unreachable. */
+function transportReason(error: unknown): AuthoritySigningFailureReason {
+  return error instanceof ExternalAuthoritySignerTransportError ? error.reason : 'EXTERNAL_SIGNER_UNREACHABLE';
+}
+
+type Attempted<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: AuthoritySigningFailureReason };
+
+/**
+ * The one bounded-attempt loop, shared by the startup identity handshake and
+ * every signature. It retries only a transport failure in the availability
+ * family (`isRetryableAuthoritySigningFailure`), at most `maxAttempts` calls in
+ * all, with no delay. It knows nothing about what an answer means: validating
+ * an identity or a signature happens after it returns, and a refused answer is
+ * never retried.
+ */
+async function withBoundedAttempts<T>(maxAttempts: number, call: (attempt: number) => Promise<T>): Promise<Attempted<T>> {
+  let reason: AuthoritySigningFailureReason = 'EXTERNAL_SIGNER_UNREACHABLE';
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return { ok: true, value: await call(attempt) };
+    } catch (error) {
+      reason = transportReason(error);
+      if (!isRetryableAuthoritySigningFailure(reason)) break;
+    }
+  }
+  return { ok: false, reason };
+}
+
 function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { readonly pinnedSpki: Buffer } {
   const { pinned, timeoutMs, maxAttempts } = options;
   if (typeof pinned?.keyId !== 'string' || pinned.keyId.length === 0) throw new AuthorityAuthenticityConfigurationError('The external authority signer has no pinned key id.');
@@ -222,6 +306,10 @@ function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { re
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAXIMUM_EXTERNAL_SIGNER_ATTEMPTS) {
     throw new AuthorityAuthenticityConfigurationError(`The external authority signer attempts must be an integer from 1 to ${MAXIMUM_EXTERNAL_SIGNER_ATTEMPTS}.`);
   }
+  const probeIntervalMs = options.probeIntervalMs ?? 0;
+  if (!Number.isSafeInteger(probeIntervalMs) || probeIntervalMs < 0 || probeIntervalMs > MAXIMUM_EXTERNAL_SIGNER_PROBE_INTERVAL_MS) {
+    throw new AuthorityAuthenticityConfigurationError(`The external authority signer probe interval must be an integer from 0 to ${MAXIMUM_EXTERNAL_SIGNER_PROBE_INTERVAL_MS} ms.`);
+  }
   if (typeof options.transport?.identity !== 'function' || typeof options.transport.sign !== 'function') {
     throw new AuthorityAuthenticityConfigurationError('The external authority signer has no transport.');
   }
@@ -232,24 +320,28 @@ function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { re
  * Proves the custody service is the pinned identity, then returns the signer.
  *
  * Refuses (throws `AuthorityAuthenticityConfigurationError` with the closed
- * reason in `reason`) when the service cannot be reached within the budget,
- * refuses the credential, or answers as anything but the pinned identity with
- * the full capability set. A deployment that cannot prove who signs for it does
- * not start: there is no trust-on-first-use, and no "start and see".
+ * reason in `reason`) when the service cannot be reached within the budget —
+ * `maxAttempts` identity calls of `timeoutMs` each, retried only for the
+ * availability family — refuses the credential, or answers as anything but the
+ * pinned identity with the full capability set (never retried). A deployment
+ * that cannot prove who signs for it does not start: there is no
+ * trust-on-first-use, and no "start and see".
  */
 export async function establishExternalAuthorityArtifactSigner(options: ExternalAuthorityArtifactSignerOptions): Promise<ExternalAuthorityArtifactSigner> {
   const { pinnedSpki } = validatedOptions(options);
   const { transport, pinned, verifier, timeoutMs, maxAttempts } = options;
+  const probeIntervalMs = options.probeIntervalMs ?? 0;
+  const now = options.now ?? Date.now;
 
-  let answer: unknown;
-  try {
-    answer = await transport.identity({ timeoutMs });
-  } catch (error) {
-    const reason = error instanceof ExternalAuthoritySignerTransportError ? error.reason : 'EXTERNAL_SIGNER_UNREACHABLE';
-    throw externalConfigurationError(reason, `The external authority signer identity could not be obtained (${reason}). A deployment that cannot prove who signs for it does not start.`);
+  const handshake = await withBoundedAttempts(maxAttempts, () => transport.identity({ timeoutMs }));
+  if (!handshake.ok) {
+    throw externalConfigurationError(
+      handshake.reason,
+      `The external authority signer identity could not be obtained (${handshake.reason}, ${maxAttempts} attempt${maxAttempts === 1 ? '' : 's'} at most). A deployment that cannot prove who signs for it does not start.`,
+    );
   }
   try {
-    checkIdentity(answer, pinned, pinnedSpki);
+    checkIdentity(handshake.value, pinned, pinnedSpki);
   } catch (error) {
     if (error instanceof IdentityRefusal) throw externalConfigurationError(error.reason, `${error.message} (${error.reason})`);
     throw error;
@@ -258,20 +350,32 @@ export async function establishExternalAuthorityArtifactSigner(options: External
   const counters = new Map<ExternalAuthoritySignerOperation, { calls: number; attempts: number; succeeded: number; failed: number; retried: number; lastLatencyMs: number | undefined }>(
     EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.map((operation) => [operation, { calls: 0, attempts: 0, succeeded: 0, failed: 0, retried: 0, lastLatencyMs: undefined }]),
   );
-  let state: 'ready' | 'unavailable' = 'ready';
-  let lastReason: AuthoritySigningFailureReason | undefined;
+  // The two halves of health, each written only by the event that can prove it
+  // (see the module comment). `undefined` = no unresolved failure.
+  let identityFailure: AuthoritySigningFailureReason | undefined;
+  let signingFailure: AuthoritySigningFailureReason | undefined;
+  let identityCheckedAt = now();
+  let probeInFlight: Promise<ExternalAuthoritySignerStatus> | undefined;
+
+  const component = (failure: AuthoritySigningFailureReason | undefined): ExternalAuthoritySignerComponentState =>
+    Object.freeze(failure === undefined ? { state: 'ready' as const } : { state: 'unavailable' as const, reason: failure });
 
   function status(): ExternalAuthoritySignerStatus {
     const operations = Object.fromEntries(EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.map((operation) => [operation, Object.freeze({ ...counters.get(operation)! })])) as Record<
       ExternalAuthoritySignerOperation,
       ExternalAuthoritySignerOperationCounters
     >;
-    return Object.freeze({ custody: 'external', keyId: pinned.keyId, algorithm: pinned.algorithm, state, ...(lastReason !== undefined ? { reason: lastReason } : {}), operations: Object.freeze(operations) });
-  }
-
-  function observe(outcome: AuthoritySigningFailureReason | undefined): void {
-    state = outcome === undefined ? 'ready' : 'unavailable';
-    lastReason = outcome;
+    const reason = signingFailure ?? identityFailure;
+    return Object.freeze({
+      custody: 'external',
+      keyId: pinned.keyId,
+      algorithm: pinned.algorithm,
+      state: reason === undefined ? 'ready' : 'unavailable',
+      ...(reason !== undefined ? { reason } : {}),
+      identity: component(identityFailure),
+      lastSigning: component(signingFailure),
+      operations: Object.freeze(operations),
+    });
   }
 
   /** Validates an answer to `request`. Returns a fresh envelope of exactly the four fields, or throws a refusal naming why. */
@@ -324,34 +428,33 @@ export async function establishExternalAuthorityArtifactSigner(options: External
   async function sign(request: ExternalAuthoritySigningRequest): Promise<AuthoritySignature> {
     const counter = counters.get(request.operation)!;
     counter.calls += 1;
-    let reason: AuthoritySigningFailureReason = 'EXTERNAL_SIGNER_UNREACHABLE';
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const answered = await withBoundedAttempts(maxAttempts, async (attempt) => {
       counter.attempts += 1;
       if (attempt > 1) counter.retried += 1;
       const started = Date.now();
-      let answer: unknown;
       try {
-        answer = await transport.sign(request, { timeoutMs });
-      } catch (error) {
+        return await transport.sign(request, { timeoutMs });
+      } finally {
         counter.lastLatencyMs = Date.now() - started;
-        reason = error instanceof ExternalAuthoritySignerTransportError ? error.reason : 'EXTERNAL_SIGNER_UNREACHABLE';
-        if (isRetryableAuthoritySigningFailure(reason) && attempt < maxAttempts) continue;
-        break;
       }
-      counter.lastLatencyMs = Date.now() - started;
+    });
+    let reason: AuthoritySigningFailureReason;
+    if (answered.ok) {
       try {
-        const signature = accept(request, answer);
+        const signature = accept(request, answered.value);
         counter.succeeded += 1;
-        observe(undefined);
+        // Only here — a signature that verified locally under the pin — does a signing failure clear.
+        signingFailure = undefined;
         return signature;
       } catch (error) {
         // The service answered; what it said is not acceptable. Never retried.
         reason = error instanceof IdentityRefusal ? error.reason : 'EXTERNAL_SIGNER_MALFORMED_RESPONSE';
-        break;
       }
+    } else {
+      reason = answered.reason;
     }
     counter.failed += 1;
-    observe(reason);
+    signingFailure = reason;
     throw new AuthoritySigningUnavailableError(`The external authority signer did not produce an acceptable ${request.operation} signature (${reason}). Nothing was signed into authority state.`, reason);
   }
 
@@ -367,16 +470,28 @@ export async function establishExternalAuthorityArtifactSigner(options: External
   EXTERNAL_SIGNERS.add(signer);
   registerAuthoritySignerCustody(signer, 'external');
 
+  /** One identity attempt. Writes `identity` only: whatever it finds, it never touches a signing failure. */
+  async function probeIdentity(): Promise<ExternalAuthoritySignerStatus> {
+    try {
+      checkIdentity(await transport.identity({ timeoutMs }), pinned, pinnedSpki);
+      identityFailure = undefined;
+    } catch (error) {
+      identityFailure = error instanceof IdentityRefusal ? error.reason : transportReason(error);
+    } finally {
+      identityCheckedAt = now();
+    }
+    return status();
+  }
+
   const monitor: ExternalAuthoritySignerMonitor = Object.freeze({
     status,
-    async probe(): Promise<ExternalAuthoritySignerStatus> {
-      try {
-        checkIdentity(await transport.identity({ timeoutMs }), pinned, pinnedSpki);
-        observe(undefined);
-      } catch (error) {
-        observe(error instanceof IdentityRefusal || error instanceof ExternalAuthoritySignerTransportError ? error.reason : 'EXTERNAL_SIGNER_UNREACHABLE');
-      }
-      return status();
+    probe(): Promise<ExternalAuthoritySignerStatus> {
+      if (probeInFlight !== undefined) return probeInFlight;
+      if (now() - identityCheckedAt < probeIntervalMs) return Promise.resolve(status());
+      probeInFlight = probeIdentity().finally(() => {
+        probeInFlight = undefined;
+      });
+      return probeInFlight;
     },
   });
 

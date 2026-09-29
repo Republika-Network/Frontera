@@ -245,7 +245,11 @@ export function operationCounts(endpoint: string, credential = SIGNER_TOKEN): Pr
   });
 }
 
-/** The environment a Host needs for external custody — endpoint, credential, the pinned key id and the trusted public keys. No private key. */
+/**
+ * The environment a Host needs for external custody — endpoint, credential, the pinned key id and the trusted public keys. No private key.
+ * The probe interval is 0 so every `/health` probes identity: these suites assert that an outage is visible on the next health check.
+ * The default interval (and the fanout bound it buys) is qualified in `external-authority-signer-review-hardening.test.ts`.
+ */
 export function externalCustodyEnv(signer: { readonly endpoint: string; readonly keyId: string }, trusted: readonly { readonly keyId: string; readonly algorithm: string; readonly publicKeyPem: string }[], extra: Record<string, string> = {}): Record<string, string> {
   return {
     AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE: 'external',
@@ -255,6 +259,7 @@ export function externalCustodyEnv(signer: { readonly endpoint: string; readonly
     AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: JSON.stringify(trusted),
     AOC_ENTERPRISE_AUTHORITY_SIGNER_TIMEOUT_MS: '2000',
     AOC_ENTERPRISE_AUTHORITY_SIGNER_MAX_ATTEMPTS: '1',
+    AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS: '0',
     ...extra,
   };
 }
