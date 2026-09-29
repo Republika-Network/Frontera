@@ -1322,38 +1322,24 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         );
       }
     }
-    // CORE-02R round 2: every authority-bearing store is signed only on the
-    // durable path — the grant store when `persistence.provider` is `sqlite`,
-    // the obligation and approval stores when the composed Governance Store is.
-    // Anywhere else they are in-process and unsigned, and the configured signer
-    // would never be contacted while the configuration still said `external`.
-    // There is no externally signed in-memory authority store, so that
-    // combination is refused rather than silently meaning "external under
-    // SQLite, unsigned otherwise". Only where authority-controlled execution is
-    // composed: without it no authority store exists and nothing is signed.
-    if (options.authorityControlledExecution !== undefined) {
-      let selected: string | undefined;
-      if (configuration.persistence.provider !== 'sqlite') selected = `persistence.provider '${configuration.persistence.provider}'`;
-      else if (options.persistence !== undefined && options.persistence.providerKind !== 'sqlite') selected = `a supplied '${options.persistence.providerKind}' Governance Store`;
-      if (selected !== undefined) {
-        throw new AuthorityAuthenticityConfigurationError(
-          `This Host is configured for external authority-key custody with authority-controlled execution, and ${selected} would place its authority stores in process memory, unsigned — the configured signer would never be contacted. External custody requires durable persistence (AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite). There is no unsigned external mode.`,
-        );
-      }
+    // CORE-02R round 2: external custody requires authenticated persistence
+    // for each authority-bearing store actually composed. The grant/revocation
+    // store exists whenever authority-controlled execution is composed, and it
+    // is signed only when `persistence.provider` is `sqlite`; anywhere else it
+    // is in-process and unsigned, and the configured signer would never be
+    // contacted while the configuration still said `external`. There is no
+    // externally signed in-memory authority store, so that combination is
+    // refused rather than silently meaning "external under SQLite, unsigned
+    // otherwise". Without authority-controlled execution no authority store
+    // exists and nothing is signed. The obligation and approval stores follow
+    // the composed Governance Store instead; they are checked below, once the
+    // governed-action configuration that decides whether they exist is known —
+    // still before any store is opened or the signer contacted.
+    if (options.authorityControlledExecution !== undefined && configuration.persistence.provider !== 'sqlite') {
+      throw new AuthorityAuthenticityConfigurationError(
+        `This Host is configured for external authority-key custody with authority-controlled execution, and persistence.provider '${configuration.persistence.provider}' would place its grant and revocation authority in process memory, unsigned — the configured signer would never be contacted. External custody requires durable persistence (AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite). There is no unsigned external mode.`,
+      );
     }
-  }
-
-  // PROD-01: the authenticity boundary is resolved before any store is opened,
-  // so a missing, mismatched or untrusted signing key refuses the Host before a
-  // single SQLite file exists — not after the Governance, Passport, Assurance
-  // and Kernel Authority stores have been opened. Software custody: key parsing
-  // only. External custody (CORE-02): the custody service's pinned identity is
-  // proven here — before any store is opened — or the Host does not start.
-  // Resolved at most once: every store this root opens shares one boundary.
-  let authorityAuthenticityOnce: Promise<AuthorityAuthenticityBoundary> | undefined;
-  const resolveAuthorityAuthenticity = (): Promise<AuthorityAuthenticityBoundary> => (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration));
-  if (options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite') {
-    await resolveAuthorityAuthenticity();
   }
 
   // Adapter composition is checked before anything is opened: a deployment that
@@ -1463,6 +1449,48 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     });
   } else if (options.trustedContext !== undefined || options.obligations !== undefined) {
     throw new GovernedActionConfigurationError('GOVERNED_ACTION_TRUSTED_CONTEXT_INVALID', 'trustedContext and obligations configure the governed-action path, and governed actions are not enabled.');
+  }
+
+  // Which governed authority-bearing stores this composition will open, decided
+  // here — before any store opens — and used verbatim where they are composed
+  // below, so the external-custody check and the composition cannot disagree.
+  // CORE-04: the obligation discharge store exists exactly when obligations are
+  // composed on the governed path. CORE-05: the approval store exists exactly
+  // when governed actions are enabled and some Governance Profile declares how
+  // its decisions can be approved.
+  const obligationStoreComposed = governedTrust?.obligations !== undefined;
+  const approvalsDeclared = governedActionOptions !== undefined && governance.profiles.some((profile) => profile.definition.approval !== undefined);
+  // Both follow the composed Governance Store: signed SQLite when it is SQLite,
+  // in-process and unsigned otherwise.
+  const governanceStoreKind: GovernanceStore['providerKind'] = options.persistence?.providerKind ?? (configuration.persistence.provider === 'sqlite' ? 'sqlite' : 'memory');
+  // CORE-02R round 2: under external custody neither may be selected in
+  // memory. A supplied ephemeral Governance Store is refused only when it would
+  // actually carry obligation or approval authority; a legacy composition that
+  // opens neither keeps its grant/revocation authority on the signed SQLite
+  // store and may run over any Governance Store.
+  if (configuration.authorityAuthenticity.mode === 'external' && governanceStoreKind !== 'sqlite') {
+    const inMemoryAuthority = [...(obligationStoreComposed ? ['obligation discharge'] : []), ...(approvalsDeclared ? ['approval'] : [])];
+    if (inMemoryAuthority.length > 0) {
+      const selected = options.persistence !== undefined ? `a supplied '${governanceStoreKind}' Governance Store` : `persistence.provider '${configuration.persistence.provider}'`;
+      throw new AuthorityAuthenticityConfigurationError(
+        `This Host is configured for external authority-key custody with authority-controlled execution, and ${selected} would select in-memory, unsigned ${inMemoryAuthority.join(' and ')} stores for the governed actions composed here — the configured signer would never be contacted. External custody requires durable persistence for every authority-bearing store it composes (a SQLite Governance Store). There is no unsigned external mode.`,
+      );
+    }
+  }
+
+  // PROD-01: the authenticity boundary is resolved before any store is opened,
+  // so a missing, mismatched or untrusted signing key refuses the Host before a
+  // single SQLite file exists — not after the Governance, Passport, Assurance
+  // and Kernel Authority stores have been opened. Software custody: key parsing
+  // only. External custody (CORE-02): the custody service's pinned identity is
+  // proven here — before any store is opened — or the Host does not start.
+  // Established after the pure configuration checks above, so a composition
+  // they refuse never reaches the signer. Resolved at most once: every store
+  // this root opens shares one boundary.
+  let authorityAuthenticityOnce: Promise<AuthorityAuthenticityBoundary> | undefined;
+  const resolveAuthorityAuthenticity = (): Promise<AuthorityAuthenticityBoundary> => (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration));
+  if (options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite') {
+    await resolveAuthorityAuthenticity();
   }
 
   // P12: execution reconciliation, validated and snapshotted before any store
@@ -1666,7 +1694,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // forever; one that forgot a pending one would be harmless — but a durable
   // deployment never silently downgrades either way), in-memory otherwise.
   const obligationDischargeStore: ObligationDischargeStore | undefined =
-    governedTrust?.obligations === undefined
+    !obligationStoreComposed
       ? undefined
       : (options.obligations?.store ??
         (persistence.providerKind === 'sqlite'
@@ -1696,7 +1724,6 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // file under `sqlite` persistence (an approval that forgot itself on
   // restart would withhold forever, and one that forgot a rejection could be
   // re-approved), in-memory otherwise.
-  const approvalsDeclared = governedActionOptions !== undefined && governance.profiles.some((profile) => profile.definition.approval !== undefined);
   const approvalStore: ApprovalStore | undefined = !approvalsDeclared
     ? undefined
     : (options.approvals?.store ??

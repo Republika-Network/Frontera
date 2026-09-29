@@ -473,7 +473,7 @@ key lives is an explicit choice:
 | Verification | local | local (every returned signature verified before it is stored) |
 | Posture | `authoritySigner: software` | `authoritySigner: external` |
 | Authority stores | the Host's, or host-supplied authenticated ones (embedding) | always the Host's own, built over the configured, proven signer; a supplied store is refused (CORE-02R) |
-| Persistence | `memory` or `sqlite` | `sqlite` whenever authority-controlled execution is composed; `memory` is refused before anything opens, since it would mean unsigned in-process authority (CORE-02R round 2) |
+| Persistence | `memory` or `sqlite` | `sqlite` whenever authority-controlled execution is composed; `memory` is refused before anything opens, since it would mean unsigned in-process authority (CORE-02R round 2). An embedder-supplied non-SQLite Governance Store is refused only when governed actions would select obligation or approval stores from it |
 
 External-mode variables: `AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT` (https, or
 http to loopback only), `AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN` (secret, ≥ 32

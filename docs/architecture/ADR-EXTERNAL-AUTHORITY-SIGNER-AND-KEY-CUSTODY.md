@@ -1,6 +1,6 @@
 # ADR — External Authority Signer & Key Custody Boundary (CORE-02)
 
-- **Status:** Accepted — CORE-02, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`, merged as PR #152); amended by the post-merge review hardening **CORE-02R**, 2026-09-29 (branch `fix/core-02-review-hardening`, §6); and by **CORE-02R review round 2** (post-merge hotfix), 2026-09-29 (branch `fix/core-02-review-round2`, §6.8)
+- **Status:** Accepted — CORE-02, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`, merged as PR #152); amended by the post-merge review hardening **CORE-02R**, 2026-09-29 (branch `fix/core-02-review-hardening`, §6); and by **CORE-02R review round 2** (post-merge hotfix), 2026-09-29 (branch `fix/core-02-review-round2`, §6.8, including its Codex follow-up §6.8.1)
 - **Roadmap item:** `docs/architecture/FRONTERA-MASTER-PLAN.md` §9 CORE-02
 - **Security detail:** `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29
 - **Code:** `src/enterprise/external-authority-signer/`, `src/enterprise/authority-authenticity/custody.ts`, the authenticity boundary in `src/enterprise/composition/composition-root.ts`, `scripts/run-reference-authority-signer.mjs`
@@ -459,14 +459,19 @@ posture reported `authoritySigner: not-composed` with `status: healthy`. The
 canonical Host refused the combination, but only through its post-composition
 custody check, after stores had been opened.
 
-*Decision.* Refuse; do not invent an externally signed in-memory store. When
-`authorityControlledExecution` is composed under external custody,
-`createEnterprise` throws `AuthorityAuthenticityConfigurationError` before any
-store opens and before the signer is contacted in either of these cases:
+*Decision.* Refuse; do not invent an externally signed in-memory store.
+External custody requires authenticated persistence for each authority-bearing
+store actually composed. When `authorityControlledExecution` is composed under
+external custody, `createEnterprise` throws
+`AuthorityAuthenticityConfigurationError` before any store opens and before
+the signer is contacted in either of these cases:
 
-- `persistence.provider` is not `sqlite`;
-- a supplied Governance Store is not `sqlite`. Such a store would select
-  in-memory obligation and approval stores.
+- `persistence.provider` is not `sqlite`. The grant/revocation store would be
+  the unsigned in-memory one;
+- the composed Governance Store (supplied or configured) is not `sqlite`
+  **and** governed actions compose an obligation discharge store (obligations
+  configured) or an approval store (some Governance Profile declares an
+  approval). Either store would be selected in memory, unsigned (§6.8.1).
 
 The rule is narrow on purpose:
 
@@ -510,3 +515,37 @@ byte-for-byte:
 - M15b skipped the supplied-store branch;
 - M16 removed `age ≥ 0`;
 - M17 treated a negative age as cache-valid.
+
+#### 6.8.1 Codex follow-up — scope the Governance Store refusal
+
+Codex (P2, on `545306b`) found the supplied-store branch too broad. It refused
+**any** supplied non-SQLite Governance Store whenever ACE was composed. But the
+Governance Store selects obligation and approval persistence only when governed
+actions compose those stores. Legacy ACE without governed actions keeps its
+grant/revocation authority on the configured authenticated SQLite grant store.
+Reproduced: external custody, `persistence.provider = sqlite`, ACE, a supplied
+in-memory Governance Store and no governed actions was refused
+(`AuthorityAuthenticityConfigurationError`), although no in-memory authority
+store would have been composed.
+
+*Decision.* The `persistence.provider` rule is unchanged. The Governance Store
+rule is derived from the same predicates that later compose the stores,
+computed once, before any store opens and before the signer is established:
+
+- obligation discharge store composed ⇔ `governedTrust.obligations` is defined
+  (governed actions enabled **and** `obligations` configured);
+- approval store composed ⇔ governed actions enabled **and** some Governance
+  Profile declares `approval`.
+
+Legacy ACE may therefore run over an ephemeral Governance Store; grant and
+revocation authority stays signed, durable and external, and posture reports
+`obligations` / `approvals: not-configured`. The eager signer establishment
+now follows the pure governed-action validation, so a refused composition still
+never contacts the signer.
+
+*Evidence.* `external-authority-signer-review-round2.test.ts` C1 … C8 (C2 is
+the Codex regression; C9/C10 are asserted inside it). The original A8, which
+pinned the broad refusal, is replaced by a pointer to C2 … C5. Mutations, each
+restored byte-for-byte: M18 (broad rule restored) fails C2, C3; M19 (obligations
+ignored) fails C4; M20 (approvals ignored) fails C5; M21 (configured-memory
+refusal weakened) fails C1 and A1 … A2b, A7, A7b.

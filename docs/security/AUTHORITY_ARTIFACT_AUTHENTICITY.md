@@ -160,7 +160,7 @@ A note on #7, because it is the kind of thing that gets quietly conflated: `issu
 | **AA-INV-036** (CORE-02R) | A signing failure is cleared only by a successful, locally verified signature — never by an identity probe | separate `identity` / `lastSigning` monitor states | review-hardening B; structure rule |
 | **AA-INV-037** (CORE-02R) | The startup identity handshake honours `maxAttempts` for availability failures and never retries an answer | shared `withBoundedAttempts` | review-hardening C1 … C7 |
 | **AA-INV-038** (CORE-02R) | The canonical external Host refuses the authority-key variable in its real process environment | `bootEnterpriseHost` pre-composition check | process-env suite |
-| **AA-INV-039** (CORE-02R round 2) | Under external custody, authority-controlled execution never composes an unsigned in-memory authority store: memory persistence (or a supplied in-memory Governance Store) is refused before anything opens | composition refusal before signer establishment | review-round2 A1 … A8b |
+| **AA-INV-039** (CORE-02R round 2) | Under external custody, authority-controlled execution never composes an unsigned in-memory authority store: memory persistence is refused, and so is a non-SQLite Governance Store that would select an obligation discharge or approval store, before anything opens; an ephemeral Governance Store that selects neither is allowed | composition refusal before signer establishment | review-round2 A1 … A8b, C1 … C8 |
 | **AA-INV-040** (CORE-02R round 2) | A negative identity-probe age invalidates the cached identity; a clock moved backwards cannot extend signer identity freshness | `probe()` age rule `0 ≤ age < interval` | review-round2 B1 … B8 |
 
 AA-INV-021 and AA-INV-022 are additions beyond the prompt's list, both required by what the source actually does. AA-INV-023 … AA-INV-027 are CORE-01's. AA-INV-028 … AA-INV-034 are CORE-02's; AA-INV-035 … AA-INV-038 are its post-merge review hardening (CORE-02R, §29.11); AA-INV-039 … AA-INV-040 are its review round 2 (§29.12).
@@ -998,6 +998,11 @@ change. Full record in ADR §6.8.
   store opens (AA-INV-039). There is no externally signed in-memory store, and
   none was invented. External custody without authority-controlled execution
   still composes: no authority store exists and nothing is signed.
+  Codex follow-up: the Governance Store half of the rule is scoped to the
+  authority stores it actually selects. A non-SQLite Governance Store is refused
+  only when governed actions compose obligations or approvals; legacy
+  authority-controlled execution may run over an ephemeral one, its grant and
+  revocation authority still on the signed SQLite store.
 - **Clock rollback of the identity-probe cache.** A negative age satisfied the
   cache rule, so a clock moved backwards kept a stale identity `ready` until
   wall time caught up. A negative age now invalidates the cache (AA-INV-040).
