@@ -1,6 +1,6 @@
 # ADR — External Authority Signer & Key Custody Boundary (CORE-02)
 
-- **Status:** Accepted — CORE-02, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`)
+- **Status:** Accepted — CORE-02, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`, merged as PR #152); amended by the post-merge review hardening **CORE-02R**, 2026-09-29 (branch `fix/core-02-review-hardening`, §6)
 - **Roadmap item:** `docs/architecture/FRONTERA-MASTER-PLAN.md` §9 CORE-02
 - **Security detail:** `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29
 - **Code:** `src/enterprise/external-authority-signer/`, `src/enterprise/authority-authenticity/custody.ts`, the authenticity boundary in `src/enterprise/composition/composition-root.ts`, `scripts/run-reference-authority-signer.mjs`
@@ -119,6 +119,9 @@ default 5 000, 1 … 60 000) and a bounded number of attempts
 unreachable, unavailable/429/5xx) is retried; anything the service *answered*
 is never retried. Worst case per signature: `attempts × timeout`.
 
+*As merged in PR #152 the startup identity handshake made a single attempt
+regardless of `maxAttempts`; CORE-02R (§6.3) applies the same bound to it.*
+
 ### 2.7 Transactions
 
 Unchanged and now structurally tested for all three stores: plan/preflight →
@@ -166,7 +169,8 @@ transition.
 - **Health.** `/health` carries `authoritySigner {custody, keyId, algorithm,
   state, reason?, signing}`; an unreachable, refusing or re-keyed service
   makes the Host `degraded` (never `unhealthy`; `/ready` stays 200). The probe
-  never spends a signature.
+  never spends a signature. *As merged in PR #152 a successful probe also
+  cleared a signing failure; CORE-02R (§6.2) separates the two.*
 - **Startup.** A Host that cannot prove its signer's identity does not start —
   including a restart during a signer outage (reads are then unavailable until
   the signer answers; a degraded read-only boot is not offered). Deliberate:
@@ -241,4 +245,199 @@ heads re-attest under the new key at open).
 `-configuration.test.ts`, `-host.test.ts` (signer as a separate process on the
 canonical Host), `-structure.test.ts`, `tests/external-authority-signer-launcher.test.mjs`
 (the shipped launcher, `/proc/<pid>/environ` inspection); deliberate-violation
-experiments recorded in the Master Plan.
+experiments recorded in the Master Plan. CORE-02R adds
+`-review-hardening.test.ts` and `-process-env.test.ts` (§6.7).
+
+## 6. Post-merge review hardening (CORE-02R)
+
+PR #152 merged with three open review findings (P2-A, P2-B, P2-C), and an
+independent review found a fourth (P2-D). None changed the artifact format,
+the protocol, a domain string, `AUTHORITY_ARTIFACT_VERSION` or a database
+schema; all four are composition, health and bootstrap repairs. The text above
+describes CORE-02 as designed; this section records what the merged code did
+not yet do, and what it does now. Every finding was reproduced against
+`main @ 0778b74` before it was fixed.
+
+### 6.1 Supplied stores: custody branding was not identity (P2-A)
+
+**Defect.** Under external custody, `createEnterprise` accepted a
+host-supplied grant, obligation or approval store whose runtime brand said
+`external`. That brand records only *where* the store's key lives. It says
+nothing about *which* key id, algorithm or public key signs, or which trust
+registry verifies. Reproduced: configured signer A (unreachable), and a
+supplied store built over external signer B. The Host composed, posture said
+`authoritySigner: external`, A was never contacted, and every mutation would
+have been signed by B. The same shape admitted a key swap under the same id,
+and a supplied verifier that also trusts an attacker key (which would make
+attacker-signed historical artifacts readable).
+
+**Rule (Strategy 1: refuse injection).** Under
+`authorityAuthenticity.mode = 'external'`, the composition root **builds every
+authority-bearing store itself** (bounded grant, obligation discharge,
+approval), all over the one boundary it establishes. That boundary is the
+configured pinned key id, algorithm and SPKI public key, proven by the
+identity handshake, plus the configured verification registry. It **refuses
+any supplied store** in every persistence mode, even one that matches exactly.
+No store can prove which boundary built it through what it says about
+itself, so none is adopted. A runtime fingerprint (Strategy 2) would have kept
+an injection path and a comparator to get right. Refusal is the smaller trust
+story, and no production path supplies stores: `bootEnterpriseHost` never has.
+
+- Genesis of every store (revocation, discharge and approval state) is
+  therefore always signed by the established, configured external signer.
+  There is still no software fallback.
+- Posture `authoritySigner: external` can now only come from the established
+  configured boundary. There is no configuration/runtime split.
+- Rotation is unaffected. The active signing identity is the pin (exactly the
+  configured active key). The historical verification set is the configured
+  registry, which may keep old keys trusted for old artifacts. Re-attestation
+  still goes through the active external signer.
+- Verification stays local. Nothing about reads moved to the signer.
+- **Embedding boundary.** Software custody keeps host injection, under
+  CORE-01's authenticated-store rule. It makes no external claim, so nothing
+  here constrains it. A software-custody embedder that supplies a store signed
+  by some other software key gets that store's signer. That is the pre-existing
+  CORE-01 embedding boundary, and it is not a CORE-02 claim.
+- **Threat-model honesty.** Like every brand in this module, this stops a
+  supported composition API from contradicting the configuration. It is not a
+  defense against malicious code already running in the Host process. AA-002
+  is unchanged: whoever controls the configuration (endpoint, registry, key id)
+  still defines trust.
+
+### 6.2 Health: identity reachability is not signing readiness (P2-B)
+
+**Defect.** The monitor kept one state, written by both signatures and
+identity probes. After a signing failure (unavailable, timeout, or a signature
+that did not verify), the next `/health` probe reached `/v1/identity`, got a
+correct answer, and set the signer to `ready`. The Host then reported `healthy`
+while every mutation still failed. Reproduced for 503 and for an invalid
+signature.
+
+**Model.** The monitor has two states, and each is written only by the event
+that can prove it:
+
+| State | Written by | Cleared by |
+|---|---|---|
+| `identity` | the startup handshake; each probe | a later successful identity probe |
+| `lastSigning` | signing operations only | a later **successful, locally verified** signature, and nothing else |
+
+- Effective `ready`: the last identity result is acceptable **and** no signing
+  failure is unresolved.
+- Effective `unavailable`: either of those does not hold.
+- `reason`: the unresolved signing failure if there is one (it is what stops
+  new authority), else the identity failure.
+- `/health.authoritySigner` shows both halves (`identity`, `lastSigning`) next
+  to `state`, `reason` and the signing totals.
+- A health check still never spends a signature. Truthfulness comes from not
+  letting identity stand in for signing, not from test-signing.
+- A successful signature does not clear an identity failure either. Each half
+  clears only its own.
+
+`/ready` is unchanged: a signer failure leaves the Host `degraded`, and
+`/ready` stays 200. Being ready to serve existing authority, which verifies
+locally, is not the same as the signer being ready for new authority
+mutations. `/health` states the second. AA-004 is unchanged: while signing
+fails, revocation cannot be cryptographically recorded, and the emergency stop
+remains the signer-independent containment.
+
+### 6.3 Startup identity honours `maxAttempts` (P2-C)
+
+**Defect.** The handshake called `/v1/identity` once. Reproduced: with
+`maxAttempts = 3`, a single transient timeout refused startup after one call.
+
+**Rule.** The handshake and every signature now share one bounded-attempt loop
+(`withBoundedAttempts`) and the existing classifier
+(`isRetryableAuthoritySigningFailure`).
+
+- Retried, up to `maxAttempts` (1 … 3, default 2):
+  `EXTERNAL_SIGNER_{TIMEOUT, UNREACHABLE, UNAVAILABLE}`. That family includes
+  HTTP 429, 5xx and connection resets.
+- Never retried, one call: `AUTHENTICATION_FAILED`, `REFUSED`,
+  `MALFORMED_RESPONSE`, `CAPABILITY_UNSUPPORTED`, `IDENTITY_MISMATCH` (including
+  the same key id over a different public key) and `SIGNATURE_INVALID`.
+- Validation stays separate from the loop. The loop retries transport failures
+  only. Identity and signature answers are validated after it returns, each by
+  its own code, so an answer that was received and refused is never retried.
+- No delay and no backoff between attempts. Worst-case startup identity time is
+  `timeoutMs × maxAttempts`, which is 5 s × 2 by default and 60 s × 3 at most.
+- Identity attempts are not counted as signing attempts. The per-operation
+  counters stay signing-only.
+
+**Runtime probe: one attempt, deliberately.** A health probe reports, and the
+next probe is the retry. Retrying inside a probe would multiply health latency
+and signer fanout while adding no truth. `maxAttempts` governs the startup
+handshake and signing, not monitoring. One probe takes at most `timeoutMs`.
+
+### 6.4 Canonical Host: the real process environment (P2-D)
+
+**Defect.** `bootEnterpriseHost({ env })` validated external custody against
+the supplied map. A sanitized map therefore booted an "external" Host while
+the real `process.env` still held `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM`.
+Reproduced: the Host listened.
+
+**Rule.** Under external custody the canonical Host refuses
+(`HOST_ENVIRONMENT_INVALID`) before composition when the declared
+authority-key variable is present in either place:
+
+- the configuration map;
+- the real `process.env`.
+
+Refusing before composition means nothing is opened and the signer is not
+contacted. Presence is enough, and an empty value counts, which matches the
+map validation: the variable must not be part of the process at all. The
+value is never read, compared, logged or serialized. This controls the
+declared input only. It is not a scan of the environment or of memory for
+key-shaped text.
+
+`createEnterprise()` is the embedding surface. It judges the configuration it
+is handed and still refuses a contradictory one. It does not inspect the
+process it runs in, because the process-level claim belongs to the shipped Host
+process.
+
+### 6.5 Health-probe fanout (P3)
+
+**Issue.** `/health` and `/ready` are unauthenticated operational endpoints,
+and each invoked one authenticated identity call to the signer. N inbound
+health requests therefore meant N outbound signer requests, an amplification
+towards the custody service and its rate limits.
+
+**Decision (bounded cache).** Probes are **single-flight**: concurrent callers
+share one identity call. They are also **rate-bounded** by
+`AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS` (0 … 60 000, default
+5 000). Within the interval, the last identity result stands.
+
+- Staleness is bounded. An identity `ready` is at most one interval old.
+- The cache never hides a signing failure. Signing failures are recorded when
+  they happen and are independent of it, so recovery can never be claimed by
+  the cache (§6.2).
+- `0` restores probe-per-request, still single-flight.
+- Worst-case signer load from health checks is one identity call per interval
+  per Host process.
+
+### 6.6 Residuals (unchanged by CORE-02R)
+
+- **AA-010.** A compromised Host can still use the service credential to
+  *request* legitimate-looking signatures. External custody prevents
+  extraction, not all signing abuse.
+- **AA-002.** Narrowed, not closed. There is no configuration trust root
+  independent of the Host's configuration.
+- **AA-004.** Revocation needs the signer.
+- **AA-011.** A restart during a signer outage does not start. The bounded
+  retry now tolerates a transient blip, but not an outage.
+
+### 6.7 Evidence
+
+- `external-authority-signer-review-hardening.test.ts`:
+  - **A:** supplied-store refusals A1 … A6, and the obligation and approval
+    stores.
+  - **B:** stickiness for unavailable, timeout and invalid signature; identity
+    failure and recovery; independence of the two halves; the canonical Host
+    with a separate-process signer behind a fault-injecting proxy.
+  - **C:** exact identity call counts C1 … C7, the no-retry classes, and the
+    one-attempt probe.
+  - **P3:** single-flight, the interval, and the default on the Host.
+- `external-authority-signer-process-env.test.ts` (D): runs in its own test
+  process; `process.env` is saved and restored.
+- Structure rules: the shared retry loop, and "only a verified signature clears
+  a signing failure".
+- Deliberate-violation experiments are recorded in the Master Plan.
