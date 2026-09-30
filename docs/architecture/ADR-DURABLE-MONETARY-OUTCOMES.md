@@ -256,3 +256,62 @@ a resolution is a separate fact in a separate store.
 - The observation's certainty is `unconfirmed`, with a `providerRef` available.
 - The observation's certainty is `unconfirmed`, with no `providerRef`.
 - A record that fails verification (corrupt or tampered) and replays as `…_ALREADY_ATTEMPTED`.
+
+## 14. CORE-08 addendum — the attempt binds typed governed parameters (schema v2)
+
+**Status:** Accepted (CORE-08, 2026-09-30).
+
+**Why.** §9 calls the attempt "the exact execution context prepared before the
+provider crossing". That was true while `ValidatedExecutionAction` carried
+nothing beyond tenant, correlation, action and amount. CORE-08 delivers the
+exercise-contained typed governed parameters to the adapter
+(`ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` §9). A durable attempt for
+`deploy` with `replicaCount = 4`, `deploymentStrategy = rolling` that recorded
+only `action = deploy` would no longer be the exact context. It must bind them —
+without silently changing what a historical v1 record means.
+
+**Decision — a versioned record format, additive, verified per record.**
+
+| | v1 (P11, historical) | v2 (CORE-08) |
+|---|---|---|
+| Record `schemaVersion` | `aoc.execution-outcome-store.schema.v1` | `aoc.execution-outcome-store.schema.v2` |
+| `parameters` | never present — a v1 row carrying one is `EXECUTION_OUTCOME_CORRUPT` | optional: the exact `{ dimension, type, value }` list the adapter received |
+| Attempt digest | `aoc.execution-outcome.attempt.v1` over the v1 fields — **unchanged, byte for byte** | `aoc.execution-outcome.attempt.v2` over the v1 fields **plus** `parameters` (or an explicit `null`) |
+| Written by | no longer written | every new attempt |
+| Terminal observation | unchanged format; carries the version it was written under; both verify | same |
+
+- **Canonical form.** A v2 list is non-empty, ≤ 32 entries, each a plain
+  `{ dimension, type, value }` that is well formed for its own declared type
+  (safe integer, never `-0`; token grammar; boolean), strictly ascending by
+  dimension. Anything else is refused on write and on every read — never
+  sorted, de-duplicated or coerced. Stored as its `aoc.canonical-json.v1`
+  serialization in the nullable `parameters_json` column.
+- **Digest sensitivity.** Changing any dimension, type or value — or adding or
+  removing one — changes the v2 digest; the same list always digests the same.
+  An idempotent retry with the same list is `existing`; any other list for the
+  same execution is `EXECUTION_OUTCOME_CONFLICT` (§6's rule, unchanged).
+- **Store-file migration.** A file written by v1 is migrated on open the way
+  the repository migrates durable stores additively (the `sqlite-authority-store`
+  v4 pattern): `ALTER TABLE execution_attempts ADD COLUMN parameters_json TEXT`,
+  and a `migrated` row appended to the version history, in one transaction. No
+  row is rewritten; no digest is recomputed; historical rows keep their own
+  `schema_version`. A file at any other version is refused unopened, and a
+  v1-only runtime refuses a migrated file (its newest version is v2) rather than
+  misread a v2 row.
+- **Historical meaning.** A v1 attempt means what it meant: the context of an
+  adapter call that received no generic parameters (none existed before
+  CORE-08). It reads back as v1, without a `parameters` key, its digest
+  recomputed under the v1 formula. Nothing on replay or reconciliation rebuilds
+  parameters from a current profile, policy, request or provider. A retry that
+  would re-prepare a v1 execution *with* parameters is a conflict, before the
+  claim, and never reaches an adapter.
+- **P12.** A binding and a resolution name the attempt by `attemptDigest`, so
+  they bind the v2 parameters with no P12 change. The P12 selection context and
+  resolution query deliberately carry **no** parameters: resolving whether an
+  effect happened needs no provider payload, and reconciliation never rebuilds,
+  resends or retries one.
+
+Evidence: `execution-outcome-parameters.test.ts` — against a real pre-CORE-08
+store (`src/enterprise/__tests__/fixtures/pre-core-08/p11-v1-execution-outcome-store.json`,
+written by the unmodified P11 runtime at `main @ 8d99567`) — and
+`core08-action-neutrality-host.test.ts`; SEC-INV-183.

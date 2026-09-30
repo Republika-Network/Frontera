@@ -1,0 +1,123 @@
+{
+  "generatedBy": "aoc-enterprise runtime @ main 8d995676d250a7b7bc43fc32c0cb6f68e49fb021 (pre-CORE-08), createSqliteExecutionOutcomeStore",
+  "schema": [
+    {
+      "type": "table",
+      "name": "execution_outcome_store_versions",
+      "sql": "CREATE TABLE execution_outcome_store_versions (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    schema_version TEXT NOT NULL,\n    migration_state TEXT NOT NULL,\n    recorded_at TEXT NOT NULL\n  )"
+    },
+    {
+      "type": "table",
+      "name": "sqlite_sequence",
+      "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+    },
+    {
+      "type": "table",
+      "name": "execution_attempts",
+      "sql": "CREATE TABLE execution_attempts (\n    execution_id TEXT PRIMARY KEY,\n    organization_id TEXT NOT NULL,\n    evaluation_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    decision_id TEXT NOT NULL,\n    bounded_grant_id TEXT NOT NULL,\n    action TEXT NOT NULL,\n    amount_value TEXT,\n    amount_unit TEXT,\n    prepared_at TEXT NOT NULL,\n    recorded_at TEXT NOT NULL,\n    schema_version TEXT NOT NULL,\n    attempt_digest TEXT NOT NULL\n  )"
+    },
+    {
+      "type": "table",
+      "name": "execution_terminal_observations",
+      "sql": "CREATE TABLE execution_terminal_observations (\n    execution_id TEXT PRIMARY KEY,\n    organization_id TEXT NOT NULL,\n    attempt_digest TEXT NOT NULL,\n    kind TEXT NOT NULL,\n    certainty TEXT,\n    adapter_id TEXT,\n    routed_by TEXT,\n    provider_ref TEXT,\n    failure TEXT,\n    withheld_by TEXT,\n    reason_codes_json TEXT,\n    observed_at TEXT NOT NULL,\n    recorded_at TEXT NOT NULL,\n    schema_version TEXT NOT NULL,\n    observation_digest TEXT NOT NULL\n  )"
+    },
+    {
+      "type": "trigger",
+      "name": "execution_attempts_append_only_update",
+      "sql": "CREATE TRIGGER execution_attempts_append_only_update\n    BEFORE UPDATE ON execution_attempts\n    BEGIN SELECT RAISE(ABORT, 'execution attempts are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "execution_attempts_append_only_delete",
+      "sql": "CREATE TRIGGER execution_attempts_append_only_delete\n    BEFORE DELETE ON execution_attempts\n    BEGIN SELECT RAISE(ABORT, 'execution attempts are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "execution_terminal_observations_append_only_update",
+      "sql": "CREATE TRIGGER execution_terminal_observations_append_only_update\n    BEFORE UPDATE ON execution_terminal_observations\n    BEGIN SELECT RAISE(ABORT, 'execution terminal observations are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "execution_terminal_observations_append_only_delete",
+      "sql": "CREATE TRIGGER execution_terminal_observations_append_only_delete\n    BEFORE DELETE ON execution_terminal_observations\n    BEGIN SELECT RAISE(ABORT, 'execution terminal observations are immutable'); END"
+    }
+  ],
+  "tables": {
+    "execution_outcome_store_versions": [
+      {
+        "id": 1,
+        "schema_version": "aoc.execution-outcome-store.schema.v1",
+        "migration_state": "current",
+        "recorded_at": "2026-09-29T12:00:00.000Z"
+      }
+    ],
+    "execution_attempts": [
+      {
+        "execution_id": "exec-legacy-monetary",
+        "organization_id": "org-legacy",
+        "evaluation_id": "eval-legacy-1",
+        "request_id": "req-legacy-1",
+        "decision_id": "dec-legacy-1",
+        "bounded_grant_id": "grant-legacy-1",
+        "action": "payment.send",
+        "amount_value": "125.5",
+        "amount_unit": "USD",
+        "prepared_at": "2026-09-29T12:00:01.000Z",
+        "recorded_at": "2026-09-29T12:00:02.000Z",
+        "schema_version": "aoc.execution-outcome-store.schema.v1",
+        "attempt_digest": "sha256:4fa2362ca191ebcf0d44300693dcee998f1141c70935dfa8fb7f2b32e5a6055b"
+      },
+      {
+        "execution_id": "exec-legacy-plain",
+        "organization_id": "org-legacy",
+        "evaluation_id": "eval-legacy-2",
+        "request_id": "req-legacy-2",
+        "decision_id": "dec-legacy-2",
+        "bounded_grant_id": "grant-legacy-2",
+        "action": "deploy-release",
+        "amount_value": null,
+        "amount_unit": null,
+        "prepared_at": "2026-09-29T12:00:05.000Z",
+        "recorded_at": "2026-09-29T12:00:06.000Z",
+        "schema_version": "aoc.execution-outcome-store.schema.v1",
+        "attempt_digest": "sha256:afee27d32c818aa3f7319a558f55012d14e92d3080c8dfa24e292dfd60d8c657"
+      }
+    ],
+    "execution_terminal_observations": [
+      {
+        "execution_id": "exec-legacy-monetary",
+        "organization_id": "org-legacy",
+        "attempt_digest": "sha256:4fa2362ca191ebcf0d44300693dcee998f1141c70935dfa8fb7f2b32e5a6055b",
+        "kind": "provider",
+        "certainty": "confirmed-completed",
+        "adapter_id": "legacy.http",
+        "routed_by": null,
+        "provider_ref": "prov-legacy-1",
+        "failure": null,
+        "withheld_by": null,
+        "reason_codes_json": null,
+        "observed_at": "2026-09-29T12:00:03.000Z",
+        "recorded_at": "2026-09-29T12:00:04.000Z",
+        "schema_version": "aoc.execution-outcome-store.schema.v1",
+        "observation_digest": "sha256:ad75b2e582fcdc8653c4b9657e450d44db1c097cb24ed0fa5aa536d578d62e40"
+      },
+      {
+        "execution_id": "exec-legacy-plain",
+        "organization_id": "org-legacy",
+        "attempt_digest": "sha256:afee27d32c818aa3f7319a558f55012d14e92d3080c8dfa24e292dfd60d8c657",
+        "kind": "provider",
+        "certainty": "unconfirmed",
+        "adapter_id": "legacy.http",
+        "routed_by": null,
+        "provider_ref": null,
+        "failure": null,
+        "withheld_by": null,
+        "reason_codes_json": null,
+        "observed_at": "2026-09-29T12:00:07.000Z",
+        "recorded_at": "2026-09-29T12:00:08.000Z",
+        "schema_version": "aoc.execution-outcome-store.schema.v1",
+        "observation_digest": "sha256:95de34a8aacff652bdfe0ff0dc58809c4641dd07072f5f9466510a058427c245"
+      }
+    ]
+  }
+}

@@ -63,10 +63,12 @@ describe('P11 boundaries — the execution outcome store', () => {
     assert.ok(STORE.length >= 7, STORE.join(','));
   });
 
-  it('imports only provider-neutral vocabularies, the monetary primitive, and the Governance Store canonicalization and digest primitives', () => {
+  it('imports only provider-neutral vocabularies, the monetary and governed-parameter primitives, and the Governance Store canonicalization and digest primitives', () => {
     const allowed = new Set([
       '../../features/execution-runtime/index.js',
       '../../features/monetary-runtime/index.js',
+      // CORE-08: the value grammar of the typed governed parameters a v2 attempt binds — the parameter analogue of the monetary primitive.
+      '../../features/governed-parameter-runtime/index.js',
       '../../features/emergency-control-runtime/index.js',
       '../../features/exercise-control-runtime/index.js',
       '../governance-store/canonical-json.js',

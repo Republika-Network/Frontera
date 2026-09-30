@@ -7,6 +7,7 @@ import {
   isRecordableExecutionAdapterId,
   isRecordableProviderRef,
 } from '../../features/execution-runtime/index.js';
+import { GOVERNED_PARAMETERS_MAX, compareDimensionIds, isWellFormedGovernedParameter, type GovernedParameter } from '../../features/governed-parameter-runtime/index.js';
 import { isWellFormedMonetaryAmount } from '../../features/monetary-runtime/index.js';
 import type { ExecutionWithholdingLayer } from './contracts.js';
 
@@ -68,7 +69,29 @@ function undeclared(value: Record<string, unknown>, allowed: readonly string[]):
   return Object.keys(value).find((key) => !allowed.includes(key));
 }
 
-const ATTEMPT_KEYS = ['organizationId', 'executionId', 'evaluationId', 'requestId', 'decisionId', 'boundedGrantId', 'action', 'amount', 'preparedAt'] as const;
+const ATTEMPT_KEYS = ['organizationId', 'executionId', 'evaluationId', 'requestId', 'decisionId', 'boundedGrantId', 'action', 'amount', 'parameters', 'preparedAt'] as const;
+const PARAMETER_KEYS = ['dimension', 'type', 'value'] as const;
+
+/**
+ * Why a governed-parameter list is outside the contract (CORE-08), or
+ * `undefined`: a non-empty array of at most `GOVERNED_PARAMETERS_MAX` plain
+ * `{ dimension, type, value }` entries, each a well-formed value of its own
+ * declared type (a safe integer that is not `-0`, a token in the token
+ * grammar, a boolean), strictly ascending by dimension — so the list has one
+ * canonical spelling and a dimension appears at most once. Refused, never
+ * sorted, de-duplicated or coerced.
+ */
+export function executionAttemptParametersViolation(parameters: unknown): string | undefined {
+  if (!Array.isArray(parameters) || parameters.length === 0 || parameters.length > GOVERNED_PARAMETERS_MAX) return 'parameters is not a non-empty bounded list';
+  for (const [index, entry] of (parameters as readonly unknown[]).entries()) {
+    if (!isPlainRecord(entry) || undeclared(entry, PARAMETER_KEYS) !== undefined) return `parameters[${index}] is not a plain { dimension, type, value } entry`;
+    if (!isWellFormedGovernedParameter(entry as unknown as GovernedParameter)) return `parameters[${index}] is not a well-formed typed governed parameter`;
+    if (index > 0 && compareDimensionIds((parameters[index - 1] as GovernedParameter).dimension, (entry as unknown as GovernedParameter).dimension) >= 0) {
+      return 'parameters are not in strictly ascending canonical dimension order';
+    }
+  }
+  return undefined;
+}
 
 /** Why a preparation is outside the contract, or `undefined` when it is inside it. */
 export function executionAttemptViolation(input: unknown): string | undefined {
@@ -82,6 +105,10 @@ export function executionAttemptViolation(input: unknown): string | undefined {
   const amount = input['amount'];
   if (amount !== undefined) {
     if (!isPlainRecord(amount) || undeclared(amount, ['value', 'unit']) !== undefined || !isWellFormedMonetaryAmount(amount)) return 'amount is not canonical money';
+  }
+  if (input['parameters'] !== undefined) {
+    const violation = executionAttemptParametersViolation(input['parameters']);
+    if (violation !== undefined) return violation;
   }
   if (!isCanonicalOutcomeInstant(input['preparedAt'])) return 'preparedAt is not a canonical instant';
   return undefined;
