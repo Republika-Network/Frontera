@@ -18,8 +18,8 @@ For the bounded-grant / governed-action path the answer is **no**, within the sc
 | Evidence | What it proves | Where |
 |---|---|---|
 | **Integrated Host suite** — 25 tests on one canonical Host | Q1 … Q20 and the exercise-time windows through `bootEnterpriseHost()` (production profile) and `POST /api/governed-actions`. The adapter call count is asserted on every case | `src/enterprise/__tests__/core06-governance-core-qualification-host.test.ts` |
-| **Structural suite** — 19 tests | INTEL independence (import closure, 43 CORE directories, manifests); no side door in the Host's embedding options or HTTP surface; the five emergency checkpoints and their order; BLOCKED-matrix coverage; effect-path count consistency | `src/enterprise/__tests__/core06-qualification-structure.test.ts` |
-| **BLOCKED-claim evidence** — 10 tests | The nine BLOCKED rows the audit found with no runtime evidence: crash after acknowledgement (SIGKILLed writer), a failure partway through revocation, exercise racing revocation, concurrent durable issuance, a locked database, and a same-sequence fork under a running approval store | `src/enterprise/__tests__/core06-blocked-claim-evidence.test.ts` |
+| **Structural suite** — 24 tests | INTEL independence (import closure, 43 CORE directories, manifests); no side door in the Host's embedding options or HTTP surface; the five emergency checkpoints and their order; BLOCKED-matrix coverage; effect-path count consistency | `src/enterprise/__tests__/core06-qualification-structure.test.ts` |
+| **BLOCKED-claim evidence** — 10 + 20 tests | The nine BLOCKED rows the audit found with no runtime evidence: crash after acknowledgement (SIGKILLed writer), a failure partway through revocation, exercise racing revocation, concurrent durable issuance, a locked database, and a same-sequence fork under a running approval store | `src/enterprise/__tests__/core06-blocked-claim-evidence.test.ts`; Agent Passport Web rows C, P and the blocked halves of F, T, V: `apps/agent-passport-web/__tests__/apw-tenant-binding-blocked-claims.test.ts` (14), `apw-partial-blocked-claims.test.ts` (6) |
 | **Existing suites, re-run and reused** | CORE-01 … CORE-05, CORE-07, PROD-01, CTRL-01, P7 … P12 — see §11 | named per row in §6 |
 | **Mutations** | Each protection that CORE-06 relies on was removed once, and it was checked that a named test fails — §9 | — |
 
@@ -199,11 +199,12 @@ Every production writer that can change a later authority decision on the govern
 
 | Status | Rows |
 |---|---|
-| PROVEN | 82 |
+| PROVEN | 86 |
 | PROVEN (CONDITIONAL) — the disposition carries a condition (external witness, external custody, loopback, canonical Host, database-only writer …) and the evidence proves it under that condition. The weaker-mode caveat is kept verbatim | 14 |
-| PARTIAL AS DOCUMENTED — PARTIALLY BLOCKED rows whose blocked half is tested | 10 |
-| NOT APPLICABLE TO CORE-06 — Agent Passport Web (a separate authority domain) | 10 |
-| MISSING TEST / STALE CLAIM / OVERCLAIMED | **0** |
+| PARTIAL AS DOCUMENTED — PARTIALLY BLOCKED rows whose blocked half is tested | 16 |
+| MISSING TEST / STALE CLAIM / OVERCLAIMED / exempted as not applicable | **0** |
+
+**Scope of item 9.** Master Plan §11.1 item 9 reads, verbatim, *"Every "BLOCKED" security claim has a test."* It carries no scope qualifier, and only the milestone's *definition* line speaks of the core. The coverage requirement is therefore applied to **every** BLOCKED-bearing row in the repository's security documents, the Agent Passport Web threat model included. No row is exempted as "not applicable to CORE-06". (The first draft of this qualification did exempt APW rows C and P, which rested on audit evidence only. That reading was not supported by the wording, and it is withdrawn.)
 
 **Resolved by CORE-06:**
 
@@ -217,15 +218,39 @@ Every production writer that can change a later authority decision on the govern
 - **Two rows were stale** and are now reworded to current code. NB §15.1 "modify revocation state" no longer describes only the in-memory `Map`. NB §15.1 "modify trusted authority databases" now separates the signed stores from the digest-only ones.
 - **One row was overclaimed and is narrowed:** TM §7.16a row 8 and AGS W, "locked". Measured: under WAL, a held write lock does **not** block readers. Exercise therefore reads the last committed authoritative state (a committed revocation stays in force), while writes are refused and never acknowledged. "Exercise withholds when locked" was not true, and the wording now says what is.
 
-**Not in the Governance Core:** Agent Passport Web rows C (cross-tenant id in body, query or path) and P (a Stripe event applied to the wrong tenant) are BLOCKED on audit evidence only, with no regression test. They are recorded here so §11.1 item 9's scope is explicit. They belong to that application's own track.
+- **Agent Passport Web: two BLOCKED rows and four PARTIALLY BLOCKED rows had no executable evidence**, and CORE-06 added it (`apps/agent-passport-web/__tests__/apw-tenant-binding-blocked-claims.test.ts`, 14 tests; `apw-partial-blocked-claims.test.ts`, 6 tests). None of the tests changes the application.
+  - **Row C** (another tenant's id in body, query or path), at runtime over the real gates:
+    - a member of A naming B is refused, because membership is keyed by `(registryId, accountId)`;
+    - A's admin token is refused against B's own hash, in the query or at the verifier;
+    - query parameters naming A cannot override the path B;
+    - A's export id cannot be downloaded through B;
+    - A's token cannot rotate B's credential.
+
+    Structurally, over every route (the Next.js routes are not compiled by the app's test harness): exactly four routes read a registry id from the body or query (`account/signup`, `account/claim-registry`, `agent-passports`, `organization-registry/recover`), and each binds it to a credential verified against **that** registry's own hash. Every route under `/organization-registry/[registryId]` passes the path id through a registry gate.
+  - **Row P** (a valid Stripe event applied to the wrong tenant), at runtime over the real lifecycle handler. Tenant resolution is Frontera's stored subscription id, then its stored customer id:
+    - event metadata naming A cannot redirect B's subscription event;
+    - a subscription of A billed to B's customer applies to A;
+    - an invoice of B's subscription never touches A;
+    - an unlinked event changes no linked registry.
+
+    Structurally, the webhook's checkout branch takes the tenant only from the purchase its session id names. **Stated precisely rather than widened:** event metadata `registry_id` is consulted only when Frontera holds *no* link for the subscription or the customer. That metadata is Stripe-account data Frontera never sets, and no customer surface sets it.
+  - **Blocked halves of the PARTIALLY BLOCKED rows:**
+    - **T:** a viewer presenting the owner-equivalent admin token for an owner-only permission is denied, never escalated.
+    - **V:** every session cookie is `HttpOnly` and `SameSite=Lax`, and `Secure` in production.
+    - **F:** no page, component, layout or stylesheet loads a subresource from another origin.
+    - **G:** entitlement capacity and single-use purchases (existing tests).
+
+    The unblocked halves (APW-002 and APW-005, among others) stay exactly as the threat model states them.
+  - **Non-vacuity:** 12 mutations, all killed (§9).
 
 The matrix is machine-checked by `core06-qualification-structure.test.ts` §16–§18. The check asserts that:
 
 - every THREAT_MODEL_V1 BLOCKED row is present, with its disposition verbatim;
-- every in-scope row names at least one test file that exists, containing the named title;
-- no in-scope row is MISSING, STALE or OVERCLAIMED.
+- every Agent Passport Web §18 BLOCKED-bearing row is present, with its disposition verbatim;
+- every row names at least one test file that exists, containing the named title;
+- no row is MISSING, STALE, OVERCLAIMED or exempted as not applicable.
 
-Mutation M24 removes one row's evidence and the check fails.
+Mutations M24 and M24b–e each fail the check: removing one row's evidence, dropping a Threat Model row, replacing an APW row's evidence with audit prose, re-exempting an APW row, or dropping an APW row.
 
 <!-- core06:blocked-matrix:start -->
 
@@ -337,16 +362,16 @@ Mutation M24 removes one row's evidence and the check fails.
 | NB-15.1-a | NB | Modify its own bounded grant | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `execution-layer-boundaries.test.ts` › “the store port is used for reads and revocation visibility only — nothing here writes a grant”; `authority-authenticity-boundaries.test.ts` › “the exercise path reads through a port with exactly one method, and it is not a signing one”; structural; no process boundary is the documented residual |
 | NB-15.1-b | NB | Modify revocation state | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `grant-lifecycle.test.ts` › “revocation is idempotent, and the first revocation stands”; `bounded-grant-store-durability.test.ts` › “the revocation is idempotent across a restart — the first one stands”; `revocation-state-integrity.test.ts` › “E. THE MASTER-00 ATTACK: delete the row AND clear the pointer — the grant does not come back to life”; `revocation-state-integrity.test.ts` › “and also rewrite the commitment’s unkeyed fields to describe the pruned set — the signature refuses it”; `revocation-state-integrity.test.ts` › “there is no reverse transition: no un-revoke operation exists on the port or the store”; `authority-state-freshness-grants.test.ts` › “G8/G9: issue → capture → revoke → stop → restore → restart: the restart is refused as a rollback, before any grant can be read or exercised”; in-memory Map rewrite and key-holder re-signing are the documented residuals |
 | NB-15.1-c | NB | Modify trusted authority databases | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `authority-artifact-authenticity.test.ts` › “a writer who alters authority and recomputes EVERY unkeyed digest still cannot produce usable authority”; `revocation-state-integrity.test.ts` › “E. THE MASTER-00 ATTACK: delete the row AND clear the pointer — the grant does not come back to life”; `obligation-discharge-authenticity.test.ts` › “forged independent discharge inserted with every unkeyed digest recomputed”; `approval-authenticity.test.ts` › “a forged approval quorum (or a forged proof-completing approval) inserted under the kept head or re-signed with an attacker key”; `authority-state-freshness-grants.test.ts` › “G8/G9: issue → capture → revoke → stop → restore → restart: the restart is refused as a rollback, before any grant can be read or exercised”; `authority-state-freshness-obligations-approvals.test.ts` › “O2: a restored older authenticated head after a restart is refused”; digest-chained-only stores (SEC-TRUST-002) and APW-006 are the documented residuals |
-| APW-B | APW | Authenticated user guesses another tenant's object id | **BLOCKED** | NOT APPLICABLE TO CORE-06 | `admin-access-recovery.test.ts` › “session rejects wrong registry”; `registry-export.test.ts` › “rejects export from another registry”; `registry-export.test.ts` › “export artifact cannot be confused across registries”; `organization-registry.test.ts` › “verifyRegistryAccess rejects invalid token”; outside the Governance Core |
-| APW-C | APW | Tenant user submits another tenant id in body/query/path | **BLOCKED** | NOT APPLICABLE TO CORE-06 | no regression test — audit evidence only (AGENT_PASSPORT_WEB_THREAT_MODEL.md §8); outside the Governance Core |
-| APW-F | APW | Admin token leaks via history / referrer / logs | **PARTIALLY BLOCKED** | NOT APPLICABLE TO CORE-06 | `admin-access-recovery.test.ts` › “old admin token stops working after rotation”; `admin-access-recovery.test.ts` › “sessions are revoked after token rotation”; `registry-export.test.ts` › “does not include admin token”; no test for history/log exposure (APW-002); outside the Governance Core |
-| APW-G | APW | Malicious authenticated user repeatedly issues passports | **PARTIALLY BLOCKED** | NOT APPLICABLE TO CORE-06 | `organization-registry.test.ts` › “addPassportToRegistry throws when capacity exhausted”; `registry-export.test.ts` › “capacity_exhausted when remaining passports is zero”; no rate limiting (documented); outside the Governance Core |
-| APW-O | APW | Stripe webhook replayed | **BLOCKED** | NOT APPLICABLE TO CORE-06 | `billing.test.ts` › “duplicate event is idempotent”; `apw-001-checkout-disclosure.test.ts` › “is idempotent: a repeated webhook re-issues no credential”; `security-boundaries.test.ts` › “deduplicates events so a replayed webhook cannot re-apply state”; `security-boundaries.test.ts` › “verifies the Stripe signature over the raw body”; outside the Governance Core |
-| APW-P | APW | Valid Stripe event applied to wrong tenant | **BLOCKED** | NOT APPLICABLE TO CORE-06 | no regression test — audit evidence only (AGENT_PASSPORT_WEB_THREAT_MODEL.md §8); outside the Governance Core |
-| APW-Q | APW | Attacker forges or modifies a passport | **PARTIALLY BLOCKED** | NOT APPLICABLE TO CORE-06 | `passport-issuer.test.ts` › “rejects a tampered payload”; `passport-adapter.test.ts` › “tampered runtime seal returns deny”; outside the Governance Core |
-| APW-S | APW | Public verify route leaks more than intended | **PARTIALLY BLOCKED** | NOT APPLICABLE TO CORE-06 | `passport-adapter.test.ts` › “public verification payload hides sensitive metadata”; outside the Governance Core |
-| APW-T | APW | Admin bearer credential bypasses five-role RBAC | **PARTIALLY BLOCKED** | NOT APPLICABLE TO CORE-06 | `buyer-account.test.ts` › “admin cannot rotate admin access”; `buyer-account.test.ts` › “auditor can generate exports but cannot enroll”; `security-boundaries.test.ts` › “the role policy itself reads no request, cookie or environment input”; outside the Governance Core |
-| APW-V | APW | Session or auth material stolen | **PARTIALLY BLOCKED** | NOT APPLICABLE TO CORE-06 | `admin-access-recovery.test.ts` › “revoked session is rejected”; `admin-access-recovery.test.ts` › “sessions are revoked after token rotation”; `buyer-account.test.ts` › “session stores only token hash (not raw token)”; no CSRF token (APW-005); outside the Governance Core |
+| APW-B | APW | Authenticated user guesses another tenant's object id | **BLOCKED** | PROVEN | `apw-tenant-binding-blocked-claims.test.ts` › “a member of A naming B in the path is refused”; `apw-tenant-binding-blocked-claims.test.ts` › “an export id of A cannot be downloaded through B”; `admin-access-recovery.test.ts` › “session rejects wrong registry”; `registry-export.test.ts` › “rejects export from another registry”; `organization-registry.test.ts` › “verifyRegistryAccess rejects invalid token”; mutations MC1–MC3 |
+| APW-C | APW | Tenant user submits another tenant id in body/query/path | **BLOCKED** | PROVEN | `apw-tenant-binding-blocked-claims.test.ts` › “a member of A naming B in the path is refused — membership is keyed by (registryId, accountId)”; `apw-tenant-binding-blocked-claims.test.ts` › “admin token presented for B — in the query, or directly to the verifier — is refused against B”; `apw-tenant-binding-blocked-claims.test.ts` › “query parameters naming A cannot override the path B”; `apw-tenant-binding-blocked-claims.test.ts` › “only the enumerated routes read a tenant id from body or query, and each binds it to that registry”; `apw-tenant-binding-blocked-claims.test.ts` › “every route under /organization-registry/[registryId] authorizes the path id through a registry gate”; mutations MC1–MC5 |
+| APW-F | APW | Admin token leaks via history / referrer / logs | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `apw-partial-blocked-claims.test.ts` › “no page, component, layout or stylesheet loads a script, image, style, font or frame from another origin”; `admin-access-recovery.test.ts` › “old admin token stops working after rotation”; blocked half = no external subresources (mutation MF1); history, logs and shared links stay exposed (APW-002) |
+| APW-G | APW | Malicious authenticated user repeatedly issues passports | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `registry-export.test.ts` › “capacity_exhausted when remaining passports is zero”; `organization-registry.test.ts` › “addPassportToRegistry throws when capacity exhausted”; `apps/agent-passport-web/__tests__/persistence.test.ts` › “canEnrollWithPurchase returns false after passport issued”; blocked half = entitlement bound and single-use purchase; no rate limiting (APW-011) |
+| APW-O | APW | Stripe webhook replayed | **BLOCKED** | PROVEN | `billing.test.ts` › “duplicate event is idempotent”; `apw-001-checkout-disclosure.test.ts` › “is idempotent: a repeated webhook re-issues no credential”; `security-boundaries.test.ts` › “verifies the Stripe signature over the raw body” |
+| APW-P | APW | Valid Stripe event applied to wrong tenant | **BLOCKED** | PROVEN | `apw-tenant-binding-blocked-claims.test.ts` › “event metadata naming A cannot redirect B”; `apw-tenant-binding-blocked-claims.test.ts` › “applies to A — the subscription link wins; B is untouched”; `apw-tenant-binding-blocked-claims.test.ts` › “an invoice event resolves by the stored subscription, then the stored customer”; `apw-tenant-binding-blocked-claims.test.ts` › “structural: the webhook”; mutations MP1–MP3. Event metadata `registry_id` is consulted only when Frontera holds no link at all (Stripe-account data Frontera never sets; no customer surface sets it) |
+| APW-Q | APW | Attacker forges or modifies a passport | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `passport-issuer.test.ts` › “rejects a tampered payload”; `passport-adapter.test.ts` › “tampered runtime seal returns deny”; blocked half = forgery without the HMAC secret |
+| APW-S | APW | Public verify route leaks more than intended | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `passport-adapter.test.ts` › “public verification payload hides sensitive metadata”; blocked half = no seal secret or raw bundle returned; existence disclosure remains |
+| APW-T | APW | Admin bearer credential bypasses five-role RBAC | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `apw-partial-blocked-claims.test.ts` › “a viewer presenting the owner-equivalent admin token for an owner-only permission is denied rather than escalated”; `buyer-account.test.ts` › “admin cannot rotate admin access”; blocked half = a lower membership is denied, never escalated (mutation MT1); the token alone stays owner-equivalent (APW-002) |
+| APW-V | APW | Session or auth material stolen | **PARTIALLY BLOCKED** | PARTIAL AS DOCUMENTED | `apw-partial-blocked-claims.test.ts` › “the buyer-account session cookie carries HttpOnly and SameSite=Lax always, and Secure in production”; `apw-partial-blocked-claims.test.ts` › “every Set-Cookie any route emits carries HttpOnly and SameSite=Lax”; `admin-access-recovery.test.ts` › “revoked session is rejected”; mutations MV1, MV2; no CSRF token (APW-005) |
 
 <!-- core06:blocked-matrix:end -->
 
@@ -515,8 +540,23 @@ Each mutation was applied to a single site: compiled `dist` for runtime protecti
 | M25 | grant revocation's in-transaction read-back removed | grant store | CORE-06 evidence AGS-C | **killed** |
 | M26 | the approval store's in-process same-sequence fork check removed | approval store | CORE-06 evidence §7.16e fork | **killed** |
 | M27 | the grant store's `synchronous = FULL` removed | grant store `.ts` | CORE-06 evidence pin | **killed** |
+| M24c | APW-C's evidence replaced by audit prose | this document | CORE-06 structure §16–§18 | **killed** |
+| M24d | APW-P re-exempted as "not applicable" | this document | CORE-06 structure §16–§18 | **killed** |
+| M24e | an APW BLOCKED row dropped from the matrix | this document | CORE-06 structure §16–§18 | **killed** |
+| MC1 | APW membership lookup ignores the registry id | membership repository | APW row C runtime (2 fail) | **killed** |
+| MC2 | APW admin token not checked against that registry's hash | `verifyRegistryAccess` | APW row C runtime | **killed** |
+| MC3 | APW export id no longer bound to its registry | export service | APW row C runtime | **killed** |
+| MC4 | `claim-registry` trusts a caller-named registry without its credential | route | APW row C structural | **killed** |
+| MC5 | a `[registryId]` route loses its registry gate | route | APW row C structural | **killed** |
+| MP1 | event metadata overrides the server-held subscription link | Stripe lifecycle handler | APW row P runtime (2 fail) | **killed** |
+| MP2 | the customer id overrides the stored subscription link (subscription and invoice) | Stripe lifecycle handler | APW row P runtime (2 fail) | **killed** |
+| MP3 | the webhook's checkout branch selects the purchase from event metadata | webhook route | APW row P structural | **killed** |
+| MT1 | a member lacking a permission falls through to the owner-equivalent token | registry access gate | APW row T | **killed** |
+| MV1 | the buyer session cookie loses `HttpOnly` | session library | APW row V | **killed** |
+| MV2 | the admin session cookie loses `HttpOnly` | route | APW row V | **killed** |
+| MF1 | an external script (`next/script`) in the root layout | layout | APW row F | **killed** |
 
-**Totals:** 34 mutations. **32 killed.** M22 and M22b survived, and the reason is recorded rather than hidden. No duplicate effect was producible while *any* of the three duplicate-effect layers stood: replay-before-gates, the write-ahead claim, and the P7 per-execution reservation. M22c and M22d show the property is not vacuous. **Coverage note** (not a security gap): no test isolates the write-ahead claim as the *sole* guard against a truly concurrent duplicate, because the other two layers always answer first in every test. A deterministic interleaving test for the claim alone belongs with the next item that touches the ledger.
+**Totals:** 49 mutations. **47 killed.** M22 and M22b survived, and the reason is recorded rather than hidden. No duplicate effect was producible while *any* of the three duplicate-effect layers stood: replay-before-gates, the write-ahead claim, and the P7 per-execution reservation. M22c and M22d show the property is not vacuous. **Coverage note** (not a security gap): no test isolates the write-ahead claim as the *sole* guard against a truly concurrent duplicate, because the other two layers always answer first in every test. A deterministic interleaving test for the claim alone belongs with the next item that touches the ledger.
 
 ---
 
@@ -541,7 +581,7 @@ CORE-06 qualifies the claims as stated. It closes no residual with wording. Each
 10. **Mid-request races on the Host** are not driven over HTTP; they are qualified at ROOT and WORLD (§8.2). Non-financial authority is not re-checked at issuance (T1 → caught at exercise). Approvals are not re-read after the claim (T3, bounded by the approval-capped expiry). Context is not re-fetched at exercise (bounded by the expiry cap).
 11. **Q17 is not re-driven over the Host's HTTP route.** Aggregate limits on the Host are only P10 authority spending limits.
 12. **Linearizable multi-process reads are not claimed** (R-GS-07). Under WAL, a held write lock does not block readers (§6).
-13. **Agent Passport Web** BLOCKED rows C and P have no regression test. That is a separate application track.
+13. **Agent Passport Web** keeps its own open findings (APW-002, APW-005, APW-011 and others) as its threat model states them. Its BLOCKED rows now have executable evidence (§6). The route layer is proven structurally, because the app's harness does not compile its Next.js routes. Stripe-side subscription metadata is trusted only when Frontera holds no link.
 14. **One organization per Host.** No independent penetration test has been run.
 
 ---
@@ -588,6 +628,12 @@ Also in the working copy:
 - `legal:check`: only the pre-existing advisory findings (busboy / streamsearch licence, two unnamed workspace manifests);
 - `git diff --check`: clean. No conflict markers.
 
+**Follow-up: the item 9 scope check.** A pre-PR consistency check found that the first draft exempted two Agent Passport Web BLOCKED rows as "outside the Core", and that §11.1 item 9 does not support that exemption. The follow-up added the APW evidence and tightened the matrix check (§6). Measured after the follow-up, in the working copy:
+
+- the Agent Passport Web workspace passes **311 / 311** (291 existing + 20 new);
+- CORE-06 + no-bypass + security invariants pass **122 / 122** (Host 25, structure 24, evidence 10, no-bypass and invariants 63);
+- 15 more mutations were run (M24c–e, MC1–MC5, MP1–MP3, MT1, MV1, MV2, MF1). All 15 were killed, and each file was restored and hash-checked. The application's source is unchanged.
+
 **Clean export.** The full validation (fresh `npm ci`; typecheck, lint, build; the root suite; every workspace; the four repository checks) was run on a fresh LF `git archive` export of the **final** CORE-06 commit. It is reported against that exact hash in the milestone report, and not written into the tree it measures.
 
 ---
@@ -604,7 +650,7 @@ Also in the working copy:
 | 6 | Lineage revalidated at exercise for all action classes | Q14 / T2 on the Host (non-financial); P10 for financial; M10 | **TRUE** |
 | 7 | Approvals durable and resumable | Q11 / Q12 on the Host; CORE-05 suites; M8, M9 | **TRUE** |
 | 8 | **No-bypass proof re-run against the composed default Host** | §3, §4, §8; `core06-governance-core-qualification-host.test.ts`; M1, M17, M23 | **TRUE** — PROVEN, path-local, 8 of 62 |
-| 9 | **Every BLOCKED security claim has a test** | §6: 116 rows, 0 missing, stale or overclaimed in scope; machine-checked; M24 | **TRUE** — for the Governance Core. Two Agent Passport Web rows rest on audit evidence and are recorded as outside the Core |
+| 9 | **Every BLOCKED security claim has a test** (unscoped, read literally) | §6: all 116 BLOCKED-bearing rows across THREAT_MODEL_V1, AUTHORITATIVE_GRANT_STORE, AUTHORITY_ARTIFACT_AUTHENTICITY, NO_BYPASS and AGENT_PASSPORT_WEB_THREAT_MODEL — 0 missing, stale, overclaimed or exempted; machine-checked; M24, M24b–e | **TRUE** — repository-wide |
 | 10 | **CORE is independent of INTEL** | §7; M15, M16, M16b | **TRUE** |
 
 **GOVERNANCE CORE STABLE: ACHIEVED**, with the residuals of §10 retained explicitly.

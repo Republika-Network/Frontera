@@ -359,7 +359,11 @@ describe('CORE-06 §32 — the five emergency-control checkpoints are present, s
 // ─── 3. Evidence and counts ─────────────────────────────────────────────────
 
 const QUALIFICATION_DOC = 'docs/security/CORE-06-GOVERNANCE-CORE-QUALIFICATION.md';
-const STATUSES = ['PROVEN', 'PROVEN (CONDITIONAL)', 'PARTIAL AS DOCUMENTED', 'NOT APPLICABLE TO CORE-06'] as const;
+/**
+ * Master Plan §11.1 item 9 reads "Every BLOCKED security claim has a test" — with no scope. So no row may be exempted as
+ * "not applicable": every BLOCKED-bearing row, in the Governance Core or in Agent Passport Web, needs executable evidence.
+ */
+const STATUSES = ['PROVEN', 'PROVEN (CONDITIONAL)', 'PARTIAL AS DOCUMENTED'] as const;
 
 interface MatrixRow {
   readonly id: string;
@@ -425,6 +429,18 @@ function threatModelBlockedRows(): readonly { readonly threat: string; readonly 
     .map((cells) => ({ threat: plain((cells[0] ?? '').replace(/^\| /, '')), disposition: plain(cells[1] ?? '') }));
 }
 
+/** Every BLOCKED-bearing row of the Agent Passport Web abuse-case matrix (§18), keyed by its letter. */
+function agentPassportWebBlockedRows(): readonly { readonly id: string; readonly threat: string; readonly disposition: string }[] {
+  const doc = read('docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md');
+  const section = doc.slice(doc.indexOf('## 18. Abuse-Case Matrix'), doc.indexOf('## 19. Findings'));
+  return section
+    .split('\n')
+    .filter((line) => /^\| [A-Z] \|/.test(line))
+    .map((line) => line.split(' | '))
+    .filter((cells) => /BLOCKED/.test(cells[2] ?? ''))
+    .map((cells) => ({ id: `APW-${(cells[0] ?? '').replace(/^\| /, '')}`, threat: plain(cells[1] ?? ''), disposition: plain(cells[2] ?? '') }));
+}
+
 describe('CORE-06 §16–§18 — every BLOCKED claim maps to executable evidence', () => {
   const rows = matrixRows();
 
@@ -445,9 +461,19 @@ describe('CORE-06 §16–§18 — every BLOCKED claim maps to executable evidenc
     }
   });
 
-  it('no row in the Governance Core scope is left without evidence: every PROVEN / PARTIAL row names at least one test that exists and contains the named title', () => {
+  it('every BLOCKED-bearing row of the Agent Passport Web threat model appears in the matrix with its disposition verbatim', () => {
+    const apw = agentPassportWebBlockedRows();
+    assert.ok(apw.length >= 10, `${apw.length} Agent Passport Web rows`);
+    for (const expected of apw) {
+      const row = rows.find((candidate) => candidate.id === expected.id);
+      assert.ok(row !== undefined, `no matrix row for ${expected.id}`);
+      assert.equal(row.threat, expected.threat, expected.id);
+      assert.equal(row.disposition, expected.disposition, `${expected.id}: the disposition is restated verbatim`);
+    }
+  });
+
+  it('no row is left without evidence: every row names at least one test that exists and contains the named title', () => {
     for (const row of rows) {
-      if (row.status === 'NOT APPLICABLE TO CORE-06') continue;
       const references = evidenceOf(row.evidence);
       assert.ok(references.length > 0, `${row.id} (${row.status}) names no test`);
       for (const reference of references) {
@@ -458,8 +484,8 @@ describe('CORE-06 §16–§18 — every BLOCKED claim maps to executable evidenc
     }
   });
 
-  it('nothing in scope is MISSING TEST, STALE or OVERCLAIMED — those are resolved by a test or a narrowed claim, never left standing', () => {
-    const unresolved = rows.filter((row) => /MISSING|STALE|OVERCLAIMED/.test(row.status));
+  it('nothing is MISSING TEST, STALE, OVERCLAIMED or exempted as not applicable — each is resolved by a test or a narrowed claim, never left standing', () => {
+    const unresolved = rows.filter((row) => /MISSING|STALE|OVERCLAIMED|NOT APPLICABLE/.test(row.status));
     assert.deepEqual(unresolved.map((row) => row.id), []);
   });
 });

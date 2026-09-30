@@ -389,12 +389,12 @@ flowchart TD
 | # | Scenario | Result | Evidence |
 |---|---|---|---|
 | A | Anonymous reads another tenant's passport | **NOT ADDRESSED — by design** | `GET /api/agent-passports/[id]` is unauthenticated; public verifiability is the product. Passport ids must be treated as public. |
-| B | Authenticated user guesses another tenant's object id | **BLOCKED** | Registry routes verify the token against that registry's own hash; session routes derive membership from `(registryId, accountId)`. |
-| C | Tenant user submits another tenant id in body/query/path | **BLOCKED** | No CALLER-SUPPLIED-UNBOUND pattern found (§8). |
+| B | Authenticated user guesses another tenant's object id | **BLOCKED** | Registry routes verify the token against that registry's own hash; session routes derive membership from `(registryId, accountId)`. Tested: `__tests__/apw-tenant-binding-blocked-claims.test.ts` (row C runtime cases). |
+| C | Tenant user submits another tenant id in body/query/path | **BLOCKED** | No CALLER-SUPPLIED-UNBOUND pattern found (§8). Tested (CORE-06): at runtime over the real gates — another registry named in path or query, another registry's token, another registry's export id or rotation are all refused; structurally — exactly four routes read a registry id from the request (`account/signup`, `account/claim-registry`, `agent-passports`, `organization-registry/recover`), each bound to a credential verified against that registry's own hash, and every `/organization-registry/[registryId]` route passes the path id through a registry gate. `__tests__/apw-tenant-binding-blocked-claims.test.ts` |
 | D | Tenant administrator attempts system-admin function | **NOT APPLICABLE** | No global/system administrator principal exists. |
 | E | Stolen registry admin URL/token replayed | **NOT ADDRESSED** | Permanent, possession-sufficient, no binding to account/IP/device. APW-002. |
-| F | Admin token leaks via history / referrer / logs | **PARTIALLY BLOCKED** | Referrer leak limited (no external subresources); history, logs and shared links are fully exposed. APW-002. |
-| G | Malicious authenticated user repeatedly issues passports | **PARTIALLY BLOCKED** | Bounded by entitlement `remainingQuantity` on the registry path and single-use on the purchase path. No rate limiting. |
+| F | Admin token leaks via history / referrer / logs | **PARTIALLY BLOCKED** | Referrer leak limited (no external subresources); history, logs and shared links are fully exposed. APW-002. The blocked half is tested: no page, component, layout or stylesheet loads a subresource from another origin (`__tests__/apw-partial-blocked-claims.test.ts`). |
+| G | Malicious authenticated user repeatedly issues passports | **PARTIALLY BLOCKED** | Bounded by entitlement `remainingQuantity` on the registry path and single-use on the purchase path. No rate limiting. Tested: capacity exhaustion (`registry-export.test.ts`, `organization-registry.test.ts`) and single use (`persistence.test.ts`). |
 | H | Malicious tenant repeatedly changes lifecycle state | **NOT APPLICABLE** | No lifecycle transition route exists in this application (§9). |
 | I | Suspended/revoked passport reactivated by an unintended path | **NOT APPLICABLE** | Same — no transition routes; `updatePassportStatus` has no production caller. |
 | J | DB operator directly changes passport state | **NOT ADDRESSED** | No record digest, no chain — undetectable (§14). |
@@ -403,13 +403,13 @@ flowchart TD
 | M | Issuer signing secret stolen | **NOT ADDRESSED** | Forge any passport; the public verify route will affirm the forgery. APW-004. |
 | N | Stripe secret stolen | **NOT ADDRESSED** | Full merchant account access. Deployment-owned. |
 | O | Stripe webhook replayed | **BLOCKED** | Signature + `UNIQUE(stripe_event_id)` deduplication. |
-| P | Valid Stripe event applied to wrong tenant | **BLOCKED** | Tenant derived server-side from the event's own purchase/registry ids. |
+| P | Valid Stripe event applied to wrong tenant | **BLOCKED** | Tenant derived server-side from the event's own purchase/registry ids: a checkout event from the purchase its session id names; a subscription or invoice event from Frontera's stored subscription id, then stored customer id — event metadata `registry_id` is consulted only when Frontera holds no link (Stripe-account data Frontera never sets; no customer surface sets it). Tested (CORE-06): metadata or a foreign customer id cannot redirect a linked event to another registry; the checkout branch is pinned structurally. `__tests__/apw-tenant-binding-blocked-claims.test.ts` |
 | Q | Attacker forges or modifies a passport | **PARTIALLY BLOCKED** | Requires the HMAC secret; without it, verification fails. With DB access, the *bundle* can be replaced but its MAC will not verify — **the one integrity property that survives DB compromise**. |
 | R | External verifier assumes asymmetric verification | **NOT ADDRESSED** | Only HMAC exists; the "public key" verifies nothing. The verify route is an oracle. APW-004. |
 | S | Public verify route leaks more than intended | **PARTIALLY BLOCKED** | Returns a public payload plus reason codes; it does not return the seal secret or raw bundle. But it confirms existence of any passport id. |
-| T | Admin bearer credential bypasses five-role RBAC | **PARTIALLY BLOCKED** | Mapped to owner-equivalent; an account holding a *lower* membership is denied rather than escalated (§7). APW-002. |
+| T | Admin bearer credential bypasses five-role RBAC | **PARTIALLY BLOCKED** | Mapped to owner-equivalent; an account holding a *lower* membership is denied rather than escalated (§7). APW-002. The blocked half is tested: a viewer presenting the owner-equivalent token for an owner-only permission is denied (`__tests__/apw-partial-blocked-claims.test.ts`). |
 | U | CI/build artifact maliciously changed | **DEPLOYMENT-DEPENDENT** | No secrets in CI; release artifacts checksum-pinned; no `permissions:` block (TB-007). |
-| V | Session or auth material stolen | **PARTIALLY BLOCKED** | `HttpOnly` + `SameSite=Lax` + `Secure` in production; server-side revocable. No CSRF token (APW-005). |
+| V | Session or auth material stolen | **PARTIALLY BLOCKED** | `HttpOnly` + `SameSite=Lax` + `Secure` in production; server-side revocable. No CSRF token (APW-005). The blocked half is tested: every session cookie's attributes (`__tests__/apw-partial-blocked-claims.test.ts`) and revocation (`admin-access-recovery.test.ts`). |
 | W | Compromised process reads every environment secret | **NOT ADDRESSED** | Ambient `process.env`; no broker, no scoping. |
 | X | Evidence/history modified or deleted | **NOT ADDRESSED** | The seven event tables are ordinary mutable tables (§14). |
 
