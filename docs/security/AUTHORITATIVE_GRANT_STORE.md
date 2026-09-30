@@ -131,7 +131,7 @@ Classification vocabulary: **BLOCKED** (the store prevents it), **PARTIALLY BLOC
 | T | Concurrent issuance and a binding change | BLOCKED (unchanged from Prompt 3) | `SEC-INV-017` — any change to the authority binding between measurement and commit refuses issuance. The guard runs inside the transaction |
 | U | Process restart | BLOCKED | §13. Restart may **remove** authority (fail-closed recovery) and can never add any |
 | V | Store unavailable | BLOCKED (fails closed) | §14. Exercise withholds; the adapter is not called. There is no cached grant, no last-known-good and no caller copy to fall back to. Tested: `unavailable-exercise` |
-| W | Database locked / busy | BLOCKED (fails closed) | `busy_timeout` bounds the wait; after it, the operation fails and the failure is a refusal, never an authorization |
+| W | Database locked / busy | BLOCKED (fails closed) | `busy_timeout` bounds the wait; after it, a **write** (issue, revoke) fails and the failure is a refusal, never an authorization or an acknowledgement. Reads are not blocked by a writer under WAL: exercise reads the last committed state, never a cached one (measured by CORE-06, `core06-blocked-claim-evidence.test.ts`) |
 | X | Malformed persisted serialization | BLOCKED | `parseStoredGrant` is total and the canonical round-trip equality makes it unforgiving. Tested: `grant-noncanonical` |
 | Y | Schema-version mismatch (database level) | BLOCKED | The store refuses to **open**, before `CREATE TABLE IF NOT EXISTS` runs, so a foreign database is not even mutated by the attempt. Tested: `db-schema` |
 | Z | Schema-version mismatch (row level) | BLOCKED | A row carrying an unrecognized `schema_version` is refused on read, never reinterpreted under the current schema. Tested: `row-schema` |
@@ -407,7 +407,7 @@ Stated precisely, because the temptation to overstate it is real.
 | foreign row schema version → read | Refused, never reinterpreted | `row-schema` |
 | foreign database schema version → open | Refused, and the database is **not mutated** | `db-schema` |
 
-**Restart monotonicity (GS-INV-014):** every path above either preserves authority exactly or removes it. None adds any. Restoring an older *snapshot* is a different operation and is covered in §17 — it is **not** restart, and it is **not** protected against.
+**Restart monotonicity (GS-INV-014):** every path above either preserves authority exactly or removes it. None adds any. Restoring an older *snapshot* is a different operation and is covered in §17 — it is **not** restart. It was not protected against when this section was written; since CORE-07 it is refused wherever an external authority-state witness is composed (always, on the secure Host), and remains unprotected without one (§17; `THREAT_MODEL_V1.md` §7.16e).
 
 ## 14. Store Failure Semantics
 
@@ -418,7 +418,7 @@ Stated precisely, because the temptation to overstate it is real.
 | `issue` | Throws; the caller sees a failure, never an issuance | Success is never reported before the commit |
 | `revoke` | Throws; the caller sees a failure, never a revocation | Success is never reported before the commit |
 
-Two error codes, in their own taxonomy (`BoundedGrantStoreError`) rather than folded into `ExecutionGovernanceError` — every code there is a *wiring* defect and these are runtime conditions, which call for opposite operator responses.
+Four error codes today — `BOUNDED_GRANT_STORE_UNAVAILABLE`, `…_STATE_CORRUPT`, `…_AUTHENTICITY_FAILED` (Prompt 5) and `…_REVOCATION_STATE_INCONSISTENT` (CORE-01); two when this section was written — in their own taxonomy (`BoundedGrantStoreError`) rather than folded into `ExecutionGovernanceError` — every code there is a *wiring* defect and these are runtime conditions, which call for opposite operator responses.
 
 Messages name the grant id and the condition. They name **no** SQL, no file path, no driver text and no row contents: a caller who can read the store's internals from an error message has been handed a map of the authoritative state.
 
@@ -493,8 +493,8 @@ Owners: **CORE-07** (external anchoring — delivered); **PROD-02** and operatio
 
 | ID | Risk | Why it remains | Owner |
 |---|---|---|---|
-| **R-GS-01** | A writer who can rewrite a record **and** recompute its unkeyed digest defeats every integrity check here (threats H and L). | The digest is unkeyed by design; a key boundary is out of scope for this prompt. | **Prompt 5** |
-| **R-GS-02** | Snapshot rollback restores revoked authority (§17). | No external anchor exists. | Prompt 5 / Prompt 17 |
+| **R-GS-01** | A writer who can rewrite a record **and** recompute its unkeyed digest defeats every integrity check here (threats H and L). **Narrowed:** for a database-only writer, H is blocked by Prompt 5's signatures and L by CORE-01's signed revocation-state commitment; it remains true for a holder of the signing key (or, under external custody, of the signer's credential, AA-010). | The digest is unkeyed by design; a key boundary is out of scope for this prompt. | **Prompt 5** (delivered), CORE-01 (delivered) |
+| **R-GS-02** | Snapshot rollback restores revoked authority (§17). | **Narrowed by CORE-07:** an external anchor now exists; with the witness composed (always, on the secure Host) a restored older state is refused. It remains open without a witness, for a witness restored together with the store, and before a store's first enrollment. | Prompt 5 / Prompt 17 → CORE-07 (delivered); PROD-02 (co-restore) |
 | **R-GS-03** | Filesystem-level replacement of the database file. | Application code cannot prevent it. | Prompt 17 |
 | **R-GS-04** | A host retaining a store reference mutates authority out of band. | No process boundary. | Prompt 7 |
 | **R-GS-05** | A grant minted under a maliciously modified policy pack is persisted faithfully and durably. Grant-store integrity does **not** imply authority-policy integrity. | NB-008 is untouched by this prompt, and durability arguably makes such a grant *outlive* the process in which the policy was tampered with. | **Prompt 14** |

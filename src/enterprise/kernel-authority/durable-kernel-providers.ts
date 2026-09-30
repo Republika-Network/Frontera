@@ -72,6 +72,15 @@ export type DurableKernelProviderSet = DurableKernelDecisionService;
  *
  * Not exported from `enterprise/index.ts`. If this ever becomes reachable from
  * a package export, the guarantee above is gone.
+ *
+ * CORE-06: the composition root publishes `providerSet` as
+ * `AocEnterprise.kernelProviders`, so an in-process holder of the
+ * `AocEnterprise` object holds these mutable handles. That object is trusted
+ * embedding surface (SEC-TRUST-001) — reachable from no route, SDK method or
+ * intent — and its holder could equally supply its own Kernel. The separation
+ * above holds against code handed only a `DurableKernelDecisionService`, not
+ * against the embedder (`docs/security/CORE-06-GOVERNANCE-CORE-QUALIFICATION.md`
+ * §10).
  */
 export interface DurableKernelWorld {
   readonly service: DurableKernelDecisionService;
