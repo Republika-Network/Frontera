@@ -33,6 +33,16 @@ import {
   type AuthorityArtifactVerifier,
   type AuthoritySignature,
 } from '../authority-authenticity/index.js';
+import { revocationStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { AuthorityStateFreshnessError, isAuthorityStateFreshnessError, type AuthorityStateFreshnessErrorCode } from '../authority-state-freshness/errors.js';
+import {
+  isAuthorityStateFreshnessBoundary,
+  markComposedUnderFreshness,
+  type AuthorityStateEnrollmentContext,
+  type AuthorityStateFreshnessBoundary,
+  type AuthorityStateFreshnessSession,
+  type AuthorityStateFreshnessSessionStatus,
+} from '../authority-state-freshness/session.js';
 
 /**
  * The durable authoritative bounded-grant store.
@@ -112,9 +122,14 @@ import {
  * kept a copy of an earlier commitment and restores it together with the rows
  * it covered has rolled the store back to an earlier authentic state (GS-002).
  * This process refuses a commitment older than one it has already verified,
- * which catches that while it runs; across a restart nothing here can, and
- * freshness/anchoring is CORE-07. `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md`
- * states all three.
+ * which catches that while it runs. Across a restart, only a witness outside
+ * this file can (CORE-07): with `freshness` composed, the commitment is
+ * anchored at an external authority-state witness — enrolled at genesis,
+ * compared at open before the store is returned, and advanced by
+ * prepare → local commit → finalize on every revocation — and a restored
+ * earlier state is refused (`authority-state-freshness/`). Without it, the
+ * cross-restart gap stays open, and nothing claims otherwise.
+ * `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` states all three.
  *
  * ## There is no unsigned mode
  *
@@ -163,6 +178,17 @@ export interface CreateSqliteBoundedGrantStoreOptions {
     /** Public material only. This is what the authoritative read path uses, and it cannot mint authority. */
     readonly verifier: AuthorityArtifactVerifier;
   };
+  /**
+   * CORE-07 — cross-restart freshness of the signed revocation-state
+   * commitment, anchored at an external witness outside this file's restore
+   * domain. Optional for an embedder; the secure Host always composes it.
+   * `enrollment` is the explicit ceremony for an **existing** store the
+   * witness has never seen, and is never passed by any composition path.
+   */
+  readonly freshness?: {
+    readonly boundary: AuthorityStateFreshnessBoundary;
+    readonly enrollment?: AuthorityStateEnrollmentContext;
+  };
 }
 
 export interface BoundedGrantStoreHealth {
@@ -177,10 +203,12 @@ export interface BoundedGrantStoreHealth {
    * no authoritative read, so it is never reported healthy.
    */
   readonly revocationState: 'verified' | 'failed';
-  /** Why it failed: an error code, never key material, signature bytes or row contents. */
-  readonly revocationStateFailure?: BoundedGrantStoreErrorCode;
+  /** Why it failed: an error code, never key material, signature bytes or row contents. A CORE-07 freshness refusal reports its own closed code. */
+  readonly revocationStateFailure?: BoundedGrantStoreErrorCode | AuthorityStateFreshnessErrorCode;
   /** The number of revocations the verified commitment covers. */
   readonly revocationSequence?: number;
+  /** CORE-07: the store's freshness session, when composed. A failed session is never healthy. */
+  readonly freshness?: AuthorityStateFreshnessSessionStatus;
 }
 
 /** The durable store, plus the lifecycle surface a host needs. The exercise path is handed only `BoundedGrantReaderPort`; nothing below widens what it can reach. */
@@ -610,6 +638,17 @@ export async function createSqliteBoundedGrantStore(
   // structural test pins that `runRead` and its helpers never name it.
   const { signer, verifier } = options.authenticity;
 
+  // CORE-07: a freshness boundary is either the one the freshness module built,
+  // or absent. Never a shape that merely looks like one.
+  const freshness = options.freshness;
+  if (freshness !== undefined && !isAuthorityStateFreshnessBoundary(freshness.boundary)) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The bounded-grant store freshness option must carry a boundary built by createAuthorityStateFreshnessBoundary.');
+  }
+  if (freshness !== undefined && dbPath === ':memory:') {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'An in-memory database has no cross-restart state to anchor; freshness is refused for it.');
+  }
+  const organizationId = freshness?.boundary.organizationId ?? '';
+
   const path = dbPath === ':memory:' ? ':memory:' : resolveOnDisk(dbPath);
   const db = new Database(path);
   db.pragma('foreign_keys = ON');
@@ -653,10 +692,22 @@ export async function createSqliteBoundedGrantStore(
 
     // Genesis. Signed before the transaction opens, like every other signature
     // here; committed only if no other process initialized the file meanwhile.
-    const storeId = randomUUID();
-    const genesis: RevocationStateCommitment = { storeId, sequence: 0, revocationSetDigest: revocationSetDigest(storeId, []) };
+    //
+    // CORE-07: under freshness the genesis is enrolled at the witness *before*
+    // it is committed here, so the witness always knows of a store before the
+    // store exists. A crash in between leaves a witnessed genesis and an empty
+    // file; the next open adopts that same store id (genesis is deterministic
+    // from it). A witness holding this organization's revocation state beyond
+    // genesis refuses the empty file: a deleted store is never re-initialized.
+    let storeId: string;
+    let genesis: RevocationStateCommitment;
     let genesisSignature: AuthoritySignature;
     try {
+      storeId =
+        freshness === undefined
+          ? randomUUID()
+          : await freshness.boundary.genesisStoreId('bounded-grant-revocation-state', { newStoreId: () => randomUUID(), genesisDigest: (id) => revocationSetDigest(id, []) });
+      genesis = { storeId, sequence: 0, revocationSetDigest: revocationSetDigest(storeId, []) };
       genesisSignature = await signOrFail('(genesis)', () => signer.signRevocationState(genesis));
     } catch (error) {
       db.close();
@@ -705,14 +756,26 @@ export async function createSqliteBoundedGrantStore(
 
   let closed = false;
 
+  /** CORE-07: established at open, before the store is returned; absent without freshness. */
+  let session: AuthorityStateFreshnessSession | undefined;
+  /**
+   * CORE-07: freshness was composed but could never be established, because
+   * the local revocation state did not verify at open. The store then answers
+   * nothing for the life of this process — exactly as an unverifiable store
+   * always has — and it never starts answering later without a session: a
+   * state that verifies after open is not a state whose freshness anyone
+   * established.
+   */
+  let unestablished: BoundedGrantStoreError | undefined;
+
   /**
    * The newest revocation-state commitment this process has verified and seen
    * committed. A limited, in-process freshness witness: a later read that finds
    * an *older* commitment — or a different one at the same sequence — has
    * found the store rolled back underneath it, and refuses. It is not a cache:
    * nothing is ever answered from it, it only ever causes a refusal, and it is
-   * lost on restart, which is exactly why cross-restart rollback remains
-   * CORE-07's problem.
+   * lost on restart, which is exactly why cross-restart rollback needs
+   * CORE-07's external witness (the freshness session below).
    */
   let newestVerified: { readonly sequence: number; readonly revocationSetDigest: string } | undefined;
 
@@ -740,6 +803,7 @@ export async function createSqliteBoundedGrantStore(
    * that agrees with a pruned set needs the authority signing key.
    */
   function verifiedRevocationState(): VerifiedRevocationState {
+    if (unestablished !== undefined) throw unestablished;
     const row = selectRevocationState.get() as RevocationStateRow | undefined;
     if (row === undefined) throw inconsistentRevocationState('the signed revocation-state commitment is absent');
     if (row.schema_version !== BOUNDED_GRANT_STORE_SCHEMA_VERSION) throw inconsistentRevocationState('the revocation-state commitment carries an unrecognized schema version');
@@ -762,6 +826,11 @@ export async function createSqliteBoundedGrantStore(
       throw inconsistentRevocationState('the recorded revocations disagree with the signed revocation-state commitment');
     }
 
+    // CORE-07: the floor established against the external witness at open.
+    // Local, synchronous, no network: a restored earlier commitment — across a
+    // restart, since the floor came from the witness — is refused here. First,
+    // so the freshness session records what it refused.
+    session?.observe(revocationStateCheckpoint(commitment, organizationId));
     if (newestVerified !== undefined) {
       if (commitment.sequence < newestVerified.sequence) {
         throw inconsistentRevocationState(`the revocation-state commitment regressed from sequence ${newestVerified.sequence} to ${commitment.sequence}`);
@@ -909,6 +978,39 @@ export async function createSqliteBoundedGrantStore(
     // Read back: a re-signature this deployment would refuse rolls back.
     verifiedRevocationState();
   });
+
+  // CORE-07: freshness is established before anything else touches the store
+  // — before the key-rotation re-attestation below, and before the store is
+  // returned to a caller that could read a grant through it. A rollback, a
+  // fork, a pending transition the file does not hold, an unenrolled store or
+  // an unreachable witness refuses the open.
+  if (freshness !== undefined) {
+    let opened: RevocationStateCommitment | undefined;
+    try {
+      opened = runVerifyRevocationState();
+    } catch (error) {
+      if (!(error instanceof BoundedGrantStoreError)) {
+        db.close();
+        throw error;
+      }
+      // Parity with a store opened without freshness: it opens, answers
+      // nothing, and reports why — so the Host names the failing module.
+      unestablished = error;
+    }
+    if (opened !== undefined) {
+      const established = opened;
+      try {
+        session = await freshness.boundary.establish(
+          revocationStateCheckpoint(established, organizationId),
+          () => revocationStateCheckpoint(runVerifyRevocationState(), organizationId),
+          freshness.enrollment !== undefined ? { enrollment: freshness.enrollment } : {},
+        );
+      } catch (error) {
+        db.close();
+        throw error;
+      }
+    }
+  }
 
   if (!fresh) {
     try {
@@ -1199,7 +1301,27 @@ export async function createSqliteBoundedGrantStore(
       const revocationSignature = await signOrFail(revocation.grantId, () => signer.signRevocation(revocation, plan.previous.storeId));
       const stateSignature = await signOrFail(revocation.grantId, () => signer.signRevocationState(plan.next));
       assertOpen();
-      const committed = runRevoke.immediate(revocation, plan, revocationSignature, stateSignature);
+      const commitLocal = () => runRevoke.immediate(revocation, plan, revocationSignature, stateSignature);
+      let committed: ReturnType<typeof commitLocal>;
+      if (session === undefined) {
+        committed = commitLocal();
+      } else {
+        // CORE-07: prepare at the witness, then commit here, then finalize.
+        // `prepare` completes before `runRevoke` opens its write transaction,
+        // and `finalize` runs after it commits — no network call inside it. A
+        // witness that does not prepare leaves nothing written; one that lost
+        // the compare-and-advance to another writer makes this re-plan.
+        try {
+          committed = await session.transition(revocationStateCheckpoint(plan.previous, organizationId), revocationStateCheckpoint(plan.next, organizationId), () => {
+            const result = commitLocal();
+            if (result === STALE) throw inconsistentRevocationState('the revocation-state commitment changed after the transition was prepared at the freshness witness');
+            return { value: result, state: revocationStateCheckpoint(result.state, organizationId) };
+          });
+        } catch (error) {
+          if (isAuthorityStateFreshnessError(error) && error.code === 'AUTHORITY_FRESHNESS_CONFLICT') continue;
+          throw error;
+        }
+      }
       if (committed !== STALE) {
         noteVerified(committed.state);
         return committed.outcome;
@@ -1337,18 +1459,21 @@ export async function createSqliteBoundedGrantStore(
         } catch (error) {
           revocationState = {
             revocationState: 'failed',
-            revocationStateFailure: error instanceof BoundedGrantStoreError ? error.code : 'BOUNDED_GRANT_STORE_UNAVAILABLE',
+            revocationStateFailure: error instanceof BoundedGrantStoreError || isAuthorityStateFreshnessError(error) ? error.code : 'BOUNDED_GRANT_STORE_UNAVAILABLE',
           };
         }
       }
+      const freshnessStatus = session?.status();
+      const freshnessFailed = freshnessStatus !== undefined && ['regressed', 'forked', 'pending-recovery', 'unbound'].includes(freshnessStatus.status);
 
       return {
-        status: readable && writable && revocationState.revocationState === 'verified' ? 'healthy' : 'unhealthy',
+        status: readable && writable && revocationState.revocationState === 'verified' && !freshnessFailed ? 'healthy' : 'unhealthy',
         readable,
         writable,
         schemaVersion: BOUNDED_GRANT_STORE_SCHEMA_VERSION,
         checkedAt: now(),
         ...revocationState,
+        ...(freshnessStatus !== undefined ? { freshness: freshnessStatus } : {}),
       };
     },
 
@@ -1365,5 +1490,7 @@ export async function createSqliteBoundedGrantStore(
   // CORE-02: which custody signs for this store, so a composition configured
   // for external custody can refuse a store built with a software signer.
   bindStoreSignerCustody(store, signer);
+  // CORE-07: which freshness boundary this store was composed under, if any.
+  if (freshness !== undefined) markComposedUnderFreshness(store, freshness.boundary);
   return store;
 }

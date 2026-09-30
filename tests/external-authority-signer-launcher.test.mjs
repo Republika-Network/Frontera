@@ -24,6 +24,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const LAUNCHER = fileURLToPath(new URL('../scripts/run-enterprise-host.mjs', import.meta.url));
 const SIGNER = fileURLToPath(new URL('../scripts/run-reference-authority-signer.mjs', import.meta.url));
+// CORE-07: a secure Host also needs its external authority-state witness — a third process.
+const WITNESS = fileURLToPath(new URL('../scripts/run-reference-authority-state-witness.mjs', import.meta.url));
+const WITNESS_TOKEN = 'FRONTERA_CORE07_LAUNCHER_WITNESS_TOKEN_SENTINEL_3a9e5c1b7d20f846';
 const TOKEN = 'FRONTERA_CORE02_LAUNCHER_TOKEN_SENTINEL_6d1c9a04e2f7b38a';
 const KEY_ID = 'frontera-core02-launcher-key';
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/;
@@ -74,7 +77,7 @@ function counts(port) {
   });
 }
 
-function hostEnv(dir, signerPort, publicKeyPem) {
+function hostEnv(dir, signerPort, publicKeyPem, witness = { port: 1, publicKeyPem }) {
   const file = join(dir, 'governed-actions.json');
   writeFileSync(
     file,
@@ -126,7 +129,30 @@ function hostEnv(dir, signerPort, publicKeyPem) {
     AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN: TOKEN,
     AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID: KEY_ID,
     AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: JSON.stringify([{ keyId: KEY_ID, algorithm: 'ed25519-v1', publicKeyPem }]),
+    // CORE-07: the external authority-state witness — its own endpoint, credential and pinned receipt key.
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE: 'external',
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT: `http://127.0.0.1:${witness.port}`,
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN: WITNESS_TOKEN,
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID: 'witness-core07-launcher',
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY: witness.publicKeyPem,
   };
+}
+
+/** The reference authority-state witness as its own process, over its own key and database. */
+async function spawnWitness(dir) {
+  const child = spawn(process.execPath, [WITNESS], {
+    cwd: ROOT,
+    env: {
+      PATH: process.env.PATH,
+      FRONTERA_REFERENCE_WITNESS_DB: join(dir, 'witness.sqlite'),
+      FRONTERA_REFERENCE_WITNESS_KEY_FILE: join(dir, 'witness-key.pem'),
+      FRONTERA_REFERENCE_WITNESS_ID: 'witness-core07-launcher',
+      FRONTERA_REFERENCE_WITNESS_TOKEN: WITNESS_TOKEN,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const started = await waitFor(child, /listening on http:\/\/127\.0\.0\.1:(\d+) witnessId=/);
+  return { child, port: Number.parseInt(started.match[1], 10), publicKeyPem: readFileSync(join(dir, 'witness-key.pem.pub'), 'utf8') };
 }
 
 test('the shipped launcher runs a production Host under external custody; the Host process never holds the authority private key', { timeout: 180_000 }, async (t) => {
@@ -138,12 +164,16 @@ test('the shipped launcher runs a production Host under external custody; the Ho
     env: { PATH: process.env.PATH, FRONTERA_REFERENCE_SIGNER_KEY_FILE: keyFile, FRONTERA_REFERENCE_SIGNER_KEY_ID: KEY_ID, FRONTERA_REFERENCE_SIGNER_TOKEN: TOKEN },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const witnessDir = mkdtempSync(join(tmpdir(), 'frontera-core07-launcher-witness-'));
   let host;
+  let witness;
   t.after(async () => {
     if (host !== undefined) await stop(host);
     await stop(signer);
+    if (witness !== undefined) await stop(witness.child);
     rmSync(keys, { recursive: true, force: true });
     rmSync(data, { recursive: true, force: true });
+    rmSync(witnessDir, { recursive: true, force: true });
   });
   const signerStarted = await waitFor(signer, /listening on http:\/\/127\.0\.0\.1:(\d+) keyId=/);
   assert.match(signerStarted.out(), /NOT an HSM/, 'the reference signer is labelled for what it is');
@@ -153,7 +183,8 @@ test('the shipped launcher runs a production Host under external custody; the Ho
   const publicKeyPem = readFileSync(`${keyFile}.pub`, 'utf8');
   assert.equal(PRIVATE_KEY.test(publicKeyPem), false);
 
-  const env = hostEnv(data, signerPort, publicKeyPem);
+  witness = await spawnWitness(witnessDir);
+  const env = hostEnv(data, signerPort, publicKeyPem, witness);
   for (const [name, value] of Object.entries(env)) assert.equal(PRIVATE_KEY.test(value ?? ''), false, `${name} carries no private key`);
   host = spawn(process.execPath, [LAUNCHER], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const started = await waitFor(host, /posture: .*\n/);
@@ -161,6 +192,7 @@ test('the shipped launcher runs a production Host under external custody; the Ho
   assert.match(line, /listening on http:\/\/127\.0\.0\.1:\d+/);
   assert.match(line, /authorityStore=authenticated-durable/);
   assert.match(line, /authoritySigner=external/);
+  assert.match(line, /authorityFreshness=external/);
 
   // The running Host process's own environment, read from the kernel.
   if (existsSync(`/proc/${host.pid}/environ`)) {

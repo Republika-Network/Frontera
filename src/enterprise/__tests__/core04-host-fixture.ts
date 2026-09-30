@@ -20,6 +20,7 @@ import { toKernelEvaluationResult } from '../governance-store/store-common.js';
 import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host.js';
 import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
  * CORE-04 — one synthetic organization on the **canonical shipped Host**
@@ -363,8 +364,7 @@ export async function boot(workspace: Workspace, env: Record<string, string | un
     },
   };
   const host = workspace.track(
-    await bootEnterpriseHost({
-      env,
+    await bootEnterpriseHost({ env: await withDeploymentWitness(env),
       executionAdapters: [adapter],
       ...(options.context !== undefined ? { contextProvider: options.context.provider } : {}),
       ...(options.policy === null ? {} : { policyPackProvider: options.policy ?? policyPackProvider() }),

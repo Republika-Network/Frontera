@@ -48,6 +48,7 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_GOVERNED_ACTIONS_REQUIRED'
   | 'HOST_KERNEL_AUTHORITY_REQUIRED'
   | 'HOST_AUTHORITY_SIGNING_KEY_REQUIRED'
+  | 'HOST_AUTHORITY_FRESHNESS_REQUIRED'
   | 'HOST_EXECUTION_ROUTE_INVALID'
   | 'HOST_COMPOSITION_INCOMPLETE'
   | 'HOST_NOT_HEALTHY';
@@ -354,9 +355,10 @@ function isLoopback(host: string): boolean {
  *
  * Additional rules for the secure profile (`AOC_ENTERPRISE_ENV` = `production`
  * or `staging`): SQLite persistence, required authentication, the
- * governed-action file, a required Kernel Authority source and a configured
- * authority signer — software or external custody (CORE-02). A secure Host is Frontera's governed-action control
- * plane or it does not start.
+ * governed-action file, a required Kernel Authority source, a configured
+ * authority signer — software or external custody (CORE-02) — and an external
+ * authority-state freshness witness (CORE-07). A secure Host is Frontera's
+ * governed-action control plane or it does not start.
  */
 export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfiguration {
   const problems = validateEnterpriseEnvironment(env);
@@ -439,6 +441,21 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
       throw new EnterpriseHostConfigurationError(
         'HOST_AUTHORITY_SIGNING_KEY_REQUIRED',
         `AOC_ENTERPRISE_ENV=${base.environment} requires an authority signer: either AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external with AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT, AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN, AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID and AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS (no private key in this process), or software custody with AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_ID, AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM and AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS. Durable authority is always signed.`,
+      );
+    }
+    // CORE-07: durable authority on a secure Host is always anchored. A
+    // signature proves a state is authentic, never that it is the newest; a
+    // secure Host without an external freshness witness would run with AA-003 /
+    // GS-002 open — a restored pre-revocation snapshot would be believed after
+    // a restart. There is no local-only substitute: an anchor inside the
+    // authority store's restore domain is rolled back with it.
+    const freshness = configuration.authorityFreshness;
+    const freshnessReady =
+      freshness?.mode === 'external' && freshness.witness.endpoint.length > 0 && freshness.witness.credential.length > 0 && freshness.witness.witnessId.length > 0 && freshness.witness.publicKeyPem.length > 0;
+    if (!freshnessReady) {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_AUTHORITY_FRESHNESS_REQUIRED',
+        `AOC_ENTERPRISE_ENV=${base.environment} requires an external authority-state freshness witness: AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external with AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT, AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN, AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID and AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY. Its state must live outside the authority stores' backup and snapshot domain.`,
       );
     }
   }

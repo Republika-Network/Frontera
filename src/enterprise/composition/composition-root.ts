@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, statSync } from 'node:fs';
 
 import { AOC_KERNEL_VERSION, createAocKernel, type AocKernel, type KernelIdGenerator, type PolicyPackProvider } from '../../kernel/index.js';
 import { computeEnterpriseHealth, type EnterpriseHealthPosture, type EnterpriseHealthReport } from '../health/health-check.js';
@@ -124,6 +125,18 @@ import { createEmergencyControlReader, createInMemoryEmergencyControlStore } fro
 import { createSqliteEmergencyControlStore } from '../emergency-control/sqlite-emergency-control-store.js';
 import { ExecutionGovernanceError } from '../execution-governance/errors.js';
 import { createSqliteBoundedGrantStore, isAuthenticatedDurableBoundedGrantStore } from '../bounded-grant-store/sqlite-bounded-grant-store.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
+import { createHttpAuthorityStateWitnessTransport } from '../authority-state-freshness/http-transport.js';
+import {
+  createAuthorityStateFreshnessBoundary,
+  isAuthorityStateEnrollmentContext,
+  freshnessBoundaryOf,
+  isFailedAuthorityStateFreshnessStatus,
+  type AuthorityStateEnrollmentContext,
+  type AuthorityStateFreshnessBoundary,
+} from '../authority-state-freshness/session.js';
+import type { AuthorityStateKind } from '../authority-state-freshness/checkpoint.js';
+import { authorityStateWitnessKeyBytes, establishAuthorityStateWitness } from '../authority-state-freshness/witness-client.js';
 import {
   CustomerIdentityConfigurationError,
   assertCustomerCredentialConfiguration,
@@ -921,12 +934,19 @@ async function buildKernelAuthorityStore(configuration: EnterpriseConfiguration,
  * configuration is refused before anything is opened (CORE-02R round 2), so
  * external custody never silently means an unsigned in-process store.
  */
-async function buildBoundedGrantStore(configuration: EnterpriseConfiguration, authenticity: () => Promise<AuthorityAuthenticityBoundary>): Promise<BoundedGrantStorePort> {
+async function buildBoundedGrantStore(
+  configuration: EnterpriseConfiguration,
+  authenticity: () => Promise<AuthorityAuthenticityBoundary>,
+  freshness: () => Promise<AuthorityStateFreshnessBoundary | undefined>,
+): Promise<BoundedGrantStorePort> {
   if (configuration.persistence.provider === 'sqlite') {
     const { signer, verifier } = await authenticity();
+    const boundary = await freshness();
     return createSqliteBoundedGrantStore(configuration.boundedGrant.sqlitePath, {
       busyTimeoutMs: configuration.persistence.busyTimeoutMs,
       authenticity: { signer, verifier },
+      // CORE-07: anchored at the external witness when one is configured.
+      ...(boundary !== undefined ? { freshness: { boundary } } : {}),
     });
   }
   return createInMemoryBoundedGrantStore();
@@ -1178,6 +1198,78 @@ async function withAuthoritySignerHealth(report: EnterpriseHealthReport, authent
   };
 }
 
+/**
+ * CORE-07: the authority-state freshness boundary, built **once**, before any
+ * authority store is opened: the witness's pinned identity (id and Ed25519
+ * receipt key, from configuration, never from the witness) is proven by a
+ * signed handshake, or the Host does not start. Refuses a witness key that is
+ * also an authority verification key, and a witness credential that is also
+ * the signer's: the freshness witness and the authority signer are different
+ * trust roles, and neither is allowed to stand in for the other.
+ */
+async function buildAuthorityFreshness(configuration: EnterpriseConfiguration): Promise<AuthorityStateFreshnessBoundary | undefined> {
+  const freshness = configuration.authorityFreshness;
+  if (freshness?.mode !== 'external') return undefined;
+  const { witness } = freshness;
+  const witnessKey = authorityStateWitnessKeyBytes(witness.publicKeyPem);
+  if (witnessKey === undefined) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The pinned authority-state witness key is not a parseable public key.');
+  for (const entry of configuration.authorityAuthenticity.verificationKeys) {
+    const authorityKey = authorityStateWitnessKeyBytes(entry.publicKeyPem);
+    if (authorityKey !== undefined && authorityKey.equals(witnessKey)) {
+      throw new AuthorityStateFreshnessError(
+        'AUTHORITY_FRESHNESS_CONFIGURATION_INVALID',
+        `The pinned authority-state witness key is also the trusted authority verification key '${entry.keyId}'. The freshness witness and the authority signer are different trust roles and never share a key.`,
+      );
+    }
+  }
+  if (configuration.authorityAuthenticity.mode === 'external' && configuration.authorityAuthenticity.externalSigner.credential === witness.credential) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The authority-state witness credential is also the external signer credential. Different trust roles never share a credential.');
+  }
+  const { anchor, monitor } = await establishAuthorityStateWitness({
+    transport: createHttpAuthorityStateWitnessTransport({ endpoint: witness.endpoint, credential: witness.credential }),
+    pinned: { witnessId: witness.witnessId, publicKeyPem: witness.publicKeyPem },
+    timeoutMs: witness.timeoutMs,
+    maxAttempts: witness.maxAttempts,
+    probeIntervalMs: witness.probeIntervalMs,
+  });
+  return createAuthorityStateFreshnessBoundary({ anchor, monitor, organizationId: configuration.kernelAuthority.organizationId, probeIntervalMs: witness.probeIntervalMs });
+}
+
+/**
+ * CORE-07: the freshness state on `/health` — the witness's signed identity
+ * and each anchored store's witness-then-local comparison, single-flight and
+ * at most once per probe interval. A store whose freshness has failed
+ * (`regressed`, `forked`, `pending-recovery`, `unbound`) refuses every
+ * authority read and makes the Host `unhealthy` — and so not ready. A witness
+ * that cannot be reached after freshness was established at startup makes it
+ * `degraded`: existing authority still reads against the startup floor and
+ * the in-process witness, and no authority mutation can be prepared. No
+ * credential, endpoint path, receipt, signature or digest appears here.
+ */
+async function withAuthorityFreshnessHealth(report: EnterpriseHealthReport, boundary: AuthorityStateFreshnessBoundary | undefined): Promise<EnterpriseHealthReport> {
+  if (boundary === undefined) return report;
+  const probed = await boundary.probe();
+  const failed = probed.stores.some((store) => isFailedAuthorityStateFreshnessStatus(store.status));
+  const unavailable = probed.witness?.state === 'unavailable' || probed.stores.some((store) => store.status === 'unavailable');
+  const status = failed ? 'unhealthy' : unavailable && report.status === 'healthy' ? 'degraded' : report.status;
+  return {
+    ...report,
+    status,
+    authorityFreshness: {
+      mode: 'external',
+      witnessId: boundary.witnessId,
+      witness: probed.witness === undefined ? { state: 'ready' } : { state: probed.witness.state, ...(probed.witness.reason !== undefined ? { reason: probed.witness.reason } : {}) },
+      stores: probed.stores.map((store) => ({ stateKind: store.stateKind, status: store.status, ...(store.reason !== undefined ? { reason: store.reason } : {}), sequence: store.sequence })),
+    },
+  };
+}
+
+/** The `freshness` store option for the boundary, or nothing. */
+async function withFreshness(resolve: () => Promise<AuthorityStateFreshnessBoundary | undefined>): Promise<{ readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary } }> {
+  const boundary = await resolve();
+  return boundary !== undefined ? { freshness: { boundary } } : {};
+}
+
 /** Closes a store that may or may not own a handle (the in-memory ones own none). Used by the atomic-startup cleanup in `createEnterprise`. */
 async function closeIfClosable(resource: unknown): Promise<void> {
   const closable = resource as Partial<{ close: () => Promise<void> }> | undefined;
@@ -1342,6 +1434,33 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     }
   }
 
+  // CORE-07: under an external freshness witness the composition root builds
+  // every authority-bearing store itself, over the one boundary it proves
+  // against the *configured* witness — and adopts none from the host. A store
+  // the host opened could have been opened without the anchor (or against
+  // another witness), and adopting it would let posture say `external` over
+  // authority whose freshness was never established. Checked before anything
+  // is opened or the witness contacted. In-memory authority stores hold no
+  // cross-restart state, so there is nothing to anchor: they are composed
+  // without a session, and the posture says `not-composed` — never `external`
+  // — which the secure Host refuses.
+  const freshnessExternal = configuration.authorityFreshness?.mode === 'external';
+  if (freshnessExternal) {
+    const supplied: readonly [string, unknown][] = [
+      ['authorityControlledExecution.grantStore', suppliedGrantStore],
+      ['obligations.store', options.obligations?.store],
+      ['approvals.store', options.approvals?.store],
+    ];
+    for (const [name, store] of supplied) {
+      if (store !== undefined) {
+        throw new AuthorityStateFreshnessError(
+          'AUTHORITY_FRESHNESS_CONFIGURATION_INVALID',
+          `This Host is configured with an external authority-state freshness witness, and a ${name} was supplied. Under an external witness the Host composes its authority stores itself and anchors each one; it adopts none. Omit ${name}.`,
+        );
+      }
+    }
+  }
+
   // Adapter composition is checked before anything is opened: a deployment that
   // states both a single adapter and a routing table, or neither, has not said
   // which provider an authorized action reaches, and that is not a question to
@@ -1492,6 +1611,14 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   if (options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite') {
     await resolveAuthorityAuthenticity();
   }
+  // CORE-07: the freshness witness, likewise proven before any store is
+  // opened — whenever some durable authority store will be composed here. At
+  // most once; every store shares one boundary.
+  let authorityFreshnessOnce: Promise<AuthorityStateFreshnessBoundary | undefined> | undefined;
+  const resolveAuthorityFreshness = (): Promise<AuthorityStateFreshnessBoundary | undefined> => (authorityFreshnessOnce ??= buildAuthorityFreshness(configuration));
+  if (freshnessExternal && ((options.authorityControlledExecution !== undefined && configuration.persistence.provider === 'sqlite') || (governanceStoreKind === 'sqlite' && (obligationStoreComposed || approvalsDeclared)))) {
+    await resolveAuthorityFreshness();
+  }
 
   // P12: execution reconciliation, validated and snapshotted before any store
   // is opened. The authorities and the selector are read here, once; nothing
@@ -1631,7 +1758,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   const grantStore: BoundedGrantStorePort | undefined =
     options.authorityControlledExecution === undefined
       ? undefined
-      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration, resolveAuthorityAuthenticity)));
+      : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration, resolveAuthorityAuthenticity, resolveAuthorityFreshness)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
   if (grantStoreOpenedHere) opened.push(() => closeIfClosable(grantStore));
 
@@ -1706,6 +1833,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
               // uses: a verified discharge releases issuance, so its store's
               // committed state is an authority artifact.
               authenticity: await resolveAuthorityAuthenticity(),
+              // CORE-07: anchored at the same witness, when one is configured.
+              ...(await withFreshness(resolveAuthorityFreshness)),
             })
           : createInMemoryObligationDischargeStore({ organizationId: configuration.kernelAuthority.organizationId })));
   const obligationDischargeStoreOpenedHere = obligationDischargeStore !== undefined && options.obligations?.store === undefined;
@@ -1736,6 +1865,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             // uses: a completed approval resumes a decision into a grant, so
             // its store's committed state is an authority artifact.
             authenticity: await resolveAuthorityAuthenticity(),
+            // CORE-07: anchored at the same witness, when one is configured.
+            ...(await withFreshness(resolveAuthorityFreshness)),
           })
         : createInMemoryApprovalStore({ organizationId: configuration.kernelAuthority.organizationId })));
   const approvalStoreOpenedHere = approvalStore !== undefined && options.approvals?.store === undefined;
@@ -2276,6 +2407,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // CORE-02: the authenticity boundary this root built, if any — for the
   // posture and for the custody service's non-signing health probe.
   const authorityAuthenticity = authorityAuthenticityOnce === undefined ? undefined : await authorityAuthenticityOnce;
+  // CORE-07: the freshness boundary this root built, if any.
+  const authorityFreshness = authorityFreshnessOnce === undefined ? undefined : await authorityFreshnessOnce;
   // Which custody actually signs for the composed grant store — read from the
   // store's own brand when it is the authenticated durable store (so a
   // host-supplied store reports its own custody), never from configuration.
@@ -2314,6 +2447,19 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     approvals: approvalAuthority === undefined || governedActionOrchestrator === undefined ? 'not-configured' : approvalAuthority.storeKind === 'durable-authenticated' ? 'durable' : 'ephemeral',
     // CORE-02: where the authority private key lives — `external` means not in this process.
     authoritySigner: composedSignerCustody,
+    // CORE-07: from the composed boundary — `external` only when every durable
+    // authority store composed here established freshness against it.
+    authorityFreshness: (() => {
+      // Every durable authority store composed here, each read back from its
+      // own brand: `external` only when all of them were opened under this
+      // root's boundary (established at open, or refusing every read).
+      const durable: unknown[] = [
+        ...(grantStore !== undefined && isAuthenticatedDurableBoundedGrantStore(grantStore) ? [grantStore] : []),
+        ...(obligationDischargeStore?.kind === 'durable-authenticated' ? [obligationDischargeStore] : []),
+        ...(approvalStore?.kind === 'durable-authenticated' ? [approvalStore] : []),
+      ];
+      return authorityFreshness !== undefined && durable.length > 0 && durable.every((store) => freshnessBoundaryOf(store) === authorityFreshness) ? 'external' : 'not-composed';
+    })(),
   });
 
   const enterprise: AocEnterprise = {
@@ -2413,7 +2559,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         lifecycle: lifecycleSnapshot,
         posture,
       });
-      return withAuthoritySignerHealth(report, authorityAuthenticity);
+      return withAuthorityFreshnessHealth(await withAuthoritySignerHealth(report, authorityAuthenticity), authorityFreshness);
     },
     start: () => lifecycle.start(),
     isLive: () => lifecycle.isLive(),
@@ -2456,4 +2602,70 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
  */
 export function createDefaultEnterprise(configuration?: EnterpriseConfiguration): Promise<AocEnterprise> {
   return createEnterprise(configuration !== undefined ? { configuration } : {});
+}
+
+/**
+ * CORE-07 — the explicit enrollment ceremony for **existing** durable authority
+ * stores the freshness witness has never seen (an upgrade to CORE-07, or a
+ * store created before the witness was configured).
+ *
+ * A trusted, in-process, one-shot operator action — never a route, never a
+ * runtime fallback, and never reached by `createEnterprise`. The operator
+ * states, through `context`, that each store's **currently verified** state is
+ * the baseline from which monotonic freshness begins. That statement is the
+ * operator's, not CORE-07's: nothing can know whether a store was rolled back
+ * *before* its first trusted enrollment. After it, a regression is refused.
+ *
+ * Opens each named store exactly as the Host would — the same signer, trusted
+ * verifier and witness — so its whole signed history is verified before its
+ * head is enrolled. A store file that does not exist is refused, never
+ * created: enrollment never produces a genesis. A slot the witness already
+ * binds to other state is refused (`AUTHORITY_FRESHNESS_ALREADY_ENROLLED`):
+ * enrollment never rebinds.
+ */
+export async function enrollExistingAuthorityStores(
+  configuration: EnterpriseConfiguration,
+  context: AuthorityStateEnrollmentContext,
+  stateKinds: readonly AuthorityStateKind[],
+): Promise<readonly { readonly stateKind: AuthorityStateKind; readonly sequence: number }[]> {
+  if (!isAuthorityStateEnrollmentContext(context)) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'Enrolling an existing store requires a trusted enrollment context { operator: true, operatorId, attestation }.');
+  }
+  if (configuration.authorityFreshness?.mode !== 'external') {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'Enrollment needs the external authority-state witness configured (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external).');
+  }
+  if (configuration.persistence.provider !== 'sqlite') {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'Only durable (SQLite) authority stores are enrolled.');
+  }
+  const kinds = [...new Set(stateKinds)];
+  if (kinds.length === 0) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'Name at least one authority store to enroll.');
+  const pathOf: Record<AuthorityStateKind, string> = {
+    'bounded-grant-revocation-state': configuration.boundedGrant.sqlitePath,
+    'obligation-discharge-state': configuration.obligationDischarge.sqlitePath,
+    'approval-state': configuration.approval.sqlitePath,
+  };
+  for (const kind of kinds) {
+    const path = pathOf[kind];
+    if (path === undefined || !existsSync(path) || statSync(path).size === 0) {
+      throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `There is no existing ${kind} store to enroll. Enrollment never creates a store.`);
+    }
+  }
+  const authenticity = await buildAuthorityAuthenticity(configuration);
+  const boundary = await buildAuthorityFreshness(configuration);
+  if (boundary === undefined) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The authority-state witness could not be composed.');
+  const signed = { signer: authenticity.signer, verifier: authenticity.verifier };
+  const organizationId = configuration.kernelAuthority.organizationId;
+  const busyTimeoutMs = configuration.persistence.busyTimeoutMs;
+  const now = (): string => new Date().toISOString();
+  for (const kind of kinds) {
+    const freshness = { boundary, enrollment: context };
+    const store =
+      kind === 'bounded-grant-revocation-state'
+        ? await createSqliteBoundedGrantStore(pathOf[kind], { busyTimeoutMs, authenticity: signed, freshness })
+        : kind === 'obligation-discharge-state'
+          ? await createSqliteObligationDischargeStore(pathOf[kind], { now, busyTimeoutMs, organizationId, authenticity: signed, freshness })
+          : await createSqliteApprovalStore(pathOf[kind], { now, busyTimeoutMs, organizationId, authenticity: signed, freshness });
+    await store.close();
+  }
+  return boundary.sessions().map((session) => ({ stateKind: session.binding.stateKind, sequence: session.status().sequence }));
 }

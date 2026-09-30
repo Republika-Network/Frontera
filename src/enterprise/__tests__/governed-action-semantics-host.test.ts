@@ -10,6 +10,7 @@ import { EnterpriseHostConfigurationError } from '../host/host-configuration.js'
 import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
 import { CUSTOMER_DATA, EXPORT_ACTION, READ_ACTION, SEMANTIC_CONFIGURATION, SEMANTIC_CONFIGURATION_WITHOUT_FACTS, APPROVED_DESTINATION } from './governed-action-semantics-fixture.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
  * CORE-03 §63 / §66 — the semantic model through the **canonical shipped
@@ -113,7 +114,7 @@ async function boot(env: Record<string, string | undefined>): Promise<Booted> {
       return { outcome: 'completed', providerRef: 'provider-ref-core03' };
     },
   };
-  const host = await bootEnterpriseHost({ env, executionAdapters: [adapter] });
+  const host = await bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter] });
   hosts.push(host);
   const { port } = await host.listen();
   return { host, calls, baseUrl: `http://127.0.0.1:${port}` };
@@ -247,7 +248,7 @@ describe('CORE-03 §64 — Host configuration: strict, no silent fallback, no de
   for (const [name, governance] of refusals) {
     it(`refuses to boot on ${name}`, async () => {
       await assert.rejects(
-        () => bootEnterpriseHost({ env: secureEnv(workDir(), governedFile({ governance })) }),
+        async () => bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(workDir(), governedFile({ governance }))) }),
         (error: unknown) => error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_GOVERNED_ACTIONS_FILE_INVALID',
       );
     });

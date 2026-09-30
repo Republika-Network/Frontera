@@ -295,9 +295,11 @@ is no other reset.
 | 404 | `NOT_FOUND` | No such administration route or method (including every un-revoke shape), or the API is not configured |
 | 409 | `AUTHORITY_ADMIN_OPERATION_REFUSED` | The owning service refused for a domain reason other than the above (code in the message) |
 | 415 | `INVALID_REQUEST` | A mutation body that is not `application/json` |
-| 500 | `AUTHORITY_STATE_INTEGRITY_FAILED` | The authoritative state could not be verified; `failure` names the store condition (e.g. `BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT`, `BOUNDED_GRANT_STORE_STATE_CORRUPT`, `BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED`, `KERNEL_AUTHORITY_INTEGRITY_FAILED`, `EMERGENCY_CONTROL_STORE_STATE_CORRUPT`). **Nothing was reported or changed.** Never a 404, never a status |
+| 500 | `AUTHORITY_STATE_INTEGRITY_FAILED` | The authoritative state could not be verified; `failure` names the store condition (e.g. `BOUNDED_GRANT_STORE_REVOCATION_STATE_INCONSISTENT`, `BOUNDED_GRANT_STORE_STATE_CORRUPT`, `BOUNDED_GRANT_STORE_AUTHENTICITY_FAILED`, `KERNEL_AUTHORITY_INTEGRITY_FAILED`, `EMERGENCY_CONTROL_STORE_STATE_CORRUPT`, and — CORE-07 — `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`, `…_FORK_DETECTED`, `…_BINDING_MISMATCH`, `…_PENDING_RECOVERY`, `…_UNBOUND_STORE`, `…_WITNESS_UNAUTHENTIC`). **Nothing was reported or changed.** Never a 404, never a status |
 | 500 | `INFRASTRUCTURE_FAILURE` | Unexpected Host fault |
 | 503 | `AUTHORITY_STATE_UNAVAILABLE` | The owning store is unavailable |
+| 503 | `AUTHORITY_SIGNER_UNAVAILABLE` | CORE-02: the authority signer could not sign; `failure` is the closed reason, `recorded: false`. **Nothing was recorded**: the grant remains exercisable (use an emergency stop) |
+| 503 | `AUTHORITY_FRESHNESS_UNAVAILABLE` | CORE-07: the authority-state witness could not prepare the revocation (unreachable, or another writer advanced first); `failure` is the closed code, `recorded: false`. **Nothing was recorded**: the grant remains exercisable (use an emergency stop — it depends on neither the signer nor the witness) |
 | 503 | `ENTERPRISE_NOT_READY` | The Host lifecycle is not ready |
 
 A refused administrative request is also a no-op: nothing is read past the
@@ -343,7 +345,7 @@ ASSURE-01.
 | **Administrator credential theft** | **residual** | A stolen administrator secret *is* an administrator: it can revoke authority and stop or resume execution (it cannot mint authority). No MFA, SSO, per-human identity, approval quorum or external signing custody — CTRL-02, CTRL-04, CORE-02, PROD-04. Rotate by changing the variable and restarting |
 | Rate limiting / brute force | **residual** | None on any Host route (PROD-04). Secrets ≥ 32 characters |
 | Signer on the revocation critical path | **residual** | AA-004: a revocation fails loudly if the signer is unavailable (CORE-02) |
-| Snapshot rollback of a whole store | **residual** | CORE-07 |
+| Snapshot rollback of a whole store | **closed for the grant, discharge and approval stores with an external freshness witness** (CORE-07; always on the secure Host); residual for the witness restored with them, and for the other stores | CORE-07 / PROD-02 |
 
 ## 8. Operator runbook
 
@@ -421,9 +423,15 @@ curl -s -X POST "$FRONTERA/api/admin/emergency-controls/release" -H "$ADMIN" \
   -H 'content-type: application/json' -d '{"scope":"actor","value":"actor-agent"}'
 ```
 
+**If a call returns `503 AUTHORITY_FRESHNESS_UNAVAILABLE`:** the revocation
+was **not** recorded — the authority-state witness (CORE-07) did not prepare it.
+Declare an emergency stop now, restore the witness, and retry the revocation.
+
 **If a call returns `500 AUTHORITY_STATE_INTEGRITY_FAILED`:** treat it as a
-security incident. The authority store's contents could not be verified; the
-Host reports nothing from it and `/ready` will be failing. Do not attempt to
+security incident. The authority store's contents could not be verified — or,
+with a `failure` of `AUTHORITY_FRESHNESS_*`, the store is not the newest state
+its witness holds (a rollback, a fork, a substituted store, a pending
+transition) — so the Host reports nothing from it and `/ready` will be failing. Do not attempt to
 "fix" the database: restore the store files from a trusted copy
 (`AUTHORITATIVE_GRANT_STORE.md`, `AUTHORITY_ARTIFACT_AUTHENTICITY.md`).
 

@@ -20,6 +20,10 @@ import {
 } from '../obligation-discharge/index.js';
 import { AUTHORITY_KEY_A, AUTHORITY_KEY_B, AUTHORITY_KEY_UNTRUSTED, testAuthenticity, testSigner, testVerifier } from './authority-authenticity-fixture.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/index.js';
+import { boundaryFor, closeAllWitnesses, startWitness } from './core07-freshness-fixture.js';
+
+after(closeAllWitnesses);
 
 /**
  * CORE-04 — a database-only writer cannot manufacture obligation satisfaction.
@@ -305,7 +309,7 @@ describe('CORE-04 — the obligation discharge store is authenticated, not merel
     );
   });
 
-  it('rollback: an older genuine signed state restored under a running process is refused; after a restart it is accepted — CORE-07’s residual, stated', async () => {
+  it('rollback: an older genuine signed state restored under a running process is refused; after a restart with no freshness witness it is accepted (scoped: not claimed without CORE-07)', async () => {
     const file = path();
     const store = await open(file);
     await record(store, 'notes', 'discharged');
@@ -320,13 +324,37 @@ describe('CORE-04 — the obligation discharge store is authenticated, not merel
     rollback.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(olderHead.sequence, olderHead.chain_digest, olderHead.signature_json);
     rollback.close();
     await assert.rejects(() => state(store), (error: unknown) => error instanceof ObligationDischargeError && /regressed/.test(error.message));
-    // A fresh process has no witness: the older, genuine state verifies.
-    // Detecting that is CORE-07's. What CORE-04 does guarantee is that a
-    // rollback can only remove reports and can never *manufacture*
-    // satisfaction: reports are recorded in strictly increasing observation
-    // time, so every committed prefix is a lifecycle prefix, and a satisfied
-    // obligation is terminal (see the next test).
+    // SCOPED (CORE-07): a fresh process opened with no freshness witness
+    // believes the older, genuine state — the lenient mode, stated. CORE-04
+    // guarantees that such a rollback can only remove reports and never
+    // *manufacture* satisfaction: reports are recorded in strictly increasing
+    // observation time, so every committed prefix is a lifecycle prefix, and a
+    // satisfied obligation is terminal (see the next test).
     assert.equal(await state(await open(file)), 'discharged');
+  });
+
+  it('CORE-07 (inverted from the residual): with a freshness witness, an older genuine signed state restored before a restart is refused', async () => {
+    const witness = await startWitness();
+    const file = path();
+    const openAnchored = async () => {
+      const store = await createSqliteObligationDischargeStore(file, { now: () => NOW, organizationId: ORG, authenticity: testAuthenticity(), freshness: { boundary: await boundaryFor(witness, ORG) } });
+      stores.push(store);
+      return store;
+    };
+    const store = await openAnchored();
+    await record(store, 'notes', 'discharged');
+    const db = new Database(file);
+    const olderHead = db.prepare('SELECT sequence, chain_digest, signature_json FROM obligation_discharge_head').get() as { sequence: number; chain_digest: string; signature_json: string };
+    db.close();
+    await record(store, 'board', 'discharged');
+    await store.close();
+    const rollback = new Database(file);
+    rollback.exec('DROP TRIGGER IF EXISTS obligation_discharges_no_delete;');
+    rollback.prepare('DELETE FROM obligation_discharges WHERE sequence = 2').run();
+    rollback.prepare('UPDATE obligation_discharge_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(olderHead.sequence, olderHead.chain_digest, olderHead.signature_json);
+    rollback.close();
+    await assert.rejects(openAnchored, (error: unknown) => error instanceof AuthorityStateFreshnessError && error.code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED');
+    await witness.close();
   });
 
   it('reports are recorded in strictly increasing observation time per obligation, so no committed prefix can be satisfied when the whole is not', async () => {

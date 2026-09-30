@@ -427,7 +427,7 @@ it and composes nothing itself.
 | Profile | Persistence | Authentication | Governed actions | Bind |
 |---|---|---|---|---|
 | `development`, `test` | `memory` (default) or `sqlite` | optional | optional (file) | loopback unless auth is on |
-| `production`, `staging` | `sqlite`, stated explicitly | **required**, with credentials | **required** (file) | any, auth is on |
+| `production`, `staging` | `sqlite`, stated explicitly, **plus an external authority-state witness** (CORE-07) | **required**, with credentials | **required** (file) | any, auth is on |
 
 Every variable is read strictly by the bootstrap
 (`validateEnterpriseEnvironment`): `AOC_ENTERPRISE_ENV=prod`,
@@ -452,6 +452,12 @@ AOC_ENTERPRISE_AUTHORITY_SIGNER_ENDPOINT=https://authority-signer.internal.examp
 AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN=<secret, >= 32 chars>
 #   or software custody (key in process memory, AA-001):
 # AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM=<secret, PKCS#8>
+# authority-state freshness — REQUIRED on a secure Host (CORE-07):
+AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external
+AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT=https://authority-witness.internal.example:8444
+AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN=<secret, >= 32 chars, NOT the signer token>
+AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID=witness-prod-1
+AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----...'   # the witness's Ed25519 receipt key
 AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE=/etc/frontera/governed-actions.json
 # every AOC_ENTERPRISE_*_SQLITE_PATH on a persistent volume (see .env.example)
 # plus each secret variable the governed-action file names
@@ -515,6 +521,81 @@ service needs no re-signing (signatures are byte-identical). Moving to a new
 key: add its public key, keep the old one trusted until the grants it signed
 have expired or been dealt with; state heads are re-attested under the new key
 at open.
+
+### Authority-state freshness (CORE-07)
+
+A signature proves an authority state is authentic, never that it is the
+newest: restoring a pre-revocation copy of the grant database used to bring a
+revoked grant back after a restart. A secure Host therefore anchors the signed
+head of every durable authority store — grants' revocation state, obligation
+discharges, approvals — at an **external authority-state witness** whose state
+lives outside the stores' restore domain
+(`docs/architecture/ADR-AUTHORITY-STATE-FRESHNESS-AND-ROLLBACK-DETECTION.md`).
+
+| | Without a witness (`mode` absent / `none`) | `AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external` |
+|---|---|---|
+| Profiles | development / embedding only | **required** for `production` / `staging` (`HOST_AUTHORITY_FRESHNESS_REQUIRED`) |
+| Restored earlier authority state after a restart | believed (AA-003 / GS-002 open) | **refused** before the store is handed to anything; the Host does not start |
+| Posture | `authorityFreshness: not-composed` | `authorityFreshness: external` |
+| Supplied authority stores | as before | refused: the Host builds and anchors all of them |
+
+Variables: `…_ENDPOINT` (https, or http to loopback only; base URL),
+`…_TOKEN` (secret, ≥ 32 characters, never the signer's), `…_WITNESS_ID` and
+`…_WITNESS_PUBLIC_KEY` (the witness's pinned identity — from you, never
+learned from the witness; must not be an authority verification key), optional
+`…_TIMEOUT_MS` (default 5000), `…_MAX_ATTEMPTS` (default 2, max 3; availability
+failures only), `…_PROBE_INTERVAL_MS` (default 5000). All prefixed
+`AOC_ENTERPRISE_AUTHORITY_FRESHNESS_`.
+
+**Deployment rule — the one the protection rests on.** The witness's state
+must be on a different volume, in a different backup set and on a different
+snapshot schedule from every authority database. If the authority stores and
+the witness are restored together to the same earlier moment, nothing can
+detect it.
+
+**Outage.** At startup the Host does not start without its witness. After a
+normal start, existing authority keeps reading (Host `degraded`, still ready),
+and every authority mutation — revocation, obligation discharge, approval —
+is refused with nothing written (`AUTHORITY_FRESHNESS_UNAVAILABLE`). Revocation
+now needs the witness as well as the signer; an emergency stop depends on
+neither.
+
+**Refusals at startup** (thrown by composition, printed by the launcher as
+`[CODE]`): `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED` (a store restored behind
+the witness), `…_FORK_DETECTED` (a different state at the same position, or
+state the witness never saw), `…_BINDING_MISMATCH` (another store under this
+organization's slot), `…_PENDING_RECOVERY` (a transition prepared at the
+witness that the store does not hold — a crash between prepare and commit,
+indistinguishable from a rollback), `…_UNBOUND_STORE` (an existing store the
+witness has never seen), `…_UNAVAILABLE`, `…_AUTHENTICATION_FAILED`,
+`…_WITNESS_UNAUTHENTIC`.
+
+**Upgrading an existing deployment (the enrollment ceremony).** An existing
+store is never enrolled automatically. With the Host stopped, and the Host's
+own environment:
+
+```bash
+node scripts/enroll-authority-state-freshness.mjs --operator ops-primary \
+  --attest-current-state --store grants [--store obligations] [--store approvals]
+```
+
+It verifies each store exactly as the Host would and enrolls its **current**
+state as the baseline — your declaration that it is current; a rollback before
+this point cannot be detected. It never creates a store and never rebinds an
+enrolled one. New stores are enrolled automatically, at creation, before they
+exist on disk.
+
+**Recovery.** A Host refusing with `ROLLBACK_DETECTED` is the protection
+working: put back the current copy of that store. `PENDING_RECOVERY` and an
+intentional point-in-time recovery of authority state are trusted operational
+procedures (PROD-02) — there is no force-clear.
+
+**Reference witness.** `npm run start:reference-authority-state-witness`
+(`FRONTERA_REFERENCE_WITNESS_DB`, `…_KEY_FILE`, `…_ID`, `…_TOKEN`, `…_PORT`)
+runs a loopback-only witness over its own SQLite file with its own receipt key,
+writing the public half to `<key>.pub` for you to pin. It is a reference and
+qualification boundary — **not** an HSM, a ledger, a timestamping authority or
+a blockchain.
 
 ### The governed-action file
 
@@ -588,6 +669,7 @@ and fields, never values; no stack trace is printed.
 | `HOST_GOVERNED_ACTIONS_REQUIRED` | Secure profile without the governed-action file |
 | `HOST_KERNEL_AUTHORITY_REQUIRED` | Governed actions without the durable Kernel Authority source, or secure profile with it optional |
 | `HOST_AUTHORITY_SIGNING_KEY_REQUIRED` | Secure profile without an authority signer (external endpoint + credential, or a software key) and trusted set |
+| `HOST_AUTHORITY_FRESHNESS_REQUIRED` (CORE-07) | Secure profile without an external authority-state witness (mode, endpoint, token, witness id and public key) |
 | `HOST_ENVIRONMENT_INVALID` (CORE-02) | Contradictory custody: external mode with `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` in the configuration or, since CORE-02R, anywhere in the real process environment (empty value included, even when `bootEnterpriseHost({ env })` was given a sanitized map); external-signer variables without external mode; a non-https non-loopback endpoint; a short credential; an out-of-range probe interval |
 | `HOST_GOVERNED_ACTIONS_FILE_UNREADABLE` / `_INVALID` | The file cannot be read, or breaks the schema |
 | `HOST_SECRET_REFERENCE_UNRESOLVED` | A named secret variable is unset or empty |
@@ -599,7 +681,8 @@ Composition's own refusals pass through unchanged: a signing key absent from
 the trusted set or not matching it (`AuthorityAuthenticityConfigurationError`),
 an external signer that cannot be reached, refuses the credential or does not
 answer as the pinned identity (`AuthorityAuthenticityConfigurationError` with
-`reason: EXTERNAL_SIGNER_*`),
+`reason: EXTERNAL_SIGNER_*`), an authority-state freshness refusal
+(`AuthorityStateFreshnessError`, `code: AUTHORITY_FRESHNESS_*`, CORE-07),
 invalid Generic HTTP configuration (`GenericHttpConfigurationError`), invalid
 customer credentials (`CustomerIdentityConfigurationError`), an unopenable
 store.
@@ -622,8 +705,13 @@ store.
   `not-configured`, CTRL-01), `trustedContext` (`composed` / `not-configured`,
   CORE-04), `obligations` (`durable` / `ephemeral` / `not-configured`,
   CORE-04), `approvals` (`durable` / `ephemeral` / `not-configured`,
-  CORE-05) and `authoritySigner` (`external` / `software` / `not-composed`,
-  CORE-02). Beside the posture, `authoritySigner` reports the signer's live
+  CORE-05), `authoritySigner` (`external` / `software` / `not-composed`,
+  CORE-02) and `authorityFreshness` (`external` / `not-composed`, CORE-07).
+  Beside the posture, `authorityFreshness` reports the witness id, the
+  witness's state and each anchored store's `{stateKind, status, reason?,
+  sequence}`: a store `regressed` / `forked` / `pending-recovery` / `unbound`
+  makes the Host `unhealthy` (not ready); a witness outage after startup makes
+  it `degraded`. Beside the posture, `authoritySigner` reports the signer's live
   state (`custody`, `keyId`, `algorithm`, `state: ready|unavailable`,
   `reason`; for external custody also `identity` and `lastSigning`, each
   `{state, reason?}`, and signing totals). Under external custody `ready`
@@ -652,7 +740,10 @@ shutdown failed.
   has no HTTP route: it is the trusted in-process
   `AocEnterprise.kernelAuthorityProvisioning` surface (CTRL-02).
 - **Backup/restore** covers four stores; the governed-action stores are
-  PROD-02.
+  PROD-02. Never back up or restore the authority-state witness's database
+  together with the authority stores (CORE-07).
+- **First enrollment** of existing stores at a new witness is the explicit
+  ceremony above (CORE-07).
 - The authority signing key is process-resident under software custody (AA-001); external custody (CORE-02) removes it from the process.
 
 Embedding without `node:http` (e.g. a Next.js route handler):

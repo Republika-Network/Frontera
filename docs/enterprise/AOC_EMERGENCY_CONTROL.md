@@ -496,7 +496,10 @@ Two limits remain, and neither is papered over:
    that database being swapped for a blank one, or restored from a snapshot
    taken before a control was declared. That is the same anti-rollback gap the
    grant store records as **GS-002**, and closing it needs an anchor outside the
-   database.
+   database. CORE-07 anchors the three authority-bearing stores (grants'
+   revocation state, obligation discharges, approvals); the emergency-control
+   store is **not** anchored — a restored control store can drop a stop, never
+   add authority.
 
 What changed is the *accidental and partial* cases — a mistyped `DELETE`, a
 half-restored backup, a truncated table, an interrupted migration. None of those

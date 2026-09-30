@@ -5,6 +5,15 @@ import { dirname, resolve } from 'node:path';
 import { bindStoreSignerCustody } from '../authority-authenticity/custody.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
+import { approvalStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
+import {
+  isAuthorityStateFreshnessBoundary,
+  markComposedUnderFreshness,
+  type AuthorityStateEnrollmentContext,
+  type AuthorityStateFreshnessBoundary,
+  type AuthorityStateFreshnessSession,
+} from '../authority-state-freshness/session.js';
 import { APPROVAL_STORE_SCHEMA_VERSION, type ApprovalStore, type StoredApprovalRecord } from './contracts.js';
 import { ApprovalAuthorityError } from './errors.js';
 import { rowsForRequest, verifyApprovalHistory } from './integrity.js';
@@ -25,12 +34,16 @@ import { approvalGenesisDigest, approvalRowDigest, nextApprovalChainDigest, type
  *
  * Append-only triggers remain as defense in depth; they are not the boundary.
  *
- * What this does **not** give (stated, not implied): protection against a
- * restore of an older, genuinely signed state (rollback — CORE-07; an
- * in-process witness refuses regression only while the process lives. A
- * genuine history's prefix never holds a completed approval its whole does
- * not, because nothing is recorded on a closed request), or against anyone who
- * holds the signing key or controls this process (CORE-02).
+ * Rollback matters here more than anywhere: a genuine history's *prefix* can
+ * be more permissive than its whole (an approval before its revocation or a
+ * later rejection). It is refused while the process lives by an in-process
+ * witness (sequence and digest), and across restarts **only** when `freshness`
+ * is composed (CORE-07): the head is then anchored at an external witness
+ * outside this file's restore domain, compared at open before the store is
+ * returned, and advanced by prepare → local commit → finalize on every append.
+ * What this does **not** give: protection when the witness itself is restored
+ * together with this file, or against anyone who holds the signing key or
+ * controls this process (CORE-02).
  */
 
 export interface SqliteApprovalStoreOptions {
@@ -40,6 +53,14 @@ export interface SqliteApprovalStoreOptions {
   readonly organizationId: string;
   /** The deployment's authority signer (to advance the signed head) and verifier (to believe it). Never optional: there is no unauthenticated durable mode. */
   readonly authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier };
+  /**
+   * CORE-07 — cross-restart freshness of the signed head, anchored at an
+   * external witness outside this file's restore domain. Optional for an
+   * embedder; the secure Host always composes it. `enrollment` is the explicit
+   * ceremony for an existing store the witness has never seen, and is never
+   * passed by any composition path.
+   */
+  readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary; readonly enrollment?: AuthorityStateEnrollmentContext };
 }
 
 const SCHEMA = `
@@ -147,11 +168,18 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
 
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(absolute);
-  // The highest committed sequence this process has verified. A read that
-  // finds a lower one — an older signed state restored underneath a running
-  // Host — is refused. Only while this process lives: cross-restart rollback
-  // detection is CORE-07.
-  let witnessed = -1;
+  // The newest committed state this process has verified — sequence **and**
+  // digest (CORE-07): a read that finds a lower sequence, or a different state
+  // at the same sequence, has found an older or forked signed state restored
+  // underneath a running Host, and is refused. On its own it lasts only while
+  // this process lives; across a restart the freshness session below, anchored
+  // at the external witness, is what refuses an older state.
+  let witnessed: { readonly sequence: number; readonly chainDigest: string } | undefined;
+  let session: AuthorityStateFreshnessSession | undefined;
+  const freshness = options.freshness;
+  if (freshness !== undefined && (!isAuthorityStateFreshnessBoundary(freshness.boundary) || freshness.boundary.organizationId !== organizationId)) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The approval store freshness option must carry a boundary built by createAuthorityStateFreshnessBoundary for the same organization.');
+  }
 
   function verifiedState(): { readonly state: ApprovalStateCommitment; readonly rows: readonly StoredApprovalRecord[]; readonly keyId: string } {
     for (const table of ['approval_store_meta', 'approval_head', 'approval_records']) {
@@ -181,8 +209,13 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
     const keyId = verification.keyId;
     const rows = (db.prepare('SELECT * FROM approval_records ORDER BY sequence ASC').all() as Row[]).map(toStored);
     verifyApprovalHistory(rows, state);
-    if (state.sequence < witnessed) corrupt('The approval store regressed to an earlier committed state while this process was running.');
-    witnessed = Math.max(witnessed, state.sequence);
+    // CORE-07: the floor established against the external witness at open. Local, synchronous, no network. First, so the freshness session records what it refused.
+    session?.observe(approvalStateCheckpoint(state));
+    if (witnessed !== undefined) {
+      if (state.sequence < witnessed.sequence) corrupt('The approval store regressed to an earlier committed state while this process was running.');
+      if (state.sequence === witnessed.sequence && state.chainDigest !== witnessed.chainDigest) corrupt('The approval store holds a different committed state at the same sequence while this process was running.');
+    }
+    if (witnessed === undefined || state.sequence > witnessed.sequence) witnessed = { sequence: state.sequence, chainDigest: state.chainDigest };
     return { state, rows, keyId };
   }
 
@@ -196,7 +229,14 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
       // would sign a fresh, empty authority state over whatever is there —
       // and an empty approval state forgets every rejection.
       if (!isEmptyDatabase(db)) corrupt('The approval store has content but no authenticated identity; it is never re-initialized.');
-      const storeId = `approval-store:${randomUUID()}`;
+      // CORE-07: under freshness the genesis is enrolled at the witness before
+      // it is committed here; a crash in between is adopted on the next open
+      // (genesis is deterministic from the store id), and a witness holding
+      // this organization's state beyond genesis refuses the empty file.
+      const storeId =
+        freshness === undefined
+          ? `approval-store:${randomUUID()}`
+          : await freshness.boundary.genesisStoreId('approval-state', { newStoreId: () => `approval-store:${randomUUID()}`, genesisDigest: (id) => approvalGenesisDigest(id, organizationId) });
       const genesis: ApprovalStateCommitment = { storeId, organizationId, sequence: 0, chainDigest: approvalGenesisDigest(storeId, organizationId) };
       const signature = await signer.signApprovalState(genesis);
       const createdAt = options.now();
@@ -209,6 +249,12 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
     // Verified before the store is handed to anything: a forged or foreign
     // store refuses the Host at startup, not at the first resumption.
     const opened = verifiedState();
+    // CORE-07: freshness is established before the store is re-attested or
+    // handed to anything. A rollback, fork, unheld pending transition,
+    // unenrolled store or unreachable witness refuses the open.
+    if (freshness !== undefined) {
+      session = await freshness.boundary.establish(approvalStateCheckpoint(opened.state), () => approvalStateCheckpoint(verifiedState().state), freshness.enrollment !== undefined ? { enrollment: freshness.enrollment } : {});
+    }
     // Key rotation — the CORE-01 rule, reused unchanged: a state that verifies
     // under a trusted key other than the active one is re-signed, *unchanged*,
     // under the active key, inside a transaction that verifies it again and
@@ -255,7 +301,7 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
     // Signed before the write transaction; nothing is written if signing fails.
     const signature = await signer.signApprovalState(next);
     const updatedAt = options.now();
-    db.transaction(() => {
+    const commitLocal = (): void => db.transaction(() => {
       // Under the write lock, the whole history is verified again and must
       // still be exactly the state the new head was signed over: a row
       // tampered between planning and commit is never laundered into a new
@@ -286,7 +332,12 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
       // every later read refuses.
       verifiedState();
     }).immediate();
-    witnessed = Math.max(witnessed, sequence);
+    // CORE-07: prepare at the witness, commit here, then finalize. `prepare`
+    // completes before the write transaction opens and `finalize` runs after it
+    // commits — no network call inside it. A witness that does not prepare
+    // leaves nothing written.
+    if (session === undefined) commitLocal();
+    else await session.transition(approvalStateCheckpoint(state), approvalStateCheckpoint(next), () => (commitLocal(), { value: undefined, state: approvalStateCheckpoint(next) }));
     return Object.freeze({ ...content, sequence, digest });
   }
 
@@ -316,5 +367,7 @@ export async function createSqliteApprovalStore(path: string, options: SqliteApp
   };
   // CORE-02: which custody signs for this store (software or external).
   bindStoreSignerCustody(store, signer);
+  // CORE-07: which freshness boundary this store was composed under, if any.
+  if (freshness !== undefined) markComposedUnderFreshness(store, freshness.boundary);
   return store;
 }

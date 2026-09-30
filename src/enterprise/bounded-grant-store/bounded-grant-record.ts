@@ -152,9 +152,10 @@ export interface RevocationSetEntry {
  * That it is the *latest* commitment. A writer holding an earlier, genuinely
  * signed commitment (copied before a revocation happened) can restore it along
  * with the rows it covered. That is a rollback of the store to an earlier
- * authentic state, and it is out of scope here: CORE-07 owns freshness and
- * anchoring. `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` states the
- * boundary.
+ * authentic state, and nothing in the file can detect it: CORE-07 anchors this
+ * commitment, unchanged, at an external authority-state witness outside the
+ * file's restore domain (`authority-state-freshness/`).
+ * `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §30 states the boundary.
  */
 export interface RevocationStateCommitment {
   readonly storeId: string;

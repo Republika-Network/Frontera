@@ -14,6 +14,10 @@ import { AUTHORITY_KEY_A, AUTHORITY_KEY_B, authorityAuthenticityEnv, openDurable
 import { SIGNER_TOKEN, externalCustodyEnv, startInProcessSigner, withoutSoftwareCustody } from './core02-external-signer-fixture.js';
 import { secureEnv } from './core04-host-fixture.js';
 import { buildTestKernelProviders } from './support.js';
+import { freshnessEnv, witnessKey } from './core07-freshness-fixture.js';
+
+/** CORE-07: a secure profile also requires a freshness witness. Configuration only — never contacted here. */
+const WITNESS_CONFIGURATION = freshnessEnv({ endpoint: 'https://witness.internal.example', witnessId: 'witness-config-only', publicKeyPem: witnessKey().publicKeyPem });
 
 /**
  * CORE-02 — configuration: one custody, stated explicitly; the external mode
@@ -112,7 +116,7 @@ describe('CORE-02 — external mode never parses, stores or ignores a private ke
 
   it('the secure Host accepts external custody with no private key, and refuses it with one — before anything is composed', () => {
     const host = dir('secure');
-    const env = { ...withoutSoftwareCustody(secureEnv(host)), ...external() };
+    const env = { ...withoutSoftwareCustody(secureEnv(host)), ...external(), ...WITNESS_CONFIGURATION };
     const configuration = loadEnterpriseHostConfiguration(env);
     assert.equal(configuration.configuration.authorityAuthenticity.mode, 'external');
     assert.throws(
@@ -122,7 +126,7 @@ describe('CORE-02 — external mode never parses, stores or ignores a private ke
     // The secure profile still requires *a* signer: neither custody configured is refused.
     assert.throws(() => loadEnterpriseHostConfiguration(withoutSoftwareCustody(secureEnv(dir('none')))), (error: unknown) => isEnterpriseHostConfigurationError(error) && error.code === 'HOST_AUTHORITY_SIGNING_KEY_REQUIRED');
     // And software custody is still accepted where it was (development embedding, and deployments that choose it).
-    assert.equal(loadEnterpriseHostConfiguration(secureEnv(dir('software'))).configuration.authorityAuthenticity.mode, undefined);
+    assert.equal(loadEnterpriseHostConfiguration({ ...secureEnv(dir('software')), ...WITNESS_CONFIGURATION }).configuration.authorityAuthenticity.mode, undefined);
   });
 
   it('public configuration exposes mode, key id, algorithm material and the endpoint origin — never the credential, the private key, or an endpoint path', () => {

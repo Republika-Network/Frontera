@@ -279,6 +279,19 @@ export interface EnterpriseConfiguration {
    * placed in.
    */
   readonly authorityAuthenticity: SoftwareAuthorityAuthenticityConfiguration | ExternalAuthorityAuthenticityConfiguration;
+  /**
+   * CORE-07 — cross-restart freshness of authenticated authority state.
+   *
+   * A closed choice: `none` (absent means `none`: signatures authenticate the
+   * durable authority stores, and a restored earlier authentic state is
+   * detected only while a process runs — AA-003 / GS-002 stay open for this
+   * deployment) or `external` (every durable authority store anchors its
+   * signed head at an external authority-state witness outside its restore
+   * domain, and a restored earlier state is refused across restarts). The
+   * secure Host profile requires `external`. There is no local-only mode that
+   * claims cross-restart freshness, and no fallback from `external` to one.
+   */
+  readonly authorityFreshness?: NoAuthorityFreshnessConfiguration | ExternalAuthorityFreshnessConfiguration;
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -356,6 +369,38 @@ export interface ExternalAuthorityAuthenticityConfiguration {
    */
   readonly conflictingSigningKeyPresent: boolean;
 }
+
+/** CORE-07: no freshness witness. Cross-restart rollback of durable authority is not detected (AA-003 / GS-002 open for this deployment). */
+export interface NoAuthorityFreshnessConfiguration {
+  readonly mode: 'none';
+}
+
+/**
+ * CORE-07: an external authority-state witness. Its identity — id and Ed25519
+ * public key — is pinned here and never learned from the witness; its
+ * credential is its own, never the external signer's. A different trust role
+ * gets a different credential and a different key.
+ */
+export interface ExternalAuthorityFreshnessConfiguration {
+  readonly mode: 'external';
+  readonly witness: {
+    /** Base URL of the witness. `https:`, or `http:` to loopback for the local reference witness. */
+    readonly endpoint: string;
+    /** Bearer credential for the witness. **Secret.** Never on public configuration. */
+    readonly credential: string;
+    /** The pinned witness id every receipt must name. */
+    readonly witnessId: string;
+    /** SPKI PEM of the pinned witness receipt key. Public material. */
+    readonly publicKeyPem: string;
+    readonly timeoutMs: number;
+    readonly maxAttempts: number;
+    readonly probeIntervalMs: number;
+  };
+}
+
+export const DEFAULT_AUTHORITY_FRESHNESS_TIMEOUT_MS = 5_000;
+export const DEFAULT_AUTHORITY_FRESHNESS_MAX_ATTEMPTS = 2;
+export const DEFAULT_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS = 5_000;
 
 export const DEFAULT_EXTERNAL_SIGNER_TIMEOUT_MS = 5_000;
 export const DEFAULT_EXTERNAL_SIGNER_MAX_ATTEMPTS = 2;
@@ -476,6 +521,7 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
     problems.push('AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS must be a JSON array of {keyId, algorithm, publicKeyPem} objects.');
   }
   problems.push(...authoritySignerEnvironmentProblems(env));
+  problems.push(...authorityFreshnessEnvironmentProblems(env));
   const apiKeys = env.AOC_ENTERPRISE_API_KEYS;
   if (apiKeys !== undefined && parseApiKeys(apiKeys).some((apiKey) => apiKey.key.length === 0)) {
     problems.push('AOC_ENTERPRISE_API_KEYS contains an entry with an empty key.');
@@ -563,6 +609,105 @@ function authoritySignerEnvironmentProblems(env: Readonly<Record<string, string 
     problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS must be an integer from 0 to 60000.');
   }
   return problems;
+}
+
+const AUTHORITY_FRESHNESS_VARIABLES = [
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT',
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN',
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID',
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY',
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS',
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS',
+  'AOC_ENTERPRISE_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS',
+] as const;
+
+/**
+ * CORE-07: the strict reading of the authority-freshness variables. One mode,
+ * stated explicitly:
+ *
+ * - `external` without endpoint, credential, pinned witness id or pinned
+ *   witness public key is refused;
+ * - a witness variable without `external` is refused — never guessed;
+ * - the witness credential must not be the external signer's: a different
+ *   trust role never shares a credential.
+ *
+ * Names variables and rules, never values.
+ */
+function authorityFreshnessEnvironmentProblems(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const problems: string[] = [];
+  const mode = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE;
+  if (mode !== undefined && mode !== 'none' && mode !== 'external') {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE must be one of: none, external.');
+    return problems;
+  }
+  if (mode !== 'external') {
+    for (const name of AUTHORITY_FRESHNESS_VARIABLES) {
+      if (env[name] !== undefined) problems.push(`${name} is set but AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE is not 'external'. Refusing to guess whether a freshness witness was meant.`);
+    }
+    return problems;
+  }
+  const endpoint = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT;
+  if (endpoint === undefined || endpoint.length === 0) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external requires AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT.');
+  } else {
+    let url: URL | undefined;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      url = undefined;
+    }
+    if (url === undefined || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+      problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT must be an absolute https URL (or http to a loopback address for the local reference witness).');
+    } else if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {
+      problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT uses plain http to a non-loopback address; only https is accepted beyond loopback.');
+    } else if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || (url.pathname !== '/' && url.pathname !== '')) {
+      problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT must be a base URL with no credentials, path, query or fragment.');
+    }
+  }
+  const token = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN;
+  if (token === undefined || token.length < 32 || /\s/.test(token)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external requires AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN: a credential of at least 32 characters with no whitespace.');
+  } else if (token === env.AOC_ENTERPRISE_AUTHORITY_SIGNER_TOKEN) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN must not be the external signer credential: the freshness witness and the authority signer are different trust roles.');
+  }
+  const witnessId = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID;
+  if (witnessId === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(witnessId)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external requires AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID: 1-128 letters, digits, ".", "_", ":" or "-".');
+  }
+  const publicKey = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY;
+  if (publicKey === undefined || !/-----BEGIN PUBLIC KEY-----/.test(publicKey) || /PRIVATE KEY/.test(publicKey)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external requires AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY: the pinned witness Ed25519 public key (SPKI PEM). Never a private key.');
+  }
+  const timeout = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS;
+  if (timeout !== undefined && (!/^\d{1,5}$/.test(timeout) || Number.parseInt(timeout, 10) < 1 || Number.parseInt(timeout, 10) > 60_000)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS must be an integer from 1 to 60000.');
+  }
+  const attempts = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS;
+  if (attempts !== undefined && !['1', '2', '3'].includes(attempts)) problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS must be 1, 2 or 3.');
+  const probeInterval = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS;
+  if (probeInterval !== undefined && (!/^\d{1,5}$/.test(probeInterval) || Number.parseInt(probeInterval, 10) > 60_000)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS must be an integer from 0 to 60000.');
+  }
+  return problems;
+}
+
+/** CORE-07: the freshness mode as read from `env`. Absent (or `none`) is `none`. */
+function loadAuthorityFreshness(env: Readonly<Record<string, string | undefined>>): NonNullable<EnterpriseConfiguration['authorityFreshness']> {
+  if (env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE !== 'external') return { mode: 'none' };
+  const attempts = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS;
+  const probeInterval = env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS;
+  return {
+    mode: 'external',
+    witness: {
+      endpoint: env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT ?? '',
+      credential: env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN ?? '',
+      witnessId: env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID ?? '',
+      publicKeyPem: env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY ?? '',
+      timeoutMs: parsePositiveIntMs(env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS, DEFAULT_AUTHORITY_FRESHNESS_TIMEOUT_MS),
+      maxAttempts: attempts !== undefined && /^\d+$/.test(attempts) ? Number.parseInt(attempts, 10) : DEFAULT_AUTHORITY_FRESHNESS_MAX_ATTEMPTS,
+      probeIntervalMs: probeInterval !== undefined && /^\d+$/.test(probeInterval) ? Number.parseInt(probeInterval, 10) : DEFAULT_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS,
+    },
+  };
 }
 
 /**
@@ -683,6 +828,7 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',
     },
     authorityAuthenticity: loadAuthorityAuthenticity(env),
+    authorityFreshness: loadAuthorityFreshness(env),
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',
       required: parseBoolean(env.AOC_ENTERPRISE_ASSURANCE_REQUIRED, false),
@@ -697,7 +843,20 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
  * flags, timeouts) with `authentication.apiKeys` replaced by a non-secret
  * count and per-key organization scoping. Never carries `EnterpriseApiKey.key`.
  */
-export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authentication' | 'authorityAuthenticity' | 'administration'> & {
+export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authentication' | 'authorityAuthenticity' | 'authorityFreshness' | 'administration'> & {
+  /** CORE-07: the freshness mode and, for `external`, the pinned witness identity and bounds — the origin only, never the credential. */
+  readonly authorityFreshness: {
+    readonly mode: 'none' | 'external';
+    readonly witness?: {
+      readonly origin: string;
+      readonly witnessId: string;
+      readonly timeoutMs: number;
+      readonly maxAttempts: number;
+      readonly probeIntervalMs: number;
+      /** Whether a witness credential is configured. A boolean, never the credential. */
+      readonly credentialConfigured: boolean;
+    };
+  };
   /** CTRL-01: how many administrators are configured. A count, never an identity or a secret. */
   readonly administration: { readonly administratorCount: number };
   readonly authentication: {
@@ -747,9 +906,23 @@ export function toPublicEnterpriseConfiguration(config: EnterpriseConfiguration)
   // `authorityAuthenticity` is destructured out alongside `authentication` so
   // the private signing key is removed by *construction* rather than by an
   // overwrite that a later spread could undo.
-  const { authentication, authorityAuthenticity, administration, ...rest } = config;
+  const { authentication, authorityAuthenticity, authorityFreshness, administration, ...rest } = config;
   return {
     ...rest,
+    authorityFreshness:
+      authorityFreshness?.mode === 'external'
+        ? {
+            mode: 'external',
+            witness: {
+              origin: originOf(authorityFreshness.witness.endpoint),
+              witnessId: authorityFreshness.witness.witnessId,
+              timeoutMs: authorityFreshness.witness.timeoutMs,
+              maxAttempts: authorityFreshness.witness.maxAttempts,
+              probeIntervalMs: authorityFreshness.witness.probeIntervalMs,
+              credentialConfigured: authorityFreshness.witness.credential.length > 0,
+            },
+          }
+        : { mode: 'none' },
     administration: { administratorCount: administration?.administrators.length ?? 0 },
     authentication: {
       requireAuthentication: config.features.requireAuthentication,

@@ -24,6 +24,8 @@ import {
   storePath,
   target,
 } from './core05-approval-fixture.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/index.js';
+import { boundaryFor, closeAllWitnesses, startWitness } from './core07-freshness-fixture.js';
 
 /**
  * CORE-05 — a database-only writer cannot manufacture, restore or keep an
@@ -35,6 +37,7 @@ import {
  */
 
 after(cleanup);
+after(closeAllWitnesses);
 
 async function assertRefusedEverywhere(file: string, store: ApprovalStore): Promise<void> {
   // The resuming read believes nothing — withheld, never approved.
@@ -291,8 +294,8 @@ describe('CORE-05 — key rotation follows the CORE-01 rule', () => {
   });
 });
 
-describe('CORE-05 — rollback (the CORE-07 residual, pinned)', () => {
-  it('S1 approved → S2 revoked → S1 restored: refused while the process lives; across a restart the older genuine state is believed (stated residual)', async () => {
+describe('CORE-05 — rollback (the CORE-07 residual, inverted)', () => {
+  it('S1 approved → S2 revoked → S1 restored: refused while the process lives; across a restart it is refused too once a freshness witness is composed (CORE-07)', async () => {
     const clock = new Clock();
     const file = storePath();
     const store = await openStore(file, { clock });
@@ -314,11 +317,32 @@ describe('CORE-05 — rollback (the CORE-07 residual, pinned)', () => {
     await assert.rejects(() => authority.describe('aoc.gar:target'), (error: unknown) => corrupt(error) && /regressed/.test((error as Error).message));
     assert.deepEqual(await authority.assess(target()), { kind: 'withheld', status: 'unavailable' });
 
-    // RESIDUAL (CORE-07): after a restart there is no witness, and the older
-    // genuine state — approved — verifies. CORE-05 does not claim to detect
-    // this; it is bounded by the approval's own validity window and by every
-    // other issuance gate, and closed by CORE-07's external anchoring.
+    // SCOPED (CORE-07): a store opened with no freshness witness still
+    // believes the older genuine state — approved — after a restart. That is
+    // the lenient mode, stated; the secure Host never runs it.
     const restarted = authorityOver(await openStore(file, { clock }), { clock });
     assert.equal((await restarted.assess(target())).kind, 'approved');
+  });
+
+  it('CORE-07 (inverted from the residual): with a freshness witness, the restored approved prefix is refused at restart — the revoked approval never becomes usable again', async () => {
+    const witness = await startWitness();
+    const clock = new Clock();
+    const file = storePath();
+    const open = async () => createSqliteApprovalStore(file, { now: clock.now, organizationId: ORG, authenticity: testAuthenticity(), freshness: { boundary: await boundaryFor(witness, ORG) } });
+    const store = await open();
+    const authority = authorityOver(store, { clock });
+    const command = await opened(authority);
+    await authority.approve(actor('approver-a'), command);
+    await authority.approve(actor('approver-b'), command);
+    const s1 = { head: rawHead(file), rows: rawRows(file) };
+    await authority.revoke(actor('approver-c'), command);
+    await store.close();
+    const rollback = new Database(file);
+    rollback.exec('DROP TRIGGER IF EXISTS approval_records_no_delete;');
+    rollback.prepare('DELETE FROM approval_records WHERE sequence > ?').run(s1.rows.length);
+    rollback.prepare('UPDATE approval_head SET sequence = ?, chain_digest = ?, signature_json = ? WHERE id = 1').run(s1.head.sequence, s1.head.chain_digest, s1.head.signature_json);
+    rollback.close();
+    await assert.rejects(open, (error: unknown) => error instanceof AuthorityStateFreshnessError && error.code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED');
+    await witness.close();
   });
 });

@@ -33,6 +33,7 @@ import {
   storedGrant,
   type Reading,
 } from './core04-host-fixture.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
  * CORE-04 §92 / §93 / §52–§58 / §96 — trusted facts on the **canonical shipped
@@ -316,7 +317,7 @@ describe('CORE-04 §66 / §67 / §101 — startup: no default trust, no fallback
   const refusesToBoot = async (file: Record<string, unknown>, withProvider = true, withPolicy = true, code?: string) => {
     const context = createContextTable();
     await assert.rejects(
-      () => bootEnterpriseHost({ env: secureEnv(workspace.dir(), file), executionAdapters: [STUB_ADAPTER], ...(withProvider ? { contextProvider: context.provider } : {}), ...(withPolicy ? { policyPackProvider: policyPackProvider() } : {}) }),
+      async () => bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(workspace.dir(), file)), executionAdapters: [STUB_ADAPTER], ...(withProvider ? { contextProvider: context.provider } : {}), ...(withPolicy ? { policyPackProvider: policyPackProvider() } : {}) }),
       (error: unknown) =>
         (error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_GOVERNED_ACTIONS_FILE_INVALID' && (code === undefined || error.message.includes(code))) ||
         (error instanceof GovernedActionConfigurationError && (code === undefined || error.code === code)),
@@ -362,11 +363,11 @@ describe('CORE-04 §66 / §67 / §101 — startup: no default trust, no fallback
 
   it('refuses facts declared with no context provider, or with no policy to decide with them — never healthy-and-proceeding', async () => {
     await assert.rejects(
-      () => bootEnterpriseHost({ env: secureEnv(workspace.dir()), executionAdapters: [STUB_ADAPTER], policyPackProvider: policyPackProvider() }),
+      async () => bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(workspace.dir())), executionAdapters: [STUB_ADAPTER], policyPackProvider: policyPackProvider() }),
       (error: unknown) => error instanceof GovernedActionConfigurationError && error.code === 'GOVERNED_ACTION_TRUSTED_CONTEXT_REQUIRED',
     );
     await assert.rejects(
-      () => bootEnterpriseHost({ env: secureEnv(workspace.dir()), executionAdapters: [STUB_ADAPTER], contextProvider: createContextTable().provider }),
+      async () => bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(workspace.dir())), executionAdapters: [STUB_ADAPTER], contextProvider: createContextTable().provider }),
       (error: unknown) => error instanceof GovernedActionConfigurationError && error.code === 'GOVERNED_ACTION_CONTEXT_POLICY_REQUIRED',
     );
   });

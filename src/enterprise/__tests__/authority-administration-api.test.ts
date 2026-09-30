@@ -14,6 +14,7 @@ import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kern
 import { createKernelAuthorityProvisioningService, type KernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { AUTHORITY_KEY_A, authorityAuthenticityEnv, dropAuthorityStoreTriggers } from './authority-authenticity-fixture.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
  * CTRL-01 — the authority administration API, qualified through the real
@@ -145,7 +146,7 @@ interface Booted {
 }
 
 async function boot(env: Record<string, string | undefined>, adapter: RecordingAdapter = recordingAdapter()): Promise<Booted> {
-  const host = await bootEnterpriseHost({ env, executionAdapters: [adapter], logger: capturingLogger });
+  const host = await bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter], logger: capturingLogger });
   hosts.push(host);
   const { port } = await host.listen();
   return { host, adapter, baseUrl: `http://127.0.0.1:${port}` };
@@ -327,7 +328,7 @@ describe('CTRL-01 configuration — administrators are explicit, server-side, st
       const dir = workDir();
       let refused: unknown;
       try {
-        const host = await bootEnterpriseHost({ env: secureEnv(dir, file, overrides), executionAdapters: [recordingAdapter()], logger: capturingLogger });
+        const host = await bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(dir, file, overrides)), executionAdapters: [recordingAdapter()], logger: capturingLogger });
         hosts.push(host);
       } catch (error) {
         refused = error;
