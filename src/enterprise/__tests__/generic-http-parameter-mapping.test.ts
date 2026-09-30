@@ -230,6 +230,9 @@ describe('CORE-08 §12 / §13 — a parameter can never control destination, cre
 
   it('a parameter cannot set Authorization, a credential header, a reserved header or a header name', () => {
     refused({ headers: { Authorization: { kind: 'parameter', dimension: 'strategy' } } });
+    // Without any credential configured too — the reserved-name rule stands on its own, not only via the credential collision check.
+    refused({ credential: undefined, headers: { Authorization: { kind: 'parameter', dimension: 'strategy' } } });
+    refused({ credential: undefined, headers: { 'Proxy-Authorization': { kind: 'parameter', dimension: 'strategy' } } });
     refused({ headers: { Host: { kind: 'parameter', dimension: 'strategy' } } });
     refused({ headers: { 'Proxy-Authorization': { kind: 'parameter', dimension: 'strategy' } } });
     refused({ credential: { kind: 'header', name: 'X-Strategy', value: 'secret-value' } });
