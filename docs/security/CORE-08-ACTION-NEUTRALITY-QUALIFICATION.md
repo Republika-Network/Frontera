@@ -257,9 +257,24 @@ Run on an LF export of the tree under test (the working-copy sources, no CRLF), 
 
 Root suite on the working copy: **8 514 tests — 8 498 pass, 3 fail, 9 skipped, 4 todo.** The three failures, each explained: (1) CTRL-01 structure — "the HTTP adapter mounts administration only through the service" and (2) R004.B — "loadEnterpriseConfiguration never falls back to a hardcoded … API key" are source-regex tests over two files CORE-08 did not touch whose *working copies* carry CRLF line endings (`git ls-files --eol`: `i/lf w/crlf`) — the known Windows working-copy artifact recorded by CORE-06/07; (3) the CORE-08 matrix/document cross-check ran before this document existed, and passes (38/38) with it. Workspaces: **1 089 tests, 1 089 pass**, 0 fail.
 
-### 14.3 Clean export
+### 14.3 Clean export (authoritative)
 
-PENDING — filled after the clean-export run.
+`git archive` of the validation candidate `aff06c8c20708b73a66da8c0c665b961e0ae77e7` (all code, tests and security documentation of this milestone), extracted on a native Linux filesystem: **0 files with CRLF**.
+
+| Step | Result |
+|---|---|
+| `npm ci` | green |
+| typecheck (`tsc -b`) | green |
+| lint | green |
+| build | green |
+| Root suite (`npm run test:root`) | **8 514 tests, 1 560 suites — 8 501 pass, 0 fail**, 0 cancelled, 9 skipped, 4 todo |
+| Workspaces (`npm run test:workspaces`) | **1 089 tests — 1 089 pass, 0 fail** |
+| `check-api-freeze` | passed — 36 endpoints, no source drift |
+| `check-release-docs` | passed — 24 documents |
+| `check-sdk-surface` | passed — 5 frozen exports, zero dependencies |
+| `legal:check` | pre-existing advisory findings only (2) |
+
+The two working-copy failures of §14.2 do not occur on the LF export: they were line-ending artifacts. The milestone's final commit adds only this document's results and the Master Plan status; it is re-validated the same way (reported with the milestone).
 
 ## 15. Residuals (retained; nothing erased)
 
@@ -276,4 +291,10 @@ PENDING — filled after the clean-export run.
 
 ## 16. Verdict
 
-PENDING — stated after validation.
+Every live §11.6 criterion holds (§2 → §8 – §12), every item of the CORE-08 exit gate is evidenced by an executable test on the canonical Host or in the named suites, the domain matrix is machine-checked, the no-domain-branching proof is mutation-proven, and the full validation is green on a clean export.
+
+> **Frontera's deterministic Governance Core is action-neutral across the qualified reference domains.** Monetary treasury actions, software deployment actions and customer-data actions traverse the same authority spine, using generic signed bounded authority, shared constraints, trusted context, exercise controls and evidence lifecycle. Domain meaning enters through Governance Profiles, trusted context and policy data, organizational authority data and Execution Adapter configuration — not through Kernel or orchestrator branches.
+
+Not claimed: that every possible machine action is supported; physical-actuation safety; rail neutrality (CORE PROVEN, §11.2).
+
+**CORE-08 → VERIFIED. GOVERNED ACTION THESIS PROVEN → ACHIEVED.**
