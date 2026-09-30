@@ -208,11 +208,58 @@ The detectors are tested against eleven real branch shapes (non-vacuity), and ag
 
 ## 13. Mutation campaign
 
-PENDING — filled after the campaign runs.
+**Method.** Run on a clean `git archive` of the committed tree (`ec5b207`, plus the then-uncommitted ledger documents and the hardened mapping test) on a native filesystem, never on the working copy. For every mutation the runner recorded the SHA-256 of each file it would touch, applied an **exact single-occurrence** edit (an anchor found zero or several times is `NOT-APPLIED`, never guessed), rebuilt with `tsc -b` (a compile failure is `INVALID`, never counted as a kill), ran the named killing suites, restored the original bytes and re-verified each hash; the last step rebuilt from restored sources so no mutated output remained in `dist`. Afterwards the workspace was diffed against `git archive HEAD`: the only differences were the four intentionally uncommitted files. A suite whose `before()` hook aborted is `SUITE-ABORTED`, not a kill.
+
+**Result: 36 mutations — 35 KILLED, 1 SURVIVED (M30a, explained and deepened into M30, KILLED).** Restoration hash = the first 16 hex digits of the original file's SHA-256, verified after every mutation.
+
+| ID | Mutation (security property removed) | Result | Killing test(s) | Restored |
+|---|---|---|---|---|
+{table}
+
+**Corrections made during the campaign (none counted as kills).**
+
+- **M4, M6 — definitions corrected.** M4's first anchor matched twice (`NOT-APPLIED`); M6's first form did not type-check (`INVALID`). Both were rewritten as exact, compiling edits and re-run: KILLED.
+- **M24, M24b, M29 — anchor corrected.** The first Kernel anchor matched two methods (`NOT-APPLIED`); anchored on `evaluate`'s signature and re-run: KILLED.
+- **M17 – M19 — deepened past an independent layer.** Removing a material fact from a profile alone aborted the Host at startup: the governed-action file parser refuses a trusted-source attestation that no Governance Profile reads (`GOVERNED_ACTION_TRUSTED_CONTEXT_INVALID`). That consistency check is a real, independent defence, but it proves nothing about the missing-fact tests. Each mutation was deepened to also remove that fact's attestation, so the Host boots with the requirement genuinely gone: KILLED by the domain's missing-fact test (and, for treasury and data, the policy-deny test whose rule reads the same fact).
+- **M30a — survivor, defence in depth.** Removing the orchestrator's idempotency-conflict stop does not produce a second effect: the request identity is derived from the idempotency key (`deriveGovernedActionRequestId`), and the Governance Store's own idempotency record refuses a different request under it (`GOVERNANCE_IDEMPOTENCY_CONFLICT` → `rejected`). **M30** deepens it — rekeying both the request identity and the idempotency record by the parameter values — and is KILLED by “W — the same idempotency key with changed parameters is refused; the committed request is never reinterpreted”.
+- **M10 — test hardened before the campaign.** The Authorization-mapping refusal was first asserted only with a bearer credential configured, where the credential-collision check also refuses; a credential-less case was added so the reserved-name rule is tested on its own.
+
+**Mapping to the §67 list.** M1 … M13 as listed; M14 / M15 are the domains' own policy data and M14b the generic `maximum` bound; M16 the P10 ceiling; M17 … M19 the domains' material facts; M20 … M22 a per-domain skipped revocation check (each a literal domain branch in the generic exercise gate, so also caught structurally); M23 / M24 / M24b real branches inserted into the orchestrator and the Kernel; M25 … M32 as listed.
 
 ## 14. Validation
 
-PENDING — filled after validation runs.
+### 14.1 Focused regression matrix
+
+Run on an LF export of the tree under test (the working-copy sources, no CRLF), one `node --test` invocation per group:
+
+| Group | Suites | Tests | Pass | Fail |
+|---|---|---|---|---|
+| CORE-03 semantic parameters | envelope, semantics Host, neutrality structure, read/export thesis, profile registry, parameter runtime, Kernel semantics / legacy parameters / effective profile, policy parameter predicates | 126 | 126 | 0 |
+| CORE-04 context & obligations | trusted-context / obligations / restrictive-signal / review-profile Hosts, trusted-context structure, discharge store / authenticity / scenario / record, Kernel context, policy context predicates | 162 | 162 | 0 |
+| CORE-05 approvals | approvals Host + adversarial Host, approval gate, approval authenticity / lifecycle / structure | 81 | 81 | 0 |
+| CORE-06 qualification | Governance Core Host, qualification structure (incl. the BLOCKED-claim ledger with the CORE-08 rows), BLOCKED-claim evidence | 59 | 59 | 0 |
+| CORE-07 freshness | freshness Host, grants, enrollment, obligations/approvals, protocol, structure | 88 | 88 | 0 |
+| Grant issuance / exercise / revocation | every grant-runtime and execution-runtime suite (incl. layer boundaries and the CORE-08 delivery suite) | 446 | 446 | 0 |
+| Host governed actions & HTTP API | orchestrator, composition, API endpoint, enterprise Host, event stream | 349 | 349 | 0 |
+| Generic HTTP | adapter, composition, CORE-08 parameter mapping | 211 | 211 | 0 |
+| Emergency control | governed action, commit boundary, composition, durability | 113 | 113 | 0 |
+| P7 exercise controls | governed action, SQLite, authority binding, composition, concurrency, resolution | 187 | 187 | 0 |
+| P9 / P10 monetary | canonical semantics, exact JSON, payment ceilings + structure, monetary constraints | 160 | 160 | 0 |
+| P11 outcomes | store, boundaries, concurrency, CORE-08 parameters, durable outcomes + e2e | 121 | 121 | 0 |
+| P12 reconciliation | e2e, boundaries, resolution store | 95 | 95 | 0 |
+| CORE-08 qualification | Host, structure | 58 | 58 | 0 |
+| Security ledgers | security invariants, no-bypass effect paths | 63 | 63 | 0 |
+| **Total** | | **2 319** | **2 319** | **0** |
+
+### 14.2 Working copy
+
+`npm ci` (clean install), typecheck and build (`tsc -b`) green; lint (Node16 imports, architecture, public surface) passed; `check-api-freeze` passed — **36 endpoints**, no route added; `check-release-docs` passed (24 documents); `check-sdk-surface` passed (5 frozen exports, zero dependencies) — no public SDK type changed; `legal:check` reports the two pre-existing advisory findings only (unnamed workspace manifests; busboy/streamsearch license metadata), no dependency added; `git diff --check` clean; no conflict markers.
+
+Root suite on the working copy: **8 514 tests — 8 498 pass, 3 fail, 9 skipped, 4 todo.** The three failures, each explained: (1) CTRL-01 structure — "the HTTP adapter mounts administration only through the service" and (2) R004.B — "loadEnterpriseConfiguration never falls back to a hardcoded … API key" are source-regex tests over two files CORE-08 did not touch whose *working copies* carry CRLF line endings (`git ls-files --eol`: `i/lf w/crlf`) — the known Windows working-copy artifact recorded by CORE-06/07; (3) the CORE-08 matrix/document cross-check ran before this document existed, and passes (38/38) with it. Workspaces: **1 089 tests, 1 089 pass**, 0 fail.
+
+### 14.3 Clean export
+
+PENDING — filled after the clean-export run.
 
 ## 15. Residuals (retained; nothing erased)
 
