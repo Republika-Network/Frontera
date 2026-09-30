@@ -555,14 +555,15 @@ export async function createSqliteKernelAuthorityStore(
           migrationState: 'current',
           recordCount: count,
         };
-      } catch (error) {
+      } catch {
+        // The driver's message is not reported: it can name the database file.
         return {
           providerKind: 'sqlite',
           status: 'unhealthy',
           readable: false,
           writable: false,
           schemaVersion: KERNEL_AUTHORITY_SCHEMA_VERSION,
-          migrationState: error instanceof Error ? error.message : 'unknown',
+          migrationState: 'unavailable',
           recordCount: 0,
         };
       }

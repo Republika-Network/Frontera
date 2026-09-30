@@ -421,6 +421,9 @@ export {
   KERNEL_AUTHORITY_SCHEMA_VERSION,
   KERNEL_AUTHORITY_CONTRACT_IDS,
   KERNEL_AUTHORITY_ENTITY_KINDS,
+  KERNEL_AUTHORITY_STORE_PROVIDER_KINDS,
+  KERNEL_AUTHORITY_STORE_PROVIDER_PROPERTIES,
+  isDurableKernelAuthorityStoreProvider,
 } from './kernel-authority/contracts.js';
 export type {
   KernelAuthorityAccessContext,
@@ -437,6 +440,8 @@ export type {
   KernelAuthorityRecordQuery,
   KernelAuthorityRiskLevel,
   KernelAuthorityStoreHealth,
+  KernelAuthorityStoreMigrationState,
+  KernelAuthorityStoreProviderKind,
   AppendKernelAuthorityEventInput,
   AppendKernelAuthorityEventResult,
   KernelAuthorityProvisionInput,

@@ -1,4 +1,4 @@
-import { AOC_KERNEL_AUTHORITY_RUNTIME_VERSION } from '../kernel-authority/contracts.js';
+import { AOC_KERNEL_AUTHORITY_RUNTIME_VERSION, isDurableKernelAuthorityStoreProvider } from '../kernel-authority/contracts.js';
 import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import type { EnterpriseModule, EnterpriseModuleHealth } from './enterprise-module.js';
 
@@ -53,7 +53,7 @@ export function createKernelAuthorityModule(store: KernelAuthorityStore, now: ()
           // Deliberately shape and counts only: never an actor id, a capability,
           // a resource scope, or any other authority content.
           provider: store.providerKind,
-          durable: store.providerKind === 'sqlite',
+          durable: isDurableKernelAuthorityStoreProvider(store.providerKind),
           writable: health.writable,
           readable: health.readable,
           schemaVersion: health.schemaVersion,

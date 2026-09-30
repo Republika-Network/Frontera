@@ -12,6 +12,7 @@ import {
   type KernelAuthorityRecord,
   type KernelAuthorityRecordQuery,
   type KernelAuthorityStoreHealth,
+  type KernelAuthorityStoreProviderKind,
 } from './contracts.js';
 import { KernelAuthorityError } from './errors.js';
 
@@ -31,7 +32,7 @@ import { KernelAuthorityError } from './errors.js';
  * to nothing else in this layer.
  */
 export interface KernelAuthorityStore {
-  readonly providerKind: 'memory' | 'sqlite';
+  readonly providerKind: KernelAuthorityStoreProviderKind;
 
   /**
    * Appends one authority event atomically, enforcing the provisioning rules

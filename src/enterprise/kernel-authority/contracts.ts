@@ -337,13 +337,59 @@ export interface KernelAuthorityRecordQuery {
   readonly status?: KernelAuthorityEntityStatus;
 }
 
+/**
+ * The storage providers this runtime actually implements -- a closed,
+ * versioned vocabulary, not a free-form string.
+ *
+ * A kind is added here only in the same change that ships its implementation
+ * and passes the shared Kernel Authority Store conformance suite
+ * (`docs/architecture/ADR-NETWORK-DURABLE-KERNEL-AUTHORITY-STORE.md`). Naming
+ * a provider before it exists would let a configuration select something no
+ * code can construct, and every exhaustive check over this union would have to
+ * invent an answer for it.
+ */
+export const KERNEL_AUTHORITY_STORE_PROVIDER_KINDS = ['memory', 'sqlite'] as const;
+
+export type KernelAuthorityStoreProviderKind = (typeof KERNEL_AUTHORITY_STORE_PROVIDER_KINDS)[number];
+
+/**
+ * What a provider kind guarantees, declared once so no consumer re-derives it
+ * from a kind's name (`providerKind === 'sqlite'` is exactly the assumption a
+ * second durable provider would silently fall outside of).
+ *
+ * `durable`: committed authority survives the process that wrote it.
+ */
+export const KERNEL_AUTHORITY_STORE_PROVIDER_PROPERTIES: Readonly<Record<KernelAuthorityStoreProviderKind, { readonly durable: boolean }>> = {
+  memory: { durable: false },
+  sqlite: { durable: true },
+};
+
+export function isDurableKernelAuthorityStoreProvider(kind: KernelAuthorityStoreProviderKind): boolean {
+  return KERNEL_AUTHORITY_STORE_PROVIDER_PROPERTIES[kind].durable;
+}
+
+/**
+ * Fixed vocabulary, never free text. `unavailable` deliberately carries no
+ * reason: a driver's error message can name a filesystem path, a host, a
+ * database user or a connection string, and health is readable by anyone who
+ * can reach a health endpoint.
+ */
+export type KernelAuthorityStoreMigrationState = 'current' | 'closed' | 'unavailable';
+
+/**
+ * Storage-neutral store health. Every field is meaningful for a local file, a
+ * process-local map and a network database alike, and none of them may carry
+ * a credential, connection string, path, host, table name, driver message or
+ * any authority content. Provider-specific diagnostics belong to the provider's
+ * own operational tooling, not to this contract.
+ */
 export interface KernelAuthorityStoreHealth {
-  readonly providerKind: 'memory' | 'sqlite';
+  readonly providerKind: KernelAuthorityStoreProviderKind;
   readonly status: 'healthy' | 'degraded' | 'unhealthy';
   readonly readable: boolean;
   readonly writable: boolean;
   readonly schemaVersion: string;
-  readonly migrationState: string;
+  readonly migrationState: KernelAuthorityStoreMigrationState;
   readonly recordCount: number;
 }
 
