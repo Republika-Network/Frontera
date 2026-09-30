@@ -1,6 +1,6 @@
 import { createPublicKey, randomBytes, verify, type KeyObject } from 'node:crypto';
 
-import { authorityStateCheckpointProblem, isBoundedIdentifier, sameBinding, type AuthorityStateBinding, type AuthorityStateCheckpoint } from './checkpoint.js';
+import { authorityStateCheckpointProblem, isBoundedIdentifier, sameBinding, sameHead, type AuthorityStateBinding, type AuthorityStateCheckpoint } from './checkpoint.js';
 import { AuthorityStateFreshnessError, isRetryableAuthorityStateFreshnessFailure, type AuthorityStateFreshnessErrorCode } from './errors.js';
 import {
   AUTHORITY_STATE_WITNESS_OPERATIONS,
@@ -34,7 +34,9 @@ import type { AuthorityStateWitnessTransport } from './transport.js';
  *    protocol shape, and the signature must verify under the **pinned** key
  *    over the receipt's canonical, domain-separated bytes;
  * 3. the receipt must name the pinned witness id, the operation that was
- *    asked, the challenge that was sent, and the binding that was asked about.
+ *    asked, the challenge that was sent, and the binding that was asked about;
+ *    and a receipt that says `enrolled`, `prepared` or `finalized` must hold
+ *    exactly the store and checkpoint(s) that operation was asked to apply.
  *
  * So a recorded receipt cannot be replayed to a later call, a receipt for one
  * binding cannot answer another, and nothing but the pinned key can make a
@@ -154,6 +156,32 @@ function fail(code: AuthorityStateFreshnessErrorCode, message: string): never {
   throw new AuthorityStateFreshnessError(code, message);
 }
 
+function holds(state: WitnessBindingState | undefined, checkpoint: AuthorityStateCheckpoint, pending: AuthorityStateCheckpoint | undefined): boolean {
+  if (state?.status !== 'bound' || state.storeId !== checkpoint.storeId || !sameHead(state.committed, checkpoint)) return false;
+  return pending === undefined ? state.pending === undefined : state.pending !== undefined && sameHead(state.pending, pending);
+}
+
+/**
+ * Why a receipt that says an operation was applied does not show it applied to
+ * the checkpoint that was asked about, or `undefined`. A receipt claiming
+ * `enrolled`, `prepared` or `finalized` must carry the very state that
+ * outcome produces — so an authentic answer to one transition can never be
+ * read as the outcome of another. `current` and `conflict` report whatever
+ * the witness holds; the session compares that itself.
+ */
+function appliedStateProblem(request: WitnessRequest, receipt: WitnessReceipt): string | undefined {
+  switch (receipt.outcome) {
+    case 'enrolled':
+      return request.operation === 'enroll' && holds(receipt.state, request.checkpoint, undefined) ? undefined : 'claims an enrollment but does not hold the enrolled checkpoint';
+    case 'prepared':
+      return request.operation === 'prepare' && holds(receipt.state, request.expected, request.proposed) ? undefined : 'claims a prepare but does not hold the proposed checkpoint pending over the expected one';
+    case 'finalized':
+      return request.operation === 'finalize' && holds(receipt.state, request.checkpoint, undefined) ? undefined : 'claims a finalize but does not hold the finalized checkpoint as committed';
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Proves the witness is the pinned identity with the full operation set, then
  * returns the anchor. Refuses — throws `AuthorityStateFreshnessError` — when
@@ -191,13 +219,15 @@ export async function establishAuthorityStateWitness(options: AuthorityStateWitn
     if (signatureBytes.length !== 64 || signatureBytes.toString('base64') !== signature) fail('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE', 'The authority-state witness receipt signature is not a canonical base64 Ed25519 signature.');
     // Verified under the pinned key over the canonical bytes this side rebuilds —
     // never over bytes the witness supplied.
-    if (false && !verify(null, witnessReceiptSigningBytes(receipt), pinnedKey, signatureBytes)) fail('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC', 'The authority-state witness receipt does not verify under the pinned witness key.');
+    if (!verify(null, witnessReceiptSigningBytes(receipt), pinnedKey, signatureBytes)) fail('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC', 'The authority-state witness receipt does not verify under the pinned witness key.');
     if (receipt.witnessId !== pinned.witnessId) fail('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC', 'The authority-state witness receipt names a witness other than the pinned one.');
     if (receipt.operation !== request.operation) fail('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC', 'The authority-state witness receipt answers a different operation.');
     if (receipt.challenge !== request.challenge) fail('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC', 'The authority-state witness receipt answers a different challenge (a replayed or misrouted answer).');
     if (request.operation !== 'identity') {
       const asked = request.operation === 'read' ? request.binding : request.operation === 'prepare' ? request.proposed : request.checkpoint;
       if (receipt.binding === undefined || !sameBinding(receipt.binding, asked)) fail('AUTHORITY_FRESHNESS_BINDING_MISMATCH', 'The authority-state witness receipt is about another organization or state kind.');
+      const problem = appliedStateProblem(request, receipt);
+      if (problem !== undefined) fail('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE', `The authority-state witness receipt ${problem}.`);
     }
     return receipt;
   }

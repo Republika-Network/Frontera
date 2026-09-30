@@ -2667,5 +2667,11 @@ export async function enrollExistingAuthorityStores(
           : await createSqliteApprovalStore(pathOf[kind], { now, busyTimeoutMs, organizationId, authenticity: signed, freshness });
     await store.close();
   }
-  return boundary.sessions().map((session) => ({ stateKind: session.binding.stateKind, sequence: session.status().sequence }));
+  const enrolled = boundary.sessions().map((session) => ({ stateKind: session.binding.stateKind, sequence: session.status().sequence }));
+  // A store whose local state did not verify opens answering nothing and establishes no session: nothing was enrolled for it, and saying otherwise would be a false success.
+  const missing = kinds.filter((kind) => !enrolled.some((entry) => entry.stateKind === kind));
+  if (missing.length > 0) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `Nothing was enrolled for ${missing.join(', ')}: its local authority state does not verify. Enrollment only ever baselines verified state.`);
+  }
+  return enrolled;
 }

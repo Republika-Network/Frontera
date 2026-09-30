@@ -6,6 +6,7 @@ import {
   sameHead,
   type AuthorityStateBinding,
   type AuthorityStateCheckpoint,
+  type AuthorityStateHead,
   type AuthorityStateKind,
 } from './checkpoint.js';
 import { AuthorityStateFreshnessError, type AuthorityStateFreshnessErrorCode } from './errors.js';
@@ -238,6 +239,81 @@ function reconcile(local: AuthorityStateCheckpoint, witnessed: WitnessBindingSta
   throw freshness('AUTHORITY_FRESHNESS_FORK_DETECTED', `The ${kind} store is at sequence ${local.sequence}, ahead of anything the freshness witness has seen. Authority state that was never anchored is refused.`);
 }
 
+/**
+ * Whether the witness shows `checkpoint` — which it held prepared — as
+ * finalized: committed exactly, or committed past it. A prepared successor
+ * leaves the witness only by being finalized (there is no abandonment), so a
+ * committed sequence beyond it means another process finalized it first and
+ * then advanced; the same outcome, not a fork.
+ */
+function finalizedPast(witnessed: WitnessBindingState, checkpoint: AuthorityStateCheckpoint): boolean {
+  if (witnessed.status !== 'bound' || witnessed.storeId !== checkpoint.storeId) return false;
+  return witnessed.committed.sequence > checkpoint.sequence || sameHead(witnessed.committed, checkpoint);
+}
+
+/** At most this many further witness reads while looking for a witness that held still across one local read. */
+const SETTLE_ROUNDS = 3;
+
+function sameWitnessedState(a: WitnessBindingState, b: WitnessBindingState): boolean {
+  if (a.status === 'unbound' || b.status === 'unbound') return a.status === b.status;
+  if (a.storeId !== b.storeId || !sameHead(a.committed, b.committed)) return false;
+  return a.pending === undefined || b.pending === undefined ? a.pending === b.pending : sameHead(a.pending, b.pending);
+}
+
+/**
+ * Whether `reconcile` refused `local` against `witnessed` for a reason a
+ * legitimate writer in **another process** can produce between the two
+ * reads: that writer prepares at the witness before it commits locally, so a
+ * local head can be ahead of a witness answer read a moment earlier, and a
+ * witness can hold a prepared successor the file does not hold *yet*. Every
+ * other refusal — an older local head, a different state at a witnessed
+ * position, another store, no binding — no legitimate writer can produce,
+ * whatever the order of the reads: the witness only moves forward, and only
+ * after the local store it anchors already holds the state it finalizes.
+ */
+function raceable(error: AuthorityStateFreshnessError, local: AuthorityStateCheckpoint, witnessed: WitnessBindingState): boolean {
+  if (error.code === 'AUTHORITY_FRESHNESS_PENDING_RECOVERY') return true;
+  if (error.code !== 'AUTHORITY_FRESHNESS_FORK_DETECTED' || witnessed.status !== 'bound') return false;
+  return local.sequence > witnessed.committed.sequence && !(witnessed.pending !== undefined && local.sequence === witnessed.pending.sequence);
+}
+
+type Settlement =
+  | { readonly kind: 'settled'; readonly local: AuthorityStateCheckpoint; readonly verdict: 'ready' | 'finalize' }
+  | { readonly kind: 'refused'; readonly error: AuthorityStateFreshnessError; readonly witnessed: WitnessBindingState }
+  | { readonly kind: 'unsettled' }
+  | { readonly kind: 'unreadable'; readonly cause: unknown };
+
+/**
+ * Compares the local head, read **after** `witnessed`, with it — and, when the
+ * refusal is one another process's legitimate transition could explain
+ * (`raceable`), reads the witness again: a refusal stands only when the
+ * witness held still across the local read, so the two reads are one
+ * consistent view. A witness that keeps moving for `SETTLE_ROUNDS` rereads is
+ * `unsettled`: no verdict either way. Bounded; never retries a refusal the
+ * order of the reads cannot explain.
+ */
+async function settle(read: () => Promise<WitnessBindingState>, readLocal: () => AuthorityStateCheckpoint, first: WitnessBindingState): Promise<Settlement> {
+  let witnessed = first;
+  for (let round = 0; ; round += 1) {
+    let local: AuthorityStateCheckpoint;
+    try {
+      local = readLocal();
+    } catch (cause) {
+      return { kind: 'unreadable', cause };
+    }
+    try {
+      return { kind: 'settled', local, verdict: reconcile(local, witnessed) };
+    } catch (error) {
+      if (!(error instanceof AuthorityStateFreshnessError)) throw error;
+      if (!raceable(error, local, witnessed)) return { kind: 'refused', error, witnessed };
+      if (round >= SETTLE_ROUNDS) return { kind: 'unsettled' };
+      const again = await read();
+      if (sameWitnessedState(witnessed, again)) return { kind: 'refused', error, witnessed };
+      witnessed = again;
+    }
+  }
+}
+
 export function createAuthorityStateFreshnessBoundary(options: CreateAuthorityStateFreshnessBoundaryOptions): AuthorityStateFreshnessBoundary {
   const { anchor, monitor, organizationId } = options;
   if (!isAuthorityStateFreshnessAnchor(anchor)) {
@@ -316,13 +392,27 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
         throw freshness('AUTHORITY_FRESHNESS_ALREADY_ENROLLED', `The freshness witness already binds this organization's ${local.stateKind} to other state. Enrollment never rebinds a slot, and never enrolls another state over it.`);
       }
     }
-    if (reconcile(local, witnessed) === 'finalize') {
+    // The local head is read again *after* the witness, so another process's
+    // transition completing in between can only make it newer, never older.
+    const settled = await settle(() => anchor.read(binding), readLocal, witnessed);
+    if (settled.kind === 'unreadable') throw settled.cause;
+    if (settled.kind === 'refused') throw settled.error;
+    if (settled.kind === 'unsettled') {
+      throw freshness('AUTHORITY_FRESHNESS_CONFLICT', `The ${local.stateKind} witnessed state kept moving while this store was being opened, so its freshness could not be established. Nothing was accepted.`);
+    }
+    const current = settled.local;
+    if (!sameBinding(current, local) || current.storeId !== local.storeId) {
+      throw freshness('AUTHORITY_FRESHNESS_BINDING_MISMATCH', `The ${local.stateKind} store changed identity while it was being opened.`);
+    }
+    if (settled.verdict === 'finalize') {
       // The witness prepared exactly this head and the local store committed
       // it: a crash between commit and finalize. Completing it is safe.
-      const answer = await anchor.finalize(local);
-      if (answer.outcome !== 'finalized') throw freshness('AUTHORITY_FRESHNESS_FORK_DETECTED', `The ${local.stateKind} transition prepared at the freshness witness could not be finalized over the local state.`);
+      const answer = await anchor.finalize(current);
+      if (answer.outcome !== 'finalized' && !finalizedPast(answer.state, current)) {
+        throw freshness('AUTHORITY_FRESHNESS_FORK_DETECTED', `The ${local.stateKind} transition prepared at the freshness witness could not be finalized over the local state.`);
+      }
     }
-    const session = createSession(anchor, local, readLocal);
+    const session = createSession(anchor, current, readLocal);
     established.push(session);
     return session;
   }
@@ -349,6 +439,18 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
   let sticky: AuthorityStateFreshnessError | undefined;
   /** The last read's observation failure. Cleared by the next read that observes a fresh head. */
   let observed: AuthorityStateFreshnessError | undefined;
+  /**
+   * The probe found the witness holding a prepared successor (`pending`) the
+   * local store does not hold. From a running process that is either another
+   * process between its prepare and its local commit, or a transition that
+   * will never complete (a crash, or a commit then a rollback) — so every read
+   * refuses while it lasts, and it lasts until the local store holds exactly
+   * that successor or the next probe finds a consistent state. Never cleared
+   * by time, and never by anything this process says.
+   */
+  let unresolved: { readonly error: AuthorityStateFreshnessError; readonly pending: AuthorityStateHead } | undefined;
+  /** True only during the probe's own synchronous local read, which must see the head the refusal above is about. */
+  let probeReading = false;
   /** A transition committed locally whose `finalize` has not been confirmed. Local and witness-pending agree; it is completed before the next transition. */
   let unfinalized: AuthorityStateCheckpoint | undefined;
   /** The last witness call made on behalf of this session failed for availability. */
@@ -369,6 +471,12 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
 
   function observe(local: AuthorityStateCheckpoint): void {
     if (sticky !== undefined) throw sticky;
+    if (unresolved !== undefined && !probeReading) {
+      // The local store now holds exactly the prepared successor: the same
+      // safe case a restart finalizes. Anything else still refuses.
+      if (sameBinding(local, binding) && local.storeId === storeId && sameHead(local, unresolved.pending)) unresolved = undefined;
+      else throw unresolved.error;
+    }
     let problem: AuthorityStateFreshnessError | undefined;
     if (!sameBinding(local, binding) || local.storeId !== storeId) {
       problem = freshness('AUTHORITY_FRESHNESS_BINDING_MISMATCH', `The ${kind} store read under this process is not the store whose freshness was established.`);
@@ -402,7 +510,7 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
     const pending = unfinalized;
     const answer = await witnessCall(() => anchor.finalize(pending));
     const witnessed = answer.state;
-    if (answer.outcome === 'finalized' || (witnessed.status === 'bound' && witnessed.storeId === storeId && witnessed.pending === undefined && sameHead(witnessed.committed, pending))) {
+    if (answer.outcome === 'finalized' || finalizedPast(witnessed, pending)) {
       unfinalized = undefined;
       return;
     }
@@ -458,7 +566,7 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
       try {
         const finalized = await witnessCall(() => anchor.finalize(proposed));
         const witnessed = finalized.state;
-        if (finalized.outcome !== 'finalized' && !(witnessed.status === 'bound' && witnessed.storeId === storeId && witnessed.pending === undefined && sameHead(witnessed.committed, proposed))) {
+        if (finalized.outcome !== 'finalized' && !finalizedPast(witnessed, proposed)) {
           fail(freshness('AUTHORITY_FRESHNESS_FORK_DETECTED', `The freshness witness refused to finalize the ${kind} transition this process committed.`));
         }
       } catch (error) {
@@ -469,29 +577,49 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
     });
   }
 
+  function readLocalForProbe(): AuthorityStateCheckpoint {
+    probeReading = true;
+    try {
+      return readLocal();
+    } finally {
+      probeReading = false;
+    }
+  }
+
   function probe(): Promise<AuthorityStateFreshnessSessionStatus> {
     return serialized(async () => {
       if (sticky !== undefined) return status();
       let witnessed: WitnessBindingState;
+      let settled: Settlement;
       try {
-        // The witness first, then the local head: a transition another writer
-        // completes in between can then only make the local head *newer* than
-        // what was read from the witness, never older.
+        // The witness first, then the local head — and the witness again when
+        // the answer is one another process's transition could explain
+        // (`settle`), so a legitimate concurrent writer is never mistaken for
+        // a fork or a rollback.
         witnessed = await witnessCall(() => anchor.read(binding));
+        settled = await settle(() => witnessCall(() => anchor.read(binding)), readLocalForProbe, witnessed);
       } catch {
         return status();
       }
-      let local: AuthorityStateCheckpoint;
-      try {
-        local = readLocal();
-      } catch {
+      if (settled.kind === 'unreadable' || settled.kind === 'unsettled') return status();
+      if (settled.kind === 'refused') {
+        const { error } = settled;
+        const pending = settled.witnessed.status === 'bound' ? settled.witnessed.pending : undefined;
+        // Pending over an old local head, from a running process: refused while
+        // it lasts, never sticky — it is also what another process's in-flight
+        // transition looks like. Everything else no legitimate writer can
+        // produce, and is never cleared in this process.
+        if (error.code === 'AUTHORITY_FRESHNESS_PENDING_RECOVERY' && pending !== undefined) unresolved = { error, pending };
+        else if (STATUS_FOR_CODE[error.code] !== undefined) sticky ??= error;
         return status();
       }
+      unresolved = undefined;
       try {
-        if (reconcile(local, witnessed) === 'finalize') {
+        if (settled.verdict === 'finalize') {
+          const local = settled.local;
           const answer = await witnessCall(() => anchor.finalize(local));
-          if (answer.outcome === 'finalized' && unfinalized !== undefined && sameHead(unfinalized, local)) unfinalized = undefined;
-        } else if (unfinalized !== undefined && witnessed.status === 'bound' && sameHead(witnessed.committed, unfinalized)) {
+          if ((answer.outcome === 'finalized' || finalizedPast(answer.state, local)) && unfinalized !== undefined && sameHead(unfinalized, local)) unfinalized = undefined;
+        } else if (unfinalized !== undefined && witnessed.status === 'bound' && finalizedPast(witnessed, unfinalized)) {
           unfinalized = undefined;
         }
       } catch (error) {
@@ -502,7 +630,7 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
   }
 
   function status(): AuthorityStateFreshnessSessionStatus {
-    const failure = sticky ?? observed;
+    const failure = sticky ?? unresolved?.error ?? observed;
     const value: AuthorityStateFreshnessStatusValue =
       failure !== undefined ? (STATUS_FOR_CODE[failure.code] ?? 'forked') : unfinalized !== undefined || witnessUnavailable !== undefined ? 'unavailable' : 'ready';
     const reason = failure?.code ?? (unfinalized !== undefined || witnessUnavailable !== undefined ? 'AUTHORITY_FRESHNESS_UNAVAILABLE' : undefined);

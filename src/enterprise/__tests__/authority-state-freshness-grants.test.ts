@@ -486,7 +486,9 @@ describe('CORE-07 — crash consistency of a revocation', () => {
     const slot = await grantSlot(witness);
     assert.equal(slot?.['pending_sequence'], 1);
     assert.notEqual(slot?.['pending_digest'], (await rawState(path)).digest);
-    await assert.rejects(async () => open(path, await boundaryFor(witness, ORG)), refusedWith('AUTHORITY_FRESHNESS_FORK_DETECTED'));
+    const reopening = await scriptedBoundary(witness);
+    await assert.rejects(() => open(path, reopening.boundary), refusedWith('AUTHORITY_FRESHNESS_FORK_DETECTED'));
+    assert.equal(reopening.transport.count('finalize'), 0, 'a mismatching successor is never even offered for finalize');
     assert.equal((await grantSlot(witness))?.['pending_sequence'], 1, 'a mismatching successor is never finalized');
   });
 
@@ -564,6 +566,192 @@ describe('CORE-07 — crash consistency of a revocation', () => {
     assert.ok((await setup.read(b.id)).revocation !== undefined);
     await setup.close();
   });
+});
+
+// ---------------------------------------------------------------------------
+// R — the health probe under legitimate concurrent advancement (multi-process)
+// ---------------------------------------------------------------------------
+
+describe('CORE-07 — the freshness probe of a running process while another process advances the same store', () => {
+  /** Two "processes" over one store file and one witness, after two grants were issued. */
+  async function twoProcesses(name: string) {
+    const witness = await startWitness();
+    const path = dbPath(name);
+    const setup = await open(path, await boundaryFor(witness, ORG));
+    const a = await issue(setup, 1);
+    const b = await issue(setup, 2);
+    await setup.close();
+    const probing = await scriptedBoundary(witness);
+    const advancing = await scriptedBoundary(witness);
+    const storeA = await open(path, probing.boundary);
+    const storeB = await open(path, advancing.boundary);
+    return { witness, path, a, b, probing, advancing, storeA, storeB };
+  }
+
+  /** Arms `transport` so the next witness `read` is answered, then `between` runs before that (now stale) answer is handed back. */
+  function afterNextRead(transport: ScriptedWitnessTransport, between: () => Promise<void>): void {
+    let armed = true;
+    transport.answer = async (request, forward) => {
+      const answer = await forward();
+      if (request.operation === 'read' && armed) {
+        armed = false;
+        await between();
+      }
+      return answer;
+    };
+  }
+
+  it('R1: another process completes a revocation between the probe\'s witness read and its local read — not a fork, and the probing process keeps serving', async () => {
+    const { a, b, probing, storeA, storeB } = await twoProcesses('r1');
+    afterNextRead(probing.transport, async () => {
+      assert.equal((await revoke(storeB, b.id)).outcome, 'revoked');
+    });
+    const probed = await probing.boundary.probe();
+    assert.deepEqual(probed.stores.map((store) => store.status), ['ready'], JSON.stringify(probed.stores));
+    assert.ok((await storeA.read(b.id)).revocation !== undefined, 'the probing process reads the other process\'s revocation');
+    assert.equal((await storeA.read(a.id)).revocation, undefined);
+    assert.equal((await storeA.health()).status, 'healthy');
+    await storeA.close();
+    await storeB.close();
+  });
+
+  it('R2: another process is between prepare and its local commit when the probe runs — refused while unresolved, never poisoned once it completes', async () => {
+    const { b, probing, advancing, storeA, storeB } = await twoProcesses('r2');
+    // Hold B's prepare answer: the witness holds B's successor pending, the file does not hold it yet.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let prepared: () => void = () => {};
+    const atWitness = new Promise<void>((resolve) => {
+      prepared = resolve;
+    });
+    advancing.transport.answer = async (request, forward) => {
+      const answer = await forward();
+      if (request.operation === 'prepare') {
+        prepared();
+        await held;
+      }
+      return answer;
+    };
+    const revokingB = revoke(storeB, b.id);
+    await atWitness;
+    const during = await probing.boundary.probe();
+    assert.equal(during.stores[0]?.status, 'pending-recovery', 'witness pending over an old local state is refused while it lasts');
+    await assert.rejects(() => storeA.read(b.id), refusedWith('AUTHORITY_FRESHNESS_PENDING_RECOVERY'));
+    release();
+    assert.equal((await revokingB).outcome, 'revoked');
+    // The local store now holds exactly the successor the witness held pending: reads resume without waiting for a probe.
+    assert.ok((await storeA.read(b.id)).revocation !== undefined);
+    const after = await probing.boundary.probe();
+    assert.equal(after.stores[0]?.status, 'ready', 'once the other process completes, the probing process is healthy again');
+    assert.ok((await storeA.read(b.id)).revocation !== undefined);
+    assert.equal((await storeA.health()).status, 'healthy');
+    await storeA.close();
+    await storeB.close();
+  });
+
+  it('R5: a process that starts while another completes a revocation between its local read and its witness read opens — not a rollback', async () => {
+    const witness = await startWitness();
+    const path = dbPath('r5');
+    const setup = await open(path, await boundaryFor(witness, ORG));
+    const a = await issue(setup, 1);
+    await setup.close();
+    const advancing = await open(path, await boundaryFor(witness, ORG));
+    const starting = await scriptedBoundary(witness);
+    let armed = true;
+    starting.transport.answer = async (request, forward) => {
+      if (request.operation === 'read' && armed) {
+        // The starting process has verified its local head; the other process revokes before the witness is asked.
+        armed = false;
+        assert.equal((await revoke(advancing, a.id)).outcome, 'revoked');
+      }
+      return forward();
+    };
+    const started = await open(path, starting.boundary);
+    assert.ok((await started.read(a.id)).revocation !== undefined);
+    assert.equal((await started.health()).freshness?.status, 'ready');
+    await started.close();
+    await advancing.close();
+  });
+
+  /** Replaces every table of the store at `path` with the rows of the store at `source`, underneath its open connections — the attacker restoring a whole authentic state. */
+  async function transplant(path: string, source: string): Promise<void> {
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(path);
+    try {
+      for (const { name } of db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).all() as { name: string }[]) db.exec(`DROP TRIGGER "${name}"`);
+      db.prepare('ATTACH DATABASE ? AS source').run(source);
+      const tables = (db.prepare(`SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all() as { name: string }[]).map((row) => row.name);
+      db.pragma('foreign_keys = OFF');
+      db.transaction(() => {
+        for (const table of tables) {
+          db.exec(`DELETE FROM main."${table}"`);
+          db.exec(`INSERT INTO main."${table}" SELECT * FROM source."${table}"`);
+        }
+      })();
+      db.exec('DETACH DATABASE source');
+    } finally {
+      db.close();
+    }
+  }
+
+  async function probeStatus(boundary: AuthorityStateFreshnessBoundary): Promise<string | undefined> {
+    return (await boundary.probe()).stores[0]?.status;
+  }
+
+  it('R3: a real same-sequence fork underneath the running process is still fatal to it, and stays fatal', async () => {
+    const { path, a, b, probing, storeA, storeB } = await twoProcesses('r3');
+    // The fork, built offline from the same genesis by a writer holding the key but bypassing the witness: sequence 1 revoking b.
+    const forkPath = dbPath('r3-fork');
+    await transplantInto(forkPath, path);
+    const rogue = await open(forkPath, undefined);
+    assert.equal((await revoke(rogue, b.id)).outcome, 'revoked');
+    await rogue.close();
+    // B anchors the genuine sequence 1 (revoking a). A never reads it, so A's own floor stays at 0.
+    assert.equal((await revoke(storeB, a.id)).outcome, 'revoked');
+    await storeB.close();
+    const anchored = await rawState(path);
+    await transplant(path, forkPath);
+    const local = await rawState(path);
+    assert.equal(local.sequence, anchored.sequence);
+    assert.notEqual(local.digest, anchored.digest);
+    assert.equal(await probeStatus(probing.boundary), 'forked');
+    await assert.rejects(() => storeA.read(a.id), refusedWith('AUTHORITY_FRESHNESS_FORK_DETECTED'));
+    assert.deepEqual(await exercise(storeA, a), { status: 'withheld', adapterCalls: 0 });
+    assert.equal(await probeStatus(probing.boundary), 'forked', 'sticky: a later probe never clears it');
+    await storeA.close();
+  });
+
+  it('R4: an actually older authentic snapshot restored underneath the running process is still fatal to it, and stays fatal', async () => {
+    const { path, a, probing, storeA, storeB } = await twoProcesses('r4');
+    const older = dbPath('r4-older');
+    await transplantInto(older, path);
+    // B anchors sequence 1 (revoking a). A's own floor stays at 0, so only the witness can tell.
+    assert.equal((await revoke(storeB, a.id)).outcome, 'revoked');
+    await storeB.close();
+    await transplant(path, older);
+    assert.equal((await rawState(path)).sequence, 0);
+    assert.equal(await probeStatus(probing.boundary), 'regressed');
+    await assert.rejects(() => storeA.read(a.id), refusedWith('AUTHORITY_FRESHNESS_ROLLBACK_DETECTED'));
+    assert.deepEqual(await exercise(storeA, a), { status: 'withheld', adapterCalls: 0 });
+    assert.equal(await probeStatus(probing.boundary), 'regressed', 'sticky: a later probe never clears it');
+    await storeA.close();
+  });
+
+  /** A byte-level copy of the store at `from`, taken through SQLite's backup API while it is open elsewhere. */
+  async function transplantInto(to: string, from: string): Promise<void> {
+    const { default: Database } = await import('better-sqlite3');
+    const { mkdirSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    mkdirSync(dirname(to), { recursive: true });
+    const db = new Database(from, { readonly: true });
+    try {
+      await db.backup(to);
+    } finally {
+      db.close();
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

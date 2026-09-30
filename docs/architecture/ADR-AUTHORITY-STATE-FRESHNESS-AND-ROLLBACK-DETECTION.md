@@ -162,7 +162,10 @@ learned from the witness. On **every** call:
    `frontera:authority-state-witness:receipt:v1\n` + the canonical receipt
    (rebuilt locally, never taken from the wire);
 3. the receipt must name the pinned witness id, the operation asked, the
-   challenge sent, and the binding asked about.
+   challenge sent, and the binding asked about;
+4. a receipt whose outcome says the operation was applied (`enrolled`,
+   `prepared`, `finalized`) must hold exactly the store and checkpoint(s)
+   that operation was asked to apply — otherwise `MALFORMED_RESPONSE`.
 
 A recorded receipt therefore cannot be replayed to a later call; a receipt
 about one slot cannot answer another; an endpoint that is not the pinned
@@ -230,6 +233,15 @@ store object is returned — reads its slot and reconciles:
 | committed C, pending P | = P exactly | **finalize P**, ready (crash after local commit) |
 | committed C, pending P | = C | refused — `PENDING_RECOVERY` (§2.9 case A) |
 | committed C, pending P | seq = P, other digest | refused — `FORK_DETECTED` |
+
+The local head compared is read **after** the witness answer, so another
+process's transition completing in between can only make it newer. The two
+verdicts such a transition can legitimately produce — a local head ahead of
+the witness answer, or a prepared successor the file does not hold yet — are
+accepted only when a second witness read shows the witness held still across
+the local read (at most three rereads; a witness that keeps moving refuses the
+open with `CONFLICT`). Every other refusal needs no second read: the witness
+only moves forward, and finalizes only what the store already holds.
 
 A refusal throws from the store constructor, so `createEnterprise` fails and
 the secure Host never listens: detection happens before any grant can be
@@ -331,9 +343,24 @@ remains the stop mechanism that does not depend on it.
 fences cross-process *writers* (§2.11). Reads rely on this process's floor, so
 a process that never observed another process's transition learns of a
 rollback past it only at its next start, its next own transition, or the
-health probe (which compares witness-then-local and marks the session
-`regressed` sticky) — not on every read. Linearizable multi-process reads
-remain unclaimed (R-GS-07).
+health probe — not on every read. Linearizable multi-process reads remain
+unclaimed (R-GS-07).
+
+**The probe under concurrent writers.** The probe reads the witness, then the
+local head, and settles exactly as startup does (§2.8): a legitimate
+transition by another process between the two reads is never classified as a
+fork or a rollback. What it finds then decides how long it lasts:
+
+| Probe finds (witness held still across the local read) | Session | Reads |
+|---|---|---|
+| older local head, other digest at a witnessed position, other store, unbound | `regressed` / `forked` / `unbound` — **sticky** for the life of the process | refused |
+| a prepared successor the local store does not hold | `pending-recovery` — **not** sticky: from a running process it is also what another process's in-flight transition looks like | refused while it lasts; resumes when the local store holds exactly that successor (the case a restart finalizes) or the next probe finds a consistent state |
+| a witness that kept moving through three rereads | unchanged | unchanged |
+
+A genuine pending-recovery (a writer that crashed after `prepare`, or a
+committed transition rolled back underneath) therefore stays refused: nothing
+this process says can make the witness drop a pending successor, and a
+finalized one that the file does not hold is a rollback, which is sticky.
 
 ### 2.13 Health, posture, failure codes
 
@@ -430,6 +457,7 @@ window and concurrent successors are all refused.
 | A trusted operator enrolling stale state, or first enrollment of an already-rolled-back store | the ceremony's attestation is the baseline |
 | A holder of the witness credential | can deny service, and can advance slots arbitrarily (making the Host refuse); cannot make a stale local state current |
 | Signer-independent revocation | AA-004 — still open; revocation now also needs the witness |
+| Rollback of the Kernel Authority store | not an authenticated store: its event log is digest-chained but unsigned, so a database-level writer can already rewrite it (its pre-CORE-07 integrity boundary). There is no signed head to anchor; CORE-07 anchors only the three signed stores. The FRONTERA-PROD-01 storage-neutral provider contract does not change this |
 
 PROD-02 owns safe backup / restore across the growing store set; CORE-07 does
 not make arbitrary infrastructure snapshots safe.
@@ -441,7 +469,12 @@ schemas or schema versions changed (grant, revocation, revocation-state,
 discharge-state and approval-state signatures are byte-identical; CORE-01 /
 02 / 04 / 05 suites pass unchanged). Software and external custody both work
 with freshness; the signer is not the witness. The API surface stays at 36
-endpoints. Embedders that configure no witness see no behaviour change except
+endpoints. The FRONTERA-PROD-01 storage-neutral Kernel Authority provider
+contract (on `main` before this change) is independent of CORE-07: CORE-07
+neither reads its provider vocabulary nor anchors that store; durability here
+is decided by the three signed stores' own brands (`durable-authenticated`)
+and the persistence provider that composes them, and the secure Host's
+`kernelAuthority` and `authorityFreshness` posture checks stay separate. Embedders that configure no witness see no behaviour change except
 the two strengthened in-process witnesses (now also refusing a different
 state at the same sequence under a running process).
 
@@ -451,8 +484,13 @@ state at the same sequence under a running process).
 C1–C8, E1–E6 against real stores and a loopback witness),
 `authority-state-freshness-obligations-approvals.test.ts` (O1–O8, P1–P9),
 `authority-state-freshness-protocol.test.ts` (canonical checkpoint, strict
-parsing, compare-and-advance, A1–A8, replay, retry taxonomy, transport bounds,
-configuration), `authority-state-freshness-host.test.ts` (the exercise-time
+parsing, compare-and-advance, A1–A8 — including forged read receipts after the
+handshake and authentic receipts that do not hold the asked checkpoint —
+replay, retry taxonomy, transport bounds, configuration), the concurrent-writer
+probe cases R1–R5 in the grants suite (a legitimate transition by another
+process between the reads is neither a fork nor a rollback, and never poisons
+the session; a real fork and a real older snapshot under a running process
+stay fatal), `authority-state-freshness-host.test.ts` (the exercise-time
 guarantee through `bootEnterpriseHost()` with a **separate-process** witness:
 adapter calls unchanged after the restored snapshot; the refusal is
 `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`; the no-witness embedding still believes

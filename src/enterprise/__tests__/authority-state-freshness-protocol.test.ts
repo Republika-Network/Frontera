@@ -15,9 +15,11 @@ import {
   isRetryableAuthorityStateFreshnessFailure,
   parseWitnessRequest,
   serializeAuthorityStateCheckpoint,
+  serializeWitnessReceipt,
   witnessReceiptSigningBytes,
   type AuthorityStateCheckpoint,
   type AuthorityStateFreshnessErrorCode,
+  type WitnessBindingState,
   type WitnessReceipt,
 } from '../authority-state-freshness/index.js';
 import { loadEnterpriseConfiguration, toPublicEnterpriseConfiguration, validateEnterpriseEnvironment } from '../configuration/enterprise-configuration.js';
@@ -142,6 +144,8 @@ async function forgingWitness(respond: (body: Record<string, unknown>, path: str
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  // A forging witness never keeps the test process alive, even when an assertion fails before it is closed.
+  server.unref();
   return {
     endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
@@ -199,6 +203,71 @@ describe('CORE-07 — anchor authentication: nothing the witness says is believe
     await anchor.prepare(checkpoint(0), checkpoint(1));
     await anchor.finalize(checkpoint(1));
     await assert.rejects(() => anchor.read({ stateKind: 'bounded-grant-revocation-state', organizationId: ORG }), refusedWith('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC'));
+  });
+
+  it('A4 (after the handshake): a well-formed read receipt claiming a stale state, re-signed by another key or by the pinned key outside the receipt domain, is refused — nothing it says is used', async () => {
+    const pinned = witnessKey();
+    const attacker = witnessKey();
+    const witness = await startWitness({ key: pinned });
+    const transport = new ScriptedWitnessTransport(createHttpAuthorityStateWitnessTransport({ endpoint: witness.endpoint, credential: WITNESS_TOKEN }));
+    const { anchor } = await connect(witness, { transport });
+    await anchor.enroll('genesis', checkpoint(0));
+    await anchor.prepare(checkpoint(0), checkpoint(1));
+    await anchor.finalize(checkpoint(1));
+    const binding = { stateKind: 'bounded-grant-revocation-state', organizationId: ORG } as const;
+    // Every forgery answers the right challenge, names the pinned witness and
+    // the asked binding, and is exactly the protocol shape: only the signature
+    // can tell it from the witness's own answer.
+    const stale = (receipt: WitnessReceipt): WitnessReceipt => ({ ...receipt, state: { status: 'bound', storeId: 'store-1', committed: { sequence: 0, stateDigest: digestOf(1) } } });
+    const forgeries: readonly [string, (receipt: WitnessReceipt) => { readonly receipt: WitnessReceipt; readonly signature: string }][] = [
+      ['signed by another key', (receipt) => signReceipt(stale(receipt), attacker.privateKeyPem)],
+      ['signed by the pinned key without the receipt domain', (receipt) => ({ receipt: stale(receipt), signature: sign(null, Buffer.from(serializeWitnessReceipt(stale(receipt)), 'utf8'), createPrivateKey(pinned.privateKeyPem)).toString('base64') })],
+      ['the genuine signature over the genuine receipt, then altered', (receipt) => ({ receipt: stale(receipt), signature: signReceipt(receipt, pinned.privateKeyPem).signature })],
+      ['an all-zero signature', (receipt) => ({ receipt: stale(receipt), signature: Buffer.alloc(64).toString('base64') })],
+    ];
+    for (const [name, forge] of forgeries) {
+      transport.answer = async (request, forward) => {
+        const genuine = (await forward()) as { receipt: WitnessReceipt };
+        return request.operation === 'read' ? forge(genuine.receipt) : genuine;
+      };
+      await assert.rejects(() => anchor.read(binding), refusedWith('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC'), name);
+    }
+    // Control: the unaltered witness answer verifies, and says sequence 1.
+    transport.answer = (_request, forward) => forward();
+    const current = await anchor.read(binding);
+    assert.ok(current.status === 'bound' && current.committed.sequence === 1);
+  });
+
+  it('A4 (checkpoint binding): an authentic receipt whose outcome does not hold the checkpoint that was asked about is refused', async () => {
+    const pinned = witnessKey();
+    const witness = await startWitness({ key: pinned });
+    const transport = new ScriptedWitnessTransport(createHttpAuthorityStateWitnessTransport({ endpoint: witness.endpoint, credential: WITNESS_TOKEN }));
+    const { anchor } = await connect(witness, { transport });
+    await anchor.enroll('genesis', checkpoint(0));
+    // Each answer is genuinely signed by the pinned witness key over the right
+    // challenge and binding — but says it applied something else.
+    const resign = (receipt: WitnessReceipt, state: WitnessBindingState) => signReceipt({ ...receipt, state }, pinned.privateKeyPem);
+    const bound = (committed: number, pending?: number) => ({ status: 'bound' as const, storeId: 'store-1', committed: { sequence: committed, stateDigest: digestOf(committed + 1) }, ...(pending !== undefined ? { pending: { sequence: pending, stateDigest: digestOf(pending + 1) } } : {}) });
+    transport.answer = async (request, forward) => {
+      const genuine = (await forward()) as { receipt: WitnessReceipt };
+      // 'prepared', yet nothing pending.
+      return request.operation === 'prepare' ? resign(genuine.receipt, bound(0)) : genuine;
+    };
+    await assert.rejects(() => anchor.prepare(checkpoint(0), checkpoint(1)), refusedWith('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE'));
+    transport.answer = (_request, forward) => forward();
+    await anchor.finalize(checkpoint(1));
+    transport.answer = async (request, forward) => {
+      const genuine = (await forward()) as { receipt: WitnessReceipt };
+      // 'finalized', yet about another store.
+      return request.operation === 'finalize' ? resign(genuine.receipt, { ...bound(1), storeId: 'store-other' }) : genuine;
+    };
+    await assert.rejects(() => anchor.finalize(checkpoint(1)), refusedWith('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE'));
+    transport.answer = async (request, forward) => {
+      const genuine = (await forward()) as { receipt: WitnessReceipt };
+      // 'enrolled', yet holding a different checkpoint.
+      return request.operation === 'enroll' ? resign(genuine.receipt, bound(7)) : genuine;
+    };
+    await assert.rejects(() => anchor.enroll('baseline', checkpoint(1)), refusedWith('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE'));
   });
 
   it('A5: an unsupported protocol version or a missing operation is refused', async () => {
