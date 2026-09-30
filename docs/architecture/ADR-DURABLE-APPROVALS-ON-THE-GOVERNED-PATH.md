@@ -237,13 +237,13 @@ durable format; no unauthenticated mode exists or is accepted):
 | Half-write / crash | Mitigated — one transaction; half state refused at open |
 | Old-key state | Mitigated — CORE-01 re-attestation rule |
 | Revocation between issuance and exercise | Mitigated — pre-claim re-assessment |
-| Genuine-state rollback across restart | **Bounded residual → CORE-07.** Restoring an older genuine signed state (e.g. approved before a revocation) is believed after restart (pinned by test). Bounded by the approval's validity window and every other gate |
+| Genuine-state rollback across restart | **Closed by CORE-07 with an external freshness witness** (always on the secure Host): the approval chain head is anchored outside the store's restore domain and a restored prefix (e.g. approved before a revocation) refuses the restart (`authority-state-freshness-obligations-approvals.test.ts` P2/P3; the former residual test, inverted). **Residual without a witness** (lenient embedding, pinned by a scoped test), bounded by the approval's validity window and every other gate |
 | Process / signing-key compromise | **Deferred → CORE-02** (`signApprovalState` joins the external signer's operation set) |
 | Governance Store rewrite (integrity-only) | Bounded — a rewritten record changes its digests → the approval subject no longer matches → superseded |
 
 ## 4. Residuals and owners
 
-Rollback across restart (CORE-07); key/process compromise (CORE-02); human
+Rollback across restart without a freshness witness, or with the witness restored together with the store (CORE-07 closes it within its scope); key/process compromise (CORE-02); human
 authentication, inbox, notification (CTRL-04); human identity administration
 (CTRL-02); portable approval evidence (ASSURE-01..03); approval store backup
 (PROD-02); one organization per Host; a dangling grant issued immediately

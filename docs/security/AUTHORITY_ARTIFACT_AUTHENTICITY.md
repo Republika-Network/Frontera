@@ -558,7 +558,7 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 | O | An old signing key is compromised | **PARTIALLY BLOCKED** | remove it from the verification set; artifacts it signed become unreadable (§13.1). No per-key revocation list |
 | P | Rotation removes a historical verifier too early | **DEPLOYMENT-DEPENDENT** | fails closed (unreadable), never open. Documented, tested |
 | Q | Artifact replay | **BLOCKED** for cross-row replay (E, F); a signature replayed onto *its own* row is a no-op |
-| R | Snapshot rollback | **PARTIALLY BLOCKED** (CORE-01) | detected **while the process runs** (in-process freshness witness, §26.6); **not detected across a restart**. **GS-002 stays open** → CORE-07 |
+| R | Snapshot rollback | **BLOCKED with an external freshness witness** (CORE-07); **PARTIALLY BLOCKED** without one (CORE-01) | with the witness (always, on the secure Host): refused at open, before the store is returned, and on every read against the established floor (§30). Without it: detected only **while the process runs** (§26.6). **Not addressed** in either mode: the witness restored *together with* the store (§30.7) |
 | R2 | Delete a revocation row and clear the grant's pointer (the MASTER-00 un-revocation) | **BLOCKED** (CORE-01) | the signed commitment no longer describes the rows; `REVOCATION_STATE_INCONSISTENT`. Test E |
 | R3 | R2 + rewrite the commitment's unkeyed fields | **BLOCKED** (CORE-01) | commitment signature. Test E+K |
 | R4 | R2 + splice in a genuine commitment from another store under the same key (e.g. the genesis of a re-created file) | **BLOCKED** (CORE-01) | store binding: this store's grants are signed for this store's id. Test E+ |
@@ -585,7 +585,7 @@ Only (3) is honest. **Signer availability is therefore now on the critical path 
 |---|---|---|---|
 | **AA-001** | **HIGH** (software custody) · **CLOSED for external custody** (CORE-02) | Under **software** custody the authority signing private key is **resident in application process memory**, loaded from configuration; anything that can read this process can mint authority that verifies perfectly. Under **external** custody no authority private key is in the Frontera process (proven by the canonical-Host and launcher E2E, §29.4). What external custody does **not** remove — a compromised Host asking the signer to sign while it holds the credential — is recorded separately as AA-010 | CORE-02 (external mode); software mode remains by choice |
 | **AA-002** | MEDIUM | The trusted verification registry is deployment-controlled configuration. An attacker who can write it can install their own key and make their own artifacts authentic. **Narrowed by CORE-02:** the external signer's identity is proven against the registry at startup (key id, algorithm, public key), so substituting or miswiring *either* half alone is refused. An attacker who can rewrite the signer endpoint **and** the registry **and** the Host configuration still controls trust — there is no independent configuration trust root | deployment; independent configuration trust root unassigned |
-| **AA-003** | MEDIUM | Signatures carry no freshness. A wholesale rollback to an earlier snapshot — or a restore of a previously *captured* commitment together with the rows it covered — restores artifacts that are all validly signed, including grants whose revocations are rolled back with them. Since CORE-01 this requires a copy of the earlier signed state (removing rows no longer suffices), and a running process detects it; a restarted one does not. Old commitment bytes can also persist in WAL frames or free pages of the file. Same shape as **GS-002** | **CORE-07** |
+| **AA-003** | MEDIUM · **CLOSED within the freshness-anchor scope** (CORE-07) | Signatures carry no freshness. A wholesale rollback to an earlier snapshot — or a restore of a previously *captured* commitment together with the rows it covered — restores artifacts that are all validly signed, including grants whose revocations are rolled back with them. **CORE-07:** each authenticated store's signed head is anchored at an external authority-state witness outside its restore domain, reconciled at open and advanced by prepare → local commit → finalize; a restored earlier state is refused across restarts (§30, reproduced before the fix and inverted as a test). **Still open:** a deployment that composes no witness (a lenient embedding — the secure Host always does); the witness restored together with the store; a rollback before a store's first trusted enrollment. Same shape as **GS-002** | CORE-07 (closed in scope); witness-and-store co-restore is a deployment trust assumption (PROD-02 owns backup/restore) |
 | **AA-004** | MEDIUM | Signer availability is required to **revoke**. A signer outage cannot withdraw authority and correctly refuses to pretend it did (§19.2). **CORE-02:** designed and observable — bounded time and attempts, `503 AUTHORITY_SIGNER_UNAVAILABLE` / `recorded: false`, `/health` degraded, nothing written, emergency stop independent of the signer (§29.7). Still **open**: no redundant signers, no quorum, no signer-independent revocation | OPEN — future (redundant custody / signer-independent revocation), unassigned |
 | **AA-005** | LOW | Every signer call may be metered or rate-limited. **CORE-02:** issuance preflight settles already-issued, precluded and already-ineligible grants before signing; revocation already settled unknown and already-revoked grants before signing; health probes never sign; expected call counts are documented and tested (§29.8). Unavoidable waste remains: a signature for an issuance whose eligibility changes in flight, a stale revocation plan, a retried lost response | partially addressed; provider pricing/limits are deployment-dependent |
 | **AA-006** | LOW | One algorithm (`ed25519-v1`). **CORE-02:** the deployment pins and proves its signer's algorithm exactly (no negotiation); a provider must support Ed25519 or sit behind a custody server that does. Adding a second algorithm remains deliberate cryptographic work | portability constraint, unchanged |
@@ -606,7 +606,7 @@ AA-001 … AA-006 above. Each is supported by the implementation, not anticipate
 | ID | Was | Now |
 |---|---|---|
 | **GS-001** — a privileged writer can re-seal unkeyed digests | OPEN | **CLOSED for a database-only writer (CORE-01 closed the un-revocation gap MASTER-00 found).** A writer with write access to the database file, and no access to a signing key, can neither produce usable authority nor remove a committed revocation — proven by the central test and `revocation-state-integrity.test.ts`. **Still open** for a writer who also holds the signing key or can write the key configuration (AA-001, AA-002), and for restore of a previously captured signed state (GS-002 / AA-003) |
-| **GS-002** — snapshot rollback can restore revoked authority | OPEN | **STILL OPEN.** Narrowed by CORE-01: needs a *captured* earlier signed state rather than row deletion, and is detected while the process runs; not detected across a restart. Restated as AA-003 → CORE-07 |
+| **GS-002** — snapshot rollback can restore revoked authority | OPEN | **CLOSED within the freshness-anchor scope (CORE-07).** Narrowed by CORE-01 (a *captured* earlier signed state is needed, and a running process detects it); closed by CORE-07 across restarts when an external authority-state witness is composed — always on the secure Host (§30). Remains open without a witness, and for a witness restored together with the store (AA-003) |
 | **GS-003** — durable store available but not default | OPEN | **CLOSED for the shipped Host by PROD-01**: the secure profile refuses anything but `sqlite`, and a secure Host refuses to bind unless its grant store is `authenticated-durable` (SEC-INV-126). The embedding default (`createEnterprise`) is still `memory` |
 | **GS-004** — revocation records carried no integrity | CLOSED (integrity) | now also **authenticated**, at the same strength as grants |
 | **NB-009** — the store was in-memory, singly implemented, unkeyed | PARTIALLY CLOSED | *in-memory*: closed (Prompt 4). *singly implemented*: closed (Prompt 4). *unkeyed*: **closed for the durable store** by this prompt. *Process-resident key*: closed **for external custody** by CORE-02. **Still not** "authority the application cannot forge": a compromised Host can ask the external signer to sign (AA-010), and software custody keeps the key in process (AA-001) |
@@ -636,8 +636,9 @@ Each claim carries its scope. A restatement that drops the scope is an overclaim
 |---|---|
 | "Authority is tamper-proof" | it is not. An attacker with the signing key, the process, or the key configuration forges freely |
 | "Host compromise cannot forge authority" | software custody: host compromise yields the private key (AA-001). External custody: it does not yield the key, but a compromised Host can still *ask* the custody service to sign while it holds the credential (AA-010) |
-| "Rollback cannot resurrect old authority" | it can. Signatures carry no freshness (AA-003 / GS-002). CORE-01 detects it only within a running process |
-| "Database compromise cannot un-revoke a grant" | only a database-only writer *without a captured earlier signed state* is blocked. A restore of such a state across a restart is not detected (CORE-07) |
+| "Rollback cannot resurrect old authority" | sayable **only** with the scope "with an external authority-state witness whose state is not restored with the authority stores" (CORE-07, §30). Without a witness it can (AA-003 / GS-002 open for that deployment); with one, the witness restored together with the stores, or a rollback before first enrollment, is not detected |
+| "Database compromise cannot un-revoke a grant" | with a witness, a database-only writer restoring a captured earlier signed state is refused across restarts (§30); without one, only a writer *without* such a state is blocked. Neither holds against a writer who can also restore the witness's state |
+| "Frontera makes infrastructure snapshots safe" | it does not. CORE-07 detects an authority store restored *behind* its witness; it cannot detect both restored to the same earlier moment (§30.7) |
 | "A malicious host cannot bypass the signed store" | the composition check guards mistakes. Code in the same process can replace the check (§26.8) |
 | "The signing key cannot be stolen" | under software custody it is in process memory; under external custody it is in the custody service, whose own compromise is out of scope — and the reference service is a plain file-backed key |
 | "Cryptographic authenticity proves the policy was legitimate" | it proves a trusted key vouched for these bytes. NB-008 is untouched |
@@ -704,7 +705,7 @@ There is no reverse transition and no `unRevoke`. A second revocation of a revok
 | Database-only writer (any SQL, drops triggers, recomputes unkeyed digests; no trusted signing key) deletes, clears, rewrites, moves, renumbers or re-signs (untrusted key) revocation state | **Blocked.** Reads fail closed (`REVOCATION_STATE_INCONSISTENT` / `AUTHENTICITY_FAILED` / `STATE_CORRUPT`); execution withholds |
 | Same, splicing a genuine commitment from another store under the same key | **Blocked** (store binding) |
 | Same, restoring a **previously captured** genuine commitment plus the rows it covered, **while the process runs** | **Detected** — the in-process freshness witness refuses a commitment older than one already verified |
-| Same, **across a restart** | **Not detected.** Indistinguishable from "never revoked" using the file alone. Old commitment bytes may also remain in WAL/free pages. **CORE-07** (external freshness/anchoring) |
+| Same, **across a restart** | **Refused with an external freshness witness** (CORE-07, §30): the witness holds the newer checkpoint outside the file's restore domain, and the restarted store does not open. **Not detected without one** — indistinguishable from "never revoked" using the file alone |
 | Holder of the signing key, process, or key configuration | **Not addressed** (AA-001, AA-002; CORE-02) |
 
 ### 26.7 Key rotation
@@ -778,8 +779,9 @@ a row's source, outcome, correlation or organization; upgrading the
 unauthenticated v1 format. Tested in `obligation-discharge-authenticity.test.ts`
 and end to end in `governed-action-obligations-host.test.ts`.
 
-Not blocked: restoring an older, genuinely signed state after a restart
-(rollback — CORE-07). Its effect is bounded: the trusted writer records reports
+Rollback across a restart — restoring an older, genuinely signed state — is
+refused **with an external freshness witness** (CORE-07, §30); without one it
+is not blocked. Either way its effect is bounded: the trusted writer records reports
 for one obligation in strictly increasing observation time, so every committed
 prefix is a prefix of the lifecycle sequence, and because a satisfied obligation
 is terminal, a rollback can remove satisfaction but never manufacture it. A
@@ -836,12 +838,13 @@ legitimate later command (before or during signing); a half-written row
 without its head. Tested in `approval-authenticity.test.ts` and end to end in
 `governed-action-approvals-adversarial-host.test.ts`.
 
-Not blocked: restoring an older, genuinely signed state after a restart
-(rollback — CORE-07). Unlike discharges, a prefix **can** be more permissive
-than its whole — an approval later revoked, or a request before its rejection
-— so a restored earlier genuine state can make a revoked approval usable again
-until its own `approvalValiditySeconds` lapse; pinned by a test and assigned to
-CORE-07. A holder of the signing key, or of this process, can sign anything
+Rollback across a restart — restoring an older, genuinely signed state — is
+refused **with an external freshness witness** (CORE-07, §30). Unlike
+discharges, a prefix **can** be more permissive than its whole — an approval
+later revoked, or a request before its rejection — so without a witness a
+restored earlier genuine state can make a revoked approval usable again until
+its own `approvalValiditySeconds` lapse (the former residual test, now inverted
+for the witness and kept, scoped, for the no-witness mode). A holder of the signing key, or of this process, can sign anything
 (AA-001, AA-010); CORE-02 moved `signApprovalState` behind the external signer
 with the other four operations (§29).
 
@@ -1009,7 +1012,91 @@ change. Full record in ADR §6.8.
   Signing-failure stickiness (AA-INV-036) is unchanged.
 
 Residuals are unchanged. Persisted authority-state rollback across restart is
-CORE-07's, not this cache's.
+CORE-07's (§30), not this cache's.
+
+---
+
+## 30. CORE-07 — Authority State Freshness & Rollback Detection
+
+`docs/architecture/ADR-AUTHORITY-STATE-FRESHNESS-AND-ROLLBACK-DETECTION.md` is
+the design; this section is the security statement. Invariants SEC-INV-164 …
+SEC-INV-175.
+
+### 30.1 The gap it closes
+
+A signature proves a trusted key vouched for a state; it cannot prove the
+state is the newest. Before CORE-07, every durable authority store refused a
+rollback only while the process that had seen the newer state was running.
+Reproduced on `main @ 5cf562d`: issue G, copy the whole grant database, revoke
+G (withheld, 0 adapter calls), stop, restore the copy, restart — the store
+opened authentic and healthy at revocation sequence 0, and **G executed (1
+adapter call)**.
+
+### 30.2 The anchor, and why it is outside
+
+Each store's already-signed head — the revocation-state commitment, the
+discharge chain head, the approval chain head — is anchored, unchanged, as a
+checkpoint `{stateKind, organizationId, storeId, sequence, stateDigest}` at an
+external authority-state witness, keyed by the slot `(stateKind,
+organizationId)`. An anchor inside the store's file, beside it, in memory, in
+configuration or in the same snapshot would be rolled back with the state it
+witnesses; none is used. No signature, signing domain, canonical format or
+schema of any store changed.
+
+### 30.3 Trust in the witness
+
+The witness's id and Ed25519 receipt key are pinned by configuration — never
+learned from the witness (no TOFU) and never an authority verification key.
+Every answer is a receipt signed over the caller's fresh challenge, the
+operation, the binding and the state; a receipt that does not verify under the
+pinned key, names another witness, operation, challenge or binding, or is
+malformed, is refused with a closed code. A witness can deny service; it cannot
+make a stale local state current, and nothing it says ever makes local
+authority *usable* — it can only refuse.
+
+### 30.4 Startup, transitions, reads
+
+- **Startup:** the verified local head is reconciled with the witness before
+  the store is returned (ADR §2.8). Rollback, fork, a different store, an
+  unbound slot, a prepared transition the file does not hold, or an
+  unreachable witness refuses the store — so the secure Host never listens.
+- **Transitions** (revocation; discharge append; approval append): witness
+  `prepare` (compare-and-advance) → local commit (synchronous, revalidating) →
+  `finalize`. No network inside the write transaction; a crash between
+  prepare and commit is `pending-recovery` (fail closed, never auto-cleared); a
+  crash between commit and finalize is finalized at the next start. Concurrent
+  writers: one prepare wins, the loser writes nothing it planned.
+- **Reads:** local, against the floor established at startup — no network per
+  read. Lower sequence or same-sequence-other-digest is refused.
+
+### 30.5 Enrollment
+
+A new store is enrolled at the witness as genesis before its local genesis
+commits. An existing store the witness has never seen is refused until the
+explicit operator ceremony enrolls its current verified head
+(`scripts/enroll-authority-state-freshness.mjs`); nothing enrolls silently and
+nothing rebinds a slot. A rollback before first enrollment is not detectable.
+
+### 30.6 Availability (the decision)
+
+Witness unavailable: at startup → the store does not open; for a mutation →
+nothing is written; after an established start → existing reads continue
+(Host `degraded`, still ready). No fallback to process-only freshness in any
+case. **Revocation therefore needs both the signer and the witness** — AA-004's
+shape, extended; the emergency control (not anchored) remains the stop that
+depends on neither.
+
+### 30.7 What CORE-07 does not give
+
+| Not given | Why |
+|---|---|
+| Detection of the witness's state restored **together with** the authority stores to the same earlier moment | the witness's trust assumption; **never restore them as one snapshot domain** (PROD-02) |
+| Detection of a rollback that happened **before** a store's first trusted enrollment | the ceremony's attestation is the baseline |
+| Protection when deployment configuration (witness endpoint, key, credential) is rewritten | AA-002 |
+| Protection against a malicious Host process or a holder of the witness credential | they can prepare, finalize or advance at will (denial of service, never a stale state made current) |
+| Anti-rollback for a deployment that composes no witness | a lenient `createEnterprise` embedding claims nothing (scoped tests) |
+| Linearizable multi-process reads | a process relies on its own floor between probes (R-GS-07) |
+| Signer-independent revocation | AA-004, open |
 
 ---
 

@@ -41,6 +41,10 @@ import {
   trustedKeyOf,
 } from './authority-authenticity-fixture.js';
 import { buildTestKernelProviders } from './support.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/index.js';
+import { boundaryFor, closeAllWitnesses, startWitness } from './core07-freshness-fixture.js';
+
+after(closeAllWitnesses);
 
 /**
  * CORE-01 — revocation state integrity.
@@ -67,10 +71,12 @@ import { buildTestKernelProviders } from './support.js';
  * ## The boundary this suite also pins
  *
  * A writer who kept a copy of an earlier, genuinely signed state and restores
- * it wholesale has rolled the store back. The running process detects that; a
- * restarted one cannot, and that is CORE-07. The RESIDUAL test at the end
- * asserts the limitation exactly as documented, so the claim cannot quietly
- * drift in either direction.
+ * it wholesale has rolled the store back. The running process detects that.
+ * Across a restart, CORE-07 does — **when an external freshness witness is
+ * composed**: the test that used to pin this as a residual is inverted below
+ * (the restarted store refuses the restored state), and a separately scoped
+ * test pins that anti-rollback is **not** claimed for a store opened without
+ * a witness, so the claim cannot quietly drift in either direction.
  */
 
 const NOW = '2026-01-01T12:00:00.000Z';
@@ -553,15 +559,40 @@ describe('CORE-01 — restart and rollback', () => {
     await store.close();
   });
 
-  it('RESIDUAL (CORE-07): a full restore of an earlier authentic state is NOT detected by a restarted process', async () => {
-    // This pins the documented boundary rather than a desired behaviour. A
-    // writer who kept a copy of the complete pre-revocation state — commitment
-    // and rows — and restores it before a restart has rolled the store back to
-    // something this key genuinely signed. Nothing inside the file can tell
-    // "never revoked" from "restored to before the revocation"; that needs a
-    // freshness anchor outside the database, which is CORE-07. When CORE-07
-    // lands, this test must be inverted, not deleted.
+  it('CORE-07 (inverted from the CORE-07 RESIDUAL): a full restore of an earlier authentic state IS detected by a restarted process with a freshness witness', async () => {
+    // This used to pin the documented residual: a writer who kept a copy of
+    // the complete pre-revocation state — commitment and rows — and restored it
+    // before a restart had rolled the store back to something this key
+    // genuinely signed, and the restarted store read the grant as live.
+    // Nothing inside the file can tell "never revoked" from "restored to
+    // before the revocation"; CORE-07's external witness, outside the file's
+    // restore domain, can — and the restarted store refuses to open.
+    const witness = await startWitness();
     const dbPath = tempDbPath('residual-rollback');
+    const store = await openDurableStore(dbPath, { freshness: { boundary: await boundaryFor(witness, 'org-core01') } });
+    const grant = await issueInto(store);
+    const captured = await withOrdinaryConnection(dbPath, readState);
+    await revoke(store, grant.id);
+    await store.close();
+
+    await withAttacker(dbPath, (db) => {
+      unrevoke(db, grant.id);
+      writeState(db, captured);
+    });
+
+    await assert.rejects(
+      async () => openDurableStore(dbPath, { freshness: { boundary: await boundaryFor(witness, 'org-core01') } }),
+      (error: unknown) => error instanceof AuthorityStateFreshnessError && error.code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED',
+    );
+    await witness.close();
+  });
+
+  it('SCOPED (CORE-07): without a freshness witness, anti-rollback across a restart is NOT claimed — the restored state is believed', async () => {
+    // The lenient embedding (`createEnterprise` / a store opened with no
+    // `freshness`) keeps the pre-CORE-07 behaviour, stated rather than hidden:
+    // AA-003 / GS-002 stay open for a deployment that composes no witness. The
+    // secure Host never runs this way (HOST_AUTHORITY_FRESHNESS_REQUIRED).
+    const dbPath = tempDbPath('no-anchor-rollback');
     const store = await openDurableStore(dbPath);
     const grant = await issueInto(store);
     const captured = await withOrdinaryConnection(dbPath, readState);
@@ -574,7 +605,7 @@ describe('CORE-01 — restart and rollback', () => {
     });
 
     const restarted = await openDurableStore(dbPath);
-    assert.equal((await restarted.read(grant.id)).revocation, undefined, 'if this now fails closed, CORE-07 has landed: invert this test and update the threat model');
+    assert.equal((await restarted.read(grant.id)).revocation, undefined, 'no witness, no cross-restart freshness: exactly what is documented for this mode');
     await restarted.close();
   });
 });

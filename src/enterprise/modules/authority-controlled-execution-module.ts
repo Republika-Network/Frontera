@@ -80,6 +80,8 @@ export function createAuthorityControlledExecutionModule(
             revocationState: report.revocationState,
             ...(report.revocationStateFailure !== undefined ? { revocationStateFailure: report.revocationStateFailure } : {}),
             ...(report.revocationSequence !== undefined ? { revocationSequence: report.revocationSequence } : {}),
+            // CORE-07: the store's freshness status and closed reason — never a digest.
+            ...(report.freshness !== undefined ? { freshness: report.freshness.status, ...(report.freshness.reason !== undefined ? { freshnessReason: report.freshness.reason } : {}) } : {}),
           },
         };
       } catch {

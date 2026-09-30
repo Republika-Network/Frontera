@@ -5,6 +5,15 @@ import { dirname, resolve } from 'node:path';
 import { bindStoreSignerCustody } from '../authority-authenticity/custody.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
+import { obligationDischargeStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
+import {
+  isAuthorityStateFreshnessBoundary,
+  markComposedUnderFreshness,
+  type AuthorityStateEnrollmentContext,
+  type AuthorityStateFreshnessBoundary,
+  type AuthorityStateFreshnessSession,
+} from '../authority-state-freshness/session.js';
 import {
   OBLIGATION_DISCHARGE_STORE_SCHEMA_VERSION,
   type ObligationDischargeContent,
@@ -37,10 +46,14 @@ import {
  *
  * Append-only triggers remain as defense in depth; they are not the boundary.
  *
- * What this does **not** give (stated, not implied): protection against a
- * restore of an older, genuinely signed state (rollback — CORE-07; an in-process
- * witness refuses regression only while the process lives), or against anyone
- * who holds the signing key or controls this process (CORE-02).
+ * Rollback — a restore of an older, genuinely signed state — is refused while
+ * the process lives by an in-process witness (sequence and digest), and across
+ * restarts **only** when `freshness` is composed (CORE-07): the head is then
+ * anchored at an external witness outside this file's restore domain, compared
+ * at open before the store is returned, and advanced by prepare → local commit
+ * → finalize on every append. What this does **not** give: protection when the
+ * witness itself is restored together with this file, or against anyone who
+ * holds the signing key or controls this process (CORE-02).
  */
 
 export interface SqliteObligationDischargeStoreOptions {
@@ -50,6 +63,14 @@ export interface SqliteObligationDischargeStoreOptions {
   readonly organizationId: string;
   /** The deployment's authority signer (to advance the signed head) and verifier (to believe it). Never optional: there is no unauthenticated durable mode. */
   readonly authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier };
+  /**
+   * CORE-07 — cross-restart freshness of the signed head, anchored at an
+   * external witness outside this file's restore domain. Optional for an
+   * embedder; the secure Host always composes it. `enrollment` is the explicit
+   * ceremony for an existing store the witness has never seen, and is never
+   * passed by any composition path.
+   */
+  readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary; readonly enrollment?: AuthorityStateEnrollmentContext };
 }
 
 const SCHEMA = `
@@ -156,11 +177,18 @@ export async function createSqliteObligationDischargeStore(path: string, options
 
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(absolute);
-  // The highest committed sequence this process has verified. A read that
-  // finds a lower one — an older signed state restored underneath a running
-  // Host — is refused. Only while this process lives: cross-restart rollback
-  // detection is CORE-07.
-  let witnessed = -1;
+  // The newest committed state this process has verified — sequence **and**
+  // digest (CORE-07): a read that finds a lower sequence, or a different state
+  // at the same sequence, has found an older or forked signed state restored
+  // underneath a running Host, and is refused. On its own it lasts only while
+  // this process lives; across a restart the freshness session below, anchored
+  // at the external witness, is what refuses an older state.
+  let witnessed: { readonly sequence: number; readonly chainDigest: string } | undefined;
+  let session: AuthorityStateFreshnessSession | undefined;
+  const freshness = options.freshness;
+  if (freshness !== undefined && (!isAuthorityStateFreshnessBoundary(freshness.boundary) || freshness.boundary.organizationId !== organizationId)) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The obligation discharge store freshness option must carry a boundary built by createAuthorityStateFreshnessBoundary for the same organization.');
+  }
 
   function verifiedState(): { readonly state: ObligationDischargeStateCommitment; readonly rows: readonly StoredObligationDischarge[]; readonly keyId: string } {
     for (const table of ['obligation_discharge_store_meta', 'obligation_discharge_head', 'obligation_discharges']) {
@@ -190,8 +218,13 @@ export async function createSqliteObligationDischargeStore(path: string, options
     const keyId = verification.keyId;
     const rows = (db.prepare('SELECT * FROM obligation_discharges ORDER BY sequence ASC').all() as Row[]).map(toStored);
     verifyObligationDischargeHistory(rows, state);
-    if (state.sequence < witnessed) corrupt('The obligation discharge store regressed to an earlier committed state while this process was running.');
-    witnessed = Math.max(witnessed, state.sequence);
+    // CORE-07: the floor established against the external witness at open. Local, synchronous, no network. First, so the freshness session records what it refused.
+    session?.observe(obligationDischargeStateCheckpoint(state));
+    if (witnessed !== undefined) {
+      if (state.sequence < witnessed.sequence) corrupt('The obligation discharge store regressed to an earlier committed state while this process was running.');
+      if (state.sequence === witnessed.sequence && state.chainDigest !== witnessed.chainDigest) corrupt('The obligation discharge store holds a different committed state at the same sequence while this process was running.');
+    }
+    if (witnessed === undefined || state.sequence > witnessed.sequence) witnessed = { sequence: state.sequence, chainDigest: state.chainDigest };
     return { state, rows, keyId };
   }
 
@@ -210,7 +243,14 @@ export async function createSqliteObligationDischargeStore(path: string, options
       if (!isEmptyDatabase(db)) corrupt('The obligation discharge store has content but no authenticated identity; it is never re-initialized.');
       // A new store: its identity and signed genesis are created together, and
       // the signature is produced before anything is written.
-      const storeId = `obligation-discharge-store:${randomUUID()}`;
+      // CORE-07: under freshness the genesis is enrolled at the witness before
+      // it is committed here; a crash in between is adopted on the next open
+      // (genesis is deterministic from the store id), and a witness holding
+      // this organization's state beyond genesis refuses the empty file.
+      const storeId =
+        freshness === undefined
+          ? `obligation-discharge-store:${randomUUID()}`
+          : await freshness.boundary.genesisStoreId('obligation-discharge-state', { newStoreId: () => `obligation-discharge-store:${randomUUID()}`, genesisDigest: (id) => obligationDischargeGenesisDigest(id, organizationId) });
       const genesis: ObligationDischargeStateCommitment = { storeId, organizationId, sequence: 0, chainDigest: obligationDischargeGenesisDigest(storeId, organizationId) };
       const signature = await signer.signObligationDischargeState(genesis);
       const createdAt = options.now();
@@ -223,6 +263,12 @@ export async function createSqliteObligationDischargeStore(path: string, options
     // Verified before the store is handed to anything: a forged or foreign
     // store refuses the Host at startup, not at the first issuance.
     const opened = verifiedState();
+    // CORE-07: freshness is established before the store is re-attested or
+    // handed to anything. A rollback, fork, unheld pending transition,
+    // unenrolled store or unreachable witness refuses the open.
+    if (freshness !== undefined) {
+      session = await freshness.boundary.establish(obligationDischargeStateCheckpoint(opened.state), () => obligationDischargeStateCheckpoint(verifiedState().state), freshness.enrollment !== undefined ? { enrollment: freshness.enrollment } : {});
+    }
     // Key rotation — the CORE-01 rule, reused unchanged: a state that verifies
     // under a trusted key other than the active one is re-signed, *unchanged*,
     // under the active key, inside a transaction that verifies it again and
@@ -271,7 +317,7 @@ export async function createSqliteObligationDischargeStore(path: string, options
     // Signed before the write transaction; nothing is written if signing fails.
     const signature = await signer.signObligationDischargeState(next);
     const recordedAt = options.now();
-    db.transaction(() => {
+    const commitLocal = (): void => db.transaction(() => {
       // Under the write lock, the whole history is verified again — signature,
       // exact row set and chain — and must still be exactly the state the new
       // head was signed over. A row tampered between planning and commit can
@@ -303,7 +349,12 @@ export async function createSqliteObligationDischargeStore(path: string, options
       // every later read refuses.
       verifiedState();
     }).immediate();
-    witnessed = Math.max(witnessed, sequence);
+    // CORE-07: prepare at the witness, commit here, then finalize. `prepare`
+    // completes before the write transaction opens and `finalize` runs after it
+    // commits — no network call inside it. A witness that does not prepare
+    // leaves nothing written.
+    if (session === undefined) commitLocal();
+    else await session.transition(obligationDischargeStateCheckpoint(state), obligationDischargeStateCheckpoint(next), () => (commitLocal(), { value: undefined, state: obligationDischargeStateCheckpoint(next) }));
     return Object.freeze({ ...content, correlation: Object.freeze({ ...content.correlation }), sequence, digest });
   }
 
@@ -333,5 +384,7 @@ export async function createSqliteObligationDischargeStore(path: string, options
   };
   // CORE-02: which custody signs for this store (software or external).
   bindStoreSignerCustody(store, signer);
+  // CORE-07: which freshness boundary this store was composed under, if any.
+  if (freshness !== undefined) markComposedUnderFreshness(store, freshness.boundary);
   return store;
 }

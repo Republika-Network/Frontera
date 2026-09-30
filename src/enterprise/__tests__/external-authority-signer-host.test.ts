@@ -16,6 +16,7 @@ import { createSqliteObligationDischargeStore, type ObligationDischargeRecordInp
 import { ADMIN, DEPLOY, ORG, PRODUCTION, Workspace, boot, call, createContextTable, govern, nextKey, provision, secureEnv, settle, type Booted, type Reply } from './core04-host-fixture.js';
 import { APPROVER_A, APPROVER_B, LARGE, approvalPolicy, approvals, approvalsFile, as, commandFor, describe as describeApproval, payablesWorld, provisionApprovers } from './core05-host-fixture.js';
 import { SIGNER_TOKEN, externalCustodyEnv, signerKeyDirectory, spawnReferenceSigner, withoutSoftwareCustody, type SpawnedSigner } from './core02-external-signer-fixture.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
  * CORE-02 — external key custody on the **canonical shipped Host**
@@ -92,9 +93,8 @@ async function grantIdOf(baseUrl: string, reply: Reply): Promise<string> {
 }
 
 /** The canonical bootstrap without listening — for the refusals, which must happen before any socket exists. */
-function bootRaw(env: Record<string, string | undefined>) {
-  return bootEnterpriseHost({
-    env,
+async function bootRaw(env: Record<string, string | undefined>) {
+  return bootEnterpriseHost({ env: await withDeploymentWitness(env),
     executionAdapters: [{ adapterId: 'test.recording', execute: async () => ({ outcome: 'completed', providerRef: 'never' }) }],
     contextProvider: createContextTable().provider,
     policyPackProvider: approvalPolicy(),

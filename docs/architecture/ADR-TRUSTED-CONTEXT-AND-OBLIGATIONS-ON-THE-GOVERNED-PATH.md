@@ -224,9 +224,10 @@ identity, head or tables refuse the store. Key rotation reuses the CORE-01 rule
 (re-sign the unchanged, verified state under the active key at open). Details:
 `docs/security/AUTHORITY_ARTIFACT_AUTHENTICITY.md` §27.
 
-**Rollback.** A restore of an older genuine signed state after a restart is not
-detected (CORE-07); an in-process witness refuses regression while the process
-lives. The trusted writer records reports for one obligation of one decision in
+**Rollback.** A restore of an older genuine signed state after a restart is
+refused when an external authority-state freshness witness is composed —
+always, on the secure Host (CORE-07); without one it is not detected, and an
+in-process witness refuses regression while the process lives. The trusted writer records reports for one obligation of one decision in
 strictly increasing observation time, so every committed prefix is a prefix of
 the lifecycle sequence; a satisfied obligation is terminal, so a rollback can
 remove satisfaction but never manufacture it.
@@ -355,7 +356,7 @@ annotates and does not relabel.
 | Obligation forgery / unauthorized discharge | Mitigated | trusted writer + configured source class; self-reported never satisfies |
 | Obligation replay | Mitigated | decision-bound correlation |
 | Discharge store tampering / forged satisfaction by a DB-only writer | **Mitigated (authenticity)** | signed chain head verified on every read; insert/alter/delete/reorder/transplant/re-sign-with-own-key refused (`obligation-discharge-authenticity.test.ts`, Host forgery E2E) |
-| Discharge store rollback to an older genuine state | **Residual (CORE-07)**, bounded | in-process witness; time-ordered recording makes a rollback unable to manufacture satisfaction |
+| Discharge store rollback to an older genuine state | **Mitigated (CORE-07)** with an external freshness witness; residual without one, bounded | the chain head anchored outside the store's restore domain; in-process witness (sequence and digest); time-ordered recording makes a rollback unable to manufacture satisfaction |
 | Signing key or process compromise | **Residual (CORE-02)** | whoever holds the key can sign any state (AA-001) |
 | Governance Record tampering (integrity-only, pre-existing) | **Residual (ASSURE-02)**, narrowed | the obligation gate no longer reads the record; the context digest is authentic once inside a signed grant |
 | Context/decision digest mismatch | Mitigated | digest in committed record and in signed grant source |
@@ -369,7 +370,7 @@ annotates and does not relabel.
   *Integrity only:* the committed Governance Record, including its context
   evaluation (pre-existing, §3.7 item 4; ASSURE-02), and context provenance
   digests on readings (a connector-level attacker can recompute them).
-  *Rollback:* not detected across restarts for either store (CORE-07).
+  *Rollback:* across restarts, refused for the discharge store when an external freshness witness is composed (CORE-07); the trusted-context readings are not an authority store and are not anchored.
   *Process/key compromise:* not addressed (CORE-02).
 - **Provenance classification.** Context provenance is never read back from
   storage to admit a fact: admission happens in memory, at decision time, from

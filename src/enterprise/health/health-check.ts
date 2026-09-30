@@ -66,6 +66,30 @@ export interface EnterpriseHealthPosture {
    * `not-composed` — no signed authority store is composed.
    */
   readonly authoritySigner: 'external' | 'software' | 'not-composed';
+  /**
+   * CORE-07: whether the composed durable authority stores anchor their signed
+   * state at an external authority-state witness. `external` — every durable
+   * authority store composed here established cross-restart freshness at
+   * startup, before any authority was handed to the runtime; `not-composed` —
+   * no witness, so a restored earlier authentic state is detected only while a
+   * process runs (AA-003 / GS-002 open for this deployment).
+   */
+  readonly authorityFreshness: 'external' | 'not-composed';
+}
+
+/**
+ * CORE-07: the live freshness state. Per store: `ready`; `unavailable` (the
+ * witness could not be reached — existing authority still reads against the
+ * floor established at startup, and no authority mutation is possible);
+ * `regressed` / `forked` / `pending-recovery` / `unbound` (the store refuses
+ * every authority read, and the Host is unhealthy). Never a credential, an
+ * endpoint path, a receipt, a signature or a digest.
+ */
+export interface EnterpriseAuthorityFreshnessHealth {
+  readonly mode: 'external';
+  readonly witnessId: string;
+  readonly witness: { readonly state: 'ready' | 'unavailable'; readonly reason?: string };
+  readonly stores: readonly { readonly stateKind: string; readonly status: string; readonly reason?: string; readonly sequence: number }[];
 }
 
 /**
@@ -126,6 +150,8 @@ export interface EnterpriseHealthReport {
   readonly posture?: EnterpriseHealthPosture;
   /** CORE-02: present when a signed authority store's signer was composed by this Host. */
   readonly authoritySigner?: EnterpriseAuthoritySignerHealth;
+  /** CORE-07: present when an external authority-state witness was composed by this Host. */
+  readonly authorityFreshness?: EnterpriseAuthorityFreshnessHealth;
 }
 
 export interface EnterpriseHealthDependencies {

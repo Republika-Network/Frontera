@@ -502,8 +502,8 @@ used only when `0 ≤ age < probeIntervalMs`.
   including one forced by a rollback, never clears `lastSigning`.
 
 *Scope.* This fix covers signer-health cache freshness only. It does not
-address persisted authority-state rollback across restart, which remains
-CORE-07.
+address persisted authority-state rollback across restart, which is CORE-07's
+(`ADR-AUTHORITY-STATE-FRESHNESS-AND-ROLLBACK-DETECTION.md`).
 
 *Evidence.* `external-authority-signer-review-round2.test.ts` (22 tests):
 A1 … A8b and B1 … B8, plus the rollback signing-stickiness case. Five

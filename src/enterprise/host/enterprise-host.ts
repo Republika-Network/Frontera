@@ -169,6 +169,8 @@ function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly str
     kernelAuthority: 'composed',
     emergencyControl: 'composed',
     exerciseControls: 'composed',
+    // CORE-07: every durable authority store anchored at the external witness.
+    authorityFreshness: 'external',
   };
   const shortfalls = Object.entries(expected)
     .filter(([key, value]) => posture[key as keyof EnterpriseHealthPosture] !== value)
@@ -245,6 +247,10 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
           const failure = entry.health.details?.['revocationStateFailure'];
           return typeof failure === 'string' ? `${moduleId} (${failure})` : moduleId;
         });
+      // CORE-07: a store whose freshness failed is named by kind and closed code — never a digest or path.
+      for (const store of report.authorityFreshness?.stores ?? []) {
+        if (store.status !== 'ready' && store.status !== 'unavailable') failing.push(`authority-freshness:${store.stateKind} (${store.reason ?? store.status})`);
+      }
       throw new EnterpriseHostConfigurationError(
         'HOST_NOT_HEALTHY',
         `The Enterprise Host composed but is not healthy (${report.status}); required modules failing: ${failing.length > 0 ? failing.join(', ') : 'none reported'}. It will not serve traffic.`,

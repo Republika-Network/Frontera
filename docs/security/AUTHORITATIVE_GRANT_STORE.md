@@ -123,8 +123,8 @@ Classification vocabulary: **BLOCKED** (the store prevents it), **PARTIALLY BLOC
 | L | Attacker rewrites **both** the revocation row and the grant's reference, consistently — including deleting both | **BLOCKED since CORE-01** for a database-only writer (was NOT ADDRESSED; MASTER-00 showed deletion of both made the grant live) | The signed revocation-state commitment no longer describes the rows → `REVOCATION_STATE_INCONSISTENT`. `revocation-state-integrity.test.ts` E |
 | M | Duplicate issuance of the same identity | BLOCKED | `grant_id PRIMARY KEY` plus the in-transaction existence check. Resolves to `already-issued` with the **existing** grant, never a second row. Tested: `duplicate-issue` |
 | N | Duplicate revocation | BLOCKED | `grant_id PRIMARY KEY` on the revocation table plus the in-transaction check. Idempotent, and the **first** revocation stands — never re-dated, never re-reasoned. Tested: `revoke-idempotent` |
-| O | Replay of a stale database copy | **NOT ADDRESSED across restart** | See §17. Nothing in the store is anchored outside the file. Since CORE-01 a *running* store refuses a commitment older than one it has verified |
-| P | Rollback to an older database snapshot | **NOT ADDRESSED across restart** | See §17. A backup taken before a revocation restores a live grant once the process restarts. **Do not claim anti-rollback** → CORE-07 |
+| O | Replay of a stale database copy | **BLOCKED with an external freshness witness** (CORE-07); not addressed across restart without one | See §17. With the witness, the revocation-state commitment is anchored outside the file and a stale copy refuses the restart. Since CORE-01 a *running* store refuses a commitment older than one it has verified |
+| P | Rollback to an older database snapshot | **BLOCKED with an external freshness witness** (CORE-07); **NOT ADDRESSED** without one, or when the witness is restored with the file | See §17. With the witness (always, on the secure Host) a pre-revocation backup restored before a restart is refused before any grant can be read. Anti-rollback is claimed **only** in that scope |
 | Q | Concurrent exercise and revocation (same process) | BLOCKED | `better-sqlite3` is synchronous; a read transaction and a revoke transaction cannot interleave. The read either sees the committed revocation or precedes it |
 | R | Concurrent exercise and revocation (different processes) | PARTIALLY BLOCKED | SQLite serializes writers and WAL readers see a consistent snapshot. See §12 for exactly what this does and does not amount to |
 | S | Concurrent issuance of the same identity | BLOCKED | One grant and one `already-issued`, never two grants (M) |
@@ -469,14 +469,14 @@ This is the most easily missed property in the whole design, so it gets its own 
 
 Concretely: take a backup at T0 while a grant is live; revoke it at T1; restore the T0 backup at T2. Every integrity check passes — the restored records are internally consistent, correctly digested and correctly cross-referenced, because they *were* correct at T0. The store has no way to know that a later state existed.
 
-**Classification: NOT ADDRESSED — DEPLOYMENT SECURITY REQUIREMENT.**
+**Classification (CORE-07): BLOCKED with an external authority-state freshness witness; NOT ADDRESSED without one — and a DEPLOYMENT SECURITY REQUIREMENT either way.**
 
-- There is no anti-rollback mechanism in this store, and **none is claimed**.
-- Digest chaining alone would not solve it either, unless the chain head is anchored **outside** the database — in a signed, monotonic, externally-held value. That is not implemented.
-- The mitigation available today is operational: treat a restore of the authority store as a security-relevant operation, and re-apply revocations recorded after the snapshot.
-- **CORE-01** narrows this without closing it. Removing revocation rows is no longer enough: a rollback now needs a *previously captured* signed commitment together with the rows it covered, and a process that already verified a newer commitment refuses the older one. A restarted process cannot tell the difference. External anchoring is **CORE-07**.
+- **CORE-01** narrowed this: removing revocation rows is no longer enough; a rollback needs a *previously captured* signed commitment together with the rows it covered, and a process that already verified a newer commitment refuses the older one.
+- **CORE-07** closes it across restarts **within scope**: the signed revocation-state commitment `{storeId, sequence, revocationSetDigest}` is anchored at an external witness outside the database's restore domain — enrolled at genesis, reconciled at open **before** the store is returned, and advanced by prepare → local commit → finalize on every revocation. A restored T0 backup at T2 is refused at restart (`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`); the secure Host does not start and no grant can be exercised (`ADR-AUTHORITY-STATE-FRESHNESS-AND-ROLLBACK-DETECTION.md`, tests `authority-state-freshness-*.test.ts`).
+- **Not claimed:** a deployment composing no witness (a lenient embedding) keeps the pre-CORE-07 behaviour; restoring the witness's database **together with** this file to the same earlier moment is undetectable; a rollback before the store's first trusted enrollment is not detected.
+- **The deployment requirement:** the witness's state must live in a different volume, backup set and snapshot schedule from every authority database. A restore of the authority stores remains a security-relevant operation; if the witness holds a newer state, the restored store refuses to open until an operator restores the current copy (or resolves it through PROD-02's procedures).
 
-Owners: **Prompt 5** may strengthen authenticity in a way that makes an external anchor possible; **Prompt 17** and operational controls own restore governance.
+Owners: **CORE-07** (external anchoring — delivered); **PROD-02** and operational controls own restore governance across the store set.
 
 ## 18. Deployment Assumptions
 
@@ -525,6 +525,7 @@ Owners: **Prompt 5** may strengthen authenticity in a way that makes an external
 - **Residual risk:** R-GS-02. **Future owner: Prompt 5 (anchor) / Prompt 17 (restore governance).**
 - **Disposition after CORE-01: STILL OPEN, narrowed** — needs a captured earlier signed state rather than row deletion; detected while the process runs; not across a restart. Owner: **CORE-07**.
 - **Disposition after Prompt 5: STILL OPEN — NOT ADDRESSED.** Signatures authenticate, they do not timestamp. Every artifact in a restored snapshot is validly signed, including grants whose revocations were rolled back with them, so a signature check passes exactly as a digest check did. Restated as AA-003. No anchor was added; none is claimed.
+- **Disposition after CORE-07: CLOSED within the freshness-anchor scope.** Reproduced on `main @ 5cf562d` before the fix (a restored pre-revocation copy opened authentic and the revoked grant executed); with an external authority-state witness composed — always, on the secure Host — the restart refuses the restored state before any grant can be read, and the adapter is never reached (`authority-state-freshness-host.test.ts`). **Still open** for a deployment that composes no witness, for the witness restored together with the file, and for a rollback before first enrollment (§17).
 
 ### GS-003 — The durable store is available but is not the default for every deployment
 
@@ -578,7 +579,7 @@ Every one of claims 1–5 is PATH-LOCAL to bounded-grant exercise, issuance and 
 | "The grant store is tamper-proof." | Still false. Prompt 5 blocks a *database-only* writer; an attacker holding the signing key or the key configuration forges freely (AA-001, AA-002) |
 | "Grants are cryptographically signed / authenticated." | **True as of Prompt 5, for the durable store only** — `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §23. It was false when this document was written, and it remains false for the in-memory store and for every other authority artifact in the repository. SEC-INV-U01 is now PARTIALLY IMPLEMENTED, not satisfied: the signing key is process-readable |
 | "A privileged host or DBA cannot modify authority." | They can. D-GS1, D-GS3, R-GS-03, R-GS-04 |
-| "Rollback of an old database snapshot cannot restore old authority." | It can. §17, GS-002. **Not proven, not implemented** |
+| "Rollback of an old database snapshot cannot restore old authority." | Sayable **only** as "with an external authority-state witness whose state is not restored with the authority databases" (CORE-07, §17). Without a witness it can; with one, a co-restore of the witness and the file, or a rollback before first enrollment, is undetectable |
 | "All Frontera authority is now durable." | False. Recognition state, approvals, capability-token revocation, the policy pack registry and the Action Enforcement `emergencyDeny` all remain in-process. The bounded-grant store changed in Prompt 3; Prompt 4 added a separately-configured durable emergency-control store on its own file, under the same `persistence.provider === 'sqlite'` condition and with the same in-memory default |
 | "Frontera has a global kill switch." | False. Prompt 4 added a durable operational interlock for the **bounded-grant / Governed Action path only**, and it is opt-in. `AocKernel.enforce()`, Sovereign Access and Content Protection honour nothing of the sort (SEC-INV-U05) |
 | "Frontera durably stores grants by default." | False as stated. The durable store is selected when `persistence.provider === 'sqlite'`; the default provider is `memory` (GS-003, D-GS5) |
@@ -613,5 +614,5 @@ Every one of claims 1–5 is PATH-LOCAL to bounded-grant exercise, issuance and 
 2. A GS-INV may only be strengthened by evidence. Changing the prose is not promotion.
 3. §21's claims travel with their scope. A restatement omitting "when the durable store is configured" or "on the bounded-grant path" is an overclaim.
 4. §22 is not advisory. Adding a §21 claim that contradicts a §22 row requires deleting that row, and deleting it requires the evidence that makes it false.
-5. Findings close on evidence, not on documentation. GS-001 and GS-002 close when a key boundary and an external anchor exist, not when this document is edited.
+5. Findings close on evidence, not on documentation. GS-001 and GS-002 close when a key boundary and an external anchor exist, not when this document is edited. (GS-002 closed, in scope, on CORE-07's evidence: the reproduced attack and the inverted tests.)
 6. Any column added to either table must be justified against GS-INV-017 (no free-form authority payload) and GS-INV-012 (nothing that invites a sweeper).

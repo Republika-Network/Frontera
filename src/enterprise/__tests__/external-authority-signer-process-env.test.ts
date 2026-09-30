@@ -11,6 +11,7 @@ import { externalCustodyEnv, startInProcessSigner, withoutSoftwareCustody } from
 import { Workspace, createContextTable, secureEnv } from './core04-host-fixture.js';
 import { approvalPolicy, approvalsFile } from './core05-host-fixture.js';
 import { buildTestKernelProviders } from './support.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
  * CORE-02R D — the canonical Host's "no authority private key in this process"
@@ -42,9 +43,8 @@ after(async () => {
   await workspace.cleanup();
 });
 
-function bootRaw(env: Record<string, string | undefined>) {
-  return bootEnterpriseHost({
-    env,
+async function bootRaw(env: Record<string, string | undefined>) {
+  return bootEnterpriseHost({ env: await withDeploymentWitness(env),
     executionAdapters: [{ adapterId: 'test.recording', execute: async () => ({ outcome: 'completed', providerRef: 'never' }) }],
     contextProvider: createContextTable().provider,
     policyPackProvider: approvalPolicy(),

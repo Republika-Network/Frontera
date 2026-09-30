@@ -19,6 +19,8 @@ import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host
 import { EnterpriseHostConfigurationError } from '../host/host-configuration.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { AUTHORITY_KEY_A, AUTHORITY_KEY_UNTRUSTED, authorityAuthenticityEnv, dropAuthorityStoreTriggers, trustedKeyOf } from './authority-authenticity-fixture.js';
+import { withDeploymentWitness } from './core07-freshness-fixture.js';
+import { AUTHORITY_STATE_WITNESS_PATHS } from '../authority-state-freshness/index.js';
 
 /**
  * PROD-01 — the Enterprise Host an operator starts, qualified end to end.
@@ -57,7 +59,13 @@ const SECRETS = [AGENT_KEY, OUTSIDER_KEY, LEGACY_KEY, ERP_TOKEN, AUTHORITY_KEY_A
 // -- network observation (Generic HTTP) ------------------------------------------
 
 const network = { lookups: [] as string[], httpRequests: 0 };
-diagnosticsChannel.subscribe('http.client.request.start', () => {
+// CORE-07: the secure Host now also talks to its loopback authority-state
+// witness, on the witness protocol's fixed paths. Those calls are not provider
+// traffic, and these assertions are about providers only.
+const WITNESS_PATHS = new Set(Object.values(AUTHORITY_STATE_WITNESS_PATHS));
+diagnosticsChannel.subscribe('http.client.request.start', (message) => {
+  const path = (message as { readonly request?: { readonly path?: string } }).request?.path;
+  if (path !== undefined && WITNESS_PATHS.has(path)) return;
   network.httpRequests += 1;
 });
 const realLookup = dns.promises.lookup;
@@ -184,7 +192,7 @@ interface Booted {
 }
 
 async function boot(env: Record<string, string | undefined>, adapter: RecordingAdapter = recordingAdapter()): Promise<Booted> {
-  const host = await bootEnterpriseHost({ env, executionAdapters: [adapter], logger: capturingLogger });
+  const host = await bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter], logger: capturingLogger });
   hosts.push(host);
   const { port } = await host.listen();
   return { host, adapter, baseUrl: `http://127.0.0.1:${port}` };
@@ -323,7 +331,7 @@ describe('PROD-01 reproduction — the pre-PROD-01 shipped host path composed no
 
   it('the same environment is refused by the canonical bootstrap', async () => {
     const dir = workDir();
-    const error = await refusal(bootEnterpriseHost({ env: { AOC_ENTERPRISE_ENV: 'production', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite', AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'g.sqlite') } }));
+    const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness({ AOC_ENTERPRISE_ENV: 'production', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite', AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'g.sqlite') }) }));
     assert.ok(error instanceof EnterpriseHostConfigurationError);
     assert.equal(error.code, 'HOST_AUTHENTICATION_REQUIRED');
   });
@@ -352,6 +360,8 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       approvals: 'not-configured',
       // CORE-02: the canonical fixture still configures software custody.
       authoritySigner: 'software',
+      // CORE-07: a secure Host anchors its durable authority at an external witness.
+      authorityFreshness: 'external',
     });
     const health = await getJson(baseUrl, '/health');
     assert.equal(health.status, 200);
@@ -455,7 +465,7 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
     // Resolved from the repository root, where the suite runs, like every structural test here.
     const example = join(process.cwd(), 'examples/enterprise-host/governed-actions.example.json');
     const env = secureEnv(dir, { AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: example, FRONTERA_CUSTOMER_KEY_AGENT_1: AGENT_KEY, FRONTERA_ERP_API_TOKEN: ERP_TOKEN });
-    const host = await bootEnterpriseHost({ env });
+    const host = await bootEnterpriseHost({ env: await withDeploymentWitness(env) });
     hosts.push(host);
     assert.equal(host.posture.governedActions, 'composed');
     assert.equal(host.posture.authorityStore, 'authenticated-durable');
@@ -508,7 +518,7 @@ describe('PROD-01 — revocation is visible at the product boundary (CORE-01 thr
     db.prepare('UPDATE bounded_grants SET revocation_digest = NULL WHERE grant_id = ?').run(grant.grant_id);
     db.close();
 
-    const error = await refusal(bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()], logger: capturingLogger }));
+    const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [recordingAdapter()], logger: capturingLogger }));
     assert.ok(error instanceof EnterpriseHostConfigurationError, String(error));
     assert.equal(error.code, 'HOST_NOT_HEALTHY');
     assert.match(error.message, /aoc\.enterprise\.authority-controlled-execution/);
@@ -605,7 +615,7 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
     it(`${label} → ${code}; nothing is opened and nothing listens`, async () => {
       const dir = workDir();
       const env = envOf(dir);
-      const error = await refusal(bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()] }));
+      const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [recordingAdapter()] }));
       assert.ok(error instanceof EnterpriseHostConfigurationError, `${label}: ${String(error)}`);
       assert.equal(error.code, code, error.message);
       assertNoSecret(error.message, 'a configuration refusal');
@@ -616,7 +626,7 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
   it('a signing key absent from the trusted set is refused by composition before any store is opened', async () => {
     const dir = workDir();
     const env = secureEnv(dir, { AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: JSON.stringify([trustedKeyOf(AUTHORITY_KEY_UNTRUSTED)]) });
-    const error = await refusal(bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()] }));
+    const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [recordingAdapter()] }));
     assert.ok(error instanceof AuthorityAuthenticityConfigurationError, String(error));
     assertNoSecret(error.message, 'an authenticity refusal');
     assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.sqlite')), [], 'the key boundary is checked before any SQLite file exists');
@@ -626,7 +636,7 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
     const dir = workDir();
     const adapters = governedFile()['genericHttpAdapters'] as Record<string, unknown>[];
     const env = secureEnv(dir, {}, governedFile({ genericHttpAdapters: [{ ...adapters[0], origin: 'http://erp.example.com' }] }));
-    const error = await refusal(bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()] }));
+    const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [recordingAdapter()] }));
     assert.ok(error instanceof GenericHttpConfigurationError, String(error));
     assertNoSecret(error.message, 'a Generic HTTP refusal');
     assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.sqlite')), []);
@@ -647,7 +657,7 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
       get: () => (++reads === 2 ? 'memory' : 'sqlite'),
     });
     const adapter = recordingAdapter();
-    const error = await refusal(bootEnterpriseHost({ env, executionAdapters: [adapter] }));
+    const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter] }));
     assert.equal(reads, 3, 'validator, loader and secure-profile rule each read the provider once');
     assert.ok(error instanceof EnterpriseHostConfigurationError, String(error));
     assert.equal(error.code, 'HOST_COMPOSITION_INCOMPLETE', error.message);
@@ -663,7 +673,7 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
     // after the Governance, Passport, Assurance, Kernel Authority and grant stores have.
     const blocked = join(dir, 'execution-outcomes.sqlite');
     mkdirSync(blocked);
-    const error = await refusal(bootEnterpriseHost({ env: secureEnv(dir), executionAdapters: [recordingAdapter()] }));
+    const error = await refusal(bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(dir)), executionAdapters: [recordingAdapter()] }));
     assert.ok(!(error instanceof EnterpriseHostConfigurationError), 'the root error surfaces unchanged');
     assert.equal(existsSync(join(dir, 'bounded-grants.sqlite')), true, 'the grant store had been opened before the failure');
     assert.deepEqual(handlesUnder(dir), [], 'and was closed again, with every other store');
@@ -672,7 +682,7 @@ describe('PROD-01 — security-critical misconfiguration refuses to boot, precis
 
 describe('PROD-01 — development mode is explicit and visibly not production', () => {
   it('zero configuration boots development, ephemeral, unauthenticated, loopback-only — and says so', async () => {
-    const host = await bootEnterpriseHost({ env: { AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' } });
+    const host = await bootEnterpriseHost({ env: await withDeploymentWitness({ AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' }) });
     hosts.push(host);
     const { host: address } = await host.listen();
     assert.equal(address, '127.0.0.1', 'the default bind is loopback');
@@ -713,7 +723,7 @@ describe('PROD-01 — shutdown', () => {
 
   it('closing a Host that never listened still closes its stores', async () => {
     const dir = workDir();
-    const host = await bootEnterpriseHost({ env: secureEnv(dir), executionAdapters: [recordingAdapter()] });
+    const host = await bootEnterpriseHost({ env: await withDeploymentWitness(secureEnv(dir)), executionAdapters: [recordingAdapter()] });
     await host.close();
     assert.equal(host.enterprise.isLive(), false);
     if (CAN_SEE_HANDLES) assert.deepEqual(handlesUnder(dir), []);
