@@ -27,6 +27,7 @@ import {
   type ValidatedExecutionAction,
   type ValidatedExecutionCorrelation,
 } from '../domain/index.js';
+import { snapshotGrantExerciseRequest } from '../domain/grant-exercise-request.js';
 import { isExecutionAdapterRegistry } from './execution-adapter-registry.js';
 
 /**
@@ -234,7 +235,8 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
   }
 
   return {
-    async assess(request: GrantExerciseRequest): Promise<BoundedGrantExerciseAssessment> {
+    async assess(input: GrantExerciseRequest): Promise<BoundedGrantExerciseAssessment> {
+      const request = snapshotGrantExerciseRequest(input);
       try {
         return await assess(request);
       } catch {
@@ -251,12 +253,17 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
       }
     },
 
-    async exercise(request: GrantExerciseRequest): Promise<ExecutionOutcome> {
-      const correlation: ValidatedExecutionCorrelation = {
+    async exercise(input: GrantExerciseRequest): Promise<ExecutionOutcome> {
+      // CORE-08: the attempt's amount and typed parameters are read once, into
+      // fresh frozen copies, and only the copy is assessed, admitted and handed
+      // to the adapter — a caller mutating its own objects while this awaits
+      // changes nothing that was proven inside a bound.
+      const request = snapshotGrantExerciseRequest(input);
+      const correlation: ValidatedExecutionCorrelation = Object.freeze({
         requestId: request.correlation.requestId,
         decisionId: request.correlation.decisionId,
         executionId: request.executionId,
-      };
+      });
 
       const notFound = (): BoundedGrantExerciseAssessment => ({
         usable: false,
@@ -465,9 +472,14 @@ export function createGrantExecutionService(options: GrantExecutionServiceOption
         ...(request.counterparty !== undefined ? { counterparty: request.counterparty } : {}),
         ...(request.organization !== undefined ? { organization: request.organization } : {}),
         ...(request.amount !== undefined ? { amount: request.amount } : {}),
+        // CORE-08: the typed parameters the assessment above proved inside the
+        // grant's parameter bounds — the frozen snapshot, never the caller's
+        // array — present exactly when the grant bounds parameters.
+        ...(request.parameters !== undefined ? { parameters: request.parameters } : {}),
         notAfter: trustedGrant.expiresAt,
         correlation,
       };
+      Object.freeze(action);
 
       // The adapter that actually performed the effect, and the composite that
       // selected it when one did. A plain adapter names itself; the registry

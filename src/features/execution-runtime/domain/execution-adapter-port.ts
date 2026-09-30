@@ -1,3 +1,4 @@
+import type { GovernedParameter } from '../../governed-parameter-runtime/index.js';
 import type { GrantExerciseAmount } from './grant-exercise-request.js';
 
 /**
@@ -43,10 +44,17 @@ import type { GrantExerciseAmount } from './grant-exercise-request.js';
  * this type. An adapter that could dereference one would execute data no bound
  * covered and no assessment saw — a grant for 7500 to V123 submitting a payload
  * for 100000 to V999, with every check passing on the way. The action carried
- * here *is* the payload: subject, action, resource, counterparty, organization
- * and amount, each already proven inside a bound. See
- * `grant-exercise-request.ts` for the full reasoning and for what a later ADR
- * would have to decide before such a field could exist.
+ * here *is* the payload: subject, action, resource, counterparty, organization,
+ * amount and the typed governed parameters, each already proven inside a
+ * bound. See `grant-exercise-request.ts` for the full reasoning and for what a
+ * later ADR would have to decide before such a field could exist.
+ *
+ * ## Fresh, frozen, plain data (CORE-08)
+ *
+ * `GrantExecutionService` builds every value handed to an adapter as a fresh
+ * frozen copy — the amount, the correlation, each parameter entry and the
+ * parameter list — so an adapter holds no reference into a caller's object, the
+ * trusted grant or the exercise request, and cannot mutate anything upstream.
  */
 export interface ValidatedExecutionAction {
   /** The grant that was proven to cover this action. An identity for correlation; the adapter has no way to read the grant it names, and no reason to. */
@@ -63,6 +71,20 @@ export interface ValidatedExecutionAction {
   readonly organization?: string;
   /** The quantity, proven at or below the grant's ceiling in the grant's own unit. */
   readonly amount?: GrantExerciseAmount;
+  /**
+   * The typed governed parameters (CORE-03 values, CORE-08 delivery), present
+   * exactly when the exercised grant bounds parameters — and then exactly the
+   * list the exercise gate proved inside those bounds: every dimension the
+   * grant bounds, no other, canonical dimension order, no duplicate, each entry
+   * `{ dimension, type, value }` with its declared type preserved (a safe
+   * integer never `-0`, a token byte-exact, a boolean).
+   *
+   * Taken from the exercise request's snapshot — the same frozen copy the
+   * assessment read — never from the caller's intent, its metadata, its
+   * asserted context or the grant object. Values, not authority: an adapter
+   * translates them into a provider call and decides nothing with them.
+   */
+  readonly parameters?: readonly GovernedParameter[];
   /**
    * The instant the covering grant stops, copied from the trusted grant.
    *
