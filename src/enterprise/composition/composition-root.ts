@@ -2651,12 +2651,40 @@ export async function enrollExistingAuthorityStores(
     }
   }
   const authenticity = await buildAuthorityAuthenticity(configuration);
-  const boundary = await buildAuthorityFreshness(configuration);
-  if (boundary === undefined) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The authority-state witness could not be composed.');
   const signed = { signer: authenticity.signer, verifier: authenticity.verifier };
   const organizationId = configuration.kernelAuthority.organizationId;
   const busyTimeoutMs = configuration.persistence.busyTimeoutMs;
   const now = (): string => new Date().toISOString();
+  // All or nothing: every named store's local state is verified — exactly as
+  // the Host would open it, without the witness — before the witness is even
+  // contacted. One unverifiable store refuses the whole ceremony, so no other
+  // named store is enrolled behind a refusal.
+  const unverifiable: AuthorityStateKind[] = [];
+  for (const kind of kinds) {
+    let verified = false;
+    try {
+      if (kind === 'bounded-grant-revocation-state') {
+        const store = await createSqliteBoundedGrantStore(pathOf[kind], { busyTimeoutMs, authenticity: signed });
+        verified = (await store.health()).revocationState === 'verified';
+        await store.close();
+      } else {
+        const store =
+          kind === 'obligation-discharge-state'
+            ? await createSqliteObligationDischargeStore(pathOf[kind], { now, busyTimeoutMs, organizationId, authenticity: signed })
+            : await createSqliteApprovalStore(pathOf[kind], { now, busyTimeoutMs, organizationId, authenticity: signed });
+        verified = true;
+        await store.close();
+      }
+    } catch {
+      verified = false;
+    }
+    if (!verified) unverifiable.push(kind);
+  }
+  if (unverifiable.length > 0) {
+    throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `Nothing was enrolled: the local authority state of ${unverifiable.join(', ')} does not verify. Enrollment only ever baselines verified state.`);
+  }
+  const boundary = await buildAuthorityFreshness(configuration);
+  if (boundary === undefined) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The authority-state witness could not be composed.');
   for (const kind of kinds) {
     const freshness = { boundary, enrollment: context };
     const store =
@@ -2668,7 +2696,7 @@ export async function enrollExistingAuthorityStores(
     await store.close();
   }
   const enrolled = boundary.sessions().map((session) => ({ stateKind: session.binding.stateKind, sequence: session.status().sequence }));
-  // A store whose local state did not verify opens answering nothing and establishes no session: nothing was enrolled for it, and saying otherwise would be a false success.
+  // Defense in depth: a store that established no session was not enrolled, and saying otherwise would be a false success.
   const missing = kinds.filter((kind) => !enrolled.some((entry) => entry.stateKind === kind));
   if (missing.length > 0) {
     throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `Nothing was enrolled for ${missing.join(', ')}: its local authority state does not verify. Enrollment only ever baselines verified state.`);

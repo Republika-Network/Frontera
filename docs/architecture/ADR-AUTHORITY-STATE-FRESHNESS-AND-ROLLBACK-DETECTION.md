@@ -210,7 +210,12 @@ verified — and enrolls its current head as a `baseline`. The context
 is own-data-property validated; no composition path constructs one (pinned
 structurally), and there is no HTTP route (the API stays at 36 endpoints). It
 never creates a store and never rebinds an occupied slot
-(`AUTHORITY_FRESHNESS_ALREADY_ENROLLED`).
+(`AUTHORITY_FRESHNESS_ALREADY_ENROLLED`). It is **all or nothing**: every
+named store's local state is verified before the witness is contacted, and a
+single store that does not verify refuses the whole ceremony
+(`AUTHORITY_FRESHNESS_CONFIGURATION_INVALID`, "Nothing was enrolled", exit 1
+from the script) — it is never skipped, and no other named store is enrolled
+behind the refusal (`authority-state-freshness-enrollment.test.ts`).
 
 **Unavoidable limitation:** CORE-07 cannot know whether a store was rolled
 back *before* its first trusted enrollment. The operator's attestation is the
