@@ -1,4 +1,4 @@
-import { after, describe, it } from 'node:test';
+import { after, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { contextResolutionDigest } from '../../features/context-resolution-runtime/index.js';
@@ -106,21 +106,72 @@ describe('CORE-04 §92 — trusted facts reach policy and authorize through the 
 });
 
 describe('CORE-04 §93 — stale context: same action, source, value and provenance; only the time changes', () => {
-  it('fresh executes; exactly on the boundary and beyond it fail closed; a future-dated reading is refused — no sleeps', async () => {
-    const { host: booted, calls, baseUrl, context } = await host();
-    const withInvoiceAge = (ageSeconds: number): readonly Reading[] => [{ key: 'invoice.exists', value: true, sourceId: 'erp-primary', ageSeconds }, ...PAYABLES_WORLD.slice(1)];
+  const withInvoiceAge = (ageSeconds: number): readonly Reading[] => [{ key: 'invoice.exists', value: true, sourceId: 'erp-primary', ageSeconds }, ...PAYABLES_WORLD.slice(1)];
 
-    context.set(withInvoiceAge(899));
-    assert.equal((await govern(baseUrl, settle())).body['status'], 'executed');
-    assert.equal(calls.length, 1);
-
-    for (const ageSeconds of [900, 3600]) {
-      context.set(withInvoiceAge(ageSeconds));
-      await assertDenied(booted, await govern(baseUrl, settle()), 'CONTEXT_REQUIRED_FACT_STALE', `${ageSeconds}s`);
+  /**
+   * Runs `body` with `Date` frozen at the real instant. An 899 s fact leaves the
+   * decision a 1 s `validUntil` (§46), and issuance and exercise read the Host
+   * clock again, so on a live clock any second of processing after the
+   * resolution instant would withhold it. Freezing the clock makes "fresh"
+   * mean fresh; the second test moves it on purpose.
+   */
+  async function withFrozenClock(body: () => Promise<void>): Promise<void> {
+    mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    try {
+      await body();
+    } finally {
+      mock.timers.reset();
     }
-    context.set(withInvoiceAge(-60));
-    await assertDenied(booted, await govern(baseUrl, settle()), 'CONTEXT_REQUIRED_FACT_TIME_INVALID');
-    assert.equal(calls.length, 1, 'no stale or impossible fact reached execution');
+  }
+
+  it('fresh executes; exactly on the boundary and beyond it fail closed; a future-dated reading is refused — no sleeps', async () => {
+    await withFrozenClock(async () => {
+      const { host: booted, calls, baseUrl, context } = await host();
+
+      context.set(withInvoiceAge(899));
+      assert.equal((await govern(baseUrl, settle())).body['status'], 'executed');
+      assert.equal(calls.length, 1);
+
+      for (const ageSeconds of [900, 3600]) {
+        context.set(withInvoiceAge(ageSeconds));
+        await assertDenied(booted, await govern(baseUrl, settle()), 'CONTEXT_REQUIRED_FACT_STALE', `${ageSeconds}s`);
+      }
+      context.set(withInvoiceAge(-60));
+      await assertDenied(booted, await govern(baseUrl, settle()), 'CONTEXT_REQUIRED_FACT_TIME_INVALID');
+      assert.equal(calls.length, 1, 'no stale or impossible fact reached execution');
+    });
+  });
+
+  it('processing after the resolution instant counts against validUntil: a decision that is stale by issuance is never issued — no sleeps', async () => {
+    await withFrozenClock(async () => {
+      const { calls, baseUrl, context } = await host();
+      // Admission decides freshness at the resolution instant; the delay is applied right after it.
+      let delayMs = 0;
+      const resolveContext = context.provider.resolveContext.bind(context.provider);
+      context.provider.resolveContext = async (query) => {
+        const resolved = await resolveContext(query);
+        mock.timers.setTime(Date.parse(query.at) + delayMs);
+        return resolved;
+      };
+
+      for (const ms of [0, 999]) {
+        delayMs = ms;
+        context.set(withInvoiceAge(899));
+        const reply = await govern(baseUrl, settle());
+        assert.equal(reply.body['status'], 'executed', `+${ms} ms: ${reply.text}`);
+      }
+      assert.equal(calls.length, 2);
+
+      for (const ms of [1000, 5000]) {
+        delayMs = ms;
+        context.set(withInvoiceAge(899));
+        const reply = await govern(baseUrl, settle());
+        assert.equal(reply.body['status'], 'withheld', `+${ms} ms: ${reply.text}`);
+        assert.equal(reply.body['withheldBy'], 'grant', `+${ms} ms`);
+        assert.deepEqual(reply.body['reasonCodes'], ['GRANT_VALIDITY_INVALID'], `+${ms} ms`);
+      }
+      assert.equal(calls.length, 2, 'a decision past its validUntil never reached execution');
+    });
   });
 });
 
