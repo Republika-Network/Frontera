@@ -150,6 +150,8 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
     },
     monetary: governed.monetary,
     ...(governed.governance !== undefined ? { governance: governed.governance } : {}),
+    // CTRL-02: the file's profiles as an operator-promoted catalog.
+    ...(governed.profileLifecycle !== undefined ? { governanceLifecycle: governed.profileLifecycle } : {}),
     // CORE-04: the file's source registry, with the in-process provider.
     ...(governed.trustedContext !== undefined
       ? { trustedContext: { ...governed.trustedContext, ...(options.contextProvider !== undefined ? { provider: options.contextProvider } : {}) } }

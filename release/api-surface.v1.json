@@ -1,7 +1,7 @@
 {
   "surface": "aoc-enterprise-host-http.v1",
   "documentation": "docs/enterprise/API_STABILITY_V1.md",
-  "endpointCount": 36,
+  "endpointCount": 47,
   "routeLiterals": [
     "/api/assurance/assessments",
     "/api/assurance/manual-reviews",
@@ -35,7 +35,16 @@
     "^\\/api\\/admin\\/authority\\/grants\\/([^/]+)$",
     "^\\/api\\/admin\\/authority\\/grants\\/([^/]+)\\/revoke$",
     "^\\/api\\/admin\\/emergency-controls$",
-    "^\\/api\\/admin\\/emergency-controls\\/(activate|release)$"
+    "^\\/api\\/admin\\/emergency-controls\\/(activate|release)$",
+    "^\\/api\\/admin\\/organization$",
+    "^\\/api\\/admin\\/agents$",
+    "^\\/api\\/admin\\/agents\\/([^/]+)$",
+    "^\\/api\\/admin\\/agents\\/([^/]+)\\/credentials$",
+    "^\\/api\\/admin\\/agents\\/([^/]+)\\/credentials\\/([^/]+)\\/(rotate|revoke)$",
+    "^\\/api\\/admin\\/authority\\/entities$",
+    "^\\/api\\/admin\\/authority\\/entities\\/([^/]+)$",
+    "^\\/api\\/admin\\/governance-profiles$",
+    "^\\/api\\/admin\\/governance-profiles\\/([^/]+)\\/versions\\/([^/]+)\\/(activate|retire)$"
   ],
   "routePrefixGuards": [
     "/api/assurance/",
