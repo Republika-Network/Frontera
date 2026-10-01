@@ -161,11 +161,16 @@ describe('CTRL-02 structure — the generic control plane stays generic and dete
 });
 
 describe('CTRL-02 passport reconciliation — pinned in code', () => {
-  it('passport-web, agent-governance and the PMFreak foundation are never imported by the Enterprise runtime', () => {
+  it('passport-web, agent-governance and the PMFreak foundation are never imported or loaded by the Enterprise runtime', () => {
     for (const file of ENTERPRISE) {
       for (const specifier of importsOf(file)) {
         assert.equal(/agent-passport-web|apps\/|@aoc-enterprise\/agent-governance|agent-governance\/|pmfreak/.test(specifier), false, `${file} imports ${specifier}`);
       }
+      // Not only static imports: no code (comments stripped) names passport-web or PMFreak at all, and nothing loads
+      // agent-governance dynamically. (The assurance framework's `agent-governance-levels` tags are metadata, not loads.)
+      const code = codeOf(file);
+      assert.equal(/agent-passport-web|pmfreak/i.test(code), false, `${file} names a separate passport product in code`);
+      assert.equal(/(?:import|require)\s*\([^)]*(?:agent-governance|apps\/)/.test(code), false, `${file} loads a separate passport product`);
     }
   });
 

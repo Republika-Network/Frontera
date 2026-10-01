@@ -6,6 +6,7 @@ import { createAuthorityAdministrationService, type AuthorityAdministrationServi
 import { createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
 import type { KernelAuthorityAccessContext } from '../kernel-authority/contracts.js';
 import { KernelAuthorityError } from '../kernel-authority/errors.js';
+import { createCustomerIdentityAdmission, createKernelAuthoritySubjectBindingReader } from '../customer-identity/index.js';
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService, type KernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
@@ -502,6 +503,38 @@ describe('CTRL-02 organization binding — the served organization is the only o
     assert.equal((await createAgentCredentialVerifier(h.controlPlane, FOREIGN).authenticate(token)).status, 'authenticated', 'control: it is valid in its own organization');
     assert.deepEqual(await createAgentCredentialVerifier(h.controlPlane, ORG).authenticate(token), { status: 'refused' });
     assert.equal(await h.controlPlane.readAgentCredentialForVerification(ORG, credentialId), undefined);
+  });
+
+  it('admission believes the Kernel Authority, not the credential record: a principal naming another actor than the binding admits no one', async () => {
+    const h = await harness();
+    await world(h);
+    const admission = createCustomerIdentityAdmission({
+      apiKeys: [],
+      subjectBindings: createKernelAuthoritySubjectBindingReader(h.store),
+      organizationId: ORG,
+      agentCredentials: createAgentCredentialVerifier(h.controlPlane, ORG),
+      reservedPrincipalPrefix: 'agent:',
+    });
+    const issue = async (actorId: string, key: string): Promise<string> => {
+      const credentialId = newAgentCredentialId();
+      const secret = newAgentCredentialSecret();
+      await h.controlPlane.issueAgentCredential({
+        organizationId: ORG,
+        principal: { principalId: `agent:${actorId}`, actorId, externalSubject: { system: 'app', subjectId: 'agent-1' } },
+        credentialId,
+        verifier: agentCredentialVerifier(secret),
+        operatorRef: 'operator:test',
+        at: '2026-10-01T00:00:00.000Z',
+        idempotencyKey: key,
+        requestDigest: `sha256:${key}`,
+      });
+      return formatAgentCredential(credentialId, secret);
+    };
+    // A control-plane row (as a tampered file could hold) claiming the agent's subject for a different actor.
+    const forged = await issue('actor-impostor', 'forged-binding-0001');
+    const refusedForged = await admission.admit({ authorizationHeader: `Bearer ${forged}` });
+    assert.equal(refusedForged.status, 'unavailable');
+    assert.equal((await admission.admit({ authorizationHeader: 'Bearer fra1.agc-00000000000000000000000000000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' })).status, 'refused');
   });
 
   it('every write reaches the provisioning service under the served organization and the authenticated operator — never a caller value', async () => {
