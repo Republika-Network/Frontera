@@ -2,7 +2,7 @@ import { assessGrantExercise, GRANT_REASON_CODES, type BoundedGrantReaderPort } 
 import type { EmergencyControlStorePort } from '../../features/emergency-control-runtime/index.js';
 import { EnterpriseHttpError, EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
 import { isBoundedGrantStoreError } from '../bounded-grant-store/errors.js';
-import type { EnterpriseAdministrator, EnterpriseApiKey } from '../configuration/enterprise-configuration.js';
+import type { EnterpriseAdministrator, EnterpriseApiKey, EnterpriseOperator } from '../configuration/enterprise-configuration.js';
 import { isEmergencyControlStoreError } from '../emergency-control/errors.js';
 import type { RevokeBoundedGrantRequest, RevokeBoundedGrantResult } from '../execution-governance/service.js';
 import { isExecutionOutcomeStoreError } from '../execution-outcome-store/errors.js';
@@ -11,7 +11,8 @@ import type { KernelAuthorityAccessContext } from '../kernel-authority/contracts
 import { isKernelAuthorityError } from '../kernel-authority/errors.js';
 import type { KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import type { KernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
-import { extractBearerToken, matchApiKey } from '../orchestration/credential-matching.js';
+import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
+import type { OperatorPermission } from '../operator-control/roles.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import {
   isCanonicalEntityId,
@@ -84,8 +85,16 @@ export interface AuthorityAdministrationService {
 }
 
 export interface AuthorityAdministrationDependencies {
-  /** At least one. The trusted identity of each is its configured `operatorId`. */
+  /** CTRL-01 administrators. The trusted identity of each is its configured `operatorId`; CTRL-02 holds them to exactly the CTRL-01 powers. */
   readonly administrators: readonly EnterpriseAdministrator[];
+  /** CTRL-02 operators. Each reaches the CTRL-01 operations its role's permissions allow (`operator-control/roles.ts`). At least one administrator or operator in total. */
+  readonly operators?: readonly EnterpriseOperator[];
+  /**
+   * CTRL-02: the Host's one operator authenticator, shared with the operator
+   * control service so both planes authenticate identically. Built from
+   * `administrators`, `operators` and `ordinaryCredentials` when absent.
+   */
+  readonly authenticator?: OperatorAuthenticator;
   /** Every ordinary credential the Host accepts elsewhere, used only to tell "authenticated, not an administrator" (403) from "not authenticated" (401). */
   readonly ordinaryCredentials: readonly EnterpriseApiKey[];
   /** The one organization this Host serves. */
@@ -170,27 +179,28 @@ function integrityFailed(failure: string): EnterpriseHttpError {
 
 export function createAuthorityAdministrationService(dependencies: AuthorityAdministrationDependencies): AuthorityAdministrationService {
   const { organizationId, now, logger } = dependencies;
-  if (dependencies.administrators.length === 0) throw new Error('createAuthorityAdministrationService: at least one administrator is required.');
+  if (dependencies.administrators.length === 0 && (dependencies.operators?.length ?? 0) === 0 && dependencies.authenticator === undefined) {
+    throw new Error('createAuthorityAdministrationService: at least one administrator or operator is required.');
+  }
 
-  // Matched with the Host's canonical constant-time matcher. The keyed objects
-  // carry nothing but the secret; the operator id is looked up afterwards.
-  const administratorKeys = dependencies.administrators.map((administrator) => ({ key: administrator.key }));
-  const operatorByKey = new Map<EnterpriseApiKey, string>(administratorKeys.map((apiKey, index) => [apiKey, dependencies.administrators[index]?.operatorId ?? '']));
-  const ordinaryKeys = dependencies.ordinaryCredentials.map((apiKey) => ({ key: apiKey.key }));
+  // CTRL-02: one authenticator for the whole operator plane — the Host's
+  // canonical constant-time matcher, then the one permission policy. A CTRL-01
+  // administrator is the `legacy-administrator` class: exactly these
+  // operations, never provisioning.
+  const authenticator: OperatorAuthenticator =
+    dependencies.authenticator ??
+    createOperatorAuthenticator({
+      administrators: dependencies.administrators,
+      operators: dependencies.operators ?? [],
+      ordinaryCredentials: dependencies.ordinaryCredentials,
+      organizationId,
+      isReady: dependencies.isReady,
+      lifecycleState: dependencies.lifecycleState,
+    });
 
-  function authorize(authorizationHeader: string | undefined): AdministratorContext {
-    const token = authorizationHeader === undefined ? undefined : extractBearerToken(authorizationHeader);
-    if (token === undefined) throw EnterpriseHttpErrors.authenticationFailed('An administrator Bearer credential is required.');
-    // Both lookups always run, so timing does not reveal which kind of secret was presented.
-    const administrator = matchApiKey(token, administratorKeys);
-    const ordinary = matchApiKey(token, ordinaryKeys);
-    const operatorId = administrator === undefined ? undefined : operatorByKey.get(administrator);
-    if (operatorId !== undefined && operatorId.length > 0) {
-      if (!dependencies.isReady()) throw EnterpriseHttpErrors.enterpriseNotReady(dependencies.lifecycleState());
-      return { operatorId, actorRef: `operator:${operatorId}` };
-    }
-    if (ordinary !== undefined) throw EnterpriseHttpErrors.authorizationFailed('This credential is not authorized to administer authority.');
-    throw EnterpriseHttpErrors.authenticationFailed('The provided credential is not recognized.');
+  function authorize(authorizationHeader: string | undefined, permission: OperatorPermission): AdministratorContext {
+    const principal = authenticator.authorize(authorizationHeader, permission);
+    return { operatorId: principal.operatorId, actorRef: principal.actorRef };
   }
 
   function audit(context: AdministratorContext, operation: string, target: string, status: string): void {
@@ -280,7 +290,7 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
 
   return Object.freeze({
     async inspectGrant(authorizationHeader: string | undefined, rawGrantId: string): Promise<AdministeredGrantView> {
-      authorize(authorizationHeader);
+      authorize(authorizationHeader, 'authority.inspect');
       const grantId = grantIdFrom(rawGrantId);
       const grants = dependencies.grants;
       if (grants === undefined) throw notComposed('Bounded grants');
@@ -302,7 +312,7 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
     },
 
     async inspectExecutionGrant(authorizationHeader: string | undefined, rawExecutionId: string): Promise<AdministeredExecutionGrantView> {
-      authorize(authorizationHeader);
+      authorize(authorizationHeader, 'authority.inspect');
       if (!isCanonicalEntityId(rawExecutionId)) throw EnterpriseHttpErrors.invalidRequest('executionId must be a non-empty identifier of at most 256 characters.');
       const reader = dependencies.executionOutcomes;
       if (reader === undefined) throw notComposed('Execution outcomes');
@@ -332,7 +342,7 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
     },
 
     async revokeGrant(authorizationHeader: string | undefined, rawGrantId: string, readBody: AdministrationBodyReader): Promise<GrantRevocationResponse> {
-      const context = authorize(authorizationHeader);
+      const context = authorize(authorizationHeader, 'authority.revoke');
       const grantId = grantIdFrom(rawGrantId);
       const { reason } = validateGrantRevocationRequest(await readBody());
       const grants = dependencies.grants;
@@ -354,13 +364,13 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
     },
 
     async inspectAuthorityEntity(authorizationHeader: string | undefined, rawKind: string, rawId: string): Promise<AdministeredAuthorityEntityView> {
-      authorize(authorizationHeader);
+      authorize(authorizationHeader, 'authority.inspect');
       const { entityKind, entityId } = entityFrom(rawKind, rawId);
       return readEntity(entityKind, entityId);
     },
 
     async revokeAuthorityEntity(authorizationHeader: string | undefined, rawKind: string, rawId: string, readBody: AdministrationBodyReader): Promise<AuthorityEntityRevocationResponse> {
-      const context = authorize(authorizationHeader);
+      const context = authorize(authorizationHeader, 'authority.revoke');
       const { entityKind, entityId } = entityFrom(rawKind, rawId);
       const { reason } = validateAuthorityEntityRevocationRequest(await readBody());
       const kernelAuthority = dependencies.kernelAuthority;
@@ -383,12 +393,12 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
     },
 
     async listEmergencyControls(authorizationHeader: string | undefined): Promise<EmergencyControlsView> {
-      authorize(authorizationHeader);
+      authorize(authorizationHeader, 'authority.inspect');
       return activeControls(emergencyControlStore());
     },
 
     async activateEmergencyControl(authorizationHeader: string | undefined, readBody: AdministrationBodyReader): Promise<EmergencyControlTransitionResponse> {
-      const context = authorize(authorizationHeader);
+      const context = authorize(authorizationHeader, 'emergency.stop');
       const control = validateEmergencyControlTarget(await readBody());
       const store = emergencyControlStore();
       const target = control.value === undefined ? control.scope : `${control.scope}:${control.value}`;
@@ -403,7 +413,7 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
     },
 
     async releaseEmergencyControl(authorizationHeader: string | undefined, readBody: AdministrationBodyReader): Promise<EmergencyControlTransitionResponse> {
-      const context = authorize(authorizationHeader);
+      const context = authorize(authorizationHeader, 'emergency.release');
       const control = validateEmergencyControlTarget(await readBody());
       const store = emergencyControlStore();
       const target = control.value === undefined ? control.scope : `${control.scope}:${control.value}`;

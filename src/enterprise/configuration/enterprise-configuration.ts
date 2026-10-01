@@ -62,6 +62,23 @@ export interface EnterpriseAdministrator {
   readonly key: string;
 }
 
+/**
+ * CTRL-02: one human operator credential — an identified operator with one
+ * role from the closed operator role model (`operator-control/roles.ts`).
+ *
+ * Like an administrator, deliberately **not** an `EnterpriseApiKey` and never
+ * merged into `authentication.apiKeys`: it authenticates the operator plane
+ * (`/api/admin/...`) and nothing else. `operatorId` and `role` are trusted
+ * configuration; no request can state either. The role is a string here so the
+ * configuration layer stays free of the operator module; the Host's parser
+ * accepts only a role the closed model names.
+ */
+export interface EnterpriseOperator {
+  readonly operatorId: string;
+  readonly role: string;
+  readonly key: string;
+}
+
 export interface EnterpriseFeatureFlags {
   readonly traceLevel: 'basic' | 'full';
   readonly requireAuthentication: boolean;
@@ -115,6 +132,8 @@ export interface EnterpriseConfiguration {
    */
   readonly administration?: {
     readonly administrators: readonly EnterpriseAdministrator[];
+    /** CTRL-02: identified operators with roles. Absent or empty: no CTRL-02 operator exists. */
+    readonly operators?: readonly EnterpriseOperator[];
   };
   readonly features: EnterpriseFeatureFlags;
   readonly http: {
@@ -260,6 +279,16 @@ export interface EnterpriseConfiguration {
   };
   readonly executionResolution: {
     /** SQLite path for the execution resolution store. */
+    readonly sqlitePath: string;
+  };
+  /**
+   * CTRL-02 — the control-plane store: operator-issued agent credentials
+   * (verifiers only, never secrets) and the Governance Profile lifecycle.
+   * Opened only when CTRL-02 operators are configured; the SQLite file under
+   * `sqlite` persistence. Its own file. Not an authority store: Kernel
+   * Authority stays the only authority source.
+   */
+  readonly controlPlane: {
     readonly sqlitePath: string;
   };
   /**
@@ -827,6 +856,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     executionResolution: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',
     },
+    controlPlane: {
+      sqlitePath: env.AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH ?? '.data/control-plane.sqlite',
+    },
     authorityAuthenticity: loadAuthorityAuthenticity(env),
     authorityFreshness: loadAuthorityFreshness(env),
     assurance: {
@@ -858,7 +890,7 @@ export type PublicEnterpriseConfiguration = Omit<EnterpriseConfiguration, 'authe
     };
   };
   /** CTRL-01: how many administrators are configured. A count, never an identity or a secret. */
-  readonly administration: { readonly administratorCount: number };
+  readonly administration: { readonly administratorCount: number; readonly operatorCount?: number };
   readonly authentication: {
     readonly requireAuthentication: boolean;
     readonly apiKeyCount: number;
@@ -923,7 +955,11 @@ export function toPublicEnterpriseConfiguration(config: EnterpriseConfiguration)
             },
           }
         : { mode: 'none' },
-    administration: { administratorCount: administration?.administrators.length ?? 0 },
+    // CTRL-02: `operatorCount` only when operators exist, so a CTRL-01 deployment's public view is unchanged.
+    administration: {
+      administratorCount: administration?.administrators.length ?? 0,
+      ...((administration?.operators?.length ?? 0) > 0 ? { operatorCount: administration?.operators?.length ?? 0 } : {}),
+    },
     authentication: {
       requireAuthentication: config.features.requireAuthentication,
       apiKeyCount: authentication.apiKeys.length,
