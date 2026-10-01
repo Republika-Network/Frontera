@@ -218,6 +218,51 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
       if (url.pathname.startsWith('/api/admin/') && enterprise.authorityAdministration !== undefined) {
         const administration = enterprise.authorityAdministration;
         const auth = req.headers.authorization;
+        // -- CTRL-02 operator plane. Mounted only when the Host composed
+        // `operatorControl` (CTRL-02 operators are configured). The service
+        // authenticates the operator, checks the role's permission before any
+        // body is read, derives organization and operator identity, and calls
+        // the existing authoritative services — this adapter only routes.
+        const operatorControl = enterprise.operatorControl;
+        const operatorRoute = operatorControl === undefined ? undefined : matchOperatorRoute(method, url.pathname);
+        if (operatorControl !== undefined && operatorRoute !== undefined) {
+          const query = Object.fromEntries(url.searchParams.entries());
+          const respond = (promise: Promise<unknown>): void => {
+            promise.then((body) => writeJson(res, 200, body)).catch(fail);
+          };
+          switch (operatorRoute.kind) {
+            case 'organization':
+              respond(operatorControl.describeOrganization(auth, query));
+              return;
+            case 'agents':
+              respond(operatorControl.listAgents(auth, query));
+              return;
+            case 'agent':
+              respond(operatorControl.inspectAgent(auth, operatorRoute.actorId, query));
+              return;
+            case 'agent-credential-issue':
+              respond(operatorControl.issueAgentCredential(auth, operatorRoute.actorId, administrationBodyReader(req)));
+              return;
+            case 'agent-credential-rotate':
+              respond(operatorControl.rotateAgentCredential(auth, operatorRoute.actorId, operatorRoute.credentialId, administrationBodyReader(req)));
+              return;
+            case 'agent-credential-revoke':
+              respond(operatorControl.revokeAgentCredential(auth, operatorRoute.actorId, operatorRoute.credentialId, administrationBodyReader(req)));
+              return;
+            case 'entities':
+              respond(operatorControl.listAuthorityEntities(auth, query));
+              return;
+            case 'entity-create':
+              respond(operatorControl.provisionAuthorityEntity(auth, operatorRoute.entityKind, administrationBodyReader(req)));
+              return;
+            case 'profiles':
+              respond(operatorControl.listGovernanceProfiles(auth, query));
+              return;
+            case 'profile-transition':
+              respond(operatorControl.transitionGovernanceProfile(auth, operatorRoute.profileId, operatorRoute.version, operatorRoute.transition, administrationBodyReader(req)));
+              return;
+          }
+        }
         const route = matchAdministrationRoute(method, url.pathname);
         if (route !== undefined) {
           const respond = (promise: Promise<unknown>): void => {
@@ -590,6 +635,51 @@ function matchAdministrationRoute(method: string, pathname: string): Administrat
     const transition = /^\/api\/admin\/emergency-controls\/(activate|release)$/.exec(pathname);
     if (transition?.[1] === 'activate') return { kind: 'emergency-control-activate' };
     if (transition?.[1] === 'release') return { kind: 'emergency-control-release' };
+  }
+  return undefined;
+}
+
+type OperatorRoute =
+  | { readonly kind: 'organization' | 'agents' | 'entities' | 'profiles' }
+  | { readonly kind: 'agent' | 'agent-credential-issue'; readonly actorId: string }
+  | { readonly kind: 'agent-credential-rotate' | 'agent-credential-revoke'; readonly actorId: string; readonly credentialId: string }
+  | { readonly kind: 'entity-create'; readonly entityKind: string }
+  | { readonly kind: 'profile-transition'; readonly profileId: string; readonly version: string; readonly transition: 'activate' | 'retire' };
+
+/**
+ * CTRL-02 operator routes. Reads are `GET`; every mutation is a `POST` to an
+ * explicit path — create an authority entity of one kind, issue / rotate /
+ * revoke an agent credential, activate / retire a Governance Profile version.
+ * There is deliberately no route that mints a bounded grant, un-revokes,
+ * deletes, or names an organization: the organization is the Host's own.
+ */
+function matchOperatorRoute(method: string, pathname: string): OperatorRoute | undefined {
+  if (method === 'GET') {
+    if (/^\/api\/admin\/organization$/.exec(pathname) !== null) return { kind: 'organization' };
+    if (/^\/api\/admin\/agents$/.exec(pathname) !== null) return { kind: 'agents' };
+    const agent = /^\/api\/admin\/agents\/([^/]+)$/.exec(pathname);
+    if (agent?.[1] !== undefined) return { kind: 'agent', actorId: decodeURIComponent(agent[1]) };
+    if (/^\/api\/admin\/authority\/entities$/.exec(pathname) !== null) return { kind: 'entities' };
+    if (/^\/api\/admin\/governance-profiles$/.exec(pathname) !== null) return { kind: 'profiles' };
+    return undefined;
+  }
+  if (method === 'POST') {
+    const create = /^\/api\/admin\/authority\/entities\/([^/]+)$/.exec(pathname);
+    if (create?.[1] !== undefined) return { kind: 'entity-create', entityKind: decodeURIComponent(create[1]) };
+    const issue = /^\/api\/admin\/agents\/([^/]+)\/credentials$/.exec(pathname);
+    if (issue?.[1] !== undefined) return { kind: 'agent-credential-issue', actorId: decodeURIComponent(issue[1]) };
+    const credential = /^\/api\/admin\/agents\/([^/]+)\/credentials\/([^/]+)\/(rotate|revoke)$/.exec(pathname);
+    if (credential?.[1] !== undefined && credential[2] !== undefined) {
+      return {
+        kind: credential[3] === 'rotate' ? 'agent-credential-rotate' : 'agent-credential-revoke',
+        actorId: decodeURIComponent(credential[1]),
+        credentialId: decodeURIComponent(credential[2]),
+      };
+    }
+    const profile = /^\/api\/admin\/governance-profiles\/([^/]+)\/versions\/([^/]+)\/(activate|retire)$/.exec(pathname);
+    if (profile?.[1] !== undefined && profile[2] !== undefined) {
+      return { kind: 'profile-transition', profileId: decodeURIComponent(profile[1]), version: decodeURIComponent(profile[2]), transition: profile[3] === 'activate' ? 'activate' : 'retire' };
+    }
   }
   return undefined;
 }

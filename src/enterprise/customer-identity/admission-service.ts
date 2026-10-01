@@ -1,4 +1,5 @@
 import type { EnterpriseApiKey } from '../configuration/enterprise-configuration.js';
+import { extractBearerToken } from '../orchestration/credential-matching.js';
 import {
   CUSTOMER_IDENTITY_REFUSAL_REASONS,
   CUSTOMER_IDENTITY_UNAVAILABLE_REASONS,
@@ -6,6 +7,8 @@ import {
   type CustomerIdentityAdmissionRequest,
   type CustomerIdentityAdmissionResult,
   type CustomerIdentityAdmissionService,
+  type CustomerPrincipal,
+  type DynamicCustomerCredentialVerifier,
 } from './contracts.js';
 import { authenticateCustomerCredential } from './customer-authenticator.js';
 import { CustomerIdentityConfigurationError } from './errors.js';
@@ -19,6 +22,15 @@ export interface CustomerIdentityAdmissionOptions {
   readonly subjectBindings: CustomerSubjectBindingReader;
   /** The one authority organization this instance's Kernel Authority world belongs to (`kernelAuthority.organizationId`). */
   readonly organizationId: string;
+  /**
+   * CTRL-02 — operator-issued agent credentials, consulted only for a bearer
+   * credential that matches no configured key. When present, a deployment may
+   * configure no static customer credential at all: its agents are onboarded
+   * by identified operators instead of by editing configuration.
+   */
+  readonly agentCredentials?: DynamicCustomerCredentialVerifier;
+  /** CTRL-02 — principal ids operator-issued credentials use (`agent:`). A configured key may not claim one, so one principal id names one identity. */
+  readonly reservedPrincipalPrefix?: string;
 }
 
 /**
@@ -35,7 +47,11 @@ export interface CustomerIdentityAdmissionOptions {
  * Legacy keys without a `customerIdentity` block are left exactly as they are
  * — valid for the legacy routes, never eligible here.
  */
-export function assertCustomerCredentialConfiguration(apiKeys: readonly EnterpriseApiKey[], organizationId: string): void {
+export function assertCustomerCredentialConfiguration(
+  apiKeys: readonly EnterpriseApiKey[],
+  organizationId: string,
+  options: { readonly dynamicCredentials?: boolean; readonly reservedPrincipalPrefix?: string } = {},
+): void {
   if (!isCanonicalCustomerIdentifier(organizationId)) {
     throw new CustomerIdentityConfigurationError('CUSTOMER_IDENTITY_ORGANIZATION_NOT_SERVED', 'The served authority organization id is not a canonical identifier.');
   }
@@ -67,6 +83,12 @@ export function assertCustomerCredentialConfiguration(apiKeys: readonly Enterpri
         `Credential #${index} is scoped to organization '${apiKey.organizationId}', but this instance serves the authority world of '${organizationId}' only.`,
       );
     }
+    if (options.reservedPrincipalPrefix !== undefined && identity.principalId.startsWith(options.reservedPrincipalPrefix)) {
+      throw new CustomerIdentityConfigurationError(
+        'CUSTOMER_IDENTITY_PRINCIPAL_AMBIGUOUS',
+        `Credential #${index} uses principalId '${identity.principalId}', whose prefix is reserved for operator-issued agent principals.`,
+      );
+    }
     const fingerprint = JSON.stringify([apiKey.organizationId, identity.externalSubject.system, identity.externalSubject.subjectId]);
     const existing = principals.get(identity.principalId);
     if (existing !== undefined && existing !== fingerprint) {
@@ -77,7 +99,7 @@ export function assertCustomerCredentialConfiguration(apiKeys: readonly Enterpri
     }
     principals.set(identity.principalId, fingerprint);
   });
-  if (customerCredentials === 0) {
+  if (customerCredentials === 0 && options.dynamicCredentials !== true) {
     throw new CustomerIdentityConfigurationError(
       'CUSTOMER_IDENTITY_NO_CUSTOMER_CREDENTIAL',
       'Customer identity admission was requested, but no configured credential carries an organizationId and customerIdentity metadata.',
@@ -96,7 +118,10 @@ export function assertCustomerCredentialConfiguration(apiKeys: readonly Enterpri
  * decision about what the actor may do is still the Kernel's to make.
  */
 export function createCustomerIdentityAdmission(options: CustomerIdentityAdmissionOptions): CustomerIdentityAdmissionService {
-  assertCustomerCredentialConfiguration(options.apiKeys, options.organizationId);
+  assertCustomerCredentialConfiguration(options.apiKeys, options.organizationId, {
+    dynamicCredentials: options.agentCredentials !== undefined,
+    ...(options.reservedPrincipalPrefix !== undefined ? { reservedPrincipalPrefix: options.reservedPrincipalPrefix } : {}),
+  });
   // An immutable snapshot of what was validated above, so a host that later
   // mutates its own configuration objects cannot change what admission reads.
   const apiKeys: readonly EnterpriseApiKey[] = Object.freeze(
@@ -115,15 +140,30 @@ export function createCustomerIdentityAdmission(options: CustomerIdentityAdmissi
       }),
     ),
   );
-  const { subjectBindings, organizationId } = options;
+  const { subjectBindings, organizationId, agentCredentials } = options;
 
   return Object.freeze({
     organizationId,
     async admit(request: CustomerIdentityAdmissionRequest): Promise<CustomerIdentityAdmissionResult> {
       const authorizationHeader = typeof request?.authorizationHeader === 'string' ? request.authorizationHeader : undefined;
       const authenticated = authenticateCustomerCredential(authorizationHeader, apiKeys);
-      if (authenticated.status === 'refused') return { status: 'refused', reason: authenticated.reason };
-      const { principal } = authenticated;
+      let principal: CustomerPrincipal;
+      // CTRL-02: the actor an operator-issued credential was bound to at issue.
+      let issuedForActorId: string | undefined;
+      if (authenticated.status === 'refused') {
+        // Only a well-formed bearer credential that matched no configured key
+        // is ever offered to the operator-issued credential port — never a
+        // configured key that was refused for another reason.
+        const token = authenticated.reason === CUSTOMER_IDENTITY_REFUSAL_REASONS.CUSTOMER_AUTH_INVALID && agentCredentials !== undefined && authorizationHeader !== undefined ? extractBearerToken(authorizationHeader) : undefined;
+        if (token === undefined || agentCredentials === undefined) return { status: 'refused', reason: authenticated.reason };
+        const dynamic = await agentCredentials.authenticate(token);
+        if (dynamic.status === 'unavailable') return { status: 'unavailable', reason: CUSTOMER_IDENTITY_UNAVAILABLE_REASONS.CUSTOMER_SUBJECT_LOOKUP_FAILED };
+        if (dynamic.status !== 'authenticated') return { status: 'refused', reason: CUSTOMER_IDENTITY_REFUSAL_REASONS.CUSTOMER_AUTH_INVALID };
+        principal = dynamic.principal;
+        issuedForActorId = dynamic.actorId;
+      } else {
+        principal = authenticated.principal;
+      }
 
       // Composition already refuses a credential for another organization; this
       // is the same rule restated at the one place a binding is read, so a key
@@ -142,6 +182,11 @@ export function createCustomerIdentityAdmission(options: CustomerIdentityAdmissi
       switch (binding?.status) {
         case 'bound': {
           if (!isCanonicalCustomerIdentifier(binding.actorId)) {
+            return { status: 'unavailable', reason: CUSTOMER_IDENTITY_UNAVAILABLE_REASONS.CUSTOMER_SUBJECT_BINDING_INCONSISTENT };
+          }
+          // CTRL-02: the Kernel Authority binding is canonical; a credential
+          // issued for another actor admits no one.
+          if (issuedForActorId !== undefined && issuedForActorId !== binding.actorId) {
             return { status: 'unavailable', reason: CUSTOMER_IDENTITY_UNAVAILABLE_REASONS.CUSTOMER_SUBJECT_BINDING_INCONSISTENT };
           }
           const identity: BoundCustomerIdentity = Object.freeze({ principal, actor: Object.freeze({ actorId: binding.actorId }) });

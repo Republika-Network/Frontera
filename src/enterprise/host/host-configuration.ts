@@ -6,7 +6,9 @@ import {
   type EnterpriseAdministrator,
   type EnterpriseApiKey,
   type EnterpriseConfiguration,
+  type EnterpriseOperator,
 } from '../configuration/enterprise-configuration.js';
+import { OPERATOR_ROLES, isOperatorRole } from '../operator-control/roles.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
 import { GovernedActionConfigurationError } from '../governed-action/errors.js';
@@ -43,6 +45,7 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_CREDENTIALS_MISSING'
   | 'HOST_CREDENTIALS_AMBIGUOUS'
   | 'HOST_ADMINISTRATOR_INVALID'
+  | 'HOST_OPERATOR_INVALID'
   | 'HOST_PERSISTENCE_NOT_DURABLE'
   | 'HOST_AUTHENTICATION_REQUIRED'
   | 'HOST_GOVERNED_ACTIONS_REQUIRED'
@@ -101,6 +104,13 @@ export interface EnterpriseHostGovernedActionConfiguration {
   readonly genericHttpAdapters: readonly EnterpriseGenericHttpExecutionAdapterOptions[];
   /** Trusted routing: governed action → adapter id. An action with no route is authorized by nothing and reaches no adapter. */
   readonly routes: ReadonlyMap<string, string>;
+  /**
+   * CTRL-02 — `operator-promoted`: the file's Governance Profiles are a
+   * catalog of versions, and only the version an identified operator
+   * activated (durably, through `/api/admin/governance-profiles/...`)
+   * resolves. Absent: every configured profile is active, as before.
+   */
+  readonly profileLifecycle?: 'operator-promoted';
 }
 
 export interface EnterpriseHostConfiguration {
@@ -179,6 +189,8 @@ interface ParsedGovernedActionsFile {
   readonly customerKeys: readonly { readonly principal: EnterpriseHostCustomerPrincipal; readonly apiKey: string }[];
   /** CTRL-01: resolved administrator credentials. Kept apart from every ordinary credential. */
   readonly administrators: readonly EnterpriseAdministrator[];
+  /** CTRL-02: resolved operator credentials, each with one role from the closed model. Kept apart from every ordinary credential. */
+  readonly operators: readonly EnterpriseOperator[];
 }
 
 function administratorInvalid(message: string): never {
@@ -212,6 +224,39 @@ function parseAdministrators(env: Env, value: unknown): readonly EnterpriseAdmin
   });
 }
 
+function operatorInvalid(message: string): never {
+  throw new EnterpriseHostConfigurationError('HOST_OPERATOR_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${message}`);
+}
+
+/**
+ * CTRL-02: `operators` — identified human operators of the operator plane.
+ * Optional. Each names a stable operator id (the identity every write is
+ * attributed to), exactly one role from the closed operator role model, and the
+ * environment variable holding its secret. An operator id is one identity: it
+ * may not also be a CTRL-01 administrator.
+ */
+function parseOperators(env: Env, value: unknown, administrators: readonly EnterpriseAdministrator[]): readonly EnterpriseOperator[] {
+  if (value === undefined) return [];
+  const entries = array(value, 'operators');
+  if (entries.length === 0) invalid('operators must name at least one operator when present; omit it to configure none.');
+  const seen = new Set<string>(administrators.map((administrator) => administrator.operatorId));
+  return entries.map((entry, index) => {
+    const where = `operators[${index}]`;
+    if (!isRecord(entry)) invalid(`${where} must be an object.`);
+    closedKeys(entry, ['operatorId', 'role', 'apiKeyEnv'], where);
+    const operatorId = text(entry.operatorId, `${where}.operatorId`);
+    if (!OPERATOR_ID.test(operatorId)) operatorInvalid(`${where}.operatorId must be 1-128 letters, digits, '.', '_' or '-', starting with a letter or digit.`);
+    if (seen.has(operatorId)) operatorInvalid(`${where}.operatorId '${operatorId}' is declared twice (operators and administrators share one identity space); one operator has one identity.`);
+    seen.add(operatorId);
+    if (!isOperatorRole(entry.role)) operatorInvalid(`${where}.role must be one of: ${OPERATOR_ROLES.join(', ')}.`);
+    const key = secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`);
+    if (key.length < MIN_ADMINISTRATOR_SECRET_LENGTH || key.trim() !== key) {
+      operatorInvalid(`${where}.apiKeyEnv names a secret shorter than ${MIN_ADMINISTRATOR_SECRET_LENGTH} characters or with surrounding whitespace. An operator credential must be a long random secret.`);
+    }
+    return { operatorId, role: entry.role, key };
+  });
+}
+
 function parseGovernedActionsFile(env: Env, path: string, organizationId: string): ParsedGovernedActionsFile {
   let raw: string;
   try {
@@ -227,7 +272,11 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     invalid('the file is not valid JSON.');
   }
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
-  closedKeys(parsed, ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'monetary', 'governance', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes'], 'the file');
+  closedKeys(
+    parsed,
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes'],
+    'the file',
+  );
   if (parsed.version !== 1) invalid('version must be 1.');
 
   const trustDomainId = text(parsed.trustDomainId, 'trustDomainId');
@@ -248,7 +297,24 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     };
     return { principal, apiKey: secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`) };
   });
-  if (customerPrincipals.length === 0) invalid('customerPrincipals must name at least one principal; governed actions act only for a bound customer identity.');
+  const administrators = parseAdministrators(env, parsed.administrators);
+  const operators = parseOperators(env, parsed.operators, administrators);
+  // CTRL-02: with operators configured, agents are onboarded by identified
+  // operators (operator-issued credentials), so the file may name no static
+  // customer principal at all.
+  if (customerPrincipals.length === 0 && operators.length === 0) {
+    invalid('customerPrincipals must name at least one principal (or configure operators, who onboard agents); governed actions act only for a bound customer identity.');
+  }
+
+  let profileLifecycle: 'operator-promoted' | undefined;
+  if (parsed.profileLifecycle !== undefined) {
+    if (parsed.profileLifecycle !== 'operator-promoted') invalid("profileLifecycle must be 'operator-promoted' when present.");
+    if (!operators.some((operator) => operator.role === 'profile-steward' || operator.role === 'organization-administrator')) {
+      operatorInvalid("profileLifecycle 'operator-promoted' needs at least one operator whose role may promote a profile (profile-steward or organization-administrator); otherwise no profile could ever become active.");
+    }
+    profileLifecycle = 'operator-promoted';
+  }
+  const lifecycleOption = profileLifecycle !== undefined ? { lifecycle: { activeVersion: () => undefined } } : {};
 
   let monetary: EnterpriseHostGovernedActionConfiguration['monetary'] = { assets: [], financialActions: [] };
   if (parsed.monetary !== undefined) {
@@ -268,12 +334,15 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (parsed.governance !== undefined) {
     if (!isRecord(parsed.governance)) invalid('governance must be an object.');
     try {
-      createGovernanceProfileRegistry(parsed.governance as GovernanceConfiguration);
+      createGovernanceProfileRegistry(parsed.governance as GovernanceConfiguration, lifecycleOption);
     } catch (error) {
       if (error instanceof GovernanceProfileConfigurationError) invalid(`governance: ${error.message}`);
       throw error;
     }
     governance = parsed.governance as GovernanceConfiguration;
+  }
+  if (profileLifecycle !== undefined && (governance?.profiles ?? []).length === 0) {
+    invalid("profileLifecycle 'operator-promoted' needs governance.profiles: the catalog of versions an operator may promote.");
   }
 
   // CORE-04: the trusted source registry and the obligation discharge sources,
@@ -288,7 +357,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   const obligations = parsed.obligations as ObligationConfiguration | undefined;
   try {
     composeGovernedTrust({
-      governance: createGovernanceProfileRegistry(governance),
+      governance: createGovernanceProfileRegistry(governance, lifecycleOption),
       organizationId,
       ...(trustedContext !== undefined ? { trustedContext, contextProvider: { resolveContext: () => Promise.resolve({ observations: [] }) } } : {}),
       ...(obligations !== undefined ? { obligations } : {}),
@@ -333,9 +402,11 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
       ...(obligations !== undefined ? { obligations } : {}),
       genericHttpAdapters,
       routes,
+      ...(profileLifecycle !== undefined ? { profileLifecycle } : {}),
     },
     customerKeys: customerPrincipals,
-    administrators: parseAdministrators(env, parsed.administrators),
+    administrators,
+    operators,
   };
 }
 
@@ -380,18 +451,24 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
   // an administrator secret authenticates the administration API only, and an
   // ordinary key never authenticates there.
   const administrators = parsed?.administrators ?? [];
+  // CTRL-02 operators, likewise never merged into `authentication.apiKeys`.
+  const operators = parsed?.operators ?? [];
   const configuration: EnterpriseConfiguration = {
     ...base,
     authentication: { apiKeys: [...base.authentication.apiKeys, ...customerKeys] },
-    ...(administrators.length > 0 ? { administration: { administrators } } : {}),
+    ...(administrators.length > 0 || operators.length > 0 ? { administration: { administrators, ...(operators.length > 0 ? { operators } : {}) } } : {}),
   };
 
   const seen = new Set<string>();
-  for (const secret of [...configuration.authentication.apiKeys.map((apiKey) => apiKey.key), ...administrators.map((administrator) => administrator.key)]) {
+  for (const secret of [
+    ...configuration.authentication.apiKeys.map((apiKey) => apiKey.key),
+    ...administrators.map((administrator) => administrator.key),
+    ...operators.map((operator) => operator.key),
+  ]) {
     if (seen.has(secret)) {
       throw new EnterpriseHostConfigurationError(
         'HOST_CREDENTIALS_AMBIGUOUS',
-        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals and/or administrators). One secret authenticates one caller.',
+        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals, administrators and/or operators). One secret authenticates one caller.',
       );
     }
     seen.add(secret);
@@ -403,7 +480,9 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
       `AOC_ENTERPRISE_HTTP_HOST is a network address and AOC_ENTERPRISE_REQUIRE_AUTH is off: every network peer would read every tenant's records as the system principal. Set AOC_ENTERPRISE_REQUIRE_AUTH=true with AOC_ENTERPRISE_API_KEYS, or bind 127.0.0.1.`,
     );
   }
-  if (configuration.features.requireAuthentication && configuration.authentication.apiKeys.length === 0) {
+  // CTRL-02: a Host whose agents are onboarded by operators may start with no
+  // static key — its customer credentials are operator-issued.
+  if (configuration.features.requireAuthentication && configuration.authentication.apiKeys.length === 0 && operators.length === 0) {
     throw new EnterpriseHostConfigurationError(
       'HOST_CREDENTIALS_MISSING',
       'AOC_ENTERPRISE_REQUIRE_AUTH is on and no credential is configured. Set AOC_ENTERPRISE_API_KEYS or configure customerPrincipals in the governed-action file. There is no default key.',

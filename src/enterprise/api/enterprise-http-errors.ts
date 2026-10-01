@@ -90,7 +90,15 @@ export type EnterpriseHttpErrorCode =
   | 'AUTHORITY_STATE_UNAVAILABLE'
   /** CORE-02: the authority signer could not sign, so nothing was recorded (AA-004). */
   | 'AUTHORITY_SIGNER_UNAVAILABLE'
-  | 'AUTHORITY_STATE_INTEGRITY_FAILED';
+  | 'AUTHORITY_STATE_INTEGRITY_FAILED'
+  /** CTRL-02 operator plane: an authenticated operator whose role does not hold the permission. */
+  | 'OPERATOR_PERMISSION_DENIED'
+  /** CTRL-02: an idempotency key replayed with materially different content. Nothing was written. */
+  | 'OPERATOR_IDEMPOTENCY_CONFLICT'
+  /** CTRL-02: the authoritative store or lifecycle refused the operation (conflict, terminal state, unresolvable reference). Nothing was written. */
+  | 'OPERATOR_OPERATION_REFUSED'
+  /** CTRL-02: the authority write was durably recorded, and refreshing the in-memory projection failed (which fails closed). Retry the same request; it replays. */
+  | 'AUTHORITY_STATE_REFRESH_FAILED';
 
 export class EnterpriseHttpError extends Error {
   constructor(

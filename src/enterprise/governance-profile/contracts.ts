@@ -175,6 +175,16 @@ export const GOVERNANCE_PROFILE_REFUSALS = {
 
 export type GovernanceProfileRefusal = (typeof GOVERNANCE_PROFILE_REFUSALS)[keyof typeof GOVERNANCE_PROFILE_REFUSALS];
 
+/**
+ * CTRL-02 — the Governance Profile lifecycle as the registry reads it: which
+ * catalog version of a profile an identified operator activated, and the
+ * content digest it activated. Backed by the durable lifecycle store; the
+ * registry never writes it.
+ */
+export interface GovernanceProfileLifecycleView {
+  activeVersion(profileId: string): { readonly version: number; readonly digest: string } | undefined;
+}
+
 /** Read-only by type. Built once from host configuration and frozen. */
 export interface GovernanceProfileRegistry {
   /** Whether any class or profile is declared. `false` is the pre-CORE-03 world, exactly. */
@@ -197,4 +207,11 @@ export interface GovernanceProfileRegistry {
   reservesContextKey(key: string): boolean;
   /** CORE-04 — every fact class any profile declares (material and restrict-only), sorted. */
   readonly factClasses: readonly string[];
+  /**
+   * CTRL-02 — `operator-promoted` when the configured profiles are a catalog
+   * of versions and only the version an identified operator activated
+   * resolves (draft → active → retired). Absent: the CORE-03 behaviour — every
+   * configured profile is the active one.
+   */
+  readonly lifecycle?: 'operator-promoted';
 }

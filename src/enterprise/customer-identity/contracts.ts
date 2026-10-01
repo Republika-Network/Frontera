@@ -136,6 +136,26 @@ export interface CustomerIdentityAdmissionRequest {
   readonly authorizationHeader?: string;
 }
 
+/**
+ * CTRL-02 — the outcome of authenticating an operator-issued agent credential.
+ * `actorId` is the actor the credential's principal was bound to when it was
+ * issued; admission still resolves the external subject through the Kernel
+ * Authority and refuses unless both agree.
+ */
+export type DynamicCustomerCredentialResult =
+  | { readonly status: 'authenticated'; readonly principal: CustomerPrincipal; readonly actorId: string }
+  | { readonly status: 'refused' }
+  | { readonly status: 'unavailable' };
+
+/**
+ * CTRL-02 — the port customer admission consults for a bearer credential that
+ * matches no configured key: operator-issued agent credentials. Read-only; it
+ * never creates a principal, a binding or an actor.
+ */
+export interface DynamicCustomerCredentialVerifier {
+  authenticate(token: string): Promise<DynamicCustomerCredentialResult>;
+}
+
 /** The narrow capability Prompt 3's Governed Action Orchestrator consumes. Admits or refuses; never decides, provisions or executes. */
 export interface CustomerIdentityAdmissionService {
   /** The one authority organization whose actors this instance can admit. */

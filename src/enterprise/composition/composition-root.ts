@@ -35,6 +35,10 @@ import { createEnterpriseLogger, type EnterpriseLogger } from '../telemetry/ente
 import { createEnterpriseTelemetry, type EnterpriseTelemetry } from '../telemetry/enterprise-telemetry.js';
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
 import { createAuthorityAdministrationService, type AuthorityAdministrationService } from '../authority-administration/service.js';
+import { createAgentCredentialVerifier, AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
+import { createSqliteControlPlaneStore, replayProfileLifecycle, type ControlPlaneStore, type ProfileLifecycleState } from '../operator-control/control-plane-store.js';
+import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
+import { createOperatorControlService, type OperatorControlService } from '../operator-control/service.js';
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 import { createEnterpriseModuleRegistry } from '../registry/enterprise-module-registry.js';
 import { createEnterpriseLifecycleController } from '../lifecycle/enterprise-lifecycle-controller.js';
@@ -72,6 +76,7 @@ import {
   type ObligationDischargeStore,
 } from '../obligation-discharge/index.js';
 import { createKernelAuthorityLineageRevalidator } from '../kernel-authority/authority-lineage-revalidator.js';
+import { createKernelParameterAuthorityResolver } from '../kernel-authority/parameter-authority-resolver.js';
 import {
   createApprovalAuthority,
   createInMemoryApprovalStore,
@@ -308,6 +313,14 @@ export interface CreateEnterpriseOptions {
    * `GovernanceProfileConfigurationError`.
    */
   readonly governance?: GovernanceConfiguration;
+  /**
+   * CTRL-02 — `operator-promoted`: `governance.profiles` is a catalog of
+   * versions and only the version an identified operator activated resolves
+   * (draft → active → retired, durable in the control-plane store). Requires
+   * configured operators. Omitted: every configured profile is active, as
+   * before.
+   */
+  readonly governanceLifecycle?: 'operator-promoted';
   /**
    * CORE-04 — the Trusted Context Boundary for governed actions: the trusted
    * source registry (which source may **attest** which fact classes, for this
@@ -775,6 +788,15 @@ export interface AocEnterprise {
    * credential. It issues nothing, provisions nothing and un-revokes nothing.
    */
   readonly authorityAdministration?: AuthorityAdministrationService;
+  /**
+   * CTRL-02 — the operator control service: the served organization, the
+   * calling operator, the agent inventory, operator-issued agent credentials,
+   * Kernel-Authority provisioning (through the existing provisioning service)
+   * and the Governance Profile lifecycle. Present only when CTRL-02 operators
+   * are configured (`configuration.administration.operators`). Behind
+   * `/api/admin/...`, authenticated and authorized per operation by role.
+   */
+  readonly operatorControl?: OperatorControlService;
   /**
    * CORE-04 — the trusted, **in-process** writer of obligation discharge
    * reports, present when obligations are composed. It records what a
@@ -1271,6 +1293,11 @@ async function withFreshness(resolve: () => Promise<AuthorityStateFreshnessBound
 }
 
 /** Closes a store that may or may not own a handle (the in-memory ones own none). Used by the atomic-startup cleanup in `createEnterprise`. */
+/** CTRL-02: whether identified operators (not only CTRL-01 administrators) are configured. */
+function operatorsConfigured(configuration: EnterpriseConfiguration): boolean {
+  return (configuration.administration?.operators?.length ?? 0) > 0;
+}
+
 async function closeIfClosable(resource: unknown): Promise<void> {
   const closable = resource as Partial<{ close: () => Promise<void> }> | undefined;
   if (typeof closable?.close === 'function') await closable.close();
@@ -1365,7 +1392,20 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         'Customer identity admission resolves actors only through the Kernel Authority store, and this Host has none configured.',
       );
     }
-    assertCustomerCredentialConfiguration(configuration.authentication.apiKeys, configuration.kernelAuthority.organizationId);
+    assertCustomerCredentialConfiguration(configuration.authentication.apiKeys, configuration.kernelAuthority.organizationId, {
+      // CTRL-02: with operators configured, agent credentials are operator-issued;
+      // no static customer credential is required, and none may claim an
+      // operator-issued principal id.
+      dynamicCredentials: operatorsConfigured(configuration),
+      ...(operatorsConfigured(configuration) ? { reservedPrincipalPrefix: AGENT_PRINCIPAL_PREFIX } : {}),
+    });
+  }
+  // CTRL-02: an operator-promoted profile lifecycle needs someone to promote.
+  if (options.governanceLifecycle !== undefined && (options.governanceLifecycle !== 'operator-promoted' || !operatorsConfigured(configuration))) {
+    throw new GovernedActionConfigurationError(
+      'GOVERNED_ACTION_CONFIGURATION_INVALID',
+      "governanceLifecycle 'operator-promoted' requires configured operators (configuration.administration.operators): a profile becomes active only when an identified operator promotes it.",
+    );
   }
 
   // CORE-01: no silent authenticity downgrade. Checked before anything is
@@ -1520,7 +1560,15 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // CORE-03: the trusted semantic configuration, built and validated with the
   // same timing and for the same reason — before any store opens. Absent, it
   // classifies nothing, which is the pre-CORE-03 behaviour exactly.
-  const governance: GovernanceProfileRegistry = createGovernanceProfileRegistry(options.governance);
+  // CTRL-02: in the operator-promoted lifecycle the registry reads which
+  // catalog version is active through this view; it is filled from the durable
+  // lifecycle store once that store is open (before anything can resolve), and
+  // reloaded only after a committed transition.
+  let profileLifecycleState: ProfileLifecycleState | undefined;
+  const governance: GovernanceProfileRegistry = createGovernanceProfileRegistry(
+    options.governance,
+    options.governanceLifecycle === 'operator-promoted' ? { lifecycle: { activeVersion: (profileId: string) => profileLifecycleState?.active.get(profileId) } } : {},
+  );
 
   const governedActionOptions = options.governedActionOrchestrator?.enabled === true ? options.governedActionOrchestrator : undefined;
   if (governedActionOptions !== undefined) {
@@ -1694,6 +1742,31 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           monetaryAssets: monetary.assets,
         });
 
+  // CTRL-02: the control-plane store — operator-issued agent credentials
+  // (verifiers only) and the Governance Profile lifecycle. Opened only when
+  // operators are configured; the SQLite file under `sqlite` persistence.
+  let controlPlaneStore: ControlPlaneStore | undefined;
+  if (operatorsConfigured(configuration)) {
+    controlPlaneStore = await createSqliteControlPlaneStore(configuration.persistence.provider === 'sqlite' ? configuration.controlPlane.sqlitePath : ':memory:', {
+      busyTimeoutMs: configuration.persistence.busyTimeoutMs,
+    });
+    const store = controlPlaneStore;
+    opened.push(() => store.close());
+  }
+  const reloadProfileLifecycle = async (): Promise<void> => {
+    if (controlPlaneStore === undefined) return;
+    try {
+      profileLifecycleState = replayProfileLifecycle(await controlPlaneStore.listProfileLifecycleEvents(configuration.kernelAuthority.organizationId));
+    } catch (error) {
+      // Fail closed: no version is active (nothing resolves) until a reload succeeds.
+      profileLifecycleState = replayProfileLifecycle([]);
+      throw error;
+    }
+  };
+  // Loaded before anything can resolve a profile: an unreadable or illegal
+  // lifecycle history refuses the Host rather than resolving nothing silently.
+  if (options.governanceLifecycle === 'operator-promoted') await reloadProfileLifecycle();
+
   // The read half, narrowed further: customer admission is handed a
   // one-method binding reader over this same store, never the store and never
   // the provisioning surface above.
@@ -1709,6 +1782,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       apiKeys: configuration.authentication.apiKeys,
       subjectBindings: createKernelAuthoritySubjectBindingReader(kernelAuthorityStore),
       organizationId: configuration.kernelAuthority.organizationId,
+      // CTRL-02: operator-issued agent credentials, read-only, one row by id.
+      ...(controlPlaneStore !== undefined
+        ? { agentCredentials: createAgentCredentialVerifier(controlPlaneStore, configuration.kernelAuthority.organizationId), reservedPrincipalPrefix: AGENT_PRINCIPAL_PREFIX }
+        : {}),
     });
   }
 
@@ -2037,6 +2114,24 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
                     assets: monetary.assets,
                     authority: () => kernelProviders.authorityRuntime,
                   }),
+                },
+              }
+            : {}),
+          // CTRL-02: standing authority over typed governed parameters, from the
+          // same hydrated authority world and the records it was built from —
+          // composed wherever P10's financial authority is.
+          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined && governedActionOptions !== undefined && durableKernelWorld !== undefined
+            ? {
+                parameterAuthority: {
+                  resolve: (() => {
+                    const world = durableKernelWorld;
+                    return createKernelParameterAuthorityResolver({
+                      organizationId: configuration.kernelAuthority.organizationId,
+                      trustDomainId: governedActionOptions.trustDomainId,
+                      authority: () => kernelProviders.authorityRuntime,
+                      records: () => world.service.records(),
+                    });
+                  })(),
                 },
               }
             : {}),
@@ -2378,11 +2473,27 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // them. Absent unless an administrator is configured: there is no default
   // administrator, and no other credential reaches it.
   const administrators = configuration.administration?.administrators ?? [];
+  const operators = configuration.administration?.operators ?? [];
+  // CTRL-02: one operator authenticator for the whole operator plane, shared
+  // by the CTRL-01 administration service and the operator control service.
+  const operatorAuthenticator: OperatorAuthenticator | undefined =
+    administrators.length === 0 && operators.length === 0
+      ? undefined
+      : createOperatorAuthenticator({
+          administrators,
+          operators,
+          ordinaryCredentials: configuration.authentication.apiKeys,
+          organizationId: configuration.kernelAuthority.organizationId,
+          isReady: () => lifecycle.isReady(),
+          lifecycleState: () => lifecycle.lifecycleState(),
+        });
   const authorityAdministration: AuthorityAdministrationService | undefined =
-    administrators.length === 0
+    operatorAuthenticator === undefined
       ? undefined
       : createAuthorityAdministrationService({
           administrators,
+          operators,
+          authenticator: operatorAuthenticator,
           ordinaryCredentials: configuration.authentication.apiKeys,
           organizationId: configuration.kernelAuthority.organizationId,
           now: kernelProviders.clock.now,
@@ -2402,6 +2513,31 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             : {}),
           ...(emergencyControlStore !== undefined ? { emergencyControl: emergencyControlStore } : {}),
           ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
+        });
+
+  // CTRL-02: composed from the same objects — the provisioning service (and its
+  // append rules), the Kernel Authority store's reads, the control-plane store
+  // and the one registry. Absent unless CTRL-02 operators are configured.
+  const operatorControl: OperatorControlService | undefined =
+    operatorAuthenticator === undefined || operators.length === 0 || kernelAuthorityStore === undefined || kernelAuthorityProvisioning === undefined
+      ? undefined
+      : createOperatorControlService({
+          authenticator: operatorAuthenticator,
+          organizationId: configuration.kernelAuthority.organizationId,
+          ...(governedActionOptions !== undefined ? { trustDomainId: governedActionOptions.trustDomainId } : {}),
+          now: kernelProviders.clock.now,
+          logger,
+          kernelAuthority: {
+            store: {
+              getRecord: (context, organizationId, entityKind, entityId) => kernelAuthorityStore.getRecord(context, organizationId, entityKind, entityId),
+              listRecords: (context, query) => kernelAuthorityStore.listRecords(context, query),
+            },
+            provisioning: kernelAuthorityProvisioning,
+          },
+          ...(controlPlaneStore !== undefined ? { controlPlane: controlPlaneStore } : {}),
+          staticCustomerSubjects: configuration.authentication.apiKeys.flatMap((apiKey) => (apiKey.customerIdentity !== undefined ? [apiKey.customerIdentity.externalSubject] : [])),
+          governance,
+          ...(options.governanceLifecycle === 'operator-promoted' ? { profileLifecycle: { reload: reloadProfileLifecycle } } : {}),
         });
 
   // CORE-02: the authenticity boundary this root built, if any — for the
@@ -2495,6 +2631,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       : {}),
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     ...(authorityAdministration !== undefined ? { authorityAdministration } : {}),
+    ...(operatorControl !== undefined ? { operatorControl } : {}),
     ...(obligationDischargeStore !== undefined && governedTrust?.obligations !== undefined && governedActionOrchestrator !== undefined
       ? {
           obligationDischarges: createObligationDischargeRecorder({

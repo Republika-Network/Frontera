@@ -3,6 +3,7 @@ import type { BoundedGrant, GrantCorrelation, GrantReasonCode, GrantValidityCeil
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import type { GrantAuthorityBinding } from './authority-binding.js';
 import type { FinancialAuthority, FinancialAuthorityReasonCode } from './financial-authority.js';
+import type { ParameterAuthorityReasonCode } from './parameter-authority.js';
 
 /**
  * The Kernel surface this composition needs, named structurally so it depends
@@ -132,6 +133,18 @@ export type AuthorityControlledAuthorizationOutcome =
       readonly outcome: 'financial-authority-withheld';
       readonly decision: KernelEvaluationResult;
       readonly reasonCodes: readonly FinancialAuthorityReasonCode[];
+    }
+  | {
+      /**
+       * CTRL-02: the decision's typed parameters are not inside the standing
+       * parameter authority on its lineage — above a maximum, other than an
+       * exact value, unstated, or the authority could not be established. No
+       * grant exists; the decision is carried unchanged and nothing here is a
+       * policy denial.
+       */
+      readonly outcome: 'parameter-authority-withheld';
+      readonly decision: KernelEvaluationResult;
+      readonly reasonCodes: readonly ParameterAuthorityReasonCode[];
     }
   | {
       /**

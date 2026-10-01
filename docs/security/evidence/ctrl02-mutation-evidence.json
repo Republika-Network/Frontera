@@ -1,0 +1,1799 @@
+{
+  "format": "frontera.ctrl02.mutation-evidence.v1",
+  "commit": "65dd86ac2a78708bd45cf19e18bd2f7d39057761",
+  "runner": "scripted, outside the repository: apply edits (each find verified to occur exactly once) -> tsc -b -> node --test --test-concurrency=1 <kill set> -> restore original bytes -> SHA-256 compare; then the whole src tree diffed against a fresh git archive of the commit",
+  "killSet": [
+    "dist/src/enterprise/__tests__/ctrl02-pilot-onboarding-host.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-operator-control-service.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-operator-plane-host.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-profile-lifecycle-host.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-structure.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-parameter-authority-host.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-parameter-authority.test.js",
+    "dist/src/enterprise/__tests__/authority-administration-service.test.js",
+    "dist/src/enterprise/__tests__/customer-identity-admission.test.js",
+    "dist/src/enterprise/__tests__/customer-identity-composition.test.js",
+    "dist/src/enterprise/__tests__/external-authority-signer-structure.test.js"
+  ],
+  "baseline": {
+    "compiled": true,
+    "pass": 400,
+    "fail": 0
+  },
+  "srcTreeIdenticalAfterCampaign": true,
+  "totals": {
+    "counted": 46,
+    "killed": 46,
+    "survived": 0
+  },
+  "mutations": [
+    {
+      "id": "M1",
+      "counted": true,
+      "property": "ordinary customer credential accepted as operator",
+      "semantic": "an ordinary key is matched as an organization-administrator operator",
+      "files": [
+        "src/enterprise/operator-control/operator-authenticator.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/operator-authenticator.ts",
+          "find": "const identity = matched === undefined ? undefined : identities.get(matched);",
+          "replace": "const identity = matched === undefined ? (ordinary !== undefined ? { operatorId: 'customer', role: 'organization-administrator' as const, credentialClass: 'operator' as const } : undefined) : identities.get(matched);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 5,
+      "passCount": 395,
+      "killingTests": [
+        "no header, a malformed header, an unknown secret → 401; an ordinary credential → 403; nothing is read or revoked",
+        "the body is not read until the caller is an administrator",
+        "an ordinary customer key → 403 on every operation; nothing read, written or logged",
+        "customer, legacy, administrator, operator and agent credentials: each refused everywhere but where it belongs",
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave"
+      ],
+      "observed": [
+        "error: 'expected the administration call to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the administration call to be refused' code: 'ERR_ASSERTION'",
+        "error: |- inspectGrant"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+      },
+      "restored": true
+    },
+    {
+      "id": "M2",
+      "counted": true,
+      "property": "legacy CTRL-01 administrator gains provisioning",
+      "semantic": "legacy-administrator class gains 'authority.provision'",
+      "files": [
+        "src/enterprise/operator-control/roles.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/roles.ts",
+          "find": "[LEGACY_ADMINISTRATOR_ROLE]: new Set<OperatorPermission>(['authority.inspect', 'authority.revoke', 'emergency.stop', 'emergency.release']),",
+          "replace": "[LEGACY_ADMINISTRATOR_ROLE]: new Set<OperatorPermission>(['authority.inspect', 'authority.revoke', 'emergency.stop', 'emergency.release', 'authority.provision']),"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 8,
+      "passCount": 392,
+      "killingTests": [
+        "legacy-administrator → provision:actor: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:passport: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:capability-token: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:authority-grant: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:delegation-grant: 403, body unread, nothing written, nothing logged",
+        "a CTRL-01 administrator is held to CTRL-01: it can revoke and stop, and cannot provision, issue credentials, promote profiles or read the CTRL-02 inventory",
+        "customer, legacy, administrator, operator and agent credentials: each refused everywhere but where it belongs",
+        "an inert, mistyped, undeclared or duplicated bound is refused before it is written"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/roles.ts": "7f8d55c60ae93e5edc10a8efce6cc1701e5af0f4282a419516916439ad35d538"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/roles.ts": "7f8d55c60ae93e5edc10a8efce6cc1701e5af0f4282a419516916439ad35d538"
+      },
+      "restored": true
+    },
+    {
+      "id": "M3",
+      "counted": true,
+      "property": "read-only role gains provisioning",
+      "semantic": "observer gains 'authority.provision'",
+      "files": [
+        "src/enterprise/operator-control/roles.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/roles.ts",
+          "find": "  observer: new Set<OperatorPermission>(READ),",
+          "replace": "  observer: new Set<OperatorPermission>([...READ, 'authority.provision']),"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 7,
+      "passCount": 393,
+      "killingTests": [
+        "observer → provision:actor: 403, body unread, nothing written, nothing logged",
+        "observer → provision:passport: 403, body unread, nothing written, nothing logged",
+        "observer → provision:capability-token: 403, body unread, nothing written, nothing logged",
+        "observer → provision:authority-grant: 403, body unread, nothing written, nothing logged",
+        "observer → provision:delegation-grant: 403, body unread, nothing written, nothing logged",
+        "a read-only observer holds no permission that writes: every mutating operation is 403, its body unread, nothing written",
+        "an organization actor is bootstrap: a provisioner is refused it (after its own body is validated) and nothing is written"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/roles.ts": "7f8d55c60ae93e5edc10a8efce6cc1701e5af0f4282a419516916439ad35d538"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/roles.ts": "7f8d55c60ae93e5edc10a8efce6cc1701e5af0f4282a419516916439ad35d538"
+      },
+      "restored": true
+    },
+    {
+      "id": "M4",
+      "counted": true,
+      "property": "role authorization removed",
+      "semantic": "the permission check becomes vacuous",
+      "files": [
+        "src/enterprise/operator-control/operator-authenticator.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/operator-authenticator.ts",
+          "find": "if (!operatorMay(identity.role, permission)) throw permissionDenied(permission);",
+          "replace": "if (!operatorMay(identity.role, permission) && permission.length < 0) throw permissionDenied(permission);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 75,
+      "passCount": 325,
+      "killingTests": [
+        "observer → revokeGrant: 403, body unread, nothing written, nothing logged",
+        "profile-steward → revokeGrant: 403, body unread, nothing written, nothing logged",
+        "observer → revokeAuthorityEntity: 403, body unread, nothing written, nothing logged",
+        "profile-steward → revokeAuthorityEntity: 403, body unread, nothing written, nothing logged",
+        "provisioner → activateEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "observer → activateEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "profile-steward → activateEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "provisioner → releaseEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "observer → releaseEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "responder → releaseEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "profile-steward → releaseEmergencyControl: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → describeOrganization: 403, body unread, nothing written, nothing logged"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+      },
+      "restored": true
+    },
+    {
+      "id": "M5",
+      "counted": true,
+      "property": "operatorId accepted from body and recorded as provenance",
+      "semantic": "a body 'operatorId' is accepted and becomes the write's actorId",
+      "files": [
+        "src/enterprise/operator-control/contracts.ts",
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "  const body = closedBody(raw, [...FIELDS[kind], 'idempotencyKey']);\n  const idempotencyKey = optional(body, 'idempotencyKey', idempotencyKeyOf);",
+          "replace": "  const body = closedBody(raw, [...FIELDS[kind], 'idempotencyKey', 'operatorId']);\n  const idempotencyKey = optional(body, 'idempotencyKey', idempotencyKeyOf);\n  (globalThis as Record<string, unknown>)['claimedOperator'] = body['operatorId'];"
+        },
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "    return Object.freeze({ system: true, organizationId, actorId: operator.actorRef });",
+          "replace": "    const claimed = (globalThis as Record<string, unknown>)['claimedOperator'];\n    return Object.freeze({ system: true, organizationId, actorId: typeof claimed === 'string' ? claimed : operator.actorRef });"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "a provisioning body carrying 'operatorId' is refused before anything is written",
+        "no operator-plane module reads an operator id, role, permission, organization, system flag or provenance from request data",
+        "`system: true` is constructed in exactly one place on the operator plane — after authorization, from the authenticated operator"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: |- src/enterprise/operator-control/contracts.ts must not match /(body|raw|input|query|request)\\s*(\\[\\s*['\"]|\\.)(operatorId|role|permissions|organizationId|system|actorRef|issuerRef|provisionedBy|approvedBy|authoredBy|activatedBy)\\b/",
+        "error: |- The input did not match the regular expression /function operatorContext\\(operator: EnterpriseOperatorPrincipal\\): KernelAuthorityAccessContext \\{\\s*return Object\\.freeze\\(\\{ system: true, organizationId, actorId: operator\\.actorR"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90",
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90",
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M6",
+      "counted": true,
+      "property": "organizationId accepted from body",
+      "semantic": "'organizationId'/'tenantId' allowed in provisioning bodies",
+      "files": [
+        "src/enterprise/operator-control/contracts.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "  const body = closedBody(raw, [...FIELDS[kind], 'idempotencyKey']);",
+          "replace": "  const body = closedBody(raw, [...FIELDS[kind], 'idempotencyKey', 'organizationId', 'tenantId']);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 9,
+      "passCount": 391,
+      "killingTests": [
+        "a provisioning body carrying 'organizationId' is refused before anything is written",
+        "a provisioning body carrying 'tenantId' is refused before anything is written",
+        "actor: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "trust-domain: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "root-issuer: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "passport: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "capability-token: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "authority-grant: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "delegation-grant: malformed id, unknown field, forged provenance and a non-object body are refused before any write"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restored": true
+    },
+    {
+      "id": "M7",
+      "counted": true,
+      "property": "system:true accepted from body",
+      "semantic": "'system' allowed in provisioning bodies",
+      "files": [
+        "src/enterprise/operator-control/contracts.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "  const body = closedBody(raw, [...FIELDS[kind], 'idempotencyKey']);",
+          "replace": "  const body = closedBody(raw, [...FIELDS[kind], 'idempotencyKey', 'system']);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 8,
+      "passCount": 392,
+      "killingTests": [
+        "a provisioning body carrying 'system' is refused before anything is written",
+        "actor: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "trust-domain: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "root-issuer: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "passport: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "capability-token: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "authority-grant: malformed id, unknown field, forged provenance and a non-object body are refused before any write",
+        "delegation-grant: malformed id, unknown field, forged provenance and a non-object body are refused before any write"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restored": true
+    },
+    {
+      "id": "M8",
+      "counted": true,
+      "property": "body read before authorization",
+      "semantic": "the body is read before authorize()",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "      let operator = authenticator.authorize(authorizationHeader, KIND_PERMISSION[rawKind]);\n      const { request, idempotencyKey } = validateProvisionRequest(rawKind, await readBody());",
+          "replace": "      const early = await readBody();\n      let operator = authenticator.authorize(authorizationHeader, KIND_PERMISSION[rawKind]);\n      const { request, idempotencyKey } = validateProvisionRequest(rawKind, early);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 40,
+      "passCount": 360,
+      "killingTests": [
+        "observer → provision:actor: 403, body unread, nothing written, nothing logged",
+        "responder → provision:actor: 403, body unread, nothing written, nothing logged",
+        "profile-steward → provision:actor: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:actor: 403, body unread, nothing written, nothing logged",
+        "observer → provision:passport: 403, body unread, nothing written, nothing logged",
+        "responder → provision:passport: 403, body unread, nothing written, nothing logged",
+        "profile-steward → provision:passport: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:passport: 403, body unread, nothing written, nothing logged",
+        "observer → provision:capability-token: 403, body unread, nothing written, nothing logged",
+        "responder → provision:capability-token: 403, body unread, nothing written, nothing logged",
+        "profile-steward → provision:capability-token: 403, body unread, nothing written, nothing logged",
+        "legacy-administrator → provision:capability-token: 403, body unread, nothing written, nothing logged"
+      ],
+      "observed": [
+        "error: |- the body of a refused operation is never read",
+        "error: |- the body of a refused operation is never read",
+        "error: |- the body of a refused operation is never read"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M9",
+      "counted": true,
+      "property": "closed-schema unknown-field rejection removed",
+      "semantic": "the unknown-field filter becomes vacuous",
+      "files": [
+        "src/enterprise/operator-control/contracts.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "  const unexpected = Object.keys(raw).filter((key) => !allowed.includes(key));\n  if (unexpected.length > 0) {\n    throw EnterpriseHttpErrors.invalidRequest(\n      `The request body has unsupported field(s). Accepted: ${allowed.join(', ')}. Operator identity, role and organization",
+          "replace": "  const unexpected = Object.keys(raw).filter((key) => !allowed.includes(key) && key.length < 0);\n  if (unexpected.length > 0) {\n    throw EnterpriseHttpErrors.invalidRequest(\n      `The request body has unsupported field(s). Accepted: ${allowed.join(', ')}. Operator identity, role and organization"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 30,
+      "passCount": 370,
+      "killingTests": [
+        "a provisioning body carrying 'organizationId' is refused before anything is written",
+        "a provisioning body carrying 'tenantId' is refused before anything is written",
+        "a provisioning body carrying 'operatorId' is refused before anything is written",
+        "a provisioning body carrying 'role' is refused before anything is written",
+        "a provisioning body carrying 'permissions' is refused before anything is written",
+        "a provisioning body carrying 'system' is refused before anything is written",
+        "a provisioning body carrying 'actorRef' is refused before anything is written",
+        "a provisioning body carrying 'issuerRef' is refused before anything is written",
+        "a provisioning body carrying 'provisionedBy' is refused before anything is written",
+        "a provisioning body carrying 'approvedBy' is refused before anything is written",
+        "a provisioning body carrying 'authenticated' is refused before anything is written",
+        "a provisioning body carrying 'authorityState' is refused before anything is written"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restored": true
+    },
+    {
+      "id": "M10",
+      "counted": true,
+      "property": "route writes directly to KernelAuthorityStore",
+      "semantic": "provisionThrough is replaced by a direct KernelAuthorityStore.appendEvent",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "          result = await provisionThrough(request, context, idempotencyKey);",
+          "replace": "          void provisionThrough;\n          const appended = await (store as unknown as KernelAuthorityStore).appendEvent(context, { organizationId, entityKind: request.kind, entityId, eventType: 'KernelAuthorityEntityProvisioned', payload: request.input as unknown as Readonly<Record<string, unknown>>, ...(idempotencyKey !== undefined ? { idempotency: { idempotencyKey } } : {}) });\n          result = { record: appended.record, replayed: appended.replayed };"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 20,
+      "passCount": 380,
+      "killingTests": [
+        "every write reaches the provisioning service under the served organization and the authenticated operator — never a caller value",
+        "monetary authority: an unknown asset, an over-scale value, a malformed or widening constraint shape are refused before commit",
+        "customer, legacy, administrator, operator and agent credentials: each refused everywhere but where it belongs",
+        "malformed JSON, an oversized body, a wrong content type, unknown query parameters and other verbs are refused; nothing is written",
+        "monetary authority over HTTP is checked against the Host’s trusted asset registry before it commits: an unknown asset or an over-scale value is refused",
+        "provisioning idempotency survives a restart: same key + same body replays the original record, different body conflicts",
+        "revealed once; never on a list, a read, a replay or a log line; stored as a verifier that does not authenticate",
+        "rotation invalidates the old credential in the same transaction; revocation is terminal; neither touches the actor",
+        "a credential is never issued for a non-agent, an unknown actor, a revoked actor or a statically configured subject",
+        "replicaCount ≤ 3 and deploymentStrategy = rolling on the standing grant: 2 and 3 execute with the canonical bound signed; 4, another strategy and a wrong type reach no adapter; durable across restart",
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs",
+        "a parent with no parameter bound may delegate a new narrower one, and it binds"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly deep-equal:",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: |- create actor: {\"error\":{\"code\":\"INFRASTRUCTURE_FAILURE\",\"message\":\"An unexpected Enterprise Host failure occurred.\"}}"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M11",
+      "counted": true,
+      "property": "monetary asset/scale validation bypassed at provisioning (composition drops the trusted registry)",
+      "semantic": "composition drops the trusted asset registry from the provisioning service",
+      "files": [
+        "src/enterprise/composition/composition-root.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/composition/composition-root.ts",
+          "find": "          // P10: obvious monetary-authority faults (an unknown asset, a value\n          // beyond its trusted scale) are refused when provisioned.\n          monetaryAssets: monetary.assets,",
+          "replace": "          // P10: obvious monetary-authority faults (an unknown asset, a value\n          // beyond its trusted scale) are refused when provisioned.\n          ...({} as { monetaryAssets?: typeof monetary.assets }),"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "monetary authority over HTTP is checked against the Host’s trusted asset registry before it commits: an unknown asset or an over-scale value is refused"
+      ],
+      "observed": [
+        "error: |- {\"outcome\":\"provisioned\",\"entity\":{\"entityKind\":\"authority-grant\",\"entityId\":\"authority-money\",\"organizationId\":\"org-pilot\",\"trustDomainId\":\"trust-domain-pilot\",\"status\":\"active\",\"terms\":{\"authorityGrantId\":\"authority-money\",\"issu"
+      ],
+      "beforeSha256": {
+        "src/enterprise/composition/composition-root.ts": "756a51d0fbb0847754f280a5fb8e8e2b18c23e6ea7c63ded4638d16810a53538"
+      },
+      "restoredSha256": {
+        "src/enterprise/composition/composition-root.ts": "756a51d0fbb0847754f280a5fb8e8e2b18c23e6ea7c63ded4638d16810a53538"
+      },
+      "restored": true
+    },
+    {
+      "id": "M11b",
+      "counted": true,
+      "property": "monetary shape pre-validation removed (malformed constraint reaches the replay)",
+      "semantic": "the P10 shape pre-validation is removed",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "        validateKernelAuthorityMonetaryConstraints(request.kind, request.input as unknown as Readonly<Record<string, unknown>>, `${request.kind} '${entityId}'`);",
+          "replace": "        void validateKernelAuthorityMonetaryConstraints;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "monetary authority: an unknown asset, an over-scale value, a malformed or widening constraint shape are refused before commit",
+        "monetary authority over HTTP is checked against the Host’s trusted asset registry before it commits: an unknown asset or an over-scale value is refused"
+      ],
+      "observed": [
+        "error: |- [{\"type\":\"max_amount\",\"currency\":\"USD\",\"value\":\"-5\"}]",
+        "error: |- {\"error\":{\"code\":\"OPERATOR_OPERATION_REFUSED\",\"message\":\"The decision engine could not replay this authority-grant with the authority already provisioned (KERNEL_AUTHORITY_INTEGRITY_FAILED): a reference it names is missing or not "
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M12",
+      "counted": true,
+      "property": "standing parameter maximum ignored (replicaCount 4 would reach the adapter)",
+      "semantic": "a standing maximum parameter bound is ignored at issuance",
+      "files": [
+        "src/enterprise/execution-governance/parameter-authority.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/execution-governance/parameter-authority.ts",
+          "find": "      if (!governedParameterBoundAdmits(entry.bound, parameter)) return PARAMETER_AUTHORITY_REASON_CODES.PARAMETER_AUTHORITY_EXCEEDED;",
+          "replace": "      if (entry.bound.kind !== 'maximum' && !governedParameterBoundAdmits(entry.bound, parameter)) return PARAMETER_AUTHORITY_REASON_CODES.PARAMETER_AUTHORITY_EXCEEDED;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 6,
+      "passCount": 394,
+      "killingTests": [
+        "replicaCount ≤ 3 and deploymentStrategy = rolling on the standing grant: 2 and 3 execute with the canonical bound signed; 4, another strategy and a wrong type reach no adapter; durable across restart",
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs",
+        "a parent with no parameter bound may delegate a new narrower one, and it binds",
+        "independent grants are not intersected and not searched: the Authority Graph’s deterministic lineage (first matching grant, by id) alone applies",
+        "every hop of a delegated lineage applies — a delegate that dropped or widened a bound in-process still cannot exceed its source",
+        "maximum admits ≤ limit; exact admits the value only; no coercion; an unstated bounded dimension is required"
+      ],
+      "observed": [
+        "error: |- {\"status\":\"executed\",\"requestId\":\"aoc.gar:76b3e0e26bc4882536df19a1c7ec4094\",\"decision\":{\"decisionId\":\"enforcement-decision-498753bd-9b16-46f2-8cea-d9eae4d6dd44\",\"evaluationId\":\"gov-evaluation-mupz37de-1a-ygsoy8q3\",\"status\":\"allowe",
+        "error: |- {\"status\":\"executed\",\"requestId\":\"aoc.gar:c4db665a87bb63b7c9bd2371ca118df2\",\"decision\":{\"decisionId\":\"enforcement-decision-f47bbb1f-ba7a-4238-9e67-b044bd6ba974\",\"evaluationId\":\"gov-evaluation-mupz38iq-o-fsrfnxvy\",\"status\":\"allowed",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/execution-governance/parameter-authority.ts": "0c2b0aedd1a3a5fe40a00405a39b8d626be16be1dd97a7e6137e5149165e8d80"
+      },
+      "restoredSha256": {
+        "src/enterprise/execution-governance/parameter-authority.ts": "0c2b0aedd1a3a5fe40a00405a39b8d626be16be1dd97a7e6137e5149165e8d80"
+      },
+      "restored": true
+    },
+    {
+      "id": "M13",
+      "counted": true,
+      "property": "idempotency conflict treated as a fresh write (Kernel-Authority idempotency dropped)",
+      "semantic": "the Kernel-Authority idempotency option is dropped",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "    const options = idempotencyKey !== undefined ? { idempotency: { idempotencyKey } } : undefined;",
+          "replace": "    const options = idempotencyKey !== undefined && idempotencyKey.length < 0 ? { idempotency: { idempotencyKey } } : undefined;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 8,
+      "passCount": 392,
+      "killingTests": [
+        "actor: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "trust-domain: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "root-issuer: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "passport: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "capability-token: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "authority-grant: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "delegation-grant: idempotency — same key + same body replays; same key + different authority conflicts; concurrent same key commits once",
+        "provisioning idempotency survives a restart: same key + same body replays the original record, different body conflicts"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M13b",
+      "counted": true,
+      "property": "credential idempotency conflict treated as replay",
+      "semantic": "a credential idempotency digest mismatch is ignored (treated as replay)",
+      "files": [
+        "src/enterprise/operator-control/control-plane-store.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "              if (claim.request_digest !== input.requestDigest) {",
+          "replace": "              if (claim.request_digest !== input.requestDigest && input.requestDigest.length < 0) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "revealed once; never on a list, a read, a replay or a log line; stored as a verifier that does not authenticate"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restored": true
+    },
+    {
+      "id": "M14",
+      "counted": true,
+      "property": "duplicate external subject allowed (Kernel Authority binding)",
+      "semantic": "the external-subject conflict rule becomes vacuous (append rules)",
+      "files": [
+        "src/enterprise/kernel-authority/append-rules.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/kernel-authority/append-rules.ts",
+          "find": "      if (state.conflictingExternalSubjectActorId !== undefined) {",
+          "replace": "      if (state.conflictingExternalSubjectActorId !== undefined && input.entityId.length < 0) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "a revoked actor is never re-authorized: authority naming it is refused, and a revoked agent is never re-onboarded under its id"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/kernel-authority/append-rules.ts": "43f05ffec62c403be3a9c2e8efef3550eea71aab8cbf60418456d9f8c81e8e14"
+      },
+      "restoredSha256": {
+        "src/enterprise/kernel-authority/append-rules.ts": "43f05ffec62c403be3a9c2e8efef3550eea71aab8cbf60418456d9f8c81e8e14"
+      },
+      "restored": true
+    },
+    {
+      "id": "M14b",
+      "counted": true,
+      "property": "operator-issued principal for a statically configured subject",
+      "semantic": "the static-subject refusal becomes vacuous",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "    if (staticSubjects.has(JSON.stringify([subject.system, subject.subjectId]))) {",
+          "replace": "    if (staticSubjects.has(JSON.stringify([subject.system, subject.subjectId])) && subject.system.length < 0) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "a credential is never issued for a non-agent, an unknown actor, a revoked actor or a statically configured subject"
+      ],
+      "observed": [
+        "error: |- actor-static: {\"outcome\":\"issued\",\"actorId\":\"actor-static\",\"principalId\":\"agent:actor-static\",\"credential\":{\"credentialId\":\"agc-b5ead508fb420fc469a045171681aa70\",\"status\":\"active\",\"createdBy\":\"operator:ops-provisioner\",\"createdAt\""
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M15",
+      "counted": true,
+      "property": "revoked actor re-authorized (references to revoked authority accepted)",
+      "semantic": "references to revoked authority are accepted",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "      if (record.status !== 'active') throw refused(`${field} '${id}' is revoked;",
+          "replace": "      if (record.status !== 'active' && field.length < 0) throw refused(`${field} '${id}' is revoked;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "a revoked actor is never re-authorized: authority naming it is refused, and a revoked agent is never re-onboarded under its id"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M15b",
+      "counted": true,
+      "property": "credential issued for a revoked actor",
+      "semantic": "a credential is issued for a revoked actor",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "    if (actor.status !== 'active') throw refused('This agent is revoked.",
+          "replace": "    if (actor.status !== 'active' && actor.entityId.length < 0) throw refused('This agent is revoked."
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "a revoked actor is never re-authorized: authority naming it is refused, and a revoked agent is never re-onboarded under its id",
+        "a credential is never issued for a non-agent, an unknown actor, a revoked actor or a statically configured subject"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: |- actor-payables-agent: {\"outcome\":\"issued\",\"actorId\":\"actor-payables-agent\",\"principalId\":\"agent:actor-payables-agent\",\"credential\":{\"credentialId\":\"agc-933f75c468c945c5ba402f517ef2b1dd\",\"status\":\"active\",\"createdBy\":\"operator:ops-"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M16",
+      "counted": true,
+      "property": "agent credential verifier returned by GET/list",
+      "semantic": "the verifier is carried on credential records and spread into the view",
+      "files": [
+        "src/enterprise/operator-control/control-plane-store.ts",
+        "src/enterprise/operator-control/contracts.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "    createdBy: row.created_by,\n    createdAt: row.created_at,\n    ...(row.revoked_by !== null ? { revokedBy: row.revoked_by } : {}),",
+          "replace": "    createdBy: row.created_by,\n    createdAt: row.created_at,\n    verifier: row.verifier,\n    ...(row.revoked_by !== null ? { revokedBy: row.revoked_by } : {}),"
+        },
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "  readonly replacesCredentialId?: string;\n}\n\n/** What admission reads",
+          "replace": "  readonly replacesCredentialId?: string;\n  readonly verifier?: string;\n}\n\n/** What admission reads"
+        },
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "  return {\n    credentialId: record.credentialId,\n    status: record.status,",
+          "replace": "  return {\n    ...(record.verifier !== undefined ? { verifier: record.verifier } : {}),\n    credentialId: record.credentialId,\n    status: record.status,"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "revealed once; never on a list, a read, a replay or a log line; stored as a verifier that does not authenticate"
+      ],
+      "observed": [
+        "error: |- /api/admin/agents carries no verifier"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22",
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22",
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90"
+      },
+      "restored": true
+    },
+    {
+      "id": "M17",
+      "counted": true,
+      "property": "old rotated credential remains usable",
+      "semantic": "rotation no longer revokes the old credential",
+      "files": [
+        "src/enterprise/operator-control/control-plane-store.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "                .prepare(`UPDATE agent_credentials SET status = 'revoked', revoked_by = ?, revoked_at = ?, revocation_reason = ? WHERE credential_id = ? AND status = 'active'`)\n                .run(input.operatorRef, input.at, `rotated: replaced by ${input.credentialId}`, input.replaces);",
+          "replace": "                .prepare(`UPDATE agent_credentials SET status = 'revoked', revoked_by = ?, revoked_at = ?, revocation_reason = ? WHERE credential_id = ? AND status = 'active' AND 1 = 0`)\n                .run(input.operatorRef, input.at, `rotated: replaced by ${input.credentialId}`, input.replaces);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "rotation invalidates the old credential in the same transaction; revocation is terminal; neither touches the actor"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restored": true
+    },
+    {
+      "id": "M18",
+      "counted": true,
+      "property": "agent credential reaches /api/admin",
+      "semantic": "'fra1.' tokens are admitted as observer operators",
+      "files": [
+        "src/enterprise/operator-control/operator-authenticator.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/operator-authenticator.ts",
+          "find": "      if (identity === undefined) {\n        if (ordinary !== undefined)",
+          "replace": "      if (identity === undefined && token.startsWith('fra1.')) return Object.freeze({ plane: 'operator' as const, operatorId: 'agent', organizationId, role: 'observer' as const, credentialClass: 'operator' as const, actorRef: 'operator:agent' });\n      if (identity === undefined) {\n        if (ordinary !== undefined)"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "an operator-issued agent credential → 401 on every operation; nothing read, written or logged",
+        "customer, legacy, administrator, operator and agent credentials: each refused everywhere but where it belongs"
+      ],
+      "observed": [
+        "error: |- inspectGrant",
+        "error: |- agent credential → GET /api/admin/organization: {\"organization\":{\"organizationId\":\"org-pilot\",\"trustDomainId\":\"trust-domain-pilot\",\"agentCredentials\":\"enabled\",\"profileLifecycle\":\"static\"},\"operator\":{\"operatorId\":\"agent\",\"role\":\""
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+      },
+      "restored": true
+    },
+    {
+      "id": "M19",
+      "counted": true,
+      "property": "unauthorized operator activates a Governance Profile",
+      "semantic": "provisioner gains 'profile.promote'",
+      "files": [
+        "src/enterprise/operator-control/roles.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/roles.ts",
+          "find": "  provisioner: new Set<OperatorPermission>([...READ, 'authority.provision', 'authority.revoke', 'agent-credential.manage', 'agent-credential.revoke']),",
+          "replace": "  provisioner: new Set<OperatorPermission>([...READ, 'authority.provision', 'authority.revoke', 'agent-credential.manage', 'agent-credential.revoke', 'profile.promote']),"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "provisioner → activateProfile: 403, body unread, nothing written, nothing logged",
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: |- {\"outcome\":\"activated\",\"profile\":{\"profileId\":\"payables-transfer\",\"version\":1,\"digest\":\"sha256:52111a5ae99e0ece68c0a1a61aa96533a865c119be5e4a5a0fd57e8078ac4855\",\"state\":\"active\",\"actionClass\":\"payment\",\"resourceClass\":\"operating-f"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/roles.ts": "7f8d55c60ae93e5edc10a8efce6cc1701e5af0f4282a419516916439ad35d538"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/roles.ts": "7f8d55c60ae93e5edc10a8efce6cc1701e5af0f4282a419516916439ad35d538"
+      },
+      "restored": true
+    },
+    {
+      "id": "M20",
+      "counted": true,
+      "property": "draft profile becomes resolvable",
+      "semantic": "with no active version the latest catalog version resolves",
+      "files": [
+        "src/enterprise/governance-profile/registry.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/governance-profile/registry.ts",
+          "find": "    const active = lifecycle.activeVersion(profileId);\n    if (active === undefined) return undefined;",
+          "replace": "    const active = lifecycle.activeVersion(profileId);\n    if (active === undefined) return [...(catalog.get(profileId)?.values() ?? [])].pop();"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "draft → retired is legal: a catalog version withdrawn before activation is retired, terminal, and never activatable",
+        "a lifecycle reload that fails after a recorded transition is reported as recorded, resolves nothing meanwhile, and the same request recovers",
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: |- fails closed: nothing resolves",
+        "error: |- {\"status\":\"executed\",\"requestId\":\"aoc.gar:ffc5dc6622afe7b3aee68b0cfe1857d8\",\"decision\":{\"decisionId\":\"enforcement-decision-21b0ac8e-fda1-4450-823f-07243bccb107\",\"evaluationId\":\"gov-evaluation-mupzdrp5-2-q5w2xo69\",\"status\":\"allowed"
+      ],
+      "beforeSha256": {
+        "src/enterprise/governance-profile/registry.ts": "adf1fd8d2321f7fc1753459f6f8608e183e8dd02fe718a18defad057a11c3332"
+      },
+      "restoredSha256": {
+        "src/enterprise/governance-profile/registry.ts": "adf1fd8d2321f7fc1753459f6f8608e183e8dd02fe718a18defad057a11c3332"
+      },
+      "restored": true
+    },
+    {
+      "id": "M21",
+      "counted": true,
+      "property": "retired profile remains active",
+      "semantic": "retirement never clears the active version",
+      "files": [
+        "src/enterprise/operator-control/control-plane-store.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "      if (active.get(event.profileId)?.version === event.version) active.delete(event.profileId);",
+          "replace": "      if (active.get(event.profileId)?.version === event.version && event.reason === 'never') active.delete(event.profileId);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "concurrent activation of two versions: exactly one ends active, the history stays legal, and at no point are two active",
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave",
+        "a steward activating a less-demanding catalog version relaxes that profile’s own requirements — and nothing else: no authority is created, and independent policy requirements still deny"
+      ],
+      "observed": [
+        "error: 'a losing activation of a superseded version is refused (retired is terminal), never applied' code: 'ERR_ASSERTION'",
+        "error: |- activate v2: {\"error\":{\"code\":\"AUTHORITY_STATE_INTEGRITY_FAILED\",\"message\":\"The authoritative state could not be verified, so it is not reported and nothing was changed. Treat this as a security incident; see the operator runbook.",
+        "error: |- activate v2: {\"error\":{\"code\":\"AUTHORITY_STATE_INTEGRITY_FAILED\",\"message\":\"The authoritative state could not be verified, so it is not reported and nothing was changed. Treat this as a security incident; see the operator runbook."
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restored": true
+    },
+    {
+      "id": "M22",
+      "counted": true,
+      "property": "approvedBy / promotion provenance taken from the request",
+      "semantic": "a body 'approvedBy' is accepted and recorded as the operator",
+      "files": [
+        "src/enterprise/operator-control/contracts.ts",
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "  const body = closedBody(raw, ['digest', 'reason']);",
+          "replace": "  const body = closedBody(raw, ['digest', 'reason', 'approvedBy']);\n  (globalThis as Record<string, unknown>)['approvedBy'] = body['approvedBy'];"
+        },
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "            transition: transition === 'activate' ? 'activated' : 'retired',\n            operatorRef: operator.actorRef,",
+          "replace": "            transition: transition === 'activate' ? 'activated' : 'retired',\n            operatorRef: typeof (globalThis as Record<string, unknown>)['approvedBy'] === 'string' ? ((globalThis as Record<string, unknown>)['approvedBy'] as string) : operator.actorRef,"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave",
+        "no operator-plane module reads an operator id, role, permission, organization, system flag or provenance from request data",
+        "every operator-plane write names its operator from the authenticated principal, and the principal from configuration"
+      ],
+      "observed": [
+        "error: |- approvedBy",
+        "error: |- src/enterprise/operator-control/contracts.ts must not match /(body|raw|input|query|request)\\s*(\\[\\s*['\"]|\\.)(operatorId|role|permissions|organizationId|system|actorRef|issuerRef|provisionedBy|approvedBy|authoredBy|activatedBy)\\b/",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90",
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/contracts.ts": "4e3e261639a7945289c9b42ad9c41ac86a08bd355b37f09abfd01223ca6fdd90",
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M23",
+      "counted": true,
+      "property": "cross-organization lifecycle mutation applies here",
+      "semantic": "the lifecycle query drops the organization filter",
+      "files": [
+        "src/enterprise/operator-control/control-plane-store.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "    return (live().prepare(`SELECT * FROM profile_lifecycle_events WHERE organization_id = ? ORDER BY sequence`).all(organizationId) as LifecycleRow[]).map(toLifecycleEvent);",
+          "replace": "    void organizationId;\n    return (live().prepare(`SELECT * FROM profile_lifecycle_events ORDER BY sequence`).all() as LifecycleRow[]).map((row) => toLifecycleEvent({ ...row, organization_id: organizationId }));"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "another organization's actor, authority and profile lifecycle are invisible, unaddressable and cannot be attached"
+      ],
+      "observed": [
+        "error: |- The expression evaluated to a falsy value:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22"
+      },
+      "restored": true
+    },
+    {
+      "id": "M23b",
+      "counted": true,
+      "property": "cross-organization agent credential authenticates",
+      "semantic": "credential verification ignores the organization",
+      "files": [
+        "src/enterprise/operator-control/control-plane-store.ts",
+        "src/enterprise/operator-control/agent-credentials.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/control-plane-store.ts",
+          "find": "        if (row === undefined || row.organization_id !== organizationId) return undefined;\n        const principal = principalBy(organizationId, row.principal_id);",
+          "replace": "        if (row === undefined) return undefined;\n        const principal = principalBy(row.organization_id, row.principal_id);"
+        },
+        {
+          "file": "src/enterprise/operator-control/agent-credentials.ts",
+          "find": "      if (record.credential.organizationId !== organizationId || record.principal.organizationId !== organizationId || record.principal.principalId !== record.credential.principalId) {",
+          "replace": "      if (record.principal.principalId !== record.credential.principalId) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "an operator-issued credential of another organization authenticates nothing here"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly deep-equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22",
+        "src/enterprise/operator-control/agent-credentials.ts": "b18cb34b0ba9940cffcba467b966d4999b9bcdb02c523450f85b279b20c72b65"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/control-plane-store.ts": "d637541e611620fb3f6b9d2e1e8df89d0045beaff9974e9c153f3caac3266e22",
+        "src/enterprise/operator-control/agent-credentials.ts": "b18cb34b0ba9940cffcba467b966d4999b9bcdb02c523450f85b279b20c72b65"
+      },
+      "restored": true
+    },
+    {
+      "id": "M24",
+      "counted": true,
+      "property": "admin route creates a BoundedGrant directly",
+      "semantic": "POST /api/admin/authority/grants/issue route added",
+      "files": [
+        "src/enterprise/adapters/node-http-adapter.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/adapters/node-http-adapter.ts",
+          "find": "    const create = /^\\/api\\/admin\\/authority\\/entities\\/([^/]+)$/.exec(pathname);",
+          "replace": "    if (/^\\/api\\/admin\\/authority\\/grants\\/issue$/.exec(pathname) !== null) return { kind: 'entity-create', entityKind: 'bounded-grant' };\n    const create = /^\\/api\\/admin\\/authority\\/entities\\/([^/]+)$/.exec(pathname);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "the HTTP adapter reaches the operator plane only through `enterprise.operatorControl`, and its mutations are exactly the six CTRL-02 verbs"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly deep-equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/adapters/node-http-adapter.ts": "65ae65566dcbd86c2365f350d1a57081af70456870cd754109fd98ea4316c74e"
+      },
+      "restoredSha256": {
+        "src/enterprise/adapters/node-http-adapter.ts": "65ae65566dcbd86c2365f350d1a57081af70456870cd754109fd98ea4316c74e"
+      },
+      "restored": true
+    },
+    {
+      "id": "M25",
+      "counted": true,
+      "property": "authority signer reused for passport",
+      "semantic": "the authority signer is used to sign a passport (corrected, compiling form)",
+      "files": [
+        "src/enterprise/operator-control/agent-credentials.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/agent-credentials.ts",
+          "find": "export function agentPrincipalIdFor(actorId: string): string {",
+          "replace": "export function signPassportWithAuthorityKey(signer: import('../authority-authenticity/signer.js').AuthorityArtifactSigner, passport: unknown): unknown {\n  return signer.signGrant(passport as never, 'passport-store');\n}\n\nexport function agentPrincipalIdFor(actorId: string): string {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "no passport signer, HMAC signer or passport key role exists in the Enterprise runtime; the authority signer stays authority-only"
+      ],
+      "observed": [
+        "error: |- src/enterprise/operator-control/agent-credentials.ts signs nothing"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/agent-credentials.ts": "b18cb34b0ba9940cffcba467b966d4999b9bcdb02c523450f85b279b20c72b65"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/agent-credentials.ts": "b18cb34b0ba9940cffcba467b966d4999b9bcdb02c523450f85b279b20c72b65"
+      },
+      "restored": true
+    },
+    {
+      "id": "M26",
+      "counted": true,
+      "property": "passport-web / agent-governance becomes an authority source for admission",
+      "semantic": "the binding reader dynamically imports passport-web",
+      "files": [
+        "src/enterprise/customer-identity/subject-binding-reader.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/customer-identity/subject-binding-reader.ts",
+          "find": "export function createKernelAuthoritySubjectBindingReader(",
+          "replace": "export async function passportWebStanding(): Promise<unknown> {\n  return import('../../../apps/agent-passport-web/src/lib/store.js' as string);\n}\n\nexport function createKernelAuthoritySubjectBindingReader("
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "passport-web, agent-governance and the PMFreak foundation are never imported or loaded by the Enterprise runtime",
+        "has no I/O, network, process or dynamic-code capability of its own",
+        "never mentions an Agent Passport as a caller credential"
+      ],
+      "observed": [
+        "error: |- src/enterprise/customer-identity/subject-binding-reader.ts names a separate passport product in code",
+        "error: |- src/enterprise/customer-identity/subject-binding-reader.ts must not have /\\bimport\\s*\\(/",
+        "error: |- src/enterprise/customer-identity/subject-binding-reader.ts must keep passports out of caller authentication"
+      ],
+      "beforeSha256": {
+        "src/enterprise/customer-identity/subject-binding-reader.ts": "e76146512ae78cebdce879b71b1f0a6d7fae88a6900bc81b16d9ff3cd45363db"
+      },
+      "restoredSha256": {
+        "src/enterprise/customer-identity/subject-binding-reader.ts": "e76146512ae78cebdce879b71b1f0a6d7fae88a6900bc81b16d9ff3cd45363db"
+      },
+      "restored": true
+    },
+    {
+      "id": "M27",
+      "counted": true,
+      "property": "onboarding leaves an unreplayable / dangling-reference record committed after a failed check",
+      "semantic": "reference checks and the dry-run replay are removed",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "          assertReferences(world, request);\n          assertParameterAuthority(world, request);\n          dryRun(world, request.kind, entityId, request.input as unknown as Readonly<Record<string, unknown>>, operator);",
+          "replace": "          void assertReferences;\n          assertParameterAuthority(world, request);\n          void dryRun;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "another organization's actor, authority and profile lifecycle are invisible, unaddressable and cannot be attached",
+        "references the engines cannot replay are refused before they are written — the world stays bootable",
+        "a revoked actor is never re-authorized: authority naming it is refused, and a revoked agent is never re-onboarded under its id"
+      ],
+      "observed": [
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'",
+        "error: 'expected the operation to be refused' code: 'ERR_ASSERTION'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M28",
+      "counted": true,
+      "property": "provisioning response leaks a store digest",
+      "semantic": "latestEventDigest is added to the provisioning response",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "        return { outcome, entity: toAdministeredAuthorityEntityView(result.record) };",
+          "replace": "        return { outcome, entity: { ...toAdministeredAuthorityEntityView(result.record), latestEventDigest: result.record.latestEventDigest } };"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 7,
+      "passCount": 393,
+      "killingTests": [
+        "actor: valid create → provisioned, attributed, and readable",
+        "trust-domain: valid create → provisioned, attributed, and readable",
+        "root-issuer: valid create → provisioned, attributed, and readable",
+        "passport: valid create → provisioned, attributed, and readable",
+        "capability-token: valid create → provisioned, attributed, and readable",
+        "authority-grant: valid create → provisioned, attributed, and readable",
+        "delegation-grant: valid create → provisioned, attributed, and readable"
+      ],
+      "observed": [
+        "error: |- no store digest is serialized",
+        "error: |- no store digest is serialized",
+        "error: |- no store digest is serialized"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M29",
+      "counted": true,
+      "property": "operator secret logged",
+      "semantic": "the Authorization header is written into the audit target",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "        audit(operator, 'authority-entity.provision', target, outcome);",
+          "replace": "        audit(operator, 'authority-entity.provision', `${target} ${authorizationHeader ?? ''}`, outcome);"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "revealed once; never on a list, a read, a replay or a log line; stored as a verifier that does not authenticate",
+        "operator authenticates → sees the organization → bootstraps → onboards the agent → issues its credential → assigns bounded authority → the agent acts in bounds, is held out of bounds, and is stopped by revocation (across"
+      ],
+      "observed": [
+        "error: |- the Host log must not contain a configured or issued secret",
+        "error: |- the Host log must not contain a configured or issued secret"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M30",
+      "counted": true,
+      "property": "static customerPrincipals still required after claimed onboarding",
+      "semantic": "customerPrincipals >= 1 is required again",
+      "files": [
+        "src/enterprise/host/host-configuration.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/host/host-configuration.ts",
+          "find": "  if (customerPrincipals.length === 0 && operators.length === 0) {",
+          "replace": "  if (customerPrincipals.length === 0) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 16,
+      "passCount": 384,
+      "killingTests": [
+        "an unknown role, a short secret, an inline secret, a duplicate identity and a reused secret are each refused at boot",
+        "without operators a file still needs a static customer principal; a profile lifecycle needs a catalog and someone able to promote it",
+        "malformed JSON, an oversized body, a wrong content type, unknown query parameters and other verbs are refused; nothing is written",
+        "monetary authority over HTTP is checked against the Host’s trusted asset registry before it commits: an unknown asset or an over-scale value is refused",
+        "provisioning idempotency survives a restart: same key + same body replays the original record, different body conflicts",
+        "revealed once; never on a list, a read, a replay or a log line; stored as a verifier that does not authenticate",
+        "rotation invalidates the old credential in the same transaction; revocation is terminal; neither touches the actor",
+        "replicaCount ≤ 3 and deploymentStrategy = rolling on the standing grant: 2 and 3 execute with the canonical bound signed; 4, another strategy and a wrong type reach no adapter; durable across restart",
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs",
+        "a parent with no parameter bound may delegate a new narrower one, and it binds",
+        "an inert, mistyped, undeclared or duplicated bound is refused before it is written",
+        "operator authenticates → sees the organization → bootstraps → onboards the agent → issues its credential → assigns bounded authority → the agent acts in bounds, is held out of bounds, and is stopped by revocation (across"
+      ],
+      "observed": [
+        "error: |- one secret, one meaning",
+        "error: |- Expected values to be strictly equal:",
+        "error: 'AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: customerPrincipals must name at least one principal (or configure operators, who onboard agents); governed actions act only for a bound customer identity.' code: 'HOST_GOVERNED_ACTIONS_FILE_INVA"
+      ],
+      "beforeSha256": {
+        "src/enterprise/host/host-configuration.ts": "523bd37bd229db9abcf7eedd9363fa614beaa283a4c84ab87a2490877a688127"
+      },
+      "restoredSha256": {
+        "src/enterprise/host/host-configuration.ts": "523bd37bd229db9abcf7eedd9363fa614beaa283a4c84ab87a2490877a688127"
+      },
+      "restored": true
+    },
+    {
+      "id": "M30b",
+      "counted": true,
+      "property": "operator-issued credentials not composed into admission (agent needs static configuration)",
+      "semantic": "operator-issued credentials are not composed into admission",
+      "files": [
+        "src/enterprise/composition/composition-root.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/composition/composition-root.ts",
+          "find": "        ? { agentCredentials: createAgentCredentialVerifier(controlPlaneStore, configuration.kernelAuthority.organizationId), reservedPrincipalPrefix: AGENT_PRINCIPAL_PREFIX }",
+          "replace": "        ? { reservedPrincipalPrefix: AGENT_PRINCIPAL_PREFIX, ...({} as { agentCredentials?: ReturnType<typeof createAgentCredentialVerifier> }) }"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 15,
+      "passCount": 385,
+      "killingTests": [
+        "customer, legacy, administrator, operator and agent credentials: each refused everywhere but where it belongs",
+        "malformed JSON, an oversized body, a wrong content type, unknown query parameters and other verbs are refused; nothing is written",
+        "monetary authority over HTTP is checked against the Host’s trusted asset registry before it commits: an unknown asset or an over-scale value is refused",
+        "provisioning idempotency survives a restart: same key + same body replays the original record, different body conflicts",
+        "revealed once; never on a list, a read, a replay or a log line; stored as a verifier that does not authenticate",
+        "rotation invalidates the old credential in the same transaction; revocation is terminal; neither touches the actor",
+        "replicaCount ≤ 3 and deploymentStrategy = rolling on the standing grant: 2 and 3 execute with the canonical bound signed; 4, another strategy and a wrong type reach no adapter; durable across restart",
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs",
+        "a parent with no parameter bound may delegate a new narrower one, and it binds",
+        "an inert, mistyped, undeclared or duplicated bound is refused before it is written",
+        "operator authenticates → sees the organization → bootstraps → onboards the agent → issues its credential → assigns bounded authority → the agent acts in bounds, is held out of bounds, and is stopped by revocation (across",
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: 'Customer identity admission was requested, but no configured credential carries an organizationId and customerIdentity metadata.' code: 'CUSTOMER_IDENTITY_NO_CUSTOMER_CREDENTIAL'",
+        "error: 'Customer identity admission was requested, but no configured credential carries an organizationId and customerIdentity metadata.' code: 'CUSTOMER_IDENTITY_NO_CUSTOMER_CREDENTIAL'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/composition/composition-root.ts": "756a51d0fbb0847754f280a5fb8e8e2b18c23e6ea7c63ded4638d16810a53538"
+      },
+      "restoredSha256": {
+        "src/enterprise/composition/composition-root.ts": "756a51d0fbb0847754f280a5fb8e8e2b18c23e6ea7c63ded4638d16810a53538"
+      },
+      "restored": true
+    },
+    {
+      "id": "M31",
+      "counted": true,
+      "property": "admission trusts the credential record over the Kernel Authority binding (actor mismatch admitted)",
+      "semantic": "admission ignores a credential/binding actor mismatch",
+      "files": [
+        "src/enterprise/customer-identity/admission-service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/customer-identity/admission-service.ts",
+          "find": "          if (issuedForActorId !== undefined && issuedForActorId !== binding.actorId) {",
+          "replace": "          if (issuedForActorId !== undefined && issuedForActorId !== binding.actorId && binding.actorId.length < 0) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "admission believes the Kernel Authority, not the credential record: a principal naming another actor than the binding admits no one"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/customer-identity/admission-service.ts": "67f5d7eaaa7cbc08c54f18899f7571c14b52949814f0c584662aa0eea76d16cb"
+      },
+      "restoredSha256": {
+        "src/enterprise/customer-identity/admission-service.ts": "67f5d7eaaa7cbc08c54f18899f7571c14b52949814f0c584662aa0eea76d16cb"
+      },
+      "restored": true
+    },
+    {
+      "id": "M32",
+      "counted": true,
+      "property": "exact standing parameter authority ignored",
+      "semantic": "an exact standing parameter bound is ignored at issuance",
+      "files": [
+        "src/enterprise/execution-governance/parameter-authority.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/execution-governance/parameter-authority.ts",
+          "find": "      if (!governedParameterBoundAdmits(entry.bound, parameter)) return PARAMETER_AUTHORITY_REASON_CODES.PARAMETER_AUTHORITY_EXCEEDED;",
+          "replace": "      if (entry.bound.kind !== 'exact' && !governedParameterBoundAdmits(entry.bound, parameter)) return PARAMETER_AUTHORITY_REASON_CODES.PARAMETER_AUTHORITY_EXCEEDED;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "replicaCount ≤ 3 and deploymentStrategy = rolling on the standing grant: 2 and 3 execute with the canonical bound signed; 4, another strategy and a wrong type reach no adapter; durable across restart",
+        "maximum admits ≤ limit; exact admits the value only; no coercion; an unstated bounded dimension is required"
+      ],
+      "observed": [
+        "error: |- {\"status\":\"executed\",\"requestId\":\"aoc.gar:c0b23351a8405d3847e7cd83ba50fa87\",\"decision\":{\"decisionId\":\"enforcement-decision-f3d7dee6-f68a-4f72-84cd-d7bb02892c7b\",\"evaluationId\":\"gov-evaluation-mupzpk3d-1w-6n6viybo\",\"status\":\"allowe",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/execution-governance/parameter-authority.ts": "0c2b0aedd1a3a5fe40a00405a39b8d626be16be1dd97a7e6137e5149165e8d80"
+      },
+      "restoredSha256": {
+        "src/enterprise/execution-governance/parameter-authority.ts": "0c2b0aedd1a3a5fe40a00405a39b8d626be16be1dd97a7e6137e5149165e8d80"
+      },
+      "restored": true
+    },
+    {
+      "id": "M33",
+      "counted": true,
+      "property": "a delegation removes its parent ceiling at decision (upstream grant bounds skipped)",
+      "semantic": "upstream grant parameter bounds are skipped when a delegation exists (resolver)",
+      "files": [
+        "src/enterprise/kernel-authority/parameter-authority-resolver.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/kernel-authority/parameter-authority-resolver.ts",
+          "find": "      for (const entry of readKernelAuthorityParameterBounds(record.payload)) {",
+          "replace": "      for (const entry of chain.delegations.length > 0 && hop.ref.startsWith('authority-grant:') ? [] : readKernelAuthorityParameterBounds(record.payload)) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "every hop of a delegated lineage applies — a delegate that dropped or widened a bound in-process still cannot exceed its source"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/kernel-authority/parameter-authority-resolver.ts": "250535877d76e6587a7aa9c825574ccabccfad0904b5a67f113107364095893c"
+      },
+      "restoredSha256": {
+        "src/enterprise/kernel-authority/parameter-authority-resolver.ts": "250535877d76e6587a7aa9c825574ccabccfad0904b5a67f113107364095893c"
+      },
+      "restored": true
+    },
+    {
+      "id": "M33b",
+      "counted": true,
+      "property": "a delegation may drop an upstream bound at provisioning",
+      "semantic": "a delegation may drop an upstream bound at provisioning",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "        if (child === undefined) {\n          throw refused(",
+          "replace": "        if (child === undefined) continue;\n        if (child === undefined) {\n          throw refused("
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs"
+      ],
+      "observed": [
+        "error: \"Cannot read properties of undefined (reading 'failure')\" code: 'ERR_TEST_FAILURE'"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M34",
+      "counted": true,
+      "property": "a delegation may widen an integer maximum at provisioning",
+      "semantic": "a delegation may widen an integer maximum at provisioning",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "        if (!governedParameterBoundComparisonPermits(compareGovernedParameterBound(parentBound, childBound))) {",
+          "replace": "        if (parentBound.kind === 'exact' && !governedParameterBoundComparisonPermits(compareGovernedParameterBound(parentBound, childBound))) {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs"
+      ],
+      "observed": [
+        "error: |- {\"outcome\":\"provisioned\",\"entity\":{\"entityKind\":\"delegation-grant\",\"entityId\":\"delegation-wide\",\"organizationId\":\"org-pilot\",\"trustDomainId\":\"trust-domain-pilot\",\"status\":\"active\",\"terms\":{\"delegationGrantId\":\"delegation-wide\",\"de"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M35",
+      "counted": true,
+      "property": "a parameter bound whose type mismatches the declared dimension is accepted",
+      "semantic": "a bound whose type mismatches the declared dimension is accepted",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "      if (declared.type !== bound.type || (bound.kind === 'maximum' && declared.bound !== 'maximum')) {",
+          "replace": "      if (bound.kind === 'maximum' && declared.bound !== 'maximum') {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "an inert, mistyped, undeclared or duplicated bound is refused before it is written"
+      ],
+      "observed": [
+        "error: |- type mismatch (token on an integer dimension): {\"outcome\":\"provisioned\",\"entity\":{\"entityKind\":\"authority-grant\",\"entityId\":\"authority-bad-45\",\"organizationId\":\"org-pilot\",\"trustDomainId\":\"trust-domain-pilot\",\"status\":\"active\",\"te"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M36",
+      "counted": true,
+      "property": "a post-commit refresh failure is reported as nothing written",
+      "semantic": "a post-commit refresh failure is reported as store-unavailable (nothing written)",
+      "files": [
+        "src/enterprise/kernel-authority/provisioning-service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/kernel-authority/provisioning-service.ts",
+          "find": "        throw new KernelAuthorityError(\n          'KERNEL_AUTHORITY_REFRESH_FAILED',",
+          "replace": "        throw new KernelAuthorityError(\n          'KERNEL_AUTHORITY_STORE_UNAVAILABLE',"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 2,
+      "passCount": 398,
+      "killingTests": [
+        "the provisioning service: committed + REFRESH_FAILED; the same request replays and refreshes; a different body conflicts",
+        "the operator plane answers 503 AUTHORITY_STATE_REFRESH_FAILED with recorded: true — never “nothing was written” — and audits it as committed"
+      ],
+      "observed": [
+        "error: |- The authority-grant 'g-committed' event was durably committed, but refreshing the live authority projection failed. Retry the same request (same id, terms and idempotency key) to replay it and refresh; do not submit a different on",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/kernel-authority/provisioning-service.ts": "18e88125bf76a82f4a98165bddebf422139ce0dc63cd49d8eef72800961aad09"
+      },
+      "restoredSha256": {
+        "src/enterprise/kernel-authority/provisioning-service.ts": "18e88125bf76a82f4a98165bddebf422139ce0dc63cd49d8eef72800961aad09"
+      },
+      "restored": true
+    },
+    {
+      "id": "M36b",
+      "counted": true,
+      "property": "a failed reload leaves the previous (possibly revoked) projection in force",
+      "semantic": "a failed reload leaves the previous projection in force",
+      "files": [
+        "src/enterprise/kernel-authority/durable-kernel-providers.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/kernel-authority/durable-kernel-providers.ts",
+          "find": "      world = hydrateKernelAuthorityWorld([], { now: clock.now, nextId: idGenerator.nextId });\n      throw error;",
+          "replace": "      void hydrateKernelAuthorityWorld;\n      throw error;"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 1,
+      "passCount": 399,
+      "killingTests": [
+        "the durable world: a reload that fails leaves a deny-all projection, never the previous one"
+      ],
+      "observed": [
+        "error: |- fail closed: nothing is authorized until a reload succeeds"
+      ],
+      "beforeSha256": {
+        "src/enterprise/kernel-authority/durable-kernel-providers.ts": "3eac6ad3dc94b035f7753d4c699f399a812a10e6248eb49c774f04293a31a255"
+      },
+      "restoredSha256": {
+        "src/enterprise/kernel-authority/durable-kernel-providers.ts": "3eac6ad3dc94b035f7753d4c699f399a812a10e6248eb49c774f04293a31a255"
+      },
+      "restored": true
+    },
+    {
+      "id": "M37",
+      "counted": true,
+      "property": "profile promotion no longer requires the dedicated promotion permission",
+      "semantic": "profile activation requires only 'inventory.read'",
+      "files": [
+        "src/enterprise/operator-control/service.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "transition === 'activate' ? 'profile.promote' : 'profile.retire'",
+          "replace": "transition === 'activate' ? 'inventory.read' : 'profile.retire'"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 6,
+      "passCount": 394,
+      "killingTests": [
+        "provisioner → activateProfile: 403, body unread, nothing written, nothing logged",
+        "observer → activateProfile: 403, body unread, nothing written, nothing logged",
+        "responder → activateProfile: 403, body unread, nothing written, nothing logged",
+        "a read-only observer holds no permission that writes: every mutating operation is 403, its body unread, nothing written",
+        "a responder only narrows: it revokes and stops, and cannot create, widen, release or promote anything",
+        "drafts govern nothing; only a profile steward or organization administrator promotes; the promotion names the operator; decisions bind the active version; supersession, retirement and restart behave"
+      ],
+      "observed": [
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restoredSha256": {
+        "src/enterprise/operator-control/service.ts": "fa06982ad2ac485e01373c53f41fbecd00ab43ee91aafad012f159d039facdde"
+      },
+      "restored": true
+    },
+    {
+      "id": "M38",
+      "counted": true,
+      "property": "standing parameter authority is not composed on the Host (issuance ignores it)",
+      "semantic": "standing parameter authority is not composed on the Host",
+      "files": [
+        "src/enterprise/composition/composition-root.ts"
+      ],
+      "edits": [
+        {
+          "file": "src/enterprise/composition/composition-root.ts",
+          "find": "          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined && governedActionOptions !== undefined && durableKernelWorld !== undefined\n            ? {\n                parameterAuthority: {",
+          "replace": "          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined && governedActionOptions !== undefined && durableKernelWorld !== undefined && durableKernelWorld.service.organizationId === ''\n            ? {\n                parameterAuthority: {"
+        }
+      ],
+      "compiled": true,
+      "verdict": "KILLED",
+      "failCount": 3,
+      "passCount": 397,
+      "killingTests": [
+        "replicaCount ≤ 3 and deploymentStrategy = rolling on the standing grant: 2 and 3 execute with the canonical bound signed; 4, another strategy and a wrong type reach no adapter; durable across restart",
+        "delegation attenuates: a delegate may narrow a standing bound, never widen or drop it; the narrower bound governs",
+        "a parent with no parameter bound may delegate a new narrower one, and it binds"
+      ],
+      "observed": [
+        "error: |- {\"status\":\"executed\",\"requestId\":\"aoc.gar:e7979ba2cab5202c323081e10b9a1b93\",\"decision\":{\"decisionId\":\"enforcement-decision-932472c9-91b5-44ae-aa0b-29153d06c7f4\",\"evaluationId\":\"gov-evaluation-mupzwyu3-1a-8lu1mumm\",\"status\":\"allowe",
+        "error: |- {\"status\":\"executed\",\"requestId\":\"aoc.gar:d9b3dca34065775e018e6b00abbb3c4a\",\"decision\":{\"decisionId\":\"enforcement-decision-94e36e5a-097b-441d-9164-a790e7fd8689\",\"evaluationId\":\"gov-evaluation-mupzwzz4-o-ttlc4med\",\"status\":\"allowed",
+        "error: |- Expected values to be strictly equal:"
+      ],
+      "beforeSha256": {
+        "src/enterprise/composition/composition-root.ts": "756a51d0fbb0847754f280a5fb8e8e2b18c23e6ea7c63ded4638d16810a53538"
+      },
+      "restoredSha256": {
+        "src/enterprise/composition/composition-root.ts": "756a51d0fbb0847754f280a5fb8e8e2b18c23e6ea7c63ded4638d16810a53538"
+      },
+      "restored": true
+    }
+  ],
+  "history": [
+    {
+      "id": "M25 (first form, 2026-10-01, commit 4f0ba8a)",
+      "counted": false,
+      "verdict": "COMPILE-FAIL (not counted)",
+      "compileError": "src/enterprise/operator-control/agent-credentials.ts(72,17): error TS2554: Expected 2 arguments, but got 1. | ",
+      "note": "did not compile (signGrant takes two arguments); excluded; the corrected form is the counted M25"
+    },
+    {
+      "id": "M12 (first campaign, 2026-10-01, commit 4f0ba8a)",
+      "counted": false,
+      "property": "parameter bound widened: a parameters field accepted on standing authority",
+      "note": "replaced by the pre-push hardening: it only proved a parameter-bound field was refused, because no standing parameter authority existed. The counted M12 now ignores a real standing maximum and is killed by the non-monetary Host E2E (replicaCount 4 executes)."
+    },
+    {
+      "id": "first campaign",
+      "counted": false,
+      "note": "37 mutations, 37 killed on commit 4f0ba8a (kill set included core06-qualification-structure); superseded by this campaign on the hardened code"
+    }
+  ]
+}

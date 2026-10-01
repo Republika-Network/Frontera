@@ -29,6 +29,7 @@ import { createAuthorityControlledIssuanceCore } from './issuance-core.js';
 import { createAuthorityControlledExerciseControlGate, type AuthorityControlledExerciseControls } from './exercise-controls.js';
 import { ExecutionGovernanceError } from './errors.js';
 import type { AuthorityControlledFinancialAuthority } from './financial-authority.js';
+import type { ParameterAuthorityResolver } from './parameter-authority.js';
 
 /**
  * The first production composition of the authority-control pipeline onto a
@@ -187,6 +188,16 @@ export interface AuthorityControlledExecutionOptions {
    */
   readonly authorityLineage?: (query: ExerciseControlQuery) => boolean;
   /**
+   * CTRL-02 — standing authority over typed governed parameters, resolved from
+   * the durable authority world. Consulted at issuance (a request outside a
+   * standing bound gets no grant) and at exercise, where the grant's provenance
+   * — which commits to the parameter-authority lineage — is re-derived from the
+   * live world, so a revoked, replaced or re-lineaged parameter authority is
+   * unverifiable before any reservation or adapter call. Composition-supplied,
+   * never a host option. **Requires `exerciseControls`.**
+   */
+  readonly parameterAuthority?: { readonly resolve: ParameterAuthorityResolver };
+  /**
    * P8 — the canonical authority event stream's **write-only** recorder, when
    * the composition root composed one. Never a host option.
    *
@@ -235,6 +246,10 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
       'financialAuthority requires a synchronous resolve() and composed exerciseControls: durable spending limits are enforced by the exercise-control reservation, and financial authority nothing enforces would be unlimited.',
     );
   }
+  const parameterAuthority = options.parameterAuthority;
+  if (parameterAuthority !== undefined && (typeof parameterAuthority !== 'object' || typeof parameterAuthority.resolve !== 'function' || options.exerciseControls === undefined)) {
+    throw new ExecutionGovernanceError('EXECUTION_EXERCISE_CONTROLS_INVALID', 'parameterAuthority requires a synchronous resolve() and composed exerciseControls: parameter authority is revalidated inside the exercise gate.');
+  }
   if (options.authorityLineage !== undefined && (typeof options.authorityLineage !== 'function' || options.exerciseControls === undefined)) {
     throw new ExecutionGovernanceError('EXECUTION_EXERCISE_CONTROLS_INVALID', 'authorityLineage requires a synchronous function and composed exerciseControls: lineage is revalidated inside the exercise gate.');
   }
@@ -246,6 +261,7 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
             ...options.exerciseControls,
             ...(financialAuthority !== undefined ? { financialAuthority: financialAuthority.resolve } : {}),
             ...(options.authorityLineage !== undefined ? { authorityLineage: options.authorityLineage } : {}),
+            ...(parameterAuthority !== undefined ? { parameterAuthority: parameterAuthority.resolve } : {}),
           },
           now,
           evidence,
@@ -272,6 +288,7 @@ export function createAuthorityControlledExecution(options: AuthorityControlledE
     ...(emergencyControl !== undefined ? { emergencyControl } : {}),
     ...(options.exerciseControls !== undefined ? { exerciseControls: { actionClassifier: options.exerciseControls.actionClassifier } } : {}),
     ...(financialAuthority !== undefined ? { financialAuthority } : {}),
+    ...(parameterAuthority !== undefined ? { parameterAuthority } : {}),
   });
 
   return {

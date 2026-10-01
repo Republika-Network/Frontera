@@ -127,7 +127,16 @@ export async function createDurableKernelWorld(options: CreateDurableKernelProvi
   });
 
   async function reload(): Promise<void> {
-    world = hydrateKernelAuthorityWorld(await store.listRecords(readContext, { organizationId }), { now: clock.now, nextId: idGenerator.nextId });
+    try {
+      world = hydrateKernelAuthorityWorld(await store.listRecords(readContext, { organizationId }), { now: clock.now, nextId: idGenerator.nextId });
+    } catch (error) {
+      // CTRL-02: a reload that cannot complete must never leave the previous
+      // projection in force — after a durable revocation it would still hold
+      // the revoked authority. The world fails closed (the empty, deny-all
+      // projection) until a reload succeeds.
+      world = hydrateKernelAuthorityWorld([], { now: clock.now, nextId: idGenerator.nextId });
+      throw error;
+    }
   }
 
   const service: DurableKernelDecisionService = {

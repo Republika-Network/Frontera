@@ -8,6 +8,7 @@ import {
 } from '../../features/exercise-control-runtime/index.js';
 import { isPositiveMonetaryAmount, isWellFormedMonetaryAmount, isCanonicalDecimal, type MonetaryAmount } from '../../features/monetary-runtime/index.js';
 import { grantAuthorityBindingDigest, serializeGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
+import { parameterAuthorityDigest, type ParameterAuthority } from './parameter-authority.js';
 
 /**
  * P10 — authority-sourced payment ceilings and durable spending limits, as the
@@ -268,6 +269,9 @@ export function financialAuthorityDigest(authority: FinancialAuthority): string 
 /** The format of a grant's combined provenance when it carries financial authority. */
 export const GRANT_AUTHORITY_PROVENANCE_FORMAT = 'aoc.grant-authority-provenance.v1';
 
+/** CTRL-02 — the format of a grant's combined provenance when its lineage carries standing parameter authority. */
+export const GRANT_AUTHORITY_PROVENANCE_PARAMETER_FORMAT = 'frontera.grant-authority-provenance.v2';
+
 /**
  * The provenance commitment a grant records as `authorityBindingDigest`.
  *
@@ -283,7 +287,15 @@ export const GRANT_AUTHORITY_PROVENANCE_FORMAT = 'aoc.grant-authority-provenance
  * the binding alone, can never match and is withheld until it expires. No
  * digest is ever fabricated for an old record.
  */
-export function grantAuthorityProvenanceDigest(binding: GrantAuthorityBinding, financial: FinancialAuthority | undefined): string {
+export function grantAuthorityProvenanceDigest(binding: GrantAuthorityBinding, financial: FinancialAuthority | undefined, parameterAuthority?: ParameterAuthority): string {
+  // CTRL-02: a grant whose lineage carries standing parameter authority also
+  // commits to that lineage and its bounds, under its own format, so exercise
+  // revalidation withholds the moment the parameter authority changes. Every
+  // other grant's digest is byte-identical to before.
+  if (parameterAuthority !== undefined) {
+    const canonical = `{"binding":${serializeGrantAuthorityBinding(binding)},"financialAuthority":${financial === undefined ? 'null' : JSON.stringify(financialAuthorityDigest(financial))},"format":${JSON.stringify(GRANT_AUTHORITY_PROVENANCE_PARAMETER_FORMAT)},"parameterAuthority":${JSON.stringify(parameterAuthorityDigest(parameterAuthority))}}`;
+    return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+  }
   if (financial === undefined) return grantAuthorityBindingDigest(binding);
   const canonical = `{"binding":${serializeGrantAuthorityBinding(binding)},"financialAuthority":${JSON.stringify(financialAuthorityDigest(financial))},"format":${JSON.stringify(GRANT_AUTHORITY_PROVENANCE_FORMAT)}}`;
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;

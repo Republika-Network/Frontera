@@ -606,8 +606,10 @@ reviewed example: `examples/enterprise-host/governed-actions.example.json`.
 |---|---|
 | `trustDomainId` | The trust domain governed actions are evaluated in |
 | `grantLifetimeSeconds` | Bounded-grant lifetime from the committed decision, 1 … 3600 |
-| `customerPrincipals[]` | `principalId`, `externalSubject {system, subjectId}`, `apiKeyEnv`. Each becomes a customer credential scoped to `AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID`, bound to the Kernel Authority actor carrying that external subject |
-| `administrators[]` | Optional (CTRL-01). `operatorId`, `apiKeyEnv`. Each becomes an **administrator** credential for `/api/admin/...` only — never an ordinary API key. Secret ≥ 32 characters. Absent: the administration API is not mounted. See `AOC_AUTHORITY_ADMINISTRATION_API.md` |
+| `customerPrincipals[]` | `principalId`, `externalSubject {system, subjectId}`, `apiKeyEnv`. Each becomes a customer credential scoped to `AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID`, bound to the Kernel Authority actor carrying that external subject. At least one is required **unless `operators[]` is configured** (CTRL-02), in which case it may be `[]`: agents then receive operator-issued credentials over the API. A principal id may not start with `agent:` (reserved for operator-issued principals) |
+| `administrators[]` | Optional (CTRL-01). `operatorId`, `apiKeyEnv`. Each becomes an **administrator** credential for `/api/admin/...` only — never an ordinary API key. Secret ≥ 32 characters. Since CTRL-02 an administrator is the `legacy-administrator` class: exactly inspect, revoke, emergency stop and release — **never provisioning**. See `AOC_AUTHORITY_ADMINISTRATION_API.md` |
+| `operators[]` | Optional (CTRL-02). `operatorId`, `role` (`observer` \| `responder` \| `provisioner` \| `profile-steward` \| `organization-administrator`), `apiKeyEnv`. Each becomes an identified **operator** credential for `/api/admin/...` only, authorized per operation by its role. Secret ≥ 32 characters; an operator id is one identity across `administrators[]` and `operators[]` (`HOST_OPERATOR_INVALID`). Enables the CTRL-02 operator plane: agent inventory, operator-issued agent credentials, Kernel-Authority provisioning, Governance Profile lifecycle. See `docs/architecture/ADR-CTRL-02-OPERATOR-AGENT-IDENTITY.md` |
+| `profileLifecycle` | Optional (CTRL-02). `"operator-promoted"`: `governance.profiles` becomes a catalog of immutable versions (several versions of one profile allowed, all on the same action class × resource class); a version resolves only after a `profile-steward` or `organization-administrator` activates it over the API, and only while its content digest is the activated one. Requires `governance.profiles` and an operator able to promote. Lifecycle history is durable in `AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH` |
 | `monetary` | Optional. `assets [{assetId, scale}]`, `financialActions []` (P9) |
 | `governance` | Optional (CORE-03). `parameterDimensions [{id, type: integer\|token\|boolean, bound: exact\|maximum}]`, `actionClasses [{id, actions[]}]`, `resourceClasses [{id, resources[]}]`, `profiles [{profileId, version, owner, provenance {authoredBy, approvedBy}, actionClass, resourceClass, parameters [{dimension, required}], materialFacts [], relevantPolicies [], restrictiveFacts? [], obligations? [{obligationType, blocking}]}]`, `reservedContextKeys []` (trusted extensions of the reserved `assertedContext` keys). Validated completely at startup; anything malformed, undeclared or executable-looking refuses to boot (`HOST_GOVERNED_ACTIONS_FILE_INVALID`). Absent: nothing is classified and no governed action may carry `parameters`. See `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` |
 | `trustedContext` | Required when a profile declares `materialFacts` or `restrictiveFacts` (CORE-04); otherwise omit it. `sources [{sourceId, kind, name, trustClass: authoritative\|attested, organizationId, attests [{factClass, maxAgeSeconds}]}]`, `maxFutureSkewSeconds` (0 … 300, default 0). The **source registry**: which source may attest which fact classes, for this organization only, and how long each reading stays fresh. A `request` kind, an `asserted` class, another organization, a missing freshness bound, an attestation of an undeclared fact class, or a declared fact no source attests refuses to boot. Every reading must carry a provenance reference and digest. The retrieval side — the **context provider** — and the **policy** are trusted in-process inputs (`bootEnterpriseHost({ contextProvider, policyPackProvider })`); without both, a file declaring facts refuses to start. See `docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md` |
@@ -633,7 +635,8 @@ variable, never a value). A secret used by two credentials refuses
 | P7 exercise controls, durable ledger; P10 authority-sourced ceilings | **required**; no host-imposed aggregate limits (the authority's own apply) |
 | P11 durable execution outcomes | **required** |
 | Durable emergency control (P4) | composed; operable over `/api/admin/emergency-controls` when an administrator is configured (CTRL-01) |
-| Authority administration API (CTRL-01) | mounted only when `administrators[]` is configured (`posture.authorityAdministration`) |
+| Authority administration API (CTRL-01) | mounted when `administrators[]` or `operators[]` is configured (`posture.authorityAdministration`) |
+| Operator plane (CTRL-02): agent inventory, operator-issued agent credentials, Kernel-Authority provisioning, Governance Profile lifecycle | mounted only when `operators[]` is configured; the control-plane store (`AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH`, default `.data/control-plane.sqlite`) is opened then |
 | P8 authority event stream | optional by design (evidence never blocks) |
 | Generic HTTP adapter(s) behind the trusted registry, routed by the file | composed as configured |
 | P12 reconciliation | not wired: no resolution authority implementation ships |
@@ -662,8 +665,9 @@ and fields, never values; no stack trace is printed.
 | `HOST_ENVIRONMENT_INVALID` | A variable does not parse strictly (includes malformed `AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`) |
 | `HOST_UNAUTHENTICATED_NETWORK_BIND` | Authentication off and a non-loopback bind |
 | `HOST_CREDENTIALS_MISSING` | Authentication required, no credential |
-| `HOST_CREDENTIALS_AMBIGUOUS` | One secret configured for two credentials (legacy, customer principal or administrator) |
+| `HOST_CREDENTIALS_AMBIGUOUS` | One secret configured for two credentials (legacy, customer principal, administrator or operator) |
 | `HOST_ADMINISTRATOR_INVALID` | An administrator secret shorter than 32 characters or with surrounding whitespace |
+| `HOST_OPERATOR_INVALID` (CTRL-02) | An operator with an unknown role, a short secret, an id used twice (including by an administrator), or `profileLifecycle` with no operator able to promote |
 | `HOST_PERSISTENCE_NOT_DURABLE` | Secure profile without explicit `sqlite` |
 | `HOST_AUTHENTICATION_REQUIRED` | Secure profile without `AOC_ENTERPRISE_REQUIRE_AUTH=true` |
 | `HOST_GOVERNED_ACTIONS_REQUIRED` | Secure profile without the governed-action file |
@@ -736,9 +740,25 @@ shutdown failed.
   grants) and **emergency stop/release** are operated over the authority
   administration API (CTRL-01) — `AOC_AUTHORITY_ADMINISTRATION_API.md`, which
   includes the operator runbook. Configure `administrators[]` to enable it.
-- **Provisioning authority** (actors, trust domain, grants, delegations) still
-  has no HTTP route: it is the trusted in-process
-  `AocEnterprise.kernelAuthorityProvisioning` surface (CTRL-02).
+- **Provisioning authority and onboarding agents** (CTRL-02): configure
+  `operators[]`. An organization administrator bootstraps the organization
+  (issuer actor, trust domain, root issuer) and a provisioner onboards each
+  agent over `/api/admin/...` — the Kernel-Authority actor with its external
+  subject, an operator-issued credential, and standing authority (passport,
+  capability token, authority and delegation grants with P10 constraints) — with
+  no configuration change, restart, REPL or database access. The in-process
+  `AocEnterprise.kernelAuthorityProvisioning` surface remains for embedders
+  (without the operator plane's reference and replay checks, NB-012).
+- **Profile content** (a new Governance Profile version) is a configuration
+  change and a restart; promoting or retiring a catalog version is an API call
+  (CTRL-02).
+- **The control-plane store** (`control-plane.sqlite`) is not in `backup:v1`
+  and is neither signed nor witnessed: restoring an older copy resurrects
+  revoked or rotated-out agent credentials and earlier profile lifecycle state.
+  After any such restore, re-revoke affected credentials or the agents' actors.
+- **Typed parameter authority** (e.g. `replicaCount ≤ 3`) is provisioned on the
+  standing grant over the API (`parameterBounds`, CTRL-02) — no policy pack or
+  source change is needed for a standing parameter ceiling.
 - **Backup/restore** covers four stores; the governed-action stores are
   PROD-02. Never back up or restore the authority-state witness's database
   together with the authority stores (CORE-07).
