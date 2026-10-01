@@ -177,6 +177,16 @@ function integrityFailed(failure: string): EnterpriseHttpError {
   );
 }
 
+function committedRefreshFailed(): EnterpriseHttpError {
+  return new EnterpriseHttpError(
+    503,
+    'AUTHORITY_STATE_REFRESH_FAILED',
+    'The authority write was durably recorded, but this Host could not refresh its in-memory authority projection, which now fails closed (decisions are denied) until a refresh succeeds. Retry the SAME request — same target, terms and idempotency key — to replay the committed record and refresh. Do not submit a different request.',
+    undefined,
+    { recorded: true, retry: 'same-request' },
+  );
+}
+
 export function createAuthorityAdministrationService(dependencies: AuthorityAdministrationDependencies): AuthorityAdministrationService {
   const { organizationId, now, logger } = dependencies;
   if (dependencies.administrators.length === 0 && (dependencies.operators?.length ?? 0) === 0 && dependencies.authenticator === undefined) {
@@ -226,6 +236,8 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
           throw targetNotFound('No Kernel Authority entity of that kind and id is provisioned in this organization.');
         case 'KERNEL_AUTHORITY_VALIDATION_ERROR':
           throw EnterpriseHttpErrors.invalidRequest(error.message);
+        case 'KERNEL_AUTHORITY_REFRESH_FAILED':
+          throw committedRefreshFailed();
         case 'KERNEL_AUTHORITY_STORE_UNAVAILABLE':
           throw stateUnavailable();
         case 'KERNEL_AUTHORITY_INTEGRITY_FAILED':
@@ -383,7 +395,7 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
       try {
         result = await kernelAuthority.provisioning.revoke(operator, { entityKind, entityId, reason });
       } catch (error) {
-        audit(context, 'authority-entity.revoke', target, 'refused');
+        audit(context, 'authority-entity.revoke', target, isKernelAuthorityError(error) && error.code === 'KERNEL_AUTHORITY_REFRESH_FAILED' ? 'committed-refresh-failed' : 'refused');
         mapKernelAuthorityError(error);
       }
       if (result.record.status !== 'revoked' || result.record.entityKind !== entityKind || result.record.entityId !== entityId) throw integrityFailed('KERNEL_AUTHORITY_RECORD_MISMATCH');

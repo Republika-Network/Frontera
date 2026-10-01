@@ -25,7 +25,14 @@ export type KernelAuthorityErrorCode =
   | 'KERNEL_AUTHORITY_INTEGRITY_FAILED'
   | 'KERNEL_AUTHORITY_STORE_UNAVAILABLE'
   | 'KERNEL_AUTHORITY_VERSION_UNSUPPORTED'
-  | 'KERNEL_AUTHORITY_VALIDATION_ERROR';
+  | 'KERNEL_AUTHORITY_VALIDATION_ERROR'
+  /**
+   * CTRL-02: the write **was durably committed**, and refreshing the live
+   * projection afterwards failed. The projection fails closed until a refresh
+   * succeeds; retrying the same request (same id and terms, same idempotency
+   * key) replays the committed record and refreshes. Never "nothing written".
+   */
+  | 'KERNEL_AUTHORITY_REFRESH_FAILED';
 
 export class KernelAuthorityError extends Error {
   constructor(

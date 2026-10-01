@@ -139,6 +139,8 @@ export function createKernelAuthorityProvisioningService(
   options: CreateKernelAuthorityProvisioningServiceOptions,
 ): KernelAuthorityProvisioningService {
   const { store, organizationId, onCommitted, monetaryAssets } = options;
+  /** Set when a committed write's refresh failed: the next call — even a replay — refreshes again. */
+  let refreshPending = false;
 
   function checkMonetary(constraints: ProvisionAuthorityGrantInput['constraints']): void {
     if (monetaryAssets !== undefined) assertKernelAuthorityMonetaryConstraintsWithinRegistry(constraints, monetaryAssets);
@@ -166,7 +168,22 @@ export function createKernelAuthorityProvisioningService(
     });
     // Only after the store has committed. A re-hydration that ran first could
     // publish authority the durable source never accepted.
-    if (!result.replayed && onCommitted !== undefined) await onCommitted();
+    if (onCommitted !== undefined && (!result.replayed || refreshPending)) {
+      try {
+        await onCommitted();
+        refreshPending = false;
+      } catch {
+        // CTRL-02: the event IS committed. Say so — never "nothing written" —
+        // and keep refreshing on the next call, a replay included, until one
+        // succeeds. (The projection itself fails closed meanwhile.)
+        refreshPending = true;
+        throw new KernelAuthorityError(
+          'KERNEL_AUTHORITY_REFRESH_FAILED',
+          `The ${entityKind} '${entityId}' event was durably committed, but refreshing the live authority projection failed. Retry the same request (same id, terms and idempotency key) to replay it and refresh; do not submit a different one.`,
+          { committed: true, entityKind, entityId, replayed: result.replayed },
+        );
+      }
+    }
     return { record: result.record, replayed: result.replayed };
   }
 

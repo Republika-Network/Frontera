@@ -96,7 +96,9 @@ export type EnterpriseHttpErrorCode =
   /** CTRL-02: an idempotency key replayed with materially different content. Nothing was written. */
   | 'OPERATOR_IDEMPOTENCY_CONFLICT'
   /** CTRL-02: the authoritative store or lifecycle refused the operation (conflict, terminal state, unresolvable reference). Nothing was written. */
-  | 'OPERATOR_OPERATION_REFUSED';
+  | 'OPERATOR_OPERATION_REFUSED'
+  /** CTRL-02: the authority write was durably recorded, and refreshing the in-memory projection failed (which fails closed). Retry the same request; it replays. */
+  | 'AUTHORITY_STATE_REFRESH_FAILED';
 
 export class EnterpriseHttpError extends Error {
   constructor(
