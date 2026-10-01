@@ -28,6 +28,7 @@
  */
 
 import type { AuthorityActorType, AuthorityConstraint } from '../../features/authority-graph/domain/authority-grant.js';
+import type { GovernedParameterBound } from '../../features/governed-parameter-runtime/index.js';
 import type { ActorType } from '../../features/recognition-runtime/domain/actor.js';
 import type { ApprovalRequirement, EvidenceRequirement, RiskLevel } from '../../features/recognition-runtime/domain/capability-token.js';
 import type { PassportType } from '../../features/recognition-runtime/domain/passport.js';
@@ -210,6 +211,15 @@ export interface ProvisionRootIssuerInput {
  */
 export type KernelAuthorityMonetaryConstraint = Extract<AuthorityConstraint, { readonly type: 'max_amount' | 'spending_limit' }>;
 
+/**
+ * CTRL-02 — one standing bound on a CORE-03 governed parameter dimension. The
+ * canonical CORE-03 bound exactly (`exact` integer/token/boolean, or `maximum`
+ * integer) on a declared dimension — the same shape a signed BoundedGrant's
+ * `scope.parameters` carries — never a second parameter model. Kept apart from
+ * P10's monetary `constraints`: money stays `max_amount` / `spending_limit`.
+ */
+export type KernelAuthorityParameterBound = { readonly dimension: string } & GovernedParameterBound;
+
 export interface ProvisionAuthorityGrantInput {
   readonly authorityGrantId: string;
   readonly issuerActorId: string;
@@ -232,6 +242,13 @@ export interface ProvisionAuthorityGrantInput {
    * that disappeared on the round trip would widen authority.
    */
   readonly constraints?: readonly KernelAuthorityMonetaryConstraint[];
+  /**
+   * CTRL-02 — standing authority over typed governed parameters, in canonical
+   * order (strictly increasing dimension id). Every bound on the authority
+   * lineage applies to a request; absent means no parameter restriction beyond
+   * the record's other scope (the meaning every earlier record keeps).
+   */
+  readonly parameterBounds?: readonly KernelAuthorityParameterBound[];
 }
 
 export interface ProvisionDelegationGrantInput {
@@ -250,6 +267,8 @@ export interface ProvisionDelegationGrantInput {
   readonly expiresAt?: string;
   /** P10 — additional monetary constraints on the delegate. They can only add restrictions: every constraint on the source lineage still applies. */
   readonly constraints?: readonly KernelAuthorityMonetaryConstraint[];
+  /** CTRL-02 — additional typed parameter bounds on the delegate. They can only add restrictions: every bound on the source lineage still applies. */
+  readonly parameterBounds?: readonly KernelAuthorityParameterBound[];
 }
 
 /** Discriminated union of everything an operator can provision. The `kind` is the record's own kind — the store never infers it from payload shape. */

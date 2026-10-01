@@ -1,8 +1,10 @@
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
+import { isSemanticIdentifier, isWellFormedGovernedParameterBound, semanticIdentifierFold, type GovernedParameterBound } from '../../features/governed-parameter-runtime/index.js';
 import type { GovernanceProfileDefinition } from '../governance-profile/index.js';
 import type {
   KernelAuthorityEntityKind,
   KernelAuthorityMonetaryConstraint,
+  KernelAuthorityParameterBound,
   ProvisionActorInput,
   ProvisionAuthorityGrantInput,
   ProvisionCapabilityTokenInput,
@@ -161,6 +163,40 @@ function constraints(value: unknown, field: string): readonly KernelAuthorityMon
   );
 }
 
+/**
+ * CTRL-02 — standing typed-parameter authority: each entry is the canonical
+ * CORE-03 bound on a declared dimension, rebuilt field by field into a fresh
+ * plain object. Well-formedness is CORE-03's own `isWellFormedGovernedParameterBound`
+ * (no coercion: `"3"` is not 3, `-0` and unsafe integers are refused, tokens
+ * keep their grammar, `maximum` only over integers). One bound per dimension,
+ * regardless of case; returned in canonical (dimension id) order.
+ */
+function parameterBounds(value: unknown, field: string): readonly KernelAuthorityParameterBound[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) throw EnterpriseHttpErrors.invalidRequest(`${field} must be an array of 1 to 32 parameter bounds.`);
+  const folds = new Set<string>();
+  const bounds = value.map((entry: unknown, index): KernelAuthorityParameterBound => {
+    const where = `${field}[${index}]`;
+    if (!isRecord(entry)) throw EnterpriseHttpErrors.invalidRequest(`${where} must be an object.`);
+    const kind = entry['kind'];
+    const keys = kind === 'maximum' ? ['dimension', 'kind', 'type', 'limit'] : ['dimension', 'kind', 'type', 'value'];
+    const unexpected = Object.keys(entry).filter((key) => !keys.includes(key));
+    if (unexpected.length > 0 || keys.some((key) => !Object.prototype.hasOwnProperty.call(entry, key))) {
+      throw EnterpriseHttpErrors.invalidRequest(`${where} must carry exactly ${keys.join(', ')}.`);
+    }
+    const dimension = entry['dimension'];
+    if (!isSemanticIdentifier(dimension)) throw EnterpriseHttpErrors.invalidRequest(`${where}.dimension is not a canonical dimension id.`);
+    const bound = (kind === 'maximum' ? { kind, type: entry['type'], limit: entry['limit'] } : { kind, type: entry['type'], value: entry['value'] }) as unknown as GovernedParameterBound;
+    if (!isWellFormedGovernedParameterBound(bound)) {
+      throw EnterpriseHttpErrors.invalidRequest(`${where} is not a well-formed governed parameter bound: exact integer, token or boolean, or maximum integer; safe integers only, no coercion.`);
+    }
+    const fold = semanticIdentifierFold(dimension);
+    if (folds.has(fold)) throw EnterpriseHttpErrors.invalidRequest(`${field} bounds dimension '${dimension}' twice; one bound per dimension.`);
+    folds.add(fold);
+    return Object.freeze({ dimension, ...bound }) as KernelAuthorityParameterBound;
+  });
+  return Object.freeze([...bounds].sort((left, right) => (left.dimension < right.dimension ? -1 : left.dimension > right.dimension ? 1 : 0)));
+}
+
 export function idempotencyKeyOf(value: unknown, field = 'idempotencyKey'): string {
   if (typeof value !== 'string' || !IDEMPOTENCY_KEY.test(value)) throw EnterpriseHttpErrors.invalidRequest(`${field} must be 8-128 letters, digits, '.', '_', ':' or '-', starting with a letter or digit.`);
   return value;
@@ -239,6 +275,7 @@ const FIELDS: Readonly<Record<KernelAuthorityEntityKind, readonly string[]>> = {
     'expiresAt',
     'parentGrantId',
     'constraints',
+    'parameterBounds',
   ],
   'delegation-grant': [
     'delegationGrantId',
@@ -255,6 +292,7 @@ const FIELDS: Readonly<Record<KernelAuthorityEntityKind, readonly string[]>> = {
     'nonDelegableActions',
     'expiresAt',
     'constraints',
+    'parameterBounds',
   ],
 };
 
@@ -347,6 +385,7 @@ export function validateProvisionRequest(kind: KernelAuthorityEntityKind, raw: u
           expiresAt: optional(body, 'expiresAt', instant),
           parentGrantId: optional(body, 'parentGrantId', entityId),
           constraints: optional(body, 'constraints', constraints),
+          parameterBounds: optional(body, 'parameterBounds', parameterBounds),
         }),
       });
     case 'delegation-grant':
@@ -367,6 +406,7 @@ export function validateProvisionRequest(kind: KernelAuthorityEntityKind, raw: u
           nonDelegableActions: optional(body, 'nonDelegableActions', (value, field) => textList(value, field)),
           expiresAt: optional(body, 'expiresAt', instant),
           constraints: optional(body, 'constraints', constraints),
+          parameterBounds: optional(body, 'parameterBounds', parameterBounds),
         }),
       });
   }

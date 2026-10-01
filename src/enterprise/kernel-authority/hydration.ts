@@ -19,6 +19,7 @@ import type {
 } from './contracts.js';
 import { KernelAuthorityError } from './errors.js';
 import { validateKernelAuthorityMonetaryConstraints } from './monetary-constraints.js';
+import { validateKernelAuthorityParameterBounds } from './parameter-bounds.js';
 
 export interface KernelAuthorityHydrationContext {
   readonly now: () => string;
@@ -178,6 +179,8 @@ function applyProvisioned(record: KernelAuthorityRecord, recognition: AocRecogni
   // whole world fails closed instead, exactly as for an engine-refused record.
   try {
     validateKernelAuthorityMonetaryConstraints(record.entityKind, record.payload, `Kernel Authority record '${record.entityKind}:${record.entityId}' in organization '${record.organizationId}'`);
+    // CTRL-02: typed parameter authority is re-proven at hydration too.
+    validateKernelAuthorityParameterBounds(record.entityKind, record.payload, `Kernel Authority record '${record.entityKind}:${record.entityId}' in organization '${record.organizationId}'`);
   } catch (error) {
     throw new KernelAuthorityError('KERNEL_AUTHORITY_INTEGRITY_FAILED', error instanceof Error ? error.message : String(error), { entityKind: record.entityKind, entityId: record.entityId });
   }

@@ -76,6 +76,7 @@ import {
   type ObligationDischargeStore,
 } from '../obligation-discharge/index.js';
 import { createKernelAuthorityLineageRevalidator } from '../kernel-authority/authority-lineage-revalidator.js';
+import { createKernelParameterAuthorityResolver } from '../kernel-authority/parameter-authority-resolver.js';
 import {
   createApprovalAuthority,
   createInMemoryApprovalStore,
@@ -1754,7 +1755,13 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   }
   const reloadProfileLifecycle = async (): Promise<void> => {
     if (controlPlaneStore === undefined) return;
-    profileLifecycleState = replayProfileLifecycle(await controlPlaneStore.listProfileLifecycleEvents(configuration.kernelAuthority.organizationId));
+    try {
+      profileLifecycleState = replayProfileLifecycle(await controlPlaneStore.listProfileLifecycleEvents(configuration.kernelAuthority.organizationId));
+    } catch (error) {
+      // Fail closed: no version is active (nothing resolves) until a reload succeeds.
+      profileLifecycleState = replayProfileLifecycle([]);
+      throw error;
+    }
   };
   // Loaded before anything can resolve a profile: an unreadable or illegal
   // lifecycle history refuses the Host rather than resolving nothing silently.
@@ -2107,6 +2114,24 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
                     assets: monetary.assets,
                     authority: () => kernelProviders.authorityRuntime,
                   }),
+                },
+              }
+            : {}),
+          // CTRL-02: standing authority over typed governed parameters, from the
+          // same hydrated authority world and the records it was built from —
+          // composed wherever P10's financial authority is.
+          ...(exerciseControlOptions !== undefined && exerciseLedger !== undefined && governedActionOptions !== undefined && durableKernelWorld !== undefined
+            ? {
+                parameterAuthority: {
+                  resolve: (() => {
+                    const world = durableKernelWorld;
+                    return createKernelParameterAuthorityResolver({
+                      organizationId: configuration.kernelAuthority.organizationId,
+                      trustDomainId: governedActionOptions.trustDomainId,
+                      authority: () => kernelProviders.authorityRuntime,
+                      records: () => world.service.records(),
+                    });
+                  })(),
                 },
               }
             : {}),

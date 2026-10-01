@@ -8,6 +8,8 @@ import { isKernelAuthorityError } from '../kernel-authority/errors.js';
 import { hydrateKernelAuthorityWorld } from '../kernel-authority/hydration.js';
 import { compareKernelAuthorityRecords, readExternalSubject, type KernelAuthorityStore } from '../kernel-authority/kernel-authority-store.js';
 import { validateKernelAuthorityMonetaryConstraints } from '../kernel-authority/monetary-constraints.js';
+import { readKernelAuthorityParameterBounds } from '../kernel-authority/parameter-bounds.js';
+import { compareGovernedParameterBound, governedParameterBoundComparisonPermits } from '../../features/governed-parameter-runtime/index.js';
 import type { KernelAuthorityProvisioningResult, KernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { agentCredentialVerifier, agentPrincipalIdFor, formatAgentCredential, isAgentCredentialId, newAgentCredentialId, newAgentCredentialSecret } from './agent-credentials.js';
@@ -136,6 +138,16 @@ function integrityFailed(failure: string): EnterpriseHttpError {
   );
 }
 
+function committedRefreshFailed(): EnterpriseHttpError {
+  return new EnterpriseHttpError(
+    503,
+    'AUTHORITY_STATE_REFRESH_FAILED',
+    'The authority write was durably recorded, but this Host could not refresh its in-memory authority projection, which now fails closed (decisions are denied) until a refresh succeeds. Retry the SAME request — same target, terms and idempotency key — to replay the committed record and refresh. Do not submit a different request.',
+    undefined,
+    { recorded: true, retry: 'same-request' },
+  );
+}
+
 const KIND_PERMISSION: Readonly<Record<KernelAuthorityEntityKind, OperatorPermission>> = {
   'trust-domain': 'authority.bootstrap',
   'root-issuer': 'authority.bootstrap',
@@ -183,6 +195,8 @@ export function createOperatorControlService(dependencies: OperatorControlDepend
           throw notFound('No Kernel Authority entity of that kind and id is provisioned in this organization.');
         case 'KERNEL_AUTHORITY_VALIDATION_ERROR':
           throw EnterpriseHttpErrors.invalidRequest(error.message);
+        case 'KERNEL_AUTHORITY_REFRESH_FAILED':
+          throw committedRefreshFailed();
         case 'KERNEL_AUTHORITY_STORE_UNAVAILABLE':
           throw unavailable();
         case 'KERNEL_AUTHORITY_INTEGRITY_FAILED':
@@ -300,6 +314,76 @@ export function createOperatorControlService(dependencies: OperatorControlDepend
     else need('trust-domain', text('trustDomainId'), 'trustDomainId');
     need('authority-grant', text('parentGrantId'), 'parentGrantId');
     need(['authority-grant', 'delegation-grant'], text('sourceAuthorityGrantId'), 'sourceAuthorityGrantId');
+  }
+
+  /**
+   * CTRL-02 — standing typed-parameter authority must be **effective and
+   * attenuating**, or it is refused before anything is written.
+   *
+   * Effective: for every action × resource pair the record covers, the Host's
+   * trusted governance must resolve a Governance Profile that governs that
+   * dimension, the dimension must be declared with the bound's type, and the
+   * bound's kind must suit the declaration (`exact` always; `maximum` only for a
+   * dimension declared `maximum`). An inert bound — one no request in scope
+   * could ever carry — is refused rather than recorded as if it constrained
+   * something. (Conservative: under the operator-promoted lifecycle a profile
+   * must be active for its pairs to resolve.)
+   *
+   * Attenuating: every bound on the upstream lineage (the source grant and its
+   * parents, or the source delegation chain) must be restated by this record as
+   * equal or narrower (`compareGovernedParameterBound`); a delegate may add new
+   * bounds, never drop or widen one. (At decision every hop applies regardless —
+   * this refuses the record that would merely read as wider.)
+   */
+  function assertParameterAuthority(existing: readonly KernelAuthorityRecord[], request: OperatorProvisionRequest): void {
+    if (request.kind !== 'authority-grant' && request.kind !== 'delegation-grant') return;
+    const own = request.input.parameterBounds ?? [];
+    for (const bound of own) {
+      const declared = governance.dimensions.get(bound.dimension);
+      if (declared === undefined) throw refused(`parameterBounds names dimension '${bound.dimension}', which this Host's governance does not declare.`, 'PARAMETER_BOUND_DIMENSION_UNDECLARED');
+      if (declared.type !== bound.type || (bound.kind === 'maximum' && declared.bound !== 'maximum')) {
+        throw refused(`parameterBounds states a ${bound.kind} ${bound.type} bound on '${bound.dimension}', which is declared ${declared.bound} ${declared.type}.`, 'PARAMETER_BOUND_DECLARATION_MISMATCH');
+      }
+      for (const action of request.input.actions) {
+        for (const resource of request.input.resourceScopes) {
+          const resolution = governance.resolve(action, resource);
+          if (resolution.kind !== 'resolved' || !resolution.profile.definition.parameters.some((parameter) => parameter.dimension === bound.dimension)) {
+            throw refused(`parameterBounds bounds '${bound.dimension}', but no active Governance Profile governs it for ${action} × ${resource}: the bound could never constrain that pair. Narrow the scope or declare the dimension.`, 'PARAMETER_BOUND_UNVERIFIABLE');
+          }
+        }
+      }
+    }
+    // The upstream lineage, by record: an authority grant's parents, or a delegation's source chain.
+    const byRef = new Map(existing.map((record) => [`${record.entityKind}:${record.entityId}`, record]));
+    const upstream: KernelAuthorityRecord[] = [];
+    const visit = (ref: string | undefined, guard: number): void => {
+      if (ref === undefined || guard > 50) return;
+      const record = byRef.get(ref);
+      if (record === undefined) return;
+      upstream.push(record);
+      if (record.entityKind === 'authority-grant') {
+        const parent = record.payload['parentGrantId'];
+        visit(typeof parent === 'string' ? `authority-grant:${parent}` : undefined, guard + 1);
+      } else {
+        const source = record.payload['sourceAuthorityGrantId'];
+        if (typeof source === 'string') visit(byRef.has(`authority-grant:${source}`) ? `authority-grant:${source}` : `delegation-grant:${source}`, guard + 1);
+      }
+    };
+    if (request.kind === 'authority-grant') visit(request.input.parentGrantId === undefined ? undefined : `authority-grant:${request.input.parentGrantId}`, 0);
+    else visit(byRef.has(`authority-grant:${request.input.sourceAuthorityGrantId}`) ? `authority-grant:${request.input.sourceAuthorityGrantId}` : `delegation-grant:${request.input.sourceAuthorityGrantId}`, 0);
+    for (const record of upstream) {
+      for (const parent of readKernelAuthorityParameterBounds(record.payload)) {
+        const child = own.find((bound) => bound.dimension === parent.dimension);
+        if (child === undefined) {
+          throw refused(`The source lineage bounds '${parent.dimension}' (${record.entityKind}:${record.entityId}); a delegate must restate it, equal or narrower — it is never dropped.`, 'PARAMETER_BOUND_REMOVED');
+        }
+        const { dimension: _p, ...parentBound } = parent;
+        const { dimension: _c, ...childBound } = child;
+        if (!governedParameterBoundComparisonPermits(compareGovernedParameterBound(parentBound, childBound))) {
+          throw refused(`parameterBounds widens or changes '${parent.dimension}' beyond ${record.entityKind}:${record.entityId}; a delegate may only narrow.`, 'PARAMETER_BOUND_WIDENED');
+        }
+      }
+    }
   }
 
   function provisionThrough(request: OperatorProvisionRequest, context: KernelAuthorityAccessContext, idempotencyKey: string | undefined): Promise<KernelAuthorityProvisioningResult> {
@@ -586,13 +670,14 @@ export function createOperatorControlService(dependencies: OperatorControlDepend
         if (existing === null) {
           const world = await records();
           assertReferences(world, request);
+          assertParameterAuthority(world, request);
           dryRun(world, request.kind, entityId, request.input as unknown as Readonly<Record<string, unknown>>, operator);
         }
         let result: KernelAuthorityProvisioningResult;
         try {
           result = await provisionThrough(request, context, idempotencyKey);
         } catch (error) {
-          audit(operator, `authority-entity.provision`, target, 'refused');
+          audit(operator, `authority-entity.provision`, target, isKernelAuthorityError(error) && error.code === 'KERNEL_AUTHORITY_REFRESH_FAILED' ? 'committed-refresh-failed' : 'refused');
           mapKernelAuthorityError(error);
         }
         if (result.record.organizationId !== organizationId || result.record.entityKind !== request.kind || result.record.entityId !== entityId) throw integrityFailed('KERNEL_AUTHORITY_RECORD_MISMATCH');
@@ -644,8 +729,17 @@ export function createOperatorControlService(dependencies: OperatorControlDepend
           audit(operator, `governance-profile.${transition}`, `${profileId}@${version}`, 'refused');
           mapControlPlaneError(error);
         }
-        // The registry's view is reloaded from the durable record, never patched.
-        if (result.appended.length > 0) await lifecycle.reload();
+        // The registry's view is reloaded from the durable record, never
+        // patched — after every transition call, a replay included, so a
+        // retry after a failed refresh refreshes. A failed reload leaves the
+        // view failing closed (no version active) and is reported as what it
+        // is: the transition is recorded.
+        try {
+          await lifecycle.reload();
+        } catch {
+          audit(operator, `governance-profile.${transition}`, `${profileId}@${version}`, 'committed-refresh-failed');
+          throw committedRefreshFailed();
+        }
         audit(operator, `governance-profile.${transition}`, `${profileId}@${version}`, result.outcome);
         const events = await lifecycleEvents();
         const supersededEvent = result.appended.find((event) => event.transition === 'retired' && event.version !== version);

@@ -841,6 +841,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (authorization.outcome === 'financial-authority-withheld') {
         return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
       }
+      // CTRL-02: the requested typed parameters are outside the standing
+      // parameter authority on the decision's lineage. As P10: no grant, so no
+      // reservation and no adapter call; publicly an authority-binding
+      // withholding carrying the PARAMETER_AUTHORITY_* code.
+      if (authorization.outcome === 'parameter-authority-withheld') {
+        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+      }
       if (authorization.outcome === 'grant-withheld') {
         const withheldBy: GovernedActionWithheldBy = authorization.reasonCodes.includes(GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED) ? 'obligations' : 'grant';
         return result({ status: 'withheld', withheldBy, ...decided, reasonCodes: authorization.reasonCodes });

@@ -31,6 +31,13 @@ import {
   type FinancialAuthorityReasonCode,
 } from './financial-authority.js';
 import {
+  parameterAuthorityViolation,
+  resolveParameterAuthority,
+  type ParameterAuthority,
+  type ParameterAuthorityReasonCode,
+  type ParameterAuthorityResolver,
+} from './parameter-authority.js';
+import {
   AUTHORITY_BINDING_REASON_CODES,
   type AuthorityControlledAuthorizationOutcome,
   type ExecutionKernelPort,
@@ -99,6 +106,13 @@ export interface AuthorityControlledIssuanceCoreOptions {
    * unlimited authority.
    */
   readonly financialAuthority?: AuthorityControlledFinancialAuthority;
+  /**
+   * CTRL-02 — the trusted, synchronous standing parameter-authority resolver.
+   * When composed, every eligible decision's typed parameters must lie inside
+   * every standing bound on its authority lineage, or no grant is issued.
+   * Absent, nothing about issuance changes.
+   */
+  readonly parameterAuthority?: { readonly resolve: ParameterAuthorityResolver };
 }
 
 export interface IssueFromDecisionInput {
@@ -219,6 +233,11 @@ function financialQueryFor(
   };
 }
 
+type ParameterMeasurement =
+  | { readonly kind: 'unbounded' }
+  | { readonly kind: 'bounded'; readonly authority: ParameterAuthority }
+  | { readonly kind: 'withheld'; readonly reasonCodes: readonly ParameterAuthorityReasonCode[] };
+
 type FinancialMeasurement =
   | { readonly kind: 'non-financial' }
   | { readonly kind: 'financial'; readonly authority: FinancialAuthority; readonly asset: string }
@@ -229,6 +248,33 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
   const emergencyControl = options.emergencyControl;
   const actionClassifier = options.exerciseControls?.actionClassifier;
   const financialResolver = options.financialAuthority?.resolve;
+  const parameterResolver = options.parameterAuthority?.resolve;
+
+  /**
+   * CTRL-02, issuance half. Standing authority over typed governed parameters:
+   * resolve it on the lineage the recognition layer reported for **this**
+   * decision and prove every requested value lies inside every bound on it. The
+   * request's values are compared against authority here; they never become it.
+   */
+  function measureParameterAuthority(request: KernelEvaluationRequest, decision: KernelEvaluationResult, measured: GrantSourceAuthorization): ParameterMeasurement {
+    if (options.parameterAuthority === undefined) return { kind: 'unbounded' };
+    // As P10: an authorization nobody may exercise is refused by the grant layer in its own vocabulary.
+    if (assessGrantEligibility(measured).eligibility !== 'eligible') return { kind: 'unbounded' };
+    const resolution = resolveParameterAuthority(parameterResolver, {
+      phase: 'issuance',
+      subject: request.actor.id,
+      action: measured.correlation.action,
+      resourceScope: measured.correlation.resourceScope,
+      ...(request.organization?.id !== undefined ? { organizationId: request.organization.id } : {}),
+      at: now(),
+      ...(decision.authority?.decisionId !== undefined ? { authorityDecisionId: decision.authority.decisionId } : {}),
+    });
+    if (resolution.kind === 'unbounded') return { kind: 'unbounded' };
+    if (resolution.kind === 'unresolved') return { kind: 'withheld', reasonCodes: [resolution.reasonCode] };
+    const violation = parameterAuthorityViolation(resolution.authority, request.action.governedParameters);
+    if (violation !== undefined) return { kind: 'withheld', reasonCodes: [violation] };
+    return { kind: 'bounded', authority: resolution.authority };
+  }
 
   /**
    * P10, issuance half. For a host-classified financial action: resolve the
@@ -472,6 +518,12 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         return { outcome: 'financial-authority-withheld', decision, reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_ASSET_MISMATCH] };
       }
 
+      // CTRL-02: standing parameter authority, or no grant. Before any grant,
+      // reservation or adapter; the historical decision is untouched.
+      const parameters = measureParameterAuthority(request, decision, measured);
+      if (parameters.kind === 'withheld') return { outcome: 'parameter-authority-withheld', decision, reasonCodes: parameters.reasonCodes };
+      const parameterAuthority = parameters.kind === 'bounded' ? parameters.authority : undefined;
+
       let financialRefusal: FinancialAuthorityReasonCode | undefined;
       const captureFinancialRefusal = (reasonCode: FinancialAuthorityReasonCode): void => {
         financialRefusal = reasonCode;
@@ -506,7 +558,7 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
         // authority that supplied the ceiling and the aggregate limits, so
         // exercise-time revalidation withholds the moment that authority
         // changes. For every other action it is byte-identical to before.
-        authorityBindingDigest: grantAuthorityProvenanceDigest(binding, financialAuthority),
+        authorityBindingDigest: grantAuthorityProvenanceDigest(binding, financialAuthority, parameterAuthority),
       });
 
       if (issued.outcome === 'refused') {

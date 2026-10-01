@@ -27,6 +27,7 @@ import {
   type FinancialAuthorityResolution,
   type FinancialAuthorityResolver,
 } from './financial-authority.js';
+import { resolveParameterAuthority, type ParameterAuthority, type ParameterAuthorityResolver } from './parameter-authority.js';
 
 /**
  * Aggregate / velocity exercise controls and exercise-time authority-binding
@@ -101,6 +102,13 @@ export interface AuthorityControlledExerciseControls {
    * (Financial grants are revalidated by `financialAuthority`.)
    */
   readonly authorityLineage?: (query: ExerciseControlQuery) => boolean;
+  /**
+   * CTRL-02 — standing parameter authority, supplied by the composition (never
+   * a host exercise-control option). When the grant's lineage carries
+   * parameter bounds, its provenance commits to them; it is re-derived here from
+   * the live world, and any difference is `UNVERIFIABLE` / changed.
+   */
+  readonly parameterAuthority?: ParameterAuthorityResolver;
 }
 
 function readOwn(source: object, key: string): unknown {
@@ -151,6 +159,7 @@ export function exerciseAuthorityBindingDigestResolver(
   resolver: ExerciseAuthorityBindingResolver,
   financialAuthority?: FinancialAuthorityResolver,
   authorityLineage?: (query: ExerciseControlQuery) => boolean,
+  parameterAuthorityResolver?: ParameterAuthorityResolver,
 ): ExerciseAuthorityBindingDigestResolver {
   return (query) => {
     let binding: GrantAuthorityBinding | undefined;
@@ -160,6 +169,22 @@ export function exerciseAuthorityBindingDigestResolver(
       return undefined;
     }
     if (binding === undefined) return undefined;
+    // CTRL-02: the standing parameter authority on the live lineage. Unresolved
+    // (inactive, re-lineaged, unprovable) is UNVERIFIABLE; bounded joins the
+    // provenance digest the grant committed to, so any change is detected.
+    let parameterAuthority: ParameterAuthority | undefined;
+    if (parameterAuthorityResolver !== undefined) {
+      const resolution = resolveParameterAuthority(parameterAuthorityResolver, {
+        phase: 'exercise',
+        subject: query.subject,
+        action: query.correlation.action,
+        resourceScope: query.correlation.resourceScope,
+        ...(query.organization !== undefined ? { organizationId: query.organization } : {}),
+        at: query.at,
+      });
+      if (resolution.kind === 'unresolved') return undefined;
+      if (resolution.kind === 'bounded') parameterAuthority = resolution.authority;
+    }
     // P10: a financial grant's provenance also commits to the monetary
     // authority it was issued under. That authority is re-resolved from the
     // live authority projection *now*; unresolvable (revoked, expired,
@@ -167,7 +192,7 @@ export function exerciseAuthorityBindingDigestResolver(
     // — both before the policy and before any capacity is reserved.
     if (query.actionClass === 'financial') {
       const financial = exerciseFinancialAuthority(financialAuthority, query);
-      return financial.resolved ? grantAuthorityProvenanceDigest(binding, financial.authority) : undefined;
+      return financial.resolved ? grantAuthorityProvenanceDigest(binding, financial.authority, parameterAuthority) : undefined;
     }
     // CORE-04: a non-financial grant's lineage is re-resolved from the live
     // authority world too. Revoked, expired or re-lineaged — or a revalidator
@@ -181,7 +206,7 @@ export function exerciseAuthorityBindingDigestResolver(
       }
       if (!live) return undefined;
     }
-    return grantAuthorityBindingDigest(binding);
+    return parameterAuthority !== undefined ? grantAuthorityProvenanceDigest(binding, undefined, parameterAuthority) : grantAuthorityBindingDigest(binding);
   };
 }
 
@@ -255,7 +280,7 @@ export function createAuthorityControlledExerciseControlGate(controls: Authority
   assertValidExerciseControlStore(controls.reservationLedger, 'exerciseControls.reservationLedger');
   return createExerciseControlGate({
     policy: financialAuthorityExercisePolicy(controls.policy, controls.financialAuthority),
-    authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding, controls.financialAuthority, controls.authorityLineage),
+    authorityBinding: exerciseAuthorityBindingDigestResolver(controls.revalidateAuthorityBinding, controls.financialAuthority, controls.authorityLineage, controls.parameterAuthority),
     reservationLedger: controls.reservationLedger,
     actionClassifier: controls.actionClassifier,
     now,
