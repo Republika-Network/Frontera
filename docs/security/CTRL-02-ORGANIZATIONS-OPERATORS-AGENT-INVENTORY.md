@@ -169,7 +169,13 @@ Run on a native-Linux `git archive` export of `65dd86a` (the hardened code) by a
 
 ## 11. Validation
 
-The validation of this candidate — clean `git archive` export, full root suite, every workspace, API freeze, release docs, SDK surface, legal, `git diff --check`, conflict markers — is recorded by the documentation-only commit that follows it, and that final commit is re-validated on its own clean export (milestone report).
+**Clean export (authoritative)** of the hardened candidate `461d03f` (all code, tests and documentation of the pre-push hardening), into a fresh native-Linux directory, with no mutation job or other test run in parallel: 0 files containing CR; `npm ci`, typecheck, lint, build green; root **8 809 tests: 8 796 pass, 0 fail, 0 cancelled, 9 skipped, 4 todo**; workspaces **1 089 tests, 1 089 pass, 0 fail**; API freeze **47 endpoints** (36 + 11, no other drift); release docs (24 documents) and SDK surface (5 frozen exports) green; `legal:check` pre-existing findings only (busboy/streamsearch license metadata, two unnamed workspace manifests); 0 conflict markers; `git diff --check` clean.
+
+**Focused suites** (same export, 0 fail each): governed-parameter-runtime 20; grant-runtime 187; Kernel Authority 189; authority payment ceilings (P10) 78; CTRL-02 (`ctrl02-*`) 287; CTRL-01 64; customer identity 62; governed action (semantics, approvals, obligations, trusted context, composition, API) 385; CORE-03 compatibility 21; CORE-06 59; CORE-08 58; execution parameter delivery / P11 parameters 19; no-bypass, security invariants and structural boundaries 127; Enterprise Host 54.
+
+**Earlier record:** the first candidate `10bccaa` was validated green on its own export (8 788 / 8 775 / 0 fail) after one run showed a pre-existing wall-clock test (`exercise-control-sqlite.test.ts`, untouched by CTRL-02) failing under load and passing 5/5 in isolation. That candidate then failed the adversarial pre-push review (§14).
+
+The commit that adds this section is documentation only; it is re-validated on its own clean export (milestone report), and nothing is committed after that run.
 
 ## 12. Residual risks (not claimed)
 
