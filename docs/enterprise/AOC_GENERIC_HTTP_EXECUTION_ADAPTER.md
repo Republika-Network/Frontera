@@ -102,7 +102,7 @@ Closed and declarative. **Any undeclared key, at any level, is refused at startu
 | `adapterId` | Recordable: 1–64 chars of `[A-Za-z0-9._:/-]`, alphanumeric first. |
 | `origin` | Exact origin: `https://` + DNS hostname + optional port. See §4. |
 | `method` | `POST`, `PUT`, `PATCH` or `DELETE`. No `GET`: this adapter produces effects, not reads. |
-| `path` | Array of segments (≤ 32). Each is `{ kind: 'literal', value }` or `{ kind: 'source', source }`; always required. |
+| `path` | Array of segments (≤ 32). Each is `{ kind: 'literal', value }`, `{ kind: 'source', source }` or `{ kind: 'parameter', dimension }` (CORE-08, §4a); always required. |
 | `query` | `name → binding` (≤ 64). |
 | `headers` | `name → binding` (≤ 32). HTTP-token names, case-insensitive, no duplicates, no reserved names (§7). |
 | `body` | `{ kind: 'json-object', fields: name → binding }` (≤ 64 fields). Flat. |
@@ -127,6 +127,24 @@ Not sources, and refused at startup: `boundedGrantId` (internal authority plumbi
 - JSON body: strings stay strings, `amount.value` stays a JSON number — since P9 its token is spelled exactly as the canonical decimal text the action carries (`9007199254740993.01` goes out byte for byte, never through a double; `JSON.rawJSON`) — see `docs/architecture/ADR-CANONICAL-MONETARY-SEMANTICS.md`, boolean and `null` literals keep their type. No parse, no interpolation, no merge, no nesting.
 - `__proto__`, `prototype` and `constructor` are refused as destination keys even from trusted configuration; the body is built on a null-prototype object.
 - The request is built fresh from the frozen plan and the action. No mutable caller or configuration object reaches the transport.
+
+## 4a. Governed-parameter bindings (CORE-08)
+
+Since CORE-08 the validated action also carries the **typed governed parameters** the exercise gate proved inside the exercised grant's parameter bounds (`ValidatedExecutionAction.parameters`: `{ dimension, type, value }`, canonical order, one per dimension; `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` §CORE-08). A binding may read one of them:
+
+```ts
+{ kind: 'parameter', dimension: 'replicaCount' }                    // query, header or body value; required
+{ kind: 'parameter', dimension: 'exportFormat', required: false }   // omitted when the action carries none
+{ kind: 'parameter', dimension: 'recordCount' }                      // path segment (always required; no `required` key)
+```
+
+- **Closed.** `dimension` must be a governed dimension id in the canonical grammar (`isSemanticIdentifier`). It is compared for **exact equality** against each entry of the action's own list — never looked up as a property, never traversed as a path. A dotted id is legal in that grammar and is an opaque name: `parameters.recordCount` reads a dimension literally named that, and nothing else. No template, expression, JSONPath, index, callback or default value exists; an undeclared key on the binding fails composition (`GENERIC_HTTP_MAPPING_INVALID` / `_PATH_INVALID` / `_HEADER_INVALID`).
+- **One translation per position, type preserved.** Path segment, query value and header value take the one text spelling: integer → plain decimal (`3`, `-7`, `9007199254740991`), token → itself, byte-exact and case-preserved, boolean → `true`/`false`. A JSON body keeps the JSON primitive: integer → number, token → string, boolean → boolean — never `"true"` for `true`, never a stringified-and-reparsed integer. Existing encoding and bounds apply unchanged (one encoded path segment, `encodeURIComponent` query values, visible-ASCII header values, 64 KiB body, 8 KiB URL).
+- **Absent parameters.** Required (the default) and absent: the request is unbuildable → `failed / ADAPTER_ERROR`, nothing sent. `required: false`: the destination field is omitted. Adapter optionality never weakens a Governance Profile's `required` — the profile is enforced by the envelope before any decision; this only shapes the provider request afterwards.
+- **Defence in depth.** A parameter list that is not an array, an entry that is not a well-formed value of its own declared type, or a dimension stated twice makes the request unbuildable, never coerced.
+- **Values only.** A governed parameter can fill a path segment, a query value, a header value or a flat JSON body value. It can never reach the scheme, host, port, origin, resolver, selected address, TLS, redirects, proxy, credential, `Authorization`, a header name, a body key, the adapter id or routing: all of those are this trusted configuration's, snapshotted at composition, and no binding kind addresses them. The caller proposes parameter **values** through the governed-action intent; every mapping, field name, layout, header name and serialization is operator configuration.
+
+Evidence: `generic-http-parameter-mapping.test.ts` (pure mapping), `execution-parameter-delivery.test.ts` (what reaches an adapter), `core08-action-neutrality-host.test.ts` (three reference-domain adapters behind the canonical Host).
 
 ## 5. Path construction
 

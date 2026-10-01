@@ -151,7 +151,7 @@ which a caller can supply, select or edit a profile.
 |---|---|---|
 | Typed declared parameters | **authority material** | `intent.parameters` (untrusted wire) → validated declared list → Kernel `action.governedParameters` → policy `governedParameters` → grant `scope.parameters` → exercise `parameters` |
 | Effective profile id/version/digest, action class, resource class | **authority material** | Kernel `action.semantics` → policy fields → grant axes + `semanticsFormat` → exercise |
-| Typed parameters for adapters | **execution material** — none in CORE-03 | §8 |
+| Typed parameters for adapters | **execution material** — none in CORE-03; **delivered since CORE-08**: the exercise-contained list only | `ValidatedExecutionAction.parameters` → Generic HTTP `parameter` bindings; bound by the P11 v2 attempt digest (§9) |
 | Profile `materialFacts` | declared references to **trusted context** — admitted by CORE-04's Trusted Context Boundary since 2026-09-28 | policy `contextFact` predicates (admitted facts only); raw `metadata['aoc.context']` paths are refused (ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH) |
 | `assertedContext`, legacy `ActionDescriptor.parameters` | **metadata**, never authority | recognition metadata only |
 
@@ -314,12 +314,13 @@ is attribution and an explicit, freezable boundary, not isolation from the host.
 
 ## 8. Not done here (owned elsewhere)
 
-- **Adapter transmission of parameters (execution material).**
+- ~~**Adapter transmission of parameters (execution material).**
   `ValidatedExecutionAction` does not carry typed parameters: P11's prepared
   attempt records the exact adapter context under a closed v1 schema, and CORE-03
   deliberately does not expand P11. Parameters are fully governed (policy,
   grant, exercise) on the one canonical path; they are not handed to adapters.
-  Owner: CORE-08 (first domain adapter that needs them).
+  Owner: CORE-08 (first domain adapter that needs them).~~ **Delivered by
+  CORE-08 — see §9.**
 - **Authority-sourced non-money limits** (a generic counterpart of P10's
   `spending_limit`): today a non-money bound comes from the decision's
   projection and trusted host narrowing. Owner: CTRL-02 (provisioning schema)
@@ -329,3 +330,49 @@ is attribution and an explicit, freezable boundary, not isolation from the host.
 - **Profile lifecycle, promotion identity and signing** (OQ-2, who may promote): CTRL-02.
 - **Material-fact admission:** CORE-04.
 - **Profile resolution by interpretation:** INTEL-02.
+
+## 9. CORE-08 addendum — parameters across the execution boundary
+
+**Status:** Accepted (CORE-08, 2026-09-30). No second parameter model: the
+canonical `GovernedParameter` (`{ dimension, type, value }`) of
+`src/features/governed-parameter-runtime` is reused end to end.
+
+```
+intent.parameters (untrusted wire)
+  → trusted profile declaration → type validation (envelope, no coercion)
+  → Kernel action.governedParameters → deterministic policy
+  → committed decision (re-read, verified) → signed grant scope.parameters
+  → exercise request (built from the VERIFIED committed request, never the caller's object)
+  → GrantExecutionService: snapshot (fresh frozen copy, read once) → containment assessment
+  → ValidatedExecutionAction.parameters (the assessed snapshot) → adapter
+```
+
+- **Source.** The orchestrator builds the exercise request's parameters from
+  the committed, re-read and verified Kernel request. `GrantExecutionService`
+  copies them once, into fresh frozen `{ dimension, type, value }` entries,
+  when the exercise begins; every assessment, the P7 input and the
+  `ValidatedExecutionAction` read that copy. A caller mutating its own objects
+  while the exercise awaits a store or a reservation changes nothing assessed
+  and nothing delivered; a getter runs once; extra keys never travel.
+- **Only contained parameters cross.** The exercise gate already requires the
+  attempt's list to equal the grant's bounded dimensions exactly (both
+  directions) and each value inside its bound, with its declared type; so a
+  delivered list exists exactly when the grant bounds parameters, in canonical
+  order, duplicate-free. A legacy (pre-CORE-03) grant bounds none, so it
+  can never carry a parameter to an adapter.
+- **Values, not authority.** The adapter port still carries no decision, policy
+  result, approval, obligation state, context, grant scope or digest; an
+  adapter translates the values and decides nothing with them.
+- **Provider mapping is configuration.** Generic HTTP reads a parameter only
+  through a closed `{ kind: 'parameter', dimension }` binding, by exact id,
+  into a value position (`docs/enterprise/AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`
+  §4a). A parameter can never select a destination, credential or adapter.
+- **Durable execution context.** The P11 attempt now binds the exact delivered
+  list under a versioned record format (v2); historical v1 records are read as
+  written and never gain parameters (`ADR-DURABLE-MONETARY-OUTCOMES.md` §14).
+- **Money stays money.** A monetary action keeps `amount` (P9) and its
+  authority-sourced ceiling (P10); no `amount` dimension is introduced.
+
+Evidence: `execution-parameter-delivery.test.ts`,
+`generic-http-parameter-mapping.test.ts`, `execution-outcome-parameters.test.ts`,
+`core08-action-neutrality-host.test.ts`; SEC-INV-181 … SEC-INV-188.

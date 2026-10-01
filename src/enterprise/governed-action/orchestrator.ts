@@ -884,8 +884,11 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // P11 preparation, BEFORE the claim and therefore before any adapter: the
       // exact context this execution will run under, from trusted values only —
       // the committed decision's identifiers, the issued grant's id, and the
-      // exercise request's action and amount, which `GrantExecutionService`
-      // hands to the adapter verbatim as `ValidatedExecutionAction.amount`.
+      // exercise request's action, amount and typed governed parameters, which
+      // `GrantExecutionService` hands to the adapter verbatim as
+      // `ValidatedExecutionAction.amount` and `.parameters` (CORE-08: the
+      // parameters come from the committed, verified request — never the
+      // caller's intent — and the v2 attempt digest binds them).
       // Idempotent: a request that crashed after preparing and before claiming
       // finds its own attempt on retry. A preparation that cannot be proven
       // written stops here — no claim, no adapter, nothing stranded — and is
@@ -902,6 +905,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
           boundedGrantId: grant.id,
           action: exercise.action,
           ...(exercise.amount !== undefined ? { amount: { value: exercise.amount.value, unit: exercise.amount.unit } } : {}),
+          ...(exercise.parameters !== undefined ? { parameters: exercise.parameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) } : {}),
           preparedAt: now(),
         });
       } catch {

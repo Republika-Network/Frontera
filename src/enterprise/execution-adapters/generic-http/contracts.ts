@@ -15,8 +15,9 @@
  * ## Closed and declarative, on purpose
  *
  * There is no callback, template, expression, path language or function that
- * receives the action and returns a URL. A value is either an operator literal
- * or **one named field** of `ValidatedExecutionAction`; a path is a list of
+ * receives the action and returns a URL. A value is either an operator literal,
+ * **one named field** of `ValidatedExecutionAction`, or **one governed
+ * parameter named by its dimension id** (CORE-08); a path is a list of
  * segments, each encoded as exactly one URL path segment; a body is a flat JSON
  * object. Boring is the security property: a mapping that cannot compute
  * cannot be made to compute a destination.
@@ -57,17 +58,45 @@ export type EnterpriseGenericHttpActionSource =
   | 'correlation.executionId';
 
 /**
- * One destination value: exactly one action field, or one operator literal.
+ * One destination value: exactly one action field, one governed parameter, or
+ * one operator literal.
  *
  * `required` defaults to **true**. A required source the action does not carry
  * (an absent `counterparty`, `organization` or `amount`) stops the request
  * before any network I/O, as `ADAPTER_ERROR`. `required: false` omits the
  * destination field instead.
+ *
+ * ## `parameter` — one exercise-contained governed parameter (CORE-08)
+ *
+ * `{ kind: 'parameter', dimension: 'replicaCount' }` reads the entry of
+ * `ValidatedExecutionAction.parameters` whose dimension id equals
+ * `dimension` **exactly** — a declared identifier in the canonical
+ * governed-dimension grammar, never a path, an expression or a template. Its
+ * type is the one the exercised grant preserved: in a JSON body an `integer`
+ * is a JSON number, a `token` a JSON string and a `boolean` a JSON boolean; in
+ * a path segment, query value or header value each has one text spelling
+ * (`3`, `rolling`, `true`). Absent and `required` (the default) is
+ * unbuildable, exactly like an absent source; `required: false` omits the
+ * destination field. Adapter optionality never weakens a Governance Profile's
+ * `required` — the profile is enforced before any decision, this only says
+ * what the provider request looks like afterwards.
+ *
+ * A governed parameter can fill a **value** position only. It can never name
+ * or reach the scheme, host, port, origin, resolver, address, TLS settings,
+ * redirect behaviour, proxy, credential, `Authorization`, a header name, a
+ * body field name or which adapter runs: all of those are this configuration's
+ * and nothing else's.
  */
 export type EnterpriseGenericHttpValueBinding =
   | {
       readonly kind: 'source';
       readonly source: EnterpriseGenericHttpActionSource;
+      readonly required?: boolean;
+    }
+  | {
+      readonly kind: 'parameter';
+      /** A governed dimension id, exactly as the deployment declared it. */
+      readonly dimension: string;
       readonly required?: boolean;
     }
   | {
@@ -78,7 +107,8 @@ export type EnterpriseGenericHttpValueBinding =
 /** One URL path segment. Always required; always encoded as exactly one segment. */
 export type EnterpriseGenericHttpPathSegment =
   | { readonly kind: 'literal'; readonly value: string }
-  | { readonly kind: 'source'; readonly source: EnterpriseGenericHttpActionSource };
+  | { readonly kind: 'source'; readonly source: EnterpriseGenericHttpActionSource }
+  | { readonly kind: 'parameter'; readonly dimension: string };
 
 /**
  * The provider credential. Operator configuration only; snapshotted at

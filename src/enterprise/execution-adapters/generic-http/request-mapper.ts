@@ -1,4 +1,5 @@
 import type { ValidatedExecutionAction } from '../../../features/execution-runtime/index.js';
+import { isWellFormedGovernedParameter, type GovernedParameterValue } from '../../../features/governed-parameter-runtime/index.js';
 import { GENERIC_HTTP_LIMITS as LIMITS, type EnterpriseGenericHttpActionSource, type EnterpriseGenericHttpMethod } from './contracts.js';
 import { decimalString, type GenericHttpPlan, type GenericHttpPlanBinding } from './configuration.js';
 import { isCanonicalDecimal } from '../../../features/monetary-runtime/index.js';
@@ -8,9 +9,9 @@ import { isCanonicalDecimal } from '../../../features/monetary-runtime/index.js'
  * HTTP request, built **before** any socket exists. No I/O, no clock, no
  * environment, no second input.
  *
- * Every outbound value is either an operator literal from the plan or exactly
- * one field of the validated action. Nothing is interpolated, merged, parsed or
- * nested. A value that cannot be placed safely where the plan puts it — an
+ * Every outbound value is either an operator literal from the plan, exactly
+ * one field of the validated action, or exactly one of its governed parameters
+ * (CORE-08). Nothing is interpolated, merged, parsed or nested. A value that cannot be placed safely where the plan puts it — an
  * absent required source, a control character, a path segment of `.` or `..`,
  * a header value outside visible ASCII, anything over a bound — makes the whole
  * request unbuildable, and an unbuildable request is never sent.
@@ -71,6 +72,58 @@ function readSource(action: ValidatedExecutionAction, source: EnterpriseGenericH
   return unbuildable();
 }
 
+/**
+ * The one governed parameter whose dimension id equals `dimension` exactly, or
+ * `undefined` when the validated action carries none for it (CORE-08).
+ *
+ * A linear scan by exact equality over the action's own list — no property
+ * lookup keyed by configuration, so no prototype member, `__proto__` or path
+ * can ever be read. Defence in depth below the exercise gate that already
+ * proved the list: a list that is not an array, an entry that is not a
+ * well-formed typed value of its own declared type, or a dimension stated
+ * twice makes the request unbuildable rather than choosing one.
+ */
+function readParameter(action: ValidatedExecutionAction, dimension: string): GovernedParameterValue | undefined {
+  const parameters: unknown = action.parameters;
+  if (parameters === undefined) return undefined;
+  if (!Array.isArray(parameters)) return unbuildable();
+  let found: GovernedParameterValue | undefined;
+  for (const entry of parameters as readonly unknown[]) {
+    if (entry === null || typeof entry !== 'object' || !isWellFormedGovernedParameter(entry as never)) return unbuildable();
+    const parameter = entry as { readonly dimension: string } & GovernedParameterValue;
+    if (parameter.dimension !== dimension) continue;
+    if (found !== undefined) return unbuildable();
+    found = parameter;
+  }
+  return found;
+}
+
+/** The one text spelling of a typed value, for a path, query or header position: `3`, `rolling`, `true`. */
+function parameterText(parameter: GovernedParameterValue): string {
+  switch (parameter.type) {
+    case 'integer':
+      return decimalString(parameter.value) ?? unbuildable();
+    case 'token':
+      return parameter.value;
+    case 'boolean':
+      return parameter.value ? 'true' : 'false';
+    default:
+      return unbuildable();
+  }
+}
+
+/** The JSON primitive of a typed value, its declared type preserved: an integer is a JSON number, a token a string, a boolean a boolean. Never stringified and re-parsed. */
+function parameterJson(parameter: GovernedParameterValue): string | number | boolean {
+  switch (parameter.type) {
+    case 'integer':
+    case 'token':
+    case 'boolean':
+      return parameter.value;
+    default:
+      return unbuildable();
+  }
+}
+
 /** Text form for a path, query or header position. `undefined` means "omit". */
 function textFor(binding: GenericHttpPlanBinding, action: ValidatedExecutionAction): string | undefined {
   if (binding.kind === 'literal') {
@@ -79,6 +132,11 @@ function textFor(binding: GenericHttpPlanBinding, action: ValidatedExecutionActi
     if (typeof literal === 'boolean') return literal ? 'true' : 'false';
     if (typeof literal === 'number') return decimalString(literal) ?? unbuildable();
     return literal;
+  }
+  if (binding.kind === 'parameter') {
+    const parameter = readParameter(action, binding.dimension);
+    if (parameter === undefined) return binding.required ? unbuildable() : undefined;
+    return parameterText(parameter);
   }
   const value = readSource(action, binding.source);
   if (value === undefined) return binding.required ? unbuildable() : undefined;
@@ -104,6 +162,11 @@ function exactJsonNumber(value: string | number): object {
 /** JSON form for a body position. Strings stay strings, `amount.value` is an exact JSON number, literals keep their type. `undefined` means "omit". */
 function jsonFor(binding: GenericHttpPlanBinding, action: ValidatedExecutionAction): string | number | boolean | null | object | undefined {
   if (binding.kind === 'literal') return binding.value;
+  if (binding.kind === 'parameter') {
+    const parameter = readParameter(action, binding.dimension);
+    if (parameter === undefined) return binding.required ? unbuildable() : undefined;
+    return parameterJson(parameter);
+  }
   const value = readSource(action, binding.source);
   if (value === undefined) return binding.required ? unbuildable() : undefined;
   if (binding.source === 'amount.value') return exactJsonNumber(value);
@@ -129,7 +192,13 @@ function encodeSegment(value: string): string {
  */
 export function mapGenericHttpRequest(plan: GenericHttpPlan, action: ValidatedExecutionAction): GenericHttpMappingResult {
   try {
-    const segments = plan.path.map((segment) => encodeSegment(segment.kind === 'literal' ? segment.value : (textFor({ kind: 'source', source: segment.source, required: true }, action) ?? unbuildable())));
+    const segments = plan.path.map((segment) =>
+      encodeSegment(
+        segment.kind === 'literal'
+          ? segment.value
+          : (textFor(segment.kind === 'parameter' ? { kind: 'parameter', dimension: segment.dimension, required: true } : { kind: 'source', source: segment.source, required: true }, action) ?? unbuildable()),
+      ),
+    );
     const pairs: string[] = [];
     for (const [key, binding] of plan.query) {
       const value = textFor(binding, action);

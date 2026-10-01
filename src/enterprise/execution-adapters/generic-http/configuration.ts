@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { isRecordableExecutionAdapterId } from '../../../features/execution-runtime/index.js';
+import { isSemanticIdentifier } from '../../../features/governed-parameter-runtime/index.js';
 import {
   GENERIC_HTTP_LIMITS as LIMITS,
   GenericHttpConfigurationError,
@@ -31,9 +32,13 @@ import { isLocalOnlyHostname } from './public-address-policy.js';
 /** A snapshotted value binding. Literals are pre-validated for every position they are used in. */
 export type GenericHttpPlanBinding =
   | { readonly kind: 'source'; readonly source: EnterpriseGenericHttpActionSource; readonly required: boolean }
+  | { readonly kind: 'parameter'; readonly dimension: string; readonly required: boolean }
   | { readonly kind: 'literal'; readonly value: string | number | boolean | null };
 
-export type GenericHttpPlanSegment = { readonly kind: 'literal'; readonly value: string } | { readonly kind: 'source'; readonly source: EnterpriseGenericHttpActionSource };
+export type GenericHttpPlanSegment =
+  | { readonly kind: 'literal'; readonly value: string }
+  | { readonly kind: 'source'; readonly source: EnterpriseGenericHttpActionSource }
+  | { readonly kind: 'parameter'; readonly dimension: string };
 
 /** The adapter's own frozen description of its one integration. Internal; never exported from the Enterprise barrel. */
 export interface GenericHttpPlan {
@@ -218,6 +223,19 @@ function snapshotSource(value: unknown, code: EnterpriseGenericHttpConfiguration
   return value as EnterpriseGenericHttpActionSource;
 }
 
+/**
+ * A governed dimension id (CORE-08): the canonical semantic-identifier grammar
+ * and nothing else — no dot path, no `parameters.` prefix, no index, no
+ * wildcard, no expression. It names one entry of the validated action's
+ * parameter list by exact equality.
+ */
+function snapshotDimension(value: unknown, code: EnterpriseGenericHttpConfigurationErrorCode): string {
+  if (!isSemanticIdentifier(value)) {
+    fail(code, 'A Generic HTTP parameter binding must name one governed dimension id in the canonical identifier grammar; paths, expressions and templates are not dimension ids.');
+  }
+  return value;
+}
+
 /** Literal checks shared by path, query and header positions: a string, a finite number or a boolean. `null` has no text form and is refused. */
 function textLiteral(value: unknown, code: EnterpriseGenericHttpConfigurationErrorCode): string {
   if (typeof value === 'string') {
@@ -246,6 +264,13 @@ function snapshotBinding(value: unknown, position: Position): GenericHttpPlanBin
     if (required !== undefined && typeof required !== 'boolean') fail(code, 'A source binding’s required flag must be a boolean.');
     return Object.freeze({ kind: 'source', source, required: required !== false });
   }
+  if (kind === 'parameter') {
+    const fields = readClosed(value, new Set(['kind', 'dimension', 'required']), code, 'A parameter binding');
+    const dimension = snapshotDimension(fields['dimension'], code);
+    const required = fields['required'];
+    if (required !== undefined && typeof required !== 'boolean') fail(code, 'A parameter binding’s required flag must be a boolean.');
+    return Object.freeze({ kind: 'parameter', dimension, required: required !== false });
+  }
   if (kind === 'literal') {
     const fields = readClosed(value, new Set(['kind', 'value']), code, 'A literal binding');
     const literal = fields['value'];
@@ -267,7 +292,7 @@ function snapshotBinding(value: unknown, position: Position): GenericHttpPlanBin
     }
     return Object.freeze({ kind: 'literal', value: typeof literal === 'string' ? literal : text });
   }
-  return fail(code, "A Generic HTTP value binding's kind must be 'source' or 'literal'.");
+  return fail(code, "A Generic HTTP value binding's kind must be 'source', 'parameter' or 'literal'.");
 }
 
 /** A destination object key. Never `__proto__`, `prototype` or `constructor`; never a control character; bounded. */
@@ -301,8 +326,13 @@ function snapshotPath(value: unknown): readonly GenericHttpPlanSegment[] {
       // an optional one cannot silently shift the path hierarchy.
       const fields = readClosed(segment, new Set(['kind', 'source']), 'GENERIC_HTTP_PATH_INVALID', 'A source path segment');
       segments.push(Object.freeze({ kind: 'source', source: snapshotSource(fields['source'], 'GENERIC_HTTP_PATH_INVALID') }));
+    } else if (kind === 'parameter') {
+      // Always required, like a source segment: an optional segment would
+      // shift the path hierarchy.
+      const fields = readClosed(segment, new Set(['kind', 'dimension']), 'GENERIC_HTTP_PATH_INVALID', 'A parameter path segment');
+      segments.push(Object.freeze({ kind: 'parameter', dimension: snapshotDimension(fields['dimension'], 'GENERIC_HTTP_PATH_INVALID') }));
     } else {
-      fail('GENERIC_HTTP_PATH_INVALID', "A Generic HTTP path segment's kind must be 'literal' or 'source'.");
+      fail('GENERIC_HTTP_PATH_INVALID', "A Generic HTTP path segment's kind must be 'literal', 'source' or 'parameter'.");
     }
   }
   return Object.freeze(segments);

@@ -149,6 +149,66 @@ export function isWellFormedGrantExerciseRequest(request: GrantExerciseRequest):
 }
 
 /**
+ * The attempt, read **once** into fresh frozen data (CORE-08).
+ *
+ * The structured values an adapter will receive — the amount and the typed
+ * parameters — are copied field by field into new frozen objects the moment an
+ * exercise begins, and everything after that point (every assessment, the
+ * exercise-control input, the `ValidatedExecutionAction`) reads the copy. A
+ * caller that keeps a reference to its request object, its parameter array or
+ * an entry in it, and mutates any of them while the exercise awaits a store,
+ * a reservation or a second read, changes nothing that was assessed and
+ * nothing an adapter sees: the value proven inside the grant's bound is the
+ * value that crosses the boundary.
+ *
+ * Only the declared fields are copied (`dimension`, `type`, `value`; `value`,
+ * `unit`), so nothing else on a caller's entry travels on. Total: a malformed
+ * list or entry is carried as-is, or as `null` when reading it throws, and the
+ * assessment refuses it as malformed rather than this function guessing. No
+ * value is converted, trimmed, lowered or re-typed here.
+ */
+export function snapshotGrantExerciseRequest(request: GrantExerciseRequest): GrantExerciseRequest {
+  const { parameters, amount } = request;
+  return {
+    ...request,
+    ...(amount !== undefined ? { amount: snapshotAmount(amount) } : {}),
+    ...(parameters !== undefined ? { parameters: snapshotParameters(parameters) } : {}),
+  };
+}
+
+function snapshotAmount(amount: GrantExerciseAmount): GrantExerciseAmount {
+  try {
+    if (amount === null || typeof amount !== 'object') return amount;
+    const { value, unit } = amount;
+    return Object.freeze({ value, unit });
+  } catch {
+    return null as unknown as GrantExerciseAmount;
+  }
+}
+
+function snapshotParameters(parameters: readonly GovernedParameter[]): readonly GovernedParameter[] {
+  try {
+    if (!Array.isArray(parameters)) return parameters;
+    const length = parameters.length;
+    const copy: GovernedParameter[] = [];
+    for (let index = 0; index < length; index += 1) copy.push(snapshotParameter(parameters[index]));
+    return Object.freeze(copy);
+  } catch {
+    return Object.freeze([null as unknown as GovernedParameter]);
+  }
+}
+
+function snapshotParameter(parameter: unknown): GovernedParameter {
+  try {
+    if (parameter === null || typeof parameter !== 'object') return parameter as GovernedParameter;
+    const source = parameter as Record<string, unknown>;
+    return Object.freeze({ dimension: source['dimension'], type: source['type'], value: source['value'] }) as GovernedParameter;
+  } catch {
+    return null as unknown as GovernedParameter;
+  }
+}
+
+/**
  * A stated parameter list: non-empty, every entry well formed, strictly
  * ascending by dimension — so two values for one dimension can never both be
  * "the" value an assessment compares.

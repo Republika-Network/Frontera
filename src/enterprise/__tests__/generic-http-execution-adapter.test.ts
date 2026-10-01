@@ -1541,6 +1541,9 @@ describe('Generic HTTP — structural boundaries (§5, §29, §52)', () => {
           specifier === '../../../features/execution-runtime/index.js' ||
           // P9: the pure monetary primitive, to prove amount.value is canonical text before it is spelled as a JSON number.
           specifier === '../../../features/monetary-runtime/index.js' ||
+          // CORE-08: the pure governed-parameter value grammar, to check a dimension id at composition and a typed value's
+          // own well-formedness before it is spelled — value primitives only; it holds no profile, policy or grant.
+          specifier === '../../../features/governed-parameter-runtime/index.js' ||
           ['node:net', 'node:dns', 'node:https', 'node:http'].includes(specifier);
         assert.ok(allowed, `${file} imports '${specifier}'; the adapter receives a ValidatedExecutionAction and nothing else from governance`);
       }

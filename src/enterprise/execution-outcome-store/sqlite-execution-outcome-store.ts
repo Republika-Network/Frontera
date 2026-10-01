@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { canonicalSerialize } from '../governance-store/canonical-json.js';
 import {
   EXECUTION_OUTCOME_STORE_SCHEMA_VERSION,
+  EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1,
+  type ExecutionAttemptParameter,
   type ExecutionAttemptRecord,
   type ExecutionOutcomeAccessContext,
   type ExecutionOutcomeRecord,
@@ -54,6 +56,19 @@ import { isCanonicalOutcomeInstant } from './validation.js';
  * written and read as JavaScript strings, never bound as numbers, so
  * `"9007199254740993.01"` and `"0.1"` come back byte-for-byte.
  *
+ * Typed governed parameters (v2, CORE-08) are stored as their canonical JSON
+ * (`aoc.canonical-json.v1`) in the nullable `parameters_json` column — the
+ * same serialization the attempt digest is taken over — so an integer comes
+ * back an integer, a token byte-exact, a boolean a boolean. `NULL` is absence.
+ *
+ * ## Schema v2 migration (CORE-08)
+ *
+ * A file written by v1 is migrated on open the way the repository migrates
+ * every durable store additively: one nullable column added by
+ * `ALTER TABLE … ADD COLUMN`, a `migrated` row appended to the version
+ * history, no existing row touched, no digest recomputed. Old rows keep their
+ * own `schema_version` and are verified under v1's rules forever.
+ *
  * ## Every write decision is one `BEGIN IMMEDIATE` transaction
  *
  * The write lock is taken **before** existing rows are read, so "load → verify
@@ -91,6 +106,16 @@ export interface CreateSqliteExecutionOutcomeStoreOptions {
 
 export interface DurableExecutionOutcomeStore extends ExecutionOutcomeStore {
   readonly providerKind: 'sqlite';
+}
+
+/**
+ * v2's one addition, applied "add the column unless it is already there" so a
+ * fresh store and a migrated v1 store reach exactly the same shape through one
+ * code path (the `sqlite-authority-store` v4 pattern).
+ */
+function applySchemaV2(db: import('better-sqlite3').Database): void {
+  const columns = new Set((db.prepare(`PRAGMA table_info(execution_attempts)`).all() as { readonly name: string }[]).map((column) => column.name));
+  if (!columns.has('parameters_json')) db.exec(`ALTER TABLE execution_attempts ADD COLUMN parameters_json TEXT;`);
 }
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
@@ -162,6 +187,7 @@ interface AttemptRow {
   readonly action: unknown;
   readonly amount_value: unknown;
   readonly amount_unit: unknown;
+  readonly parameters_json: unknown;
   readonly prepared_at: unknown;
   readonly recorded_at: unknown;
   readonly schema_version: unknown;
@@ -227,6 +253,18 @@ function attemptOf(executionId: string, row: AttemptRow): ExecutionAttemptRecord
   const amountValue = optionalText(executionId, row.amount_value, 'amount_value');
   const amountUnit = optionalText(executionId, row.amount_unit, 'amount_unit');
   if ((amountValue === undefined) !== (amountUnit === undefined)) throw corrupt(executionId, 'the amount is half present');
+  // Decoded exactly, then left to the closed contract: a v1 row carrying any
+  // value here, or a v2 row carrying a list outside the canonical form, is
+  // refused by verification rather than reshaped.
+  let parameters: unknown;
+  if (row.parameters_json !== null && row.parameters_json !== undefined) {
+    try {
+      parameters = JSON.parse(text(executionId, row.parameters_json, 'parameters_json'));
+    } catch (error) {
+      if (error instanceof ExecutionOutcomeStoreError) throw error;
+      throw corrupt(executionId, 'parameters do not decode');
+    }
+  }
   return {
     schemaVersion: text(executionId, row.schema_version, 'schema_version'),
     organizationId: text(executionId, row.organization_id, 'organization_id'),
@@ -237,6 +275,7 @@ function attemptOf(executionId: string, row: AttemptRow): ExecutionAttemptRecord
     boundedGrantId: text(executionId, row.bounded_grant_id, 'bounded_grant_id'),
     action: text(executionId, row.action, 'action'),
     ...(amountValue !== undefined && amountUnit !== undefined ? { amount: { value: amountValue, unit: amountUnit } } : {}),
+    ...(parameters !== undefined ? { parameters: parameters as readonly ExecutionAttemptParameter[] } : {}),
     preparedAt: text(executionId, row.prepared_at, 'prepared_at'),
     recordedAt: text(executionId, row.recorded_at, 'recorded_at'),
     attemptDigest: text(executionId, row.attempt_digest, 'attempt_digest'),
@@ -316,29 +355,43 @@ export async function createSqliteExecutionOutcomeStore(dbPath: string, options:
 
   // The version guard runs before `CREATE TABLE IF NOT EXISTS`, so a file
   // written under a schema this runtime does not implement is refused unmutated.
+  // v1 is the one earlier version it implements, and it is migrated below.
+  let migratingFromV1 = false;
+  let versioned = false;
   if (tableExists(db, 'execution_outcome_store_versions')) {
     const existing = db.prepare(`SELECT schema_version FROM execution_outcome_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-    if (existing !== undefined && existing.schema_version !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION) {
+    versioned = existing !== undefined;
+    if (existing !== undefined && existing.schema_version !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION && existing.schema_version !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1) {
       db.close();
       throw unavailable(
         `The execution outcome store is recorded under schema version '${existing.schema_version}', which this runtime does not implement (expected '${EXECUTION_OUTCOME_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
       );
     }
+    migratingFromV1 = existing?.schema_version === EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1;
   }
 
-  db.exec(SCHEMA_V1);
-  const latest = db.prepare(`SELECT schema_version FROM execution_outcome_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-  if (latest === undefined) {
-    const openedAt = now();
-    if (!isCanonicalOutcomeInstant(openedAt)) {
-      db.close();
-      throw unavailable('The store clock did not answer a canonical instant.');
-    }
-    db.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, openedAt);
+  // The clock is sampled only when a version row is about to be written — a
+  // new file, or a migration — exactly as before v2.
+  const openedAt = !versioned || migratingFromV1 ? now() : undefined;
+  if (openedAt !== undefined && !isCanonicalOutcomeInstant(openedAt)) {
+    db.close();
+    throw unavailable('The store clock did not answer a canonical instant.');
   }
+  db.transaction(() => {
+    db.exec(SCHEMA_V1);
+    applySchemaV2(db);
+    const latest = db.prepare(`SELECT schema_version FROM execution_outcome_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
+    if (latest === undefined) {
+      db.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, openedAt);
+    } else if (migratingFromV1) {
+      // Appended, never overwritten: the version table is a history, and a
+      // reader must be able to see this file was migrated rather than created at v2.
+      db.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'migrated', ?)`).run(EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, openedAt);
+    }
+  }).immediate();
 
   const selectAttempt = db.prepare(
-    `SELECT execution_id, organization_id, evaluation_id, request_id, decision_id, bounded_grant_id, action, amount_value, amount_unit, prepared_at, recorded_at, schema_version, attempt_digest
+    `SELECT execution_id, organization_id, evaluation_id, request_id, decision_id, bounded_grant_id, action, amount_value, amount_unit, parameters_json, prepared_at, recorded_at, schema_version, attempt_digest
        FROM execution_attempts WHERE execution_id = ?`,
   );
   const selectTerminal = db.prepare(
@@ -347,8 +400,8 @@ export async function createSqliteExecutionOutcomeStore(dbPath: string, options:
   );
   const insertAttempt = db.prepare(
     `INSERT INTO execution_attempts
-       (execution_id, organization_id, evaluation_id, request_id, decision_id, bounded_grant_id, action, amount_value, amount_unit, prepared_at, recorded_at, schema_version, attempt_digest)
-     VALUES (@executionId, @organizationId, @evaluationId, @requestId, @decisionId, @boundedGrantId, @action, @amountValue, @amountUnit, @preparedAt, @recordedAt, @schemaVersion, @attemptDigest)`,
+       (execution_id, organization_id, evaluation_id, request_id, decision_id, bounded_grant_id, action, amount_value, amount_unit, parameters_json, prepared_at, recorded_at, schema_version, attempt_digest)
+     VALUES (@executionId, @organizationId, @evaluationId, @requestId, @decisionId, @boundedGrantId, @action, @amountValue, @amountUnit, @parametersJson, @preparedAt, @recordedAt, @schemaVersion, @attemptDigest)`,
   );
   const insertTerminal = db.prepare(
     `INSERT INTO execution_terminal_observations
@@ -394,6 +447,7 @@ export async function createSqliteExecutionOutcomeStore(dbPath: string, options:
       action: attempt.action,
       amountValue: attempt.amount?.value ?? null,
       amountUnit: attempt.amount?.unit ?? null,
+      parametersJson: attempt.parameters !== undefined ? canonicalSerialize(attempt.parameters) : null,
       preparedAt: attempt.preparedAt,
       recordedAt: attempt.recordedAt,
       schemaVersion: attempt.schemaVersion,

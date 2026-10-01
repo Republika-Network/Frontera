@@ -406,6 +406,9 @@ describe('Execution layer boundaries — nothing unassessed crosses the boundary
       'counterparty',
       'organization',
       'amount',
+      // CORE-08: the typed parameters the exercise gate proved inside the
+      // grant's parameter bounds — assessed exactly like `amount`.
+      'parameters',
       'notAfter',
       'correlation',
       'requestId',

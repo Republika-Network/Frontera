@@ -1,4 +1,5 @@
 import type { ExecutionFailureReason } from '../../features/execution-runtime/index.js';
+import type { GovernedParameter } from '../../features/governed-parameter-runtime/index.js';
 
 /**
  * P11 — durable monetary outcomes and provider certainty: the record shapes.
@@ -11,7 +12,9 @@ import type { ExecutionFailureReason } from '../../features/execution-runtime/in
  * ExecutionAttemptRecord      the exact execution context PREPARED before the
  *                             write-ahead claim and the provider crossing:
  *                             which tenant, which authorization (by reference),
- *                             which action, which exact amount and asset
+ *                             which action, which exact amount and asset, and
+ *                             (v2, CORE-08) which exact typed governed
+ *                             parameters the adapter will receive
  *
  * ExecutionTerminalRecord     the INITIAL observation of what that attempt did:
  *                             the provider's certainty (confirmed-completed,
@@ -47,8 +50,55 @@ import type { ExecutionFailureReason } from '../../features/execution-runtime/in
  *   non-repudiation, not an external anchor (P20 owns KMS/HSM authenticity).
  */
 
-/** Frozen identifier for this record format. A file written under any other version is refused unopened. */
-export const EXECUTION_OUTCOME_STORE_SCHEMA_VERSION = 'aoc.execution-outcome-store.schema.v1';
+/**
+ * The record format this runtime writes, and the store-file version it
+ * maintains (CORE-08).
+ *
+ * ## v1 → v2: explicit, additive, never reinterpreting
+ *
+ * **v1** (P11) recorded the prepared context as tenant, correlation ids, action
+ * and amount. That was the *whole* execution context while
+ * `ValidatedExecutionAction` carried nothing else. CORE-08 delivers the
+ * exercise-contained typed governed parameters to the adapter, so a record
+ * claiming to be the exact context must now bind them too — and it may not do
+ * so by silently widening the v1 meaning.
+ *
+ * **v2** is v1 plus an optional `parameters` list, under its **own** digest
+ * domain (`aoc.execution-outcome.attempt.v2`) that commits to the list — or
+ * to an explicit `null` when the adapter received none. Every record carries
+ * the version it was written under, and is verified under exactly that
+ * version's rules:
+ *
+ * | record | may carry `parameters` | digest recomputed as |
+ * | --- | --- | --- |
+ * | v1 (historical) | **never** — a v1 row with parameters is corrupt | the v1 formula, byte for byte |
+ * | v2 | yes, or none (bound as `null`) | the v2 formula |
+ *
+ * So a historical attempt reads exactly as it was written: its absence of
+ * parameters stays absence, no parameter is invented for it, and its digest
+ * still recomputes. Nothing on a replay rebuilds parameters from a current
+ * profile, policy or request. The terminal observation's format is unchanged;
+ * its version label is the version it was written under.
+ *
+ * A store **file** written by v1 is migrated in place on open (one nullable
+ * column added, a `migrated` version row appended, no row rewritten); a file
+ * at any other version is refused unopened, and a v1-only runtime refuses a
+ * migrated file — it could not read a v2 row honestly.
+ */
+export const EXECUTION_OUTCOME_STORE_SCHEMA_VERSION = 'aoc.execution-outcome-store.schema.v2';
+
+/** The historical P11 format. Readable forever; never written again. */
+export const EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1 = 'aoc.execution-outcome-store.schema.v1';
+
+/** Every record format this runtime can verify. */
+export const EXECUTION_OUTCOME_RECORD_SCHEMA_VERSIONS: readonly string[] = Object.freeze([EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1, EXECUTION_OUTCOME_STORE_SCHEMA_VERSION]);
+
+/**
+ * One typed governed parameter exactly as the adapter received it:
+ * `{ dimension, type, value }`, the canonical governed-parameter shape
+ * (`src/features/governed-parameter-runtime`), never a second model.
+ */
+export type ExecutionAttemptParameter = GovernedParameter;
 
 /** Tenant scope. There is deliberately no `system` escape: every call is confined to one organization. */
 export interface ExecutionOutcomeAccessContext {
@@ -77,6 +127,13 @@ export interface PrepareExecutionAttemptInput {
   readonly action: string;
   /** Present exactly when the action carries a quantity — the amount the adapter receives, verbatim. */
   readonly amount?: ExecutionAttemptAmount;
+  /**
+   * Present exactly when the adapter receives typed governed parameters — the
+   * exercise-contained list `ValidatedExecutionAction.parameters` carries,
+   * verbatim: canonical dimension order, no duplicate, each entry's declared
+   * type preserved (v2 records only).
+   */
+  readonly parameters?: readonly ExecutionAttemptParameter[];
   /** The host-injected clock at the preparation step. */
   readonly preparedAt: string;
 }

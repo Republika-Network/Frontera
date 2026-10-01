@@ -5,8 +5,8 @@
 - **Established by:** MASTER-00 (architecture reconciliation), 2026-09-25.
 - **Audited against:** `main` @ `26a84be` (PR #142, the PRE-00 forward-port, merged).
 - **Reconciled by:** MASTER-01 (governed action intelligence & roadmap reconciliation), 2026-09-27, against `main` @ `c66e0c7` (CTRL-01 merged). Architecture and roadmap only; no runtime change.
-- **Last status change:** CORE-06 → **VERIFIED**, 2026-09-30 (branch `feat/core-06-governance-core-qualification`, on `main @ c5113cf`): **GOVERNANCE CORE STABLE → ACHIEVED** (§11.1, all ten items true). Governance Core qualification — no new capability. The composed Host was qualified as one boundary: Q1 … Q20 and the exercise-time windows through `bootEnterpriseHost()` and `POST /api/governed-actions`, adapter calls asserted on every case; the no-bypass proof re-run on it (PROVEN, path-local, **8 of 62** effect paths after re-enumerating from source: EP-058 … EP-062 added, none bounded-grant controlled); a 116-row BLOCKED-claim matrix covering every BLOCKED-bearing row in the repository (§11.1 item 9 is unscoped), machine-checked, 0 missing / stale / overclaimed / exempted (nine Governance Core rows and six Agent Passport Web rows gained executable evidence, two were reworded, one — "store locked" — narrowed to what was measured); INTEL independence proven structurally (import closure, 43 CORE directories, manifests) and at runtime. 49 mutations, 47 killed, the two survivors defence in depth and explained. SEC-INV-177 … 180; `docs/security/CORE-06-GOVERNANCE-CORE-QUALIFICATION.md`. NEXT → CORE-08.
-- **Previous status change:** CORE-07 → **VERIFIED**, 2026-09-29 (branch `feat/core-07-authority-state-freshness`, rebased onto `main @ 37a3ad4` — FRONTERA-PROD-01): cross-restart authority-state freshness. The signed head of every durable authority store — the bounded-grant revocation-state commitment, the obligation-discharge and approval chain heads — is anchored, unchanged, at an external authority-state witness outside its restore domain (`frontera.authority-state-witness.v1`: pinned witness id + Ed25519 receipt key, per-call challenge, compare-and-advance, slot `(stateKind, organizationId)` recording the store id). Genesis is enrolled before it is committed; an existing store is never auto-enrolled (explicit operator ceremony); startup reconciles before any store is handed out; every transition is prepare → local commit → finalize with no network inside a SQLite write transaction; pending + old local fails closed (`pending-recovery`, no force-clear). The secure Host requires `AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external`. AA-003 / GS-002 **closed within the freshness-anchor scope**; AA-002, AA-004 unchanged. NEXT → CORE-06. Previous: CORE-02 → **VERIFIED**, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`): external key custody for all five authority-signing operations — a closed `software` | `external` custody choice; under `external` no authority private key in the Frontera process (the key variable is refused, never read); a vendor-neutral structured protocol (`frontera.external-authority-signer.v1`, one path per operation, no byte signing) behind a transport port; the signer's identity pinned to the trusted registry (key id, algorithm, public key) and proven before any store opens, no TOFU; every returned signature verified locally under the pinned key before persistence; bounded time and retries with a closed failure taxonomy; outage writes nothing, revocation reported as not recorded (AA-004 explicit, not closed), reads verify locally, `/health` degraded; AA-005 issuance preflight; reference custody service as a separate process (not an HSM); TD-5 decided (passport key role → CTRL-02); NEXT → CORE-07 (§14). Previous: CORE-05 → **VERIFIED**, 2026-09-28 (branch `feat/core-05-durable-approvals`): `approval_required` is resumable, not terminal — one canonical approval request per committed decision, bound to the decision's content, the Governance Store's record digests and a snapshot of the trusted requirement (selected only through the CORE-04 effective profile); approval-runtime's own policies (recognition, authority, scope, evidence, segregation of duties, expiry, revocation, duplicates, quorum) with Kernel-Authority approver standing re-resolved at submission and at use; an append-only approval log **authenticated** by a signed state commitment (`approval-state:v1`, CORE-01/CORE-04 pattern); the same committed decision resumed into a grant whose signed `sourceDigest` binds the approval and whose expiry is capped by it; re-assessment before the claim; in-process command port only (no route; 36 endpoints); NEXT → CORE-02 (§14). Previous: CORE-04 → **VERIFIED**, 2026-09-28 (branch `feat/core-04-trusted-context-obligations`): one Trusted Context Boundary on the governed path (fact-class-scoped authority to attest, organization scope, provenance, per-class freshness); admitted-only policy input; restrict-only admitted RiskSignal contract; admitted-context digest bound to the decision and the signed grant, grant validity capped at context validity; obligations reachable with a durable, **authenticated** discharge store (signed state commitment, CORE-01 pattern — a database-only writer cannot manufacture satisfaction) and trusted writer; exercise-time lineage for every action class; NEXT → CORE-05 (§14). Previous: CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
+- **Last status change:** CORE-08 → **VERIFIED**, 2026-09-30 (branch `feat/core-08-action-neutrality-qualification`, on `main @ 8d99567`): **GOVERNED ACTION THESIS PROVEN → ACHIEVED** (§11.6, all six items true). Action-neutrality qualification — the last CORE item. Typed governed parameters now cross the execution boundary: `ValidatedExecutionAction.parameters` carries exactly the exercise-contained list (snapshotted once, frozen, type-preserved; no second parameter model); Generic HTTP maps them through one closed `{ kind: 'parameter', dimension }` binding into value positions only; the P11 attempt binds them under an explicit versioned record format (v2), historical v1 records read as written (real pre-CORE-08 store fixture). One `bootEnterpriseHost()` — one Kernel instance, one policy runtime — governs three reference domains at once (treasury transfer with P9 money and a P10 ceiling; production deploy with `replicaCount` / `deploymentStrategy`; customer-data read vs export with `recordCount` / `exportFormat`), each through its own Generic HTTP configuration; valid, policy-deny, over-bound, missing-fact, revoked-mid-flight (per domain) and adapter exactness machine-checked; CROSS-1 … CROSS-8; widened structural no-domain-branching proof. 36 mutations, 35 killed, one explained defence-in-depth survivor. SEC-INV-181 … 188; `docs/security/CORE-08-ACTION-NEUTRALITY-QUALIFICATION.md`. No endpoint added (36). NEXT → CTRL-02.
+- **Previous status change:** CORE-06 → **VERIFIED**, 2026-09-30 (branch `feat/core-06-governance-core-qualification`, on `main @ c5113cf`): **GOVERNANCE CORE STABLE → ACHIEVED** (§11.1, all ten items true). Governance Core qualification — no new capability. The composed Host was qualified as one boundary: Q1 … Q20 and the exercise-time windows through `bootEnterpriseHost()` and `POST /api/governed-actions`, adapter calls asserted on every case; the no-bypass proof re-run on it (PROVEN, path-local, **8 of 62** effect paths after re-enumerating from source: EP-058 … EP-062 added, none bounded-grant controlled); a 116-row BLOCKED-claim matrix covering every BLOCKED-bearing row in the repository (§11.1 item 9 is unscoped), machine-checked, 0 missing / stale / overclaimed / exempted (nine Governance Core rows and six Agent Passport Web rows gained executable evidence, two were reworded, one — "store locked" — narrowed to what was measured); INTEL independence proven structurally (import closure, 43 CORE directories, manifests) and at runtime. 49 mutations, 47 killed, the two survivors defence in depth and explained. SEC-INV-177 … 180; `docs/security/CORE-06-GOVERNANCE-CORE-QUALIFICATION.md`. NEXT → CORE-08. Previous: CORE-07 → **VERIFIED**, 2026-09-29 (branch `feat/core-07-authority-state-freshness`, rebased onto `main @ 37a3ad4` — FRONTERA-PROD-01): cross-restart authority-state freshness. The signed head of every durable authority store — the bounded-grant revocation-state commitment, the obligation-discharge and approval chain heads — is anchored, unchanged, at an external authority-state witness outside its restore domain (`frontera.authority-state-witness.v1`: pinned witness id + Ed25519 receipt key, per-call challenge, compare-and-advance, slot `(stateKind, organizationId)` recording the store id). Genesis is enrolled before it is committed; an existing store is never auto-enrolled (explicit operator ceremony); startup reconciles before any store is handed out; every transition is prepare → local commit → finalize with no network inside a SQLite write transaction; pending + old local fails closed (`pending-recovery`, no force-clear). The secure Host requires `AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external`. AA-003 / GS-002 **closed within the freshness-anchor scope**; AA-002, AA-004 unchanged. NEXT → CORE-06. Previous: CORE-02 → **VERIFIED**, 2026-09-28 (branch `feat/core-02-external-signer-key-custody`): external key custody for all five authority-signing operations — a closed `software` | `external` custody choice; under `external` no authority private key in the Frontera process (the key variable is refused, never read); a vendor-neutral structured protocol (`frontera.external-authority-signer.v1`, one path per operation, no byte signing) behind a transport port; the signer's identity pinned to the trusted registry (key id, algorithm, public key) and proven before any store opens, no TOFU; every returned signature verified locally under the pinned key before persistence; bounded time and retries with a closed failure taxonomy; outage writes nothing, revocation reported as not recorded (AA-004 explicit, not closed), reads verify locally, `/health` degraded; AA-005 issuance preflight; reference custody service as a separate process (not an HSM); TD-5 decided (passport key role → CTRL-02); NEXT → CORE-07 (§14). Previous: CORE-05 → **VERIFIED**, 2026-09-28 (branch `feat/core-05-durable-approvals`): `approval_required` is resumable, not terminal — one canonical approval request per committed decision, bound to the decision's content, the Governance Store's record digests and a snapshot of the trusted requirement (selected only through the CORE-04 effective profile); approval-runtime's own policies (recognition, authority, scope, evidence, segregation of duties, expiry, revocation, duplicates, quorum) with Kernel-Authority approver standing re-resolved at submission and at use; an append-only approval log **authenticated** by a signed state commitment (`approval-state:v1`, CORE-01/CORE-04 pattern); the same committed decision resumed into a grant whose signed `sourceDigest` binds the approval and whose expiry is capped by it; re-assessment before the claim; in-process command port only (no route; 36 endpoints); NEXT → CORE-02 (§14). Previous: CORE-04 → **VERIFIED**, 2026-09-28 (branch `feat/core-04-trusted-context-obligations`): one Trusted Context Boundary on the governed path (fact-class-scoped authority to attest, organization scope, provenance, per-class freshness); admitted-only policy input; restrict-only admitted RiskSignal contract; admitted-context digest bound to the decision and the signed grant, grant validity capped at context validity; obligations reachable with a durable, **authenticated** discharge store (signed state commitment, CORE-01 pattern — a database-only writer cannot manufacture satisfaction) and trusted writer; exercise-time lineage for every action class; NEXT → CORE-05 (§14). Previous: CORE-03 → **VERIFIED**, 2026-09-27 (branch `feat/core-03-governed-action-semantic-parameter-model`): typed parameter dimensions, domain-declared action/resource classes and declarative Governance Profiles on the one envelope; semantic grants signed under an explicit `semanticsFormat` with explicit class axes; NB-008 closed (attributed, freezable policy-pack writes); reserved-key registry; NEXT → CORE-04 (§14). Previous: MASTER-01, 2026-09-27. Product thesis generalized to governed machine actions (§1); Governed Action semantic model, action/resource awareness and Governance Profiles (§4.2–4.3); INTEL track and the Frontera Agent boundary (§4.4, §5, §9); AI authorization invariant corrected (§2, §13); ASSURE-04 re-scoped, INTEL-05 added (§9); GOVERNED ACTION THESIS PROVEN (§11.6); open questions (§16). NEXT → CORE-03 (§14). Stale MASTER-00-era current-state FACTs corrected against `main` @ `c66e0c7` (shipped Host composition, §1; as-built layering, §4). Previous: CTRL-01 → VERIFIED 2026-09-26.
 - **Post-merge hardening:** CORE-02R, 2026-09-29 (branch `fix/core-02-review-hardening`). CORE-02 stays **VERIFIED**, now resting on the hardened code: four review findings on the code merged by PR #152, each reproduced on `main @ 0778b74` and fixed. (A) Under external custody no supplied authority store is adopted. (B) An identity probe can no longer clear a signing failure. (C) The startup identity handshake honours `maxAttempts`. (D) The canonical Host checks its real process environment for the authority-key variable. P3: bounded probe fanout. NEXT stays CORE-07.
 - **Post-merge hotfix:** CORE-02R review round 2, 2026-09-29 (branch `fix/core-02-review-round2`). CORE-02 stays **VERIFIED**. Two further review findings on `main @ 58f0334` were reproduced and fixed. (A) External custody + memory persistence + authority-controlled execution used to compose on the unsigned in-memory grant store, never contact the configured signer and report `authoritySigner: not-composed`; it is now refused before anything opens. Codex follow-up: a non-SQLite Governance Store is refused only when governed actions would compose obligation or approval stores from it; legacy ACE may use an ephemeral one. (B) A clock moved backwards could keep a stale signer identity `ready` beyond the probe interval; a negative age now invalidates the cache. NEXT stays CORE-07.
 - **Supersedes as active roadmap:** every earlier sequencing scheme (§15).
@@ -77,9 +77,8 @@ and feeds the core; it never replaces it (§4.4, invariants 24–32):
   `PaymentIntent`, `settlement` and `receipt` in core layers
   (`src/enterprise/__tests__/authority-payment-ceilings-structure.test.ts`).
   However, no second rail exists to prove neutrality against.
-- **Action neutrality is structural in control flow *and* parameters since
-  CORE-03, and demonstrated for two non-financial domains on one composition —
-  not yet qualified (CORE-08).** The envelope keeps its required `action` and
+- **Action neutrality is qualified (CORE-08) for three reference domains on the
+  shipped Host — structural in control flow and parameters since CORE-03.** The envelope keeps its required `action` and
   `resource` identifiers and gains typed, declared `parameters`
   (`integer`/`token`/`boolean`, `src/features/governed-parameter-runtime`);
   trusted configuration classifies each action × resource into a
@@ -90,9 +89,14 @@ and feeds the core; it never replaces it (§4.4, invariants 24–32):
   unchanged. `governed-action-thesis-read-export.test.ts` governs read vs export
   of one dataset, and deploy to production, differently by policy and profile
   data alone, with no Kernel change; `governed-action-neutrality-structure.test.ts`
-  forbids domain vocabulary and branching in the generic core. Typed parameters
-  are not yet handed to adapters (P11 schema; CORE-08). The only execution
-  adapter is Generic HTTP.
+  forbids domain vocabulary and branching in the generic core. Since CORE-08 the
+  exercise-contained typed parameters reach adapters (`ValidatedExecutionAction.parameters`,
+  bound by the P11 v2 attempt), and one `bootEnterpriseHost()` governs a treasury
+  transfer, a production deployment and a customer-data read vs export through
+  one Kernel instance and one policy runtime
+  (`core08-action-neutrality-host.test.ts`, `core08-action-neutrality-structure.test.ts`;
+  §11.6). The only execution adapter is still Generic HTTP; rail neutrality is
+  not demonstrated (§11.2).
 - **No intelligence component exists.** No model call, agent, signal producer or
   behavioural detector exists anywhere (CORE-04 adds only the deterministic
   *admitted* signal contract — a restrict-only fact class — with no producer); a structural test forbids intelligence
@@ -262,6 +266,7 @@ wiring inventory is §3.8.
 | Authority-sourced payment ceilings (P10) | VERIFIED (requires P7) | `kernel-authority/monetary-constraints.ts:75-91`; `authority-payment-ceilings*.test.ts` |
 | Policy packs / domain packs / jurisdiction | **PARTIAL** | Only through a host-injected `policyPackProvider` (`composition-root.ts`; on the shipped Host via `bootEnterpriseHost({ policyPackProvider })` since CORE-04). No durable policy store, no default pack. Since CORE-03: writes require a trusted writer, are attributed and freezable (NB-008 closed, SEC-INV-133), and rules can read `actionClass`, `resourceClass`, `governanceProfile`, `governanceProfileVersion` and typed `parameter` fields |
 | Governed action semantic & parameter model (CORE-03) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `governance`** | `features/governed-parameter-runtime`, `enterprise/governance-profile`; `governed-action-thesis-read-export.test.ts`, `governed-action-semantics-host.test.ts`, `pre-core-03-compatibility.test.ts`; ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL |
+| Action neutrality (CORE-08) | **VERIFIED** for three reference domains on the shipped Host | Treasury (P9/P10), DevOps and customer-data read/export through one Kernel instance, one policy runtime and one pipeline; per-domain denial, over-bound, missing-fact, revoked-mid-flight and adapter exactness; structural no-domain-branching over every generic layer (`core08-action-neutrality-*.test.ts`; SEC-INV-184 … 186). Not every action, not physical actuation, not rails |
 | Delegation lineage | **VERIFIED** (CORE-04) | Enforced at decision when the actor is an agent. Financial actions re-resolved at issue, commit and exercise (P10); **every** action class re-resolved at exercise since CORE-04 (`kernel-authority/authority-lineage-revalidator.ts`, SEC-INV-141; `governed-action-obligations-host.test.ts`) |
 | Obligation lifecycle (discharge/verify/waive) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `obligations`** (CORE-04) | The unchanged six-state lifecycle, per-profile declarations, durable append-only discharge store with a trusted in-process writer; a withheld decision is issued only after verified discharge (SEC-INV-140; `governed-action-obligations-host.test.ts`) |
 | Trusted context provenance (layer C) | **VERIFIED (opt-in); composed on the shipped Host when the governed-action file declares `trustedContext`** (CORE-04) | One Trusted Context Boundary (`context-resolution-service.ts`) per effective profile; admitted-only policy input; context digest bound to decision and signed grant (SEC-INV-136 … 139; `governed-action-trusted-context-host.test.ts`) |
@@ -280,10 +285,11 @@ wiring inventory is §3.8.
 | `POST /api/governed-actions` + SDK 1.1 (P5) | VERIFIED (opt-in); **mounted on the shipped secure Host** | `adapters/node-http-adapter.ts`; `governed-action-api-endpoint.test.ts`; `enterprise-host.test.ts` (end to end through the bootstrap) |
 | Orchestrator gate order (P3) | VERIFIED | `orchestrator.ts:555-741`; `governed-action-orchestrator.test.ts` (75 tests) |
 | Adapter registry + routing (P4) | VERIFIED | `execution-adapter-registry.ts` |
-| Generic HTTP adapter (P6, Stage A) | VERIFIED | `execution-adapters/generic-http/`; 109 tests. One attempt, SSRF-hardened, static in-process credential |
+| Generic HTTP adapter (P6, Stage A) | VERIFIED | `execution-adapters/generic-http/`; 109 tests. One attempt, SSRF-hardened, static in-process credential. Since CORE-08 a closed `parameter` binding maps exercise-contained typed parameters into value positions only (`generic-http-parameter-mapping.test.ts`; SEC-INV-182) |
+| Typed parameters at the execution boundary (CORE-08) | VERIFIED | `ValidatedExecutionAction.parameters`: the exercise-contained list only, snapshotted once, frozen (`grant-execution-service.ts`; `execution-parameter-delivery.test.ts`; SEC-INV-181) |
 | Server-derived identities (`requestId = H(org, principal, idempotencyKey)`, `executionId = H(requestId, decisionId)`) | VERIFIED | `governed-action/identifiers.ts:25,42` |
 | Write-ahead claim, at most once | VERIFIED | `execution-ledger.ts:295-313` |
-| Durable outcomes with provider certainty (P11) | VERIFIED (opt-in); required on the shipped secure Host | `execution-outcome-store/*`; `durable-monetary-outcomes*.test.ts` |
+| Durable outcomes with provider certainty (P11) | VERIFIED (opt-in); required on the shipped secure Host | `execution-outcome-store/*`; `durable-monetary-outcomes*.test.ts`. Record format v2 since CORE-08: the attempt binds the delivered typed parameters; v1 records read as written, store files migrated additively (`execution-outcome-parameters.test.ts`; SEC-INV-183) |
 | Reconciliation + resolution authority (P12) | VERIFIED (port); no resolver implementation ships | `execution-reconciliation/*`, `execution-resolution-store/*`; `execution-reconciliation-e2e.test.ts` |
 | Retries | ABSENT by design | An unconfirmed execution replays as `…_ALREADY_ATTEMPTED`; it is never re-sent |
 | `providerRef` as identity | Not used (correct) | `provider-reference.ts` treats it as a handle, never as proof |
@@ -1197,13 +1203,16 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 
 | Field | Content |
 |---|---|
-| Status | PLANNED |
+| Status | **VERIFIED** (2026-09-30, branch `feat/core-08-action-neutrality-qualification`) — **GOVERNED ACTION THESIS PROVEN → ACHIEVED** (§11.6) |
 | Depends on | CORE-03 (hard) — VERIFIED, CORE-04 (hard) — VERIFIED, CORE-05 (hard) — VERIFIED, CORE-06 (soft: reuse its adversarial and no-bypass harness) — VERIFIED; one monetary execution path (PAY-04 preferred, Generic HTTP acceptable — §11.6) |
 | Purpose | The gate for **GOVERNED ACTION THESIS PROVEN** (§11.6): prove action neutrality — the same deterministic core governs materially different action/resource domains |
 | Existing reused | Generic HTTP adapter (P6) for non-monetary domains; P9/P10 for the monetary domain; structural boundary tests; the orchestrator scenario suites |
 | Remaining work | Three reference domains expressed only through Governance Profiles, organization policy, context sources, domain validation and adapters. A structural test that the Kernel and orchestrator contain no domain branching. Cross-domain denial, over-bound, revoked-mid-flight and missing-context cases |
 | Exit criteria | §11.6 all true |
 | Non-goals | Rail neutrality (PAY-07, §11.2); any INTEL component (the thesis is about the deterministic core); physical actuation |
+| Delivered | (1) **Typed parameters across the execution boundary:** `ValidatedExecutionAction.parameters` = the exercise-contained canonical list, snapshotted once at exercise entry, frozen, type-preserved (no second model, no domain field). (2) **Generic HTTP `parameter` binding:** closed, exact dimension id, value positions only, one text spelling / JSON primitive per position; absent + required is unbuildable. (3) **P11 v2:** the attempt binds the delivered list under its own digest domain; v1 records keep their meaning and digest (real pre-CORE-08 store fixture); additive file migration; P12 unchanged. (4) **One-Host qualification** of treasury (P9/P10), DevOps and customer-data read/export through one Kernel instance and one policy runtime, via three Generic HTTP configurations. (5) **Widened structural neutrality** over every generic layer incl. P11, P12 and the policy engine, with self-tested detectors |
+| Evidence | **Suites (new, 118 tests):** `core08-action-neutrality-host` (38: the domain matrix — valid, policy-deny, over-bound, missing-fact, revoked-mid-flight per domain with controls, adapter exactness — machine-checked and cross-checked against the qualification document; TR-*, DO-*, DA-*, CROSS-1 … 8; same Kernel instance / policy runtime / CORE source; no INTEL loaded), `core08-action-neutrality-structure` (20), `execution-parameter-delivery` (21), `generic-http-parameter-mapping` (23), `execution-outcome-parameters` (16). **Mutations:** 36 — 35 killed, M30a survived by defence in depth (request identity derived from the idempotency key; store idempotency) and its deepened M30 killed. **Validation:** see §14. `docs/security/CORE-08-ACTION-NEUTRALITY-QUALIFICATION.md`; SEC-INV-181 … 188; THREAT_MODEL_V1 §7.24 |
+| Residual | Three reference domains, not every action; not physical actuation (OQ-15); not rail neutrality (PAY-07); the Host suite's provider network runtime is a test seam behind the real adapter core; P10's grant ceiling is the authority's (unchanged); P11 integrity-not-authenticity (unchanged); AA-002 and the CORE-06 residuals unchanged; a pre-existing policy-pack evidence-document kind `invoice` exempted exactly |
 
 ### PAY
 
@@ -1505,7 +1514,7 @@ No INTEL item is required for PILOT READY (§11.3).
 
 | Field | Content |
 |---|---|
-| Status | PLANNED (unblocked; the recommended parallel stream, §14) |
+| Status | PLANNED — **NEXT** (§14; since CORE-08, 2026-09-30) |
 | Depends on | CTRL-01 — VERIFIED; CORE-03 (soft) — VERIFIED: provisioning schemas can now expose typed parameter bounds rather than only the money-typed `spending_limit` (L-5). Also owns the Governance Profile promotion identity (OQ-2) |
 | Existing reused | passport-web account/role model as reference; `BoundCustomerIdentity`; the CTRL-01 administration boundary (`authority-administration/`) and `kernelAuthorityProvisioning` |
 | Remaining work | Human operator identity + roles in the enterprise runtime, replacing CTRL-01's shared administrator secrets as the operator identity. An agent inventory backed by Kernel-Authority actors. **Kernel-Authority provisioning over the API** (actors, passports, capability tokens, authority grants, delegations — moved here from CTRL-01), authorized by operator role, under the Kernel's existing append rules (terminal revocation, no in-place rewrite) and monetary checks. A passport reconciliation decision (§7) |
@@ -1631,7 +1640,7 @@ INTEL (beside CORE; CORE never depends on it):
    INTEL-05 + CORE-03 + CORE-04 + CORE-05 ──► INTEL-06 ◄┄┄ CTRL-04, CTRL-02
 
 CORE-01..05 + PROD-01 ──► CORE-06
-CORE-03 + CORE-04 + CORE-05 (+┄┄ CORE-06) + one monetary execution path ──► CORE-08
+CORE-03 + CORE-04 + CORE-05 (+┄┄ CORE-06) + one monetary execution path ──► CORE-08✓
 PROD-01 + PROD-02 + CTRL-01..04 + CORE-06 ──► PROD-03
 ```
 
@@ -1644,7 +1653,7 @@ and (via CORE-05 → CTRL-04 and CORE-06) PILOT READY.
 | Path | Sequence | Ends in |
 |---|---|---|
 | **Critical pilot path** | CORE-03 → CORE-04 → CORE-05 → CORE-06, joined by CTRL-02 → CTRL-03 → CTRL-04 (needs CORE-05), PROD-02, ASSURE-01 → PROD-03 | PILOT READY (§11.3) |
-| **Governed Action Thesis path** | CORE-03 → CORE-04 → CORE-05 → CORE-08 | GOVERNED ACTION THESIS PROVEN (§11.6) |
+| **Governed Action Thesis path** | CORE-03 → CORE-04 → CORE-05 → CORE-08 — all VERIFIED | GOVERNED ACTION THESIS PROVEN (§11.6) — **ACHIEVED** 2026-09-30 |
 | **Rail-neutrality path** | CORE-03 → PAY-01 → PAY-03 → PAY-04 / PAY-06 (+ PAY-02, PAY-05, ASSURE-01) → PAY-07, on GOVERNANCE CORE STABLE | CORE PROVEN (§11.2) |
 | **Intelligence path** | CORE-03 → INTEL-01 / INTEL-02 → INTEL-03; CORE-04 → INTEL-04; ASSURE-01 → ASSURE-04 → INTEL-05 → INTEL-06 | adaptive containment; not a pilot blocker |
 | **Credit path** | CORE-03 → CREDIT-01 … CREDIT-07 | CREDIT THESIS PROVEN (§11.4) |
@@ -1766,6 +1775,8 @@ Requires GOVERNANCE CORE STABLE, plus:
 
 ### 11.6 GOVERNED ACTION THESIS PROVEN
 
+**Status: ACHIEVED** (2026-09-30, CORE-08 — every item below true; evidence per item in `docs/security/CORE-08-ACTION-NEUTRALITY-QUALIFICATION.md` §2 and §8 – §12, residuals in §15). Scope: the three qualified reference domains; not rail neutrality (§11.2), not physical actuation.
+
 **Definition (MASTER-01).** Frontera's deterministic core is **action-neutral**:
 Governed Actions are infrastructure, not a payment feature. Distinct from CORE
 PROVEN (rail neutrality, §11.2) and non-duplicative with it. Gate: CORE-08.
@@ -1805,9 +1816,10 @@ vocabulary and branching in the Kernel, orchestrator, grant and execution
 runtimes. Two non-financial domains (data read vs export; deploy to
 production) and the monetary domain are governed on one composition by
 policy and profile data alone (`governed-action-thesis-read-export.test.ts`).
-**Still missing for §11.6:** typed parameters
+**Still missing for §11.6 at the time:** typed parameters
 handed to domain adapters, three domains end to end on the shipped Host
-(CORE-08); revoked-mid-flight cases per domain (CORE-08).
+(CORE-08); revoked-mid-flight cases per domain (CORE-08) — **all closed by
+CORE-08, below.**
 
 **FACT (CORE-04 delta, 2026-09-28).** Item 5's missing-required-fact behaviour
 now exists and is the same for every domain (denied by the one boundary, never
@@ -1820,6 +1832,37 @@ one Kernel and one policy with no Kernel change
 `governed-action-restrictive-signal-host.test.ts`,
 `governed-action-obligations-host.test.ts`). Policy on the Host is in-process
 composition (`bootEnterpriseHost({ policyPackProvider })`).
+
+
+**FACT (CORE-08 delta, 2026-09-30) — every item true.**
+
+1. **Three materially different domains, end to end, on the same Host.** One
+   `bootEnterpriseHost()` (secure profile) and `POST /api/governed-actions`:
+   treasury `transfer-funds` × treasury account (P9 amount, P10 authority
+   ceiling; executed through a Generic HTTP configuration — rail neutrality is
+   not what is proven), DevOps `deploy-release` × production cluster
+   (`replicaCount` ≤, `deploymentStrategy` =; change-window and rollback facts)
+   and customer data `read` vs `export` × the same records (`recordCount` ≤,
+   `exportFormat` =), coexisting in one configuration world. Each valid request
+   reaches its configured adapter exactly once, with exactly the canonical
+   validated action.
+2. **Shared, unchanged:** one Kernel **instance** (observed) and implementation,
+   one policy runtime, one envelope and pipeline, one signed grant store, one
+   exercise gate, P7, emergency control, one P11 store, one outcome vocabulary;
+   the compiled generic CORE hashes identically before and after the three runs.
+3. **Only data varies:** Governance Profiles, context-source configuration,
+   organization policy, Generic HTTP adapter configuration and its
+   composition-time validation — plus the durable authority world
+   (lineages and the treasury P10 ceiling), identified and justified as
+   organization-policy data, not code.
+4. **No domain branching**, structurally (widened to P11, P12 and the policy
+   engine; detectors self-tested; M23 / M24 / M24b inserted real branches and
+   were caught) and at runtime (item 2).
+5. **Per domain:** policy denial, over-bound request, missing required fact and
+   a grant revoked after issuance and before the adapter each reach no adapter
+   (machine-checked matrix; revocation proven per domain with a non-vacuous
+   control).
+6. **No intelligence component** is present or required (SEC-INV-188).
 
 ---
 
@@ -1878,40 +1921,42 @@ composition (`bootEnterpriseHost({ policyPackProvider })`).
 
 ## 14. Current NEXT Item
 
-**NEXT: CORE-08 — Action-Neutrality Qualification (Governed Action Thesis)**
+**NEXT: CTRL-02 — Organizations, Human Operators & Agent Inventory**
 
-**Previous NEXT:** CORE-06 — **VERIFIED** 2026-09-30 (§9); **GOVERNANCE CORE STABLE ACHIEVED** (§11.1). Before it CORE-07,
+**Previous NEXT:** CORE-08 — **VERIFIED** 2026-09-30 (§9); **GOVERNED ACTION THESIS PROVEN ACHIEVED** (§11.6). CORE-08 was the last CORE item: CORE-01 … CORE-08 are all VERIFIED. Before it CORE-06, CORE-07,
 CORE-02, CORE-05, CORE-04, CORE-03, CTRL-02 (displaced by MASTER-01), PROD-01 and CORE-01.
 
-**Candidates (unblocked after CORE-06):** CORE-08, CTRL-02, PAY-01,
-CREDIT-01 (design), INTEL-01, INTEL-02, INTEL-04 (needs INTEL-02), ASSURE-01,
-ASSURE-02, PROD-02.
+**Candidates (unblocked after CORE-08):** CTRL-02, PROD-02, ASSURE-01, ASSURE-02,
+PAY-01, CREDIT-01 (design), INTEL-01, INTEL-02, INTEL-04 (needs INTEL-02).
 
-**Why CORE-08:**
+**Why CTRL-02:**
 
-- **Every dependency is now VERIFIED.** CORE-03, CORE-04 and CORE-05 (hard),
-  CORE-06 (soft), and a monetary execution path — the Generic HTTP adapter is
-  acceptable per §11.6 and is composed on the shipped Host.
-- **It is the last CORE item** and the gate for GOVERNED ACTION THESIS PROVEN
-  (§11.6) — the thesis MASTER-01 made the product's centre. CORE-06 already
-  exercised three materially different domains (settle × payables, read ×
-  customer data, deploy × production) on one Host as qualification
-  evidence; CORE-08 owns the thesis proof itself: three reference domains
-  end to end, adapter-level typed parameters, the structural no-domain-branching
-  test and the domain revoked-mid-flight matrix. Its CORE-06 inputs (the
-  qualification Host harness, the stranded-grant technique, the structural
-  guards) exist.
-- **It keeps CORE ahead of the tracks that build on it.** PAY, CREDIT and
-  INTEL extend the envelope CORE-08 proves neutral; proving neutrality first
-  keeps a domain-specific assumption from being built into them.
-- **Parallel streams preserved.** CTRL-02 → CTRL-03 → CTRL-04, PROD-02 and
-  ASSURE-01 remain the recommended parallel streams on the critical pilot path
-  (§10); none is blocked by CORE-08, and PILOT READY needs them, not CORE-08.
+- **PILOT READY is now the open product milestone, and CTRL-02 heads its
+  longest remaining chain.** §11.3 needs CTRL-01 … CTRL-04, PROD-02, ASSURE-01
+  and PROD-03; the CORE items it needs are all VERIFIED. The dependency graph
+  (§10) makes CTRL-02 → CTRL-03 → CTRL-04 → PROD-03 the critical path; PROD-02
+  and ASSURE-01 are single items with only soft dependencies and remain
+  parallel streams.
+- **Every dependency is VERIFIED.** CTRL-01 (hard) and CORE-03 (soft: typed
+  parameter bounds for the provisioning schemas) — and CORE-08 has now proven
+  that the provisioning CTRL-02 exposes (profiles, policy, authority, adapter
+  configuration) is exactly where domain meaning lives.
+- **It closes the pilot's largest operational gap.** Today a pilot organization
+  still needs in-process code to provision Kernel-Authority actors and grants,
+  and administrators share configured secrets. CTRL-02's exit criterion — an
+  identified human operator onboards an agent and assigns bounded authority
+  with no source code, REPL or database access — is a PILOT READY prerequisite
+  no other candidate delivers. It also owns Governance Profile promotion
+  identity (OQ-2).
+- **Not chosen:** PAY-01 / PAY-* lead to CORE PROVEN (rail neutrality), which
+  PILOT READY does not require (§11.3); CREDIT and INTEL are not pilot blockers
+  (§11.3, §11.5); PROD-02 and ASSURE-01 stay the recommended parallel streams.
 
-**Prerequisites already satisfied:** CORE-01 … CORE-07, PROD-01 — VERIFIED; GOVERNANCE CORE STABLE — ACHIEVED.
+**Prerequisites already satisfied:** CORE-01 … CORE-08, PROD-01, CTRL-01 — VERIFIED; GOVERNANCE CORE STABLE and GOVERNED ACTION THESIS PROVEN — ACHIEVED.
 
-**Out of scope for CORE-08:** multi-rail proof (PAY-07); the CORE-06 residuals
-(`docs/security/CORE-06-GOVERNANCE-CORE-QUALIFICATION.md` §10) stay where they are recorded.
+**Out of scope for CTRL-02:** CTRL-03's web UI, CTRL-04's approval inbox, CORE PROVEN's rail work; the CORE-06 and CORE-08 residuals stay where they are recorded.
+
+**Validation (CORE-08, 2026-09-30).** Clean `git archive` export of the validation candidate `aff06c8` (0 CRLF files): `npm ci`, typecheck, lint, build green; root 8 514 tests (8 501 pass, 0 fail, 9 skipped, 4 todo); workspaces 1 089 tests, 0 fail; API freeze 36 endpoints (none added); release docs, SDK surface green (no public SDK change); legal report pre-existing findings only; no dependency added. Focused regression matrix 2 319 tests, 0 fail. Working copy: the same green except two source-regex tests over untouched files whose working copies carry CRLF (proven artifacts, pass on the export). 36 mutations, 35 killed, 1 defence-in-depth survivor (M30a) deepened and killed (M30); M17 – M19 deepened past the Host's orphan-attestation refusal. The final commit (this status and the qualification results) was re-validated on its own clean export: in the milestone report.
 
 **Validation (CORE-06, 2026-09-30).** Working copy: typecheck, lint, build green; focused regression matrix 3 641 tests, 0 real failures (one CTRL-01 source-regex CRLF working-copy artifact, proven); API freeze 36 endpoints; release docs, SDK surface green; legal report pre-existing findings only; 49 mutations, 47 killed, 2 explained survivors (defence in depth). Full validation on a clean LF export of the final commit: in the milestone report.
 
