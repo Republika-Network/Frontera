@@ -353,42 +353,47 @@ export async function createSqliteExecutionOutcomeStore(dbPath: string, options:
   db.pragma('synchronous = FULL');
   db.pragma(`busy_timeout = ${busyTimeoutMs}`);
 
-  // The version guard runs before `CREATE TABLE IF NOT EXISTS`, so a file
-  // written under a schema this runtime does not implement is refused unmutated.
-  // v1 is the one earlier version it implements, and it is migrated below.
-  let migratingFromV1 = false;
-  let versioned = false;
-  if (tableExists(db, 'execution_outcome_store_versions')) {
-    const existing = db.prepare(`SELECT schema_version FROM execution_outcome_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-    versioned = existing !== undefined;
-    if (existing !== undefined && existing.schema_version !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION && existing.schema_version !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1) {
-      db.close();
-      throw unavailable(
-        `The execution outcome store is recorded under schema version '${existing.schema_version}', which this runtime does not implement (expected '${EXECUTION_OUTCOME_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
-      );
-    }
-    migratingFromV1 = existing?.schema_version === EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1;
-  }
-
-  // The clock is sampled only when a version row is about to be written — a
-  // new file, or a migration — exactly as before v2.
-  const openedAt = !versioned || migratingFromV1 ? now() : undefined;
-  if (openedAt !== undefined && !isCanonicalOutcomeInstant(openedAt)) {
-    db.close();
-    throw unavailable('The store clock did not answer a canonical instant.');
-  }
-  db.transaction(() => {
-    db.exec(SCHEMA_V1);
-    applySchemaV2(db);
-    const latest = db.prepare(`SELECT schema_version FROM execution_outcome_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-    if (latest === undefined) {
-      db.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, openedAt);
-    } else if (migratingFromV1) {
+  // The whole version decision is one `BEGIN IMMEDIATE` transaction:
+  //
+  //   read latest → validate it → decide the transition → sample the clock
+  //   → apply the schema → append the version row → COMMIT
+  //
+  // Nothing read before the write lock decides anything. Another opener may
+  // migrate this file — or a newer runtime advance it — while this one waits
+  // for the lock, so the only version that may authorize a transition is the
+  // one read while holding it. That read comes before `CREATE TABLE IF NOT
+  // EXISTS` or any `ALTER`, so a file under a schema this runtime does not
+  // implement is refused unmutated. v1 is the one earlier version it
+  // implements, and it is migrated exactly once.
+  try {
+    db.transaction(() => {
+      const latest = tableExists(db, 'execution_outcome_store_versions')
+        ? (db.prepare(`SELECT schema_version FROM execution_outcome_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined)?.schema_version
+        : undefined;
+      if (latest !== undefined && latest !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION && latest !== EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1) {
+        throw unavailable(
+          `The execution outcome store is recorded under schema version '${latest}', which this runtime does not implement (expected '${EXECUTION_OUTCOME_STORE_SCHEMA_VERSION}'). Refusing to open it.`,
+        );
+      }
+      // `undefined` → a new file, recorded `current`; v1 → migrated, recorded
+      // `migrated`; v2 → already this version, and nothing is appended.
+      const transition = latest === undefined ? 'current' : latest === EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1 ? 'migrated' : undefined;
+      // The clock is sampled only when a version row is about to be written,
+      // and before any schema is touched.
+      const openedAt = transition === undefined ? undefined : now();
+      if (transition !== undefined && !isCanonicalOutcomeInstant(openedAt)) throw unavailable('The store clock did not answer a canonical instant.');
+      db.exec(SCHEMA_V1);
+      applySchemaV2(db);
       // Appended, never overwritten: the version table is a history, and a
-      // reader must be able to see this file was migrated rather than created at v2.
-      db.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'migrated', ?)`).run(EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, openedAt);
-    }
-  }).immediate();
+      // reader must be able to see a file was migrated rather than created at v2.
+      if (transition !== undefined) {
+        db.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, ?, ?)`).run(EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, transition, openedAt);
+      }
+    }).immediate();
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 
   const selectAttempt = db.prepare(
     `SELECT execution_id, organization_id, evaluation_id, request_id, decision_id, bounded_grant_id, action, amount_value, amount_unit, parameters_json, prepared_at, recorded_at, schema_version, attempt_digest
