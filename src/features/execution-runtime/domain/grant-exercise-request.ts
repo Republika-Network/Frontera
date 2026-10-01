@@ -151,29 +151,76 @@ export function isWellFormedGrantExerciseRequest(request: GrantExerciseRequest):
 /**
  * The attempt, read **once** into fresh frozen data (CORE-08).
  *
- * The structured values an adapter will receive — the amount and the typed
- * parameters — are copied field by field into new frozen objects the moment an
- * exercise begins, and everything after that point (every assessment, the
- * exercise-control input, the `ValidatedExecutionAction`) reads the copy. A
- * caller that keeps a reference to its request object, its parameter array or
- * an entry in it, and mutates any of them while the exercise awaits a store,
- * a reservation or a second read, changes nothing that was assessed and
- * nothing an adapter sees: the value proven inside the grant's bound is the
- * value that crosses the boundary.
+ * Every declared top-level field is read from the caller's object exactly
+ * once, here, and the snapshot is built from those captured values alone — the
+ * caller's object is never spread, enumerated or read again. A request that is
+ * an accessor or a `Proxy` therefore cannot answer one value to a presence
+ * check and another to the copy: the value this function decided about is the
+ * value it stores, and the snapshot is frozen.
  *
- * Only the declared fields are copied (`dimension`, `type`, `value`; `value`,
- * `unit`), so nothing else on a caller's entry travels on. Total: a malformed
- * list or entry is carried as-is, or as `null` when reading it throws, and the
- * assessment refuses it as malformed rather than this function guessing. No
+ * The structured values an adapter will receive — the amount, the typed
+ * parameters and the correlation — are copied field by field into new frozen
+ * objects the moment an exercise begins, and everything after that point
+ * (every assessment, the exercise-control input, the `ValidatedExecutionAction`)
+ * reads the copy. A caller that keeps a reference to its request object, its
+ * parameter array or an entry in it, and mutates any of them while the
+ * exercise awaits a store, a reservation or a second read, changes nothing
+ * that was assessed and nothing an adapter sees: the value proven inside the
+ * grant's bound is the value that crosses the boundary.
+ *
+ * Only the declared fields are copied (the request's own; `dimension`, `type`,
+ * `value`; `value`, `unit`; the correlation's four), so nothing else on a
+ * caller's object travels on. A top-level read that throws refuses the
+ * exercise before anything is read or assessed. Below that, total: a malformed
+ * list, entry, amount or correlation is carried as-is, or as `null` when
+ * reading it throws, and the assessment refuses it as malformed rather than
+ * this function guessing. An optional field stays absent when it is absent. No
  * value is converted, trimmed, lowered or re-typed here.
  */
 export function snapshotGrantExerciseRequest(request: GrantExerciseRequest): GrantExerciseRequest {
-  const { parameters, amount } = request;
-  return {
-    ...request,
+  const boundedGrantId = request.boundedGrantId;
+  const subject = request.subject;
+  const action = request.action;
+  const resource = request.resource;
+  const counterparty = request.counterparty;
+  const organization = request.organization;
+  const amount = request.amount;
+  const governanceProfile = request.governanceProfile;
+  const actionClass = request.actionClass;
+  const resourceClass = request.resourceClass;
+  const parameters = request.parameters;
+  const correlation = request.correlation;
+  const executionId = request.executionId;
+  return Object.freeze({
+    boundedGrantId,
+    subject,
+    action,
+    resource,
+    ...(counterparty !== undefined ? { counterparty } : {}),
+    ...(organization !== undefined ? { organization } : {}),
     ...(amount !== undefined ? { amount: snapshotAmount(amount) } : {}),
+    ...(governanceProfile !== undefined ? { governanceProfile } : {}),
+    ...(actionClass !== undefined ? { actionClass } : {}),
+    ...(resourceClass !== undefined ? { resourceClass } : {}),
     ...(parameters !== undefined ? { parameters: snapshotParameters(parameters) } : {}),
-  };
+    correlation: snapshotCorrelation(correlation),
+    executionId,
+  });
+}
+
+function snapshotCorrelation(correlation: GrantCorrelation): GrantCorrelation {
+  try {
+    if (correlation === null || typeof correlation !== 'object') return correlation;
+    const { requestId, decisionId, action, resourceScope } = correlation;
+    return Object.freeze({
+      ...(requestId !== undefined ? { requestId } : {}),
+      ...(decisionId !== undefined ? { decisionId } : {}),
+      ...(action !== undefined ? { action } : {}),
+      ...(resourceScope !== undefined ? { resourceScope } : {}),
+    }) as GrantCorrelation;
+  } catch {
+    return null as unknown as GrantCorrelation;
+  }
 }
 
 function snapshotAmount(amount: GrantExerciseAmount): GrantExerciseAmount {
