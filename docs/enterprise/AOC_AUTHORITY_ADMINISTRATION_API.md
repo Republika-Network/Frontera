@@ -1,4 +1,6 @@
-# Authority Administration API (CTRL-01)
+# Authority Administration API (CTRL-01) and the Operator Plane (CTRL-02)
+
+> **Since CTRL-02** the `/api/admin/...` family is the identified **operator plane**: CTRL-02 operators (`operators[]`, one role each) authenticate here alongside CTRL-01 administrators, every operation checks one permission (§10), and the operator plane adds agent inventory, operator-issued agent credentials, Kernel-Authority provisioning and the Governance Profile lifecycle (§10). A CTRL-01 administrator keeps exactly the CTRL-01 operations below — never provisioning. Rows in §1 marked *CTRL-02* supersede this document's CTRL-01-era "not exposed" statements.
 
 - **Milestone:** CTRL-01 — Authority Administration API (`docs/architecture/FRONTERA-MASTER-PLAN.md` §9).
 - **Code:** `src/enterprise/authority-administration/` (service + wire contract),
@@ -30,11 +32,12 @@ a Node REPL, repository changes or developer intervention.
 | Revoke a Kernel Authority entity (actor, passport, capability token, authority grant, delegation) | **yes** | `KernelAuthorityProvisioningService.revoke` |
 | List, activate, release emergency controls | **yes** | `EmergencyControlStorePort.active / activate / release` (P4) |
 | Issue a bounded grant | **no — intentionally not exposed** | Grants are minted only from a committed, verified Kernel decision inside the governed-action orchestrator. An administrative issuance route would mint authority no decision produced. |
-| Provision Kernel Authority (actors, trust domains, grants, delegations) | **no — deferred** | Stays the trusted in-process surface. Creating standing organizational authority over a single shared bearer credential, with no human operator identity, is the wrong trust model; human operator identity and agent inventory are CTRL-02. |
+| Provision Kernel Authority (actors, trust domains, grants, delegations) | **CTRL-02: yes, to identified operators by role — never to a CTRL-01 administrator** | `POST /api/admin/authority/entities/{kind}` → `KernelAuthorityProvisioningService` (§10). Over a CTRL-01 administrator credential it stays refused (403): a shared administrator secret is still the wrong boundary for creating standing authority. |
 | Delegation / attenuation | **no** | No new delegation semantics. Delegations are Kernel Authority entities; they can be inspected and revoked here, not created. |
 | Un-revoke, delete or clear a revocation, reactivate | **no — and never** | Revocation is monotonic in every store. Restoring authority is new provisioning under a new id. No route, service method or port offers it. |
-| Listing / search | **no** | Inspect-by-known-id only (see §6 for how an operator obtains ids). No bulk read. |
-| Approvals, organizations, humans, agents, web UI, policy CRUD, payments, KMS | **no** | CORE-05/CTRL-04, CTRL-02, CTRL-03, CORE-03, PAY, CORE-02 |
+| Listing / search | **CTRL-02: yes, to operators** (`GET /api/admin/authority/entities?kind=&status=`, `GET /api/admin/agents`) | CTRL-01 administrators remain inspect-by-known-id only (§6). |
+| Organizations, human operators, agents | **CTRL-02: yes** (§10) | — |
+| Approvals, web UI, policy CRUD, payments, KMS | **no** | CORE-05/CTRL-04, CTRL-03, CORE-03, PAY, CORE-02 |
 
 ## 2. Security model
 
@@ -288,8 +291,9 @@ is no other reset.
 | HTTP | `code` | Meaning |
 |---|---|---|
 | 400 | `INVALID_REQUEST` | Malformed path id, unknown entity kind, non-object or invalid JSON body, unsupported body field (listed in `details`), invalid reason or control, non-revocable entity kind |
-| 401 | `AUTHENTICATION_FAILED` | No `Bearer` credential, or one no administrator or ordinary credential matches |
-| 403 | `AUTHORIZATION_FAILED` | A valid ordinary credential — not an administrator |
+| 401 | `AUTHENTICATION_FAILED` | No `Bearer` credential, or one no operator, administrator or ordinary credential matches (an operator-issued agent credential is unknown here) |
+| 403 | `AUTHORIZATION_FAILED` | A valid ordinary credential — not an operator or administrator |
+| 403 | `OPERATOR_PERMISSION_DENIED` | CTRL-02: an operator or administrator whose role does not hold the operation's permission. The body was not read; nothing changed |
 | 404 | `AUTHORITY_ADMIN_TARGET_NOT_FOUND` | The grant, execution or entity is not held for this organization |
 | 404 | `AUTHORITY_ADMIN_CAPABILITY_NOT_COMPOSED` | The Host did not compose the capability the route administers |
 | 404 | `NOT_FOUND` | No such administration route or method (including every un-revoke shape), or the API is not configured |
@@ -436,5 +440,76 @@ transition) — so the Host reports nothing from it and `/ready` will be failing
 (`AUTHORITATIVE_GRANT_STORE.md`, `AUTHORITY_ARTIFACT_AUTHENTICITY.md`).
 
 **Restoring authority after a revocation** is not an administration operation:
-revocation is permanent. Provision new authority under a new id (today through
-the trusted in-process provisioning surface; CTRL-02 owns the API for it).
+revocation is permanent. Provision new authority under a new id — since CTRL-02
+over `POST /api/admin/authority/entities/{kind}` by an operator whose role
+permits it (§10). A revoked actor is never re-onboarded under its id or its
+external subject; onboard a new agent identity.
+
+## 10. The operator plane (CTRL-02)
+
+Decision record: `docs/architecture/ADR-CTRL-02-OPERATOR-AGENT-IDENTITY.md`.
+Qualification: `docs/security/CTRL-02-ORGANIZATIONS-OPERATORS-AGENT-INVENTORY.md`.
+
+### 10.1 Operators and roles
+
+Configured in the governed-action file — `"operators": [{ "operatorId": "ops-alice", "role": "provisioner", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_ALICE" }]` — each with a secret of at least 32 characters, unique across every credential. The organization is the Host's own; the operator identity every store records is `operator:<operatorId>`. No request can state an operator, role, permission, organization or `system` flag.
+
+| Role | May |
+|---|---|
+| `observer` | read: the organization and itself, the agent inventory, Kernel-Authority entities, Governance Profile versions, and the CTRL-01 reads |
+| `responder` | read; revoke Kernel-Authority entities and bounded grants; revoke an agent credential; declare an emergency stop. Never create, widen or release |
+| `provisioner` | read; provision actors (human, agent), passports, capability tokens, authority and delegation grants; issue, rotate and revoke agent credentials; revoke |
+| `profile-steward` | read; activate and retire Governance Profile versions |
+| `organization-administrator` | everything, including organization bootstrap (trust domains, root issuers, organization/system actors) and emergency release |
+| *CTRL-01 administrator* | exactly the CTRL-01 operations (§4): inspect, revoke, emergency stop and release |
+
+### 10.2 Endpoints
+
+| Method | Path | Permission | Body |
+|---|---|---|---|
+| GET | `/api/admin/organization` | `organization.read` | — |
+| GET | `/api/admin/agents` | `inventory.read` | — |
+| GET | `/api/admin/agents/{actorId}` | `inventory.read` | — |
+| POST | `/api/admin/agents/{actorId}/credentials` | `agent-credential.manage` | `{ idempotencyKey }` |
+| POST | `/api/admin/agents/{actorId}/credentials/{credentialId}/rotate` | `agent-credential.manage` | `{ idempotencyKey }` |
+| POST | `/api/admin/agents/{actorId}/credentials/{credentialId}/revoke` | `agent-credential.revoke` | `{ reason }` |
+| GET | `/api/admin/authority/entities?kind=&status=` | `inventory.read` | — |
+| POST | `/api/admin/authority/entities/{kind}` | `authority.provision` (`authority.bootstrap` for `trust-domain`, `root-issuer`, organization/system actors) | the kind's closed schema + optional `idempotencyKey` |
+| GET | `/api/admin/governance-profiles` | `inventory.read` | — |
+| POST | `/api/admin/governance-profiles/{profileId}/versions/{version}/activate` | `profile.promote` | `{ digest, reason? }` |
+| POST | `/api/admin/governance-profiles/{profileId}/versions/{version}/retire` | `profile.retire` | `{ digest, reason? }` |
+
+Provisioning bodies mirror the Kernel Authority's own inputs (`actor`: `actorId, type, displayName, issuerId?, trustDomainId?, jurisdiction?, externalSubject?`; `passport`; `capability-token`; `authority-grant` with optional P10 `constraints`; `delegation-grant`; `trust-domain`; `root-issuer`). Every named actor, trust domain and source grant must exist and be active; the would-be world is replayed through the engines before the write. A query string other than the listed filters is refused (an organization can never be named). There is no route that mints a bounded grant.
+
+An issued credential (`fra1.agc-….…`) appears **once**, in `bearerCredential` of the issuing or rotating response; a replay answers `bearerCredential: null`. Hand it to the agent's runtime as its `Authorization: Bearer` credential for `POST /api/governed-actions`.
+
+### 10.3 Additional errors
+
+| HTTP | `code` | Meaning |
+|---|---|---|
+| 403 | `OPERATOR_PERMISSION_DENIED` | The role lacks the permission |
+| 409 | `OPERATOR_IDEMPOTENCY_CONFLICT` | The idempotency key was used for a different request; nothing written |
+| 409 | `OPERATOR_OPERATION_REFUSED` | The authoritative store or lifecycle refused (`failure`: e.g. `KERNEL_AUTHORITY_ENTITY_CONFLICT`, `KERNEL_AUTHORITY_ENTITY_REVOKED`, `KERNEL_AUTHORITY_REFERENCE_INVALID`, `KERNEL_AUTHORITY_REFERENCE_REVOKED`, `KERNEL_AUTHORITY_EXTERNAL_SUBJECT_CONFLICT`, `PROFILE_DIGEST_MISMATCH`, `PROFILE_LIFECYCLE_STATIC`, `CONTROL_PLANE_CONFLICT`); `recorded: false` |
+
+### 10.4 Runbook — onboard a pilot agent (no source, REPL or database)
+
+```bash
+ADMINOP="authorization: Bearer $FRONTERA_OPERATOR_KEY_ADMIN"     # organization-administrator
+PROV="authorization: Bearer $FRONTERA_OPERATOR_KEY_ALICE"         # provisioner
+J='content-type: application/json'
+# once per organization: the issuer, its trust domain, its root-issuer standing
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/actor" -H "$ADMINOP" -H "$J" -d '{"actorId":"actor-org","type":"organization","displayName":"Acme"}'
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/trust-domain" -H "$ADMINOP" -H "$J" -d '{"trustDomainId":"td-acme","name":"Acme","issuerActorId":"actor-org","acceptedIssuerIds":["actor-org"],"acceptedActorTypes":["human","agent","organization"]}'
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/root-issuer" -H "$ADMINOP" -H "$J" -d '{"trustDomainId":"td-acme","actorId":"actor-org"}'
+# per agent: owner and agent actors, the agent's credential, bounded standing authority
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/actor" -H "$PROV" -H "$J" -d '{"actorId":"actor-treasurer","type":"human","displayName":"Treasurer","issuerId":"actor-org","trustDomainId":"td-acme"}'
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/actor" -H "$PROV" -H "$J" -d '{"actorId":"actor-payables","type":"agent","displayName":"Payables","issuerId":"actor-org","trustDomainId":"td-acme","externalSubject":{"system":"erp","subjectId":"payables-1"}}'
+curl -s -X POST "$FRONTERA/api/admin/agents/actor-payables/credentials" -H "$PROV" -H "$J" -d '{"idempotencyKey":"payables-cred-0001"}'   # store bearerCredential now: shown once
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/authority-grant" -H "$PROV" -H "$J" -d '{"authorityGrantId":"grant-payables","issuerActorId":"actor-org","subjectActorId":"actor-treasurer","trustDomainId":"td-acme","capability":"payables.manage","actions":["transfer-funds"],"resourceScopes":["operating-account"],"canDelegate":true,"allowedDelegateActorTypes":["agent"],"maxDelegationDepth":1,"constraints":[{"type":"max_amount","currency":"USD","value":"500"},{"type":"spending_limit","limitId":"payables-lifetime","currency":"USD","maximum":"10000","window":{"kind":"lifetime"}}]}'
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/passport" -H "$PROV" -H "$J" -d '{"passportId":"passport-payables","type":"agent_passport","subjectActorId":"actor-payables","issuerActorId":"actor-org","trustDomainId":"td-acme"}'
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/capability-token" -H "$PROV" -H "$J" -d '{"capabilityTokenId":"cap-payables","subjectActorId":"actor-payables","principalActorId":"actor-treasurer","issuerActorId":"actor-treasurer","trustDomainId":"td-acme","capability":"payables.execute","actions":["transfer-funds"],"resourceScopes":["operating-account"],"riskLevel":"medium"}'
+curl -s -X POST "$FRONTERA/api/admin/authority/entities/delegation-grant" -H "$PROV" -H "$J" -d '{"delegationGrantId":"delegation-payables","delegatorActorId":"actor-treasurer","delegateActorId":"actor-payables","delegateActorType":"agent","trustDomainId":"td-acme","sourceAuthorityGrantId":"grant-payables","capability":"payables.execute","actions":["transfer-funds"],"resourceScopes":["operating-account"],"canRedelegate":false}'
+curl -s "$FRONTERA/api/admin/agents/actor-payables" -H "$PROV"     # onboarding: actor active, credential active, standing authority assigned
+```
+
+A financial action needs both a per-execution ceiling (`max_amount`) and an aggregate limit (`spending_limit`) on its authority lineage; without the latter it is withheld (P10). Offboarding: `POST /api/admin/authority/entities/actor/actor-payables/revoke` (terminal; every credential bound to the agent stops admitting it), or revoke one credential (`…/credentials/{id}/revoke`) to replace it.
