@@ -752,6 +752,13 @@ shutdown failed.
 - **Profile content** (a new Governance Profile version) is a configuration
   change and a restart; promoting or retiring a catalog version is an API call
   (CTRL-02).
+- **The control-plane store** (`control-plane.sqlite`) is not in `backup:v1`
+  and is neither signed nor witnessed: restoring an older copy resurrects
+  revoked or rotated-out agent credentials and earlier profile lifecycle state.
+  After any such restore, re-revoke affected credentials or the agents' actors.
+- **Typed parameter authority** (e.g. `replicaCount ≤ 3`) is provisioned on the
+  standing grant over the API (`parameterBounds`, CTRL-02) — no policy pack or
+  source change is needed for a standing parameter ceiling.
 - **Backup/restore** covers four stores; the governed-action stores are
   PROD-02. Never back up or restore the authority-state witness's database
   together with the authority stores (CORE-07).

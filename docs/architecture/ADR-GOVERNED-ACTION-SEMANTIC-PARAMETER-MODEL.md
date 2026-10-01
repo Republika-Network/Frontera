@@ -321,13 +321,16 @@ is attribution and an explicit, freezable boundary, not isolation from the host.
   grant, exercise) on the one canonical path; they are not handed to adapters.
   Owner: CORE-08 (first domain adapter that needs them).~~ **Delivered by
   CORE-08 — see §9.**
-- **Authority-sourced non-money limits** (a generic counterpart of P10's
+- ~~**Authority-sourced non-money limits** (a generic counterpart of P10's
   `spending_limit`): today a non-money bound comes from the decision's
   projection and trusted host narrowing. Owner: CTRL-02 (provisioning schema)
-  with CORE-04.
+  with CORE-04.~~ **Delivered by CTRL-02** (pre-push hardening): standing
+  `parameterBounds` on authority and delegation grants, in this ADR's canonical
+  bound shape and algebra, enforced on the decision's lineage before any grant
+  is issued (`ADR-CTRL-02-OPERATOR-AGENT-IDENTITY.md` D10; SEC-INV-198).
 - **Durable policy store** and wiring policy packs into the shipped Host: not
   CORE-03 (NB-008's attribution and freeze are closed here).
-- **Profile lifecycle, promotion identity and signing** (OQ-2, who may promote): CTRL-02.
+- **Profile lifecycle, promotion identity and signing** (OQ-2, who may promote): CTRL-02 — lifecycle (catalog-backed draft → active → retired) and promotion identity **delivered**; cryptographic signing of profile content not done.
 - **Material-fact admission:** CORE-04.
 - **Profile resolution by interpretation:** INTEL-02.
 
