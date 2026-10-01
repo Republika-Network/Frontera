@@ -63,7 +63,7 @@ intent.parameters → trusted profile declaration → type validation (no coerci
 | Canonical ordering, duplicate-free, dimension-bound | The exercise gate refuses a non-ascending or duplicated list as malformed and requires the list to equal the grant's bounded dimensions exactly, both directions |
 | Type-preserving | Entries are copied field by field (`dimension`, `type`, `value`); an integer stays a safe integer (never `-0`), a token byte-exact, a boolean a boolean |
 | Immutable, plain data | The action, its amount, correlation, parameter list and every entry are fresh frozen objects; no getter, Proxy, caller array, intent, grant or request reference crosses |
-| No post-authorization substitution | `snapshotGrantExerciseRequest` reads the attempt **once** when the exercise begins; the assessment, the P7 input and the adapter input all read that copy. A caller mutating its objects during the store read or reservation changes nothing (measured with a mutation *inside* the await) |
+| No post-authorization substitution | `snapshotGrantExerciseRequest` reads the attempt **once** when the exercise begins — every declared top-level field exactly once, the snapshot built from those captured values alone, the caller's request never spread or re-read (§17) — and the assessment, the P7 input and the adapter input all read that copy. A caller mutating its objects during the store read or reservation changes nothing (measured with a mutation *inside* the await) |
 | Presence | Exactly when the exercised grant bounds parameters; a legacy grant bounds none and can never deliver one |
 
 The adapter port still carries no decision, status, policy result, approval, obligation state, trusted context, grant scope, source authorization, digest or Kernel handle (SEC-INV-187).
@@ -92,9 +92,9 @@ Decision and full rationale: `docs/architecture/ADR-DURABLE-MONETARY-OUTCOMES.md
 | Record `schemaVersion` | `aoc.execution-outcome-store.schema.v1` | `aoc.execution-outcome-store.schema.v2` |
 | `parameters` | never — a v1 row carrying one is `EXECUTION_OUTCOME_CORRUPT` | the exact list the adapter received, canonical form |
 | Attempt digest | `aoc.execution-outcome.attempt.v1`, formula unchanged | `aoc.execution-outcome.attempt.v2`, binds `parameters` or `null` |
-| Store file | migrated on open: `ADD COLUMN parameters_json`, `migrated` history row, no row rewritten | fresh files are created at v2 |
+| Store file | migrated on open, decided under `BEGIN IMMEDIATE` from the version read while holding the lock: `ADD COLUMN parameters_json`, exactly one `migrated` history row, no row rewritten (§17) | fresh files are created at v2 |
 
-Evidence is measured against a **real** pre-CORE-08 store: `src/enterprise/__tests__/fixtures/pre-core-08/p11-v1-execution-outcome-store.json` holds the DDL and rows written by the unmodified P11 runtime built from `8d99567` (`generatedBy`), including a monetary and a plain attempt with their terminal observations. An independent recomputation of the v1 formula reproduces every historical digest; after migration each legacy record reads back as v1, without a `parameters` key, verified; a retry that would re-prepare it with parameters is a conflict before the claim; a v1 row tampered to carry parameters is corrupt; an unknown file version is still refused unopened. P12 binds and resolves a v2 attempt by its digest, its selection context and query carry no parameters, and reconciliation never rebuilds or resends a payload (`execution-outcome-parameters.test.ts`).
+Evidence is measured against a **real** pre-CORE-08 store: `src/enterprise/__tests__/fixtures/pre-core-08/p11-v1-execution-outcome-store.json` holds the DDL and rows written by the unmodified P11 runtime built from `8d99567` (`generatedBy`), including a monetary and a plain attempt with their terminal observations. An independent recomputation of the v1 formula reproduces every historical digest; after migration each legacy record reads back as v1, without a `parameters` key, verified; a retry that would re-prepare it with parameters is a conflict before the claim; a v1 row tampered to carry parameters is corrupt; an unknown file version is still refused unopened. Independent openers — separate connections in separate threads — racing on one v1 file append exactly one `migrated` row, and a newer version committed while they wait for the lock is refused with the schema untouched (§17). P12 binds and resolves a v2 attempt by its digest, its selection context and query carry no parameters, and reconciliation never rebuilds or resends a payload (`execution-outcome-parameters.test.ts`).
 
 ## 7. Reference domains on one Host
 
@@ -353,3 +353,48 @@ Every live §11.6 criterion holds (§2 → §8 – §12), every item of the CORE
 Not claimed: that every possible machine action is supported; physical-actuation safety; rail neutrality (CORE PROVEN, §11.2).
 
 **CORE-08 → VERIFIED. GOVERNED ACTION THESIS PROVEN → ACHIEVED.**
+
+## 17. Review hardening (PR #157 adversarial review)
+
+A fresh adversarial review of `536c3cb` found two defects. Both were treated as real until executable evidence settled them; both were real, and both are fixed in code — no claim above was narrowed to accommodate them.
+
+**P1 — the snapshot re-read the caller's request.** `snapshotGrantExerciseRequest` tested `amount` and `parameters` for presence and then built the copy with `{ ...request }`, which reads every accessor a second time. A top-level getter answering `undefined` to the presence test and a caller-owned value to the spread put that value — not copied, not frozen — into the snapshot, so it reached the assessment and the adapter. Measured on the reviewed build: an `amount` getter (`undefined`, then a mutable object) executed with the caller's own unfrozen object delivered to the adapter. The same class reached one level deeper: the correlation was carried by reference and read once to build the adapter's correlation and again by the assessment, so a `requestId` getter answering a forged id first and the genuine id afterwards executed with the forged id handed to the adapter.
+
+*Fix.* Every declared top-level field is read exactly once into a local, and the snapshot is built from those captured values alone and frozen; the caller's request is never spread, enumerated or read again, and nothing beyond the declared fields travels. The correlation is copied into a fresh frozen `{ requestId, decisionId, action, resourceScope }` the same way the amount and each parameter entry are. No coercion, no default; an optional field stays absent; a top-level read that throws refuses the exercise before anything is read or assessed; a malformed nested value is still carried as-is or as `null` and refused by the assessment.
+
+*Regressions* (`execution-parameter-delivery.test.ts`, "every top-level request field is read exactly once"): a top-level `parameters` getter (`undefined`, then a valid mutable list) is observed once and the list is never touched by anything — not the assessment, not the adapter; the symmetric `amount` getter; getters answering two different in-bound values (parameters and amount), where the captured value is the one delivered even when the caller rewrites it inside the await; a `Proxy` request whose every second read answers a forged value — each field `get` once, no `ownKeys` / descriptor / `has` trap, and the adapter's input equal field for field to the first answers; the forged-then-genuine correlation, now withheld as `GRANT_EXERCISE_CORRELATION_INVALID` with zero adapter calls.
+
+**P2 — the P11 migration was decided before the lock.** `createSqliteExecutionOutcomeStore` read the version history, refused an unknown version and derived `migratingFromV1` **before** `BEGIN IMMEDIATE`; inside the transaction it re-read `latest` but still branched on the stale boolean. Two openers that both read v1 each appended a `migrated` row (history v1, v2, v2), and an opener that read v1 while a newer runtime advanced the file under it appended a v2 marker after the newer version.
+
+*Fix.* The whole decision is one `BEGIN IMMEDIATE` transaction: read the latest version → validate it (anything but absent, v1 or v2 is refused) → decide the transition (absent → `current`; v1 → exactly one `migrated`; v2 → nothing appended) → sample the clock only if a row will be written → `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN` → append → commit. Nothing read before the lock authorizes anything, and no schema is touched before the under-lock version is accepted. A refusal rolls back and closes the connection. Fresh-file behaviour, historical v1 rows (byte-for-byte), the v1 / v2 digest rules and idempotent reopen are unchanged.
+
+*Regressions* (`execution-outcome-parameters.test.ts`, "P11 schema migration is decided once, under BEGIN IMMEDIATE"): worker threads, each with its own `better-sqlite3` connection to one file, are started while a holder connection keeps `BEGIN IMMEDIATE`, so each reaches the lock while the file still reads v1; the holder releases them only after each has had its chance to decide before the lock (it waits for each opener's pre-lock clock sample, which a pre-lock decision makes, or a grace period), asserting none finished while it held the lock. Three openers racing on the real pre-CORE-08 v1 fixture, three rounds: all open, history exactly `v1 current` → `v2 migrated`, one clock sample across all openers, every historical attempt and observation byte-identical, v1 digests still verified, reopen appends nothing. Three openers racing to create one file: exactly one `current` row. A newer version committed by the holder while two v2 openers wait: both refused `EXECUTION_OUTCOME_STORE_UNAVAILABLE` naming that version, no clock sampled, history `v1` → newer only, `parameters_json` never added.
+
+**Mutations.** Same discipline as §13 — exact single-occurrence anchors, `tsc -b` must compile (a compile failure is not a kill), the named suite run, original bytes restored and SHA-256 re-verified, `dist` rebuilt from restored sources — run on the LF working copy.
+
+| ID | File / component | Semantic mutation | Security property challenged | Killing test(s) | Observed result |
+|---|---|---|---|---|---|
+| RH-1 | `execution-runtime/domain/grant-exercise-request.ts` › `snapshotGrantExerciseRequest` | The reviewed double read restored: presence-test `amount` / `parameters`, then `{ ...request }` | Every top-level field read once | the four top-level accessor / `Proxy` tests and the correlation test ("the getter is observed exactly once"; "'parameters' was read 2 times") | KILLED — 5 / 26 |
+| RH-2 | same › `snapshotGrantExerciseRequest` | Correlation carried by reference (`correlation` instead of its snapshot) | Adapter correlation = assessed correlation | “the correlation is captured once too: the adapter can never be told a correlation other than the one matched against the grant” | KILLED — 1 / 26 |
+| RH-3 | `execution-outcome-store/sqlite-execution-outcome-store.ts` › open | The reviewed pre-lock decision restored verbatim from `536c3cb` | Migration decided under the lock | v1 race (history gained extra `v2 migrated` rows); newer-version test (both openers `opened` and appended v2 after it); fresh race (clock sampled 3× for one row) | KILLED — 3 / 19 |
+| RH-4 | same › open | Under-lock shape kept, but the transition decided from a version read before `BEGIN IMMEDIATE` | No stale pre-lock decision | v1 race (duplicate `migrated` rows); fresh race (duplicate `current` rows) | KILLED — 2 / 19 |
+
+**Result: 4 mutations executed — 4 KILLED.** Restored SHA-256: `grant-exercise-request.ts` `f23fcc1e24ab6f16b87ef12685aad17ccdd04c72508db5da18c7d801dd7d0fc8`; `sqlite-execution-outcome-store.ts` `de7e16322fdec29514712ab826faafe2302e3d0d60be3e9d9987f6b94244986d`.
+
+**Ledgers.** THREAT_MODEL_V1 §7.24 gains one BLOCKED row (P11 concurrent store migration), carried into the CORE-06 ledger as `TM-7.24-14` with the three race tests as evidence; `TM-7.24-2` cites the new single-read tests; SEC-INV-181 and SEC-INV-183 state the strengthened guarantees.
+
+**Focused validation (working copy, LF sources).**
+
+| Group | Tests | Pass | Fail |
+|---|---|---|---|
+| Grant runtime + execution runtime (incl. the CORE-08 delivery suite) | 451 | 451 | 0 |
+| P11 outcomes (store, boundaries, concurrency, CORE-08 parameters incl. the race tests, durable outcomes + e2e) | 124 | 124 | 0 |
+| CORE-08 Host + structure | 58 | 58 | 0 |
+| CORE-03 regressions | 118 | 118 | 0 |
+| CORE-06 qualification + BLOCKED-claim ledger | 59 | 59 | 0 |
+| Security ledgers (invariants, no-bypass effect paths) | 63 | 63 | 0 |
+| SQLite concurrency + version guard | 184 | 183 (1 pre-existing skip: in-memory "not durable") | 0 |
+
+`check-api-freeze` (36 endpoints, no drift), `check-sdk-surface` (5 frozen exports) and `check-release-docs` (24 documents) pass. The full-repository and clean-export results for the commit carrying this section are reported with the review hardening.
+
+The verdict of §16 stands.
