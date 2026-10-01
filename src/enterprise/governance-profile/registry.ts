@@ -16,6 +16,7 @@ import {
   type GovernanceConfiguration,
   type GovernanceProfileApproval,
   type GovernanceProfileDefinition,
+  type GovernanceProfileLifecycleView,
   type GovernanceProfileObligation,
   type GovernanceProfileParameter,
   type GovernanceProfileRegistry,
@@ -281,7 +282,21 @@ function buildReservedContextKeys(value: unknown): readonly string[] {
   return Object.freeze(keys.sort(byId));
 }
 
-export function createGovernanceProfileRegistry(configuration: GovernanceConfiguration | undefined): GovernanceProfileRegistry {
+export interface GovernanceProfileRegistryOptions {
+  /**
+   * CTRL-02 — operator-promoted lifecycle. The configured profiles become a
+   * catalog: several versions of one profile may be declared (every version of
+   * a profile governs the same action class × resource class, and no other
+   * profile governs it), each validated and composed exactly as before, and a
+   * request resolves only the version the lifecycle reports active — and only
+   * while its content digest is the one that was activated. A draft (never
+   * activated) or retired version resolves nothing.
+   */
+  readonly lifecycle?: GovernanceProfileLifecycleView;
+}
+
+export function createGovernanceProfileRegistry(configuration: GovernanceConfiguration | undefined, options: GovernanceProfileRegistryOptions = {}): GovernanceProfileRegistry {
+  const lifecycle = options.lifecycle;
   const config = closed(configuration ?? {}, ['parameterDimensions', 'actionClasses', 'resourceClasses', 'profiles', 'reservedContextKeys'], 'governance');
   const reservedContextKeys = buildReservedContextKeys(config['reservedContextKeys']);
   const reservedFolds = new Set(reservedContextKeys.map((key) => key.toLowerCase()));
@@ -299,16 +314,41 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
   const byCombination = new Map<string, ResolvedGovernanceProfile>();
   const profileFolds = new Set<string>();
   const profiles: ResolvedGovernanceProfile[] = [];
+  // CTRL-02 lifecycle catalog: combination → the one profile id governing it,
+  // profile id → its versions, and the fold → spelling of every profile id.
+  const profileOfCombination = new Map<string, string>();
+  const catalog = new Map<string, Map<number, ResolvedGovernanceProfile>>();
+  const spellingOfFold = new Map<string, string>();
   for (const [index, raw] of list(config['profiles'], 'profiles', LIMITS.profiles).entries()) {
     const definition = validateProfile(raw, index, dimensions, actions.ids, resources.ids);
     const fold = semanticIdentifierFold(definition.profileId);
-    // One version of a profile per registry: a lifecycle (draft → active →
-    // retired) is future work, and two simultaneously active versions of one
-    // profile would make "which version governed this?" ambiguous.
-    if (profileFolds.has(fold)) fail(`profiles[${index}].profileId '${definition.profileId}' is declared twice (one active version per profile; identifiers are unique regardless of case).`);
-    profileFolds.add(fold);
     const combination = `${definition.actionClass}\u0000${definition.resourceClass}`;
-    if (byCombination.has(combination)) fail(`profiles[${index}] governs ${definition.actionClass} × ${definition.resourceClass}, which another profile already governs.`);
+    if (lifecycle === undefined) {
+      // One version of a profile per registry without a lifecycle: two
+      // simultaneously active versions of one profile would make "which
+      // version governed this?" ambiguous.
+      if (profileFolds.has(fold)) fail(`profiles[${index}].profileId '${definition.profileId}' is declared twice (one active version per profile; identifiers are unique regardless of case).`);
+      profileFolds.add(fold);
+      if (byCombination.has(combination)) fail(`profiles[${index}] governs ${definition.actionClass} × ${definition.resourceClass}, which another profile already governs.`);
+    } else {
+      // A catalog: versions of one profile, each immutable content, one
+      // combination per profile and one profile per combination — so "which
+      // profile governs this pair" stays a single answer and only "which of
+      // its versions is active" is the lifecycle's to say.
+      const spelling = spellingOfFold.get(fold);
+      if (spelling !== undefined && spelling !== definition.profileId) fail(`profiles[${index}].profileId '${definition.profileId}' differs only by case from '${spelling}'.`);
+      spellingOfFold.set(fold, definition.profileId);
+      const versions = catalog.get(definition.profileId) ?? new Map<number, ResolvedGovernanceProfile>();
+      if (versions.has(definition.version)) fail(`profiles[${index}] declares ${definition.profileId} version ${definition.version} twice; a profile version is immutable content.`);
+      const governing = profileOfCombination.get(combination);
+      if (governing !== undefined && governing !== definition.profileId) fail(`profiles[${index}] governs ${definition.actionClass} × ${definition.resourceClass}, which profile '${governing}' already governs.`);
+      for (const other of versions.values()) {
+        if (other.definition.actionClass !== definition.actionClass || other.definition.resourceClass !== definition.resourceClass) {
+          fail(`profiles[${index}]: every version of '${definition.profileId}' must govern the same action class × resource class.`);
+        }
+      }
+      profileOfCombination.set(combination, definition.profileId);
+    }
     // CORE-05: authority to approve is not authority to act. An approver
     // action that is also a governed action would let the authority to take an
     // action double as the standing to approve it.
@@ -319,10 +359,30 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
       reference: Object.freeze({ id: definition.profileId, version: definition.version, digest: governanceProfileDigest(definition) }),
       source: 'host-configuration' as const,
     });
-    byCombination.set(combination, resolved);
+    if (lifecycle === undefined) {
+      byCombination.set(combination, resolved);
+    } else {
+      const versions = catalog.get(definition.profileId) ?? new Map<number, ResolvedGovernanceProfile>();
+      versions.set(definition.version, resolved);
+      catalog.set(definition.profileId, versions);
+    }
     profiles.push(resolved);
   }
-  profiles.sort((left, right) => byId(left.definition.profileId, right.definition.profileId));
+  profiles.sort((left, right) => byId(left.definition.profileId, right.definition.profileId) || left.definition.version - right.definition.version);
+
+  /** The profile governing a classified pair: the configured one, or (lifecycle) the active catalog version whose digest is the one activated. */
+  function governingProfile(combination: string): ResolvedGovernanceProfile | undefined {
+    if (lifecycle === undefined) return byCombination.get(combination);
+    const profileId = profileOfCombination.get(combination);
+    if (profileId === undefined) return undefined;
+    const active = lifecycle.activeVersion(profileId);
+    if (active === undefined) return undefined;
+    const candidate = catalog.get(profileId)?.get(active.version);
+    // Activated content only: a catalog edit under an activated version number
+    // changes the digest, and the edited content resolves nothing until an
+    // operator promotes it as a version of its own.
+    return candidate !== undefined && candidate.reference.digest === active.digest ? candidate : undefined;
+  }
 
   const dimensionFolds = new Set(dimensions.dimensions.map((dimension) => semanticIdentifierFold(dimension.id)));
   // CORE-04: a declared fact class cannot be spelled by a caller either — in
@@ -343,7 +403,7 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
       if (actionClass === undefined && resourceClass === undefined) return { kind: 'unclassified' };
       if (actionClass === undefined) return { kind: 'refused', reason: GOVERNANCE_PROFILE_REFUSALS.GOVERNANCE_ACTION_CLASS_UNKNOWN };
       if (resourceClass === undefined) return { kind: 'refused', reason: GOVERNANCE_PROFILE_REFUSALS.GOVERNANCE_RESOURCE_CLASS_UNKNOWN };
-      const profile = byCombination.get(`${actionClass}\u0000${resourceClass}`);
+      const profile = governingProfile(`${actionClass}\u0000${resourceClass}`);
       if (profile === undefined) return { kind: 'refused', reason: GOVERNANCE_PROFILE_REFUSALS.GOVERNANCE_PROFILE_UNKNOWN };
       const semantics: GovernedActionSemantics = Object.freeze({ actionClass, resourceClass, governanceProfile: profile.reference });
       return { kind: 'resolved', profile, semantics };
@@ -356,6 +416,7 @@ export function createGovernanceProfileRegistry(configuration: GovernanceConfigu
       return reservedFolds.has(fold) || shadows(key) || factFolds.has(fold) || RESERVED_INTERNAL_NAMESPACES.some((prefix) => fold === prefix || fold.startsWith(`${prefix}.`));
     },
     factClasses: Object.freeze(factClasses),
+    ...(lifecycle !== undefined ? { lifecycle: 'operator-promoted' as const } : {}),
   });
 }
 

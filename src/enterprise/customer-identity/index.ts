@@ -12,6 +12,8 @@ export {
   type CustomerIdentityRefusalReason,
   type CustomerIdentityUnavailableReason,
   type CustomerPrincipal,
+  type DynamicCustomerCredentialResult,
+  type DynamicCustomerCredentialVerifier,
 } from './contracts.js';
 export { authenticateCustomerCredential, type CustomerAuthenticationResult } from './customer-authenticator.js';
 export { assertCustomerCredentialConfiguration, createCustomerIdentityAdmission, type CustomerIdentityAdmissionOptions } from './admission-service.js';

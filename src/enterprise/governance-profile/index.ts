@@ -4,6 +4,7 @@ export type {
   GovernanceConfiguration,
   GovernanceProfileApproval,
   GovernanceProfileDefinition,
+  GovernanceProfileLifecycleView,
   GovernanceProfileObligation,
   GovernanceProfileParameter,
   GovernanceProfileProvenance,
@@ -14,5 +15,5 @@ export type {
   GovernanceResourceClassDeclaration,
   ResolvedGovernanceProfile,
 } from './contracts.js';
-export { GOVERNANCE_PROFILE_FORMAT, createGovernanceProfileRegistry, governanceProfileDigest } from './registry.js';
+export { GOVERNANCE_PROFILE_FORMAT, createGovernanceProfileRegistry, governanceProfileDigest, type GovernanceProfileRegistryOptions } from './registry.js';
 export { GovernanceProfileConfigurationError } from './errors.js';
