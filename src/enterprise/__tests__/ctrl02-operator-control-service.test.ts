@@ -745,11 +745,16 @@ describe('CTRL-02 provisioning matrix — every exposed kind, through the existi
     assert.equal((await h.store.listRecords({ system: false, organizationId: ORG }, { organizationId: ORG, entityKind: 'authority-grant' })).length, 0);
   });
 
-  it('typed governed parameters are not a second authority model: a parameter bound on standing authority is refused, not ignored', async () => {
+  it('typed governed parameters have one authority model: runtime values, a second bound shape or policy disguised as authority are refused, not ignored', async () => {
     const h = await harness();
     await world(h);
-    for (const field of ['parameters', 'parameterBounds', 'maximum', 'spendingLimit', 'limits']) {
+    for (const field of ['parameters', 'maximum', 'spendingLimit', 'limits', 'parameterLimits', 'scope', 'policy']) {
       assert.equal((await httpError(h.service.provisionAuthorityEntity(auth('provisioner'), 'authority-grant', reader({ ...validBody('authority-grant'), [field]: [{ dimension: 'replicaCount', maximum: 3 }] })))).httpStatus, 400, field);
     }
+    // `parameterBounds` is the one standing parameter-authority field, and only in the canonical CORE-03 shape.
+    for (const bounds of [[{ dimension: 'replicaCount', maximum: 3 }], [{ dimension: 'replicaCount', kind: 'maximum', type: 'integer', limit: 3, value: 3 }], [{ dimension: 'replicaCount', kind: 'range', type: 'integer', limit: 3 }]]) {
+      assert.equal((await httpError(h.service.provisionAuthorityEntity(auth('provisioner'), 'authority-grant', reader({ ...validBody('authority-grant'), parameterBounds: bounds })))).httpStatus, 400);
+    }
+    assert.equal(h.mutations.count, 0);
   });
 });

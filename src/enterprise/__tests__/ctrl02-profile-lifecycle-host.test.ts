@@ -4,13 +4,20 @@ import assert from 'node:assert/strict';
 import { bootEnterpriseHost } from '../host/enterprise-host.js';
 import { EnterpriseHostConfigurationError } from '../host/host-configuration.js';
 import { withDeploymentWitness } from './core07-freshness-fixture.js';
+import { CLUSTER as CORE08_CLUSTER, DEPLOY as CORE08_DEPLOY, observedPolicy } from './core08-reference-domains-fixture.js';
 import {
   ACCOUNT,
   AUTH,
   ORG,
   TRANSFER,
+  AGENT,
+  ISSUER,
+  OWNER,
+  TRUST_DOMAIN,
   bootCtrl02,
   bootstrapOrganization,
+  create,
+  recordingAdapter,
   call,
   createWorkspace,
   ctrl02Env,
@@ -243,5 +250,77 @@ describe('CTRL-02 Governance Profile lifecycle — draft → active → retired,
     (otherResource['resourceClasses'] as unknown[]).push({ id: 'reserve-funds', resources: ['reserve-account'] });
     assert.equal(await refusal(ctrl02File({ governance: otherResource, profileLifecycle: 'operator-promoted' })), 'HOST_GOVERNED_ACTIONS_FILE_INVALID');
     assert.equal(await refusal(lifecycleFile([profile(1), { ...profile(1), profileId: 'second-profile' }])), 'HOST_GOVERNED_ACTIONS_FILE_INVALID');
+  });
+});
+
+describe('CTRL-02 Governance Profile promotion is a permitting governance operation — and still never authority', () => {
+  const deployProfile = (version: number, requireStrategy: boolean): Record<string, unknown> => ({
+    profileId: 'deploy-production',
+    version,
+    owner: ORG,
+    provenance: { authoredBy: 'platform-team', approvedBy: 'change-board' },
+    actionClass: 'deploy',
+    resourceClass: 'production',
+    parameters: [{ dimension: 'replicaCount', required: true }, ...(requireStrategy ? [{ dimension: 'deploymentStrategy', required: true }] : [{ dimension: 'deploymentStrategy', required: false }])],
+    materialFacts: [],
+    relevantPolicies: ['core08-policy'],
+  });
+  const deployGovernance = {
+    parameterDimensions: [
+      { id: 'replicaCount', type: 'integer', bound: 'maximum' },
+      { id: 'deploymentStrategy', type: 'token', bound: 'exact' },
+    ],
+    actionClasses: [{ id: 'deploy', actions: [CORE08_DEPLOY] }],
+    resourceClasses: [{ id: 'production', resources: [CORE08_CLUSTER] }],
+    profiles: [deployProfile(1, true), deployProfile(2, false)],
+  };
+
+  it('a steward activating a less-demanding catalog version relaxes that profile’s own requirements — and nothing else: no authority is created, and independent policy requirements still deny', async () => {
+    const dir = workspace.dir();
+    const adapter = recordingAdapter();
+    const env = ctrl02Env(dir, ctrl02File({ monetary: undefined, governance: deployGovernance, profileLifecycle: 'operator-promoted', routes: [{ action: CORE08_DEPLOY, adapterId: 'pilot.recording' }] }));
+    const host = workspace.track(await bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter], policyPackProvider: observedPolicy().provider }));
+    const { port } = await host.listen();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await bootstrapOrganization(baseUrl);
+    await create(baseUrl, AUTH.provisioner, 'actor', { actorId: OWNER, type: 'human', displayName: 'Owner', issuerId: ISSUER, trustDomainId: TRUST_DOMAIN });
+    await create(baseUrl, AUTH.provisioner, 'actor', { actorId: AGENT, type: 'agent', displayName: 'Agent', issuerId: ISSUER, trustDomainId: TRUST_DOMAIN, externalSubject: { system: 'ci', subjectId: 'deployer-1' } });
+    const credential = expectStatus(await call(baseUrl, 'POST', `/api/admin/agents/${AGENT}/credentials`, { authorization: AUTH.provisioner, body: { idempotencyKey: 'deployer-cred-0001' } }), 200, 'credential').body['bearerCredential'] as string;
+    await create(baseUrl, AUTH.provisioner, 'authority-grant', { authorityGrantId: 'g-deploy', issuerActorId: ISSUER, subjectActorId: OWNER, trustDomainId: TRUST_DOMAIN, capability: 'release.manage', actions: [CORE08_DEPLOY], resourceScopes: [CORE08_CLUSTER], canDelegate: true, allowedDelegateActorTypes: ['agent'], maxDelegationDepth: 1 });
+    await create(baseUrl, AUTH.provisioner, 'passport', { passportId: 'p-deployer', type: 'agent_passport', subjectActorId: AGENT, issuerActorId: ISSUER, trustDomainId: TRUST_DOMAIN });
+    await create(baseUrl, AUTH.provisioner, 'capability-token', { capabilityTokenId: 'c-deployer', subjectActorId: AGENT, principalActorId: OWNER, issuerActorId: OWNER, trustDomainId: TRUST_DOMAIN, capability: 'release.execute', actions: [CORE08_DEPLOY], resourceScopes: [CORE08_CLUSTER], riskLevel: 'high' });
+    await create(baseUrl, AUTH.provisioner, 'delegation-grant', { delegationGrantId: 'd-deployer', delegatorActorId: OWNER, delegateActorId: AGENT, delegateActorType: 'agent', trustDomainId: TRUST_DOMAIN, sourceAuthorityGrantId: 'g-deploy', capability: 'release.execute', actions: [CORE08_DEPLOY], resourceScopes: [CORE08_CLUSTER] });
+    const entitiesBefore = JSON.stringify((await call(baseUrl, 'GET', '/api/admin/authority/entities', { authorization: AUTH.observer })).body['entities']);
+
+    let n = 0;
+    const deploy = (parameters: Record<string, unknown>) => govern(baseUrl, credential, { action: CORE08_DEPLOY, resource: CORE08_CLUSTER, parameters, idempotencyKey: `promotion-${(n += 1)}` });
+    const v1 = await versionOf(baseUrl, 1);
+    const v2 = await versionOf(baseUrl, 2);
+    expectStatus(await call(baseUrl, 'POST', transitionPath(1, 'activate', 'deploy-production'), { authorization: AUTH.steward, body: { digest: v1.digest } }), 200, 'activate v1');
+    assert.equal((await deploy({ replicaCount: 3 })).body['status'], 'rejected', 'v1 requires deploymentStrategy');
+    const withStrategy = await deploy({ replicaCount: 3, deploymentStrategy: 'rolling' });
+    assert.equal(withStrategy.body['status'], 'executed', withStrategy.text);
+
+    // The permitting step, stated plainly: v2 no longer requires the strategy.
+    expectStatus(await call(baseUrl, 'POST', transitionPath(2, 'activate', 'deploy-production'), { authorization: AUTH.steward, body: { digest: v2.digest } }), 200, 'activate v2');
+    // v1 refused the request at the envelope (a required parameter missing); under v2 the profile no longer requires it, so the request now reaches a decision — the relaxation is real …
+    const relaxed = await deploy({ replicaCount: 3 });
+    assert.notEqual(relaxed.body['status'], 'rejected', `the profile requirement was relaxed: ${relaxed.text}`);
+    // … and the organization's independent policy, which also requires an approved strategy, still denies it.
+    assert.equal(relaxed.body['status'], 'denied', relaxed.text);
+    assert.match(relaxed.text, /DOMAIN_POLICY_DENIED/);
+    const v2Executes = await deploy({ replicaCount: 3, deploymentStrategy: 'blue-green' });
+    assert.equal(v2Executes.body['status'], 'executed', v2Executes.text);
+    // …but it created no authority …
+    assert.equal(JSON.stringify((await call(baseUrl, 'GET', '/api/admin/authority/entities', { authorization: AUTH.observer })).body['entities']), entitiesBefore, 'activation wrote nothing to the Kernel Authority');
+    // … and an independently binding policy requirement still denies, whatever profile is active.
+    const tooMany = await deploy({ replicaCount: 11, deploymentStrategy: 'rolling' });
+    assert.equal(tooMany.body['status'], 'denied', tooMany.text);
+    assert.match(tooMany.text, /DOMAIN_POLICY_DENIED/);
+    assert.equal(adapter.calls.length, 2);
+    // The promotion permission is the steward's and the organization administrator's only.
+    for (const header of [AUTH.provisioner, AUTH.observer, AUTH.responder, AUTH.legacyAdministrator]) {
+      assert.equal((await call(baseUrl, 'POST', transitionPath(1, 'retire', 'deploy-production'), { authorization: header, body: { digest: v1.digest } })).status, 403);
+    }
   });
 });
