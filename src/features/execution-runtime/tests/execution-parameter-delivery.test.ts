@@ -248,3 +248,214 @@ describe('CORE-08 §8 / P-13 — fresh, frozen data; the caller cannot substitut
     assert.equal(only(adapter.calls).amount?.value, '7500');
   });
 });
+
+/**
+ * PR #157 review (P1) — the request object itself is read once.
+ *
+ * A snapshot that tests a field for presence and then copies the caller's
+ * object (`{ ...request }`) reads every accessor twice: a top-level getter can
+ * answer `undefined` to the presence test and a caller-owned mutable value to
+ * the copy, which then reaches the assessment and the adapter un-snapshotted.
+ * Every test here counts the reads it causes and proves
+ *
+ * ```
+ * snapshot input == assessed input == adapter input
+ * ```
+ *
+ * for the whole attempt.
+ */
+describe('CORE-08 §8 / P-13 — every top-level request field is read exactly once', () => {
+  /** A caller-owned value that records every way it is touched. A value the snapshot never captured must never be touched at all. */
+  function watched<T extends object>(target: T): { readonly value: T; readonly touches: string[] } {
+    const touches: string[] = [];
+    const value = new Proxy(target, {
+      get(inner, key, receiver) {
+        touches.push(`get:${String(key)}`);
+        return Reflect.get(inner, key, receiver) as unknown;
+      },
+      has(inner, key) {
+        touches.push(`has:${String(key)}`);
+        return Reflect.has(inner, key);
+      },
+      ownKeys(inner) {
+        touches.push('ownKeys');
+        return Reflect.ownKeys(inner);
+      },
+      getOwnPropertyDescriptor(inner, key) {
+        touches.push(`descriptor:${String(key)}`);
+        return Reflect.getOwnPropertyDescriptor(inner, key);
+      },
+    });
+    return { value, touches };
+  }
+
+  /** A request whose one top-level field is an accessor answering `answers[0]`, then `answers[1]`, then the last answer forever. */
+  function withShiftingField<K extends keyof GrantExerciseRequest>(base: GrantExerciseRequest, key: K, answers: readonly unknown[]): { readonly request: GrantExerciseRequest; readonly reads: () => number } {
+    let reads = 0;
+    const { [key]: _dropped, ...rest } = base;
+    const shifting = { ...rest } as Record<string, unknown>;
+    Object.defineProperty(shifting, key, {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return answers[Math.min(reads, answers.length) - 1];
+      },
+    });
+    return { request: shifting as unknown as GrantExerciseRequest, reads: () => reads };
+  }
+
+  it('a top-level `parameters` getter answering undefined, then a caller-owned list, is read once; the list never reaches the assessment or the adapter', async () => {
+    const late = watched(EXACT.map((entry) => ({ ...entry })));
+    const { request: shifty, reads } = withShiftingField(request('none'), 'parameters', [undefined, late.value]);
+    const { adapter, service } = serviceFor();
+    const outcome = await service.exercise(shifty);
+    assert.equal(reads(), 1, 'the getter is observed exactly once');
+    assert.equal(outcome.status, 'withheld', 'the snapshot holds no parameters, and the grant bounds three: refused');
+    assert.ok(outcome.status === 'withheld' && outcome.assessment.reasonCodes.length > 0);
+    assert.equal(adapter.callCount, 0);
+    assert.deepEqual(late.touches, [], 'the second answer was never read by anything');
+  });
+
+  it('the symmetric top-level `amount` getter: read once, and the late caller-owned amount never reaches the assessment or the adapter', async () => {
+    const grant = buildTestGrant();
+    const adapter = createRecordingExecutionAdapter();
+    const service = createGrantExecutionService({ store: storeOf(grant), adapter, now: () => NOW });
+    const late = watched({ value: '7500', unit: 'USD' });
+    const { request: shifty, reads } = withShiftingField(
+      {
+        boundedGrantId: grant.id,
+        subject: 'agent-A',
+        action: 'payment',
+        resource: 'vendor/V123',
+        counterparty: 'V123',
+        organization: 'org-acme',
+        correlation: grant.correlation,
+        executionId: 'exec-late-amount',
+      },
+      'amount',
+      [undefined, late.value],
+    );
+    const outcome = await service.exercise(shifty);
+    assert.equal(reads(), 1, 'the getter is observed exactly once');
+    assert.equal(outcome.status, 'withheld', 'the snapshot holds no amount, and the grant bounds one: refused');
+    assert.equal(adapter.callCount, 0);
+    assert.deepEqual(late.touches, [], 'the second answer was never read by anything');
+  });
+
+  it('getters answering two different in-bound values: the one captured is the one assessed and delivered, never the other', async () => {
+    const first = EXACT.map((entry) => ({ ...entry })) as GovernedParameter[];
+    const second = watched([EXACT[0], EXACT[1], { dimension: 'quantity', type: 'integer', value: 1 }].map((entry) => ({ ...entry })));
+    const { request: shifty, reads } = withShiftingField(request('none'), 'parameters', [first, second.value]);
+    const { adapter, service } = serviceFor(GRANT, () => {
+      // Inside the await, after capture: the caller rewrites what it first answered.
+      (first[2] as { value: number }).value = 2;
+    });
+    const outcome = await service.exercise(shifty);
+    assert.equal(outcome.status, 'executed', JSON.stringify(outcome));
+    assert.equal(reads(), 1);
+    assert.deepEqual(only(adapter.calls).parameters, EXACT, 'the value captured, as captured');
+    assert.deepEqual(second.touches, []);
+
+    const grant = buildTestGrant();
+    const amountAdapter = createRecordingExecutionAdapter();
+    const amountService = createGrantExecutionService({ store: storeOf(grant), adapter: amountAdapter, now: () => NOW });
+    const later = watched({ value: '1', unit: 'USD' });
+    const shiftingAmount = withShiftingField(
+      {
+        boundedGrantId: grant.id,
+        subject: 'agent-A',
+        action: 'payment',
+        resource: 'vendor/V123',
+        counterparty: 'V123',
+        organization: 'org-acme',
+        correlation: grant.correlation,
+        executionId: 'exec-shifting-amount',
+      },
+      'amount',
+      [{ value: '7500', unit: 'USD' }, later.value],
+    );
+    assert.equal((await amountService.exercise(shiftingAmount.request)).status, 'executed');
+    assert.equal(shiftingAmount.reads(), 1);
+    assert.deepEqual(only(amountAdapter.calls).amount, { value: '7500', unit: 'USD' });
+    assert.deepEqual(later.touches, []);
+  });
+
+  it('a Proxy request is read with one `get` per declared field and is never enumerated or spread; every later answer is ignored', async () => {
+    const base = request();
+    const reads = new Map<string, number>();
+    const traps: string[] = [];
+    const hostile = new Proxy(base, {
+      get(target, key, receiver) {
+        const name = String(key);
+        const count = (reads.get(name) ?? 0) + 1;
+        reads.set(name, count);
+        if (count === 1) return Reflect.get(target, key, receiver) as unknown;
+        // Any second read gets a different, still-plausible answer.
+        if (name === 'parameters') return [EXACT[0], EXACT[1], { dimension: 'quantity', type: 'integer', value: 1 }];
+        if (name === 'correlation') return { ...CORRELATION, requestId: 'req-forged' };
+        return `${String(Reflect.get(target, key, receiver))}-forged`;
+      },
+      has(target, key) {
+        traps.push(`has:${String(key)}`);
+        return Reflect.has(target, key);
+      },
+      ownKeys(target) {
+        traps.push('ownKeys');
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, key) {
+        traps.push(`descriptor:${String(key)}`);
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    const { adapter, service } = serviceFor();
+    const outcome = await service.exercise(hostile);
+    assert.equal(outcome.status, 'executed', JSON.stringify(outcome));
+    for (const [name, count] of reads) assert.equal(count, 1, `'${name}' was read ${count} times`);
+    assert.deepEqual(traps, [], 'the request is never enumerated, spread or probed');
+    const delivered = only(adapter.calls);
+    assert.deepEqual(
+      {
+        boundedGrantId: delivered.boundedGrantId,
+        subject: delivered.subject,
+        action: delivered.action,
+        resource: delivered.resource,
+        organization: delivered.organization,
+        parameters: delivered.parameters,
+        requestId: delivered.correlation.requestId,
+        decisionId: delivered.correlation.decisionId,
+        executionId: delivered.correlation.executionId,
+      },
+      {
+        boundedGrantId: base.boundedGrantId,
+        subject: base.subject,
+        action: base.action,
+        resource: base.resource,
+        organization: base.organization,
+        parameters: EXACT,
+        requestId: CORRELATION.requestId,
+        decisionId: CORRELATION.decisionId,
+        executionId: base.executionId,
+      },
+    );
+  });
+
+  it('the correlation is captured once too: the adapter can never be told a correlation other than the one matched against the grant', async () => {
+    let reads = 0;
+    const correlation = {
+      ...CORRELATION,
+      get requestId(): string {
+        reads += 1;
+        // Forged first, genuine afterwards: a re-read would hand the adapter the
+        // forged id while the assessment matched the genuine one.
+        return reads === 1 ? 'req-forged' : CORRELATION.requestId;
+      },
+    };
+    const { adapter, service } = serviceFor();
+    const outcome = await service.exercise({ ...request(), correlation });
+    assert.equal(reads, 1, 'the correlation field is observed exactly once');
+    assert.equal(outcome.status, 'withheld', 'the captured correlation does not match the grant');
+    assert.ok(outcome.status === 'withheld' && outcome.assessment.reasonCodes.includes(E.GRANT_EXERCISE_CORRELATION_INVALID), JSON.stringify(outcome));
+    assert.equal(adapter.callCount, 0);
+  });
+});

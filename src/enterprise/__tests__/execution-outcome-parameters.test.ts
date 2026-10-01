@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 import Database from 'better-sqlite3';
 
@@ -329,6 +330,173 @@ describe('CORE-08 §15 / §57 — historical P11 v1 records are read exactly as 
   it('a file at an unknown version is still refused unopened', async () => {
     const path = legacyStore();
     tamper(path, [`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.execution-outcome-store.schema.v3', 'current', '${AT}')`]);
+    await assert.rejects(createSqliteExecutionOutcomeStore(path, { now: clock() }), (error: unknown) => isExecutionOutcomeStoreError(error) && error.code === 'EXECUTION_OUTCOME_STORE_UNAVAILABLE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * PR #157 review (P2) — the migration decision is made under the write lock.
+ *
+ * Independent openers — worker threads, each with its own connection to the
+ * same file — are started while a holder connection keeps `BEGIN IMMEDIATE`,
+ * so every one of them reaches the lock while the file still reads v1. The
+ * holder releases them only once each has had its chance to decide anything
+ * before the lock (a runtime that decides pre-lock samples its clock for the
+ * version row it intends to write, and the holder waits for that; otherwise it
+ * waits a grace period). Only then is the lock released and the openers race.
+ *
+ * A pre-lock decision is then exposed deterministically: every opener carries
+ * "migrate from v1" into a lock that, for all but the first, finds v2.
+ */
+interface OpenerResult {
+  readonly result: string;
+  readonly message: string;
+  readonly samples: number;
+}
+
+const OPENER_GRACE_MS = 1_000;
+
+async function openersBehindTheLock(path: string, count: number, whileLockHeld: (holder: Database.Database) => void = () => undefined): Promise<readonly OpenerResult[]> {
+  const holder = new Database(path);
+  holder.pragma('journal_mode = WAL');
+  holder.exec('BEGIN IMMEDIATE');
+  const results: OpenerResult[] = [];
+  let finishedWhileLocked = 0;
+  let locked = true;
+  let release!: () => void;
+  const allWaiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let opening = 0;
+  const sampledBeforeLock = new Set<number>();
+  const workers = Array.from({ length: count }, (_, index) => {
+    const worker = new Worker(join(__dirname, 'execution-outcome-migration-worker.js'), { workerData: { path, at: AT } });
+    worker.on('message', (message: { kind: string } & OpenerResult) => {
+      if (message.kind === 'opening' && (opening += 1) === count) setTimeout(release, OPENER_GRACE_MS);
+      if (message.kind === 'clock' && locked) {
+        sampledBeforeLock.add(index);
+        if (sampledBeforeLock.size === count) release();
+      }
+      if (message.kind === 'done') {
+        if (locked) finishedWhileLocked += 1;
+        results.push({ result: message.result, message: message.message, samples: message.samples });
+      }
+    });
+    return worker;
+  });
+  try {
+    await allWaiting;
+    assert.equal(finishedWhileLocked, 0, 'no opener can finish while another connection holds the write lock');
+    whileLockHeld(holder);
+    locked = false;
+    holder.exec('COMMIT');
+  } finally {
+    holder.close();
+  }
+  await Promise.all(workers.map((worker) => new Promise<void>((resolve) => worker.once('exit', () => resolve()))));
+  assert.equal(results.length, count, 'every opener reported');
+  return results;
+}
+
+function versionHistory(path: string): readonly { readonly schema_version: string; readonly migration_state: string }[] {
+  const db = new Database(path, { readonly: true });
+  try {
+    return db.prepare('SELECT schema_version, migration_state FROM execution_outcome_store_versions ORDER BY id').all() as { schema_version: string; migration_state: string }[];
+  } finally {
+    db.close();
+  }
+}
+
+function attemptColumns(path: string): readonly string[] {
+  const db = new Database(path, { readonly: true });
+  try {
+    return (db.prepare('PRAGMA table_info(execution_attempts)').all() as { name: string }[]).map((column) => column.name);
+  } finally {
+    db.close();
+  }
+}
+
+describe('PR #157 review — P11 schema migration is decided once, under BEGIN IMMEDIATE', () => {
+  it('independent openers racing to migrate one v1 file: exactly one v1 → v2 migration row, never a second', async () => {
+    for (let round = 0; round < 3; round += 1) {
+      const path = legacyStore();
+      const before = new Database(path, { readonly: true });
+      const rowsBefore = before.prepare('SELECT * FROM execution_attempts ORDER BY rowid').all();
+      const observationsBefore = before.prepare('SELECT * FROM execution_terminal_observations ORDER BY rowid').all();
+      before.close();
+
+      const results = await openersBehindTheLock(path, 3);
+
+      assert.deepEqual(
+        results.map(({ result }) => result),
+        ['opened', 'opened', 'opened'],
+        JSON.stringify(results),
+      );
+      assert.deepEqual(versionHistory(path), [
+        { schema_version: EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1, migration_state: 'current' },
+        { schema_version: EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, migration_state: 'migrated' },
+      ]);
+      assert.equal(
+        results.reduce((total, { samples }) => total + samples, 0),
+        1,
+        'one version row was written, so the clock was sampled once across every opener',
+      );
+      const after = new Database(path, { readonly: true });
+      try {
+        const rowsAfter = after.prepare('SELECT * FROM execution_attempts ORDER BY rowid').all() as Record<string, unknown>[];
+        assert.deepEqual(
+          rowsAfter.map(({ parameters_json: added, ...rest }) => {
+            assert.equal(added, null);
+            return rest;
+          }),
+          rowsBefore,
+          'historical v1 rows are preserved byte-for-byte',
+        );
+        assert.deepEqual(after.prepare('SELECT * FROM execution_terminal_observations ORDER BY rowid').all(), observationsBefore);
+      } finally {
+        after.close();
+      }
+      // The migrated file is still verified under v1's digest rules.
+      const store = await createSqliteExecutionOutcomeStore(path, { now: clock() });
+      assert.equal((await store.read(LEGACY, 'exec-legacy-monetary'))?.attempt.attemptDigest, FIXTURE.tables['execution_attempts']?.[0]?.['attempt_digest']);
+      await store.close();
+      assert.equal(versionHistory(path).length, 2, 'reopening afterwards appends nothing');
+    }
+  });
+
+  it('independent openers racing to create one new file: exactly one `current` row', async () => {
+    const path = join(freshDir(), 'fresh.sqlite');
+    new Database(path).close();
+    const results = await openersBehindTheLock(path, 3);
+    assert.deepEqual(
+      results.map(({ result }) => result),
+      ['opened', 'opened', 'opened'],
+      JSON.stringify(results),
+    );
+    assert.deepEqual(versionHistory(path), [{ schema_version: EXECUTION_OUTCOME_STORE_SCHEMA_VERSION, migration_state: 'current' }]);
+    assert.equal(results.reduce((total, { samples }) => total + samples, 0), 1);
+  });
+
+  it('a newer version committed while an opener waits for the lock is refused under the lock, and no v2 marker can follow it', async () => {
+    const path = legacyStore();
+    const NEWER = 'aoc.execution-outcome-store.schema.v3';
+    const results = await openersBehindTheLock(path, 2, (holder) => {
+      // A newer runtime advances the file while both v2 openers wait, having
+      // last seen it at v1.
+      holder.prepare(`INSERT INTO execution_outcome_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'migrated', ?)`).run(NEWER, AT);
+    });
+    for (const opener of results) {
+      assert.equal(opener.result, 'EXECUTION_OUTCOME_STORE_UNAVAILABLE', JSON.stringify(results));
+      assert.match(opener.message, /schema\.v3/);
+      assert.equal(opener.samples, 0, 'a refused open writes no version row, so it samples no clock');
+    }
+    assert.deepEqual(versionHistory(path), [
+      { schema_version: EXECUTION_OUTCOME_STORE_SCHEMA_VERSION_V1, migration_state: 'current' },
+      { schema_version: NEWER, migration_state: 'migrated' },
+    ]);
+    assert.equal(attemptColumns(path).includes('parameters_json'), false, 'the schema was not touched before the under-lock version was accepted');
     await assert.rejects(createSqliteExecutionOutcomeStore(path, { now: clock() }), (error: unknown) => isExecutionOutcomeStoreError(error) && error.code === 'EXECUTION_OUTCOME_STORE_UNAVAILABLE');
   });
 });
