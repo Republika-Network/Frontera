@@ -135,6 +135,20 @@ Run on a native-Linux export of `4f0ba8a` by a scripted runner: each mutation ed
 
 `release/api-surface.v1.json`: **36 → 47** (11 added, all under `/api/admin/`, mounted only when operators are configured). `check-api-freeze` confirms exactly nine new patterns (two with a two-verb alternation) and no other drift. No SDK method was added (`check-sdk-surface`: 5 frozen exports, unchanged). The committed `release/RELEASE_MANIFEST.json` still states 28 endpoints — stale since CTRL-01 (at `3c56a71` it said 28 while the freeze said 36); it is a release-tag artifact regenerated at release time and was not touched.
 
+## 11. Validation
+
+**Clean export (authoritative)** — `git archive` of the candidate `22a8d07` into a fresh native-Linux directory: 0 files containing CR; `npm ci`, typecheck, lint, build green; root **8 788 tests: 8 775 pass, 0 fail, 0 cancelled, 9 skipped, 4 todo**; workspaces **1 089 tests, 1 089 pass, 0 fail**; API freeze **47 endpoints** (36 + 11, no other drift); release docs (24 documents) and SDK surface (5 frozen exports) green; `legal:check` pre-existing findings only (busboy/streamsearch license metadata, two unnamed workspace manifests); 0 conflict markers; `git diff --check 3c56a71..22a8d07` clean.
+
+**Working copy** (Windows-mounted, same commit): typecheck, lint, build green; root 8 788 tests, 8 774 pass, **1 fail** — `core06-governance-core-qualification-host.test.ts` › T7, a pre-existing test CTRL-02 does not touch that sleeps against a grant's wall-clock expiry; it passes 3/3 in isolation on the working copy and in the clean export (a load-timing artifact, not a regression). The earlier HEAD-export run under the concurrent mutation campaign showed the same two wall-clock tests (T7 and CORE-04 §93) failing under CPU load and passing 3/3 in isolation.
+
+**Focused CTRL-02 suites:** `ctrl02-operator-control-service` 232, `ctrl02-operator-plane-host` 11, `ctrl02-profile-lifecycle-host` 4, `ctrl02-pilot-onboarding-host` 2, `ctrl02-structure` 17 — 266 tests, 0 fail; plus CTRL-01 (`authority-administration-*`), customer identity, CORE-06 structure, no-bypass and security-invariant suites, 0 fail.
+
+The commit that adds this section is documentation only and was itself re-validated on its own clean export (reported in the milestone report).
+
+## 13. Verdict
+
+**CTRL-02 ORGANIZATIONS, HUMAN OPERATORS & AGENT INVENTORY VERIFIED.** The exit criterion is executed literally through the shipped Host, over HTTP only, from a clean store with no static customer principal; every BLOCKED claim has executable evidence; 37 of 37 mutations are killed. PILOT READY is not claimed.
+
 ## 12. Residual risks (not claimed)
 
 SSO, MFA, WebAuthn and IdP federation (PROD-04); rate limiting (PROD-04); operator and agent credentials are bearer secrets (agent credentials not client-bound); the control-plane store is not signed, witnessed or backed up (PROD-02; ADR R-3); operator actions are attributed per store and in logs, not on a canonical event stream (ASSURE-01); profile content changes still need configuration and a restart; in-process provisioning by embedders is not replay-checked (NB-012); no approval inbox or web control plane (CTRL-04, CTRL-03); no egress controls; no payments or rail neutrality; target-system IAM is the target's; exactly-once execution is not claimed; TD-5 open. **PILOT READY is not claimed:** CTRL-03, CTRL-04, PROD-02, ASSURE-01 and PROD-03 remain.
