@@ -293,7 +293,12 @@ without silently changing what a historical v1 record means.
 - **Store-file migration.** A file written by v1 is migrated on open the way
   the repository migrates durable stores additively (the `sqlite-authority-store`
   v4 pattern): `ALTER TABLE execution_attempts ADD COLUMN parameters_json TEXT`,
-  and a `migrated` row appended to the version history, in one transaction. No
+  and a `migrated` row appended to the version history, in one transaction. The
+  migration is decided inside that `BEGIN IMMEDIATE` transaction from the version
+  read while holding the lock — read, validate, decide, alter, append, commit —
+  never from a read made before it, so independent openers racing on one v1 file
+  append exactly one `migrated` row, and a version committed by a newer runtime
+  while an opener waits is refused before any schema change. No
   row is rewritten; no digest is recomputed; historical rows keep their own
   `schema_version`. A file at any other version is refused unopened, and a
   v1-only runtime refuses a migrated file (its newest version is v2) rather than
