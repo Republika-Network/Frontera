@@ -543,6 +543,40 @@ else. Mutation bodies are closed `application/json` schemas of at most 16 KiB
 full error model: `docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md`. The SDK
 has no method for these routes (transport for customers only).
 
+### 2.8 Operator plane (capability-gated; added by CTRL-02 and CTRL-03, unreleased)
+
+Mounted only when the deployment declares `operators` in its governed-action
+file; otherwise every path below is the unmounted-route `404 NOT_FOUND`.
+CTRL-02 added eleven endpoints (36 → **47**); CTRL-03 added two **read-only**
+endpoints for the web control plane (47 → **49**). No existing route, field,
+status or code changed.
+
+| Method | Path | Added by |
+| --- | --- | --- |
+| `GET` | `/api/admin/organization` | CTRL-02 |
+| `GET` | `/api/admin/agents` | CTRL-02 |
+| `GET` | `/api/admin/agents/{actorId}` | CTRL-02 |
+| `POST` | `/api/admin/agents/{actorId}/credentials` | CTRL-02 |
+| `POST` | `/api/admin/agents/{actorId}/credentials/{credentialId}/rotate` | CTRL-02 |
+| `POST` | `/api/admin/agents/{actorId}/credentials/{credentialId}/revoke` | CTRL-02 |
+| `GET` | `/api/admin/authority/entities` | CTRL-02 |
+| `POST` | `/api/admin/authority/entities/{kind}` | CTRL-02 |
+| `GET` | `/api/admin/governance-profiles` | CTRL-02 |
+| `POST` | `/api/admin/governance-profiles/{profileId}/versions/{version}/activate` | CTRL-02 |
+| `POST` | `/api/admin/governance-profiles/{profileId}/versions/{version}/retire` | CTRL-02 |
+| `GET` | `/api/admin/activity/decisions` | CTRL-03 |
+| `GET` | `/api/admin/evidence/decisions/{evaluationId}` | CTRL-03 |
+
+An **operator** Bearer credential is always required (a CTRL-01
+administrator credential reaches only the CTRL-01 routes of §2.7; ordinary and
+agent credentials are refused). Each route checks one permission before any
+body is read. The CTRL-03 reads answer the §5 limitation "no HTTP-exposed
+governance query endpoint" for operators only: committed decisions of the
+served organization, paged, with closed query strings, and one decision record
+with the Governance Store's own verification. Reference:
+`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md` §10 and §11. The SDK has
+no method for these routes.
+
 ## 3. Error Taxonomy
 
 Every error the Host raises itself is delivered as this envelope:
@@ -644,9 +678,11 @@ behaviors above:
   `GET /api/passports/{id}/events` and
   `GET /api/assurance/assessments/{id}/findings` return their full
   collections in one response.
-- **No HTTP-exposed governance query endpoint.** The
-  `GovernanceReadService.query()` capability exists in-process but is not
-  routed; only the by-id read/verify endpoints of section 2.2 are public.
+- **No HTTP-exposed governance query endpoint for customers.** The
+  `GovernanceReadService.query()` capability is not routed for API-key
+  callers; only the by-id read/verify endpoints of section 2.2 are public.
+  Since CTRL-03 an identified operator can page the served organization's
+  committed decisions (`GET /api/admin/activity/decisions`, §2.8).
 - **No in-process rate limiting.** Deploy behind an external rate
   limiter if needed.
 - **No per-field length caps** beyond the 1 MiB transport body cap and

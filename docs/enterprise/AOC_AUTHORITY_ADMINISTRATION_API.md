@@ -518,3 +518,49 @@ curl -s "$FRONTERA/api/admin/agents/actor-payables" -H "$PROV"     # onboarding:
 **Credential semantics.** A credential is matched only against the credential classes of the plane it reaches: an agent credential on `/api/admin`, or an operator credential on `/api/governed-actions`, is unknown there (401); no wrong-plane credential is ever accepted. Credential revocation is terminal within one monotonic control-plane store history; restoring an older copy of `control-plane.sqlite` (unsigned, not witnessed, not in `backup:v1`) resurrects revoked and pre-rotation credentials and earlier profile lifecycle state — revoke the agent's actor (Kernel Authority) after any such restore. **Profile promotion is permitting:** activating a less-demanding catalog version relaxes that profile's own requirements; only profile-stewards and organization administrators may do it.
 
 A financial action needs both a per-execution ceiling (`max_amount`) and an aggregate limit (`spending_limit`) on its authority lineage; without the latter it is withheld (P10). Offboarding: `POST /api/admin/authority/entities/actor/actor-payables/revoke` (terminal; every credential bound to the agent stops admitting it), or revoke one credential (`…/credentials/{id}/revoke`) to replace it.
+
+## 11. Decision activity and evidence (CTRL-03), and the web control plane
+
+Decision record: `docs/architecture/ADR-CTRL-03-WEB-CONTROL-PLANE.md`.
+Qualification: `docs/security/CTRL-03-WEB-CONTROL-PLANE-MVP.md`.
+
+### 11.1 Endpoints
+
+| Method | Path | Permission | Query |
+|---|---|---|---|
+| GET | `/api/admin/activity/decisions` | `inventory.read` | `actorId`, `decisionId`, `requestId`, `status` (`allowed`, `denied`, `approval_required`, `indeterminate`), `limit` (1–100, default 25), `cursor` (opaque, from `nextCursor`); any other key → 400 |
+| GET | `/api/admin/evidence/decisions/{evaluationId}` | `inventory.read` | none accepted |
+
+Both are **read-only**, scoped to the one organization the Host serves (an
+organization in the query is refused), and serialize restated DTOs:
+
+- **Activity:** `{ decisions: [{ evaluationId, decisionId, requestId, correlationId, actorId, actionType, status, reasonCodes, evaluatedAt, persistedAt }], nextCursor, coverage: "governance-store-decisions" }`, newest committed first. `status` is the **Kernel decision**: a request withheld after an `allowed` decision (for example by standing parameter authority, `PARAMETER_AUTHORITY_EXCEEDED`) is listed as `allowed` and records no grant.
+- **Evidence:** `{ decision, integrity, references, verification, coverage: "governance-store-decision-record" }` — the request summary and Kernel decision, the aggregate digest and chain position, every reference appended to the record (`authorization_artifact` = the bounded grant id, `execution_record` = the execution attempt / outcome), and `GovernanceStore.verify`'s result (`valid`, per-check booleans, failures, reference-integrity counts). Verification is digest integrity: it detects modification, it is not a signature.
+- Unknown evaluation → 404 `AUTHORITY_ADMIN_TARGET_NOT_FOUND`. A CTRL-01 administrator → 403 `OPERATOR_PERMISSION_DENIED`; an API key → 403; an agent credential, anonymous → 401.
+
+### 11.2 The web control plane
+
+`npm run start:control-plane` starts the Frontera web control plane — a
+server-rendered, script-free console that operates a Host through this
+operator plane only (it holds no store or key):
+
+```bash
+FRONTERA_CONSOLE_HOST_URL=http://127.0.0.1:8787 \
+FRONTERA_CONSOLE_HTTP_PORT=8788 \
+npm run start:control-plane            # then browse http://127.0.0.1:8788
+```
+
+| Variable | Meaning |
+|---|---|
+| `FRONTERA_CONSOLE_HOST_URL` | The Host's base URL. `https://` unless loopback. Required |
+| `FRONTERA_CONSOLE_HTTP_HOST` / `FRONTERA_CONSOLE_HTTP_PORT` | Bind address / port. Default `127.0.0.1:8788` (the Host defaults to 8787) |
+| `FRONTERA_CONSOLE_PUBLIC_ORIGIN` | The exact origin browsers use; required, and `https://`, when binding a non-loopback address (terminate TLS in front of the console) |
+| `FRONTERA_CONSOLE_SESSION_IDLE_SECONDS` / `FRONTERA_CONSOLE_SESSION_MAX_SECONDS` | Session idle timeout (default 1800) / absolute lifetime (default 28800, at most 43200) |
+
+Operators sign in with their CTRL-02 operator credential; it is verified
+against `GET /api/admin/organization` and held only in the console's server
+memory for the session (the browser receives an opaque `HttpOnly`,
+`SameSite=Strict` cookie). CTRL-01 administrator credentials, API keys and
+agent credentials cannot sign in. Every operation is forwarded to the Host,
+which authorizes it; an agent credential's secret is shown once, on the page
+that issued it.
