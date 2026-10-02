@@ -44,6 +44,10 @@ export const OPERATOR_PERMISSIONS = [
   'emergency.stop',
   /** Release an emergency stop — restores execution, so it is never a restrict-only permission. */
   'emergency.release',
+  /** ANDREW-P0-03: approve a registered destination for this organization's governed use. Widens, so it is never a restrict-only permission. */
+  'destination.approve',
+  /** ANDREW-P0-03: revoke this organization's active approval of a destination. Narrows only. */
+  'destination.revoke',
 ] as const;
 
 export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
@@ -53,15 +57,16 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  *
  * - `observer` — inspection only.
  * - `responder` — incident response that only narrows: revoke authority,
- *   revoke an agent credential, declare an emergency stop. It cannot release a
- *   stop, because releasing restores execution.
+ *   revoke an agent credential, declare an emergency stop, revoke a destination
+ *   approval. It cannot release a stop or approve a destination, because both
+ *   restore or widen what may execute.
  * - `provisioner` — onboards agents and assigns standing authority, under every
  *   existing Kernel-Authority rule; may also narrow what it assigned. No
  *   organization bootstrap, no profile promotion, no emergency release.
  * - `profile-steward` — promotes and retires Governance Profile versions. No
  *   authority, no credentials.
  * - `organization-administrator` — every permission, including organization
- *   bootstrap and emergency release.
+ *   bootstrap, emergency release and destination approval.
  */
 export const OPERATOR_ROLES = ['observer', 'responder', 'provisioner', 'profile-steward', 'organization-administrator'] as const;
 
@@ -84,7 +89,7 @@ const READ: readonly OperatorPermission[] = ['organization.read', 'authority.ins
 
 const POLICY: Readonly<Record<OperatorRoleOrLegacy, ReadonlySet<OperatorPermission>>> = Object.freeze({
   observer: new Set<OperatorPermission>(READ),
-  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop']),
+  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'destination.revoke']),
   provisioner: new Set<OperatorPermission>([...READ, 'authority.provision', 'authority.revoke', 'agent-credential.manage', 'agent-credential.revoke']),
   'profile-steward': new Set<OperatorPermission>([...READ, 'profile.promote', 'profile.retire']),
   'organization-administrator': new Set<OperatorPermission>(OPERATOR_PERMISSIONS),
