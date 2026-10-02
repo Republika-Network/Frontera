@@ -167,6 +167,8 @@ describe('CTRL-04 Host — quorum 1: a real pending request, a human approval ov
     const projected = deriveGrantSourceAuthorization(new KernelGrantCapability({ declaration: {} }), record.request.requestPayload as unknown as KernelEvaluationRequest, committed);
     const source = withGrantValidityCeiling(withVerifiedHumanApproval(projected, committed, after['approvalDigest'] as string), { source: 'decision', notAfter: after['notAfter'] as string });
     assert.equal(grant.sourceDigest, grantSourceDigest(source), 'the grant source commits to the approval the human gave');
+    const { approvalDigest: _withdrawn, ...withoutApproval } = source;
+    assert.notEqual(grant.sourceDigest, grantSourceDigest(withoutApproval), 'the approval digest is material to the signed source bytes');
     assert.ok(Date.parse(grant.expiresAt) <= Date.parse(after['notAfter'] as string), 'the grant never outlives the approval');
   });
 });
