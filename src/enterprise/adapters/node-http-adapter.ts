@@ -261,6 +261,12 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
             case 'profile-transition':
               respond(operatorControl.transitionGovernanceProfile(auth, operatorRoute.profileId, operatorRoute.version, operatorRoute.transition, administrationBodyReader(req)));
               return;
+            case 'decision-activity':
+              respond(operatorControl.listDecisionActivity(auth, query));
+              return;
+            case 'decision-evidence':
+              respond(operatorControl.inspectDecisionEvidence(auth, operatorRoute.evaluationId, query));
+              return;
           }
         }
         const route = matchAdministrationRoute(method, url.pathname);
@@ -640,14 +646,15 @@ function matchAdministrationRoute(method: string, pathname: string): Administrat
 }
 
 type OperatorRoute =
-  | { readonly kind: 'organization' | 'agents' | 'entities' | 'profiles' }
+  | { readonly kind: 'organization' | 'agents' | 'entities' | 'profiles' | 'decision-activity' }
+  | { readonly kind: 'decision-evidence'; readonly evaluationId: string }
   | { readonly kind: 'agent' | 'agent-credential-issue'; readonly actorId: string }
   | { readonly kind: 'agent-credential-rotate' | 'agent-credential-revoke'; readonly actorId: string; readonly credentialId: string }
   | { readonly kind: 'entity-create'; readonly entityKind: string }
   | { readonly kind: 'profile-transition'; readonly profileId: string; readonly version: string; readonly transition: 'activate' | 'retire' };
 
 /**
- * CTRL-02 operator routes. Reads are `GET`; every mutation is a `POST` to an
+ * CTRL-02 operator routes (and CTRL-03's two reads). Reads are `GET`; every mutation is a `POST` to an
  * explicit path — create an authority entity of one kind, issue / rotate /
  * revoke an agent credential, activate / retire a Governance Profile version.
  * There is deliberately no route that mints a bounded grant, un-revokes,
@@ -661,6 +668,10 @@ function matchOperatorRoute(method: string, pathname: string): OperatorRoute | u
     if (agent?.[1] !== undefined) return { kind: 'agent', actorId: decodeURIComponent(agent[1]) };
     if (/^\/api\/admin\/authority\/entities$/.exec(pathname) !== null) return { kind: 'entities' };
     if (/^\/api\/admin\/governance-profiles$/.exec(pathname) !== null) return { kind: 'profiles' };
+    // CTRL-03 — read-only: committed decisions, and one decision record with its verification.
+    if (/^\/api\/admin\/activity\/decisions$/.exec(pathname) !== null) return { kind: 'decision-activity' };
+    const evidence = /^\/api\/admin\/evidence\/decisions\/([^/]+)$/.exec(pathname);
+    if (evidence?.[1] !== undefined) return { kind: 'decision-evidence', evaluationId: decodeURIComponent(evidence[1]) };
     return undefined;
   }
   if (method === 'POST') {

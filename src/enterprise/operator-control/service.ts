@@ -1,7 +1,9 @@
-import { EnterpriseHttpError, EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
+import { EnterpriseHttpError, EnterpriseHttpErrors, mapGovernanceStoreErrorToHttp } from '../api/enterprise-http-errors.js';
 import { isCanonicalEntityId, isKernelAuthorityEntityKind } from '../authority-administration/contracts.js';
 import { toAdministeredAuthorityEntityView, type AdministeredAuthorityEntityView } from '../authority-administration/contracts.js';
+import type { GovernanceRecord, GovernanceRecordVerificationResult, GovernanceStoreAccessContext, GovernanceStoreQuery, GovernanceStoreQueryResult } from '../governance-store/contracts.js';
 import { computeDigest } from '../governance-store/digest.js';
+import { isGovernanceStoreError } from '../governance-store/errors.js';
 import type { GovernanceProfileRegistry, ResolvedGovernanceProfile } from '../governance-profile/index.js';
 import type { KernelAuthorityAccessContext, KernelAuthorityEntityKind, KernelAuthorityRecord } from '../kernel-authority/contracts.js';
 import { isKernelAuthorityError } from '../kernel-authority/errors.js';
@@ -24,7 +26,10 @@ import {
   validateProfileTransitionRequest,
   validateProvisionRequest,
   validateReasonRequest,
+  validateDecisionActivityQuery,
   type AgentCredentialIssueResponse,
+  type DecisionActivityPage,
+  type DecisionEvidenceView,
   type AgentInventoryView,
   type AuthorityReferenceView,
   type OperatorProvisionRequest,
@@ -78,6 +83,10 @@ export interface OperatorControlService {
     transition: 'activate' | 'retire',
     readBody: OperatorBodyReader,
   ): Promise<{ readonly outcome: 'activated' | 'retired' | 'already-active' | 'already-retired'; readonly profile: ProfileVersionView; readonly superseded: ProfileVersionView | null }>;
+  /** CTRL-03 — committed Kernel decisions of the served organization, newest first, as the Governance Store recorded them. Read-only. */
+  listDecisionActivity(authorizationHeader: string | undefined, query: OperatorQuery): Promise<DecisionActivityPage>;
+  /** CTRL-03 — one decision record, its references, and the Governance Store's own verification of it. Read-only. */
+  inspectDecisionEvidence(authorizationHeader: string | undefined, evaluationId: string, query: OperatorQuery): Promise<DecisionEvidenceView>;
 }
 
 export interface OperatorProfileLifecycle {
@@ -110,6 +119,16 @@ export interface OperatorControlDependencies {
   readonly governance: GovernanceProfileRegistry;
   /** Present exactly when the registry is in `operator-promoted` lifecycle mode. */
   readonly profileLifecycle?: OperatorProfileLifecycle;
+  /**
+   * CTRL-03 — the Governance Store's read half: query, read one record, verify
+   * one record. Never append. Absent: the activity and evidence reads answer
+   * 404 (not composed).
+   */
+  readonly governanceRecords?: {
+    query(context: GovernanceStoreAccessContext, query: GovernanceStoreQuery): Promise<GovernanceStoreQueryResult>;
+    getByEvaluationId(context: GovernanceStoreAccessContext, evaluationId: string): Promise<GovernanceRecord | null>;
+    verify(context: GovernanceStoreAccessContext, evaluationId: string): Promise<GovernanceRecordVerificationResult>;
+  };
 }
 
 function notComposed(capability: string): EnterpriseHttpError {
@@ -552,6 +571,23 @@ export function createOperatorControlService(dependencies: OperatorControlDepend
     };
   }
 
+  /** Governance Store reads are organization-scoped, never system: the served organization's records and nothing else. */
+  const governanceContext: GovernanceStoreAccessContext = Object.freeze({ system: false, organizationId });
+
+  function governanceRecords(): NonNullable<OperatorControlDependencies['governanceRecords']> {
+    if (dependencies.governanceRecords === undefined) throw notComposed('Decision activity and evidence');
+    return dependencies.governanceRecords;
+  }
+
+  async function readGovernance<T>(read: () => Promise<T>, callerInput: boolean): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      if (isGovernanceStoreError(error)) throw mapGovernanceStoreErrorToHttp(error, { callerInput });
+      throw error;
+    }
+  }
+
   return Object.freeze({
     async describeOrganization(authorizationHeader: string | undefined, query: OperatorQuery): Promise<OrganizationView> {
       const operator = authenticator.authorize(authorizationHeader, 'organization.read');
@@ -746,6 +782,104 @@ export function createOperatorControlService(dependencies: OperatorControlDepend
         const superseded = supersededEvent === undefined ? undefined : governance.profiles.find((candidate) => candidate.reference.id === profileId && candidate.reference.version === supersededEvent.version);
         return { outcome: result.outcome, profile: profileView(profile, events), superseded: superseded === undefined ? null : profileView(superseded, events) };
       });
+    },
+
+    async listDecisionActivity(authorizationHeader: string | undefined, query: OperatorQuery): Promise<DecisionActivityPage> {
+      authenticator.authorize(authorizationHeader, 'inventory.read');
+      const filter = validateDecisionActivityQuery(query);
+      const records = governanceRecords();
+      const page = await readGovernance(
+        () =>
+          records.query(governanceContext, {
+            organizationId,
+            limit: filter.limit,
+            ...(filter.actorId !== undefined ? { actorId: filter.actorId } : {}),
+            ...(filter.decisionId !== undefined ? { decisionId: filter.decisionId } : {}),
+            ...(filter.requestId !== undefined ? { requestId: filter.requestId } : {}),
+            ...(filter.status !== undefined ? { status: filter.status } : {}),
+            ...(filter.cursor !== undefined ? { cursor: filter.cursor } : {}),
+          }),
+        true,
+      );
+      // The served organization only, re-proven: a record of any other is corruption, never data.
+      if (page.records.some((record) => record.organizationId !== organizationId)) throw integrityFailed('GOVERNANCE_RECORD_MISMATCH');
+      return {
+        decisions: page.records.map((record) => ({
+          evaluationId: record.evaluationId,
+          decisionId: record.decisionId,
+          requestId: record.requestId,
+          correlationId: record.correlationId ?? null,
+          actorId: record.actorId,
+          actionType: record.actionType,
+          status: record.status,
+          reasonCodes: [...record.reasonCodes],
+          evaluatedAt: record.evaluatedAt,
+          persistedAt: record.persistedAt,
+        })),
+        nextCursor: page.nextCursor ?? null,
+        coverage: 'governance-store-decisions',
+      };
+    },
+
+    async inspectDecisionEvidence(authorizationHeader: string | undefined, evaluationId: string, query: OperatorQuery): Promise<DecisionEvidenceView> {
+      authenticator.authorize(authorizationHeader, 'inventory.read');
+      closedQuery(query, []);
+      if (!isCanonicalEntityId(evaluationId)) throw EnterpriseHttpErrors.invalidRequest('evaluationId must be a non-empty identifier of at most 256 characters.');
+      const records = governanceRecords();
+      const record = await readGovernance(() => records.getByEvaluationId(governanceContext, evaluationId), false);
+      if (record === null) throw notFound('No decision record with that evaluation id is recorded for this organization.');
+      const storedRequest = record.request;
+      if (storedRequest.organizationId !== organizationId || record.evaluation.evaluationId !== evaluationId) throw integrityFailed('GOVERNANCE_RECORD_MISMATCH');
+      const verification = await readGovernance(() => records.verify(governanceContext, evaluationId), false);
+      if (verification.evaluationId !== evaluationId) throw integrityFailed('GOVERNANCE_RECORD_MISMATCH');
+      const { request, evaluation, integrity } = record;
+      return {
+        decision: {
+          evaluationId: evaluation.evaluationId,
+          decisionId: evaluation.decisionId,
+          requestId: request.requestId,
+          correlationId: request.correlationId ?? null,
+          actorId: request.actorId,
+          actorType: request.actorType ?? null,
+          actionType: request.actionType,
+          resourceScope: request.resourceScope,
+          requestedAt: request.requestedAt,
+          status: evaluation.status,
+          summary: evaluation.summary,
+          reasonCodes: [...evaluation.reasonCodes],
+          evaluatedAt: evaluation.evaluatedAt,
+          persistedAt: evaluation.persistedAt,
+          kernelVersion: evaluation.kernelVersion,
+        },
+        integrity: {
+          algorithm: integrity.algorithm,
+          chainPosition: integrity.chainPosition,
+          aggregateDigest: integrity.aggregateDigest,
+          previousAggregateDigest: integrity.previousAggregateDigest ?? null,
+        },
+        references: record.references.map((reference) => ({
+          referenceId: reference.referenceId,
+          referenceType: reference.referenceType,
+          externalId: reference.externalId,
+          externalVersion: reference.externalVersion ?? null,
+          digest: reference.digest ?? null,
+          createdAt: reference.createdAt,
+          sequence: reference.sequence ?? null,
+        })),
+        verification: {
+          valid: verification.valid,
+          verifiedAt: verification.verifiedAt,
+          checks: { ...verification.checks },
+          failures: verification.failures.map((failure) => ({ check: failure.check, message: failure.message })),
+          referenceIntegrity: {
+            legacyUnprotected: verification.referenceIntegrity.legacyUnprotected,
+            protectedValid: verification.referenceIntegrity.protectedValid,
+            protectedCorrupted: verification.referenceIntegrity.protectedCorrupted,
+            protectedUnsupportedVersion: verification.referenceIntegrity.protectedUnsupportedVersion,
+          },
+        },
+        coverage: 'governance-store-decision-record',
+      };
     },
   });
 }

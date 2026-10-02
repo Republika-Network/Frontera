@@ -128,7 +128,8 @@ describe('CTRL-02 structure — no path around the authoritative services', () =
     for (const pattern of [/operator-control\//, /kernelAuthorityProvisioning|kernelAuthorityStore|controlPlane|appendEvent/]) assert.equal(pattern.test(adapter), false, String(pattern));
     for (const call of adapter.matchAll(/operatorControl\.(\w+)\(/g)) {
       assert.ok(
-        ['describeOrganization', 'listAgents', 'inspectAgent', 'issueAgentCredential', 'rotateAgentCredential', 'revokeAgentCredential', 'listAuthorityEntities', 'provisionAuthorityEntity', 'listGovernanceProfiles', 'transitionGovernanceProfile'].includes(call[1] ?? ''),
+        // CTRL-03 added two reads (`listDecisionActivity`, `inspectDecisionEvidence`); the mutations below stay exactly six.
+        ['describeOrganization', 'listAgents', 'inspectAgent', 'issueAgentCredential', 'rotateAgentCredential', 'revokeAgentCredential', 'listAuthorityEntities', 'provisionAuthorityEntity', 'listGovernanceProfiles', 'transitionGovernanceProfile', 'listDecisionActivity', 'inspectDecisionEvidence'].includes(call[1] ?? ''),
         String(call[1]),
       );
     }

@@ -589,3 +589,137 @@ export interface ProfileVersionView {
   readonly retirementReason: string | null;
   readonly definition: GovernanceProfileDefinition;
 }
+
+// -- CTRL-03: decision activity and evidence reads ----------------------------------
+
+/**
+ * The Kernel's decision vocabulary, restated (`KernelDecisionStatus`). A filter
+ * value outside it is refused, never matched loosely.
+ */
+export const DECISION_ACTIVITY_STATUSES = ['allowed', 'denied', 'approval_required', 'indeterminate'] as const;
+export const DECISION_ACTIVITY_MAX_LIMIT = 100;
+const DECISION_ACTIVITY_DEFAULT_LIMIT = 25;
+const CURSOR = /^[A-Za-z0-9._:=-]{1,512}$/;
+
+export interface DecisionActivityQuery {
+  readonly actorId?: string;
+  readonly decisionId?: string;
+  readonly requestId?: string;
+  readonly status?: (typeof DECISION_ACTIVITY_STATUSES)[number];
+  readonly limit: number;
+  readonly cursor?: string;
+}
+
+/**
+ * `GET /api/admin/activity/decisions?actorId=&decisionId=&requestId=&status=&limit=&cursor=` — closed:
+ * any other key (an organization above all) is refused. Values are checked
+ * here so a malformed one is a 400 before the store is asked anything.
+ */
+export function validateDecisionActivityQuery(query: Readonly<Record<string, string>>): DecisionActivityQuery {
+  const { actorId, status, limit, cursor, decisionId, requestId } = closedQuery(query, ['actorId', 'status', 'limit', 'cursor', 'decisionId', 'requestId']);
+  if (actorId !== undefined && !isOperatorEntityId(actorId)) throw EnterpriseHttpErrors.invalidRequest('actorId must be 1-128 letters, digits, \'.\', \'_\', \':\' or \'-\', starting with a letter or digit.');
+  for (const [field, value] of [['decisionId', decisionId], ['requestId', requestId]] as const) {
+    if (value !== undefined && (value.length === 0 || value.length > MAX_TEXT_LENGTH || value.trim() !== value || CONTROL.test(value))) {
+      throw EnterpriseHttpErrors.invalidRequest(`${field} must be a non-empty identifier of at most ${MAX_TEXT_LENGTH} characters.`);
+    }
+  }
+  if (status !== undefined && !(DECISION_ACTIVITY_STATUSES as readonly string[]).includes(status)) throw EnterpriseHttpErrors.invalidRequest(`status must be one of: ${DECISION_ACTIVITY_STATUSES.join(', ')}.`);
+  let pageSize = DECISION_ACTIVITY_DEFAULT_LIMIT;
+  if (limit !== undefined) {
+    if (!/^[1-9][0-9]{0,2}$/.test(limit) || Number(limit) > DECISION_ACTIVITY_MAX_LIMIT) throw EnterpriseHttpErrors.invalidRequest(`limit must be an integer from 1 to ${DECISION_ACTIVITY_MAX_LIMIT}.`);
+    pageSize = Number(limit);
+  }
+  if (cursor !== undefined && !CURSOR.test(cursor)) throw EnterpriseHttpErrors.invalidRequest('cursor must be the opaque value a previous page returned.');
+  return {
+    limit: pageSize,
+    ...(actorId !== undefined ? { actorId } : {}),
+    ...(decisionId !== undefined ? { decisionId } : {}),
+    ...(requestId !== undefined ? { requestId } : {}),
+    ...(status !== undefined ? { status: status as DecisionActivityQuery['status'] & string } : {}),
+    ...(cursor !== undefined ? { cursor } : {}),
+  };
+}
+
+/**
+ * One committed Kernel decision as the Governance Store recorded it — a
+ * summary, restated field by field. `status` is the **Kernel decision**, not
+ * what happened afterwards: whether a bounded grant was issued and whether an
+ * execution was attempted are recorded as references on the decision record
+ * (`DecisionEvidenceView`), and a request withheld after an `allowed`
+ * decision (for example by standing parameter authority) records no grant.
+ */
+export interface DecisionActivityView {
+  readonly evaluationId: string;
+  readonly decisionId: string;
+  readonly requestId: string;
+  readonly correlationId: string | null;
+  readonly actorId: string;
+  readonly actionType: string;
+  readonly status: string;
+  readonly reasonCodes: readonly string[];
+  readonly evaluatedAt: string;
+  readonly persistedAt: string;
+}
+
+export interface DecisionActivityPage {
+  /** Newest committed first (the store's chain order). */
+  readonly decisions: readonly DecisionActivityView[];
+  /** Opaque; absent on the last page. */
+  readonly nextCursor: string | null;
+  /** What this list is — and is not. Stated by the server so no client can overstate it. */
+  readonly coverage: 'governance-store-decisions';
+}
+
+/** One reference row on a decision record: a grant (authorization artifact), an execution attempt, an outcome, a resolution, … — exactly as recorded. */
+export interface DecisionReferenceView {
+  readonly referenceId: string;
+  readonly referenceType: string;
+  readonly externalId: string;
+  readonly externalVersion: string | null;
+  readonly digest: string | null;
+  readonly createdAt: string;
+  /** Position in the decision's protected reference chain; `null` on a legacy-unprotected row. */
+  readonly sequence: number | null;
+}
+
+/**
+ * `GET /api/admin/evidence/decisions/{evaluationId}` — one decision record and
+ * the Governance Store's own deterministic verification of it. The record and
+ * the verification are two reads; `verification.verifiedAt` says when the
+ * second ran. Integrity is digest-based (unkeyed SHA-256): it detects
+ * modification, it is not a signature (ASSURE-02).
+ */
+export interface DecisionEvidenceView {
+  readonly decision: {
+    readonly evaluationId: string;
+    readonly decisionId: string;
+    readonly requestId: string;
+    readonly correlationId: string | null;
+    readonly actorId: string;
+    readonly actorType: string | null;
+    readonly actionType: string;
+    readonly resourceScope: string;
+    readonly requestedAt: string;
+    readonly status: string;
+    readonly summary: string;
+    readonly reasonCodes: readonly string[];
+    readonly evaluatedAt: string;
+    readonly persistedAt: string;
+    readonly kernelVersion: string;
+  };
+  readonly integrity: {
+    readonly algorithm: string;
+    readonly chainPosition: number;
+    readonly aggregateDigest: string;
+    readonly previousAggregateDigest: string | null;
+  };
+  readonly references: readonly DecisionReferenceView[];
+  readonly verification: {
+    readonly valid: boolean;
+    readonly verifiedAt: string;
+    readonly checks: Readonly<Record<string, boolean>>;
+    readonly failures: readonly { readonly check: string; readonly message: string }[];
+    readonly referenceIntegrity: { readonly legacyUnprotected: number; readonly protectedValid: number; readonly protectedCorrupted: number; readonly protectedUnsupportedVersion: number };
+  };
+  readonly coverage: 'governance-store-decision-record';
+}

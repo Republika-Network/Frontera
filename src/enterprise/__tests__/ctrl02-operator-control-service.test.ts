@@ -118,6 +118,14 @@ async function harness(options: { readonly store?: KernelAuthorityStore; readonl
     controlPlane,
     staticCustomerSubjects: [{ system: 'static-app', subjectId: 'static-1' }],
     governance: registry,
+    // CTRL-03: the Governance Store's read half (an empty organization's records).
+    governanceRecords: {
+      query: async () => ({ records: [] }),
+      getByEvaluationId: async () => null,
+      verify: async () => {
+        throw new Error('verify is reached only for a recorded decision');
+      },
+    },
     ...(lifecycleOn
       ? {
           profileLifecycle: {
@@ -293,6 +301,9 @@ const OPERATIONS: readonly Operation[] = [
   { name: 'inspectAgent', allowed: CTRL02_READERS, mutates: false, body: false, run: (h, a) => h.service.inspectAgent(a, 'actor-agent', {}) },
   { name: 'listAuthorityEntities', allowed: CTRL02_READERS, mutates: false, body: false, run: (h, a) => h.service.listAuthorityEntities(a, {}) },
   { name: 'listGovernanceProfiles', allowed: CTRL02_READERS, mutates: false, body: false, run: (h, a) => h.service.listGovernanceProfiles(a, {}) },
+  // CTRL-03 reads — decision activity and evidence: CTRL-02 readers only, never a CTRL-01 administrator
+  { name: 'listDecisionActivity', allowed: CTRL02_READERS, mutates: false, body: false, run: (h, a) => h.service.listDecisionActivity(a, {}) },
+  { name: 'inspectDecisionEvidence', allowed: CTRL02_READERS, mutates: false, body: false, run: (h, a) => h.service.inspectDecisionEvidence(a, 'evaluation-1', {}) },
   // CTRL-02 credentials
   { name: 'issueAgentCredential', allowed: ['organization-administrator', 'provisioner'], mutates: true, body: true, run: (h, a, r) => h.service.issueAgentCredential(a, 'actor-agent', r) },
   { name: 'rotateAgentCredential', allowed: ['organization-administrator', 'provisioner'], mutates: true, body: true, run: (h, a, r) => h.service.rotateAgentCredential(a, 'actor-agent', 'agc-00000000000000000000000000000000', r) },
