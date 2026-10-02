@@ -431,16 +431,22 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     );
   });
 
-  it('exactly three production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056) and the authority-state witness transport (EP-057)', () => {
+  it('exactly four production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057) and the web control plane’s Host client (EP-067)', () => {
     const transport = 'src/enterprise/execution-adapters/generic-http/node-https-transport.ts';
     const signerTransport = 'src/enterprise/external-authority-signer/http-transport.ts';
     const witnessTransport = 'src/enterprise/authority-state-freshness/http-transport.ts';
+    // CTRL-03: the console's one call site, to the configured Host's operator API (never a provider).
+    const consoleClient = 'src/control-plane-web/host-client.ts';
     const importsClient = (file: string): boolean => /from\s+['"]node:(?:https|dns)['"]/.test(valueCode(file));
     // `fetch(` is counted under src/ only: packages/ holds the customer-side
     // SDK, whose fetch is the caller reaching Frontera, not Frontera reaching a provider.
     const fetches = (file: string): boolean => file.startsWith('src/') && /\bfetch\s*\(/.test(codeOf(file));
     const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && (importsClient(file) || CLIENT_CALL.test(codeOf(file)) || fetches(file)));
-    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    const client = codeOf(consoleClient);
+    assert.equal([...client.matchAll(/\bfetch\s*\(/g)].length, 1, 'the console client issues its request from exactly one place');
+    assert.match(client, /redirect: 'manual'/, 'the console client follows no redirect');
+    assert.ok(DOC.includes('EP-067') && DOC.includes(consoleClient), 'EP-067 is inventoried');
     const signer = codeOf(signerTransport);
     assert.equal([...signer.matchAll(/\bsend\s*\(/g)].length, 1, 'the signer transport issues its request from exactly one place');
     assert.ok(DOC.includes('EP-056') && DOC.includes(signerTransport), 'EP-056 is inventoried');
@@ -454,7 +460,7 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
   });
 
   it('the inbound node:http modules make no outbound call', () => {
-    for (const file of ['src/enterprise/adapters/node-http-adapter.ts', 'src/enterprise/host/enterprise-server.ts']) {
+    for (const file of ['src/enterprise/adapters/node-http-adapter.ts', 'src/enterprise/host/enterprise-server.ts', 'src/control-plane-web/server.ts']) {
       const code = codeOf(file);
       assert.equal(CLIENT_CALL.test(code), false, `${file} must not make an outbound network call`);
       assert.equal(/\brequest\s*\(\s*\{/.test(code), false);
@@ -596,7 +602,7 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Eight of sixty-six effect paths are under bounded-grant control.'),
+      DOC.includes('Eight of sixty-seven effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
@@ -606,7 +612,8 @@ describe('NB — the canonical document keeps its shape', () => {
         'CORE-02 added EP-056, the external authority signer transport — a deployment-gated signing request outside the bounded-grant gate, not a governed-action provider effect — so only the denominator moved, by one. ' +
         'CORE-07 added EP-057, the authority-state witness transport — a deployment-gated freshness request outside the bounded-grant gate that can only refuse authority — so only the denominator moved, by one. ' +
         'CORE-06 re-enumerated from source and added EP-058 … EP-062 — obligation discharge recording, the durable approval commands, the reference signer and witness processes, and the CTRL-01 administration HTTP entry — none bounded-grant controlled, so only the denominator moved, by five. ' +
-        'CTRL-02 added EP-063 … EP-066 — Kernel-Authority provisioning over the operator plane, operator-issued agent credential issuance and revocation, and Governance Profile lifecycle transitions — none bounded-grant controlled and none a way to reach a provider, so only the denominator moved, by four.',
+        'CTRL-02 added EP-063 … EP-066 — Kernel-Authority provisioning over the operator plane, operator-issued agent credential issuance and revocation, and Governance Profile lifecycle transitions — none bounded-grant controlled and none a way to reach a provider, so only the denominator moved, by four. ' +
+        'CTRL-03 added EP-067 — the web control plane, a separate operator-run process whose one outbound call reaches the Host operator API, every write of it an existing operator-plane path authorized again by the Host — not bounded-grant controlled, so only the denominator moved, by one.',
     );
   });
 
