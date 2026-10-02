@@ -21,8 +21,8 @@
   },
   "srcTreeIdenticalAfterCampaign": true,
   "totals": {
-    "counted": 40,
-    "killed": 40,
+    "counted": 41,
+    "killed": 41,
     "survived": 0
   },
   "history": "M13 first form referenced configuration.authentication.operators and did not compile (excluded); the corrected form (configuration.administration.operators) compiled and was killed. M33 changes only the response header: the page meta (which a browser lets override the header) still said same-origin, so it is killed by the header assertion only; M33b changes both — the review blocker as shipped — and is killed by the canonical sign-in and every browser flow after it.",
@@ -1720,6 +1720,133 @@
           "restoredByteForByte": true
         }
       ]
+    },
+    {
+      "id": "M38",
+      "property": "console sessions timed on the wall clock",
+      "change": "the session store reads Date.now instead of a monotonic clock",
+      "edits": [
+        {
+          "file": "src/control-plane-web/session.ts",
+          "find": "  const now = options.now ?? (() => performance.now());",
+          "replace": "  const now = options.now ?? Date.now;"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/session.ts",
+          "sha256Before": "1aeb5fc61e1eef681e97d818a9abeec955b4cfa4c76a708abab38f1312b47b30",
+          "sha256Restored": "1aeb5fc61e1eef681e97d818a9abeec955b4cfa4c76a708abab38f1312b47b30",
+          "restoredByteForByte": true
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 421,
+        "passed": 420,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "sessions are timed on a monotonic clock: a wall-clock step backwards or forwards neither ends nor extends one",
+          "observed": "a wall clock stepped an hour back does not end the session'"
+        }
+      ],
+      "history": {
+        "firstRun": {
+          "commit": "6aa81c38925d14a6993e4d049cb28bed14664787",
+          "killed": false,
+          "result": {
+            "total": 421,
+            "passed": 421,
+            "failed": 0
+          },
+          "why": "the unit test replaced Date.now after the store had captured the clock function, so it never reached a wall-clock store; the test was strengthened (c5bc444)"
+        }
+      }
     }
-  ]
+  ],
+  "addendum": {
+    "reason": "After the final clean-export run of d7ea302 dropped a console session (the WSL wall clock stepped back 36 ms and the session store was timed on Date.now), sessions moved to a monotonic clock (6aa81c3). The session mutations were re-run on the fixed code and M38 added.",
+    "commit": "c5bc444456b76129d9893379415ee9e6ab387133",
+    "baseline": {
+      "total": 421,
+      "passed": 421,
+      "failed": 0
+    },
+    "reruns": [
+      {
+        "id": "M31",
+        "killed": true,
+        "result": {
+          "total": 421,
+          "passed": 420,
+          "failed": 1
+        },
+        "killingTests": [
+          {
+            "title": "absolute and idle expiry, destruction, opaque ids, and a clock moved backwards ends the session",
+            "observed": "idle timeout"
+          }
+        ],
+        "files": [
+          {
+            "file": "src/control-plane-web/session.ts",
+            "sha256Before": "1aeb5fc61e1eef681e97d818a9abeec955b4cfa4c76a708abab38f1312b47b30",
+            "sha256Restored": "1aeb5fc61e1eef681e97d818a9abeec955b4cfa4c76a708abab38f1312b47b30",
+            "restoredByteForByte": true
+          }
+        ]
+      },
+      {
+        "id": "M32",
+        "killed": true,
+        "result": {
+          "total": 421,
+          "passed": 420,
+          "failed": 1
+        },
+        "killingTests": [
+          {
+            "title": "sign-out needs the CSRF token, destroys the server-side session, and the old cookie no longer opens anything",
+            "observed": "the destroyed session opens nothing'"
+          }
+        ],
+        "files": [
+          {
+            "file": "src/control-plane-web/app.tsx",
+            "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+            "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+            "restoredByteForByte": true
+          }
+        ]
+      },
+      {
+        "id": "M37",
+        "killed": true,
+        "result": {
+          "total": 421,
+          "passed": 420,
+          "failed": 1
+        },
+        "killingTests": [
+          {
+            "title": "a successful sign-in ends any earlier session of the same browser",
+            "observed": "Expected values to be strictly equal:"
+          }
+        ],
+        "files": [
+          {
+            "file": "src/control-plane-web/app.tsx",
+            "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+            "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+            "restoredByteForByte": true
+          }
+        ]
+      }
+    ],
+    "srcTreeIdenticalAfterAddendum": true
+  }
 }
