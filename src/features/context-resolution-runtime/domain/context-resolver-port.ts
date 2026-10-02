@@ -19,6 +19,15 @@ export interface ContextResolutionQuery {
   readonly resourceScope: string;
   readonly organizationId?: string;
   readonly targetId?: string;
+  /**
+   * ANDREW-P0-04 — the counterparty the action is directed at, exactly as the
+   * request's typed `action.counterpartyId` states it: the same value the grant
+   * binds and execution receives. Request *intent* — which party the action
+   * names — never a fact about that party. Present only when the request names
+   * one; opaque here, and interpreted, if at all, only by a resolver the
+   * deployment composed to do so.
+   */
+  readonly counterpartyId?: string;
   /** The instant the Kernel is resolving at. Supplied rather than read, so a resolver needs no clock and a test can pin one. */
   readonly at: string;
 }
