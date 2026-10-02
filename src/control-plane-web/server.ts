@@ -16,7 +16,7 @@ import { createSessionStore, type SessionStoreOptions } from './session.js';
  * |---|---|
  * | `FRONTERA_CONSOLE_HOST_URL` | The Host's base URL. `https://` required unless it is loopback. Required. |
  * | `FRONTERA_CONSOLE_HTTP_HOST` | Bind address. Default `127.0.0.1`. |
- * | `FRONTERA_CONSOLE_HTTP_PORT` | Bind port. Default `8787`. |
+ * | `FRONTERA_CONSOLE_HTTP_PORT` | Bind port. Default `8788` (the Host's default is 8787). |
  * | `FRONTERA_CONSOLE_PUBLIC_ORIGIN` | The exact origin browsers use. Default `http://127.0.0.1:<port>`; required — and `https://` — when the bind address is not loopback (TLS is terminated in front of the console). |
  * | `FRONTERA_CONSOLE_SESSION_IDLE_SECONDS` | Idle timeout. Default 1800. |
  * | `FRONTERA_CONSOLE_SESSION_MAX_SECONDS` | Absolute session lifetime, at most 43200. Default 28800. |
@@ -71,7 +71,7 @@ export function loadControlPlaneWebConfiguration(env: Readonly<Record<string, st
     throw new ControlPlaneWebConfigurationError('FRONTERA_CONSOLE_HOST_URL must use https:// unless the Host is on loopback: operator credentials cross this connection.');
   }
   const bindHost = env['FRONTERA_CONSOLE_HTTP_HOST'] ?? '127.0.0.1';
-  const portRaw = env['FRONTERA_CONSOLE_HTTP_PORT'] ?? '8787';
+  const portRaw = env['FRONTERA_CONSOLE_HTTP_PORT'] ?? '8788';
   if (!/^[0-9]{1,5}$/.test(portRaw) || Number(portRaw) > 65535) throw new ControlPlaneWebConfigurationError('FRONTERA_CONSOLE_HTTP_PORT must be a port number (0-65535).');
   const port = Number(portRaw);
   const loopbackBind = isLoopbackHostname(bindHost);

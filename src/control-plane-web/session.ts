@@ -57,7 +57,7 @@ export function createSessionStore(options: SessionStoreOptions = {}): SessionSt
   if (!(idleTtlMs > 0 && idleTtlMs <= absoluteTtlMs)) throw new Error('createSessionStore: the idle timeout must be greater than 0 and at most the absolute lifetime.');
   const sessions = new Map<string, ConsoleSession>();
 
-  const expired = (session: ConsoleSession, at: number): boolean => at - session.createdAtMs >= absoluteTtlMs || at - session.lastSeenAtMs >= idleTtlMs || at < session.createdAtMs;
+  const expired = (session: ConsoleSession, at: number): boolean => at - session.createdAtMs >= absoluteTtlMs || at - session.lastSeenAtMs >= idleTtlMs || at < session.lastSeenAtMs;
 
   return Object.freeze({
     create(bearer: string, operatorId: string): ConsoleSession {
