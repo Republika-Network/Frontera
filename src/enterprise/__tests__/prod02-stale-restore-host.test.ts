@@ -129,7 +129,8 @@ describe('PROD-02 stale-backup drill — an older authority backup never becomes
 
     // ── restore A, keep the witness at S2 ─────────────────────────────────────────────
     const staleDir = deployment.dir('restored-A');
-    const restoredA = await runRestore({ backup: backupA, target: staleDir, env: deployment.envFor(staleDir) });
+    // Even with the witness's own database reachable from the restoring environment, restore leaves it alone.
+    const restoredA = await runRestore({ backup: backupA, target: staleDir, env: { ...deployment.envFor(staleDir), FRONTERA_REFERENCE_WITNESS_DB: deployment.witness.databasePath } });
     assert.equal(restoredA['status'], 'restored', 'restore cannot know freshness; the Host decides at startup');
     const adapter = recordingAdapter();
     const refused = await bootRefusal(deployment.envFor(staleDir), adapter);
@@ -141,7 +142,7 @@ describe('PROD-02 stale-backup drill — an older authority backup never becomes
     const { registry } = await portability();
     for (const storeDef of registry.STORE_DEFINITIONS.filter((entry) => entry.freshnessStateKind !== undefined)) {
       const mixed = deployment.dir(`restored-B-stale-${storeDef.name}`);
-      await runRestore({ backup: backupB, target: mixed, env: deployment.envFor(mixed) });
+      await runRestore({ backup: backupB, target: mixed, env: { ...deployment.envFor(mixed), FRONTERA_REFERENCE_WITNESS_DB: deployment.witness.databasePath } });
       copyFileSync(join(backupA, 'stores', storeDef.filename), join(mixed, storeDef.targetFilename));
       const error = await bootRefusal(deployment.envFor(mixed), adapter);
       assert.equal(freshnessCode(error), 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED', `${storeDef.name}: ${error.message}`);

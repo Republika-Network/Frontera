@@ -432,6 +432,52 @@ describe('PROD-02 restore replacement: exactly the old state or exactly the new 
     });
   }
 
+  it('a staged copy damaged before promotion is refused by the post-copy checksum, and the target is untouched', async () => {
+    const { runRestore } = await portability();
+    const target = join(tempDir('stage-damage'), 'data');
+    await assert.rejects(
+      () =>
+        runRestore({
+          backup: specimen,
+          target,
+          env: deployment.envFor(target),
+          faultInjection: {
+            afterStage: (staging: string) => {
+              const path = join(staging, 'approvals.sqlite');
+              const bytes = readFileSync(path);
+              bytes[100] = (bytes[100] ?? 0) ^ 0x01;
+              writeFileSync(path, bytes);
+            },
+          },
+        }),
+      /Post-copy checksum mismatch for store 'approvals'/,
+    );
+    assert.deepEqual(readdirSync(target), []);
+  });
+
+  it('a promoted file altered before post-promotion verification is caught and the target rolled back', async () => {
+    const { runRestore } = await portability();
+    const target = join(tempDir('promote-damage'), 'data');
+    await runRestore({ backup: specimen, target, env: deployment.envFor(target) });
+    const before = stateOf(target);
+    await assert.rejects(
+      () =>
+        runRestore({
+          backup: specimen,
+          target,
+          env: deployment.envFor(target),
+          force: true,
+          faultInjection: {
+            afterPromote: (_index: number, name: string) => {
+              if (name === 'control-plane') writeFileSync(join(target, 'control-plane.sqlite'), 'tampered after promotion');
+            },
+          },
+        }),
+      /Post-restore checksum mismatch for store 'control-plane'/,
+    );
+    assert.deepEqual(stateOf(target), before);
+  });
+
   it('a failure in post-promotion verification rolls back too', async () => {
     const { runRestore } = await portability();
     const target = join(tempDir('rollback-verify'), 'data');

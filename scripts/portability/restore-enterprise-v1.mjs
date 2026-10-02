@@ -196,7 +196,7 @@ async function verifyStoreFile(filePath, entry, storeDef, modules, where) {
     return await verifyStoreFileUnchecked(filePath, entry, storeDef, modules, where);
   } catch (error) {
     if (error instanceof RestoreValidationError) throw error;
-    throw new RestoreValidationError(`SQLite integrity check failed for store '${storeDef.name}'${where}: the file cannot be read as a valid database (${error.message}).`);
+    throw new RestoreValidationError(`Store '${storeDef.name}'${where} could not be read as a valid SQLite database (${error.message}).`);
   }
 }
 
@@ -339,9 +339,11 @@ function databaseFiles(path) {
  * its trusted verification keys (public) are used to verify the signed stores.
  * The CLI passes `process.env`.
  *
- * `faultInjection` — tests only: `afterPromote(index, name)` is called after
- * each store is moved into place, to prove a failure mid-promotion rolls the
- * whole target back.
+ * `faultInjection` — tests only: `afterStage(stagingDir)` runs after the
+ * staging copies, `afterPromote(index, name)` after each store is moved into
+ * place, `afterVerify()` after post-promotion verification — to prove a
+ * damaged copy is refused and a failure mid-promotion rolls the whole target
+ * back.
  */
 export async function runRestore({ backup, target, force = false, allowIncomplete = false, allowLegacyBackup = false, env, faultInjection } = {}) {
   const enterprise = await loadEnterpriseModule();
@@ -407,12 +409,16 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
   mkdirSync(staging, { recursive: true });
   let objectVerification;
   try {
-    // 4. staging
+    // 4. staging, then every staged copy re-checksummed (a copy-time I/O
+    // error, or anything that touched the staging directory, is caught here)
     for (const entry of manifest.stores) {
       const storeDef = storeDefinitionByName(entry.name);
-      const staged = join(staging, storeDef.targetFilename);
-      copyFileSync(join(backupPath, 'stores', entry.filename), staged);
-      if (sha256File(staged) !== entry.checksum) {
+      copyFileSync(join(backupPath, 'stores', entry.filename), join(staging, storeDef.targetFilename));
+    }
+    faultInjection?.afterStage?.(staging);
+    for (const entry of manifest.stores) {
+      const storeDef = storeDefinitionByName(entry.name);
+      if (sha256File(join(staging, storeDef.targetFilename)) !== entry.checksum) {
         throw new RestoreValidationError(`Post-copy checksum mismatch for store '${storeDef.name}' -- the staged copy is not byte-identical to the verified backup file.`);
       }
     }

@@ -107,13 +107,17 @@ export function assertNotSymlink(path, description) {
 
 export async function sqliteIntegrityCheck(dbPath) {
   const Database = await loadBetterSqlite3();
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  let db;
   try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.pragma('integrity_check');
     const ok = rows.length === 1 && rows[0].integrity_check === 'ok';
     return { ok, detail: ok ? 'ok' : rows.map((row) => row.integrity_check).join('; ') };
+  } catch (error) {
+    // A file so damaged that the check itself cannot run is an integrity failure, not a crash.
+    return { ok: false, detail: error.message };
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
