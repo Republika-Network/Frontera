@@ -217,14 +217,17 @@ describe('CTRL-03 web — sessions are bounded, opaque and destroyable', () => {
   });
 
   it('sessions are timed on a monotonic clock: a wall-clock step backwards or forwards neither ends nor extends one', () => {
-    const store = createSessionStore({ idleTtlMs: 60_000, absoluteTtlMs: 120_000 });
-    const session = store.create('s', 'ops-wall');
+    // The stubbed wall clock is installed before the store exists, so a store that read the wall clock would read this one.
     const realNow = Date.now;
+    let wall = realNow();
+    Date.now = () => wall;
     try {
-      Date.now = () => realNow() - 3_600_000;
+      const store = createSessionStore({ idleTtlMs: 60_000, absoluteTtlMs: 120_000 });
+      const session = store.create('s', 'ops-wall');
+      wall -= 3_600_000;
       assert.ok(store.get(session.id), 'a wall clock stepped an hour back does not end the session');
-      Date.now = () => realNow() + 3_600_000;
-      assert.ok(store.get(session.id), 'a wall clock stepped an hour forward does not end it either');
+      wall += 7_200_000;
+      assert.ok(store.get(session.id), 'a wall clock stepped an hour forward (past both lifetimes) does not end it either');
     } finally {
       Date.now = realNow;
     }
