@@ -26,7 +26,12 @@ function sourceFiles(dir: string): readonly string[] {
   return out;
 }
 
-const PRODUCTION_SOURCES = sourceFiles(ROOT);
+/**
+ * The identity primitive: `domain/` and the root barrel. `registry/`
+ * (ANDREW-P0-02) is a separate entry point with its own boundary test,
+ * `destination-registry-boundaries.test.ts`; the root barrel does not export it.
+ */
+const PRODUCTION_SOURCES = [join(ROOT, 'index.ts'), ...sourceFiles(join(ROOT, 'domain'))];
 
 /** Comments stripped: what is forbidden is code, not a word the prose explains. */
 function codeOf(file: string): string {
