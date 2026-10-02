@@ -110,7 +110,7 @@ interface PreState {
   readonly withdrawn: string;
   readonly withdrawnRefusal: { readonly httpStatus: number; readonly code: unknown };
   readonly release: string;
-  readonly t1: { readonly key: string; readonly executionId: string; readonly requestId: string };
+  readonly t1: { readonly key: string; readonly executionId: string; readonly requestId: string; readonly grantId: string };
   readonly liveGrant: string;
   readonly revokedGrant: string;
   readonly approved: { readonly key: string; readonly approvalRequestId: string; readonly approvalDigest: string };
@@ -172,6 +172,8 @@ async function accumulateState(deployment: Deployment, dataDir: string): Promise
   const t1Key = key('t1');
   const t1 = await govern(baseUrl, payables, transfer('500', t1Key));
   assert.equal(status(t1), 'executed', t1.text);
+  // The durable P11 outcome names the grant the execution ran under.
+  const t1GrantId = await grantOf(baseUrl, auth, t1);
 
   // Bounded grants: one left live, one revoked by an operator.
   const x1 = await govern(baseUrl, releaseAgent.credential, restart(key('x1')));
@@ -244,7 +246,7 @@ async function accumulateState(deployment: Deployment, dataDir: string): Promise
     withdrawn: withdrawn.credential,
     withdrawnRefusal,
     release: releaseAgent.credential,
-    t1: { key: t1Key, executionId: t1.body['executionId'] as string, requestId: t1.body['requestId'] as string },
+    t1: { key: t1Key, executionId: t1.body['executionId'] as string, requestId: t1.body['requestId'] as string, grantId: t1GrantId },
     liveGrant,
     revokedGrant,
     approved: { key: approvedKey, approvalRequestId: a1View['approvalRequestId'] as string, approvalDigest: (approvedDetail as Record<string, unknown>)['approvalDigest'] as string },
@@ -350,6 +352,8 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       assert.equal(status(t1Retry), 'executed', t1Retry.text);
       assert.equal(t1Retry.body['executionId'], pre.t1.executionId, 'the same execution, not a new one');
       assert.equal(calls(), 0, 'restoring state did not make the provider be called again');
+      // The durable outcome record itself survived (not merely re-derived elsewhere): same execution, same grant.
+      assert.equal(await grantOf(baseUrl, auth, t1Retry), pre.t1.grantId, 'the completed execution\'s P11 outcome is the one recorded before the backup');
       // Ledger: consumption survived — 400 exceeds the 300 left, 300 fits exactly, then nothing is left.
       assert.equal((await govern(baseUrl, pre.payables, transfer('400', key('t3')))).body['status'], 'withheld');
       assert.equal(calls(), 0, 'a limit already consumed did not regain capacity');
