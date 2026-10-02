@@ -288,6 +288,116 @@ export interface DecisionEvidence {
 // A 2xx body that does not have the shape the console renders is a contract
 // failure, reported as such — never rendered partially as if it were state.
 
+// -- CTRL-04: the approval workflow ---------------------------------------------------
+//
+// What the Host serializes from the CORE-05 view (`operator-control/approval-workflow.ts`).
+// Every state field is **derived by CORE-05** on the Host's read; the console
+// displays it and never computes, increments or completes anything itself.
+
+/** The inbox's closed views, rendered as links. The Host validates the value again. */
+export const APPROVAL_VIEWS = ['pending', 'escalated', 'approved', 'rejected', 'revoked', 'expired', 'superseded', 'all'] as const;
+export type ApprovalView = (typeof APPROVAL_VIEWS)[number];
+
+/** The verdict verbs the Host routes, one path each. */
+export const APPROVAL_VERBS = ['approve', 'reject', 'request-changes', 'escalate', 'revoke'] as const;
+export type ApprovalVerb = (typeof APPROVAL_VERBS)[number];
+
+export function isApprovalVerb(value: string): value is ApprovalVerb {
+  return (APPROVAL_VERBS as readonly string[]).includes(value);
+}
+
+export function isApprovalView(value: string): value is ApprovalView {
+  return (APPROVAL_VIEWS as readonly string[]).includes(value);
+}
+
+export interface ApprovalQuorum {
+  readonly minimumApprovals: number;
+  readonly countedApprovers: readonly string[];
+  readonly satisfied: boolean;
+}
+
+export interface ApprovalInboxEntry {
+  readonly approvalRequestId: string;
+  readonly requestId: string;
+  readonly decisionId: string;
+  readonly requestedAt: string;
+  readonly status: string;
+  readonly actorId: string;
+  readonly action: string;
+  readonly resourceScope: string;
+  readonly governanceProfile: string;
+  readonly quorum: ApprovalQuorum;
+  readonly requestExpiresAt: string;
+  readonly escalations: readonly { readonly actorId: string; readonly recordedAt: string; readonly reason: string | null }[];
+  readonly changesRequested: number;
+}
+
+export interface ApprovalInbox {
+  readonly view: string;
+  readonly approvals: readonly ApprovalInboxEntry[];
+}
+
+export interface ApprovalVerdictRecord {
+  readonly kind: string;
+  readonly actorId: string;
+  readonly recordedAt: string;
+  readonly recordedBy: string;
+  readonly counted: boolean;
+  readonly reasonCode: string;
+  readonly reason: string | null;
+  readonly evidence: readonly { readonly type: string; readonly hash: string; readonly uri: string | null }[];
+  readonly rowDigest: string;
+}
+
+export interface ApprovalDetail extends ApprovalInboxEntry {
+  readonly subjectDigest: string;
+  readonly canonicalSubject: string;
+  readonly subject: {
+    readonly evaluationId: string;
+    readonly actorId: string;
+    readonly principalActorId: string | null;
+    readonly action: string;
+    readonly resourceScope: string;
+    readonly counterpartyId: string | null;
+    readonly amount: { readonly value: string; readonly unit: string } | null;
+    readonly governanceProfile: string;
+    readonly actionClass: string;
+    readonly resourceClass: string;
+    readonly parameters: readonly { readonly dimension: string; readonly type: string; readonly value: string | number }[];
+    readonly contextDigest: string | null;
+    readonly contextValidUntil: string | null;
+    readonly decision: { readonly status: string; readonly reasonCodes: readonly string[]; readonly evaluatedAt: string };
+    readonly decisionDigest: { readonly requestDigest: string; readonly evaluationDigest: string };
+  };
+  readonly requirement: {
+    readonly approverAction: string;
+    readonly minimumApprovals: number;
+    readonly requestTtlSeconds: number;
+    readonly approvalValiditySeconds: number;
+    readonly requiredEvidence: readonly string[];
+    readonly digest: string;
+  };
+  readonly superseded: boolean;
+  readonly approvedAt: string | null;
+  readonly notAfter: string | null;
+  readonly approvalDigest: string | null;
+  readonly closedBy: string | null;
+  readonly verdicts: readonly ApprovalVerdictRecord[];
+}
+
+export interface ApprovalCommandBody {
+  readonly subjectDigest: string;
+  readonly evidence?: readonly { readonly type: string; readonly hash: string; readonly uri?: string }[];
+  readonly reason?: string;
+}
+
+export interface ApprovalCommandResponse {
+  readonly outcome: string;
+  readonly verdict: string;
+  /** CORE-05's canonical re-read after the append. */
+  readonly approval: ApprovalDetail;
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isArrayOf = (value: unknown, item: (entry: unknown) => boolean): boolean => Array.isArray(value) && value.every(item);
@@ -333,4 +443,25 @@ export const shapes = {
     Array.isArray(body['verification']['failures']) &&
     isObject(body['verification']['referenceIntegrity']) &&
     typeof body['verification']['referenceIntegrity']['legacyUnprotected'] === 'number',
+  approvalEntry: (entry: unknown): entry is ApprovalInboxEntry =>
+    isObject(entry) &&
+    isString(entry['approvalRequestId']) &&
+    isString(entry['requestId']) &&
+    isString(entry['status']) &&
+    isString(entry['actorId']) &&
+    isObject(entry['quorum']) &&
+    typeof entry['quorum']['minimumApprovals'] === 'number' &&
+    isArrayOf(entry['quorum']['countedApprovers'], isString) &&
+    typeof entry['quorum']['satisfied'] === 'boolean' &&
+    Array.isArray(entry['escalations']),
+  approvals: (body: unknown): body is ApprovalInbox => isObject(body) && isString(body['view']) && isArrayOf(body['approvals'], (entry) => shapes.approvalEntry(entry)),
+  approval: (body: unknown): body is ApprovalDetail =>
+    isObject(body) &&
+    shapes.approvalEntry(body) &&
+    isString(body['subjectDigest']) &&
+    isString(body['canonicalSubject']) &&
+    isObject(body['subject']) &&
+    isObject(body['requirement']) &&
+    isArrayOf(body['verdicts'], (verdict) => isObject(verdict) && isString(verdict['kind']) && typeof verdict['counted'] === 'boolean' && Array.isArray(verdict['evidence'])),
+  approvalCommand: (body: unknown): body is ApprovalCommandResponse => isObject(body) && body['outcome'] === 'recorded' && isString(body['verdict']) && shapes.approval(body['approval']),
 } as const;

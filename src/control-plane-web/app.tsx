@@ -3,13 +3,14 @@ import type { IncomingMessage } from 'node:http';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { lifecycleTransitions } from './activity.js';
+import { buildApprovalCommand } from './approval-forms.js';
 import type { HostFailure } from './failures.js';
 import { buildProvisionRequest, PARAMETER_BOUND_MAX_ROWS } from './forms.js';
 import type { HostClient, HostResult } from './host-client.js';
 import { ConsoleRequestError, clearCookie, cookieNames, readCookie, readForm, sameOrigin, setCookie, type FormFields } from './security.js';
 import { newFormToken, newIdempotencyKey, takeFlash, tokensEqual, type ConsoleSession, type SessionStore } from './session.js';
 import { CONSOLE_CSS } from './styles.js';
-import { ENTITY_KIND_LABELS, GRANT_REVOCATION_REASONS, isEntityKind, type EntityKind, type EntityView, type OrganizationContext } from './wire.js';
+import { ENTITY_KIND_LABELS, GRANT_REVOCATION_REASONS, isApprovalVerb, isApprovalView, isEntityKind, type ApprovalVerb, type EntityKind, type EntityView, type OrganizationContext } from './wire.js';
 import { boundsOf, lineageOf } from './views/authority-terms.js';
 import { Id, Status } from './views/components.js';
 import type { FormValues } from './views/entity-form.js';
@@ -17,6 +18,7 @@ import { AgentOnboardPage, AgentPage, AgentsPage } from './views/pages-agents.js
 import { AuthorityPage, EntityPage, ExecutionPage, GrantPage, ProvisionPage } from './views/pages-authority.js';
 import { ConfirmPage, CredentialIssuedPage, ErrorPage, LoginPage, OverviewPage } from './views/pages-core.js';
 import { ActivityPage, EmergencyPage, EvidenceIndexPage, EvidencePage, ProfilesPage } from './views/pages-records.js';
+import { ApprovalCommandPage, ApprovalPage, ApprovalsPage } from './views/pages-approvals.js';
 
 /**
  * CTRL-03 — the Frontera web control plane: request handling.
@@ -541,6 +543,32 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
     );
   }
 
+  // -- approvals (CTRL-04) ------------------------------------------------------------------
+
+  /**
+   * One verdict's confirmation page, always from a fresh Host read: the hidden
+   * subject digest it renders is the subject it displays. After a refusal it
+   * re-reads too, so a stale page is replaced by the current subject — and the
+   * operator must review it again; the earlier intent is never re-applied.
+   */
+  async function approvalCommandPage(authed: Authed, approvalRequestId: string, verb: ApprovalVerb, failure?: HostFailure): Promise<ConsoleResponse> {
+    const detail = await host.approval(authed.session.bearer, approvalRequestId);
+    if (!detail.ok) return failurePage(authed, 'Approval request', failure ?? detail.failure);
+    return html(failure === undefined ? 200 : statusForFailure(failure), <ApprovalCommandPage context={authed.context} csrfToken={authed.csrf} detail={detail.body} verb={verb} {...(failure !== undefined ? { failure } : {})} />);
+  }
+
+  async function approvalCommand(authed: Authed, approvalRequestId: string, verb: ApprovalVerb, form: FormFields): Promise<ConsoleResponse> {
+    if (!confirmed(form)) return approvalCommandPage(authed, approvalRequestId, verb);
+    const result = await host.approvalCommand(authed.session.bearer, approvalRequestId, verb, buildApprovalCommand(verb, form));
+    if (!result.ok) return result.failure.kind === 'unauthenticated' ? failurePage(authed, 'Approval', result.failure) : approvalCommandPage(authed, approvalRequestId, verb, result.failure);
+    // What the Host's approval engine re-read after recording the verdict — then the page below re-reads again.
+    const { approval } = result.body;
+    authed.session.flash =
+      `Verdict '${verb}' recorded by the Host. Status (derived, re-read): ${approval.status}; quorum ${approval.quorum.countedApprovers.length} / ${approval.quorum.minimumApprovals}.` +
+      (approval.status === 'approved' ? ' Approval quorum satisfied — the action has NOT been executed: the original requester must retry its governed action.' : '');
+    return redirect(`/approvals/${enc(approvalRequestId)}`);
+  }
+
   // -- routing -----------------------------------------------------------------------------
 
   function segments(pathname: string): readonly string[] {
@@ -633,6 +661,19 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
       }
       if (first === 'profiles' && second !== undefined && third !== undefined && (fourth === 'activate' || fourth === 'retire') && parts.length === 4) return profileConfirm(authed, second, third, fourth);
 
+      if (first === 'approvals' && parts.length === 1) {
+        const view = query.get('view') ?? 'pending';
+        if (!isApprovalView(view)) return html(400, <ErrorPage title="Unknown approval view" context={authed.context} csrfToken={authed.csrf} />);
+        const inbox = await host.approvals(bearer, view);
+        if (!inbox.ok && inbox.failure.kind === 'unauthenticated') return failurePage(authed, 'Approvals', inbox.failure);
+        return html(inbox.ok ? 200 : statusForFailure(inbox.failure), <ApprovalsPage context={authed.context} csrfToken={authed.csrf} view={view} inbox={settle(inbox)} {...flashOf(authed.session)} />);
+      }
+      if (first === 'approvals' && second !== undefined && parts.length === 2) {
+        const detail = await host.approval(bearer, second);
+        return detail.ok ? html(200, <ApprovalPage context={authed.context} csrfToken={authed.csrf} detail={detail.body} {...flashOf(authed.session)} />) : failurePage(authed, 'Approval request', detail.failure);
+      }
+      if (first === 'approvals' && second !== undefined && third !== undefined && isApprovalVerb(third) && parts.length === 3) return approvalCommandPage(authed, second, third);
+
       if (first === 'activity' && parts.length === 1) return activity(authed, query);
       if (first === 'evidence' && parts.length === 1) return evidenceIndex(authed, query);
       if (first === 'evidence' && second === 'decisions' && third !== undefined && parts.length === 3) {
@@ -694,6 +735,7 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
         authed.session.flash = `Emergency control ${result.body.control.scope}${result.body.control.value !== undefined ? `=${result.body.control.value}` : ''}: ${result.body.outcome}. Re-read from the Host below.`;
         return redirect('/emergency');
       }
+      if (first === 'approvals' && second !== undefined && third !== undefined && isApprovalVerb(third) && parts.length === 3) return approvalCommand(authed, second, third, form);
       if (first === 'profiles' && second !== undefined && third !== undefined && (fourth === 'activate' || fourth === 'retire') && parts.length === 4) {
         if (!confirmed(form)) return profileConfirm(authed, second, third, fourth);
         const version = Number(third);

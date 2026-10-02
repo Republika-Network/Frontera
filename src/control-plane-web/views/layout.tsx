@@ -7,6 +7,7 @@ export const NAVIGATION = [
   { path: '/', label: 'Overview' },
   { path: '/agents', label: 'Agents' },
   { path: '/authority', label: 'Authority' },
+  { path: '/approvals', label: 'Approvals' },
   { path: '/activity', label: 'Activity' },
   { path: '/evidence', label: 'Evidence' },
   { path: '/profiles', label: 'Governance Profiles' },
