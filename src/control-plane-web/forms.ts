@@ -127,8 +127,20 @@ export const ENTITY_FORM_SPECS: Readonly<Record<EntityKind, readonly FieldSpec[]
 /** Kinds whose form carries monetary constraints and typed parameter bounds. */
 export const BOUNDED_KINDS: readonly EntityKind[] = ['authority-grant', 'delegation-grant'];
 
-/** How many typed-parameter-bound rows a form offers. */
-export const PARAMETER_BOUND_ROWS = 4;
+/** Typed-parameter-bound rows: a form offers at least this many, and one more than the highest row in use. */
+export const PARAMETER_BOUND_MIN_ROWS = 4;
+/** The Host's own ceiling on bounds per record; every row up to it is read, so a prefilled lineage is never truncated. */
+export const PARAMETER_BOUND_MAX_ROWS = 32;
+
+/** How many bound rows to render for these form values: every row in use, plus one empty row, at least the minimum. */
+export function parameterBoundRowCount(values: Readonly<Record<string, string>>): number {
+  let highest = -1;
+  for (const name of Object.keys(values)) {
+    const match = /^bound\.(\d+)\./.exec(name);
+    if (match !== null && (values[name] ?? '') !== '') highest = Math.max(highest, Number(match[1]));
+  }
+  return Math.min(PARAMETER_BOUND_MAX_ROWS, Math.max(PARAMETER_BOUND_MIN_ROWS, highest + 2));
+}
 
 /**
  * The bound forms an operator may choose — the canonical CORE-03 bound shapes,
@@ -167,10 +179,11 @@ export function parseStrictInteger(value: string): number | undefined {
 /** Builds the canonical typed parameter bound list from the form's bound rows. A half-filled row is an error, never dropped. */
 export function buildParameterBounds(form: FormFields, errors: Record<string, string>): readonly Record<string, unknown>[] {
   const bounds: Record<string, unknown>[] = [];
-  for (let row = 0; row < PARAMETER_BOUND_ROWS; row += 1) {
+  for (let row = 0; row < PARAMETER_BOUND_MAX_ROWS; row += 1) {
     const dimension = form.text(`bound.${row}.dimension`);
     const shape = form.text(`bound.${row}.form`);
-    const value = form.text(`bound.${row}.value`);
+    // The value is taken exactly as typed — not trimmed — for the strict parse below and for the Host.
+    const value = form.raw(`bound.${row}.value`);
     if (dimension === '' && value === '') continue;
     const where = `bound.${row}`;
     if (dimension === '') {

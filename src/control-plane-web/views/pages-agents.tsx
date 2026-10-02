@@ -92,9 +92,11 @@ export interface AgentPageProps {
   readonly entities: readonly EntityView[] | HostFailure;
   readonly issueIdempotencyKey: string;
   readonly flash?: string;
+  /** A failed credential issue: shown above the canonical (re-read) agent, whose issuing form keeps the same idempotency key. */
+  readonly failure?: HostFailure;
 }
 
-export function AgentPage({ context, csrfToken, agent, entities, issueIdempotencyKey, flash }: AgentPageProps): React.ReactElement {
+export function AgentPage({ context, csrfToken, agent, entities, issueIdempotencyKey, flash, failure }: AgentPageProps): React.ReactElement {
   const revoked = agent.status === 'revoked';
   const stages: readonly (readonly [string, boolean, string])[] = [
     ['Actor provisioned', agent.onboarding.actor === 'active', agent.onboarding.actor],
@@ -112,6 +114,7 @@ export function AgentPage({ context, csrfToken, agent, entities, issueIdempotenc
   const grants = [...agent.authority.authorityGrants, ...agent.authority.delegationGrants];
   return (
     <Page title={`Agent ${agent.displayName}`} context={context} csrfToken={csrfToken} active="/agents" {...(flash !== undefined ? { flash } : {})}>
+      {failure !== undefined ? <FailureNotice failure={failure} /> : null}
       {revoked ? (
         <Notice tone="danger" title="This agent’s actor is revoked.">
           <p>Revocation is terminal. No credential admits this agent, whatever its status below, and it holds no authority. Restoring capability means onboarding a new agent under a new identity.</p>

@@ -315,11 +315,22 @@ export const shapes = {
   grantRevoke: (body: unknown): body is GrantRevokeResult => isObject(body) && isString(body['outcome']) && isObject(body['revocation']),
   execution: (body: unknown): body is ExecutionGrantView => isObject(body) && isString(body['executionId']) && isString(body['grantId']),
   emergency: (body: unknown): body is EmergencyControls => isObject(body) && Array.isArray(body['active']),
-  emergencyTransition: (body: unknown): body is EmergencyTransitionResult => isObject(body) && isString(body['outcome']) && Array.isArray(body['active']),
+  emergencyTransition: (body: unknown): body is EmergencyTransitionResult =>
+    isObject(body) && isString(body['outcome']) && Array.isArray(body['active']) && isObject(body['control']) && isString(body['control']['scope']),
   profiles: (body: unknown): body is ProfileCatalog => isObject(body) && isString(body['lifecycle']) && isArrayOf(body['profiles'], (entry) => isObject(entry) && isString(entry['profileId']) && isString(entry['digest'])),
   profileTransition: (body: unknown): body is ProfileTransitionResult => isObject(body) && isString(body['outcome']) && isObject(body['profile']),
   decisions: (body: unknown): body is DecisionPage =>
     isObject(body) && isArrayOf(body['decisions'], (entry) => isObject(entry) && isString(entry['evaluationId']) && isString(entry['status'])) && (body['nextCursor'] === null || isString(body['nextCursor'])),
   evidence: (body: unknown): body is DecisionEvidence =>
-    isObject(body) && isObject(body['decision']) && isString(body['decision']['evaluationId']) && Array.isArray(body['references']) && isObject(body['verification']) && typeof body['verification']['valid'] === 'boolean',
+    isObject(body) &&
+    isObject(body['decision']) &&
+    isString(body['decision']['evaluationId']) &&
+    Array.isArray(body['references']) &&
+    isObject(body['verification']) &&
+    typeof body['verification']['valid'] === 'boolean' &&
+    isObject(body['verification']['checks']) &&
+    Object.values(body['verification']['checks']).every((value) => typeof value === 'boolean') &&
+    Array.isArray(body['verification']['failures']) &&
+    isObject(body['verification']['referenceIntegrity']) &&
+    typeof body['verification']['referenceIntegrity']['legacyUnprotected'] === 'number',
 } as const;

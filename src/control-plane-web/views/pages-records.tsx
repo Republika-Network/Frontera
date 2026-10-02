@@ -100,6 +100,7 @@ export function ActivityPage({ context, csrfToken, decisions, filter, transition
         <p className="help coverage" data-coverage="lifecycle">
           {LIFECYCLE_COVERAGE}
         </p>
+        {filter.actorId !== '' || filter.status !== '' ? <p className="emphasis">The filter above applies to decisions only; this table lists every recorded transition.</p> : null}
         {!Array.isArray(transitions) ? (
           <FailureNotice failure={transitions as HostFailure} />
         ) : transitions.length === 0 ? (
@@ -200,11 +201,16 @@ export function EvidencePage({ context, csrfToken, evidence }: { readonly contex
     <Page title={`Decision ${decision.evaluationId}`} context={context} csrfToken={csrfToken} active="/evidence">
       <Section title="Verification (Governance Store)">
         {verification.valid ? (
-          <Notice tone="success" title="Integrity verified by the Governance Store">
+          <Notice tone={verification.referenceIntegrity.legacyUnprotected > 0 ? 'warning' : 'success'} title="Integrity verified by the Governance Store">
             <p>
               Every digest check on this decision record passed at <Time value={verification.verifiedAt} />. This is digest-based integrity: it detects modification of the stored record; it is not a signature (ASSURE-02) and says
               nothing about compliance.
             </p>
+            {verification.referenceIntegrity.legacyUnprotected > 0 ? (
+              <p className="emphasis" data-testid="unprotected-references">
+                {verification.referenceIntegrity.legacyUnprotected} reference row(s) on this record predate reference integrity and are not covered by this verification; downstream records built from them are unverified.
+              </p>
+            ) : null}
           </Notice>
         ) : (
           <Notice tone="danger" title="Verification FAILED — this record could not be verified">

@@ -40,7 +40,7 @@ export function Page({ title, context, csrfToken, active, flash, children }: Pag
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="referrer" content="no-referrer" />
+        <meta name="referrer" content="same-origin" />
         <title>{`${title} — Frontera Control Plane`}</title>
         <link rel="stylesheet" href="/assets/console.css" />
       </head>

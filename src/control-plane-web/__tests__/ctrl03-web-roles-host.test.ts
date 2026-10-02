@@ -244,6 +244,7 @@ describe('CTRL-03 web — session, CSRF, origin and browser-input controls', () 
     const csrf = csrfOf(await browser.get('/'));
     assert.equal((await browser.post('/agents', `${body}&csrf=${csrf}`, { origin: 'https://attacker.example' })).status, 403, 'cross-origin');
     assert.equal((await browser.post('/agents', `${body}&csrf=${csrf}`, {})).status, 403, 'no origin');
+    assert.equal((await browser.post('/agents', `${body}&csrf=${csrf}`, { origin: 'null' })).status, 403, 'an opaque (null) origin');
     const otherCsrf = csrfOf(await as('administrator').get('/'));
     assert.equal((await browser.post('/agents', `${body}&csrf=${otherCsrf}`)).status, 403, 'another session’s token');
     assert.equal(await hostState(), before);

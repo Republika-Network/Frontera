@@ -4,9 +4,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { lifecycleTransitions } from './activity.js';
 import type { HostFailure } from './failures.js';
-import { buildProvisionRequest, PARAMETER_BOUND_ROWS } from './forms.js';
+import { buildProvisionRequest, PARAMETER_BOUND_MAX_ROWS } from './forms.js';
 import type { HostClient, HostResult } from './host-client.js';
-import { ConsoleRequestError, clearCookie, LOGIN_COOKIE, readCookie, readForm, sameOrigin, SESSION_COOKIE, setCookie, type FormFields } from './security.js';
+import { ConsoleRequestError, clearCookie, cookieNames, readCookie, readForm, sameOrigin, setCookie, type FormFields } from './security.js';
 import { newFormToken, newIdempotencyKey, takeFlash, tokensEqual, type ConsoleSession, type SessionStore } from './session.js';
 import { CONSOLE_CSS } from './styles.js';
 import { ENTITY_KIND_LABELS, GRANT_REVOCATION_REASONS, isEntityKind, type EntityKind, type EntityView, type OrganizationContext } from './wire.js';
@@ -112,6 +112,7 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
   const { host, sessions, publicOrigin } = options;
   const secure = publicOrigin.startsWith('https://');
   const cookieOptions = { secure };
+  const { session: SESSION_COOKIE, login: LOGIN_COOKIE } = cookieNames(secure);
 
   function sessionCookie(session: ConsoleSession): string {
     return setCookie(SESSION_COOKIE, session.id, cookieOptions);
@@ -200,6 +201,8 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
               : 'The Host could not verify the credential.';
       return loginPage(failure.kind === 'unauthenticated' ? 401 : failure.kind === 'unauthorized' ? 403 : statusForFailure(failure), { message, failure });
     }
+    // A new sign-in never coexists with an earlier session on this browser.
+    sessions.destroy(readCookie(req, SESSION_COOKIE));
     const session = sessions.create(credential, organization.body.operator.operatorId);
     return redirect('/', [sessionCookie(session), clearCookie(LOGIN_COOKIE, cookieOptions)]);
   }
@@ -221,13 +224,22 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
     );
   }
 
-  async function agentPage(authed: Authed, actorId: string, status = 200): Promise<ConsoleResponse> {
+  /** The agent page — after a failed issue, with that failure shown and the same idempotency key kept, so a retry is the same request. */
+  async function agentPage(authed: Authed, actorId: string, issue?: { readonly failure: HostFailure; readonly idempotencyKey: string }): Promise<ConsoleResponse> {
     const { bearer } = authed.session;
     const [agent, entities] = await Promise.all([host.agent(bearer, actorId), host.listEntities(bearer)]);
-    if (!agent.ok) return failurePage(authed, `Agent ${actorId}`, agent.failure);
+    if (!agent.ok) return failurePage(authed, `Agent ${actorId}`, issue?.failure ?? agent.failure);
     return html(
-      status,
-      <AgentPage context={authed.context} csrfToken={authed.csrf} agent={agent.body} entities={entities.ok ? entities.body.entities : entities.failure} issueIdempotencyKey={newIdempotencyKey()} {...flashOf(authed.session)} />,
+      issue === undefined ? 200 : statusForFailure(issue.failure),
+      <AgentPage
+        context={authed.context}
+        csrfToken={authed.csrf}
+        agent={agent.body}
+        entities={entities.ok ? entities.body.entities : entities.failure}
+        issueIdempotencyKey={issue?.idempotencyKey ?? newIdempotencyKey()}
+        {...(issue !== undefined ? { failure: issue.failure } : {})}
+        {...flashOf(authed.session)}
+      />,
     );
   }
 
@@ -255,7 +267,7 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
         for (const key of ['actions', 'resourceScopes']) if (Array.isArray(terms[key])) values[key] = (terms[key] as string[]).join('\n');
         // The parent's own bounds, unchanged: the starting point may be kept or narrowed — it never suggests a wider value.
         boundsOf(terms)
-          .slice(0, PARAMETER_BOUND_ROWS)
+          .slice(0, PARAMETER_BOUND_MAX_ROWS)
           .forEach((bound, row) => {
             values[`bound.${row}.dimension`] = String(bound.dimension);
             values[`bound.${row}.form`] = bound.kind === 'maximum' ? 'maximum-integer' : `exact-${String(bound.type)}`;
@@ -642,7 +654,7 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
         const idempotencyKey = form.text('idempotencyKey');
         if (idempotencyKey === '') return html(400, <ErrorPage title="The issuing form is incomplete" context={authed.context} csrfToken={authed.csrf} />);
         const issued = await host.issueCredential(bearer, second, idempotencyKey);
-        if (!issued.ok) return failurePage(authed, 'Issue credential', issued.failure, <a href={`/agents/${enc(second)}`}>Back to the agent (canonical state)</a>);
+        if (!issued.ok) return issued.failure.kind === 'unauthenticated' ? failurePage(authed, 'Issue credential', issued.failure) : agentPage(authed, second, { failure: issued.failure, idempotencyKey });
         return html(200, <CredentialIssuedPage context={authed.context} csrfToken={authed.csrf} result={issued.body} rotated={false} />);
       }
       if (first === 'agents' && second !== undefined && third === 'credentials' && fourth !== undefined && fifth === 'rotate' && parts.length === 5) {

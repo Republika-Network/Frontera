@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { BOUNDED_KINDS, ENTITY_FORM_SPECS, PARAMETER_BOUND_FORM_LABELS, PARAMETER_BOUND_FORMS, PARAMETER_BOUND_ROWS, type FieldSpec, type FormErrors } from '../forms.js';
+import { BOUNDED_KINDS, ENTITY_FORM_SPECS, PARAMETER_BOUND_FORM_LABELS, PARAMETER_BOUND_FORMS, parameterBoundRowCount, type FieldSpec, type FormErrors } from '../forms.js';
 import { ENTITY_KIND_LABELS, type EntityKind } from '../wire.js';
 import { CsrfField, FieldError } from './components.js';
 
@@ -150,7 +150,7 @@ export function EntityForm(props: EntityFormProps): React.ReactElement {
                 </tr>
               </thead>
               <tbody>
-                {Array.from({ length: PARAMETER_BOUND_ROWS }, (_, row) => (
+                {Array.from({ length: parameterBoundRowCount(values) }, (_, row) => (
                   <tr key={row}>
                     <td>
                       <label className="visually-hidden" htmlFor={`bound-${row}-dimension`}>

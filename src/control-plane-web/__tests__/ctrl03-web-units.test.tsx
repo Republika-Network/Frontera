@@ -10,13 +10,14 @@ import { createConsoleApp, statusForFailure } from '../app.js';
 import { classifyHostFailure, FAILURE_GUIDANCE, type HostFailure } from '../failures.js';
 import { buildParameterBounds, buildProvisionRequest, ENTITY_FORM_SPECS, parseStrictInteger } from '../forms.js';
 import { createHostClient, type HostClient, type HostResult } from '../host-client.js';
-import { CONTENT_SECURITY_POLICY, FormFields, securityHeaders, setCookie, SESSION_COOKIE } from '../security.js';
+import { CONTENT_SECURITY_POLICY, cookieNames, FormFields, REFERRER_POLICY, securityHeaders, setCookie, SESSION_COOKIE } from '../security.js';
 import { createSessionStore, tokensEqual } from '../session.js';
-import type { AgentView, DecisionEvidence, EntityView, OrganizationContext, ProfileVersion } from '../wire.js';
+import { shapes, type AgentView, type DecisionEvidence, type EntityView, type OrganizationContext, type ProfileVersion } from '../wire.js';
 import { FailureNotice } from '../views/components.js';
 import { AgentPage } from '../views/pages-agents.js';
 import { CredentialIssuedPage } from '../views/pages-core.js';
 import { EvidencePage } from '../views/pages-records.js';
+import { navigationHeaders } from './web-browser.js';
 
 /**
  * CTRL-03 — the web control plane's pure layers: failure taxonomy, closed and
@@ -228,10 +229,23 @@ describe('CTRL-03 web — sessions are bounded, opaque and destroyable', () => {
     assert.doesNotMatch(CONTENT_SECURITY_POLICY, /script-src/);
     assert.match(CONTENT_SECURITY_POLICY, /default-src 'none'/);
     assert.match(CONTENT_SECURITY_POLICY, /frame-ancestors 'none'/);
-    const headers = securityHeaders();
+    const headers = securityHeaders(false);
     assert.equal(headers['x-frame-options'], 'DENY');
     assert.equal(headers['cache-control'], 'no-store');
-    assert.equal(headers['referrer-policy'], 'no-referrer');
+    assert.equal(headers['strict-transport-security'], undefined, 'no HSTS on loopback HTTP');
+    assert.equal(securityHeaders(true)['strict-transport-security'], 'max-age=31536000');
+    assert.deepEqual(cookieNames(true), { session: '__Host-frontera_console_session', login: '__Host-frontera_console_login' });
+    assert.deepEqual(cookieNames(false), { session: 'frontera_console_session', login: 'frontera_console_login' });
+  });
+
+  it('the referrer policy lets a browser send the console’s true Origin on its own form posts — never `null` (no-referrer would make every form look forged)', () => {
+    assert.equal(securityHeaders(false)['referrer-policy'], REFERRER_POLICY);
+    assert.equal(REFERRER_POLICY, 'same-origin');
+    const page = 'http://127.0.0.1:9/agents/a';
+    assert.deepEqual(navigationHeaders(REFERRER_POLICY, page, 'http://127.0.0.1:9/agents'), { origin: 'http://127.0.0.1:9', referer: 'http://127.0.0.1:9/agents/a' });
+    assert.deepEqual(navigationHeaders(REFERRER_POLICY, page, 'https://elsewhere.example/x'), { origin: 'null' }, 'nothing leaks to another origin');
+    // The harness models the Fetch standard: a no-referrer document posts Origin: null.
+    assert.deepEqual(navigationHeaders('no-referrer', page, 'http://127.0.0.1:9/agents'), { origin: 'null' });
   });
 });
 
@@ -502,5 +516,82 @@ describe('CTRL-03 web — the Host client', () => {
 
   it('refuses a Host URL carrying credentials, a query or a fragment', () => {
     for (const baseUrl of ['http://user:pass@127.0.0.1:1', 'http://127.0.0.1:1/?x=1', 'http://127.0.0.1:1/#f']) assert.throws(() => createHostClient({ baseUrl }));
+  });
+});
+
+describe('CTRL-03 web — adversarial-review fixes', () => {
+  const post = (cookie: string, path: string, body: string, origin = ORIGIN): IncomingMessage =>
+    request('POST', path, { cookie, origin, 'content-type': 'application/x-www-form-urlencoded' }, body);
+
+  it('a POST carrying Origin: null is refused before the Host is asked anything', async () => {
+    const calls: string[] = [];
+    const { app, cookie, csrf } = await signedIn(scriptedHost({}, calls));
+    const response = await app.handle(post(cookie, '/agents', new URLSearchParams({ csrf, actorId: 'x', type: 'agent', displayName: 'X' }).toString(), 'null'));
+    assert.equal(response.status, 403);
+    assert.deepEqual(calls, []);
+  });
+
+  it('a failed credential issue shows the failure on the re-read agent page and keeps the same idempotency key for the same-request retry', async () => {
+    const calls: string[] = [];
+    const { app, cookie, csrf } = await signedIn(
+      scriptedHost(
+        {
+          organization: () => ok(context(['inventory.read', 'agent-credential.manage'])),
+          issueCredential: () => fail(503, { error: { code: 'AUTHORITY_STATE_UNAVAILABLE', message: 'unavailable' } }),
+          agent: () => ok(agentView),
+        },
+        calls,
+      ),
+    );
+    const response = await app.handle(post(cookie, '/agents/agent-1/credentials', new URLSearchParams({ csrf, idempotencyKey: 'console-issue-key-0001' }).toString()));
+    assert.equal(response.status, 503);
+    assert.match(response.body ?? '', /Host unavailable/);
+    assert.match(response.body ?? '', /name="idempotencyKey" value="console-issue-key-0001"/);
+    assert.ok(calls.includes('agent'), 'the agent shown is a fresh Host read');
+  });
+
+  it('a delegation form restates every parent bound — five bounds render five prefilled rows, none dropped', async () => {
+    const bounds = ['a', 'b', 'c', 'd', 'e'].map((dimension, index) => ({ dimension, kind: 'maximum', type: 'integer', limit: index + 1 }));
+    const parent = entity({ entityId: 'g-5', terms: { subjectActorId: 'owner', capability: 'c', actions: ['act'], resourceScopes: ['res'], parameterBounds: bounds } });
+    const { app, cookie } = await signedIn(scriptedHost({ listEntities: () => ok({ entities: [parent] }) }, []));
+    const response = await app.handle(request('GET', '/authority/new/delegation-grant?source=g-5', { cookie }));
+    assert.equal(response.status, 200);
+    for (const [row, bound] of bounds.entries()) {
+      assert.match(response.body ?? '', new RegExp(`name="bound\\.${row}\\.value"[^>]*value="${bound.limit}"`), `row ${row}`);
+    }
+    assert.match(response.body ?? '', /name="bound\.5\.dimension"/, 'and one empty row to add another');
+  });
+
+  it('a successful sign-in ends any earlier session of the same browser', async () => {
+    const sessions = createSessionStore();
+    const app = createConsoleApp({ host: scriptedHost({}, []), sessions, publicOrigin: ORIGIN });
+    const earlier = sessions.create('old-bearer', 'ops-old');
+    const login = await app.handle(request('GET', '/login', {}));
+    const loginToken = /name="loginToken" value="([^"]+)"/.exec(login.body ?? '')?.[1] ?? '';
+    const signedInResponse = await app.handle(
+      request('POST', '/login', { cookie: `${SESSION_COOKIE}=${earlier.id}; frontera_console_login=${loginToken}`, origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' }, new URLSearchParams({ loginToken, credential: 'operator-bearer-value' }).toString()),
+    );
+    assert.equal(signedInResponse.status, 303);
+    assert.equal(sessions.get(earlier.id), undefined);
+  });
+
+  it('a verified record with legacy-unprotected references says those references are not covered', () => {
+    const evidence: DecisionEvidence = {
+      decision: { evaluationId: 'e', decisionId: 'd', requestId: 'r', correlationId: null, actorId: 'a', actorType: null, actionType: 'act', resourceScope: 'res', requestedAt: 't', status: 'allowed', summary: 's', reasonCodes: [], evaluatedAt: 't', persistedAt: 't', kernelVersion: 'k' },
+      integrity: { algorithm: 'sha256', chainPosition: 1, aggregateDigest: 'x', previousAggregateDigest: null },
+      references: [{ referenceId: 'r1', referenceType: 'authorization_artifact', externalId: 'aoc.grant:1', externalVersion: null, digest: null, createdAt: 't', sequence: null }],
+      verification: { valid: true, verifiedAt: 't', checks: { evaluationDigest: true }, failures: [], referenceIntegrity: { legacyUnprotected: 1, protectedValid: 0, protectedCorrupted: 0, protectedUnsupportedVersion: 0 } },
+      coverage: 'governance-store-decision-record',
+    };
+    const html = renderToStaticMarkup(<EvidencePage context={context([])} csrfToken="t" evidence={evidence} />);
+    assert.match(html, /data-testid="unprotected-references"/);
+    assert.match(html, /are not covered by this verification/);
+  });
+
+  it('a 2xx body whose verification checks are not booleans, or whose emergency transition names no control, is a contract failure — never rendered', () => {
+    const base = { decision: { evaluationId: 'e' }, references: [], verification: { valid: true, checks: { evaluationDigest: 'false' }, failures: [], referenceIntegrity: { legacyUnprotected: 0 } } };
+    assert.equal(shapes.evidence(base), false);
+    assert.equal(shapes.evidence({ ...base, verification: { ...base.verification, checks: { evaluationDigest: true } } }), true);
+    assert.equal(shapes.emergencyTransition({ outcome: 'activated', active: [] }), false);
   });
 });

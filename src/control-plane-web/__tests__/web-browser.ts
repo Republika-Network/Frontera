@@ -90,6 +90,62 @@ export function textOf(html: string): string {
   return decodeEntities(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * The document's referrer policy, as a browser derives it: a `<meta name="referrer">`
+ * in the page overrides the response header; with neither, the default is
+ * `strict-origin-when-cross-origin`.
+ */
+export function referrerPolicyOf(page: { readonly html: string; readonly headers: Headers }): string {
+  const meta = /<meta name="referrer" content="([^"]+)"/.exec(page.html)?.[1];
+  return (meta ?? page.headers.get('referrer-policy') ?? 'strict-origin-when-cross-origin').trim().toLowerCase();
+}
+
+/**
+ * The `Origin` and `Referer` a browser sends on a form POST (a non-GET
+ * navigation, not CORS mode) from a document at `from` with `policy` to
+ * `target` — the Fetch standard's "append a request `Origin` header" and the
+ * Referrer Policy algorithm. Notably, a `no-referrer` document sends
+ * `Origin: null`.
+ */
+export function navigationHeaders(policy: string, from: string, target: string): Record<string, string> {
+  const source = new URL(from);
+  const destination = new URL(target);
+  const sameOrigin = source.origin === destination.origin;
+  const downgrade = source.protocol === 'https:' && destination.protocol !== 'https:';
+  let origin: string = source.origin;
+  if (policy === 'no-referrer') origin = 'null';
+  else if (policy === 'same-origin' && !sameOrigin) origin = 'null';
+  else if ((policy === 'no-referrer-when-downgrade' || policy === 'strict-origin' || policy === 'strict-origin-when-cross-origin') && downgrade) origin = 'null';
+  const full = `${source.origin}${source.pathname}${source.search}`;
+  let referer: string | undefined;
+  switch (policy) {
+    case 'no-referrer':
+      referer = undefined;
+      break;
+    case 'same-origin':
+      referer = sameOrigin ? full : undefined;
+      break;
+    case 'origin':
+      referer = `${source.origin}/`;
+      break;
+    case 'strict-origin':
+      referer = downgrade ? undefined : `${source.origin}/`;
+      break;
+    case 'origin-when-cross-origin':
+      referer = sameOrigin ? full : `${source.origin}/`;
+      break;
+    case 'unsafe-url':
+      referer = full;
+      break;
+    case 'no-referrer-when-downgrade':
+      referer = downgrade ? undefined : full;
+      break;
+    default:
+      referer = sameOrigin ? full : downgrade ? undefined : `${source.origin}/`;
+  }
+  return { origin, ...(referer !== undefined ? { referer } : {}) };
+}
+
 export async function freePort(): Promise<number> {
   return new Promise((resolvePromise, rejectPromise) => {
     const server = createServer();
@@ -106,6 +162,8 @@ export class Browser {
   readonly cookies = new Map<string, string>();
   readonly transcript: TranscriptEntry[] = [];
   readonly visited: string[] = [];
+  /** The last HTML document this browser displayed — the page a forged POST is sent "from". */
+  private lastDocument: { readonly url: string; readonly html: string; readonly headers: Headers } | undefined;
 
   constructor(
     readonly origin: string,
@@ -154,9 +212,18 @@ export class Browser {
         current = location;
         continue;
       }
-      return { status: response.status, url: response.url, html: response.text, headers: response.headers };
+      const view = { status: response.status, url: response.url, html: response.text, headers: response.headers };
+      this.lastDocument = view;
+      return view;
     }
     throw new Error('too many redirects');
+  }
+
+  /** The headers this browser would attach to a form POST from `page` (or its last document) to `action`. */
+  headersFor(action: string, page?: { readonly url: string; readonly html: string; readonly headers: Headers }): Record<string, string> {
+    const from = page ?? this.lastDocument;
+    if (from === undefined) return {};
+    return navigationHeaders(referrerPolicyOf(from), from.url, new URL(action, this.origin).toString());
   }
 
   /**
@@ -178,18 +245,25 @@ export class Browser {
       }
     }
     for (const [name, value] of Object.entries(values)) if (!overridden.has(name)) fields.append(name, value);
-    return this.post(form.action, fields.toString());
+    return this.post(form.action, fields.toString(), this.headersFor(form.action, page));
   }
 
-  /** A POST exactly as given — used to prove the server refuses what no rendered page offers. */
-  async post(path: string, body: string, headers: Record<string, string> = { origin: this.origin }): Promise<PageView> {
+  /**
+   * A POST with the given body — used to prove the server refuses what no
+   * rendered page offers. By default it carries what this browser would send
+   * from its last document (Origin / Referer per that document's referrer
+   * policy); a test may pass other headers to forge a cross-site request.
+   */
+  async post(path: string, body: string, headers: Record<string, string> = this.headersFor(path)): Promise<PageView> {
     const response = await this.send('POST', path, body, headers);
     if (response.status === 303) {
       const location = response.headers.get('location');
       assert.ok(location !== null);
       return this.get(location);
     }
-    return { status: response.status, url: response.url, html: response.text, headers: response.headers };
+    const view = { status: response.status, url: response.url, html: response.text, headers: response.headers };
+    this.lastDocument = view;
+    return view;
   }
 
   async signIn(credential: string): Promise<PageView> {

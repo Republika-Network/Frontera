@@ -7,11 +7,30 @@ import type { IncomingMessage } from 'node:http';
  * HTML and every operation an HTML form. The Content-Security-Policy below
  * therefore allows no script at all, so an injected `<script>` (or event
  * handler) does not run. Framing is refused, nothing is cached, no referrer
- * leaves the page, and no cross-origin reader is allowed.
+ * leaves for another origin, and no cross-origin reader is allowed.
  */
 
+/**
+ * Cookie names. On an HTTPS origin they carry the `__Host-` prefix, which a
+ * browser accepts only with `Secure`, `Path=/` and no `Domain` — so no sibling
+ * host can plant or overwrite them. On loopback HTTP (no `Secure` possible)
+ * they are unprefixed.
+ */
 export const SESSION_COOKIE = 'frontera_console_session';
 export const LOGIN_COOKIE = 'frontera_console_login';
+
+export function cookieNames(secure: boolean): { readonly session: string; readonly login: string } {
+  return secure ? { session: `__Host-${SESSION_COOKIE}`, login: `__Host-${LOGIN_COOKIE}` } : { session: SESSION_COOKIE, login: LOGIN_COOKIE };
+}
+
+/**
+ * `same-origin`, deliberately — not `no-referrer`. Under the Fetch standard a
+ * browser sends `Origin: null` on a form POST from a `no-referrer` document,
+ * which would make every same-origin form indistinguishable from a forged one.
+ * `same-origin` sends the true `Origin` (and `Referer`) to the console itself
+ * and nothing to any other origin.
+ */
+export const REFERRER_POLICY = 'same-origin';
 
 export const CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
@@ -22,12 +41,13 @@ export const CONTENT_SECURITY_POLICY = [
   "base-uri 'none'",
 ].join('; ');
 
-export function securityHeaders(): Readonly<Record<string, string>> {
+export function securityHeaders(secure: boolean): Readonly<Record<string, string>> {
   return {
     'content-security-policy': CONTENT_SECURITY_POLICY,
     'x-frame-options': 'DENY',
     'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
+    'referrer-policy': REFERRER_POLICY,
+    ...(secure ? { 'strict-transport-security': 'max-age=31536000' } : {}),
     'cache-control': 'no-store',
     pragma: 'no-cache',
     'cross-origin-opener-policy': 'same-origin',
@@ -71,8 +91,9 @@ export function readCookie(req: IncomingMessage, name: string): string | undefin
 /**
  * A state-changing request must come from the console's own origin: the
  * `Origin` header (or, when a browser omits it, the `Referer`'s origin) must be
- * exactly the configured public origin. A request with neither is refused.
- * This is in addition to the per-session CSRF token and `SameSite=Strict`.
+ * exactly the configured public origin. A request with neither — or with
+ * `Origin: null` — is refused. This is in addition to the per-session CSRF
+ * token and `SameSite=Strict`.
  */
 export function sameOrigin(req: IncomingMessage, publicOrigin: string): boolean {
   const origin = req.headers.origin;

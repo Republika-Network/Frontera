@@ -119,13 +119,14 @@ function routeShape(url: string | undefined): string {
 
 export function createControlPlaneWebServer(configuration: ControlPlaneWebConfiguration, options: ControlPlaneWebServerOptions = {}): ControlPlaneWebServer {
   const logger = options.logger;
+  const secure = configuration.publicOrigin.startsWith('https://');
   const sessions = createSessionStore({ ...configuration.session, ...(options.now !== undefined ? { now: options.now } : {}) });
   const app = createConsoleApp({ host: createHostClient({ baseUrl: configuration.hostUrl }), sessions, publicOrigin: configuration.publicOrigin, ...(logger !== undefined ? { logger } : {}) });
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     app
       .handle(req)
       .then((response) => {
-        const headers: Record<string, string | string[]> = { ...securityHeaders() };
+        const headers: Record<string, string | string[]> = { ...securityHeaders(secure) };
         if (response.contentType !== undefined) headers['content-type'] = response.contentType;
         if (response.location !== undefined) headers['location'] = response.location;
         if (response.cookies !== undefined && response.cookies.length > 0) headers['set-cookie'] = [...response.cookies];
@@ -136,7 +137,7 @@ export function createControlPlaneWebServer(configuration: ControlPlaneWebConfig
         logger?.info('console.request', { method: req.method ?? 'GET', route: routeShape(req.url), status: response.status });
       })
       .catch(() => {
-        res.writeHead(500, { ...securityHeaders(), 'content-type': 'text/plain; charset=utf-8' });
+        res.writeHead(500, { ...securityHeaders(secure), 'content-type': 'text/plain; charset=utf-8' });
         res.end('The console failed to handle this request.');
         logger?.info('console.request', { method: req.method ?? 'GET', route: routeShape(req.url), status: 500 });
       });
