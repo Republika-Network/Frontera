@@ -1,5 +1,11 @@
 # AOC Enterprise v1.0.0 — Portability, Backup, Restore & Clean-Room Drill Report
 
+> **Historical (v1.0.0, superseded for store coverage by PROD-02, 2026-10-02).**
+> This document records the v1.0.0 portability validation, when the Host had
+> three (later four) durable stores. The current store set — thirteen stores,
+> one registry (`scripts/portability/store-registry.mjs`) — and its
+> qualification are in `docs/security/PROD-02-COMPLETE-BACKUP-RESTORE-COVERAGE.md`.
+
 Final technical validation before tagging `v1.0.0`. Classification:
 Final Release Validation / Portability Drill / Backup and Restore Drill /
 Clean-Room Reconstruction / Disaster Recovery Validation / Transferability

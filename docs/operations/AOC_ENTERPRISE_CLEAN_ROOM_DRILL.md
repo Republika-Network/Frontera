@@ -1,5 +1,15 @@
 # AOC Enterprise v1 — Clean-Room Portability Drill (`validate:portability:v1`)
 
+> **PROD-02.** The drill now runs, inside the clean-room checkout, the three
+> PROD-02 Host drills (step `prod02-host-drills`): a production-shaped secure
+> Host composing every store, cold-backed-up, its data directory destroyed,
+> restored from the backup alone and booted against the surviving
+> separate-process freshness witness (software and external custody); the
+> stale-backup drill; and the tamper/rollback matrix. Those are the official
+> PROD-02 exit proof (`docs/security/PROD-02-COMPLETE-BACKUP-RESTORE-COVERAGE.md`).
+> The synthetic four-store fixture cycle below remains the logical-equivalence
+> check for Governance, Evidence, Passport, Assurance and Kernel Authority.
+
 The full disaster-recovery/portability proof: an isolated checkout of the
 exact tracked source, built and tested from nothing, seeded with a
 synthetic fixture, backed up, had its source stores destroyed, restored
@@ -77,7 +87,7 @@ npm run validate:v1-release       # the routine release gate (includes the bound
    suite, from the clean-room checkout's own `node_modules`.
 4. **`compiled-tests`** — `npm run test:root` (the full compiled + `.mjs`
    test suite) from the clean-room checkout.
-5. **`synthetic-fixture-generation`** — seeds a fresh three-store SQLite
+5. **`synthetic-fixture-generation`** — seeds a fresh four-store SQLite
    set with the deterministic, non-sensitive fixture described in
    `AOC_ENTERPRISE_V1_PORTABILITY_REPORT.md` §"Portability Evidence,"
    using the clean-room checkout's own build.
@@ -87,7 +97,7 @@ npm run validate:v1-release       # the routine release gate (includes the bound
    is not a second backup and is never restored from; it exists because a
    drill needs something to compare the restore against, captured before
    the simulated disaster (see "Why a reference copy" below).
-8. **`source-store-destruction`** — deletes the three fixture SQLite
+8. **`source-store-destruction`** — deletes every registry store file from the fixture
    files outright, simulating total loss of the original stores.
 9. **`full-restore`** — runs `restore:v1` against the backup from step 6,
    into a fresh target directory. At this point the *only* copy of the
@@ -99,7 +109,11 @@ npm run validate:v1-release       # the routine release gate (includes the bound
     Governance, Evidence, Passport, and Assurance (see
     `AOC_ENTERPRISE_V1_PORTABILITY_REPORT.md` for exactly what "logical
     equivalence" checks). Any mismatch fails the drill.
-11. **`clean-room-release-gate`** — runs `npm run validate:v1-release`
+11. **`prod02-host-drills`** — `node --test` over
+    `prod02-disaster-recovery-host`, `prod02-stale-restore-host` and
+    `prod02-backup-integrity-host` from the clean-room build; any failure
+    fails the drill.
+12. **`clean-room-release-gate`** — runs `npm run validate:v1-release`
     (skippable via `--skip-release-gate`) inside the clean-room checkout,
     proving the exact commit still passes the full v1 release gate from a
     from-scratch build.
