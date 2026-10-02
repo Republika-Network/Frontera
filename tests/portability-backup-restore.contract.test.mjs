@@ -61,9 +61,12 @@ test.after(() => {
 test('complete backup: manifest, checksums, RESTORE.md, and stable store ordering', () => {
   const manifest = JSON.parse(readFileSync(join(sharedBackupDir, 'backup-manifest.json'), 'utf8'));
   assert.equal(manifest.backupFormat, 'aoc.enterprise.backup.v1');
-  // Four stores as of P0-PKG-07: the Kernel Authority Store is authority
-  // source-of-truth, so a backup that omitted it would restore a deployment in
-  // which every actor is unrecognized and every action denied.
+  assert.equal(manifest.coverage.complete, true, 'PROD-02: every store this deployment composes is included');
+  // The fixture deployment composes four stores (no governed actions): the
+  // Kernel Authority Store is authority source-of-truth, so a backup that
+  // omitted it would restore a deployment in which every actor is unrecognized
+  // and every action denied. PROD-02's full thirteen-store set is qualified on
+  // the real Host (src/enterprise/__tests__/prod02-*.test.ts).
   assert.deepEqual(manifest.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'kernel-authority']);
   assert.ok(existsSync(join(sharedBackupDir, 'checksums.sha256')));
   assert.ok(existsSync(join(sharedBackupDir, 'RESTORE.md')));
@@ -101,6 +104,28 @@ test('backup does not demand the authority store when durable authority is disab
   const restored = await runRestore({ backup: backupDir, target });
   assert.equal(restored.status, 'restored');
   rmSync(root, { recursive: true, force: true });
+});
+
+test('a store file at a default path the deployment neither requires nor names is never swept into the backup (PROD-02)', async () => {
+  // The four-store fixture deployment composes no governed actions. A stray
+  // governed-action store left at its *default* relative path (here under the
+  // working directory's .data/) is not this deployment's state.
+  const root = workDir('stray-default');
+  const original = process.cwd();
+  try {
+    await generateFixture({ target: join(root, 'pre') });
+    const enterprise = await import('../dist/src/enterprise/index.js');
+    process.chdir(root);
+    const stray = await enterprise.createSqliteGovernanceStore(join(root, '.data', 'authority-event-stream.sqlite'));
+    await stray.close();
+    const report = await runBackup({ output: join(root, 'backup'), env: backupEnvFor(join(root, 'pre')) });
+    assert.deepEqual(report.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'kernel-authority']);
+    const manifest = JSON.parse(readFileSync(join(root, 'backup', 'backup-manifest.json'), 'utf8'));
+    assert.equal(manifest.coverage.stores.find((s) => s.name === 'authority-event-stream').status, 'not-configured');
+  } finally {
+    process.chdir(original);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('secret exclusion: manifest declares excluded secrets and never embeds them', () => {

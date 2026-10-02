@@ -18,6 +18,7 @@ import { generateFixture } from './generate-portability-fixture.mjs';
 import { runBackup } from './backup-enterprise-v1.mjs';
 import { runRestore } from './restore-enterprise-v1.mjs';
 import { comparePortabilityState } from './compare-portability-state.mjs';
+import { storeEnvironmentFor } from './store-registry.mjs';
 
 async function main() {
   const workDir = mkdtempSync(join(tmpdir(), 'aoc-portability-smoke-'));
@@ -31,10 +32,7 @@ async function main() {
     const backupEnv = {
       ...process.env,
       AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
-      AOC_ENTERPRISE_SQLITE_PATH: join(preDir, 'enterprise-host.sqlite'),
-      AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(preDir, 'agent-passport.sqlite'),
-      AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(preDir, 'assurance.sqlite'),
-      AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: join(preDir, 'kernel-authority.sqlite'),
+      ...storeEnvironmentFor(preDir),
       AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
     };
     await runBackup({ output: backupDir, env: backupEnv });

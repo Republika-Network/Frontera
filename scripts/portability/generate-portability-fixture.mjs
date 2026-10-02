@@ -16,6 +16,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 import { loadEnterpriseModule, stableJsonStringify } from './lib-portability.mjs';
+import { targetStorePaths as registryTargetPaths } from './store-registry.mjs';
 
 const FIXTURE_ORG = 'org-portability-fixture';
 const FIXTURE_NOW = '2026-01-01T00:00:00.000Z';
@@ -31,13 +32,10 @@ function parseArgs(argv) {
   return args;
 }
 
+/** The fixture's four stores, at the registry's own target filenames (no second list). */
 export function targetStorePaths(targetDir) {
-  return {
-    governance: join(targetDir, 'enterprise-host.sqlite'),
-    passport: join(targetDir, 'agent-passport.sqlite'),
-    assurance: join(targetDir, 'assurance.sqlite'),
-    kernelAuthority: join(targetDir, 'kernel-authority.sqlite'),
-  };
+  const paths = registryTargetPaths(targetDir);
+  return { governance: paths.governance, passport: paths['agent-passport'], assurance: paths.assurance, kernelAuthority: paths['kernel-authority'] };
 }
 
 async function loadAuthorityFixture() {
