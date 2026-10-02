@@ -364,6 +364,10 @@ describe('CTRL-04 Host — rejection, requested changes, escalation and revocati
     const state = escalated.body['approval'] as Record<string, unknown>;
     assert.equal(state['status'], 'pending');
     assert.deepEqual(quorumOf(state), { minimumApprovals: 1, countedApprovers: [], satisfied: false });
+    // Routing needs a reference: an escalation without one is refused (400) and records nothing.
+    const bare = await command(booted.baseUrl, AUTH.approverA, id(approval), 'escalate', { subjectDigest: digestOf(approval) });
+    assert.equal(bare.status, 400, bare.text);
+    assert.equal(((await detail(booted.baseUrl, id(approval)))['escalations'] as unknown[]).length, 1, 'only the referenced escalation is recorded');
     // Double submit records a second (inert) escalation fact and changes nothing else.
     await command(booted.baseUrl, AUTH.approverA, id(approval), 'escalate', { subjectDigest: digestOf(approval), reason: 'CAB-2026-114: needs release manager' });
     const queue = await inbox(booted.baseUrl, AUTH.observer, 'escalated');
@@ -557,8 +561,8 @@ describe('CTRL-04 Host — role × approval operation matrix, and the credential
 
   it('every role reaches exactly its permitted operations; every other is refused 403 before any body is read', async () => {
     const { approval } = await withheldRequest(PROD);
-    // A wrong subject digest: a command that reaches CORE-05's gate is refused there (409) and records nothing.
-    const stale = { subjectDigest: `sha256:${'f'.repeat(64)}` };
+    // A wrong subject digest: a command that passes the permission check is refused by the Host's subject pre-check (409) and records nothing.
+    const stale = { subjectDigest: `sha256:${'f'.repeat(64)}`, reason: 'matrix probe' };
     for (const [role, reaches] of Object.entries(REACHES)) {
       const authorization = AUTH[role as keyof typeof AUTH];
       for (const operation of OPERATIONS) {

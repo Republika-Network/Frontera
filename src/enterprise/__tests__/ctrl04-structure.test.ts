@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 import { APPROVAL_COMMANDS, OPERATOR_APPROVAL_CHANNEL, approvalCommandContextFor, validateApprovalCommandBody } from '../operator-control/approval-workflow.js';
 import { LEGACY_ADMINISTRATOR_ROLE, OPERATOR_ROLES, operatorMay, permissionsOf } from '../operator-control/roles.js';
@@ -70,6 +70,17 @@ describe('CTRL-04 structure — one approval engine: CORE-05', () => {
 });
 
 describe('CTRL-04 structure — the identity bridge: who acts comes only from the authenticated operator', () => {
+  it('outside CORE-05 itself, no production source anywhere builds an approval command context except the bridge', () => {
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const full = `${dir}/${name}`;
+        if (statSync(full).isDirectory()) return name === '__tests__' || name === 'tests' || name === 'fixtures' ? [] : walk(full);
+        return /\.(ts|tsx)$/.test(name) && !/\.test\.tsx?$/.test(name) ? [full] : [];
+      });
+    const constructing = walk('src').filter((file) => !file.startsWith('src/enterprise/approval-authority/') && /authenticated:\s*true/.test(codeOf(file)));
+    assert.deepEqual(constructing, [SERVICE]);
+  });
+
   it('exactly one ApprovalCommandContext is built on the operator plane, from the principal alone', () => {
     const CONTEXT = /authenticated:\s*true/;
     assert.equal(CONTEXT.test('{ authenticated: true, actorId }'), true);

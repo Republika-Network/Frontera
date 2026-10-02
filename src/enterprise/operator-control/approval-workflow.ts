@@ -197,6 +197,22 @@ function integrityFailed(failure: string): EnterpriseHttpError {
   );
 }
 
+/**
+ * An integrity failure during a command. CORE-05 appends and then re-reads the
+ * verified store; a failure here may come before the append (nothing written)
+ * or from the re-read after it (written). The port does not say which, so the
+ * operator is never told "nothing was changed".
+ */
+function integrityFailedDuringCommand(failure: string): EnterpriseHttpError {
+  return new EnterpriseHttpError(
+    500,
+    'AUTHORITY_STATE_INTEGRITY_FAILED',
+    'The approval state could not be verified during this command, so no state is reported. Whether the command was recorded is unknown until the store verifies again. Treat this as a security incident; see the operator runbook, and re-read the request before any retry.',
+    undefined,
+    { failure },
+  );
+}
+
 function boundedText(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > MAX_TEXT) throw EnterpriseHttpErrors.invalidRequest(`${field} must be a non-empty string of at most ${String(MAX_TEXT)} characters.`);
   return value;
@@ -423,6 +439,8 @@ export function createOperatorApprovalService(dependencies: OperatorApprovalDepe
       // Authenticate and authorize before the body is read: a refused caller's body is never read, parsed or validated.
       const principal = authorize(authorizationHeader, spec.permission);
       const body = validateApprovalCommandBody(await readBody());
+      // Escalation routing (CTRL-04): an escalation is listed with the reference it carries, so it must carry one.
+      if (verb === 'escalate' && body.reason === undefined) throw EnterpriseHttpErrors.invalidRequest('An escalation must carry a reference (reason) so the escalated request can be routed and acted on.');
       const current = await find(approvalRequestId);
       // A stale or substituted review: the operator must review the subject the request actually carries. CORE-05 checks it again, authoritatively.
       if (body.subjectDigest !== current.subjectDigest) {
@@ -480,7 +498,7 @@ export function createOperatorApprovalService(dependencies: OperatorApprovalDepe
           }
           case 'APPROVAL_STORE_CORRUPT':
           case 'APPROVAL_STORE_UNSUPPORTED':
-            throw integrityFailed(error.code);
+            throw integrityFailedDuringCommand(error.code);
           case 'APPROVAL_CONTEXT_UNTRUSTED':
           case 'APPROVAL_STORE_CLOSED':
             throw unavailable();

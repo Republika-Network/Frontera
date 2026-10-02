@@ -94,7 +94,8 @@ export const FAILURE_GUIDANCE: Readonly<Record<FailureKind, { readonly title: st
   },
   'integrity-failed': {
     title: 'Authoritative state could not be verified',
-    guidance: 'The Host could not verify the authoritative state, so it reported nothing and changed nothing. Treat this as a security incident and follow the operator runbook.',
+    guidance:
+      'The Host could not verify the authoritative state, so it reported none. A read changed nothing; for a write, the Host’s message below says whether it may have been recorded — never assume it was not. Treat this as a security incident and follow the operator runbook.',
   },
   unavailable: {
     title: 'Host unavailable',
