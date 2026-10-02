@@ -335,7 +335,9 @@ describe('CTRL-04 Host — rejection, requested changes, escalation and revocati
   });
 
   it('requested changes are recorded, change no quorum and no request; repeated, they record again; approval remains possible', async () => {
-    const { key, approval } = await withheldRequest(CRITICAL);
+    const callsBefore = booted.adapter.calls.length;
+    // The quorum-1 cluster: if a requested change counted, this one fact would complete the approval.
+    const { key, approval } = await withheldRequest(PROD);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const reply = await command(booted.baseUrl, AUTH.approverA, id(approval), 'request-changes', { subjectDigest: digestOf(approval), reason: 'pin the release notes' });
       assert.equal(reply.status, 200, reply.text);
@@ -345,8 +347,9 @@ describe('CTRL-04 Host — rejection, requested changes, escalation and revocati
       assert.equal(state['changesRequested'], attempt + 1);
       assert.equal(state['subjectDigest'], digestOf(approval), 'the governed request is not rewritten');
     }
-    assertAwaitingApproval(await govern(booted.baseUrl, org.agentCredential, release(CRITICAL, key)));
-    const approved = await command(booted.baseUrl, AUTH.approverA, id(approval), 'approve', { subjectDigest: digestOf(approval), evidence: [{ type: 'source_document', hash: EVIDENCE_HASH }] });
+    assertAwaitingApproval(await govern(booted.baseUrl, org.agentCredential, release(PROD, key)));
+    assert.equal(booted.adapter.calls.length, callsBefore, 'requested changes never satisfy quorum');
+    const approved = await command(booted.baseUrl, AUTH.approverA, id(approval), 'approve', { subjectDigest: digestOf(approval) });
     assert.deepEqual(quorumOf(approved.body['approval'] as Record<string, unknown>).countedApprovers, ['operator:approver-a']);
   });
 

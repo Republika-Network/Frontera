@@ -57,6 +57,8 @@ describe('CTRL-04 structure — one approval engine: CORE-05', () => {
     const keys = [...(/approvals: \{([\s\S]*?)\},/.exec(block)?.[1] ?? '').matchAll(/^\s+(\w+): \(/gm)].map((match) => match[1]).sort();
     assert.deepEqual(keys, ['approve', 'escalate', 'list', 'reject', 'requestChanges', 'revoke']);
     assert.equal(/approvalStore|store:|\.assess\(/.test(block), false, 'no store and no assess reach the operator approval service');
+    // Every request it serves is re-proven to belong to the served organization (one organization per Host).
+    assert.match(service, /if \(views\.some\(\(view\) => view\.subject\.organizationId !== organizationId\)\) throw integrityFailed\('APPROVAL_ORGANIZATION_MISMATCH'\);/);
   });
 
   it('the web control plane computes no quorum, eligibility, SOD or completion — it renders the Host’s derived values', () => {
