@@ -2,6 +2,12 @@ import { classifyHostFailure, contractFailure, unreachableFailure, type HostFail
 import {
   shapes,
   type AgentView,
+  type ApprovalCommandBody,
+  type ApprovalCommandResponse,
+  type ApprovalDetail,
+  type ApprovalInbox,
+  type ApprovalVerb,
+  type ApprovalView,
   type CredentialIssueResult,
   type CredentialRevokeResult,
   type DecisionEvidence,
@@ -73,6 +79,12 @@ export interface HostClient {
   transitionProfile(bearer: string, profileId: string, version: number, transition: 'activate' | 'retire', digest: string, reason?: string): Promise<HostResult<ProfileTransitionResult>>;
   decisions(bearer: string, query: DecisionQuery): Promise<HostResult<DecisionPage>>;
   decisionEvidence(bearer: string, evaluationId: string): Promise<HostResult<DecisionEvidence>>;
+  /** CTRL-04 — the approval inbox, one view of CORE-05's derived state. */
+  approvals(bearer: string, view: ApprovalView): Promise<HostResult<ApprovalInbox>>;
+  /** CTRL-04 — one approval request: its canonical subject, requirement snapshot, verdicts and derived state. */
+  approval(bearer: string, approvalRequestId: string): Promise<HostResult<ApprovalDetail>>;
+  /** CTRL-04 — one verdict. The Host derives who acts; the body names only the reviewed subject, evidence and a note. */
+  approvalCommand(bearer: string, approvalRequestId: string, verb: ApprovalVerb, body: ApprovalCommandBody): Promise<HostResult<ApprovalCommandResponse>>;
 }
 
 /**
@@ -157,6 +169,14 @@ export function createHostClient(options: HostClientOptions): HostClient {
     decisions: (bearer, decisionQuery) =>
       send('GET', `/api/admin/activity/decisions${query({ actorId: decisionQuery.actorId, decisionId: decisionQuery.decisionId, requestId: decisionQuery.requestId, status: decisionQuery.status, limit: decisionQuery.limit, cursor: decisionQuery.cursor })}`, bearer, shapes.decisions),
     decisionEvidence: (bearer, evaluationId) => send('GET', `/api/admin/evidence/decisions/${segment(evaluationId)}`, bearer, shapes.evidence),
+    approvals: (bearer, view) => send('GET', `/api/admin/approvals${query({ view })}`, bearer, shapes.approvals),
+    approval: (bearer, approvalRequestId) => send('GET', `/api/admin/approvals/${segment(approvalRequestId)}`, bearer, shapes.approval),
+    approvalCommand: (bearer, approvalRequestId, verb, body) =>
+      send('POST', `/api/admin/approvals/${segment(approvalRequestId)}/${segment(verb)}`, bearer, shapes.approvalCommand, {
+        subjectDigest: body.subjectDigest,
+        ...(body.evidence !== undefined ? { evidence: body.evidence.map((entry) => ({ type: entry.type, hash: entry.hash, ...(entry.uri !== undefined ? { uri: entry.uri } : {}) })) } : {}),
+        ...(body.reason !== undefined ? { reason: body.reason } : {}),
+      }),
   };
   // Every method builds its path before sending; a refused segment becomes a validation failure, never a request.
   const guarded = Object.fromEntries(

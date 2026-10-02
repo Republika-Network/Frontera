@@ -88,6 +88,13 @@ textarea.input { min-width: 260px; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; }
 .json { white-space: pre-wrap; word-break: break-all; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.tabs { margin: 0 0 10px; }
+.tab { padding: 4px 10px; border-radius: 4px; }
+.tab--active { background: var(--line); font-weight: 600; }
+.plain-list { margin: 0; padding-left: 16px; }
+.quorum { font-variant-numeric: tabular-nums; font-weight: 600; }
+.canonical { white-space: pre-wrap; word-break: break-all; font-size: 0.85em; }
+.field-row__label { min-width: 160px; }
 .footer { max-width: 1400px; margin: 0 auto; padding: 0 20px 30px; color: var(--muted); font-size: 0.9em; }
 @media (max-width: 720px) { .kv { grid-template-columns: 1fr; } .table { display: block; overflow-x: auto; } .main { padding: 12px; } }
 `;

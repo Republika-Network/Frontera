@@ -113,7 +113,7 @@ export interface ControlPlaneWebServerOptions {
 function routeShape(url: string | undefined): string {
   const path = (url ?? '/').split('?')[0] ?? '/';
   const parts = path.split('/').filter((part) => part.length > 0);
-  const keep = new Set(['agents', 'credentials', 'rotate', 'revoke', 'authority', 'entities', 'new', 'grants', 'executions', 'emergency', 'activate', 'release', 'profiles', 'retire', 'activity', 'evidence', 'decisions', 'login', 'logout', 'assets']);
+  const keep = new Set(['agents', 'credentials', 'rotate', 'revoke', 'authority', 'entities', 'new', 'grants', 'executions', 'emergency', 'activate', 'release', 'profiles', 'retire', 'activity', 'evidence', 'decisions', 'login', 'logout', 'assets', 'approvals', 'approve', 'reject', 'request-changes', 'escalate']);
   return `/${parts.map((part) => (keep.has(part) ? part : ':id')).join('/')}`;
 }
 

@@ -1,0 +1,1413 @@
+{
+ "format": "frontera.ctrl04.mutation-evidence.v1",
+ "commit": "33c8b6f85c392d5919e48a8acb8e4a6c38f2b9d7",
+ "runner": "scripted, outside the repository, on a native-Linux git-archive export of the commit: apply edits (each find verified to occur exactly once) -> tsc -b -> node --test --test-reporter=tap <kill set> -> restore original bytes -> SHA-256 compare; then the whole src tree diffed against a fresh git archive of the commit",
+ "killSet": [
+  "dist/src/enterprise/__tests__/ctrl04-approval-workflow-host.test.js",
+  "dist/src/control-plane-web/__tests__/ctrl04-web-approvals-host.test.js",
+  "dist/src/enterprise/__tests__/ctrl04-structure.test.js",
+  "dist/src/control-plane-web/__tests__/ctrl03-structure.test.js",
+  "dist/src/enterprise/__tests__/ctrl02-structure.test.js",
+  "dist/src/enterprise/__tests__/approval-structure.test.js",
+  "dist/src/enterprise/__tests__/ctrl04-approval-workflow-service.test.js"
+ ],
+ "baseline": {
+  "compiled": true,
+  "total": 107,
+  "passed": 107,
+  "failed": 0
+ },
+ "srcTreeIdenticalAfterCampaign": true,
+ "rebuiltAfterCampaign": true,
+ "totals": {
+  "defined": 35,
+  "counted": 35,
+  "killed": 35,
+  "survived": 0
+ },
+ "history": "A first campaign on 9dd428b was stopped after M7 (all killed) when the adversarial review's fixes changed mutated code; the campaign was re-run on the fixed commit 33c8b6f. On 33c8b6f a first full run found every compiling mutation killed, but its TAP parser dropped most killing-test titles (its window reached a parent suite's 'subtests failed' block); the counts were right. M12's first form did not compile (TS2367, narrowing) and was excluded. The authoritative run recorded here used the fixed parser and the corrected M12.",
+ "mutations": [
+  {
+   "id": "M1",
+   "property": "approver identity (actorId) comes only from the authenticated operator",
+   "change": "an actorId field in the command body is stripped before validation and becomes the ApprovalCommandContext actor",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      const body = validateApprovalCommandBody(await readBody());",
+     "replace": "      const rawBody = (await readBody()) as Record<string, unknown> | null; const { actorId: smuggledActor, ...rest } = rawBody ?? {}; const body = validateApprovalCommandBody(rest);"
+    },
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      const context = approvalCommandContextFor(principal);",
+     "replace": "      const context = { ...approvalCommandContextFor(principal), ...(typeof smuggledActor === 'string' ? { actorId: smuggledActor } : {}) };"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "every smuggled identity, authority or state field is refused with 400 and records nothing",
+     "observed": "approved\",\"actorId\":\"operator:approver-b\",\"recordedAt\":\"2026-10-02T05:37:02.437Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:6ea3a32dfb53bdb0dcad3288edde0b0b569a2c527d5f3ea22e0b79e83b2281e1\"}]}} 200 !== 400"
+    },
+    {
+     "title": "exactly one ApprovalCommandContext is built on the operator plane, from the principal alone",
+     "observed": ";\\n\" + \" const type = boundedText(entry['type'], 'evidence[].type');\\n\" + \" const hash = entry['hash'];\\n\" + ` if (typeof hash !== 'string' || !SHA256.test(hash)) throw EnterpriseHttpErrors.invalidRequest(\"evidence[].hash must be a content hash ('sha256:' and 64 lowercase h`... 13027 more characters"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M2",
+   "property": "the authentication channel (authenticatedBy) comes only from the server",
+   "change": "an authenticatedBy field in the command body is stripped before validation and becomes the recorded channel",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      const body = validateApprovalCommandBody(await readBody());",
+     "replace": "      const rawBody = (await readBody()) as Record<string, unknown> | null; const { authenticatedBy: smuggledChannel, ...rest } = rawBody ?? {}; const body = validateApprovalCommandBody(rest);"
+    },
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      const context = approvalCommandContextFor(principal);",
+     "replace": "      const context = { ...approvalCommandContextFor(principal), ...(typeof smuggledChannel === 'string' ? { authenticatedBy: smuggledChannel } : {}) };"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "every smuggled identity, authority or state field is refused with 400 and records nothing",
+     "observed": "d\":\"approved\",\"actorId\":\"operator:approver-a\",\"recordedAt\":\"2026-10-02T05:37:26.820Z\",\"recordedBy\":\"operator:approver-b\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:7781e9b2f00eb256bb8e7a90ffc7ab6b57431f729968e5c2de14b03e9c30a0e2\"}]}} 200 !== 400"
+    },
+    {
+     "title": "exactly one ApprovalCommandContext is built on the operator plane, from the principal alone",
+     "observed": ";\\n\" + \" const type = boundedText(entry['type'], 'evidence[].type');\\n\" + \" const hash = entry['hash'];\\n\" + ` if (typeof hash !== 'string' || !SHA256.test(hash)) throw EnterpriseHttpErrors.invalidRequest(\"evidence[].hash must be a content hash ('sha256:' and 64 lowercase h`... 13049 more characters"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M3",
+   "property": "each verdict needs its own operator permission before the body is read",
+   "change": "every verdict path authorizes approval.read instead of its own permission",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      const principal = authorize(authorizationHeader, spec.permission);",
+     "replace": "      const principal = authorize(authorizationHeader, 'approval.read');"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 103,
+    "failed": 4
+   },
+   "killingTests": [
+    {
+     "title": "each role sees exactly the verdict links its Host-reported permissions allow — and every hidden verdict, forged, is refused by the Host",
+     "observed": "proval request — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-observer (observer) Sign out Overview Agents Authority Approvals Activity Evidence Governance Profiles Approve — approval request Refused by the authoritativ 409 !== 403"
+    },
+    {
+     "title": "restriction never implies expansion: a responder holding approval standing may reject but can never approve",
+     "observed": "roved\",\"actorId\":\"operator:ops-responder\",\"recordedAt\":\"2026-10-02T05:37:40.761Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:3fdfa422e0c12a841bc6dcaecb0e0b8bce7677730c5b170be8df0b76b4dcae68\"}]}} 200 !== 403"
+    },
+    {
+     "title": "every role reaches exactly its permitted operations; every other is refused 403 before any body is read",
+     "observed": "observer approve: {\"error\":{\"code\":\"OPERATOR_OPERATION_REFUSED\",\"message\":\"The subject you reviewed is not the subject of this approval request. Nothing was recorded. Review the current request before deciding.\",\"failure\":\"APPROVAL_SUBJECT_MISMATCH\",\"recorded\":false}} 409 !== 403"
+    },
+    {
+     "title": "exactly one ApprovalCommandContext is built on the operator plane, from the principal alone",
+     "observed": ";\\n\" + \" const type = boundedText(entry['type'], 'evidence[].type');\\n\" + \" const hash = entry['hash'];\\n\" + ` if (typeof hash !== 'string' || !SHA256.test(hash)) throw EnterpriseHttpErrors.invalidRequest(\"evidence[].hash must be a content hash ('sha256:' and 64 lowercase h`... 12829 more characters"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M4",
+   "property": "an operator role (organization-administrator) is never approval authority",
+   "change": "the approval authority port recognizes, and grants live standing to, every organization-administrator operator",
+   "edits": [
+    {
+     "file": "src/enterprise/composition/composition-root.ts",
+     "find": "              recognition: (actorId) => createActorRegistryRecognitionIntegration(kernelProviders.recognitionRuntime.actorRegistry).getApproverRecognitionStatus(actorId),\n              authority: ({ actorId, capability, resourceScope, at }) => {",
+     "replace": "              recognition: (actorId) => ((configuration.administration?.operators ?? []).some((operator) => `operator:${operator.operatorId}` === actorId && operator.role === 'organization-administrator') ? { recognized: true, reasonCode: 'APPROVER_RECOGNIZED', reason: 'organization administrator' } : createActorRegistryRecognitionIntegration(kernelProviders.recognitionRuntime.actorRegistry).getApproverRecognitionStatus(actorId)),\n              authority: ({ actorId, capability, resourceScope, at }) => {\n                if ((configuration.administration?.operators ?? []).some((operator) => `operator:${operator.operatorId}` === actorId && operator.role === 'organization-administrator')) return { type: 'authority_valid', valid: true, reasonCode: 'APPROVER_AUTHORITY_PRESENT', reason: 'organization administrator' };"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "A: an operator who may reach approve but holds no Kernel-Authority standing is refused by CORE-05 — including an organization administrator",
+     "observed": "\"approved\",\"actorId\":\"operator:ops-admin\",\"recordedAt\":\"2026-10-02T05:38:04.931Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:476439b5fde21734328c32958e985b0a314b626b01c0bbcc0b6fadb64c2fd95a\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/composition/composition-root.ts": "11e6c1d21b4a2a9ddc14c700a720665c8600720c1a29c194f4472754b108572d"
+   },
+   "after": {
+    "src/enterprise/composition/composition-root.ts": "11e6c1d21b4a2a9ddc14c700a720665c8600720c1a29c194f4472754b108572d"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M5",
+   "property": "approver standing is checked against the Kernel Authority",
+   "change": "the approval authority port reports every authority check valid",
+   "edits": [
+    {
+     "file": "src/enterprise/composition/composition-root.ts",
+     "find": "                return check;",
+     "replace": "                return { ...check, valid: true, type: 'authority_valid' };"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "wrong resource, wrong approver action, and execution authority without approval authority are all refused",
+     "observed": "approved\",\"actorId\":\"operator:approver-c\",\"recordedAt\":\"2026-10-02T05:38:26.998Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:35cf3446d595d2488b2208dc85a467d839f8e6d7a7cf08c67bd6a183c4c819d2\"}]}} 200 !== 409"
+    },
+    {
+     "title": "revoking the approver’s Kernel-Authority standing withdraws an unused approval; the retry does not execute",
+     "observed": "the approval is withdrawn: CORE-05 re-resolves standing at every read + actual - expected + 'approved' - 'pending'"
+    }
+   ],
+   "before": {
+    "src/enterprise/composition/composition-root.ts": "11e6c1d21b4a2a9ddc14c700a720665c8600720c1a29c194f4472754b108572d"
+   },
+   "after": {
+    "src/enterprise/composition/composition-root.ts": "11e6c1d21b4a2a9ddc14c700a720665c8600720c1a29c194f4472754b108572d"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M6",
+   "property": "approval authority is the profile's approverAction, never the governed action",
+   "change": "the runtime requirement asks for authority over the governed action instead of the approver action",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "    requiredAuthorityCapability: requirement.approverAction,",
+     "replace": "    requiredAuthorityCapability: subject.action,"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 89,
+    "failed": 18
+   },
+   "killingTests": [
+    {
+     "title": "the agent’s real governed action is withheld; the human finds it in the inbox, inspects the exact subject, approves; nothing executes until the agent retries the SAME request — then exactly once",
+     "observed": "st refused the operation. Nothing was written. The reason code says why. You do not hold live Kernel-Authority approval standing for 'approve-release' over 'production-cluster' as operator:approver-a. Your operator role lets you reach this command; it does not grant approval authority. N 409 !== 200"
+    },
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "The expression evaluated to a falsy value: ok(missing.html.includes('APPROVAL_EVIDENCE_INSUFFICIENT'))"
+    },
+    {
+     "title": "a stale confirmation page never applies the old intent: the Host refuses it and the console re-reads the current state",
+     "observed": "The expression evaluated to a falsy value: ok((0, web_browser_js_1.textOf)(rejected.html).includes('Rejected — final'))"
+    },
+    {
+     "title": "no verdict without the explicit confirmation; a rejected request offers no further control and no undo",
+     "observed": "a closed request offers no verdict control true !== false"
+    },
+    {
+     "title": "requesting changes is recorded and changes nothing; escalation is discoverable in the escalated view with its reference",
+     "observed": "The expression evaluated to a falsy value: ok((0, web_browser_js_1.textOf)(changes.html).includes('Changes were requested'))"
+    },
+    {
+     "title": "withheld → discoverable in the inbox → exact canonical subject → operator approves → nothing executes → the agent retries → executed exactly once under the same decision",
+     "observed": "nding for 'approve-release' over 'production-cluster' as operator:approver-a. Your operator role lets you reach this command; it does not grant approval authority. Nothing was recorded.\",\"failure\":\"APPROVAL_APPROVER_INELIGIBLE\",\"recorded\":false,\"reasonCode\":\"APPROVER_AUTHORITY_MISSING\"}} 409 !== 200"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M7",
+   "property": "an approver's standing must cover exactly the request's resource",
+   "change": "the scope policy passes an out-of-scope approver",
+   "edits": [
+    {
+     "file": "src/features/approval-runtime/policies/approval-scope-policy.ts",
+     "find": "      passed: false,\n      reasonCode: 'APPROVAL_OUT_OF_SCOPE',",
+     "replace": "      passed: true,\n      reasonCode: 'APPROVAL_OUT_OF_SCOPE',"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "wrong resource, wrong approver action, and execution authority without approval authority are all refused",
+     "observed": "approved\",\"actorId\":\"operator:approver-c\",\"recordedAt\":\"2026-10-02T05:39:10.004Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:36abee5058b04c5343e84b053e644b4db710b38c39465c486f2789f1b7d2c3e9\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/features/approval-runtime/policies/approval-scope-policy.ts": "853eb9cb81c8e6c758cda5bfbba3a6d7a66aa9d87f6f4dfc5723679153bbd70e"
+   },
+   "after": {
+    "src/features/approval-runtime/policies/approval-scope-policy.ts": "853eb9cb81c8e6c758cda5bfbba3a6d7a66aa9d87f6f4dfc5723679153bbd70e"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M8",
+   "property": "segregation of duties: the requester cannot approve its own request",
+   "change": "the governed-path requirement no longer requires segregation of duties",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "    requiresSegregationOfDuties: true,",
+     "replace": "    requiresSegregationOfDuties: false,"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "segregation of duties: the requesting actor cannot approve its own request, even holding standing; another approver can",
+     "observed": "roved\",\"actorId\":\"operator:approver-self\",\"recordedAt\":\"2026-10-02T05:39:32.471Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:2eb7ee77221d5d098fcfef417f2329c940657ae6a61e79cfd21c034d43004a59\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M9",
+   "property": "one approver counts once toward quorum",
+   "change": "the duplicate policy never fires and quorum counts approvals instead of distinct approvers",
+   "edits": [
+    {
+     "file": "src/features/approval-runtime/policies/duplicate-approval-policy.ts",
+     "find": "    const alreadyApproved = priorDecisions.some(",
+     "replace": "    const alreadyApproved = false && priorDecisions.some("
+    },
+    {
+     "file": "src/features/approval-runtime/policies/quorum-policy.ts",
+     "find": "    const distinctApprovers = new Set(priorDecisions.filter((decision) => decision.type === 'approved').map((decision) => decision.approverActorId));",
+     "replace": "    const distinctApprovers = { list: priorDecisions.filter((decision) => decision.type === 'approved').map((decision) => decision.approverActorId), add(actor: string) { this.list.push(actor); }, get size() { return this.list.length; } };"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 104,
+    "failed": 3
+   },
+   "killingTests": [
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "Expected values to be strictly equal: 200 !== 409"
+    },
+    {
+     "title": "evidence is required and hashed; one approval is 1/2 and executes nothing; the same approver never counts twice; a second distinct approver completes it; the agent resumes once",
+     "observed": "e\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[{\"type\":\"source_document\",\"hash\":\"sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"uri\":null}],\"rowDigest\":\"sha256:cb6d7982560454cfb8f3f65c0ba2cd7ffc76879443a0a201bad9e95dd908e4aa\"}]}} 200 !== 409"
+    },
+    {
+     "title": "concurrent double submissions: one approver counts once; one completion, one approval digest, one execution",
+     "observed": "Expected values to be strictly deep-equal: + actual - expected [ 200, + 200 - 409 ]"
+    }
+   ],
+   "before": {
+    "src/features/approval-runtime/policies/duplicate-approval-policy.ts": "84bfc427540396fc83a4c80b840b1fa64421a4d9756425341c4d3e359c4e2785",
+    "src/features/approval-runtime/policies/quorum-policy.ts": "a4cc3a782535b96133d279200d48a6a9864d4c68ef96e6027ce1e5e1eda28b74"
+   },
+   "after": {
+    "src/features/approval-runtime/policies/duplicate-approval-policy.ts": "84bfc427540396fc83a4c80b840b1fa64421a4d9756425341c4d3e359c4e2785",
+    "src/features/approval-runtime/policies/quorum-policy.ts": "a4cc3a782535b96133d279200d48a6a9864d4c68ef96e6027ce1e5e1eda28b74"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M10",
+   "property": "no pooling: a verdict belongs to exactly one approval request",
+   "change": "list() replays every request against the whole organization's rows, and a row belongs to any request of the organization",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "  return row.requestId === input.subject.requestId && row.decisionId === input.subject.decisionId && row.subjectDigest === input.subjectDigest && row.organizationId === input.subject.organizationId;",
+     "replace": "  return row.organizationId === input.subject.organizationId;"
+    },
+    {
+     "file": "src/enterprise/approval-authority/service.ts",
+     "find": "    async list(): Promise<readonly ApprovalRequestView[]> {\n      const rows = await store.read(organizationId);\n      const at = now();\n      return requestsIn(rows)\n        .map((requested) =>\n          viewOf(\n            rows.filter((row) => row.requestId === requested.requestId),",
+     "replace": "    async list(): Promise<readonly ApprovalRequestView[]> {\n      const rows = await store.read(organizationId);\n      const at = now();\n      return requestsIn(rows)\n        .map((requested) =>\n          viewOf(\n            rows,"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 88,
+    "failed": 19
+   },
+   "killingTests": [
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "+ counted: false, + evidence: [], + kind: 'approved', + reason: null, + reasonCode: 'APPROVAL_INSUFFICIENT_EVIDENCE', + recordedAt: '2026-10-02T05:40:15.703Z', + recordedBy: 'frontera:operator-plane', + rowDigest: 'sha256:5a4a813ede5f3fa74d24dcec04a560ebab10b8524936a9af3d4206af6e4a5805' + } + ] - []"
+    },
+    {
+     "title": "a stale confirmation page never applies the old intent: the Host refuses it and the console re-reads the current state",
+     "observed": "the detail page links to reject"
+    },
+    {
+     "title": "no verdict without the explicit confirmation; a rejected request offers no further control and no undo",
+     "observed": "pprover-a', + counted: true, + evidence: [], + kind: 'approved', + reason: null, + reasonCode: 'APPROVAL_QUORUM_MET', + recordedAt: '2026-10-02T05:40:15.703Z', + recordedBy: 'frontera:operator-plane', + rowDigest: 'sha256:5a4a813ede5f3fa74d24dcec04a560ebab10b8524936a9af3d4206af6e4a5805' + } + ] - []"
+    },
+    {
+     "title": "requesting changes is recorded and changes nothing; escalation is discoverable in the escalated view with its reference",
+     "observed": "the detail page links to request-changes"
+    },
+    {
+     "title": "revocation through the web withdraws an approval before the agent retries",
+     "observed": "the detail page links to approve"
+    },
+    {
+     "title": "each role sees exactly the verdict links its Host-reported permissions allow — and every hidden verdict, forged, is refused by the Host",
+     "observed": "responder reject link false !== true"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca",
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca",
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M11",
+   "property": "a verdict binds the subject the human reviewed",
+   "change": "both the Host pre-check and the CORE-05 subject check are removed: any digest acts on the request",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      if (body.subjectDigest !== current.subjectDigest) {",
+     "replace": "      if (false) {"
+    },
+    {
+     "file": "src/enterprise/approval-authority/service.ts",
+     "find": "    if (requested === undefined || requested.subjectDigest !== command.subjectDigest) fail(",
+     "replace": "    if (requested === undefined) fail("
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 104,
+    "failed": 3
+   },
+   "killingTests": [
+    {
+     "title": "a stale confirmation page never applies the old intent: the Host refuses it and the console re-reads the current state",
+     "observed": "Expected values to be strictly equal: 200 !== 409"
+    },
+    {
+     "title": "a stale or substituted subject digest is refused and records nothing",
+     "observed": "approved\",\"actorId\":\"operator:approver-a\",\"recordedAt\":\"2026-10-02T05:40:39.364Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:600339258a8b127a5e064b0599aaf0c45b6cebf3d9585f136b6a6d68edc611dd\"}]}} 200 !== 409"
+    },
+    {
+     "title": "every role reaches exactly its permitted operations; every other is refused 403 before any body is read",
+     "observed": "actorId\":\"operator:ops-responder\",\"recordedAt\":\"2026-10-02T05:40:46.503Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_REJECTED\",\"reason\":\"matrix probe\",\"evidence\":[],\"rowDigest\":\"sha256:fc74693022488a83b3b8ad396f7ce8974e7e7d2accfb602bd26caab4b8aee234\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5",
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5",
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M12",
+   "property": "escalation never satisfies quorum",
+   "change": "a recorded escalation is replayed as an approving verdict",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "    if (row.kind === 'requested_changes' || row.kind === 'escalated') {",
+     "replace": "    if ((row.kind as string) === 'requested_changes') {"
+    }
+   ],
+   "history": "first form (row.kind === 'requested_changes' alone) did not compile: TypeScript narrowing made the branch's own 'escalated' comparison a type error (TS2367); excluded; the corrected form casts to avoid the narrowing",
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "requesting changes is recorded and changes nothing; escalation is discoverable in the escalated view with its reference",
+     "observed": "The expression evaluated to a falsy value: ok((0, web_browser_js_1.textOf)(escalated.html).includes('Status (derived, re-read): pending; quorum 0 / 1.'))"
+    },
+    {
+     "title": "escalation routing: recorded with its reference, discoverable in the escalated view without knowing the id, no quorum, no authority",
+     "observed": "Expected values to be strictly equal: + actual - expected + 'approved' - 'pending'"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M13",
+   "property": "requested changes never satisfy quorum",
+   "change": "a recorded change request is replayed as an approving verdict",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "    if (row.kind === 'requested_changes' || row.kind === 'escalated') {",
+     "replace": "    if (row.kind === 'escalated') {"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "requesting changes is recorded and changes nothing; escalation is discoverable in the escalated view with its reference",
+     "observed": "The expression evaluated to a falsy value: ok((0, web_browser_js_1.textOf)(changes.html).includes('Changes were requested'))"
+    },
+    {
+     "title": "requested changes are recorded, change no quorum and no request; repeated, they record again; approval remains possible",
+     "observed": "Expected values to be strictly equal: + actual - expected + 'approved' - 'pending'"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M14",
+   "property": "rejection is final",
+   "change": "a rejected request still accepts approving verdicts",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/service.ts",
+     "find": "      if (view.state.status !== 'pending') fail(",
+     "replace": "      if (view.state.status !== 'pending' && view.state.status !== 'rejected') fail("
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "a stale confirmation page never applies the old intent: the Host refuses it and the console re-reads the current state",
+     "observed": "Expected values to be strictly equal: 200 !== 409"
+    },
+    {
+     "title": "rejection is final: later approvals are refused, retries do not execute, a second rejection is refused",
+     "observed": "ed\",\"actorId\":\"operator:approver-b\",\"recordedAt\":\"2026-10-02T05:41:46.247Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":false,\"reasonCode\":\"APPROVAL_REQUEST_INVALID\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:5bb7ef841c0bb1d8735d03219d310315ad29234976b14871c8762de6dcf16888\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "after": {
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M15",
+   "property": "revocation is final",
+   "change": "a revoked request still accepts approving verdicts",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/service.ts",
+     "find": "      if (view.state.status !== 'pending') fail(",
+     "replace": "      if (view.state.status !== 'pending' && view.state.status !== 'revoked') fail("
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "revocation withdraws a completed approval before the retry: no execution; no restore; a second revocation is refused",
+     "observed": "ed\",\"actorId\":\"operator:approver-b\",\"recordedAt\":\"2026-10-02T05:42:08.746Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":false,\"reasonCode\":\"APPROVAL_REQUEST_INVALID\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:e5dc211f145dfe6b3d328d28a012a3fb76e690c88fa80ba7717a1017a9ce1ebc\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "after": {
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M16",
+   "property": "request expiry is enforced at the strict-before boundary",
+   "change": "the derived request-expired state and the runtime expiration policy are both disabled",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "  if (Date.parse(now) >= Date.parse(requestExpiresAt)) return { status: 'request-expired', ...base };",
+     "replace": "  if (Date.parse(now) >= Date.parse(requestExpiresAt) + 365 * 86_400_000) return { status: 'request-expired', ...base };"
+    },
+    {
+     "file": "src/features/approval-runtime/policies/expiration-policy.ts",
+     "find": "    if (!request?.expiresAt || Date.parse(now) < Date.parse(request.expiresAt)) {",
+     "replace": "    if (!request?.expiresAt || Date.parse(now) < Date.parse(request.expiresAt) + 365 * 86_400_000) {"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "the request accepts a verdict strictly before its expiry and refuses it at the expiry instant",
+     "observed": "approved\",\"actorId\":\"operator:approver-a\",\"recordedAt\":\"2026-10-02T06:42:36.054Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:3e1302982f05698a9ddd29a274a8fc8e8c03dc4d5c0e49bca87568ad7e704c22\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca",
+    "src/features/approval-runtime/policies/expiration-policy.ts": "25698e6bc201116705593134a1d14a9aa718c2f3b0bc83e7204fdabdf2292bc4"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca",
+    "src/features/approval-runtime/policies/expiration-policy.ts": "25698e6bc201116705593134a1d14a9aa718c2f3b0bc83e7204fdabdf2292bc4"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M17",
+   "property": "a completed approval lapses at notAfter",
+   "change": "the derived approval-expired state never occurs",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "    if (Date.parse(now) >= Date.parse(notAfter)) return { status: 'approval-expired', ...base, approvedAt, notAfter };",
+     "replace": "    if (Date.parse(now) >= Date.parse(notAfter) + 365 * 86_400_000) return { status: 'approval-expired', ...base, approvedAt, notAfter };"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "an approval that lapses before the agent retries releases nothing",
+     "observed": "Expected values to be strictly equal: + actual - expected + 'approved' - 'approval-expired' ^"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M18",
+   "property": "required evidence types are enforced",
+   "change": "the runtime requirement carries no evidence requirement",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "    evidenceRequirements: (requirement.requiredEvidence ?? []).map(",
+     "replace": "    evidenceRequirements: ([] as string[]).map("
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "read): pending; quorum 1 / 2. Derived state (computed by the Host’s approval engine when this page was read) Status ○ pending Quorum 1 / 2 Counted approvers operator:approver-a Request expires (Host time) 2026-10-02T06:43:21.566Z Quorum reached at not recorded Approval usable until (Host 200 !== 409"
+    },
+    {
+     "title": "evidence is required and hashed; one approval is 1/2 and executes nothing; the same approver never counts twice; a second distinct approver completes it; the agent resumes once",
+     "observed": "oved\",\"actorId\":\"operator:approver-a\",\"recordedAt\":\"2026-10-02T05:43:20.963Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_NOT_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:326e1864a0d805feeac4e67373b2f67ebf396b8dda4f0c1cdce5644080fffeb4\"}]}} 200 !== 409"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M19",
+   "property": "evidence references are sha256 content hashes",
+   "change": "the Host and CORE-05 accept any sha256:-prefixed string as a hash",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "const SHA256 = /^sha256:[0-9a-f]{64}$/;",
+     "replace": "const SHA256 = /^sha256:.+$/;"
+    },
+    {
+     "file": "src/enterprise/approval-authority/service.ts",
+     "find": "const SHA256 = /^sha256:[0-9a-f]{64}$/;",
+     "replace": "const SHA256 = /^sha256:.+$/;"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "read): pending; quorum 1 / 2. Derived state (computed by the Host’s approval engine when this page was read) Status ○ pending Quorum 1 / 2 Counted approvers operator:approver-a Request expires (Host time) 2026-10-02T06:43:45.488Z Quorum reached at not recorded Approval usable until (Host 200 !== 400"
+    },
+    {
+     "title": "evidence is required and hashed; one approval is 1/2 and executes nothing; the same approver never counts twice; a second distinct approver completes it; the agent resumes once",
+     "observed": "5:43:45.111Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_NOT_MET\",\"reason\":null,\"evidence\":[{\"type\":\"source_document\",\"hash\":\"sha256:not-a-hash\",\"uri\":null}],\"rowDigest\":\"sha256:5e4da11361e0b6d94e01bdc85da8df6517c16c467473ff52fe9c184e7af6dab6\"}]}} 200 !== 400"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5",
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5",
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M20",
+   "property": "approver standing is re-resolved at use, not only at submission",
+   "change": "a recorded approving verdict is replayed against an always-valid authority (trusting its admission)",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/evaluation.ts",
+     "find": "      authority: input.authority,",
+     "replace": "      authority: { recognition: () => ({ recognized: true, reasonCode: 'APPROVER_RECOGNIZED', reason: 'recorded' }), authority: () => ({ type: 'authority_valid', valid: true, reasonCode: 'APPROVER_AUTHORITY_PRESENT', reason: 'recorded' }) },"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "revoking the approver’s Kernel-Authority standing withdraws an unused approval; the retry does not execute",
+     "observed": "the approval is withdrawn: CORE-05 re-resolves standing at every read + actual - expected + 'approved' - 'pending'"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "after": {
+    "src/enterprise/approval-authority/evaluation.ts": "5525b1f370ca327202903a75cbe27df789706d58f742413cf4e2e137a2ac07ca"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M21",
+   "property": "a human approval never executes the governed action",
+   "change": "the operator approval surface calls the execution adapter when an approval completes",
+   "edits": [
+    {
+     "file": "src/enterprise/composition/composition-root.ts",
+     "find": "            list: () => approvalAuthority.list(),\n            approve: (context, command) => approvalAuthority.approve(context, command),",
+     "replace": "            list: () => approvalAuthority.list(),\n            approve: async (context, command) => {\n              const completed = await approvalAuthority.approve(context, command);\n              if (completed.state.status === 'approved' && executionAdapter !== undefined) await executionAdapter.execute({ action: completed.subject.action, resourceScope: completed.subject.resourceScope } as never);\n              return completed;\n            },"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 96,
+    "failed": 11
+   },
+   "killingTests": [
+    {
+     "title": "the agent’s real governed action is withheld; the human finds it in the inbox, inspects the exact subject, approves; nothing executes until the agent retries the SAME request — then exactly once",
+     "observed": "a human approval through the web is not an execution 1 !== 0"
+    },
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "Expected values to be strictly equal: 3 !== 2"
+    },
+    {
+     "title": "revocation through the web withdraws an approval before the agent retries",
+     "observed": "Expected values to be strictly equal: 4 !== 3"
+    },
+    {
+     "title": "withheld → discoverable in the inbox → exact canonical subject → operator approves → nothing executes → the agent retries → executed exactly once under the same decision",
+     "observed": "an approval is not an execution 1 !== 0"
+    },
+    {
+     "title": "evidence is required and hashed; one approval is 1/2 and executes nothing; the same approver never counts twice; a second distinct approver completes it; the agent resumes once",
+     "observed": "Expected values to be strictly equal: 3 !== 2"
+    },
+    {
+     "title": "revocation withdraws a completed approval before the retry: no execution; no restore; a second revocation is refused",
+     "observed": "Expected values to be strictly equal: 6 !== 5"
+    }
+   ],
+   "before": {
+    "src/enterprise/composition/composition-root.ts": "11e6c1d21b4a2a9ddc14c700a720665c8600720c1a29c194f4472754b108572d"
+   },
+   "after": {
+    "src/enterprise/composition/composition-root.ts": "11e6c1d21b4a2a9ddc14c700a720665c8600720c1a29c194f4472754b108572d"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M22",
+   "property": "the operator plane never retries the governed action with the operator credential",
+   "change": "the console's Host client posts the governed action with the operator bearer alongside every approve verdict",
+   "edits": [
+    {
+     "file": "src/control-plane-web/host-client.ts",
+     "find": "    approvalCommand: (bearer, approvalRequestId, verb, body) =>\n      send('POST', `/api/admin/approvals/${segment(approvalRequestId)}/${segment(verb)}`, bearer, shapes.approvalCommand, {",
+     "replace": "    approvalCommand: (bearer, approvalRequestId, verb, body) =>\n      send('POST', `/api/admin/approvals/${segment(approvalRequestId)}/${segment(verb)}`, bearer, shapes.approvalCommand, {\n        ...(verb === 'approve' ? (void send('POST', '/api/governed-actions', bearer, shapes.approvalCommand, { approvalRequestId }), {}) : {}),"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "no module mints, edits or un-revokes authority: no bounded-grant issuance, no un-revoke, no reactivation route",
+     "observed": "04 operator routes + actual - expected ... Skipped lines [ '/api/admin/agents/{}/credentials', '/api/admin/agents/{}/credentials/{}/revoke', '/api/admin/agents/{}/credentials/{}/rotate', '/api/admin/approvals/{}/{}', ... '/api/admin/governance-profiles/{}/versions/{}/{}', + '/api/governed-actions' ]"
+    },
+    {
+     "title": "no approval module performs or retries a governed action, or reaches the customer plane",
+     "observed": "src/control-plane-web/host-client.ts true !== false"
+    }
+   ],
+   "before": {
+    "src/control-plane-web/host-client.ts": "1e434bdbd4dfca1d4e1d2d335db6cd5c64a53359fb5b850edac80d41dfb64bb6"
+   },
+   "after": {
+    "src/control-plane-web/host-client.ts": "1e434bdbd4dfca1d4e1d2d335db6cd5c64a53359fb5b850edac80d41dfb64bb6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M23",
+   "property": "the original committed decision is resumed, never re-made",
+   "change": "the governed request id includes the time, so a retry opens a new request and a new Kernel decision",
+   "edits": [
+    {
+     "file": "src/enterprise/governed-action/identifiers.ts",
+     "find": "  return `aoc.gar:${digest(['aoc.governed-action.request.v1', input.organizationId, input.principalId, input.idempotencyKey])}`;",
+     "replace": "  return `aoc.gar:${digest(['aoc.governed-action.request.v1', input.organizationId, input.principalId, input.idempotencyKey, String(Date.now())])}`;"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 92,
+    "failed": 15
+   },
+   "killingTests": [
+    {
+     "title": "the agent’s real governed action is withheld; the human finds it in the inbox, inspects the exact subject, approves; nothing executes until the agent retries the SAME request — then exactly once",
+     "observed": "{\"status\":\"rejected\",\"requestId\":\"aoc.gar:432e120d1eeaa5765360b08376eb9234\",\"reasonCodes\":[\"GOVERNED_ACTION_IDEMPOTENCY_CONFLICT\"]} + actual - expected + 'rejected' - 'executed'"
+    },
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "{\"status\":\"rejected\",\"requestId\":\"aoc.gar:3c0b439e723723062a3bf24fdd4012f5\",\"reasonCodes\":[\"GOVERNED_ACTION_IDEMPOTENCY_CONFLICT\"]} + actual - expected + 'rejected' - 'withheld'"
+    },
+    {
+     "title": "requesting changes is recorded and changes nothing; escalation is discoverable in the escalated view with its reference",
+     "observed": "{\"status\":\"rejected\",\"requestId\":\"aoc.gar:9085fb6571b36f68a9a6c6d660dd1307\",\"reasonCodes\":[\"GOVERNED_ACTION_IDEMPOTENCY_CONFLICT\"]} + actual - expected + 'rejected' - 'withheld'"
+    },
+    {
+     "title": "revocation through the web withdraws an approval before the agent retries",
+     "observed": "{\"status\":\"rejected\",\"requestId\":\"aoc.gar:85f54dce91778c2170b7ce7a6be7fb26\",\"reasonCodes\":[\"GOVERNED_ACTION_IDEMPOTENCY_CONFLICT\"]} + actual - expected + 'rejected' - 'withheld'"
+    },
+    {
+     "title": "withheld → discoverable in the inbox → exact canonical subject → operator approves → nothing executes → the agent retries → executed exactly once under the same decision",
+     "observed": "{\"status\":\"rejected\",\"requestId\":\"aoc.gar:c6ffa6744c2a5f4c4336b9a31fad0cad\",\"reasonCodes\":[\"GOVERNED_ACTION_IDEMPOTENCY_CONFLICT\"]} + actual - expected + 'rejected' - 'executed'"
+    },
+    {
+     "title": "evidence is required and hashed; one approval is 1/2 and executes nothing; the same approver never counts twice; a second distinct approver completes it; the agent resumes once",
+     "observed": "{\"status\":\"rejected\",\"requestId\":\"aoc.gar:acd2d5922735545abaf329b3adde9d15\",\"reasonCodes\":[\"GOVERNED_ACTION_IDEMPOTENCY_CONFLICT\"]} + actual - expected + 'rejected' - 'withheld'"
+    }
+   ],
+   "before": {
+    "src/enterprise/governed-action/identifiers.ts": "6c6c90bf430777d5b7003c10873f7adcfd4a7414ebac162f0e47b0844dd3488f"
+   },
+   "after": {
+    "src/enterprise/governed-action/identifiers.ts": "6c6c90bf430777d5b7003c10873f7adcfd4a7414ebac162f0e47b0844dd3488f"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M24",
+   "property": "the approval digest is bound into the resumed grant's signed source",
+   "change": "the grant source serialization omits the approval digest",
+   "edits": [
+    {
+     "file": "src/features/grant-runtime/domain/grant-source-authorization.ts",
+     "find": "    ...(source.approvalDigest !== undefined ? [`\"approvalDigest\":${JSON.stringify(source.approvalDigest)}`] : []),",
+     "replace": "    ...([] as string[]),"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "withheld → discoverable in the inbox → exact canonical subject → operator approves → nothing executes → the agent retries → executed exactly once under the same decision",
+     "observed": "the approval digest is material to the signed source bytes"
+    }
+   ],
+   "before": {
+    "src/features/grant-runtime/domain/grant-source-authorization.ts": "295013cec72705c1437e68bc146b761eed9b05a2f7d598c44b9ad468c9aaf485"
+   },
+   "after": {
+    "src/features/grant-runtime/domain/grant-source-authorization.ts": "295013cec72705c1437e68bc146b761eed9b05a2f7d598c44b9ad468c9aaf485"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M25",
+   "property": "the console never marks a request approved without the canonical re-read",
+   "change": "the post-verdict flash reports approved for any approve verdict",
+   "edits": [
+    {
+     "file": "src/control-plane-web/app.tsx",
+     "find": "      `Verdict '${verb}' recorded by the Host. Status (derived, re-read): ${approval.status}; quorum ${approval.quorum.countedApprovers.length} / ${approval.quorum.minimumApprovals}.` +",
+     "replace": "      `Verdict '${verb}' recorded by the Host. Status (derived, re-read): ${verb === 'approve' ? 'approved' : approval.status}; quorum ${verb === 'approve' ? approval.quorum.minimumApprovals : approval.quorum.countedApprovers.length} / ${approval.quorum.minimumApprovals}.` +"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "missing evidence is refused by the Host; 1 / 2 executes nothing; the same human twice is refused; a second human completes 2 / 2; the agent resumes once",
+     "observed": "The expression evaluated to a falsy value: ok((0, web_browser_js_1.textOf)(first.html).includes('Status (derived, re-read): pending; quorum 1 / 2.'))"
+    }
+   ],
+   "before": {
+    "src/control-plane-web/app.tsx": "9d84aba77e8e8281e95a62413a8d7f520910c1b4884add74ca4b8c906e799b82"
+   },
+   "after": {
+    "src/control-plane-web/app.tsx": "9d84aba77e8e8281e95a62413a8d7f520910c1b4884add74ca4b8c906e799b82"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M26",
+   "property": "no request may choose the organization of an approval read",
+   "change": "the inbox query accepts an organizationId key",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      const unexpected = Object.keys(query).filter((key) => key !== 'view');",
+     "replace": "      const unexpected = Object.keys(query).filter((key) => key !== 'view' && key !== 'organizationId');"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "every smuggled identity, authority or state field is refused with 400 and records nothing",
+     "observed": "Expected values to be strictly equal: 200 !== 400"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M26b",
+   "property": "every approval read is re-proven to belong to the served organization",
+   "change": "the service's organization re-proof is removed",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      if (views.some((view) => view.subject.organizationId !== organizationId)) throw integrityFailed('APPROVAL_ORGANIZATION_MISMATCH');",
+     "replace": "      void integrityFailed;"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "a request of another organization in the port’s answer is an integrity failure, never data",
+     "observed": "expected a refusal"
+    },
+    {
+     "title": "the Host service is handed the CORE-05 command port only — list and the five commands — never a store",
+     "observed": ";\\n\" + \" const type = boundedText(entry['type'], 'evidence[].type');\\n\" + \" const hash = entry['hash'];\\n\" + ` if (typeof hash !== 'string' || !SHA256.test(hash)) throw EnterpriseHttpErrors.invalidRequest(\"evidence[].hash must be a content hash ('sha256:' and 64 lowercase h`... 12720 more characters"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M27",
+   "property": "a CTRL-01 administrator gains no approval permission",
+   "change": "the legacy-administrator policy gains approval.read / approve / restrict",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/roles.ts",
+     "find": "  [LEGACY_ADMINISTRATOR_ROLE]: new Set<OperatorPermission>(['authority.inspect', 'authority.revoke', 'emergency.stop', 'emergency.release']),",
+     "replace": "  [LEGACY_ADMINISTRATOR_ROLE]: new Set<OperatorPermission>(['authority.inspect', 'authority.revoke', 'emergency.stop', 'emergency.release', 'approval.read', 'approval.approve', 'approval.restrict']),"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "approval permissions per role are exactly the documented matrix",
+     "observed": "Expected values to be strictly deep-equal: + actual - expected { + 'legacy-administrator': [ + 'approval.read', + 'approval.approve', + 'approval.restrict' + ], - 'legacy-administrator': [], 'organization-administrator': [ 'approval.read', 'approval.approve', 'approval.restrict' ],"
+    },
+    {
+     "title": "the approver role holds no authority, credential, profile or emergency permission; no restrict-only role holds approve",
+     "observed": "Expected values to be strictly equal: true !== false"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/roles.ts": "0dd0f94ac694a7b8b79c21c2a56eda14c3b113aa001f343fdd147bdbe79515d0"
+   },
+   "after": {
+    "src/enterprise/operator-control/roles.ts": "0dd0f94ac694a7b8b79c21c2a56eda14c3b113aa001f343fdd147bdbe79515d0"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M27b",
+   "property": "a CTRL-01 administrator credential is refused by the approval service itself",
+   "change": "the approval service's credential-class check is removed",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "    if (principal.credentialClass !== 'operator') throw new EnterpriseHttpError(",
+     "replace": "    if (principal.credentialClass !== 'operator' && false) throw new EnterpriseHttpError("
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "a CTRL-01 administrator credential is refused by the approval service itself, whatever the policy says (defence in depth)",
+     "observed": ";\\n\" + \" const type = boundedText(entry['type'], 'evidence[].type');\\n\" + \" const hash = entry['hash'];\\n\" + ` if (typeof hash !== 'string' || !SHA256.test(hash)) throw EnterpriseHttpErrors.invalidRequest(\"evidence[].hash must be a content hash ('sha256:' and 64 lowercase h`... 12838 more characters"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M28",
+   "property": "customer and agent credentials never reach the approval plane",
+   "change": "an ordinary (customer) API key authenticates on the operator plane as an approver",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/operator-authenticator.ts",
+     "find": "        if (ordinary !== undefined) throw EnterpriseHttpErrors.authorizationFailed('This credential is not authorized on the operator plane.');",
+     "replace": "        if (ordinary !== undefined) return Object.freeze({ plane: 'operator' as const, operatorId: 'customer', organizationId, role: 'approver' as const, credentialClass: 'operator' as const, actorRef: 'operator:customer' });"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "legacy administrators, customer API keys, agent credentials and unknown credentials never reach the approval plane; an approver credential is not a customer credential",
+     "observed": "customer API key GET /api/admin/approvals 200 !== 403"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+   },
+   "after": {
+    "src/enterprise/operator-control/operator-authenticator.ts": "27730aedcca99d43059902a86f0eb211be89416dccf7d7b1683f45c5fb213ba0"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M29",
+   "property": "a stale page never applies the old intent to a changed subject",
+   "change": "the Host silently substitutes the request's current subject digest for the reviewed one",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      if (body.subjectDigest !== current.subjectDigest) {",
+     "replace": "      if (false) {"
+    },
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "        subjectDigest: body.subjectDigest,",
+     "replace": "        subjectDigest: current.subjectDigest,"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 103,
+    "failed": 4
+   },
+   "killingTests": [
+    {
+     "title": "a stale confirmation page never applies the old intent: the Host refuses it and the console re-reads the current state",
+     "observed": "Expected values to be strictly equal: 200 !== 409"
+    },
+    {
+     "title": "a stale or substituted subject digest is refused and records nothing",
+     "observed": "approved\",\"actorId\":\"operator:approver-a\",\"recordedAt\":\"2026-10-02T05:48:27.378Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_QUORUM_MET\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:f66be70d200a5de8a63af49355fd26c763ddacbb4fc3be9dce7f19d2ce5b6ed2\"}]}} 200 !== 409"
+    },
+    {
+     "title": "every role reaches exactly its permitted operations; every other is refused 403 before any body is read",
+     "observed": "actorId\":\"operator:ops-responder\",\"recordedAt\":\"2026-10-02T05:48:35.702Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":true,\"reasonCode\":\"APPROVAL_REJECTED\",\"reason\":\"matrix probe\",\"evidence\":[],\"rowDigest\":\"sha256:d5fc8eada2c3c47ca606815f6b4bbbd1b034f94c43a11e1f2170c24fe48906f8\"}]}} 200 !== 409"
+    },
+    {
+     "title": "the command body is closed: it can name the reviewed subject, evidence and a note — never an actor, channel, organization, role, state, quorum or proof",
+     "observed": ";\\n\" + \" const type = boundedText(entry['type'], 'evidence[].type');\\n\" + \" const hash = entry['hash'];\\n\" + ` if (typeof hash !== 'string' || !SHA256.test(hash)) throw EnterpriseHttpErrors.invalidRequest(\"evidence[].hash must be a content hash ('sha256:' and 64 lowercase h`... 12793 more characters"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M30",
+   "property": "CTRL-04 has no external notification side effect (CTRL-05)",
+   "change": "an escalation is posted to an external webhook",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      audit(principal, verb, approvalRequestId, 'recorded');",
+     "replace": "      audit(principal, verb, approvalRequestId, 'recorded');\n      if (verb === 'escalate') void fetch('https://webhook.example.invalid/escalations', { method: 'POST', body: approvalRequestId }).catch(() => undefined);"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "no model, AI or remote-inference dependency, no network, process or dynamic code",
+     "observed": "src/enterprise/operator-control/approval-workflow.ts must not match /node:net|node:http|node:https|node:dns|\\bfetch\\s*\\(/ true !== false"
+    },
+    {
+     "title": "no external notification integration exists in CTRL-04 (CTRL-05 owns alerts)",
+     "observed": "src/enterprise/operator-control/approval-workflow.ts true !== false"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M31",
+   "property": "the web approval code reaches no approval store",
+   "change": "the console imports the approval store module",
+   "edits": [
+    {
+     "file": "src/control-plane-web/app.tsx",
+     "find": "import { buildApprovalCommand } from './approval-forms.js';",
+     "replace": "import { buildApprovalCommand } from './approval-forms.js';\nimport { createInMemoryApprovalStore } from '../enterprise/approval-authority/in-memory-approval-store.js';\nvoid createInMemoryApprovalStore;"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "every import is the console’s own, React, a Node server primitive, or one of the two reused presentation components",
+     "observed": "src/control-plane-web/app.tsx must not import '../enterprise/approval-authority/in-memory-approval-store.js' true !== false"
+    },
+    {
+     "title": "no CTRL-04 module touches an approval store, appends a row or re-implements an approval policy, quorum or proof",
+     "observed": "src/control-plane-web/app.tsx reaches an approval store true !== false"
+    }
+   ],
+   "before": {
+    "src/control-plane-web/app.tsx": "9d84aba77e8e8281e95a62413a8d7f520910c1b4884add74ca4b8c906e799b82"
+   },
+   "after": {
+    "src/control-plane-web/app.tsx": "9d84aba77e8e8281e95a62413a8d7f520910c1b4884add74ca4b8c906e799b82"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M32",
+   "property": "a double submission never counts an approver twice or completes twice",
+   "change": "CORE-05 commands are no longer serialized: concurrent commands judge the same history",
+   "edits": [
+    {
+     "file": "src/enterprise/approval-authority/service.ts",
+     "find": "=> serialized(() => commandOnce(kind, context, input));",
+     "replace": "=> commandOnce(kind, context, input);"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 106,
+    "failed": 1
+   },
+   "killingTests": [
+    {
+     "title": "concurrent double submissions: one approver counts once; one completion, one approval digest, one execution",
+     "observed": "Expected values to be strictly deep-equal: + actual - expected [ 200, + 200 - 409 ]"
+    }
+   ],
+   "before": {
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "after": {
+    "src/enterprise/approval-authority/service.ts": "5d6ce99fea1a33d7ccdbb1abc4fd65b667dd4b7d8b03f9e1f012ae153cdea2a6"
+   },
+   "restoredByteForByte": true
+  },
+  {
+   "id": "M33",
+   "property": "an escalation over the operator plane carries a routable reference",
+   "change": "the escalation-reference rule is removed",
+   "edits": [
+    {
+     "file": "src/enterprise/operator-control/approval-workflow.ts",
+     "find": "      if (verb === 'escalate' && body.reason === undefined) throw",
+     "replace": "      if (verb === 'escalate' && body.reason === undefined && false) throw"
+    }
+   ],
+   "compiles": true,
+   "counted": true,
+   "killed": true,
+   "result": {
+    "total": 107,
+    "passed": 105,
+    "failed": 2
+   },
+   "killingTests": [
+    {
+     "title": "escalation routing: recorded with its reference, discoverable in the escalated view without knowing the id, no quorum, no authority",
+     "observed": "scalated\",\"actorId\":\"operator:approver-a\",\"recordedAt\":\"2026-10-02T05:49:59.956Z\",\"recordedBy\":\"frontera:operator-plane\",\"counted\":false,\"reasonCode\":\"APPROVAL_ESCALATED\",\"reason\":null,\"evidence\":[],\"rowDigest\":\"sha256:dbcd5c8b5b62878ff952e656bbec1c97a969311f7889b888806606dcb8be83ff\"}]}} 200 !== 400"
+    },
+    {
+     "title": "an unexpected port failure is “unavailable — whether recorded is unknown”, never a success; an escalation needs a reference",
+     "observed": "expected a refusal"
+    }
+   ],
+   "before": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "after": {
+    "src/enterprise/operator-control/approval-workflow.ts": "ae1684810d59354073226f3fcdd41317ca42e6ab91f6cf9bbde6170aaa3554c5"
+   },
+   "restoredByteForByte": true
+  }
+ ]
+}

@@ -543,13 +543,14 @@ else. Mutation bodies are closed `application/json` schemas of at most 16 KiB
 full error model: `docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md`. The SDK
 has no method for these routes (transport for customers only).
 
-### 2.8 Operator plane (capability-gated; added by CTRL-02 and CTRL-03, unreleased)
+### 2.8 Operator plane (capability-gated; added by CTRL-02, CTRL-03 and CTRL-04, unreleased)
 
 Mounted only when the deployment declares `operators` in its governed-action
 file; otherwise every path below is the unmounted-route `404 NOT_FOUND`.
 CTRL-02 added eleven endpoints (36 → **47**); CTRL-03 added two **read-only**
-endpoints for the web control plane (47 → **49**). No existing route, field,
-status or code changed.
+endpoints for the web control plane (47 → **49**); CTRL-04 added seven
+approval endpoints (49 → **56**), mounted only when CORE-05 approvals are
+composed as well. No existing route, field, status or code changed.
 
 | Method | Path | Added by |
 | --- | --- | --- |
@@ -566,6 +567,13 @@ status or code changed.
 | `POST` | `/api/admin/governance-profiles/{profileId}/versions/{version}/retire` | CTRL-02 |
 | `GET` | `/api/admin/activity/decisions` | CTRL-03 |
 | `GET` | `/api/admin/evidence/decisions/{evaluationId}` | CTRL-03 |
+| `GET` | `/api/admin/approvals` | CTRL-04 |
+| `GET` | `/api/admin/approvals/{approvalRequestId}` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/approve` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/reject` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/request-changes` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/escalate` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/revoke` | CTRL-04 |
 
 An **operator** Bearer credential is always required (a CTRL-01
 administrator credential reaches only the CTRL-01 routes of §2.7; ordinary and
@@ -574,8 +582,12 @@ body is read. The CTRL-03 reads answer the §5 limitation "no HTTP-exposed
 governance query endpoint" for operators only: committed decisions of the
 served organization, paged, with closed query strings, and one decision record
 with the Governance Store's own verification. Reference:
-`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md` §10 and §11. The SDK has
-no method for these routes.
+`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md` §10 and §11. The CTRL-04
+approval routes expose the human side of CORE-05's durable approvals: the inbox
+and one request's canonical subject (`approval.read`), and one verdict per
+`POST` path (`approval.approve` / `approval.restrict`) whose acting approver is
+always the authenticated operator; CORE-05 decides whether a verdict counts.
+Reference: §12 of the same document. The SDK has no method for these routes.
 
 ## 3. Error Taxonomy
 

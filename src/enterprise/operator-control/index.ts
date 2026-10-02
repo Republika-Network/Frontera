@@ -18,4 +18,14 @@ export type {
   OrganizationView,
   ProfileVersionView,
 } from './contracts.js';
+export { APPROVAL_COMMANDS, APPROVAL_VIEWS, OPERATOR_APPROVAL_CHANNEL, approvalCommandContextFor, createOperatorApprovalService, isApprovalCommandVerb } from './approval-workflow.js';
+export type {
+  ApprovalCommandResult,
+  ApprovalCommandVerb,
+  ApprovalDetailView,
+  ApprovalInboxItem,
+  ApprovalInboxView,
+  OperatorApprovalDependencies,
+  OperatorApprovalService,
+} from './approval-workflow.js';
 export type { AgentCredentialRecord, AgentPrincipalRecord, ProfileLifecycleEvent } from './control-plane-store.js';

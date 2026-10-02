@@ -39,6 +39,7 @@ import { createAgentCredentialVerifier, AGENT_PRINCIPAL_PREFIX } from '../operat
 import { createSqliteControlPlaneStore, replayProfileLifecycle, type ControlPlaneStore, type ProfileLifecycleState } from '../operator-control/control-plane-store.js';
 import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
 import { createOperatorControlService, type OperatorControlService } from '../operator-control/service.js';
+import { createOperatorApprovalService, type OperatorApprovalService } from '../operator-control/approval-workflow.js';
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 import { createEnterpriseModuleRegistry } from '../registry/enterprise-module-registry.js';
 import { createEnterpriseLifecycleController } from '../lifecycle/enterprise-lifecycle-controller.js';
@@ -797,6 +798,17 @@ export interface AocEnterprise {
    * `/api/admin/...`, authenticated and authorized per operation by role.
    */
   readonly operatorControl?: OperatorControlService;
+  /**
+   * CTRL-04 — the human side of CORE-05 approvals on the operator plane: the
+   * approval inbox, one request's canonical subject and derived state, and
+   * approve / reject / request-changes / escalate / revoke by an authenticated
+   * CTRL-02 operator. Present only when operators are configured **and**
+   * durable approvals are composed. It holds the approval command port only —
+   * no store — and builds the command context from the authenticated
+   * operator; CORE-05 decides whether any verdict counts. Behind
+   * `/api/admin/approvals...`.
+   */
+  readonly operatorApprovals?: OperatorApprovalService;
   /**
    * CORE-04 — the trusted, **in-process** writer of obligation discharge
    * reports, present when obligations are composed. It records what a
@@ -2546,6 +2558,26 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           },
         });
 
+  // CTRL-04: the operator plane's approval surface, over the CORE-05 command
+  // port only (reads and commands — no store, no append, no state writer).
+  // Absent unless operators are configured and approvals are composed.
+  const operatorApprovals: OperatorApprovalService | undefined =
+    operatorAuthenticator === undefined || operators.length === 0 || approvalAuthority === undefined || governedActionOrchestrator === undefined
+      ? undefined
+      : createOperatorApprovalService({
+          authenticator: operatorAuthenticator,
+          organizationId: configuration.kernelAuthority.organizationId,
+          approvals: {
+            list: () => approvalAuthority.list(),
+            approve: (context, command) => approvalAuthority.approve(context, command),
+            reject: (context, command) => approvalAuthority.reject(context, command),
+            requestChanges: (context, command) => approvalAuthority.requestChanges(context, command),
+            escalate: (context, command) => approvalAuthority.escalate(context, command),
+            revoke: (context, command) => approvalAuthority.revoke(context, command),
+          },
+          logger,
+        });
+
   // CORE-02: the authenticity boundary this root built, if any — for the
   // posture and for the custody service's non-signing health probe.
   const authorityAuthenticity = authorityAuthenticityOnce === undefined ? undefined : await authorityAuthenticityOnce;
@@ -2638,6 +2670,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     ...(emergencyControlStore !== undefined ? { emergencyControlAdministration: emergencyControlStore } : {}),
     ...(authorityAdministration !== undefined ? { authorityAdministration } : {}),
     ...(operatorControl !== undefined ? { operatorControl } : {}),
+    ...(operatorApprovals !== undefined ? { operatorApprovals } : {}),
     ...(obligationDischargeStore !== undefined && governedTrust?.obligations !== undefined && governedActionOrchestrator !== undefined
       ? {
           obligationDischarges: createObligationDischargeRecorder({
@@ -2652,6 +2685,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       ? {
           approvals: Object.freeze<ApprovalCommandPort>({
             pending: () => approvalAuthority.pending(),
+            list: () => approvalAuthority.list(),
             describe: (requestId: string) => approvalAuthority.describe(requestId),
             approve: (context, command) => approvalAuthority.approve(context, command),
             reject: (context, command) => approvalAuthority.reject(context, command),

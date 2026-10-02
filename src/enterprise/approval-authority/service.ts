@@ -72,6 +72,13 @@ export interface ApprovalRequestView {
 export interface ApprovalCommandPort {
   /** Every request whose approval is still open, oldest first. */
   pending(): Promise<readonly ApprovalRequestView[]>;
+  /**
+   * CTRL-04 — every canonical approval request of the organization, in every
+   * derived state (superseded included), oldest first. A read: the same
+   * replay `pending()` and `describe()` perform, unfiltered. It writes
+   * nothing and decides nothing.
+   */
+  list(): Promise<readonly ApprovalRequestView[]>;
   /** One governed request's approval, or `undefined` when it never awaited one. */
   describe(requestId: string): Promise<ApprovalRequestView | undefined>;
   approve(context: ApprovalCommandContext, command: ApprovalCommand): Promise<ApprovalRequestView>;
@@ -419,6 +426,20 @@ export function createApprovalAuthority(options: ApprovalAuthorityOptions): Appr
         if (!view.superseded && view.state.status === 'pending') open.push(view);
       }
       return open.sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
+    },
+
+    async list(): Promise<readonly ApprovalRequestView[]> {
+      const rows = await store.read(organizationId);
+      const at = now();
+      return requestsIn(rows)
+        .map((requested) =>
+          viewOf(
+            rows.filter((row) => row.requestId === requested.requestId),
+            requested,
+            at,
+          ),
+        )
+        .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
     },
 
     async describe(requestId: string): Promise<ApprovalRequestView | undefined> {

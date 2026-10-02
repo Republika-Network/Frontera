@@ -37,7 +37,7 @@ a Node REPL, repository changes or developer intervention.
 | Un-revoke, delete or clear a revocation, reactivate | **no — and never** | Revocation is monotonic in every store. Restoring authority is new provisioning under a new id. No route, service method or port offers it. |
 | Listing / search | **CTRL-02: yes, to operators** (`GET /api/admin/authority/entities?kind=&status=`, `GET /api/admin/agents`) | CTRL-01 administrators remain inspect-by-known-id only (§6). |
 | Organizations, human operators, agents | **CTRL-02: yes** (§10) | — |
-| Approvals, web UI, policy CRUD, payments, KMS | **no** | CORE-05/CTRL-04, CTRL-03, CORE-03, PAY, CORE-02 |
+| Policy CRUD, payments, KMS | **no** | CORE-03, PAY, CORE-02 (approvals: CTRL-04, §12; web UI: CTRL-03, §11.2) |
 
 ## 2. Security model
 
@@ -564,3 +564,91 @@ memory for the session (the browser receives an opaque `HttpOnly`,
 agent credentials cannot sign in. Every operation is forwarded to the Host,
 which authorizes it; an agent credential's secret is shown once, on the page
 that issued it.
+
+## 12. Approval & escalation workflow (CTRL-04)
+
+Decision record: `docs/architecture/ADR-CTRL-04-APPROVAL-ESCALATION-WORKFLOW.md`.
+Qualification: `docs/security/CTRL-04-APPROVAL-ESCALATION-WORKFLOW.md`.
+
+Mounted only when operators are configured **and** a Governance Profile
+declares an `approval` requirement (CORE-05 approvals composed). The Host
+computes nothing about an approval: every answer is CORE-05's derived view,
+restated field by field, and every verdict is a CORE-05 command whose acting
+approver is the authenticated operator.
+
+### 12.1 Endpoints
+
+| Method | Path | Permission | Body / query |
+|---|---|---|---|
+| GET | `/api/admin/approvals` | `approval.read` | `view` = `pending` (default), `escalated`, `approved`, `rejected`, `revoked`, `expired`, `superseded`, `all`; any other key → 400 |
+| GET | `/api/admin/approvals/{approvalRequestId}` | `approval.read` | none accepted |
+| POST | `/api/admin/approvals/{approvalRequestId}/approve` | `approval.approve` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
+| POST | `/api/admin/approvals/{approvalRequestId}/reject` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
+| POST | `/api/admin/approvals/{approvalRequestId}/request-changes` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
+| POST | `/api/admin/approvals/{approvalRequestId}/escalate` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason }` — the reference is **required** (it is what the Escalated view routes on) |
+| POST | `/api/admin/approvals/{approvalRequestId}/revoke` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
+
+Permissions: `approval.read` — observer, responder, approver, organization
+administrator; `approval.restrict` — responder, approver, organization
+administrator; `approval.approve` — approver, organization administrator.
+Provisioners, profile stewards and CTRL-01 administrators hold none.
+
+Bodies are closed `application/json` of at most 16 KiB: anything but
+`subjectDigest`, `evidence` and `reason` (an actor, approver, channel,
+organization, role, state, quorum, proof — even `approvalRequestId`) is refused
+(400). `subjectDigest` is the digest of the subject the operator reviewed
+(`sha256:` + 64 hex); strings ≤ 256 characters; ≤ 32 evidence references, each
+hash `sha256:` + 64 lowercase hex. Every verb accepts the same closed body;
+CORE-05 enforces the requirement's evidence types on `approve` only (references
+on a restrictive verdict are recorded, never required).
+
+### 12.2 Who may approve
+
+The operator role only reaches a command. The verdict counts only if the
+Kernel-Authority actor **`operator:<operatorId>`** — the operator's canonical
+identity — is recognized and holds live authority for the profile's
+`approverAction` (never the governed action) over exactly the request's
+resource. An organization makes an operator an approver over this same
+operator plane: provision a `human` actor with id `operator:<operatorId>`, then
+an `authority-grant` whose `actions` is the approver action and whose
+`resourceScopes` are the resources they may approve. Revoking that grant
+withdraws the operator's unused approvals.
+
+### 12.3 Responses
+
+- **Inbox:** `{ view, approvals: [{ approvalRequestId, requestId, decisionId, requestedAt, status, actorId, action, resourceScope, governanceProfile, quorum: { minimumApprovals, countedApprovers, satisfied }, requestExpiresAt, escalations: [{ actorId, recordedAt, reason }], changesRequested }] }`.
+- **Detail:** the inbox fields plus `subjectDigest`, `canonicalSubject` (the exact bytes the digest is over), `subject` (evaluation, actor, principal, action, resource, counterparty, amount, typed parameters, Governance Profile and classes, context digest and validity, Kernel decision, recorded digests), `requirement` (`approverAction`, `minimumApprovals`, `requestTtlSeconds`, `approvalValiditySeconds`, `requiredEvidence`, `digest`), `superseded`, `approvedAt`, `notAfter`, `approvalDigest`, `closedBy`, `verdicts: [{ kind, actorId, recordedAt, recordedBy, counted, reasonCode, reason, evidence, rowDigest }]`. `status`, `quorum`, `counted`, `reasonCode`, `approvedAt`, `notAfter`, `approvalDigest` are **derived** by CORE-05 at read time.
+- **Command:** `{ outcome: "recorded", verdict, approval }` — `approval` is CORE-05's re-read after the append. An approval is not an execution: the original requester retries its governed action (same idempotency key) to resume the same committed decision.
+
+### 12.4 Errors
+
+| Situation | Status | `error.code` | `error.failure` |
+|---|---|---|---|
+| no / unknown credential; agent credential | 401 | `AUTHENTICATION_FAILED` | — |
+| API key | 403 | `AUTHORIZATION_FAILED` | — |
+| role lacks the permission; CTRL-01 administrator | 403 | `OPERATOR_PERMISSION_DENIED` | — |
+| malformed body or query | 400 | `INVALID_REQUEST` | — |
+| unknown approval request (in this organization) | 404 | `AUTHORITY_ADMIN_TARGET_NOT_FOUND` | — |
+| reviewed subject differs | 409 | `OPERATOR_OPERATION_REFUSED` | `APPROVAL_SUBJECT_MISMATCH` |
+| no live approval standing | 409 | ″ | `APPROVAL_APPROVER_INELIGIBLE` (+ `reasonCode`) |
+| requester approving its own request | 409 | ″ | `APPROVAL_SEGREGATION_OF_DUTIES` |
+| same approver again | 409 | ″ | `APPROVAL_DUPLICATE` |
+| required evidence not cited | 409 | ″ | `APPROVAL_EVIDENCE_INSUFFICIENT` |
+| request closed | 409 | ″ | `APPROVAL_REJECTED`, `APPROVAL_REVOKED`, `APPROVAL_REQUEST_EXPIRED`, `APPROVAL_ALREADY_APPROVED`, `APPROVAL_EXPIRED` (+ `approvalStatus`) |
+| profile or requirement changed | 409 | ″ | `APPROVAL_REQUEST_SUPERSEDED` |
+| approval state unverifiable (on a command: whether it was recorded is unknown — re-read) | 500 | `AUTHORITY_STATE_INTEGRITY_FAILED` | store code |
+| approval store unavailable | 503 | `AUTHORITY_STATE_UNAVAILABLE` | — (re-read before retrying) |
+
+Every 409 carries `recorded: false`. There is no un-reject, un-revoke, restore,
+delete or execute route. Escalation is recorded and listed in the `escalated`
+view with its reference; it counts toward nothing and notifies no one (alerts:
+CTRL-05).
+
+### 12.5 In the web control plane
+
+The console's **Approvals** section lists the inbox views, shows one request's
+derived state, canonical subject, requirement snapshot and recorded verdicts,
+and offers one confirmation page per verdict (evidence rows for each required
+type; an explicit confirmation; the subject digest of the page it rendered).
+After every verdict it re-reads the Host; after a refusal it shows the Host's
+reason and the current subject.
