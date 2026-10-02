@@ -29,6 +29,12 @@ export interface ConsoleSession {
 }
 
 export interface SessionStoreOptions {
+  /**
+   * Milliseconds on a **monotonic** clock. Defaults to `performance.now()`:
+   * session lifetimes are durations, so a wall-clock step (NTP, a hypervisor
+   * resync) can neither extend nor end a session. A reading that goes
+   * backwards anyway (an injected clock) ends the session.
+   */
   readonly now?: () => number;
   /** Absolute lifetime. Default 8 hours. */
   readonly absoluteTtlMs?: number;
@@ -49,7 +55,7 @@ export interface SessionStore {
 const newToken = (): string => randomBytes(32).toString('base64url');
 
 export function createSessionStore(options: SessionStoreOptions = {}): SessionStore {
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => performance.now());
   const absoluteTtlMs = options.absoluteTtlMs ?? 8 * 60 * 60 * 1000;
   const idleTtlMs = options.idleTtlMs ?? 30 * 60 * 1000;
   const maxSessions = options.maxSessions ?? 256;
