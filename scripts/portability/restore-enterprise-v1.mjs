@@ -31,7 +31,7 @@
 //   node scripts/portability/restore-enterprise-v1.mjs --backup <dir> --target <dir>
 //        [--force] [--allow-incomplete] [--allow-legacy-backup]
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, renameSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, renameSync, lstatSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
 
 import {
@@ -68,9 +68,10 @@ function parseArgs(argv) {
     else if (arg === '--force' || arg === '--replace') args.force = true;
     else if (arg === '--allow-incomplete') args.allowIncomplete = true;
     else if (arg === '--allow-legacy-backup') args.allowLegacyBackup = true;
+    else if (arg === '--no-target-check') args.noTargetCheck = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
-  if (!args.backup || !args.target) throw new Error('Usage: restore-enterprise-v1.mjs --backup <dir> --target <dir> [--force] [--allow-incomplete] [--allow-legacy-backup]');
+  if (!args.backup || !args.target) throw new Error('Usage: restore-enterprise-v1.mjs --backup <dir> --target <dir> [--force] [--allow-incomplete] [--allow-legacy-backup] [--no-target-check]');
   return args;
 }
 
@@ -131,6 +132,9 @@ function loadAndValidateManifest(backupPath) {
 
 // -- 2. coverage ---------------------------------------------------------------------
 
+/** Every deployment flag a store condition reads. */
+const DEPLOYMENT_FLAGS = ['kernelAuthorityEnabled', 'governedActions', 'obligationsDeclared', 'approvalsDeclared', 'operatorsConfigured', 'executionReconciliation'];
+
 /**
  * Which required stores the backup does not include, judged two ways and
  * never by trusting the producer's own `complete` flag:
@@ -153,6 +157,25 @@ function assessCoverage(manifest, targetRequirements) {
   if (coverage.deployment === null || typeof coverage.deployment !== 'object' || !Array.isArray(coverage.stores)) {
     throw new RestoreValidationError('Malformed manifest: coverage must record the source deployment and every store.');
   }
+  // The producer's record is input, never trusted shape: every flag a
+  // condition reads must be a real boolean (a string "true" would read as
+  // false and quietly un-require a store), the organization must be named,
+  // and every registry store must be accounted for exactly once.
+  for (const flag of DEPLOYMENT_FLAGS) {
+    if (typeof coverage.deployment[flag] !== 'boolean') throw new RestoreValidationError(`Malformed manifest: coverage.deployment.${flag} must be a boolean.`);
+  }
+  if (typeof coverage.deployment.organizationId !== 'string' || coverage.deployment.organizationId.length === 0) {
+    throw new RestoreValidationError('Malformed manifest: coverage.deployment.organizationId must name the organization the backup belongs to.');
+  }
+  if (typeof coverage.complete !== 'boolean') throw new RestoreValidationError('Malformed manifest: coverage.complete must be a boolean.');
+  for (const storeDef of STORE_DEFINITIONS) {
+    const entries = coverage.stores.filter((entry) => entry?.name === storeDef.name);
+    if (entries.length !== 1) throw new RestoreValidationError(`Malformed manifest: coverage must record store '${storeDef.name}' exactly once.`);
+    if (typeof entries[0].required !== 'boolean' || typeof entries[0].included !== 'boolean') throw new RestoreValidationError(`Malformed manifest: coverage of '${storeDef.name}' must say whether it is required and included.`);
+  }
+  for (const entry of coverage.stores) {
+    if (storeDefinitionByName(entry?.name) === undefined) throw new RestoreValidationError(`Unknown store '${String(entry?.name)}' in coverage.`);
+  }
   for (const entry of coverage.stores) {
     if (entry?.included === true && !included.has(entry.name)) throw new RestoreValidationError(`Malformed manifest: coverage says '${String(entry.name)}' is included, but the manifest has no such store.`);
   }
@@ -161,11 +184,15 @@ function assessCoverage(manifest, targetRequirements) {
   }
   const missingForSource = STORE_DEFINITIONS.filter((d) => conditionHolds(d.condition, coverage.deployment) && !included.has(d.name)).map((d) => d.name);
   const missingForTarget = targetRequirements === undefined ? [] : STORE_DEFINITIONS.filter((d) => conditionHolds(d.condition, targetRequirements) && !included.has(d.name)).map((d) => d.name);
-  const complete = missingForSource.length === 0 && missingForTarget.length === 0;
+  // Whatever the producer itself recorded as required-but-absent stays absent.
+  const declaredMissing = coverage.stores.filter((entry) => entry.required === true && entry.included !== true).map((entry) => entry.name);
+  const complete = missingForSource.length === 0 && missingForTarget.length === 0 && declaredMissing.length === 0 && coverage.complete === true;
   const reasons = [];
   if (missingForSource.length > 0) reasons.push(`the source deployment composed ${missingForSource.join(', ')}, which the backup does not include`);
   if (missingForTarget.length > 0) reasons.push(`the restoring deployment requires ${missingForTarget.join(', ')}, which the backup does not include`);
-  if (coverage.complete === true && missingForSource.length > 0) reasons.push('the manifest claims to be complete, which it is not');
+  if (declaredMissing.length > 0) reasons.push(`the backup records ${declaredMissing.join(', ')} as required but not included`);
+  if (coverage.complete !== true) reasons.push('the backup records itself as incomplete');
+  if (coverage.complete === true && (missingForSource.length > 0 || declaredMissing.length > 0)) reasons.push('the manifest claims to be complete, which it is not');
   return { model: COVERAGE_MODEL, complete, missingForSource, missingForTarget, reason: reasons.join('; ') };
 }
 
@@ -233,7 +260,7 @@ async function verifyStoreFileUnchecked(filePath, entry, storeDef, modules, wher
   return head;
 }
 
-async function validateBackupSet(backupPath, manifest, modules) {
+async function validateBackupSet(backupPath, manifest, modules, targetOrganizationId) {
   const storesDir = join(backupPath, 'stores');
   if (!existsSync(storesDir)) throw new RestoreValidationError('Backup set has no stores/ directory.');
   if (lstatSync(storesDir).isSymbolicLink()) throw new RestoreValidationError('Backup stores/ directory is a symlink.');
@@ -253,6 +280,11 @@ async function validateBackupSet(backupPath, manifest, modules) {
     const boundTo = heads[entry.name]?.organizationId;
     if (boundTo !== null && boundTo !== undefined && organizationId !== undefined && boundTo !== organizationId) {
       throw new RestoreValidationError(`Store '${storeDef.name}' is bound to organization '${boundTo}', not to the backed-up deployment's '${organizationId}'.`);
+    }
+    // Also against the restoring deployment itself -- this holds for a legacy
+    // backup, which records no organization of its own.
+    if (boundTo !== null && boundTo !== undefined && targetOrganizationId !== undefined && boundTo !== targetOrganizationId) {
+      throw new RestoreValidationError(`Store '${storeDef.name}' is bound to organization '${boundTo}', but the restoring deployment serves '${targetOrganizationId}'. A store is never transplanted between organizations.`);
     }
   }
   return heads;
@@ -276,7 +308,7 @@ function refusingSigner() {
   });
 }
 
-async function deepVerify(stagingDir, manifest, modules, heads, verificationKeys) {
+async function deepVerify(stagingDir, manifest, modules, heads, verificationKeys, targetOrganizationId) {
   const scratch = join(stagingDir, '.verify');
   const results = {};
   const verifier = verificationKeys.length > 0 ? modules.authenticity.createAuthorityArtifactVerifier(verificationKeys) : undefined;
@@ -292,7 +324,8 @@ async function deepVerify(stagingDir, manifest, modules, heads, verificationKeys
       mkdirSync(scratch, { recursive: true });
       const scratchFile = join(scratch, storeDef.targetFilename);
       copyFileSync(join(stagingDir, storeDef.targetFilename), scratchFile);
-      const authority = { organizationId: heads[entry.name]?.organizationId ?? manifest.coverage?.deployment?.organizationId, authenticity: { signer: refusingSigner(), verifier } };
+      // Opened as the restoring deployment would open it: for its organization when known.
+      const authority = { organizationId: targetOrganizationId ?? manifest.coverage?.deployment?.organizationId ?? heads[entry.name]?.organizationId, authenticity: { signer: refusingSigner(), verifier } };
       let store;
       try {
         store = await storeDef.open(modules, scratchFile, authority);
@@ -326,10 +359,27 @@ async function deepVerify(stagingDir, manifest, modules, heads, verificationKeys
 
 // -- 6. promotion with rollback --------------------------------------------------------
 
-/** Every file of `path` a SQLite database owns: the database and its sidecars. */
-function databaseFiles(path) {
-  return [path, ...sqliteSidecars(path)].filter((candidate) => existsSync(candidate));
+/** Whether anything -- a file, a directory, or a symlink, even a dangling one -- is at `path`. */
+function occupied(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
+
+/** Every file of `path` a SQLite database owns: the database and its sidecars. A symlink at any of them is refused. */
+function databaseFiles(path) {
+  const files = [path, ...['-wal', '-shm', '-journal'].map((suffix) => `${path}${suffix}`)].filter(occupied);
+  for (const file of files) {
+    if (lstatSync(file).isSymbolicLink()) throw new RestoreValidationError(`Target file '${basename(file)}' is a symlink; a restore never writes through or replaces a link.`);
+  }
+  return files;
+}
+
+const IN_PROGRESS_MARKER = '.restore-in-progress';
+const REPORT_FILE = 'restore-report.json';
 
 /**
  * Restores.
@@ -366,6 +416,10 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
       targetRequirements = deriveDeploymentRequirements(env, configuration);
       targetOrganizationId = configuration.kernelAuthority.organizationId;
     }
+    // A secure-profile deployment restores signed authority only after verifying it.
+    if ((env.AOC_ENTERPRISE_ENV === 'production' || env.AOC_ENTERPRISE_ENV === 'staging') && verificationKeys.length === 0) {
+      throw new RestoreValidationError('The restoring deployment is a secure profile but supplies no trusted authority verification keys (AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS); signed state would be restored unverified.');
+    }
   }
   // A backup of another organization's deployment is not this deployment's
   // state: its authority, approvals and discharges would answer for the wrong
@@ -389,10 +443,15 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
     throw new RestoreValidationError(`Backup '${manifest.backupId}' is a pre-PROD-02 backup and the restoring deployment requires ${coverage.missingForTarget.join(', ')}, which it does not include.`);
   }
 
-  const heads = await validateBackupSet(backupPath, manifest, modules);
+  const heads = await validateBackupSet(backupPath, manifest, modules, targetOrganizationId);
 
   mkdirSync(targetPath, { recursive: true });
   const paths = targetStorePaths(targetPath);
+  if (occupied(join(targetPath, IN_PROGRESS_MARKER))) {
+    throw new RestoreValidationError(`Target '${targetPath}' carries ${IN_PROGRESS_MARKER}: an earlier restore was interrupted mid-promotion. Inspect it (its safety and staging directories hold both sides), remove the marker deliberately, then restore again with --force.`);
+  }
+  const reportPath = join(targetPath, REPORT_FILE);
+  if (occupied(reportPath) && lstatSync(reportPath).isSymbolicLink()) throw new RestoreValidationError(`${REPORT_FILE} in the target is a symlink; refusing to write through it.`);
 
   // Every registry-managed file already in the target, with its sidecars --
   // including stores this backup does not contain, so a replaced target is
@@ -405,8 +464,7 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
   }
 
   const startedAt = new Date().toISOString();
-  const staging = join(targetPath, `.restore-staging-${manifest.backupId}-${process.pid}-${Date.now()}`);
-  mkdirSync(staging, { recursive: true });
+  const staging = mkdtempSync(join(targetPath, `.restore-staging-${manifest.backupId}-`));
   let objectVerification;
   try {
     // 4. staging, then every staged copy re-checksummed (a copy-time I/O
@@ -423,20 +481,29 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
       }
     }
     // 5. deep verification, on scratch copies of the staged files
-    objectVerification = await deepVerify(staging, manifest, modules, heads, verificationKeys);
+    objectVerification = await deepVerify(staging, manifest, modules, heads, verificationKeys, targetOrganizationId);
   } catch (error) {
     cleanupDir(staging);
     throw error;
   }
 
   // 6. promotion. From here on, any failure restores the target exactly.
-  const safetyDir = existing.length > 0 ? join(targetPath, `.pre-restore-safety-${manifest.backupId}-${Date.now()}`) : undefined;
+  // A previous run's report is moved aside with the stores: a failed restore
+  // must never leave an older success report describing a target it no longer is.
+  const asideFiles = [...existing, ...(occupied(reportPath) ? [reportPath] : [])];
+  const markerPath = join(targetPath, IN_PROGRESS_MARKER);
+  let safetyDir;
+  let report;
   const movedAside = [];
   const promoted = [];
   try {
-    if (safetyDir !== undefined) {
-      mkdirSync(safetyDir, { recursive: true });
-      for (const file of existing) {
+    // From the first move to the last verification the target carries a
+    // marker: an interruption no code can catch (SIGKILL, power loss) leaves
+    // it behind, and the next restore refuses until an operator has looked.
+    writeFileSync(markerPath, `${manifest.backupId}\n`, { flag: 'wx' });
+    if (asideFiles.length > 0) {
+      safetyDir = mkdtempSync(join(targetPath, `.pre-restore-safety-${manifest.backupId}-`));
+      for (const file of asideFiles) {
         const aside = join(safetyDir, basename(file));
         renameSync(file, aside);
         movedAside.push({ from: aside, to: file });
@@ -459,7 +526,34 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
       if (sha256File(destination) !== entry.checksum) throw new RestoreValidationError(`Post-restore checksum mismatch for store '${storeDef.name}'.`);
       if (sqliteSidecars(destination).length > 0) throw new RestoreValidationError(`Store '${storeDef.name}' has an unexpected sidecar after restore.`);
     }
+    const finishedAt = new Date().toISOString();
+    report = {
+      backupId: manifest.backupId,
+      targetPath,
+      compatibilityResult: 'supported',
+      checksumResult: 'ok',
+      sqliteIntegrityResult: 'ok',
+      coverage: { model: coverage.model, complete: coverage.complete, ...(coverage.complete ? {} : { incompleteBecause: coverage.reason }) },
+      migrationsApplied: [],
+      objectVerification,
+      // Restore mapping: which file now backs which Host variable. Derived from the registry.
+      targets: manifest.stores.map((entry) => {
+        const storeDef = storeDefinitionByName(entry.name);
+        return { store: storeDef.name, envVar: storeDef.envVar, path: paths[storeDef.name] };
+      }),
+      notRestored: STORE_DEFINITIONS.filter((storeDef) => !manifest.stores.some((entry) => entry.name === storeDef.name)).map((storeDef) => storeDef.name),
+      freshnessWitness: 'not restored (never part of a backup); start the Host against the surviving witness',
+      status: 'restored',
+      startedAt,
+      finishedAt,
+      durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+      preRestoreSafetyCopy: safetyDir ?? null,
+      targetCoverageChecked: targetRequirements !== undefined,
+    };
+    writeFileSync(reportPath, stableJsonStringify(report), { flag: 'wx' });
+    promoted.push(reportPath);
     faultInjection?.afterVerify?.();
+    rmSync(markerPath);
   } catch (error) {
     const rollbackProblems = [];
     for (const file of promoted.reverse()) {
@@ -477,44 +571,30 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
       }
     }
     cleanupDir(staging);
-    if (rollbackProblems.length === 0 && safetyDir !== undefined) cleanupDir(safetyDir);
     if (rollbackProblems.length > 0) {
+      // The in-progress marker stays: the next restore refuses until an operator has looked.
       throw new RestoreValidationError(`Restore failed (${error.message}) AND the rollback did not complete (${rollbackProblems.join('; ')}). The original files remain in '${safetyDir}'. Do not start the Host on this target.`);
     }
+    if (safetyDir !== undefined) cleanupDir(safetyDir);
+    rmSync(markerPath, { force: true });
     throw error;
   }
   cleanupDir(staging);
 
-  const finishedAt = new Date().toISOString();
-  const report = {
-    backupId: manifest.backupId,
-    targetPath,
-    compatibilityResult: 'supported',
-    checksumResult: 'ok',
-    sqliteIntegrityResult: 'ok',
-    coverage: { model: coverage.model, complete: coverage.complete, ...(coverage.complete ? {} : { incompleteBecause: coverage.reason }) },
-    migrationsApplied: [],
-    objectVerification,
-    // Restore mapping: which file now backs which Host variable. Derived from the registry.
-    targets: manifest.stores.map((entry) => {
-      const storeDef = storeDefinitionByName(entry.name);
-      return { store: storeDef.name, envVar: storeDef.envVar, path: paths[storeDef.name] };
-    }),
-    notRestored: STORE_DEFINITIONS.filter((storeDef) => !manifest.stores.some((entry) => entry.name === storeDef.name)).map((storeDef) => storeDef.name),
-    freshnessWitness: 'not restored (never part of a backup); start the Host against the surviving witness',
-    status: 'restored',
-    startedAt,
-    finishedAt,
-    durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
-    preRestoreSafetyCopy: safetyDir ?? null,
-  };
-  writeFileSync(join(targetPath, 'restore-report.json'), stableJsonStringify(report));
   return report;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const report = await runRestore({ ...args, env: process.env });
+  // The restoring deployment's environment is what lets restore check coverage,
+  // organization and signatures against the deployment it restores. Without
+  // it, restore can only judge the backup by its own (unsigned) manifest.
+  if (process.env.AOC_ENTERPRISE_PERSISTENCE_PROVIDER !== 'sqlite' && args.noTargetCheck !== true) {
+    throw new Error('Run restore:v1 with the restoring deployment\'s environment (AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite and its *_SQLITE_PATH, governed-action file and verification keys), or pass --no-target-check to restore against the backup\'s own record only.');
+  }
+  const { noTargetCheck: _noTargetCheck, ...options } = args;
+  const report = await runRestore({ ...options, env: process.env });
+  if (!report.targetCoverageChecked) console.log('WARNING: the restoring deployment was not checked (--no-target-check): coverage was judged against the backup\'s own record only.');
   console.log(`Restore of backup '${report.backupId}' into ${report.targetPath}: ${report.status}${report.coverage.complete ? '' : ' -- INCOMPLETE'}`);
   console.log('Point the Host at the restored stores:');
   for (const entry of report.targets) console.log(`  ${entry.envVar}=${entry.path}`);

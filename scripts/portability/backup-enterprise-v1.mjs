@@ -201,8 +201,12 @@ export async function runBackup({ output, force = false, cold = false, allowMiss
     const sourcePath = resolve(configuredPath);
     const required = conditionHolds(storeDef.condition, requirements);
     const named = typeof env[storeDef.envVar] === 'string' && env[storeDef.envVar] !== '';
-    const present = (required || named) && existsSync(sourcePath);
-    return { storeDef, configuredPath, sourcePath, required, present };
+    const onDisk = existsSync(sourcePath);
+    const present = (required || named) && onDisk;
+    // Neither required nor named, yet a file sits at its default path: not
+    // backed up, but never silently -- the manifest and the report say so.
+    const unclaimed = !required && !named && onDisk;
+    return { storeDef, configuredPath, sourcePath, required, present, unclaimed };
   });
 
   for (const entry of plan) {
@@ -254,9 +258,9 @@ export async function runBackup({ output, force = false, cold = false, allowMiss
           envVar: storeDef.envVar,
           condition: storeDef.condition,
           required,
-          present: false,
+          present: entry.unclaimed,
           included: false,
-          status: required ? 'missing-allowed' : 'not-configured',
+          status: required ? 'missing-allowed' : entry.unclaimed ? 'present-not-configured' : 'not-configured',
         });
         continue;
       }
@@ -436,6 +440,9 @@ export async function runBackup({ output, force = false, cold = false, allowMiss
       consistency: manifest.consistency.mode,
       stores: storeEntries.map((s) => ({ name: s.name, schemaVersion: s.schemaVersion, checksum: s.checksum, sizeBytes: s.sizeBytes, recordCount: s.recordCount })),
       notIncluded: coverageStores.filter((c) => !c.included).map((c) => ({ name: c.name, status: c.status })),
+      warnings: coverageStores
+        .filter((c) => c.status === 'present-not-configured')
+        .map((c) => `A '${c.name}' database exists at its default path but ${c.envVar} is not set and this deployment does not require it: NOT backed up. If an embedder composes it, set ${c.envVar} explicitly.`),
       excludedSecrets: secretEnvironmentVariables,
       startedAt,
       finishedAt,
@@ -453,6 +460,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const report = await runBackup(args);
   console.log(`Backup '${report.backupId}' written to ${report.outputPath}${report.coverageComplete ? '' : ' -- INCOMPLETE (missing stores were allowed)'}`);
+  for (const warning of report.warnings) console.log(`WARNING: ${warning}`);
   console.log(JSON.stringify(report, null, 2));
 }
 

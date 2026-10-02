@@ -10,7 +10,7 @@
 // second canonicalization -- see AOC_ENTERPRISE_V1_PORTABILITY_CURRENT_STATE.md.
 
 import { createHash } from 'node:crypto';
-import { readFileSync, existsSync, statSync, lstatSync, mkdirSync, readdirSync, rmSync, renameSync, mkdtempSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, lstatSync, mkdirSync, readdirSync, rmSync, renameSync, mkdtempSync, realpathSync } from 'node:fs';
 import { resolve, join, dirname, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -75,10 +75,28 @@ export function stableJsonStringify(value) {
   return `${JSON.stringify(sortKeysDeep(value), null, 2)}\n`;
 }
 
+/**
+ * The real location of `path`: symlinks in its nearest existing ancestor are
+ * resolved, the not-yet-existing remainder appended. Overlap is judged on where
+ * files actually live, never on how a path is spelled.
+ */
+export function realResolve(path) {
+  let current = resolve(path);
+  const rest = [];
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) break;
+    rest.unshift(current.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
+    current = parent;
+  }
+  const base = existsSync(current) ? realpathSync(current) : current;
+  return rest.length === 0 ? base : join(base, ...rest);
+}
+
 /** Resolves an absolute path and asserts it does not sit inside `ancestorPath` (or vice versa) -- guards against a backup destination recursing into a source store directory, or a restore target escaping via `..` (Phase 7/8 path-traversal requirements). */
 export function assertNoPathOverlap(pathA, pathB, description) {
-  const a = resolve(pathA);
-  const b = resolve(pathB);
+  const a = realResolve(pathA);
+  const b = realResolve(pathB);
   if (a === b) throw new Error(`${description}: paths must not be identical (${a}).`);
   const aWithSep = `${a}${sep}`;
   const bWithSep = `${b}${sep}`;

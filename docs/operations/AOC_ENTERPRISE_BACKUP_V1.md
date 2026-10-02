@@ -47,8 +47,10 @@ parsed refuses the backup — the required stores would be unknowable.
 
 A store that is **not required** is read only when its variable is explicitly
 set **and** its file exists (an embedder's P12 store, for example). A default
-path that merely happens to exist is never swept in: it is not this
-deployment's state.
+path that merely happens to exist is never swept in — it is not this
+deployment's state — but never silently either: it is recorded as
+`present-not-configured` and the command prints a warning naming the variable
+to set if an embedder does compose it.
 
 **Deliberately excluded** (`EXCLUDED_DURABLE_STATE` in the registry): the
 CORE-07 freshness witness's database and receipt key (a different restore

@@ -121,7 +121,9 @@ test('a store file at a default path the deployment neither requires nor names i
     const report = await runBackup({ output: join(root, 'backup'), env: backupEnvFor(join(root, 'pre')) });
     assert.deepEqual(report.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'kernel-authority']);
     const manifest = JSON.parse(readFileSync(join(root, 'backup', 'backup-manifest.json'), 'utf8'));
-    assert.equal(manifest.coverage.stores.find((s) => s.name === 'authority-event-stream').status, 'not-configured');
+    assert.equal(manifest.coverage.stores.find((s) => s.name === 'authority-event-stream').status, 'present-not-configured', 'skipped, but never silently');
+    assert.equal(report.warnings.length, 1);
+    assert.match(report.warnings[0], /authority-event-stream.*NOT backed up/);
   } finally {
     process.chdir(original);
     rmSync(root, { recursive: true, force: true });

@@ -144,7 +144,10 @@ test('restore never opens (and so never creates) a store it did not just copy an
   assert.ok(deep.indexOf('copyFileSync(join(stagingDir, storeDef.targetFilename), scratchFile)') < deep.indexOf('storeDef.open('), 'the scratch copy is made from the verified staged file before it is opened');
   assert.equal(/createSqlite[A-Za-z]*\(/.test(restore), false, 'restore reaches store factories only through the registry');
   // Target files are only ever produced by renaming a verified staged file into place.
-  const promotion = restore.slice(restore.indexOf('// 6. promotion. From here on'), restore.indexOf('const finishedAt'));
+  const promotion = restore.slice(restore.indexOf('// 6. promotion. From here on'), restore.indexOf('const rollbackProblems'));
   assert.ok(promotion.length > 200, 'the promotion section was found');
-  assert.equal(/copyFileSync|cpSync|writeFileSync/.test(promotion), false, 'promotion only renames verified staged files into place');
+  assert.equal(/copyFileSync|cpSync/.test(promotion), false, 'promotion only renames verified staged files into place');
+  const writes = [...promotion.matchAll(/writeFileSync\(([A-Za-z]+),[^;]*;/g)];
+  assert.deepEqual(writes.map((match) => match[1]), ['markerPath', 'reportPath'], 'the only files written are the in-progress marker and the report');
+  for (const match of writes) assert.match(match[0], /flag: 'wx'/, `${match[1]} is created exclusively, never written through an existing file or link`);
 });

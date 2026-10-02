@@ -16,7 +16,10 @@ npm run restore:v1 -- --backup <backup-directory> --target <target-directory> \
 
 Run it **with the restoring deployment's environment** (the CLI passes
 `process.env`): that is how restore knows which stores the deployment needs,
-which organization it serves, and which public authority keys it trusts.
+which organization it serves, and which public authority keys it trusts. The
+CLI refuses to run without a `sqlite` deployment environment unless
+`--no-target-check` is passed; a secure-profile environment
+(`production`/`staging`) must supply its trusted verification keys.
 
 - `--target <dir>` — restored files are written under the registry's target
   names, which are the Host's own default basenames (`enterprise-host.sqlite`,
@@ -29,6 +32,9 @@ which organization it serves, and which public authority keys it trusts.
   every required store. The missing store is **not created**.
 - `--allow-legacy-backup` — accept a pre-PROD-02 backup (no coverage record)
   explicitly; it is reported as `coverage.model: legacy, complete: false`.
+- `--no-target-check` — restore against the backup's own record only. Backups
+  are checksummed, not signed, so a consistently forged manifest cannot be
+  caught this way; the report says `targetCoverageChecked: false`.
 
 Requires `npm run build`.
 
@@ -68,7 +74,7 @@ Requires `npm run build`.
 
 | Backup | Result |
 |---|---|
-| PROD-02 manifest, every store its own recorded deployment composes is included (re-derived with this build's rules, not trusted from the producer) and every store the restoring deployment requires is included | **restored** |
+| PROD-02 manifest with strictly typed deployment flags and every registry store recorded once; every store its recorded deployment composes is included (the rules are this build's, re-applied — the flags are the producer's record), nothing it records as required is absent, and every store the restoring deployment requires is included | **restored** |
 | a required store is missing (from either point of view), or the manifest claims `complete` while omitting a store | **refused** — `--allow-incomplete` restores the rest and creates nothing for the missing store |
 | unknown (newer) coverage model | **refused** |
 | pre-PROD-02 (no `coverage`) | **refused** — `--allow-legacy-backup` restores it as `legacy`, incomplete; still refused if the restoring deployment requires a store it lacks, unless `--allow-incomplete` too |
@@ -82,8 +88,14 @@ exist only for forensics.
 
 ## Replacement and rollback
 
+- Target paths are examined with `lstat`: a symlink at any store path,
+  sidecar or the report — even a dangling one — is refused, and overlap with
+  the backup is judged on real paths. Staging and safety directories get
+  unpredictable names; the report and an in-progress marker
+  (`.restore-in-progress`) are created exclusively.
 - Every registry-managed file already in the target — **including stores the
-  backup does not contain, and every `-wal`/`-shm` sidecar** — is moved (not
+  backup does not contain, every `-wal`/`-shm` sidecar, and the previous
+  `restore-report.json`** — is moved (not
   copied) into `<target>/.pre-restore-safety-<backupId>-<time>/` first, so the
   restored target is exactly the backup set, never a hybrid with a stale file
   or a foreign WAL.
@@ -101,9 +113,11 @@ procedural — stage, verify, move aside, promote, verify, roll back on any
 failure — and is qualified with failures injected after the 1st, 6th and last
 store and in post-promotion verification
 (`prod02-backup-integrity-host.test.ts`). An external `SIGKILL` mid-promotion
-can still leave a mixed target; the safety directory and staging directory
-then hold both sides, and re-running `restore:v1 --force` from the backup
-recovers.
+can still leave a mixed target. It is then **marked**: `.restore-in-progress`
+stays, the next restore refuses the target until an operator has inspected the
+safety and staging directories (both sides are there) and removed the marker
+deliberately, and re-running `restore:v1 --force` recovers. The Host does not
+read the marker — do not start it on a marked target.
 
 ## Freshness witness
 

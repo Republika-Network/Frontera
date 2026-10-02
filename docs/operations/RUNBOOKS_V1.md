@@ -119,7 +119,12 @@ any failure.
    `RESTORE.md` (`BACKUP_RECOVERY_V1.md` §"Key material and secrets"). Make the
    external signer (if used) and the **surviving** freshness witness
    reachable. Do **not** restore the witness from anywhere.
-3. Run `restore:v1`. Set each printed `AOC_ENTERPRISE_*_SQLITE_PATH`.
+3. Run `restore:v1` **in the deployment's environment** (the CLI refuses to run
+   without it unless `--no-target-check`). Set each printed
+   `AOC_ENTERPRISE_*_SQLITE_PATH`. If the target carries `.restore-in-progress`,
+   an earlier restore was interrupted mid-promotion: do not start the Host;
+   inspect the `.pre-restore-safety-*` and `.restore-staging-*` directories,
+   remove the marker deliberately, and restore again with `--force`.
 4. Start the matching build. Outcomes:
    - starts and `/ready` is 200 → continue;
    - `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED` → the backup predates an authority

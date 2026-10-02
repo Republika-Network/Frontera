@@ -327,6 +327,103 @@ describe('PROD-02 restore refuses a damaged or incomplete backup before touching
     });
   }
 
+  it('refuses a deployment flag that is not a boolean (a string "true" must not quietly un-require a store)', async () => {
+    const backup = copyOfSpecimen();
+    const m = manifestOf(backup);
+    assert.ok(m.coverage !== undefined);
+    (m.coverage['deployment'] as Record<string, unknown>)['approvalsDeclared'] = 'true';
+    writeManifest(backup, m);
+    await restoreRejects(backup, /coverage\.deployment\.approvalsDeclared must be a boolean/);
+  });
+
+  it('refuses a backup that records a required store as not included, even when its flags were rewritten and no restoring deployment is given', async () => {
+    const { runRestore } = await portability();
+    const backup = copyOfSpecimen();
+    const m = manifestOf(backup);
+    assert.ok(m.coverage !== undefined);
+    (m.coverage['deployment'] as Record<string, unknown>)['approvalsDeclared'] = false;
+    m.stores = m.stores.filter((store) => store.name !== 'approvals');
+    m.coverage.stores = m.coverage.stores.map((store) => (store.name === 'approvals' ? { ...store, included: false, present: false } : store));
+    unlinkSync(join(backup, 'stores', 'approvals.sqlite'));
+    writeManifest(backup, m);
+    const target = join(tempDir('declared-missing'), 'data');
+    await assert.rejects(() => runRestore({ backup, target }), /records approvals as required but not included/);
+  });
+
+  it('RESIDUAL: a manifest forged consistently (flags and coverage both rewritten) passes only when no restoring deployment is given — and the report says the target was not checked', async () => {
+    const { runRestore } = await portability();
+    const backup = copyOfSpecimen();
+    const m = manifestOf(backup);
+    assert.ok(m.coverage !== undefined);
+    (m.coverage['deployment'] as Record<string, unknown>)['approvalsDeclared'] = false;
+    m.stores = m.stores.filter((store) => store.name !== 'approvals');
+    m.coverage.stores = m.coverage.stores.map((store) => (store.name === 'approvals' ? { ...store, required: false, included: false, present: false, status: 'not-configured' } : store));
+    unlinkSync(join(backup, 'stores', 'approvals.sqlite'));
+    writeManifest(backup, m);
+    const target = join(tempDir('forged'), 'data');
+    // With the restoring deployment's environment the forgery is caught.
+    await assert.rejects(() => runRestore({ backup, target, env: deployment.envFor(target) }), /restoring deployment requires approvals/);
+    const report = await runRestore({ backup, target });
+    assert.equal(report['targetCoverageChecked'], false, 'backups are not signed: without the target environment only the backup\'s own record is judged');
+  });
+
+  it('refuses a PROD-02 manifest that does not name its organization', async () => {
+    const backup = copyOfSpecimen();
+    const m = manifestOf(backup);
+    assert.ok(m.coverage !== undefined);
+    delete (m.coverage['deployment'] as Record<string, unknown>)['organizationId'];
+    writeManifest(backup, m);
+    await restoreRejects(backup, /must name the organization/);
+  });
+
+  it('refuses a legacy backup whose signed stores belong to another organization than the restoring deployment', async () => {
+    const backup = copyOfSpecimen();
+    const m = manifestOf(backup);
+    delete m.coverage;
+    writeManifest(backup, m);
+    await restoreRejects(backup, /is bound to organization 'org-prod02', but the restoring deployment serves 'org-elsewhere'/, { allowLegacyBackup: true }, { AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: 'org-elsewhere' });
+  });
+
+  it('refuses a secure-profile restore that supplies no trusted verification keys', async () => {
+    await restoreRejects(specimen, /supplies no trusted authority verification keys/, {}, { AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: '' });
+  });
+
+  it('refuses a symlink at a target store path, even a dangling one', async () => {
+    const { runRestore } = await portability();
+    const target = join(tempDir('target-link'), 'data');
+    mkdirSync(target, { recursive: true });
+    symlinkSync(join(tempDir('elsewhere'), 'nothing.sqlite'), join(target, 'approvals.sqlite'));
+    await assert.rejects(() => runRestore({ backup: specimen, target, env: deployment.envFor(target), force: true }), /approvals\.sqlite' is a symlink/);
+  });
+
+  it('refuses a target that is a symlink into the backup directory', async () => {
+    const { runRestore } = await portability();
+    const link = join(tempDir('target-into-backup'), 'data');
+    symlinkSync(join(specimen, 'stores'), link);
+    await assert.rejects(() => runRestore({ backup: specimen, target: link, env: deployment.envFor(link) }), /must not be nested|must not be identical/);
+  });
+
+  it('marks the target while promoting; an interrupted restore is refused until an operator has looked', async () => {
+    const { runRestore } = await portability();
+    const target = join(tempDir('marker'), 'data');
+    let seen = false;
+    await runRestore({
+      backup: specimen,
+      target,
+      env: deployment.envFor(target),
+      faultInjection: {
+        afterPromote: () => {
+          seen = existsSync(join(target, '.restore-in-progress'));
+        },
+      },
+    });
+    assert.equal(seen, true, 'the marker exists during promotion');
+    assert.equal(existsSync(join(target, '.restore-in-progress')), false, 'and is gone after success');
+    // Simulate an interruption no code could catch: the marker is left behind.
+    writeFileSync(join(target, '.restore-in-progress'), 'interrupted');
+    await assert.rejects(() => runRestore({ backup: specimen, target, env: deployment.envFor(target), force: true }), /an earlier restore was interrupted/);
+  });
+
   it('refuses a backup of another organization for this deployment', async () => {
     await restoreRejects(specimen, /belongs to organization 'org-prod02', but the restoring deployment serves 'org-elsewhere'/, {}, { AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: 'org-elsewhere' });
   });

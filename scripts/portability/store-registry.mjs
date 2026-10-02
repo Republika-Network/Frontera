@@ -43,7 +43,9 @@ export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
  * - `embedder-reconciliation` — P12 reconciliation, composed only by an
  *   embedder (`executionReconciliation`); the shipped Host has no
  *   configuration that composes it, so it is never *required* from
- *   configuration. Backed up whenever its file exists.
+ *   configuration. Backed up when its variable is set explicitly and its file
+ *   exists; a file at its default path with the variable unset is reported
+ *   (`present-not-configured`), never silently skipped.
  */
 export const STORE_CONDITIONS = Object.freeze([
   'always',
@@ -393,7 +395,9 @@ export class DeploymentRequirementsError extends Error {}
  * parsed refuses, because the stores it would require are then unknowable.
  */
 export function deriveDeploymentRequirements(env, configuration) {
-  const filePath = env.AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE;
+  // Read exactly as the Host reads it: a blank value configures nothing.
+  const rawPath = env.AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE;
+  const filePath = rawPath !== undefined && rawPath.trim().length > 0 ? rawPath : undefined;
   let file;
   let fileDigest = null;
   if (filePath !== undefined && filePath !== '') {
@@ -444,7 +448,8 @@ export function conditionHolds(condition, requirements) {
     case 'approvals-declared':
       return requirements.governedActions === true && requirements.approvalsDeclared === true;
     case 'operators-configured':
-      return requirements.operatorsConfigured === true;
+      // Operators come only from the governed-action file.
+      return requirements.governedActions === true && requirements.operatorsConfigured === true;
     case 'embedder-reconciliation':
       return requirements.executionReconciliation === true;
     default:

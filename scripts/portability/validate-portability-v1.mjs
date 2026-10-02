@@ -157,7 +157,14 @@ export async function runCleanRoomDrill({ keep = false, skipReleaseGate = false 
       return { destroyed: preDir };
     });
 
-    step(steps, 'full-restore', () => run(checkoutDir, 'node', ['scripts/portability/restore-enterprise-v1.mjs', '--backup', backupDir, '--target', postDir]));
+    // Restored with the restoring deployment's environment, so coverage is checked against it.
+    step(steps, 'full-restore', () =>
+      run(checkoutDir, 'node', ['scripts/portability/restore-enterprise-v1.mjs', '--backup', backupDir, '--target', postDir], {
+        AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
+        AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
+        ...storeEnvironmentFor(postDir),
+      }),
+    );
 
     step(steps, 'logical-comparison', () => {
       const output = run(checkoutDir, 'node', [
