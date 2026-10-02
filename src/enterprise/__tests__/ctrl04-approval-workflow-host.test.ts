@@ -530,7 +530,10 @@ describe('CTRL-04 Host — closed command bodies: nothing a request says can nam
     assert.equal(manyReferences.status, 400, manyReferences.text);
     // Beyond the operator plane's body bound, the body is not read at all (the existing bounded reader closes the request).
     const oversized = await command(booted.baseUrl, AUTH.approverA, id(approval), 'approve', { subjectDigest: digestOf(approval), reason: 'x'.repeat(70_000) }).catch(() => undefined);
-    assert.ok(oversized === undefined || oversized.status === 400, oversized?.text);
+    assert.ok(
+      oversized === undefined || oversized.status === 400,
+      oversized?.text ?? 'oversized request must either close the connection or return 400',
+    );
     assert.equal(verdicts(await detail(booted.baseUrl, id(approval))).length, 0);
     // Queries are closed too: no organization can be named.
     assert.equal((await call(booted.baseUrl, 'GET', `${approvalsPath()}?organizationId=${ORG}`, { authorization: AUTH.observer })).status, 400);
