@@ -1,0 +1,1725 @@
+{
+  "format": "frontera.ctrl03.mutation-evidence.v1",
+  "commit": "d4598a28f1b67547d96125aeaa2fb1ca107f2e8d",
+  "runner": "scripted, outside the repository, on a native-Linux git-archive export: apply edits (each find verified to occur exactly once) -> tsc -b -> node --test --test-concurrency=1 --test-reporter=tap <kill set> -> restore original bytes -> SHA-256 compare; then the whole src tree diffed against a fresh git archive of the commit",
+  "killSet": [
+    "dist/src/control-plane-web/__tests__/ctrl03-web-units.test.js",
+    "dist/src/control-plane-web/__tests__/ctrl03-structure.test.js",
+    "dist/src/control-plane-web/__tests__/ctrl03-web-control-plane-host.test.js",
+    "dist/src/control-plane-web/__tests__/ctrl03-web-roles-host.test.js",
+    "dist/src/enterprise/__tests__/ctrl03-activity-evidence-host.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-operator-control-service.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-structure.test.js",
+    "dist/src/enterprise/__tests__/ctrl02-operator-plane-host.test.js",
+    "dist/src/enterprise/__tests__/no-bypass-effect-paths.test.js"
+  ],
+  "baseline": {
+    "compiled": true,
+    "total": 420,
+    "passed": 420,
+    "failed": 0
+  },
+  "srcTreeIdenticalAfterCampaign": true,
+  "totals": {
+    "counted": 40,
+    "killed": 40,
+    "survived": 0
+  },
+  "history": "M13 first form referenced configuration.authentication.operators and did not compile (excluded); the corrected form (configuration.administration.operators) compiled and was killed. M33 changes only the response header: the page meta (which a browser lets override the header) still said same-origin, so it is killed by the header assertion only; M33b changes both — the review blocker as shipped — and is killed by the canonical sign-in and every browser flow after it.",
+  "mutations": [
+    {
+      "id": "M1",
+      "property": "server 403 treated as UI success",
+      "change": "a Host 403 on agent onboarding becomes a success flash and a redirect",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    if (!result.ok) return result.failure.kind === 'unauthenticated' ? failurePage(authed, 'Onboard an agent', result.failure) : page(statusForFailure(result.failure), {}, result.failure);",
+          "replace": "    if (!result.ok) return result.failure.kind === 'unauthorized' ? ((authed.session.flash = 'Agent actor provisioned.'), redirect('/agents')) : result.failure.kind === 'unauthenticated' ? failurePage(authed, 'Onboard an agent', result.failure) : page(statusForFailure(result.failure), {}, result.failure);"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 416,
+        "failed": 4
+      },
+      "killingTests": [
+        {
+          "title": "responder → provision an agent actor (authority.provision): the Host answers 403 OPERATOR_PERMISSION_DENIED and nothing changes",
+          "observed": "Agents — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-responder (responder) Sign out Overview Agents Authority Activity Evidence Governance Profiles Agents Agent actor pro"
+        },
+        {
+          "title": "steward → provision an agent actor (authority.provision): the Host answers 403 OPERATOR_PERMISSION_DENIED and nothing changes",
+          "observed": "Agents — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-steward (profile-steward) Sign out Overview Agents Authority Activity Evidence Governance Profiles Agents Agent actor"
+        },
+        {
+          "title": "observer → provision an agent actor (authority.provision): the Host answers 403 OPERATOR_PERMISSION_DENIED and nothing changes",
+          "observed": "Agents — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-observer (observer) Sign out Overview Agents Authority Activity Evidence Governance Profiles Agents Agent actor provi"
+        },
+        {
+          "title": "a Host 403 is rendered as a refusal — never a success, a redirect or a flash",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "property": "role gate removed (UI permission gating)",
+      "change": "may() answers true for any permission",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/layout.tsx",
+          "find": "  return context.operator.permissions.includes(permission);",
+          "replace": "  return permission.length > 0;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 414,
+        "failed": 6
+      },
+      "killingTests": [
+        {
+          "title": "no role table: no module compares a role name; permission questions are the Host-reported list, asked in one helper",
+          "observed": "The input did not match the regular expression /export function may\\(context: OrganizationContext, permission: string\\): boolean \\{\\s*return context\\.operator\\.permissions\\.includes\\(permission\\);/. Input:"
+        },
+        {
+          "title": "provisioner: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "responder: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "steward: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "observer: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "controls follow the permissions the Host reported — and only those (UX, never authorization)",
+          "observed": "The input was expected to not match the regular expression /data-testid=\"issue-credential\"/. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/layout.tsx",
+          "sha256Before": "e8195697740d966118e03a650691be103bf7d8bf58e02c5eb41d9455afcafe3d",
+          "sha256Restored": "e8195697740d966118e03a650691be103bf7d8bf58e02c5eb41d9455afcafe3d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "property": "direct store/runtime import allowed into the browser app",
+      "change": "the console imports the Kernel-Authority store type",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "import type { IncomingMessage } from 'node:http';",
+          "replace": "import type { IncomingMessage } from 'node:http';\nimport type { KernelAuthorityStore } from '../enterprise/kernel-authority/kernel-authority-store.js';\nexport type ConsoleStoreHandle = KernelAuthorityStore;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "every import is the console’s own, React, a Node server primitive, or one of the two reused presentation components",
+          "observed": "src/control-plane-web/app.tsx must not import '../enterprise/kernel-authority/kernel-authority-store.js'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "property": "one-time credential persisted after the response",
+      "change": "the issued secret is kept in the session flash and shown on the next page",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "        return html(200, <CredentialIssuedPage context={authed.context} csrfToken={authed.csrf} result={issued.body} rotated={false} />);",
+          "replace": "        authed.session.flash = issued.body.bearerCredential ?? undefined;\n        return html(200, <CredentialIssuedPage context={authed.context} csrfToken={authed.csrf} result={issued.body} rotated={false} />);"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "5–7: the credential is generated, its secret shown exactly once, and gone after dismissal, reload and replay",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "no secret in any response but the one reveal, any URL, any cookie, the console log or the Host log",
+          "observed": "exactly one response ever carried the agent secret"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "property": "credential leaked into the detail view URL / history",
+      "change": "the \"continue to the agent\" link carries the secret in its query",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/pages-core.tsx",
+          "find": "  const agentPath = `/agents/${encodeURIComponent(result.actorId)}`;",
+          "replace": "  const agentPath = `/agents/${encodeURIComponent(result.actorId)}${result.bearerCredential !== null ? `?credential=${result.bearerCredential}` : ''}`;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 417,
+        "failed": 3
+      },
+      "killingTests": [
+        {
+          "title": "5–7: the credential is generated, its secret shown exactly once, and gone after dismissal, reload and replay",
+          "observed": "the secret appears exactly once in the issuing page"
+        },
+        {
+          "title": "rotate through the web: confirmation, one reveal, old credential revoked at the Host, never re-shown",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "the one-time secret renders exactly once; a replay renders none",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/pages-core.tsx",
+          "sha256Before": "fe47f7ce6938f274fd9db31892586881841dbde884c2ffece70cb9f6d9345a36",
+          "sha256Restored": "fe47f7ce6938f274fd9db31892586881841dbde884c2ffece70cb9f6d9345a36",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "property": "typed parameter maximum omitted from the provisioning request",
+      "change": "a maximum bound row is dropped from the request",
+      "edits": [
+        {
+          "file": "src/control-plane-web/forms.ts",
+          "find": "        else bounds.push({ dimension, kind: 'maximum', type: 'integer', limit });",
+          "replace": "        else void limit;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 412,
+        "failed": 8
+      },
+      "killingTests": [
+        {
+          "title": "8: the provisioner assigns bounded standing authority — action, resource and a typed replicaCount ≤ 3 — through closed forms",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "9: after a server re-read the console shows the actor, credential metadata, standing authority and the typed bound",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "10: the agent’s real credential on the governed-action API — replicaCount 2 executes, replicaCount 4 is withheld with zero adapter invocations",
+          "observed": "{\"httpStatus\":422,\"status\":\"denied\",\"requestId\":\"aoc.gar:9471066b5be333ba2c6515bbd0bc2e8e\",\"decision\":{\"decisionId\":\"enforcement-decision-a92b7af4-0c62-4e62-a63d-19d40694e70f\",\"evaluationId\":\"gov-evaluation-muq9sdcz-2-rtlml2sj\",\"status\":\"de"
+        },
+        {
+          "title": "14 (before revocation): activity and evidence show only what the Host recorded — the executed decision has a grant and an execution, the withheld one has neither",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "14: the lifecycle activity rows are exactly the recorded transitions, attributed to the operators who made them",
+          "observed": "code: 'ERR_ASSERTION'"
+        },
+        {
+          "title": "bound rows become canonical CORE-03 bounds; a half-filled row is an error, never silently dropped",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "only the spec’s fields reach the request: organization, operator, system, provenance, digest and grant fields in a form are ignored",
+          "observed": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/forms.ts",
+          "sha256Before": "6026216bd8cebcf086b154884d56431af5fc7b2dcb4ef4533efdedf9b8c31e71",
+          "sha256Restored": "6026216bd8cebcf086b154884d56431af5fc7b2dcb4ef4533efdedf9b8c31e71",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "property": "typed parameter maximum widened in UI serialization",
+      "change": "a maximum bound is serialized one higher than typed",
+      "edits": [
+        {
+          "file": "src/control-plane-web/forms.ts",
+          "find": "        else bounds.push({ dimension, kind: 'maximum', type: 'integer', limit });",
+          "replace": "        else bounds.push({ dimension, kind: 'maximum', type: 'integer', limit: limit + 1 });"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 412,
+        "failed": 8
+      },
+      "killingTests": [
+        {
+          "title": "8: the provisioner assigns bounded standing authority — action, resource and a typed replicaCount ≤ 3 — through closed forms",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "9: after a server re-read the console shows the actor, credential metadata, standing authority and the typed bound",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "10: the agent’s real credential on the governed-action API — replicaCount 2 executes, replicaCount 4 is withheld with zero adapter invocations",
+          "observed": "{\"httpStatus\":422,\"status\":\"denied\",\"requestId\":\"aoc.gar:ceb697da004f22a7603fd35007079a6c\",\"decision\":{\"decisionId\":\"enforcement-decision-57963cdf-c1e7-4cbf-9cba-9fbf06b44bcf\",\"evaluationId\":\"gov-evaluation-muq9t0dw-2-v4cj9vgt\",\"status\":\"de"
+        },
+        {
+          "title": "14 (before revocation): activity and evidence show only what the Host recorded — the executed decision has a grant and an execution, the withheld one has neither",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "14: the lifecycle activity rows are exactly the recorded transitions, attributed to the operators who made them",
+          "observed": "code: 'ERR_ASSERTION'"
+        },
+        {
+          "title": "bound rows become canonical CORE-03 bounds; a half-filled row is an error, never silently dropped",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "only the spec’s fields reach the request: organization, operator, system, provenance, digest and grant fields in a form are ignored",
+          "observed": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/forms.ts",
+          "sha256Before": "6026216bd8cebcf086b154884d56431af5fc7b2dcb4ef4533efdedf9b8c31e71",
+          "sha256Restored": "6026216bd8cebcf086b154884d56431af5fc7b2dcb4ef4533efdedf9b8c31e71",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M8",
+      "property": "revocation response not followed by canonical refetch",
+      "change": "an entity revocation renders the write response instead of redirecting to a fresh read",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "        return redirect(`/authority/entities/${enc(third)}/${enc(fourth)}`);",
+          "replace": "        return html(200, <EntityPage context={authed.context} csrfToken={authed.csrf} entity={revoked.body.entity} all={[]} />);"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "re-read after the write"
+        },
+        {
+          "title": "a successful write is followed by a canonical re-read (redirect-after-POST), never rendered from the write response",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M9",
+      "property": "profile promotion treated as unprivileged",
+      "change": "the activate control is shown on inventory.read instead of profile.promote",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/pages-records.tsx",
+          "find": "{promoted && profile.state === 'draft' && may(context, 'profile.promote') ? (",
+          "replace": "{promoted && profile.state === 'draft' && may(context, 'inventory.read') ? ("
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 417,
+        "failed": 3
+      },
+      "killingTests": [
+        {
+          "title": "provisioner: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "responder: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "observer: controls shown exactly per its Host-reported permissions",
+          "observed": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/pages-records.tsx",
+          "sha256Before": "f170dc6b6d189238b9e3707e4b1753ebb6e8f9e72ef4883ae7c3072297618646",
+          "sha256Restored": "f170dc6b6d189238b9e3707e4b1753ebb6e8f9e72ef4883ae7c3072297618646",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M9b",
+      "property": "profile promotion presented as harmless",
+      "change": "the activation warning calls it routine and non-permitting",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "            ? 'Activation is a permitting governance operation. It is not harmless: a less-demanding version relaxes this profile’s requirements for future decisions.'",
+          "replace": "            ? 'Activation is a routine, non-permitting operation.'"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 413,
+        "failed": 7
+      },
+      "killingTests": [
+        {
+          "title": "a profile steward activates the deploy-production catalog version — a permitting operation, deliberately confirmed, at the reviewed digest",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "8: the provisioner assigns bounded standing authority — action, resource and a typed replicaCount ≤ 3 — through closed forms",
+          "observed": "/authority/new/authority-grant?subject=actor-release-owner: Provision authority grant — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-provisioner (provisioner) Sign out Ove"
+        },
+        {
+          "title": "9: after a server re-read the console shows the actor, credential metadata, standing authority and the typed bound",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "10: the agent’s real credential on the governed-action API — replicaCount 2 executes, replicaCount 4 is withheld with zero adapter invocations",
+          "observed": "{\"httpStatus\":400,\"status\":\"rejected\",\"reasonCodes\":[\"GOVERNED_ACTION_INTENT_INVALID\"]}"
+        },
+        {
+          "title": "14 (before revocation): activity and evidence show only what the Host recorded — the executed decision has a grant and an execution, the withheld one has neither",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "14: the lifecycle activity rows are exactly the recorded transitions, attributed to the operators who made them",
+          "observed": "code: 'ERR_ASSERTION'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M10",
+      "property": "fabricated activity row without a canonical source",
+      "change": "a revocation row is emitted from a stray revokedAt on an active entity",
+      "edits": [
+        {
+          "file": "src/control-plane-web/activity.ts",
+          "find": "    if (entity.status === 'revoked') {",
+          "replace": "    if (entity.status === 'revoked' || entity.revokedAt !== null) {"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a missing time or operator is reported missing — never filled in — and revocation is never inferred from a stray field",
+          "observed": "status, not a stray timestamp, says what happened"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/activity.ts",
+          "sha256Before": "d9e7becd3a66dd4a5dc7eeb4e845c1f4743daf9e2abab24f60b32cd865a79572",
+          "sha256Restored": "d9e7becd3a66dd4a5dc7eeb4e845c1f4743daf9e2abab24f60b32cd865a79572",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M10b",
+      "property": "fabricated activity time",
+      "change": "a revocation with no recorded time is given the provisioning time",
+      "edits": [
+        {
+          "file": "src/control-plane-web/activity.ts",
+          "find": "          at: orNull(entity.revokedAt),",
+          "replace": "          at: orNull(entity.revokedAt) ?? entity.provisionedAt,"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a missing time or operator is reported missing — never filled in — and revocation is never inferred from a stray field",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/activity.ts",
+          "sha256Before": "d9e7becd3a66dd4a5dc7eeb4e845c1f4743daf9e2abab24f60b32cd865a79572",
+          "sha256Restored": "d9e7becd3a66dd4a5dc7eeb4e845c1f4743daf9e2abab24f60b32cd865a79572",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "property": "fabricated evidence verification rendered as verified",
+      "change": "\"Integrity verified\" is rendered whatever the store says",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/pages-records.tsx",
+          "find": "        {verification.valid ? (",
+          "replace": "        {verification.valid || verification.failures.length >= 0 ? ("
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "evidence says \"verified\" only when the store’s verification is valid",
+          "observed": "The input was expected to not match the regular expression /Integrity verified/. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/pages-records.tsx",
+          "sha256Before": "f170dc6b6d189238b9e3707e4b1753ebb6e8f9e72ef4883ae7c3072297618646",
+          "sha256Restored": "f170dc6b6d189238b9e3707e4b1753ebb6e8f9e72ef4883ae7c3072297618646",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M12",
+      "property": "agent credential accepted on the operator plane in the web client flow",
+      "change": "a refused fra1. credential still gets a console session",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    if (!organization.ok) {",
+          "replace": "    if (!organization.ok && !credential.startsWith('fra1.')) {"
+        },
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    const session = sessions.create(credential, organization.body.operator.operatorId);",
+          "replace": "    const session = sessions.create(credential, organization.ok ? organization.body.operator.operatorId : 'agent');"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "an unknown credential, an agent credential and an API key are refused; none gets a session",
+          "observed": "fra1.agc-b3f"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M13",
+      "property": "operator credential used as a customer action credential",
+      "change": "customer admission is composed with the operators’ secrets as API keys",
+      "edits": [
+        {
+          "file": "src/enterprise/composition/composition-root.ts",
+          "find": "      apiKeys: configuration.authentication.apiKeys,\n      subjectBindings:",
+          "replace": "      apiKeys: [...configuration.authentication.apiKeys, ...(configuration.administration?.operators ?? []).map((operator) => ({ key: operator.key, organizationId: configuration.kernelAuthority.organizationId }))],\n      subjectBindings:"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "planes stay separate at the Host: an agent credential on the operator plane is 401; an operator credential as a customer is 401",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "customer, legacy, administrator, operator and agent credentials: each refused everywhere but where it belongs",
+          "observed": "{\"error\":{\"code\":\"AUTHORIZATION_FAILED\",\"message\":\"The credential does not identify a customer principal bound to an active actor.\"}}"
+        }
+      ],
+      "history": {
+        "firstForm": {
+          "edits": [
+            {
+              "file": "src/enterprise/composition/composition-root.ts",
+              "find": "      apiKeys: configuration.authentication.apiKeys,\n      subjectBindings:",
+              "replace": "      apiKeys: [...configuration.authentication.apiKeys, ...(configuration.authentication.operators ?? []).map((operator) => ({ key: operator.key, organizationId: configuration.kernelAuthority.organizationId }))],\n      subjectBindings:"
+            }
+          ],
+          "compiles": false,
+          "compileOutput": [
+            "src/enterprise/composition/composition-root.ts(1782,91): error TS2339: Property 'operators' does not exist on type '{ readonly apiKeys: readonly EnterpriseApiKey[]; }'.",
+            "src/enterprise/composition/composition-root.ts(1782,113): error TS7006: Parameter 'operator' implicitly has an 'any' type."
+          ],
+          "counted": false
+        }
+      },
+      "files": [
+        {
+          "file": "src/enterprise/composition/composition-root.ts",
+          "sha256Before": "7a6753935c8ea5e53d9da39c3503856326b9e1ffa7527c28cf6cc69e9dd20ed3",
+          "sha256Restored": "7a6753935c8ea5e53d9da39c3503856326b9e1ffa7527c28cf6cc69e9dd20ed3",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M14",
+      "property": "CTRL-04 approval command accidentally wired",
+      "change": "the Host client gains an approve call",
+      "edits": [
+        {
+          "file": "src/control-plane-web/host-client.ts",
+          "find": "  decisionEvidence(bearer: string, evaluationId: string): Promise<HostResult<DecisionEvidence>>;",
+          "replace": "  decisionEvidence(bearer: string, evaluationId: string): Promise<HostResult<DecisionEvidence>>;\n  approveApproval(bearer: string, requestId: string): Promise<HostResult<DecisionEvidence>>;"
+        },
+        {
+          "file": "src/control-plane-web/host-client.ts",
+          "find": "    decisionEvidence: (bearer, evaluationId) => send('GET', `/api/admin/evidence/decisions/${segment(evaluationId)}`, bearer, shapes.evidence),",
+          "replace": "    decisionEvidence: (bearer, evaluationId) => send('GET', `/api/admin/evidence/decisions/${segment(evaluationId)}`, bearer, shapes.evidence),\n    approveApproval: (bearer, requestId) => send('POST', `/api/admin/approvals/${segment(requestId)}/approve`, bearer, shapes.evidence, {}),"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 411,
+        "failed": 9
+      },
+      "killingTests": [
+        {
+          "title": "no module mints, edits or un-revokes authority: no bounded-grant issuance, no un-revoke, no reactivation route",
+          "observed": "the console writes only through the CTRL-01 / CTRL-02 operator routes"
+        },
+        {
+          "title": "no approval inbox, approve, reject, request-changes, escalate or quorum wiring ships (CTRL-04)",
+          "observed": "src/control-plane-web/host-client.ts"
+        },
+        {
+          "title": "bootstrap: the organization administrator provisions the issuer, trust domain and root issuer through the web forms",
+          "observed": "The input did not match the regular expression /: (provisioned|replayed)\\. The canonical record was re-read from the Host below\\./. Input:"
+        },
+        {
+          "title": "8: the provisioner assigns bounded standing authority — action, resource and a typed replicaCount ≤ 3 — through closed forms",
+          "observed": "/authority/new/authority-grant?subject=actor-release-owner: Provision authority grant — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-provisioner (provisioner) Sign out Ove"
+        },
+        {
+          "title": "9: after a server re-read the console shows the actor, credential metadata, standing authority and the typed bound",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "10: the agent’s real credential on the governed-action API — replicaCount 2 executes, replicaCount 4 is withheld with zero adapter invocations",
+          "observed": "{\"httpStatus\":422,\"status\":\"denied\",\"requestId\":\"aoc.gar:0542f613a2b08c02844680725d070e23\",\"decision\":{\"decisionId\":\"enforcement-decision-78293f42-67f1-4816-bd46-e033f2dfb5b0\",\"evaluationId\":\"gov-evaluation-muq9yg92-2-cak4uu88\",\"status\":\"de"
+        },
+        {
+          "title": "14 (before revocation): activity and evidence show only what the Host recorded — the executed decision has a grant and an execution, the withheld one has neither",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "14: the lifecycle activity rows are exactly the recorded transitions, attributed to the operators who made them",
+          "observed": "code: 'ERR_ASSERTION'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/host-client.ts",
+          "sha256Before": "12914c4e769ec5f9b6ebca142639c935a977a94c779ba7307fa512f6b3b62483",
+          "sha256Restored": "12914c4e769ec5f9b6ebca142639c935a977a94c779ba7307fa512f6b3b62483",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M15",
+      "property": "organization id accepted from browser input",
+      "change": "a form organizationId is copied into the provisioning request",
+      "edits": [
+        {
+          "file": "src/control-plane-web/forms.ts",
+          "find": "  const idempotencyKey = form.text('idempotencyKey');\n  if (idempotencyKey !== '') body['idempotencyKey'] = idempotencyKey;",
+          "replace": "  if (form.text('organizationId') !== '') body['organizationId'] = form.text('organizationId');\n  const idempotencyKey = form.text('idempotencyKey');\n  if (idempotencyKey !== '') body['idempotencyKey'] = idempotencyKey;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "the organization is the Host’s: organization, operator, system and provenance fields smuggled into a form or a query change nothing",
+          "observed": "Provision actor — Frontera Control Plane Frontera Control Plane Organization org-pilot Trust domain trust-domain-pilot Operator ops-provisioner (provisioner) Sign out Overview Agents Authority Activity Evidence Governance Profiles Provision"
+        },
+        {
+          "title": "only the spec’s fields reach the request: organization, operator, system, provenance, digest and grant fields in a form are ignored",
+          "observed": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/forms.ts",
+          "sha256Before": "6026216bd8cebcf086b154884d56431af5fc7b2dcb4ef4533efdedf9b8c31e71",
+          "sha256Restored": "6026216bd8cebcf086b154884d56431af5fc7b2dcb4ef4533efdedf9b8c31e71",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M16",
+      "property": "decision activity readable by a CTRL-01 administrator",
+      "change": "the activity read authorizes authority.inspect instead of inventory.read",
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "      authenticator.authorize(authorizationHeader, 'inventory.read');\n      const filter = validateDecisionActivityQuery(query);",
+          "replace": "      authenticator.authorize(authorizationHeader, 'authority.inspect');\n      const filter = validateDecisionActivityQuery(query);"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 417,
+        "failed": 3
+      },
+      "killingTests": [
+        {
+          "title": "both reads authorize inventory.read before anything else, with an organization-scoped, non-system store context",
+          "observed": "listDecisionActivity authorizes first'"
+        },
+        {
+          "title": "legacy-administrator → listDecisionActivity: 403, body unread, nothing written, nothing logged",
+          "observed": "legacy-administrator must be refused listDecisionActivity'"
+        },
+        {
+          "title": "every CTRL-02 role may read them; a CTRL-01 administrator, an API key, an agent credential and an anonymous caller may not",
+          "observed": "a CTRL-01 administrator gains no CTRL-02/03 read"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "sha256Before": "a0e05d8c5b43e8dde1ae98a79c776fe6e9052912db9148afe689c06bf3a8e525",
+          "sha256Restored": "a0e05d8c5b43e8dde1ae98a79c776fe6e9052912db9148afe689c06bf3a8e525",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M17",
+      "property": "activity/evidence read with a system (cross-organization) context",
+      "change": "the Governance Store context becomes system",
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "  const governanceContext: GovernanceStoreAccessContext = Object.freeze({ system: false, organizationId });",
+          "replace": "  const governanceContext: GovernanceStoreAccessContext = Object.freeze({ system: true });"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "both reads authorize inventory.read before anything else, with an organization-scoped, non-system store context",
+          "observed": "The input did not match the regular expression /const governanceContext: GovernanceStoreAccessContext = Object\\.freeze\\(\\{ system: false, organizationId \\}\\);/. Input:"
+        },
+        {
+          "title": "`system: true` is constructed in exactly one place on the operator plane — after authorization, from the authenticated operator",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "sha256Before": "a0e05d8c5b43e8dde1ae98a79c776fe6e9052912db9148afe689c06bf3a8e525",
+          "sha256Restored": "a0e05d8c5b43e8dde1ae98a79c776fe6e9052912db9148afe689c06bf3a8e525",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M18",
+      "property": "organization accepted in the activity query",
+      "change": "organizationId / tenantId / system become accepted query keys",
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "find": "closedQuery(query, ['actorId', 'status', 'limit', 'cursor', 'decisionId', 'requestId'])",
+          "replace": "closedQuery(query, ['actorId', 'status', 'limit', 'cursor', 'decisionId', 'requestId', 'organizationId', 'tenantId', 'system'])"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "the query is closed: an organization, a tenant or any other key, and malformed values, are refused before the store is read",
+          "observed": "organizationId=org-other"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/enterprise/operator-control/contracts.ts",
+          "sha256Before": "a0036ec10d997825458675468395a48173bbd35e54bd3462791cdb3bb5a5192a",
+          "sha256Restored": "a0036ec10d997825458675468395a48173bbd35e54bd3462791cdb3bb5a5192a",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M19",
+      "property": "evidence verification fabricated at the Host",
+      "change": "the evidence DTO reports valid: true whatever verify returned",
+      "edits": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "find": "          valid: verification.valid,",
+          "replace": "          valid: true,"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a tampered decision record is reported by the store’s verification as invalid — never as verified",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/enterprise/operator-control/service.ts",
+          "sha256Before": "a0e05d8c5b43e8dde1ae98a79c776fe6e9052912db9148afe689c06bf3a8e525",
+          "sha256Restored": "a0e05d8c5b43e8dde1ae98a79c776fe6e9052912db9148afe689c06bf3a8e525",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M20",
+      "property": "CSRF token check removed",
+      "change": "a POST is accepted without the session CSRF token",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    if (!tokensEqual(form.text('csrf'), session.csrfToken)) return { ok: false",
+          "replace": "    if (form.text('csrf') === '__never__' && !tokensEqual(form.text('csrf'), session.csrfToken)) return { ok: false"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "a POST without the session’s CSRF token, from another origin, or with no origin is refused and writes nothing",
+          "observed": "no token"
+        },
+        {
+          "title": "a missing or foreign CSRF token, a cross-origin POST and a POST without an origin are refused before the Host is asked anything",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M21",
+      "property": "Origin check removed",
+      "change": "any Origin is accepted for a state-changing request",
+      "edits": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "find": "  if (typeof origin === 'string') return origin === publicOrigin;",
+          "replace": "  if (typeof origin === 'string') return origin.length > 0;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 417,
+        "failed": 3
+      },
+      "killingTests": [
+        {
+          "title": "a POST without the session’s CSRF token, from another origin, or with no origin is refused and writes nothing",
+          "observed": "cross-origin"
+        },
+        {
+          "title": "a missing or foreign CSRF token, a cross-origin POST and a POST without an origin are refused before the Host is asked anything",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "a POST carrying Origin: null is refused before the Host is asked anything",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "sha256Before": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "sha256Restored": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M22",
+      "property": "session cookie readable by script",
+      "change": "the session cookie loses HttpOnly",
+      "edits": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "find": "    'HttpOnly',",
+          "replace": "    'Priority=High',"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "the session cookie is opaque, HttpOnly, SameSite=Strict; every response carries the security headers",
+          "observed": "The input did not match the regular expression /HttpOnly/. Input:"
+        },
+        {
+          "title": "cookies are HttpOnly and SameSite=Strict, Secure on an HTTPS origin; the CSP allows no script and no framing",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "sha256Before": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "sha256Restored": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M23",
+      "property": "CSP allows inline script",
+      "change": "the CSP gains script-src 'unsafe-inline'",
+      "edits": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "find": "  \"default-src 'none'\",",
+          "replace": "  \"default-src 'none'\",\n  \"script-src 'unsafe-inline'\","
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "no module stores anything in the browser or ships a script",
+          "observed": "the CSP grants no script source'"
+        },
+        {
+          "title": "cookies are HttpOnly and SameSite=Strict, Secure on an HTTPS origin; the CSP allows no script and no framing",
+          "observed": "The input was expected to not match the regular expression /script-src/. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "sha256Before": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "sha256Restored": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M24",
+      "property": "recorded refresh failure shown as not recorded",
+      "change": "every 503 is classified unavailable (recorded:true ignored)",
+      "edits": [
+        {
+          "file": "src/control-plane-web/failures.ts",
+          "find": "  if (status === 503) return { kind: code === 'AUTHORITY_STATE_REFRESH_FAILED' && recorded === true ? 'recorded-refresh-failed' : 'unavailable', ...base };",
+          "replace": "  if (status === 503) return { kind: 'unavailable', ...base };"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "only an explicit recorded:true makes a 503 a recorded write; any other 503 is unknown-for-a-write, never \"unwritten\"",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "a recorded refresh failure is shown as recorded, with the same idempotency key kept for the same-request retry",
+          "observed": "The input did not match the regular expression /The write WAS durably recorded/. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/failures.ts",
+          "sha256Before": "d3f3e205ba86bdd3a6b625fadb916ae48bb7689c958c4ed3fbc77924abb52ba4",
+          "sha256Restored": "d3f3e205ba86bdd3a6b625fadb916ae48bb7689c958c4ed3fbc77924abb52ba4",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M25",
+      "property": "Host client follows redirects",
+      "change": "redirect: 'follow'",
+      "edits": [
+        {
+          "file": "src/control-plane-web/host-client.ts",
+          "find": "        redirect: 'manual',",
+          "replace": "        redirect: 'follow',"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "exactly one module performs network I/O — the Host client — and it holds no state, follows no redirect and logs nothing",
+          "observed": "The input did not match the regular expression /redirect: 'manual'/. Input:"
+        },
+        {
+          "title": "exactly four production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057) and the web control plane’s Host client (EP-067)",
+          "observed": "the console client follows no redirect'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/host-client.ts",
+          "sha256Before": "12914c4e769ec5f9b6ebca142639c935a977a94c779ba7307fa512f6b3b62483",
+          "sha256Restored": "12914c4e769ec5f9b6ebca142639c935a977a94c779ba7307fa512f6b3b62483",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M26",
+      "property": "operator credential logged",
+      "change": "sign-in logs the presented credential",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    const credential = form.raw('credential');",
+          "replace": "    const credential = form.raw('credential');\n    options.logger?.info('console.signin', { credential });"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 418,
+        "failed": 2
+      },
+      "killingTests": [
+        {
+          "title": "no secret in any response but the one reveal, any URL, any cookie, the console log or the Host log",
+          "observed": "no log line carries an operator credential"
+        },
+        {
+          "title": "rotate through the web: confirmation, one reveal, old credential revoked at the Host, never re-shown",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M27",
+      "property": "delegation editor suggests a wider value than the parent",
+      "change": "the delegation form prefills each parent maximum plus one",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "            values[`bound.${row}.value`] = String(bound.kind === 'maximum' ? bound.limit : bound.value);",
+          "replace": "            values[`bound.${row}.value`] = String(bound.kind === 'maximum' ? Number(bound.limit) + 1 : bound.value);"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 413,
+        "failed": 7
+      },
+      "killingTests": [
+        {
+          "title": "8: the provisioner assigns bounded standing authority — action, resource and a typed replicaCount ≤ 3 — through closed forms",
+          "observed": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "9: after a server re-read the console shows the actor, credential metadata, standing authority and the typed bound",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "10: the agent’s real credential on the governed-action API — replicaCount 2 executes, replicaCount 4 is withheld with zero adapter invocations",
+          "observed": "{\"httpStatus\":422,\"status\":\"denied\",\"requestId\":\"aoc.gar:e491cd97a325a122e76cdd5ac7e60283\",\"decision\":{\"decisionId\":\"enforcement-decision-a90f5098-55c4-41d1-a133-b2f20b6431cd\",\"evaluationId\":\"gov-evaluation-muqa78oc-2-nre4fzkd\",\"status\":\"de"
+        },
+        {
+          "title": "14 (before revocation): activity and evidence show only what the Host recorded — the executed decision has a grant and an execution, the withheld one has neither",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "14: the lifecycle activity rows are exactly the recorded transitions, attributed to the operators who made them",
+          "observed": "code: 'ERR_ASSERTION'"
+        },
+        {
+          "title": "a delegation form restates every parent bound — five bounds render five prefilled rows, none dropped",
+          "observed": "row 0'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M28",
+      "property": "partially onboarded agent rendered as complete",
+      "change": "the standing-authority stage always renders assigned",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/pages-agents.tsx",
+          "find": "    ['Standing authority assigned', agent.onboarding.standingAuthority === 'assigned', agent.onboarding.standingAuthority],",
+          "replace": "    ['Standing authority assigned', true, 'assigned'],"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "4: an identified provisioner onboards the agent through the web — the actor stage only, shown as such",
+          "observed": "a partially onboarded agent is not shown as complete'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/pages-agents.tsx",
+          "sha256Before": "39c7a0130e51a057db072fcef95ee90a6b83079c312fc395f842e74d2651848b",
+          "sha256Restored": "39c7a0130e51a057db072fcef95ee90a6b83079c312fc395f842e74d2651848b",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M29",
+      "property": "revoked actor rendered as still holding a working credential",
+      "change": "the revoked-actor notice is suppressed",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/pages-agents.tsx",
+          "find": "      {revoked ? (",
+          "replace": "      {revoked && agent.credentials.length < 0 ? ("
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a revoked actor is never shown as holding authority through a still-active credential",
+          "observed": "The input did not match the regular expression /This agent’s actor is revoked\\./. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/pages-agents.tsx",
+          "sha256Before": "39c7a0130e51a057db072fcef95ee90a6b83079c312fc395f842e74d2651848b",
+          "sha256Restored": "39c7a0130e51a057db072fcef95ee90a6b83079c312fc395f842e74d2651848b",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M30",
+      "property": "console decides authorization instead of the Host",
+      "change": "onboarding refuses locally on the reported permission list, never asking the Host",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    if (form.text('type') !== 'agent') return page(400, { type: 'This form onboards agents only.' });",
+          "replace": "    if (!authed.context.operator.permissions.includes('authority.provision')) return page(403, { type: 'Not permitted.' });\n    if (form.text('type') !== 'agent') return page(400, { type: 'This form onboards agents only.' });"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 417,
+        "failed": 3
+      },
+      "killingTests": [
+        {
+          "title": "responder → provision an agent actor (authority.provision): the Host answers 403 OPERATOR_PERMISSION_DENIED and nothing changes",
+          "observed": "the refusal is the Host’s own — the console forwarded the operation'"
+        },
+        {
+          "title": "steward → provision an agent actor (authority.provision): the Host answers 403 OPERATOR_PERMISSION_DENIED and nothing changes",
+          "observed": "the refusal is the Host’s own — the console forwarded the operation'"
+        },
+        {
+          "title": "observer → provision an agent actor (authority.provision): the Host answers 403 OPERATOR_PERMISSION_DENIED and nothing changes",
+          "observed": "the refusal is the Host’s own — the console forwarded the operation'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M31",
+      "property": "session idle expiry removed",
+      "change": "only the absolute lifetime ends a session",
+      "edits": [
+        {
+          "file": "src/control-plane-web/session.ts",
+          "find": "at - session.createdAtMs >= absoluteTtlMs || at - session.lastSeenAtMs >= idleTtlMs || at < session.lastSeenAtMs;",
+          "replace": "at - session.createdAtMs >= absoluteTtlMs || at < session.lastSeenAtMs;"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "absolute and idle expiry, destruction, opaque ids, and a clock moved backwards ends the session",
+          "observed": "idle timeout"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/session.ts",
+          "sha256Before": "43da54aa2456bb06e82168f68351d580b814f028e98e40ad3956e15e455dc60f",
+          "sha256Restored": "43da54aa2456bb06e82168f68351d580b814f028e98e40ad3956e15e455dc60f",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M32",
+      "property": "sign-out does not destroy the server-side session",
+      "change": "logout clears the cookie but keeps the session",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "        sessions.destroy(session.id);\n      }\n      return signedOut('signed-out');",
+          "replace": "      }\n      return signedOut('signed-out');"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "sign-out needs the CSRF token, destroys the server-side session, and the old cookie no longer opens anything",
+          "observed": "the destroyed session opens nothing'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M33",
+      "property": "referrer policy makes real browsers send Origin: null",
+      "change": "the console's referrer policy becomes no-referrer",
+      "edits": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "find": "export const REFERRER_POLICY = 'same-origin';",
+          "replace": "export const REFERRER_POLICY = 'no-referrer';"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "the referrer policy lets a browser send the console’s true Origin on its own form posts — never `null` (no-referrer would make every form look forged)",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "sha256Before": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "sha256Restored": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M33b",
+      "property": "console documents make real browsers send Origin: null (the review blocker, as shipped)",
+      "change": "both the referrer-policy header and the page meta become no-referrer",
+      "edits": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "find": "export const REFERRER_POLICY = 'same-origin';",
+          "replace": "export const REFERRER_POLICY = 'no-referrer';"
+        },
+        {
+          "file": "src/control-plane-web/views/layout.tsx",
+          "find": "<meta name=\"referrer\" content=\"same-origin\" />",
+          "replace": "<meta name=\"referrer\" content=\"no-referrer\" />"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/security.ts",
+          "sha256Before": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "sha256Restored": "5b740dd0867bed7de791d8b56454170f88565d39db2878ec3f8a8784f7ec590d",
+          "restoredByteForByte": true
+        },
+        {
+          "file": "src/control-plane-web/views/layout.tsx",
+          "sha256Before": "e8195697740d966118e03a650691be103bf7d8bf58e02c5eb41d9455afcafe3d",
+          "sha256Restored": "e8195697740d966118e03a650691be103bf7d8bf58e02c5eb41d9455afcafe3d",
+          "restoredByteForByte": true
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 370,
+        "failed": 55
+      },
+      "killingTests": [
+        {
+          "title": "1–3: an operator signs in, sees the server-derived organization and operator context, and the clean inventory",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "bootstrap: the organization administrator provisions the issuer, trust domain and root issuer through the web forms",
+          "observed": "the page http://127.0.0.1:39895/login renders the expected form'"
+        },
+        {
+          "title": "a profile steward activates the deploy-production catalog version — a permitting operation, deliberately confirmed, at the reviewed digest",
+          "observed": "the steward is offered activation'"
+        },
+        {
+          "title": "4: an identified provisioner onboards the agent through the web — the actor stage only, shown as such",
+          "observed": "the page http://127.0.0.1:39895/login renders the expected form'"
+        },
+        {
+          "title": "5–7: the credential is generated, its secret shown exactly once, and gone after dismissal, reload and replay",
+          "observed": "the provisioner is offered credential issuance'"
+        },
+        {
+          "title": "8: the provisioner assigns bounded standing authority — action, resource and a typed replicaCount ≤ 3 — through closed forms",
+          "observed": "the page http://127.0.0.1:39895/login renders the expected form'"
+        },
+        {
+          "title": "9: after a server re-read the console shows the actor, credential metadata, standing authority and the typed bound",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "10: the agent’s real credential on the governed-action API — replicaCount 2 executes, replicaCount 4 is withheld with zero adapter invocations",
+          "observed": "{\"httpStatus\":401,\"error\":{\"code\":\"AUTHENTICATION_FAILED\",\"message\":\"A valid customer credential is required.\"}}"
+        },
+        {
+          "title": "14 (before revocation): activity and evidence show only what the Host recorded — the executed decision has a grant and an execution, the withheld one has neither",
+          "observed": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "11–13: the provisioner revokes the delegation through the web; canonical state is re-read; the agent can no longer execute",
+          "observed": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "14: the lifecycle activity rows are exactly the recorded transitions, attributed to the operators who made them",
+          "observed": "code: 'ERR_ASSERTION'"
+        },
+        {
+          "title": "no secret in any response but the one reveal, any URL, any cookie, the console log or the Host log",
+          "observed": "exactly one response ever carried the agent secret"
+        }
+      ]
+    },
+    {
+      "id": "M34",
+      "property": "failed credential issue loses its idempotency key",
+      "change": "the re-rendered issue form gets a fresh key",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "agentPage(authed, second, { failure: issued.failure, idempotencyKey })",
+          "replace": "agentPage(authed, second, { failure: issued.failure, idempotencyKey: newIdempotencyKey() })"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a failed credential issue shows the failure on the re-read agent page and keeps the same idempotency key for the same-request retry",
+          "observed": "The input did not match the regular expression /name=\"idempotencyKey\" value=\"console-issue-key-0001\"/. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M35",
+      "property": "delegation prefill drops parent bounds",
+      "change": "only the first four parent bounds are prefilled",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "          .slice(0, PARAMETER_BOUND_MAX_ROWS)",
+          "replace": "          .slice(0, 4)"
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a delegation form restates every parent bound — five bounds render five prefilled rows, none dropped",
+          "observed": "row 4'"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M36",
+      "property": "verification overstated over legacy-unprotected references",
+      "change": "the not-covered qualification is never shown",
+      "edits": [
+        {
+          "file": "src/control-plane-web/views/pages-records.tsx",
+          "find": "            {verification.referenceIntegrity.legacyUnprotected > 0 ? (",
+          "replace": "            {verification.referenceIntegrity.legacyUnprotected < 0 ? ("
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a verified record with legacy-unprotected references says those references are not covered",
+          "observed": "The input did not match the regular expression /data-testid=\"unprotected-references\"/. Input:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/views/pages-records.tsx",
+          "sha256Before": "f170dc6b6d189238b9e3707e4b1753ebb6e8f9e72ef4883ae7c3072297618646",
+          "sha256Restored": "f170dc6b6d189238b9e3707e4b1753ebb6e8f9e72ef4883ae7c3072297618646",
+          "restoredByteForByte": true
+        }
+      ]
+    },
+    {
+      "id": "M37",
+      "property": "an earlier session survives a new sign-in",
+      "change": "sign-in no longer ends the earlier session",
+      "edits": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "find": "    sessions.destroy(readCookie(req, SESSION_COOKIE));\n    const session = sessions.create(",
+          "replace": "    const session = sessions.create("
+        }
+      ],
+      "compiles": true,
+      "killed": true,
+      "counted": true,
+      "result": {
+        "total": 420,
+        "passed": 419,
+        "failed": 1
+      },
+      "killingTests": [
+        {
+          "title": "a successful sign-in ends any earlier session of the same browser",
+          "observed": "Expected values to be strictly equal:"
+        }
+      ],
+      "files": [
+        {
+          "file": "src/control-plane-web/app.tsx",
+          "sha256Before": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "sha256Restored": "11d1148ffa5f9a7e8e9e2a8500e7be6549044ef117d18425341a837a34132a7d",
+          "restoredByteForByte": true
+        }
+      ]
+    }
+  ]
+}
