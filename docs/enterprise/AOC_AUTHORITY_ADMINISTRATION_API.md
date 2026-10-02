@@ -583,10 +583,10 @@ approver is the authenticated operator.
 | GET | `/api/admin/approvals` | `approval.read` | `view` = `pending` (default), `escalated`, `approved`, `rejected`, `revoked`, `expired`, `superseded`, `all`; any other key → 400 |
 | GET | `/api/admin/approvals/{approvalRequestId}` | `approval.read` | none accepted |
 | POST | `/api/admin/approvals/{approvalRequestId}/approve` | `approval.approve` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
-| POST | `/api/admin/approvals/{approvalRequestId}/reject` | `approval.restrict` | `{ subjectDigest, reason? }` |
-| POST | `/api/admin/approvals/{approvalRequestId}/request-changes` | `approval.restrict` | `{ subjectDigest, reason? }` |
-| POST | `/api/admin/approvals/{approvalRequestId}/escalate` | `approval.restrict` | `{ subjectDigest, reason }` — the reference is **required** (it is what the Escalated view routes on) |
-| POST | `/api/admin/approvals/{approvalRequestId}/revoke` | `approval.restrict` | `{ subjectDigest, reason? }` |
+| POST | `/api/admin/approvals/{approvalRequestId}/reject` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
+| POST | `/api/admin/approvals/{approvalRequestId}/request-changes` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
+| POST | `/api/admin/approvals/{approvalRequestId}/escalate` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason }` — the reference is **required** (it is what the Escalated view routes on) |
+| POST | `/api/admin/approvals/{approvalRequestId}/revoke` | `approval.restrict` | `{ subjectDigest, evidence?: [{ type, hash, uri? }], reason? }` |
 
 Permissions: `approval.read` — observer, responder, approver, organization
 administrator; `approval.restrict` — responder, approver, organization
@@ -598,7 +598,9 @@ Bodies are closed `application/json` of at most 16 KiB: anything but
 organization, role, state, quorum, proof — even `approvalRequestId`) is refused
 (400). `subjectDigest` is the digest of the subject the operator reviewed
 (`sha256:` + 64 hex); strings ≤ 256 characters; ≤ 32 evidence references, each
-hash `sha256:` + 64 lowercase hex.
+hash `sha256:` + 64 lowercase hex. Every verb accepts the same closed body;
+CORE-05 enforces the requirement's evidence types on `approve` only (references
+on a restrictive verdict are recorded, never required).
 
 ### 12.2 Who may approve
 
