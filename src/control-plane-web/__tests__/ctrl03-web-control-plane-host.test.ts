@@ -321,7 +321,7 @@ describe('CTRL-03 canonical web qualification — the Frontera web control plane
     const entities = (await q.truth('/api/admin/authority/entities')).body['entities'] as unknown[];
     const agents = (await q.truth('/api/admin/agents')).body['agents'] as { credentials: { status: string }[] }[];
     const expected = entities.length + 1 /* one revoked entity */ + agents.flatMap((agent) => agent.credentials).length + 1 /* one activation */;
-    assert.equal([...table.matchAll(/<tr data-transition=/g)].length, expected, 'one row per recorded transition — nothing invented, nothing dropped');
+    assert.equal([...table.matchAll(/\x3ctr data-transition=/g)].length, expected, 'one row per recorded transition — nothing invented, nothing dropped');
   });
 
   it('no secret in any response but the one reveal, any URL, any cookie, the console log or the Host log', () => {
