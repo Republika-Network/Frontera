@@ -269,6 +269,30 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
               return;
           }
         }
+        // -- CTRL-04 approval workflow (operator plane). Mounted only when the Host
+        // composed `operatorApprovals` (operators configured and CORE-05
+        // approvals composed). The service authenticates and authorizes the
+        // operator before any body is read and derives the approval actor from
+        // the authenticated principal — this adapter only routes.
+        const operatorApprovals = enterprise.operatorApprovals;
+        const approvalRoute = operatorApprovals === undefined ? undefined : matchApprovalRoute(method, url.pathname);
+        if (operatorApprovals !== undefined && approvalRoute !== undefined) {
+          const query = Object.fromEntries(url.searchParams.entries());
+          const respond = (promise: Promise<unknown>): void => {
+            promise.then((body) => writeJson(res, 200, body)).catch(fail);
+          };
+          switch (approvalRoute.kind) {
+            case 'approvals':
+              respond(operatorApprovals.listApprovals(auth, query));
+              return;
+            case 'approval':
+              respond(operatorApprovals.inspectApproval(auth, approvalRoute.approvalRequestId, query));
+              return;
+            case 'approval-command':
+              respond(operatorApprovals.command(auth, approvalRoute.verb, approvalRoute.approvalRequestId, administrationBodyReader(req)));
+              return;
+          }
+        }
         const route = matchAdministrationRoute(method, url.pathname);
         if (route !== undefined) {
           const respond = (promise: Promise<unknown>): void => {
@@ -690,6 +714,34 @@ function matchOperatorRoute(method: string, pathname: string): OperatorRoute | u
     const profile = /^\/api\/admin\/governance-profiles\/([^/]+)\/versions\/([^/]+)\/(activate|retire)$/.exec(pathname);
     if (profile?.[1] !== undefined && profile[2] !== undefined) {
       return { kind: 'profile-transition', profileId: decodeURIComponent(profile[1]), version: decodeURIComponent(profile[2]), transition: profile[3] === 'activate' ? 'activate' : 'retire' };
+    }
+  }
+  return undefined;
+}
+
+type ApprovalRoute =
+  | { readonly kind: 'approvals' }
+  | { readonly kind: 'approval'; readonly approvalRequestId: string }
+  | { readonly kind: 'approval-command'; readonly approvalRequestId: string; readonly verb: 'approve' | 'reject' | 'request-changes' | 'escalate' | 'revoke' };
+
+/**
+ * CTRL-04 approval routes. Reads are `GET`; each verdict is a `POST` to its own
+ * explicit verb path (so the one permission it needs is known before any body
+ * is read). There is deliberately no route that un-rejects, un-revokes,
+ * restores, deletes or executes, and none that names an approver or an
+ * organization.
+ */
+function matchApprovalRoute(method: string, pathname: string): ApprovalRoute | undefined {
+  if (method === 'GET') {
+    if (/^\/api\/admin\/approvals$/.exec(pathname) !== null) return { kind: 'approvals' };
+    const approval = /^\/api\/admin\/approvals\/([^/]+)$/.exec(pathname);
+    if (approval?.[1] !== undefined) return { kind: 'approval', approvalRequestId: decodeURIComponent(approval[1]) };
+    return undefined;
+  }
+  if (method === 'POST') {
+    const command = /^\/api\/admin\/approvals\/([^/]+)\/(approve|reject|request-changes|escalate|revoke)$/.exec(pathname);
+    if (command?.[1] !== undefined && command[2] !== undefined) {
+      return { kind: 'approval-command', approvalRequestId: decodeURIComponent(command[1]), verb: command[2] as 'approve' | 'reject' | 'request-changes' | 'escalate' | 'revoke' };
     }
   }
   return undefined;

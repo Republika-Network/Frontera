@@ -94,7 +94,8 @@ describe('CORE-05 structure — no writable bypass, no caller-named proof, no ro
     const surface = /approvals: Object\.freeze<ApprovalCommandPort>\(\{[\s\S]*?\}\),/.exec(root)?.[0] ?? '';
     assert.ok(surface.length > 0);
     const keys = [...surface.matchAll(/^\s+(\w+): \(/gm)].map((match) => match[1]).sort();
-    assert.deepEqual(keys, ['approve', 'describe', 'escalate', 'pending', 'reject', 'requestChanges', 'revoke']);
+    // CTRL-04 added one read (`list`: every canonical request, every derived state) — still no store, append or writer.
+    assert.deepEqual(keys, ['approve', 'describe', 'escalate', 'list', 'pending', 'reject', 'requestChanges', 'revoke']);
     // The orchestrator receives assess only.
     assert.match(root, /approvals: \{ assess: \(input\) => approvalAuthority\.assess\(input\) \}/);
   });

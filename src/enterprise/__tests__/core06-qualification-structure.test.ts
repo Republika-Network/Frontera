@@ -304,8 +304,13 @@ describe('CORE-06 §25 — the HTTP surface exposes no issue, provision, un-revo
     const routeText = [...adapter.matchAll(/(?:pathname\s*===\s*'([^']+)'|\/\^(\\\/api[^/]*?(?:\\\/[^\s]*?)?)\$\/)/g)].map((match) => match[1] ?? match[2] ?? '');
     assert.ok(routeText.length >= 20, `the route table is measured (${routeText.length} routes)`);
     const forbidden = /debug|force|bypass|reset|override|impersonat|unrevoke|un-revoke|provision|issue|approv|discharge|freshness|witness|sign(?:er)?\b|enroll|grants\\\/[^\\]*\\\/(?:exercise|activate)/i;
-    const offending = routeText.filter((route) => forbidden.test(route));
+    // CTRL-04 deliberately added the operator plane's approval routes (the human side of CORE-05): two reads and
+    // five explicit verdict paths, authorized per operator permission, deciding nothing themselves. Exactly these
+    // three patterns are exempt from the `approv` verb; every other forbidden verb, and any other approval route, still fails.
+    const CTRL04_APPROVAL_ROUTES = new Set(['\\/api\\/admin\\/approvals', '\\/api\\/admin\\/approvals\\/([^/]+)', '\\/api\\/admin\\/approvals\\/([^/]+)\\/(approve|reject|request-changes|escalate|revoke)']);
+    const offending = routeText.filter((route) => forbidden.test(CTRL04_APPROVAL_ROUTES.has(route) ? route.replace(/approv/g, '') : route));
     assert.deepEqual(offending, []);
+    assert.deepEqual(routeText.filter((route) => /approv/.test(route)).sort(), [...CTRL04_APPROVAL_ROUTES].sort(), 'the only approval routes are CTRL-04’s');
   });
 
   it('the administration mutations are exactly: grant revoke, entity revoke, emergency activate, emergency release', () => {

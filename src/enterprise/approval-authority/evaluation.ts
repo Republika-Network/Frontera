@@ -57,6 +57,12 @@ export interface ApprovalVerdictView {
   readonly counted: boolean;
   /** approval-runtime's reason code for the verdict, as judged now. */
   readonly reasonCode: string;
+  /** The authentication channel the row records (`recordedBy`). Presentation only: never interpreted. */
+  readonly recordedBy: string;
+  /** The opaque note the row records, when it has one (an escalation reference, a rejection reason). Presentation only: never interpreted. */
+  readonly reason?: string;
+  /** The evidence references the row records — exactly the hashed references inside its digest. Presentation only: what counts is judged above. */
+  readonly evidence: readonly ApprovalEvidenceReference[];
 }
 
 export interface ApprovalEvaluation {
@@ -288,7 +294,17 @@ export function evaluateApproval(input: EvaluateApprovalInput): ApprovalEvaluati
     const actorId = row.actorId;
     if (actorId === undefined) continue;
     const view = (counted: boolean, reasonCode: string): void => {
-      verdicts.push({ kind: row.kind, actorId, recordedAt: row.recordedAt, rowDigest: row.digest, counted, reasonCode });
+      verdicts.push({
+        kind: row.kind,
+        actorId,
+        recordedAt: row.recordedAt,
+        rowDigest: row.digest,
+        counted,
+        reasonCode,
+        recordedBy: row.recordedBy,
+        ...(row.reason !== undefined ? { reason: row.reason } : {}),
+        evidence: evidenceArtifacts(row, actorId).map((artifact) => ({ type: artifact.type, hash: artifact.hash ?? artifact.id, ...(artifact.uri !== undefined ? { uri: artifact.uri } : {}) })),
+      });
     };
 
     // Restrictive and final (see above): a revocation closes a pending or an
