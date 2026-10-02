@@ -396,6 +396,40 @@ describe('PROD-02 restore refuses a damaged or incomplete backup before touching
     await assert.rejects(() => runRestore({ backup: specimen, target, env: deployment.envFor(target), force: true }), /approvals\.sqlite' is a symlink/);
   });
 
+  it('refuses a symlinked sidecar or report in the target', async () => {
+    const { runRestore } = await portability();
+    for (const name of ['approvals.sqlite-wal', 'restore-report.json']) {
+      const target = join(tempDir('target-link-side'), 'data');
+      mkdirSync(target, { recursive: true });
+      const victim = join(tempDir('victim'), 'victim.txt');
+      writeFileSync(victim, 'untouched');
+      symlinkSync(victim, join(target, name));
+      await assert.rejects(() => runRestore({ backup: specimen, target, env: deployment.envFor(target), force: true }), /is a symlink/, name);
+      assert.equal(readFileSync(victim, 'utf8'), 'untouched', `${name}: nothing was written through the link`);
+    }
+  });
+
+  it('refuses a target that changed while the backup was being verified, and leaves the newcomer alone', async () => {
+    const { runRestore } = await portability();
+    const target = join(tempDir('changed'), 'data');
+    await runRestore({ backup: specimen, target, env: deployment.envFor(target) });
+    const before = sha256(join(target, 'approvals.sqlite'));
+    await assert.rejects(
+      () =>
+        runRestore({
+          backup: specimen,
+          target,
+          env: deployment.envFor(target),
+          force: true,
+          faultInjection: { afterStage: () => writeFileSync(join(target, 'approvals.sqlite-wal'), 'a running Host') },
+        }),
+      /The target changed while the backup was being verified/,
+    );
+    assert.equal(sha256(join(target, 'approvals.sqlite')), before);
+    assert.equal(readFileSync(join(target, 'approvals.sqlite-wal'), 'utf8'), 'a running Host');
+    assert.deepEqual(readdirSync(target).filter((name) => name.startsWith('.')), [], 'no marker, staging or safety directory left');
+  });
+
   it('refuses a target that is a symlink into the backup directory', async () => {
     const { runRestore } = await portability();
     const link = join(tempDir('target-into-backup'), 'data');
@@ -573,6 +607,7 @@ describe('PROD-02 restore replacement: exactly the old state or exactly the new 
       /Post-restore checksum mismatch for store 'control-plane'/,
     );
     assert.deepEqual(stateOf(target), before);
+    assert.deepEqual(readdirSync(target).filter((name) => name.startsWith('.')), [], 'no marker, staging or safety directory left');
   });
 
   it('a failure in post-promotion verification rolls back too', async () => {
@@ -596,6 +631,7 @@ describe('PROD-02 restore replacement: exactly the old state or exactly the new 
       /injected verification failure/,
     );
     assert.deepEqual(stateOf(target), before);
+    assert.deepEqual(readdirSync(target).filter((name) => name.startsWith('.')), [], 'no marker, staging or safety directory left');
   });
 
   it('a successful --force restore leaves exactly the backup set: stale managed files and sidecars are moved aside, never mixed in', async () => {

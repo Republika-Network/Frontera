@@ -89,14 +89,16 @@ export function realResolve(path) {
     rest.unshift(current.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
     current = parent;
   }
-  const base = existsSync(current) ? realpathSync(current) : current;
+  const base = existsSync(current) ? realpathSync.native(current) : current;
   return rest.length === 0 ? base : join(base, ...rest);
 }
 
 /** Resolves an absolute path and asserts it does not sit inside `ancestorPath` (or vice versa) -- guards against a backup destination recursing into a source store directory, or a restore target escaping via `..` (Phase 7/8 path-traversal requirements). */
 export function assertNoPathOverlap(pathA, pathB, description) {
-  const a = realResolve(pathA);
-  const b = realResolve(pathB);
+  // Case-insensitive filesystems (Windows, macOS defaults) compare folded.
+  const fold = (path) => (process.platform === 'win32' || process.platform === 'darwin' ? path.toLowerCase() : path);
+  const a = fold(realResolve(pathA));
+  const b = fold(realResolve(pathB));
   if (a === b) throw new Error(`${description}: paths must not be identical (${a}).`);
   const aWithSep = `${a}${sep}`;
   const bWithSep = `${b}${sep}`;

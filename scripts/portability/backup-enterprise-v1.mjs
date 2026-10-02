@@ -140,6 +140,11 @@ ${notIncluded.length > 0 ? `Not included:\n\n${notIncluded}\n` : 'Every store th
 From the repository root of a build at commit \`${manifest.source.commit}\` (or a
 build whose store schema versions match \`metadata/store-versions.json\`):
 
+Run it **in the restoring deployment's environment** (\`AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite\`,
+its store paths, governed-action file and trusted verification keys) -- restore
+checks coverage, organization and signatures against it, and refuses to run
+without it unless \`--no-target-check\` is passed:
+
 \`\`\`bash
 npm run restore:v1 -- --backup <this-directory> --target <fresh-data-directory>
 \`\`\`

@@ -494,6 +494,7 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
   const markerPath = join(targetPath, IN_PROGRESS_MARKER);
   let safetyDir;
   let report;
+  let markerCreated = false;
   const movedAside = [];
   const promoted = [];
   try {
@@ -501,6 +502,13 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
     // marker: an interruption no code can catch (SIGKILL, power loss) leaves
     // it behind, and the next restore refuses until an operator has looked.
     writeFileSync(markerPath, `${manifest.backupId}\n`, { flag: 'wx' });
+    markerCreated = true;
+    // The target must still be exactly what was inspected before staging: a
+    // file or sidecar that appeared meanwhile (a running Host) is refused, never overwritten.
+    const now = STORE_DEFINITIONS.flatMap((storeDef) => databaseFiles(paths[storeDef.name]));
+    if (now.length !== existing.length || now.some((file, index) => file !== existing[index])) {
+      throw new RestoreValidationError('The target changed while the backup was being verified (a store or sidecar appeared or vanished). Is a Host running on it? Stop it and restore again.');
+    }
     if (asideFiles.length > 0) {
       safetyDir = mkdtempSync(join(targetPath, `.pre-restore-safety-${manifest.backupId}-`));
       for (const file of asideFiles) {
@@ -550,8 +558,9 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
       preRestoreSafetyCopy: safetyDir ?? null,
       targetCoverageChecked: targetRequirements !== undefined,
     };
-    writeFileSync(reportPath, stableJsonStringify(report), { flag: 'wx' });
+    // Registered before the write: a partial report from a failed write is removed by the rollback too.
     promoted.push(reportPath);
+    writeFileSync(reportPath, stableJsonStringify(report), { flag: 'wx' });
     faultInjection?.afterVerify?.();
     rmSync(markerPath);
   } catch (error) {
@@ -559,6 +568,8 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
     for (const file of promoted.reverse()) {
       try {
         rmSync(file, { force: true });
+        // A sidecar beside a promoted database is not part of the prior state.
+        for (const sidecar of ['-wal', '-shm', '-journal']) rmSync(`${file}${sidecar}`, { force: true });
       } catch (rollbackError) {
         rollbackProblems.push(`${basename(file)}: ${rollbackError.message}`);
       }
@@ -576,7 +587,8 @@ export async function runRestore({ backup, target, force = false, allowIncomplet
       throw new RestoreValidationError(`Restore failed (${error.message}) AND the rollback did not complete (${rollbackProblems.join('; ')}). The original files remain in '${safetyDir}'. Do not start the Host on this target.`);
     }
     if (safetyDir !== undefined) cleanupDir(safetyDir);
-    rmSync(markerPath, { force: true });
+    // Only this run's own marker: another run's marker is never removed here.
+    if (markerCreated) rmSync(markerPath, { force: true });
     throw error;
   }
   cleanupDir(staging);

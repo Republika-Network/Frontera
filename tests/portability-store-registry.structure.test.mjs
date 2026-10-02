@@ -150,4 +150,6 @@ test('restore never opens (and so never creates) a store it did not just copy an
   const writes = [...promotion.matchAll(/writeFileSync\(([A-Za-z]+),[^;]*;/g)];
   assert.deepEqual(writes.map((match) => match[1]), ['markerPath', 'reportPath'], 'the only files written are the in-progress marker and the report');
   for (const match of writes) assert.match(match[0], /flag: 'wx'/, `${match[1]} is created exclusively, never written through an existing file or link`);
+  assert.ok(promotion.indexOf('promoted.push(reportPath)') < promotion.indexOf('writeFileSync(reportPath'), 'the report is registered for rollback before it is written');
+  assert.match(restore, /if \(markerCreated\) rmSync\(markerPath/, 'a rollback removes only the marker this run created');
 });
