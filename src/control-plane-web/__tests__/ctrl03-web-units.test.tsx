@@ -9,7 +9,7 @@ import { decisionDownstream, lifecycleTransitions } from '../activity.js';
 import { createConsoleApp, statusForFailure } from '../app.js';
 import { classifyHostFailure, FAILURE_GUIDANCE, type HostFailure } from '../failures.js';
 import { buildParameterBounds, buildProvisionRequest, ENTITY_FORM_SPECS, parseStrictInteger } from '../forms.js';
-import type { HostClient, HostResult } from '../host-client.js';
+import { createHostClient, type HostClient, type HostResult } from '../host-client.js';
 import { CONTENT_SECURITY_POLICY, FormFields, securityHeaders, setCookie, SESSION_COOKIE } from '../security.js';
 import { createSessionStore, tokensEqual } from '../session.js';
 import type { AgentView, DecisionEvidence, EntityView, OrganizationContext, ProfileVersion } from '../wire.js';
@@ -477,5 +477,30 @@ describe('CTRL-03 web — the request handler shows the Host’s answer, never i
     ];
     for (const attempt of attempts) assert.equal((await app.handle(attempt)).status, 403);
     assert.deepEqual(calls, []);
+  });
+});
+
+describe('CTRL-03 web — the Host client', () => {
+  it('refuses a dot segment instead of letting URL normalization send the request to another Host route', async () => {
+    const client = createHostClient({ baseUrl: 'http://127.0.0.1:9', timeoutMs: 500 });
+    for (const target of ['.', '..']) {
+      const revoke = await client.revokeEntity('bearer', 'actor', target, 'reason');
+      assert.equal(revoke.ok, false);
+      assert.equal(revoke.ok ? '' : revoke.failure.kind, 'validation');
+      assert.equal(revoke.ok ? 0 : revoke.failure.status, null, 'nothing was sent');
+      const issue = await client.issueCredential('bearer', target, 'key-00000001');
+      assert.equal(issue.ok ? '' : issue.failure.kind, 'validation');
+    }
+  });
+
+  it('an unreachable Host is "unavailable" — unknown for a write, never success', async () => {
+    const client = createHostClient({ baseUrl: 'http://127.0.0.1:9', timeoutMs: 500 });
+    const result = await client.revokeEntity('bearer', 'actor', 'actor-1', 'reason');
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.failure.kind, 'unavailable');
+  });
+
+  it('refuses a Host URL carrying credentials, a query or a fragment', () => {
+    for (const baseUrl of ['http://user:pass@127.0.0.1:1', 'http://127.0.0.1:1/?x=1', 'http://127.0.0.1:1/#f']) assert.throws(() => createHostClient({ baseUrl }));
   });
 });

@@ -75,7 +75,21 @@ export interface HostClient {
   decisionEvidence(bearer: string, evaluationId: string): Promise<HostResult<DecisionEvidence>>;
 }
 
-const segment = (value: string): string => encodeURIComponent(value);
+/**
+ * One path segment. `.` and `..` are refused rather than encoded: a URL parser
+ * resolves them (and their percent-encoded forms) as dot segments, which would
+ * send the request to a different Host route than the one the operator
+ * confirmed.
+ */
+class DotSegmentRefused extends Error {}
+const segment = (value: string): string => {
+  if (value === '.' || value === '..') throw new DotSegmentRefused();
+  return encodeURIComponent(value);
+};
+
+function invalidTarget(): HostFailure {
+  return { kind: 'validation', status: null, code: null, message: 'The target identifier is not a valid path segment. Nothing was sent to the Host.', failure: null, recorded: null };
+}
 
 export function createHostClient(options: HostClientOptions): HostClient {
   const base = new URL(options.baseUrl);
@@ -144,5 +158,19 @@ export function createHostClient(options: HostClientOptions): HostClient {
       send('GET', `/api/admin/activity/decisions${query({ actorId: decisionQuery.actorId, decisionId: decisionQuery.decisionId, requestId: decisionQuery.requestId, status: decisionQuery.status, limit: decisionQuery.limit, cursor: decisionQuery.cursor })}`, bearer, shapes.decisions),
     decisionEvidence: (bearer, evaluationId) => send('GET', `/api/admin/evidence/decisions/${segment(evaluationId)}`, bearer, shapes.evidence),
   };
-  return Object.freeze(client);
+  // Every method builds its path before sending; a refused segment becomes a validation failure, never a request.
+  const guarded = Object.fromEntries(
+    Object.entries(client).map(([name, method]) => [
+      name,
+      (...args: unknown[]): Promise<HostResult<unknown>> => {
+        try {
+          return (method as (...a: unknown[]) => Promise<HostResult<unknown>>)(...args);
+        } catch (error) {
+          if (error instanceof DotSegmentRefused) return Promise.resolve({ ok: false, failure: invalidTarget() });
+          throw error;
+        }
+      },
+    ]),
+  ) as unknown as HostClient;
+  return Object.freeze(guarded);
 }
