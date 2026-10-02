@@ -331,7 +331,7 @@ describe('CTRL-04 web — role visibility is UX; the Host decides every forged r
     assert.equal(noToken.status, 403);
     const anonymous = new Browser(q.consoleOrigin, 'anonymous');
     const unauthenticated = await anonymous.post(`${approvalUrl(approvalRequestId)}/approve`, body(csrf), { origin: q.consoleOrigin });
-    // No session: redirected to sign-in; the Host was never called.
+    // No session: redirected to sign-in, and no verdict is recorded (asserted below).
     assert.equal(unauthenticated.status, 200);
     assert.match(unauthenticated.url, /\/login\?reason=expired$/);
     assert.ok(unauthenticated.html.includes('name="credential"'));
