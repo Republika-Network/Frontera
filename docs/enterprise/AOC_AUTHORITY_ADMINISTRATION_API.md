@@ -650,4 +650,3 @@ and offers one confirmation page per verdict (evidence rows for each required
 type; an explicit confirmation; the subject digest of the page it rendered).
 After every verdict it re-reads the Host; after a refusal it shows the Host's
 reason and the current subject.
-
