@@ -2538,6 +2538,12 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           staticCustomerSubjects: configuration.authentication.apiKeys.flatMap((apiKey) => (apiKey.customerIdentity !== undefined ? [apiKey.customerIdentity.externalSubject] : [])),
           governance,
           ...(options.governanceLifecycle === 'operator-promoted' ? { profileLifecycle: { reload: reloadProfileLifecycle } } : {}),
+          // CTRL-03: the Governance Store's read half only — query, read, verify.
+          governanceRecords: {
+            query: (context, query) => persistence.query(context, query),
+            getByEvaluationId: (context, evaluationId) => persistence.getByEvaluationId(context, evaluationId),
+            verify: (context, evaluationId) => persistence.verify(context, evaluationId),
+          },
         });
 
   // CORE-02: the authenticity boundary this root built, if any — for the
