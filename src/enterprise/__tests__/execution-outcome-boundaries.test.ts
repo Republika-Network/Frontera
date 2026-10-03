@@ -129,6 +129,9 @@ describe('P11 boundaries — who may hold it', () => {
     'src/enterprise/authority-administration/service.ts',
     // P12: the resolution store reuses P11's identifier and instant primitives verbatim.
     'src/enterprise/execution-resolution-store/validation.ts',
+    // ASSURE-01: the trace reads one execution's verified record through the
+    // read-only reader it is handed (a type import only); it prepares and records nothing.
+    'src/enterprise/evidence/trace-builder.ts',
   ]);
 
   it('no other production module imports the execution outcome store', () => {

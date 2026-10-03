@@ -81,6 +81,10 @@ const STREAM_HOLDERS = new Set([
   'src/enterprise/composition/composition-root.ts', // opens/selects the store, hands the reader to operators
   'src/enterprise/modules/authority-event-stream-module.ts', // health only
   'src/enterprise/index.ts', // type-only re-exports
+  // ASSURE-01: reads and verifies one request's stream for the read-only trace —
+  // evidence about evidence; it decides, issues and executes nothing
+  // (`assure01-trace-structure.test.ts`), and nothing authority-bearing reads it.
+  'src/enterprise/evidence/trace-builder.ts',
 ]);
 
 /** The one permitted import of the stream from an authority-bearing module: the write-only recorder, as a type. */

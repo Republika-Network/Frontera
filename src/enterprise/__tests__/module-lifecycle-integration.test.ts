@@ -24,12 +24,14 @@ describe('Soberanía Enterprise Module Lifecycle & Registry (integration via cre
     // PR-004: 'aoc.enterprise.persistence' evolved into the Governance Store module (documented migration).
     // PR-006: 'aoc.enterprise.agent-passport' (Agent Passport Runtime) joined the built-in module set.
     // PR-007: 'aoc.enterprise.assurance' (Assurance Runtime) joined the built-in module set.
+    // ASSURE-01: 'aoc.enterprise.evidence-bundles' (the Evidence Bundle Store's health) joined it.
     assert.deepEqual(
       ids,
       [
         'aoc.enterprise.agent-passport',
         'aoc.enterprise.assurance',
         'aoc.enterprise.events',
+        'aoc.enterprise.evidence-bundles',
         'aoc.enterprise.governance-store',
         'aoc.enterprise.providers',
         'aoc.enterprise.telemetry',

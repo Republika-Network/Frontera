@@ -70,7 +70,8 @@ test('registry entries are complete, unique and closed', () => {
   for (const field of ['name', 'filename', 'envVar', 'targetFilename']) {
     assert.equal(new Set(STORE_DEFINITIONS.map((storeDef) => storeDef[field])).size, STORE_DEFINITIONS.length, `${field} is unique`);
   }
-  assert.equal(STORE_DEFINITIONS.length, 13);
+  // PROD-02: thirteen; ASSURE-01 added the durable Evidence Bundle Store.
+  assert.equal(STORE_DEFINITIONS.length, 14);
   assert.throws(() => conditionHolds('some-new-condition', {}), /Unknown store condition/);
   // The three signed stores carry their head and their witness slot; nothing else claims one.
   assert.deepEqual(

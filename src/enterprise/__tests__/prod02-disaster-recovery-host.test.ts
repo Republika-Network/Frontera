@@ -289,12 +289,12 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       assert.deepEqual(
         manifest.stores.map((store) => store.name),
         registry.STORE_DEFINITIONS.map((storeDef) => storeDef.name),
-        'all thirteen registry stores are in the backup',
+        'every registry store is in the backup (thirteen at PROD-02; fourteen since ASSURE-01 added the Evidence Bundle Store)',
       );
       assert.deepEqual(
         manifest.coverage.stores.filter((store) => store.required).map((store) => store.name).sort(),
         registry.STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'execution-resolutions').map((storeDef) => storeDef.name).sort(),
-        'twelve stores are required by this deployment; P12 is present but never required from configuration',
+        'every store but P12 is required by this deployment (twelve at PROD-02, thirteen since ASSURE-01); P12 is present but never required from configuration',
       );
 
       // ── no secret value, no private key, no witness state in any byte of the backup ──
