@@ -185,6 +185,15 @@ describe('ASSURE-01 durable Evidence Bundle Store', () => {
     await Promise.all([a.store(first, { organizationId: ORG, supersedeActive: true }), b.store(second, { organizationId: ORG, supersedeActive: true })]);
     const active = (await a.listByRequestId(ORG_SCOPE, first.source.requestId)).filter((record) => record.state !== 'SUPERSEDED');
     assert.deepEqual(active.map((record) => record.bundle.bundleId), [second.bundleId], 'the later store superseded the earlier inside its own transaction');
+    // However much history the request has, the active predecessor is found (the newest rows, filtered to this organization and version).
+    const crowded = join(dir(), 'crowded.sqlite');
+    const store = await open(crowded);
+    for (let index = 0; index < EVIDENCE_STORE_LIST_LIMIT + 2; index += 1) await store.store(bundle('AUDITOR'), { organizationId: ORG });
+    const p1 = bundle('PUBLIC');
+    const p2 = bundle('PUBLIC');
+    await store.store(p1, { organizationId: ORG, supersedeActive: true });
+    await store.store(p2, { organizationId: ORG, supersedeActive: true });
+    assert.equal((await store.getByBundleId(ORG_SCOPE, p1.bundleId))?.state, 'SUPERSEDED', 'found past more than a list of history');
     const memory = createInMemoryEvidenceStore();
     const m1 = bundle();
     const m2 = bundle();

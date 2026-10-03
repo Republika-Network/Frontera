@@ -639,3 +639,98 @@ describe('ASSURE-01 review hardening — a recorded fact never passes as progres
     assert.equal(discloseTraceVerification(verification, AUDITOR_DISCLOSURE_POLICY_V2), verification, 'AUDITOR sees every check');
   });
 });
+
+describe('ASSURE-01 second review — read order, degraded stores, summaries and history', () => {
+  it('the event stream is read before every canonical store, and the Governance Record is re-read after it', async () => {
+    const order: string[] = [];
+    const base = sources(executedWorld());
+    const recorded = Object.fromEntries(
+      Object.entries(base).map(([name, source]) => [
+        name,
+        Object.fromEntries(
+          Object.entries(source as Record<string, unknown>).map(([method, value]) => [
+            method,
+            typeof value === 'function' ? (...args: unknown[]) => (order.push(`${name}.${method}`), (value as (...inner: unknown[]) => unknown)(...args)) : value,
+          ]),
+        ),
+      ]),
+    ) as unknown as AuthorityTraceSources;
+    assert.ok((await buildAuthorityTrace(recorded, SYSTEM, REQUEST)) !== null);
+    const firstCanonical = order.findIndex((entry) => !entry.startsWith('events.') && entry !== 'governance.getByRequestId');
+    assert.ok(order.indexOf('events.readStream') >= 0 && order.indexOf('events.readStream') < firstCanonical, order.join(' '));
+    assert.equal(order.filter((entry) => entry === 'governance.getByRequestId').length, 2, 'located, then re-read after the stream');
+    assert.ok(order.lastIndexOf('governance.getByRequestId') > order.indexOf('events.readStream'));
+  });
+
+  it('a fact committed after the stream was read is incomplete evidence, never a sealed contradiction', async () => {
+    const lagging = executedWorld();
+    lagging.events = lagging.events.slice(0, 3);
+    const result = await build(lagging);
+    assert.equal(result.trace.finalState, 'executed-confirmed-completed');
+    assert.deepEqual(failed(result.verification), ['completeness:completeness.event:execution.outcome.observed']);
+    const later = (await build(executedWorld())).trace;
+    assert.equal(compareDisclosedTraces(discloseAuthorityTrace(result.trace, AUDITOR_DISCLOSURE_POLICY_V2), discloseAuthorityTrace(later, AUDITOR_DISCLOSURE_POLICY_V2)).result, 'progressed');
+  });
+
+  it('unverifiable is scoped to the observed path, includes a failed Governance Record, and is never reported as a contradiction', async () => {
+    const denied = executedWorld();
+    denied.status = 'denied';
+    denied.references = [];
+    denied.attempt = undefined;
+    denied.terminal = undefined;
+    denied.grant = undefined;
+    denied.events = denied.events.slice(0, 1);
+    (denied.events[0] as { payload: Record<string, unknown> }).payload = { status: 'denied', reasonCodes: [], evaluatedAt: T, aggregateDigest: AGGREGATE };
+    denied.throwOn = 'approval';
+    assert.equal((await build(denied)).trace.finalState, 'denied', 'an unreadable approval log says nothing about a denial');
+    const tampered = executedWorld();
+    tampered.governanceValid = false;
+    const unverifiable = await build(tampered);
+    assert.equal(unverifiable.trace.finalState, 'unverifiable');
+    const sealed = (await build(executedWorld())).trace;
+    for (const policy of [AUDITOR_DISCLOSURE_POLICY_V2, PUBLIC_DISCLOSURE_POLICY_V2]) {
+      assert.equal(compareDisclosedTraces(discloseAuthorityTrace(sealed, policy), discloseAuthorityTrace(unverifiable.trace, policy)).result, 'unverifiable', policy.policyId);
+    }
+  });
+
+  it('a Governance summary must state what the canonical record states', async () => {
+    const outcome = executedWorld();
+    outcome.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'withheld:grant-exercise:GRANT_EXPIRED', digest: OBSERVATION_DIGEST });
+    assert.ok(failed((await build(outcome)).verification).includes('correlation:correlation.outcome-summary-text'));
+    const resolution = resolvedWorld();
+    resolution.references[3] = ref(executionResolutionReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'resolved:confirmed-not-completed:PROVIDER_REJECTED', digest: RESOLUTION_DIGEST });
+    assert.ok(failed((await build(resolution)).verification).includes('correlation:correlation.resolution-summary-text'));
+    const orphan = executedWorld();
+    orphan.references.push(ref(executionResolutionReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'resolved:confirmed-completed', digest: RESOLUTION_DIGEST }));
+    const orphaned = await build(orphan);
+    assert.equal(orphaned.trace.stages.resolution.presence, 'missing', 'a resolution summary with no canonical resolution is missing, whatever the outcome');
+    assert.ok(failed(orphaned.verification).includes('completeness:completeness.execution-resolution'));
+  });
+
+  it('a malformed pre-P11 withheld summary states no outcome, exactly as the execution ledger replays it', async () => {
+    const legacy = executedWorld();
+    legacy.attempt = undefined;
+    legacy.terminal = undefined;
+    legacy.reservation = undefined;
+    legacy.events = legacy.events.slice(0, 3);
+    legacy.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'withheld:not a reason' });
+    assert.equal((await build(legacy)).trace.finalState, 'claimed-outcome-unrecorded');
+    legacy.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'withheld:GRANT_EXPIRED' });
+    assert.equal((await build(legacy)).trace.finalState, 'withheld-at-exercise', 'the Prompt 3 form (no layer) decodes as grant-exercise');
+  });
+
+  it('the store-wide chain position is not disclosed below AUDITOR; expiry and reservation payloads are checked', async () => {
+    const { trace } = await build(executedWorld());
+    const partner = listDisclosurePoliciesV2().find((policy) => policy.level === 'PARTNER');
+    assert.ok(partner !== undefined);
+    assert.equal((discloseAuthorityTrace(trace, partner).stages.decision as Record<string, unknown>)['chainPosition'], undefined);
+    assert.equal((discloseAuthorityTrace(trace, AUDITOR_DISCLOSURE_POLICY_V2).stages.decision as Record<string, unknown>)['chainPosition'], 7);
+    const expiry = executedWorld();
+    expiry.events.push(event(5, 'grant.expiry.observed', { decisionId: DECISION, boundedGrantId: GRANT }, { expiresAt: '2030-01-01T00:00:00.000Z' }));
+    assert.ok(failed((await build(expiry)).verification).includes(`correlation:correlation.event-expiry-payload:${GRANT}`));
+    const reserved = executedWorld();
+    reserved.reservation = { reservation: { executionId: EXECUTION, boundedGrantId: GRANT, policyDigest: 'sha256:p', authorityBindingDigest: 'sha256:b' }, state: 'settled', terminal: { reason: 'executed' } };
+    reserved.events.push(event(5, 'exercise.reservation.reserved', { decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION, reservationId: RESERVATION }, { policyDigest: 'sha256:other', authorityBindingDigest: 'sha256:b' }));
+    assert.ok(failed((await build(reserved)).verification).includes('correlation:correlation.event-reservation-reserved-payload'));
+  });
+});

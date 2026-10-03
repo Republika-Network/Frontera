@@ -97,12 +97,12 @@ function traceTooLarge(component: string): EvidenceError {
  */
 export async function buildAuthorityTrace(sources: AuthorityTraceSources, context: GovernanceStoreAccessContext, rawRequestId: string): Promise<AuthorityTraceBuild | null> {
   const requestId = validateTraceRequestId(rawRequestId);
-  const record = await sources.governance.getByRequestId(context, requestId);
-  if (record === null) return null;
-  const organizationId = record.request.organizationId;
+  const located = await sources.governance.getByRequestId(context, requestId);
+  if (located === null) return null;
+  const organizationId = located.request.organizationId;
   // A trace is a governed request's: one bound to an organization. Anything
   // else is not a request this surface describes.
-  if (organizationId === undefined || record.request.requestId !== requestId) return null;
+  if (organizationId === undefined || located.request.requestId !== requestId) return null;
   if (!context.system && context.organizationId !== organizationId) return null;
   const scope = { organizationId };
 
@@ -110,6 +110,33 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   const check = (name: string, category: AuthorityTraceCheckCategory, ok: boolean | 'n/a', detail?: string): void => {
     checks.push({ check: name, category, status: ok === 'n/a' ? 'not-applicable' : ok ? 'pass' : 'fail', ...(detail !== undefined ? { detail } : {}) });
   };
+
+  // -- P8 first ----------------------------------------------------------------
+  // Every event is written strictly after the canonical fact it reports. Reading
+  // the stream before any canonical store therefore guarantees that each event
+  // read describes a fact that is already committed when its store is read —
+  // a fact committing mid-build can never seal a false contradiction.
+  const streamId = deriveAuthorityEventStreamId({ organizationId, requestId });
+  let streamVerification: AuthorityEventStreamVerification | undefined;
+  let stream: readonly AuthorityEvent[] = [];
+  let streamReadFailure: string | undefined;
+  if (sources.events !== undefined) {
+    try {
+      streamVerification = await sources.events.verifyStream(scope, streamId);
+      check('integrity.event-stream', 'integrity', streamVerification.valid, streamVerification.valid ? undefined : 'EVENT_STREAM_CHAIN_INVALID');
+      if (streamVerification.eventCount > AUTHORITY_TRACE_LIMITS.maxEvents) throw traceTooLarge('authority events');
+      if (streamVerification.valid) stream = await sources.events.readStream(scope, streamId);
+    } catch (error) {
+      if (error instanceof EvidenceError) throw error;
+      streamReadFailure = failureCode(error);
+      check('integrity.event-stream', 'integrity', false, streamReadFailure);
+    }
+  }
+  // Then the Governance Record again: every canonical read happens after the stream.
+  const record = await sources.governance.getByRequestId(context, requestId);
+  if (record === null || record.request.requestId !== requestId || record.request.organizationId !== organizationId || record.evaluation.evaluationId !== located.evaluation.evaluationId) {
+    throw new EvidenceError('EVIDENCE_STORE_UNAVAILABLE', 'The Governance Record of this request changed identity while its trace was being built.');
+  }
 
   const evaluationId = record.evaluation.evaluationId;
   const decisionId = record.evaluation.decisionId;
@@ -344,6 +371,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   // -- P7 reservation ------------------------------------------------------------
   let reservation: AuthorityTraceReservationStage;
   let expectedReservationId: string | undefined;
+  let reservationView: ExerciseReservationView | undefined;
   if (executionId === undefined) reservation = { presence: 'not-applicable' };
   else if (attempt === undefined) reservation = { presence: execution.attempt?.presence === 'not-composed' ? 'not-composed' : 'not-reached' };
   else if (sources.reservations === undefined) reservation = { presence: 'not-composed' };
@@ -351,6 +379,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     expectedReservationId = exerciseReservationId({ boundedGrantId: attempt.boundedGrantId, executionId });
     try {
       const view = await sources.reservations.read(expectedReservationId);
+      reservationView = view;
       if (view === undefined) reservation = { presence: 'none-recorded', reservationId: expectedReservationId };
       else {
         check('correlation.reservation', 'correlation', view.reservation.executionId === executionId && view.reservation.boundedGrantId === attempt.boundedGrantId);
@@ -388,6 +417,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     const observation = terminal.observation;
     check('correlation.observation-binds-attempt', 'correlation', terminal.executionId === executionId && terminal.organizationId === organizationId && terminal.attemptDigest === attempt?.attemptDigest);
     if (outcomeRef?.digest !== undefined) check('integrity.outcome-summary-digest', 'integrity', outcomeRef.digest === terminal.observationDigest);
+    if (outcomeRef?.externalVersion !== undefined) check('correlation.outcome-summary-text', 'correlation', summaryStates(outcomeRef.externalVersion, observation));
     outcome = {
       presence: 'recorded',
       kind: observation.kind,
@@ -419,7 +449,10 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   let resolutionState: ExecutionResolutionState | undefined;
   const resolutionSummary = resolutionRef?.externalVersion !== undefined ? { governanceSummary: resolutionRef.externalVersion } : {};
   if (executionId === undefined) resolution = { presence: 'not-applicable' };
-  else if (!claimed) resolution = { presence: resolutionRef !== undefined ? 'missing' : 'not-reached' };
+  else if (!claimed) {
+    resolution = { presence: resolutionRef !== undefined ? 'missing' : 'not-reached' };
+    if (resolutionRef !== undefined) check('correlation.resolution-requires-claim', 'correlation', false, 'resolution-summary-without-claim');
+  }
   else if (sources.resolutions === undefined) {
     resolution = { presence: resolutionEligible ? 'not-composed' : 'not-applicable', ...resolutionSummary };
     if (resolutionRef !== undefined) check('completeness.execution-resolution', 'completeness', false, 'resolution-store-not-composed');
@@ -443,9 +476,13 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
       check('correlation.resolution-basis-observation', 'correlation', resolved.basisObservationDigest === terminal?.observationDigest);
       check('correlation.resolution-only-when-uncertain', 'correlation', outcomeReadFailure !== undefined ? 'n/a' : resolutionEligible, resolutionEligible || outcomeReadFailure !== undefined ? undefined : 'resolution-of-a-confirmed-outcome');
       if (resolutionRef?.digest !== undefined) check('integrity.resolution-summary-digest', 'integrity', resolutionRef.digest === resolved.resolutionDigest);
+      if (resolutionRef?.externalVersion !== undefined) {
+        const stated = resolved.certainty === 'confirmed-completed' ? 'resolved:confirmed-completed' : `resolved:confirmed-not-completed:${resolved.failure ?? ''}`;
+        check('correlation.resolution-summary-text', 'correlation', resolutionRef.externalVersion === stated);
+      }
     }
     const presence: AuthorityTracePresence =
-      resolved !== undefined ? 'recorded' : !resolutionEligible ? 'not-applicable' : resolutionRef !== undefined ? 'missing' : 'unresolved';
+      resolved !== undefined ? 'recorded' : resolutionRef !== undefined ? 'missing' : !resolutionEligible ? 'not-applicable' : 'unresolved';
     if (unreadable === undefined && presence === 'missing') check('completeness.execution-resolution', 'completeness', false, 'governance-summary-without-resolution');
     resolution = unreadable ?? {
       presence,
@@ -472,20 +509,8 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   let events: AuthorityTraceEventStage;
   if (sources.events === undefined) events = { presence: 'not-composed', events: [] };
   else {
-    const streamId = deriveAuthorityEventStreamId({ organizationId, requestId });
-    let verification: AuthorityEventStreamVerification | undefined;
-    let stream: readonly AuthorityEvent[] = [];
-    let readFailure: string | undefined;
-    try {
-      verification = await sources.events.verifyStream(scope, streamId);
-      check('integrity.event-stream', 'integrity', verification.valid, verification.valid ? undefined : 'EVENT_STREAM_CHAIN_INVALID');
-      if (verification.eventCount > AUTHORITY_TRACE_LIMITS.maxEvents) throw traceTooLarge('authority events');
-      if (verification.valid) stream = await sources.events.readStream(scope, streamId);
-    } catch (error) {
-      if (error instanceof EvidenceError) throw error;
-      readFailure = failureCode(error);
-      check('integrity.event-stream', 'integrity', false, readFailure);
-    }
+    const verification = streamVerification;
+    const readFailure = streamReadFailure;
     const ordered = [...stream].sort((a, b) => a.sequence - b.sequence);
     const grantSet = new Set(grantIds);
     for (const event of ordered) {
@@ -504,6 +529,11 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
       );
       if (event.eventType === 'governance.decision.committed') {
         check('correlation.event-decision-payload', 'correlation', event.payload.aggregateDigest === record.integrity.aggregateDigest && event.payload.status === path);
+      } else if (event.eventType === 'grant.expiry.observed') {
+        const grant = recordedGrants.find((entry) => entry.grantId === refs.boundedGrantId);
+        check(`correlation.event-expiry-payload:${refs.boundedGrantId ?? ''}`, 'correlation', grant !== undefined && grant.expiresAt === event.payload.expiresAt);
+      } else if (event.eventType === 'exercise.reservation.reserved') {
+        check('correlation.event-reservation-reserved-payload', 'correlation', reservationView !== undefined && reservationView.reservation.policyDigest === event.payload.policyDigest && reservationView.reservation.authorityBindingDigest === event.payload.authorityBindingDigest);
       } else if (event.eventType === 'grant.issued') {
         const grant = recordedGrants.find((entry) => entry.grantId === refs.boundedGrantId);
         check(`correlation.event-grant-payload:${refs.boundedGrantId ?? ''}`, 'correlation', grant !== undefined && grant.grantDigest === event.payload.grantDigest);
@@ -517,15 +547,24 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
             : // The projector attributes an adapter and a provider handle only where it can (a handle only for
               // an executed outcome): what the event states must match; what it omits is not a contradiction.
               (event.payload.adapterId === undefined || event.payload.adapterId === observation.adapterId) &&
+              (event.payload.routedBy === undefined || event.payload.routedBy === observation.routedBy) &&
               (event.payload.providerRef === undefined || event.payload.providerRef === observation.providerRef) &&
               event.payload.failure === (observation.certainty === 'confirmed-not-completed' ? observation.failure : undefined));
         const consistent = (event.payload.outcomeRecorded ? expected === event.payload.status : terminal === undefined || expected === event.payload.status) && detailsAgree;
         check('correlation.event-outcome-payload', 'correlation', consistent);
       } else if (event.eventType === 'execution.outcome.resolved') {
         const resolved = resolutionState?.resolution;
-        check('correlation.event-resolution-payload', 'correlation', resolved?.resolutionDigest === event.payload.resolutionDigest && resolved.certainty === event.payload.certainty && resolved.authorityId === event.payload.authorityId);
+        check(
+          'correlation.event-resolution-payload',
+          'correlation',
+          resolved?.resolutionDigest === event.payload.resolutionDigest &&
+            resolved.certainty === event.payload.certainty &&
+            resolved.authorityId === event.payload.authorityId &&
+            resolved.failure === event.payload.failure &&
+            (event.payload.providerRef === undefined || resolved.providerRef === event.payload.providerRef),
+        );
       } else if (event.eventType === 'exercise.reservation.reconciled') {
-        check('correlation.event-reconciliation-payload', 'correlation', resolutionState?.resolution?.resolutionDigest === event.payload.resolutionDigest);
+        check('correlation.event-reconciliation-payload', 'correlation', resolutionState?.resolution?.resolutionDigest === event.payload.resolutionDigest && resolutionState.resolution.certainty === event.payload.resolution);
       } else if (event.eventType === 'grant.revoked') {
         const grant = recordedGrants.find((entry) => entry.grantId === refs.boundedGrantId);
         check(`correlation.event-revocation-payload:${refs.boundedGrantId ?? ''}`, 'correlation', grant?.revocation !== undefined && grant.revocation.reason === event.payload.reason);
@@ -576,7 +615,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   // A store whose own integrity checks failed leaves the request's end unstatable
   // (and makes checks that depend on it fail as a consequence): unverifiable first.
   const finalState: AuthorityTraceFinalState =
-    outcomeReadFailure !== undefined || approval.presence === 'unreadable'
+    governanceVerification?.valid !== true || (claimed && outcomeReadFailure !== undefined) || (path === 'approval_required' && approval.presence === 'unreadable')
       ? 'unverifiable'
       : correlationFailed
         ? 'inconsistent'
@@ -646,8 +685,9 @@ function finalStateOf(
   if (resolved !== undefined) return resolved.certainty === 'confirmed-completed' ? 'resolved-confirmed-completed' : 'resolved-confirmed-not-completed';
   if (terminal === undefined && legacySummary !== undefined) {
     if (legacySummary === 'executed' || legacySummary.startsWith('executed@')) return 'executed-confirmed-completed';
-    if (legacySummary.startsWith('withheld:')) return 'withheld-at-exercise';
-    if (legacySummary.startsWith('execution-failed:')) return 'executed-confirmed-not-completed';
+    // Decoded as the execution ledger replays it: a malformed row states no outcome.
+    if (/^withheld:((grant-exercise|emergency-control|exercise-control):)?[A-Z0-9_]+(,[A-Z0-9_]+)*$/.test(legacySummary)) return 'withheld-at-exercise';
+    if (/^execution-failed:[A-Z0-9_]+(@.+)?$/.test(legacySummary)) return 'executed-confirmed-not-completed';
     if (legacySummary.startsWith('execution-unconfirmed')) return 'executed-unconfirmed';
     return 'claimed-outcome-unrecorded';
   }
@@ -682,4 +722,13 @@ const AUTHORITY_TRACE_CHECK_CATEGORIES: readonly AuthorityTraceCheckCategory[] =
 
 function canonicalList(list: readonly string[] | undefined): string {
   return JSON.stringify(list ?? []);
+}
+
+/** Whether the Governance outcome summary states exactly what the canonical observation records (the ledger's own encoding). */
+function summaryStates(summary: string, observation: NonNullable<ExecutionOutcomeRecord['terminal']>['observation']): boolean {
+  const body = summary.startsWith('withheld:') ? summary : summary.split('@')[0] ?? summary;
+  if (observation.kind === 'withheld') return body === `withheld:${observation.withheldBy}:${observation.reasonCodes.join(',')}`;
+  if (observation.certainty === 'confirmed-completed') return body === 'executed';
+  if (observation.certainty === 'confirmed-not-completed') return body === `execution-failed:${observation.failure}`;
+  return body === 'execution-unconfirmed';
 }

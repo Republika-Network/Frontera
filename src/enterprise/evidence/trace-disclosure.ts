@@ -261,6 +261,8 @@ function strip(value: unknown, keys: readonly string[]): unknown {
 function withinPolicy(stage: AuthorityTraceStageName, value: unknown, hidden: ReadonlySet<EvidenceFieldKeyV2>): unknown {
   let out = value;
   if (hidden.has('trace.approval')) out = strip(out, PEOPLE_FIELDS);
+  // The Governance chain position is a store-wide counter: below AUDITOR it would disclose other organizations' volume.
+  if (hidden.has('trace.request') && stage === 'decision') out = strip(out, ['chainPosition']);
   if (hidden.has('trace.authority') && (stage === 'outcome' || stage === 'resolution')) {
     out = strip(out, MECHANISM_FIELDS);
     // The Governance summary names the adapter after `@` (`executed@<adapter>`): keep the outcome, drop the mechanism.
@@ -306,8 +308,11 @@ export function disclosedTraceDigest(disclosed: DisclosedAuthorityTrace): string
  *   revoked, more events appended). Freshness, not integrity.
  * - `contradicted` — something the earlier disclosure stated is no longer what
  *   the canonical records say. A recorded fact never changes.
+ * - `unverifiable` — the canonical records cannot be read with integrity now
+ *   (a store failed its own checks): nothing can be said either way, and a
+ *   degraded store is never reported as a contradiction.
  */
-export type TraceComparison = 'matches' | 'progressed' | 'contradicted';
+export type TraceComparison = 'matches' | 'progressed' | 'contradicted' | 'unverifiable';
 
 export interface TraceComparisonResult {
   readonly result: TraceComparison;
@@ -419,6 +424,8 @@ export function compareDisclosedTraces(before: DisclosedAuthorityTrace, after: D
   if (canonical(before.summary) === canonical(after.summary)) stages.summary = 'matches';
   else if (isRecord(before.summary) && isRecord(after.summary) && summaryProgressed(before.summary as unknown as DisclosedAuthorityTraceSummary, after.summary as unknown as DisclosedAuthorityTraceSummary)) stages.summary = 'progressed';
   else stages.summary = 'contradicted';
+  const degraded = (isRecord(after.summary) && after.summary['finalState'] === 'unverifiable') || Object.values(after.stages).some((stage) => isRecord(stage) && stage['presence'] === 'unreadable');
+  if (degraded) return { result: 'unverifiable', stages };
   const values = Object.values(stages);
   const result: TraceComparison = values.includes('contradicted') ? 'contradicted' : values.includes('progressed') ? 'progressed' : 'matches';
   return { result, stages };

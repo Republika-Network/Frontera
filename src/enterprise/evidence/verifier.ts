@@ -255,9 +255,14 @@ function verifyEvidenceBundleV2(bundle: EvidenceBundle, options: VerifyEvidenceB
   const current = options.currentTrace;
   if (current !== undefined && trace !== undefined) {
     comparison = compareDisclosedTraces(trace, current.disclosed);
-    traceConsistent = comparison.result !== 'contradicted';
     freshness = comparison.result === 'matches' ? 'current' : comparison.result === 'progressed' ? 'superseded-by-later-facts' : 'unknown';
-    if (!traceConsistent) failures.push({ check: 'traceConsistent', message: 'The canonical records now contradict a fact this Bundle disclosed.' });
+    if (comparison.result === 'unverifiable') {
+      // A degraded store is not a contradiction: consistency is left unanswered, and the source trace fails below.
+      traceConsistent = undefined;
+    } else {
+      traceConsistent = comparison.result !== 'contradicted';
+      if (!traceConsistent) failures.push({ check: 'traceConsistent', message: 'The canonical records now contradict a fact this Bundle disclosed.' });
+    }
     sourceTraceVerified = current.verification.verified;
     if (!sourceTraceVerified) failures.push({ check: 'sourceTraceVerified', message: 'The canonical trace of this request does not verify now; see sourceTrace.checks.' });
   } else {
@@ -276,7 +281,7 @@ function verifyEvidenceBundleV2(bundle: EvidenceBundle, options: VerifyEvidenceB
       versionSupported: true,
       complete: completeOk,
       traceDigest: traceDigestOk,
-      traceConsistent,
+      ...(traceConsistent !== undefined ? { traceConsistent } : {}),
       ...(sourceTraceVerified !== undefined ? { sourceTraceVerified } : {}),
     },
     verifiedAt: options.now(),

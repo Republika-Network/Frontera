@@ -323,7 +323,7 @@ export async function createSqliteEvidenceStore(dbPath: string, options: CreateS
       throw new EvidenceError('EVIDENCE_BUNDLE_ALREADY_EXISTS', `bundleId '${bundle.bundleId}' was already stored; Bundles are immutable and never overwritten.`);
     }
     // Read under the write lock, so a concurrent build is seen.
-    const active = supersedeActive ? (selectActiveByRequest.all(bundle.source.requestId) as BundleRow[]).map(decode).filter((entry) => isActivePredecessor(entry, bundle, organizationId)).map((entry) => entry.bundle.bundleId) : [];
+    const active = supersedeActive ? (selectActiveByRequest.all(bundle.source.requestId, organizationId ?? null, bundle.bundleVersion) as BundleRow[]).map(decode).filter((entry) => isActivePredecessor(entry, bundle, organizationId)).map((entry) => entry.bundle.bundleId) : [];
     const supersedes = [...new Set([...requested, ...active])];
     const predecessors = supersedes.map((id) => {
       const previous = load(id);
@@ -352,7 +352,10 @@ export async function createSqliteEvidenceStore(dbPath: string, options: CreateS
     return stored;
   });
 
-  const selectActiveByRequest = db.prepare(`SELECT ${COLUMNS} FROM evidence_bundles WHERE request_id = ? AND state != 'SUPERSEDED' ORDER BY sequence ASC LIMIT ${EVIDENCE_STORE_LIST_LIMIT}`);
+  // Active bundles of one request, organization and version: at most one per disclosure policy (five), never a scan of history.
+  const selectActiveByRequest = db.prepare(
+    `SELECT ${COLUMNS} FROM evidence_bundles WHERE request_id = ? AND organization_id IS ? AND bundle_version = ? AND state != 'SUPERSEDED' ORDER BY sequence DESC LIMIT ${EVIDENCE_STORE_LIST_LIMIT}`,
+  );
   const selectAll = db.prepare(`SELECT ${COLUMNS} FROM evidence_bundles ORDER BY sequence ASC`);
   const runVerifyAll = db.transaction(() => (selectAll.all() as BundleRow[]).map(decode).length);
   const runTransition = db.transaction((bundleId: string, to: EvidenceBundleState, supersededBy?: string) => transitionNow(bundleId, to, supersededBy));
