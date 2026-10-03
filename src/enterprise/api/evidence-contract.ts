@@ -37,8 +37,12 @@ export function validateEvidenceBuildRequestBody(body: unknown): BuildEvidenceBu
     throw EnterpriseHttpErrors.invalidRequest('Request body must be a JSON object.');
   }
   const violations: string[] = [];
-  const unknown = Object.keys(body).filter((key) => !['evaluationId', 'requestId', 'level', 'createdBy'].includes(key));
-  if (unknown.length > 0) violations.push(`Unknown fields: ${unknown.join(', ')}.`);
+  // A v2 (trace) build body is closed. A v1 body keeps its frozen v1 behaviour:
+  // fields it does not use are ignored, exactly as before ASSURE-01.
+  if (body.requestId !== undefined) {
+    const unknown = Object.keys(body).filter((key) => !['evaluationId', 'requestId', 'level', 'createdBy'].includes(key));
+    if (unknown.length > 0) violations.push(`Unknown fields: ${unknown.join(', ')}.`);
+  }
   if ((body.evaluationId === undefined) === (body.requestId === undefined)) violations.push('Exactly one of evaluationId (v1 bundle) or requestId (v2 trace bundle) is required.');
   if (body.evaluationId !== undefined && !isNonEmptyString(body.evaluationId)) violations.push('evaluationId, when present, must be a non-empty string.');
   if (body.requestId !== undefined && !isNonEmptyString(body.requestId)) violations.push('requestId, when present, must be a non-empty string.');

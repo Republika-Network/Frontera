@@ -437,6 +437,10 @@ describe('ASSURE-01 — tenant, authentication and input boundaries', () => {
     for (const method of ['POST', 'PUT', 'DELETE']) assert.equal((await call(baseUrl, method, tracePath(requestId), { authorization: AUDITOR, body: {} })).status, 404, `${method} is unrouted`);
     assert.equal((await call(baseUrl, 'GET', '/api/evidence/traces', { authorization: AUDITOR })).status, 404, 'no listing of traces');
     assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { requestId, evaluationId: 'x', level: 'AUDITOR' } })).status, 400, 'exactly one of requestId / evaluationId');
+    assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { requestId, level: 'AUDITOR', extra: true } })).status, 400, 'a v2 build body is closed');
+    // v1 compatibility: a v1 body's unused fields are ignored, as before ASSURE-01.
+    const evaluationId = (cases['monetary']?.body['decision'] as Record<string, unknown>)['evaluationId'];
+    assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { evaluationId, level: 'AUDITOR', extra: true } })).status, 201, 'a v1 build body still ignores unknown fields');
   });
 
   it('FULL is internal: an organization-scoped key is refused it, for a trace and for a v2 bundle', async () => {
@@ -455,6 +459,7 @@ describe('ASSURE-01 — disclosure: Truth ≠ Disclosure', () => {
   it('no level ever discloses a secret, a credential, a payload, an approval subject or evidence body, a revocation note or an obligation reference', async () => {
     const { baseUrl } = booted;
     const secrets = [...deployment.secretValues(), auditorKey, foreignKey, payables, releaseAgent];
+    const callsBefore = adapter.calls.length;
     for (const name of Object.keys(cases).filter((entry) => cases[entry]?.body['requestId'] !== undefined)) {
       for (const level of ['AUDITOR', 'PARTNER', 'CUSTOMER', 'PUBLIC']) {
         const view = await fetchTrace(baseUrl, requestIdOf(name), level);
@@ -466,6 +471,7 @@ describe('ASSURE-01 — disclosure: Truth ≠ Disclosure', () => {
       const verification = expectStatus(await call(baseUrl, 'GET', verifyPath(requestIdOf(name)), { authorization: AUDITOR }), 200, 'verify').text;
       for (const secret of secrets) assert.equal(verification.includes(secret), false, `${name} verification leaks no secret`);
     }
+    assert.equal(adapter.calls.length, callsBefore, 'zero adapter calls from reading every trace at every level');
   });
 
   it('each level discloses exactly its policy: PUBLIC and CUSTOMER show where the request ended, not who asked, which authority or how it ran', async () => {
