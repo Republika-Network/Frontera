@@ -72,7 +72,7 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
     const block = /export interface AuthorityTraceSources \{([\s\S]*?)\n\}/.exec(codeOf(BUILDER))?.[1] ?? '';
     assert.ok(block.length > 0);
     const methods = [...block.matchAll(/(\w+)\(/g)].map((match) => match[1]).sort();
-    assert.deepEqual([...new Set(methods)], ['getByRequestId', 'read', 'readStream', 'verify', 'verifyStream']);
+    assert.deepEqual([...new Set(methods)], ['getByRequestId', 'read', 'readStreamBounded', 'verify']);
   });
 
   it('the composition hands the trace one read per store — never a writer, signer, reconciler, approval command or adapter', () => {
@@ -82,8 +82,7 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
     const calls = [...block.matchAll(/=> (\w+)\.(\w+)\(/g)].map((match) => `${match[1]}.${match[2]}`).sort();
     assert.deepEqual(calls, [
       'approvalStore.read',
-      'authorityEventStore.readStream',
-      'authorityEventStore.verifyStream',
+      'authorityEventStore.readStreamBounded',
       'executionOutcomeStore.read',
       'executionResolutionStore.read',
       'exerciseLedger.read',
@@ -93,6 +92,21 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
       'persistence.verify',
     ]);
     assert.equal(WRITE_CALL.test(block), false);
+  });
+
+  it('the trace reads the event stream only through the store’s bounded read, at the trace’s own fixed bound', () => {
+    const UNBOUNDED = /\.(readStream|verifyStream)(\?\.)?\(/;
+    assert.equal(UNBOUNDED.test('await sources.events.readStream(scope, streamId)'), true);
+    assert.equal(UNBOUNDED.test('await sources.events.verifyStream?.(scope, streamId)'), true);
+    assert.equal(UNBOUNDED.test('await sources.events.readStreamBounded(scope, streamId, options)'), false);
+    assert.equal(UNBOUNDED.test(codeOf(BUILDER)), false, 'the builder never calls an unbounded stream read');
+    const root = /const traceSources: AuthorityTraceSources = \{([\s\S]*?)\n {2}\};/.exec(codeOf(ROOT))?.[1] ?? '';
+    assert.equal(UNBOUNDED.test(root), false, 'the composition hands the trace no unbounded stream read');
+    // The bound is the trace's own constant — never caller input.
+    assert.match(codeOf(BUILDER), /readStreamBounded\(scope, streamId, \{ maxEvents: AUTHORITY_TRACE_LIMITS\.maxEvents \}\)/);
+    assert.equal([...codeOf(BUILDER).matchAll(/\.readStreamBounded\(/g)].length, 1, 'one call site');
+    // No HTTP query can carry a bound: the trace query admits `level` only.
+    assert.match(codeOf('src/enterprise/api/evidence-contract.ts'), /keys\.some\(\(key\) => key !== 'level'\)/);
   });
 
   it('fetching and verifying a trace writes nothing — not even the evidence store’s own lifecycle', () => {

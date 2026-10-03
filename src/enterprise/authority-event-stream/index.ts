@@ -62,6 +62,8 @@ export {
 } from './event-chain.js';
 export type { PersistedAuthorityEventStreamHead } from './event-chain.js';
 export type { AuthorityEventStreamReader, AuthorityEventStreamStore, AuthorityEventStreamWriter } from './stream-store.js';
+export { AUTHORITY_EVENT_STREAM_MAX_READ_BOUND } from './contracts.js';
+export type { AuthorityEventStreamBoundedRead, AuthorityEventStreamBoundedReadOptions } from './contracts.js';
 export type { AuthorityEventRecorder, ExecutionResolutionEvidenceRecorder } from './recorder.js';
 export { createInMemoryAuthorityEventStreamStore } from './in-memory-authority-event-stream-store.js';
 export type { InMemoryAuthorityEventStreamStoreOptions } from './in-memory-authority-event-stream-store.js';

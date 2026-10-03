@@ -5,6 +5,9 @@ import {
   type AuthorityEvent,
   type AuthorityEventStreamAccessContext,
   type AuthorityEventStreamStoreHealth,
+  type AuthorityEventStreamBoundedRead,
+  type AuthorityEventStreamBoundedReadOptions,
+  AUTHORITY_EVENT_STREAM_MAX_READ_BOUND,
   type AuthorityEventStreamVerification,
 } from './contracts.js';
 import { AuthorityEventStreamError } from './errors.js';
@@ -23,6 +26,14 @@ import { authorityEventInputViolation, isOpaqueEventIdentifier } from './validat
 export interface AuthorityEventStreamReader {
   readStream(context: AuthorityEventStreamAccessContext, streamId: string): Promise<readonly AuthorityEvent[]>;
   verifyStream(context: AuthorityEventStreamAccessContext, streamId: string): Promise<AuthorityEventStreamVerification>;
+  /**
+   * Verify and read a whole stream only if it holds at most `maxEvents` events.
+   * The size is established from the stream's row count, highest sequence and
+   * sealed head before any event is loaded; a larger stream is refused
+   * (`exceeds-bound`) with none of its events materialized. Never truncates.
+   * Tenant-confined like every read; a malformed bound is refused.
+   */
+  readStreamBounded(context: AuthorityEventStreamAccessContext, streamId: string, options: AuthorityEventStreamBoundedReadOptions): Promise<AuthorityEventStreamBoundedRead>;
 }
 
 /**
@@ -100,6 +111,21 @@ export function requireStreamOwnedBy(streamId: string, stream: LoadedAuthorityEv
   if (owner !== undefined && owner !== organizationId) {
     throw new AuthorityEventStreamError('AUTHORITY_EVENT_TENANT_VIOLATION', `The caller is not authorized to access authority event stream '${streamId}'.`);
   }
+}
+
+/** Refuses a malformed bound before any state is read: there is no unbounded bounded read. */
+export function requireBoundedReadOptions(options: AuthorityEventStreamBoundedReadOptions): number {
+  const maxEvents = (options as { readonly maxEvents?: unknown } | undefined)?.maxEvents;
+  if (typeof maxEvents !== 'number' || !Number.isSafeInteger(maxEvents) || maxEvents < 1 || maxEvents > AUTHORITY_EVENT_STREAM_MAX_READ_BOUND) {
+    throw new AuthorityEventStreamError('AUTHORITY_EVENT_INPUT_INVALID', `A bounded stream read requires maxEvents to be an integer from 1 to ${String(AUTHORITY_EVENT_STREAM_MAX_READ_BOUND)}.`);
+  }
+  return maxEvents;
+}
+
+/** The bounded-read answer for a stream already known to fit, from what was loaded. */
+export function boundedReadOf(streamId: string, stream: LoadedAuthorityEventStream): AuthorityEventStreamBoundedRead {
+  const verification = verifyAuthorityEventStream(streamId, stream.events, stream.head);
+  return { outcome: 'within-bound', verification, events: verification.valid ? Object.freeze(stream.events.map((event) => Object.freeze(event))) : [] };
 }
 
 /** Refuses a malformed append before any state is read. */

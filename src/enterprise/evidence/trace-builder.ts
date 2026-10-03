@@ -1,7 +1,7 @@
 import type { ReadBoundedGrantResult } from '../../features/grant-runtime/index.js';
 import { exerciseReservationId, type ExerciseReservationView } from '../../features/exercise-control-runtime/index.js';
 import type { StoredApprovalRecord } from '../approval-authority/contracts.js';
-import type { AuthorityEvent, AuthorityEventStreamVerification } from '../authority-event-stream/contracts.js';
+import type { AuthorityEvent, AuthorityEventStreamBoundedRead, AuthorityEventStreamVerification } from '../authority-event-stream/contracts.js';
 import { deriveAuthorityEventStreamId } from '../authority-event-stream/identifiers.js';
 import type { ExecutionOutcomeRecord } from '../execution-outcome-store/contracts.js';
 import type { ExecutionResolutionState } from '../execution-resolution-store/contracts.js';
@@ -57,9 +57,9 @@ export interface AuthorityTraceSources {
   readonly reservations?: { read(reservationId: string): Promise<ExerciseReservationView | undefined> };
   readonly outcomes?: { read(context: { readonly organizationId: string }, executionId: string): Promise<ExecutionOutcomeRecord | undefined> };
   readonly resolutions?: { read(context: { readonly organizationId: string }, executionId: string): Promise<ExecutionResolutionState | undefined> };
+  /** The event stream through its **bounded** read only: the store refuses a stream over the trace bound before loading any of it. */
   readonly events?: {
-    readStream(context: { readonly organizationId: string }, streamId: string): Promise<readonly AuthorityEvent[]>;
-    verifyStream(context: { readonly organizationId: string }, streamId: string): Promise<AuthorityEventStreamVerification>;
+    readStreamBounded(context: { readonly organizationId: string }, streamId: string, options: { readonly maxEvents: number }): Promise<AuthorityEventStreamBoundedRead>;
   };
 }
 
@@ -122,10 +122,13 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   let streamReadFailure: string | undefined;
   if (sources.events !== undefined) {
     try {
-      streamVerification = await sources.events.verifyStream(scope, streamId);
+      // One bounded read: the store sizes the stream before loading it and
+      // refuses one over the trace bound — the trace is complete or refused.
+      const read = await sources.events.readStreamBounded(scope, streamId, { maxEvents: AUTHORITY_TRACE_LIMITS.maxEvents });
+      if (read.outcome === 'exceeds-bound') throw traceTooLarge('authority events');
+      streamVerification = read.verification;
       check('integrity.event-stream', 'integrity', streamVerification.valid, streamVerification.valid ? undefined : 'EVENT_STREAM_CHAIN_INVALID');
-      if (streamVerification.eventCount > AUTHORITY_TRACE_LIMITS.maxEvents) throw traceTooLarge('authority events');
-      if (streamVerification.valid) stream = await sources.events.readStream(scope, streamId);
+      if (streamVerification.valid) stream = read.events;
     } catch (error) {
       if (error instanceof EvidenceError) throw error;
       streamReadFailure = failureCode(error);

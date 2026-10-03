@@ -6,6 +6,8 @@ import {
   type AuthorityEventStreamAccessContext,
   type AuthorityEventStreamStoreHealth,
   type AuthorityEventStreamVerification,
+  type AuthorityEventStreamBoundedRead,
+  type AuthorityEventStreamBoundedReadOptions,
 } from './contracts.js';
 import { AuthorityEventStreamError } from './errors.js';
 import { authorityEventStreamHeadDigest, buildAuthorityEvent, verifyAuthorityEventStream, type PersistedAuthorityEventStreamHead } from './event-chain.js';
@@ -13,6 +15,8 @@ import {
   planAuthorityEventAppend,
   requireStreamAccessContext,
   requireStreamOwnedBy,
+  requireBoundedReadOptions,
+  boundedReadOf,
   requireValidAppend,
   type AuthorityEventStreamStore,
   type LoadedAuthorityEventStream,
@@ -79,6 +83,21 @@ export function createInMemoryAuthorityEventStreamStore(options: InMemoryAuthori
       const verification = verifyAuthorityEventStream(streamId, stream.events, stream.head);
       if (!verification.valid) throw new AuthorityEventStreamError('AUTHORITY_EVENT_STREAM_CORRUPT', `Authority event stream '${streamId}' failed verification.`);
       return Object.freeze([...stream.events]);
+    },
+
+    async readStreamBounded(context: AuthorityEventStreamAccessContext, streamId: string, options: AuthorityEventStreamBoundedReadOptions): Promise<AuthorityEventStreamBoundedRead> {
+      assertOpen();
+      const organizationId = requireStreamAccessContext(context);
+      const maxEvents = requireBoundedReadOptions(options);
+      const held = streams.get(streamId);
+      const owner = held?.head?.head.organizationId ?? held?.events[0]?.organizationId;
+      if (owner !== undefined && owner !== organizationId) {
+        throw new AuthorityEventStreamError('AUTHORITY_EVENT_TENANT_VIOLATION', `The caller is not authorized to access authority event stream '${streamId}'.`);
+      }
+      // Sized before anything is copied out.
+      const size = Math.max(held?.events.length ?? 0, held?.head?.head.sequence ?? 0);
+      if (size > maxEvents) return { outcome: 'exceeds-bound', maxEvents, eventCount: size };
+      return boundedReadOf(streamId, load(streamId));
     },
 
     async verifyStream(context: AuthorityEventStreamAccessContext, streamId: string): Promise<AuthorityEventStreamVerification> {

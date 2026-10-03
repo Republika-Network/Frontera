@@ -429,7 +429,7 @@ describe('ASSURE-01 — tenant, authentication and input boundaries', () => {
     const unknown = await call(baseUrl, 'GET', tracePath(`aoc.gar:${'0'.repeat(32)}`), { authorization: AUDITOR });
     assert.deepEqual([unknown.status, (unknown.body['error'] as Record<string, unknown>)['code']], [404, 'EVIDENCE_TRACE_NOT_FOUND']);
     const requestId = requestIdOf('monetary');
-    for (const query of ['', '?level=SECRET', '?level=AUDITOR&level=FULL', '?level=AUDITOR&organizationId=org-foreign-assure01', '?system=true&level=FULL']) {
+    for (const query of ['', '?level=SECRET', '?level=AUDITOR&level=FULL', '?level=AUDITOR&organizationId=org-foreign-assure01', '?system=true&level=FULL', '?level=AUDITOR&maxEvents=1000000', '?level=AUDITOR&limit=1', '?level=AUDITOR&cursor=x']) {
       const reply = await call(baseUrl, 'GET', `/api/evidence/traces/${encodeURIComponent(requestId)}${query}`, { authorization: AUDITOR });
       assert.equal(reply.status, 400, `${query}: ${reply.text}`);
     }

@@ -10,6 +10,8 @@ import {
   type AuthorityEventStreamAccessContext,
   type AuthorityEventStreamStoreHealth,
   type AuthorityEventStreamVerification,
+  type AuthorityEventStreamBoundedRead,
+  type AuthorityEventStreamBoundedReadOptions,
 } from './contracts.js';
 import { AuthorityEventStreamError } from './errors.js';
 import { authorityEventStreamHeadDigest, buildAuthorityEvent, verifyAuthorityEventStream, type PersistedAuthorityEventStreamHead } from './event-chain.js';
@@ -17,6 +19,8 @@ import {
   planAuthorityEventAppend,
   requireStreamAccessContext,
   requireStreamOwnedBy,
+  requireBoundedReadOptions,
+  boundedReadOf,
   requireValidAppend,
   type AuthorityEventStreamStore,
   type LoadedAuthorityEventStream,
@@ -311,6 +315,32 @@ export async function createSqliteAuthorityEventStreamStore(dbPath: string, opti
 
   const runRead = db.transaction((streamId: string): LoadedAuthorityEventStream => load(streamId));
 
+  // Bounded read: the stream is sized from the index (row count, highest
+  // sequence) and its sealed head before a single event row is selected, and the
+  // load itself is capped one past the bound.
+  const selectStreamSize = db.prepare(`SELECT COUNT(*) AS n, MAX(sequence) AS m FROM authority_events WHERE stream_id = ?`);
+  const selectFirstOwner = db.prepare(`SELECT organization_id FROM authority_events WHERE stream_id = ? ORDER BY sequence ASC LIMIT 1`);
+  const selectStreamCapped = db.prepare(
+    `SELECT event_id, stream_id, organization_id, sequence, event_type, occurred_at, recorded_at, references_json, payload_json, previous_event_digest, event_digest, schema_version
+       FROM authority_events WHERE stream_id = ? ORDER BY sequence ASC, event_id ASC LIMIT ?`,
+  );
+  type BoundedLoad = { readonly kind: 'exceeds'; readonly owner: unknown; readonly size: number } | { readonly kind: 'loaded'; readonly owner: unknown; readonly stream: LoadedAuthorityEventStream } | { readonly kind: 'corrupt'; readonly owner: unknown; readonly message: string };
+  const runBoundedRead = db.transaction((streamId: string, maxEvents: number): BoundedLoad => {
+    const headRow = selectHead.get(streamId) as HeadRow | undefined;
+    const owner = headRow !== undefined ? headRow.organization_id : (selectFirstOwner.get(streamId) as { organization_id: unknown } | undefined)?.organization_id;
+    const sized = selectStreamSize.get(streamId) as { n: unknown; m: unknown };
+    const size = Math.max(Number(sized.n) || 0, Number(sized.m) || 0, Number(headRow?.sequence) || 0);
+    if (size > maxEvents) return { kind: 'exceeds', owner, size };
+    const rows = selectStreamCapped.all(streamId, maxEvents + 1) as EventRow[];
+    if (rows.length > maxEvents) return { kind: 'exceeds', owner, size: rows.length };
+    try {
+      return { kind: 'loaded', owner, stream: { events: rows.map(eventOf), head: headRow === undefined ? undefined : headOf(headRow) } };
+    } catch (error) {
+      if (error instanceof AuthorityEventStreamError && error.code === 'AUTHORITY_EVENT_STREAM_CORRUPT') return { kind: 'corrupt', owner, message: error.message };
+      throw error;
+    }
+  });
+
   return {
     providerKind: 'sqlite',
 
@@ -331,6 +361,19 @@ export async function createSqliteAuthorityEventStreamStore(dbPath: string, opti
       const verification = verifyAuthorityEventStream(streamId, stream.events, stream.head);
       if (!verification.valid) throw corrupt(streamId, verification.failures[0] ?? 'verification failed');
       return Object.freeze(stream.events.map((event) => Object.freeze(event)));
+    },
+
+    async readStreamBounded(context: AuthorityEventStreamAccessContext, streamId: string, options: AuthorityEventStreamBoundedReadOptions): Promise<AuthorityEventStreamBoundedRead> {
+      assertOpen();
+      const organizationId = requireStreamAccessContext(context);
+      const maxEvents = requireBoundedReadOptions(options);
+      const loaded = runBoundedRead(streamId, maxEvents);
+      if (loaded.owner !== undefined && loaded.owner !== organizationId) {
+        throw new AuthorityEventStreamError('AUTHORITY_EVENT_TENANT_VIOLATION', `The caller is not authorized to access authority event stream '${streamId}'.`);
+      }
+      if (loaded.kind === 'exceeds') return { outcome: 'exceeds-bound', maxEvents, eventCount: loaded.size };
+      if (loaded.kind === 'corrupt') return { outcome: 'within-bound', verification: { streamId, valid: false, eventCount: 0, failures: [loaded.message] }, events: [] };
+      return boundedReadOf(streamId, loaded.stream);
     },
 
     async verifyStream(context: AuthorityEventStreamAccessContext, streamId: string): Promise<AuthorityEventStreamVerification> {

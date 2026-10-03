@@ -287,6 +287,32 @@ export interface AuthorityEventStreamVerification {
   readonly failures: readonly string[];
 }
 
+/**
+ * The largest bound a bounded stream read accepts. A caller chooses its own
+ * bound below this ceiling; there is no unbounded bounded read.
+ */
+export const AUTHORITY_EVENT_STREAM_MAX_READ_BOUND = 10_000;
+
+export interface AuthorityEventStreamBoundedReadOptions {
+  /** The most events the caller will accept: a safe integer from 1 to `AUTHORITY_EVENT_STREAM_MAX_READ_BOUND`. */
+  readonly maxEvents: number;
+}
+
+/**
+ * A bounded read of one stream: the **complete** stream, verified, or a
+ * refusal — never a prefix, a suffix or a sample.
+ *
+ * - `within-bound` — the stream holds at most `maxEvents` events. `verification`
+ *   is exactly what `verifyStream` reports; `events` is the whole verified
+ *   stream when it is valid, and empty when it is not.
+ * - `exceeds-bound` — the stream holds more than `maxEvents` events, decided
+ *   from the stream's own row count, highest sequence and sealed head **before
+ *   any event is loaded**. No event of it was materialized.
+ */
+export type AuthorityEventStreamBoundedRead =
+  | { readonly outcome: 'within-bound'; readonly verification: AuthorityEventStreamVerification; readonly events: readonly AuthorityEvent[] }
+  | { readonly outcome: 'exceeds-bound'; readonly maxEvents: number; readonly eventCount: number };
+
 export interface AuthorityEventStreamStoreHealth {
   readonly status: 'healthy' | 'unhealthy';
   readonly readable: boolean;

@@ -1071,7 +1071,7 @@ function createExecutionOutcomeReader(store: ExecutionOutcomeStore): ExecutionOu
 }
 
 /**
- * A fresh two-method object over the store: `append`, `health` and `close` are
+ * A fresh read-only object over the store (read, verify, bounded read): `append`, `health` and `close` are
  * unreachable from it even by a cast, exactly as the emergency-control reader
  * narrows its store.
  */
@@ -1079,6 +1079,8 @@ function createAuthorityEventStreamReader(store: AuthorityEventStreamStore): Aut
   return Object.freeze({
     readStream: (context: Parameters<AuthorityEventStreamReader['readStream']>[0], streamId: string) => store.readStream(context, streamId),
     verifyStream: (context: Parameters<AuthorityEventStreamReader['verifyStream']>[0], streamId: string) => store.verifyStream(context, streamId),
+    readStreamBounded: (context: Parameters<AuthorityEventStreamReader['readStreamBounded']>[0], streamId: string, options: Parameters<AuthorityEventStreamReader['readStreamBounded']>[2]) =>
+      store.readStreamBounded(context, streamId, options),
   });
 }
 
@@ -2485,8 +2487,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     ...(authorityEventStore !== undefined
       ? {
           events: {
-            readStream: (context: { readonly organizationId: string }, streamId: string) => authorityEventStore.readStream(context, streamId),
-            verifyStream: (context: { readonly organizationId: string }, streamId: string) => authorityEventStore.verifyStream(context, streamId),
+            readStreamBounded: (context: { readonly organizationId: string }, streamId: string, options: { readonly maxEvents: number }) => authorityEventStore.readStreamBounded(context, streamId, options),
           },
         }
       : {}),

@@ -345,7 +345,8 @@ export function describeAuthorityEventStreamStoreContract(name: string, open: (n
     it('has no update, delete, truncate, repair or cleanup API — only append, read, verify, health, close', async () => {
       const harness = await open(steppingClock().now);
       try {
-        assert.deepEqual(Object.keys(harness.store).sort(), ['append', 'close', 'health', 'providerKind', 'readStream', 'verifyStream']);
+        // ASSURE-01 added the bounded read: still a read.
+        assert.deepEqual(Object.keys(harness.store).sort(), ['append', 'close', 'health', 'providerKind', 'readStream', 'readStreamBounded', 'verifyStream']);
         for (const forbidden of ['update', 'delete', 'remove', 'truncate', 'repair', 'rewrite', 'cleanup', 'sweep', 'purge', 'setHead']) {
           assert.equal(forbidden in harness.store, false, forbidden);
         }

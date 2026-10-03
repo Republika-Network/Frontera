@@ -989,6 +989,7 @@ describe('P12 §129 / §95 — evidence is never load-bearing', () => {
             append: () => new Promise<never>(() => {}),
             readStream: async () => [],
             verifyStream: async (_context, streamId) => ({ streamId, valid: true, eventCount: 0, failures: [] }),
+            readStreamBounded: async (_context, streamId) => ({ outcome: 'within-bound', verification: { streamId, valid: true, eventCount: 0, failures: [] }, events: [] }),
             health: async () => ({ status: 'healthy', readable: true, writable: true, schemaVersion: 'x', checkedAt: new Date().toISOString() }),
             close: async () => {},
           },

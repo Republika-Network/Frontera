@@ -159,8 +159,13 @@ function sources(world: World, options: { readonly composed?: Partial<Record<key
     outcomes: { read: async () => (fail('outcome'), world.attempt === undefined ? undefined : ({ attempt: world.attempt, ...(world.terminal !== undefined ? { terminal: world.terminal } : {}) } as never)) },
     resolutions: { read: async () => (fail('resolution'), world.binding === undefined && world.resolution === undefined ? undefined : ({ ...(world.binding !== undefined ? { binding: world.binding } : {}), ...(world.resolution !== undefined ? { resolution: world.resolution } : {}) } as never)) },
     events: {
-      readStream: async (_context, streamId) => (fail('events'), streamId === STREAM ? world.events : []),
-      verifyStream: async (_context, streamId) => ({ streamId, valid: world.streamValid, eventCount: world.events.length, failures: world.streamValid ? [] : ['digest'], ...(world.events.length > 0 ? { head: { streamId, organizationId: ORG, sequence: world.events.length, eventDigest: 'sha256:h' } } : {}) }) as never,
+      readStreamBounded: async (_context, streamId, options) => {
+        fail('events');
+        const held = streamId === STREAM ? world.events : [];
+        if (held.length > options.maxEvents) return { outcome: 'exceeds-bound', maxEvents: options.maxEvents, eventCount: held.length };
+        const verification = { streamId, valid: world.streamValid, eventCount: held.length, failures: world.streamValid ? [] : ['digest'], ...(held.length > 0 ? { head: { streamId, organizationId: ORG, sequence: held.length, eventDigest: 'sha256:h' } } : {}) };
+        return { outcome: 'within-bound', verification, events: world.streamValid ? held : [] } as never;
+      },
     },
   };
   const composed = options.composed ?? {};
@@ -211,6 +216,14 @@ describe('ASSURE-01 trace builder — a consistent world verifies, deterministic
     for (const bad of ['', 'aoc.gar:short', `aoc.gar:${'A'.repeat(32)}`, `aoc.exec:${'a'.repeat(32)}`, `aoc.gar:${'a'.repeat(32)}\n`]) {
       await assert.rejects(buildAuthorityTrace(sources(executedWorld()), SYSTEM, bad), { code: 'EVIDENCE_VALIDATION_ERROR' }, JSON.stringify(bad));
     }
+  });
+
+  it('a request whose event stream exceeds the bound is refused by the store’s bounded read — never truncated', async () => {
+    const world = executedWorld();
+    for (let index = world.events.length; index < 257; index += 1) world.events.push(event(index + 1, 'exercise.reservation.reserved', { decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION, reservationId: RESERVATION }, {}));
+    await assert.rejects(build(world), { code: 'EVIDENCE_TRACE_TOO_LARGE' });
+    world.events.length = 256;
+    assert.equal((await build(world)).trace.stages.events.events.length, 256, 'at the bound, the whole stream');
   });
 
   it('bounded: a request whose canonical records exceed the bounds is refused, never truncated', async () => {
@@ -657,9 +670,9 @@ describe('ASSURE-01 second review — read order, degraded stores, summaries and
     ) as unknown as AuthorityTraceSources;
     assert.ok((await buildAuthorityTrace(recorded, SYSTEM, REQUEST)) !== null);
     const firstCanonical = order.findIndex((entry) => !entry.startsWith('events.') && entry !== 'governance.getByRequestId');
-    assert.ok(order.indexOf('events.readStream') >= 0 && order.indexOf('events.readStream') < firstCanonical, order.join(' '));
+    assert.ok(order.indexOf('events.readStreamBounded') >= 0 && order.indexOf('events.readStreamBounded') < firstCanonical, order.join(' '));
     assert.equal(order.filter((entry) => entry === 'governance.getByRequestId').length, 2, 'located, then re-read after the stream');
-    assert.ok(order.lastIndexOf('governance.getByRequestId') > order.indexOf('events.readStream'));
+    assert.ok(order.lastIndexOf('governance.getByRequestId') > order.indexOf('events.readStreamBounded'));
   });
 
   it('a fact committed after the stream was read is incomplete evidence, never a sealed contradiction', async () => {
