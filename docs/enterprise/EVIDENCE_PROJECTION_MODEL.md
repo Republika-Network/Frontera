@@ -89,3 +89,23 @@ identical disclosed content and identical `bundleDigest`/`recordDigest`.
 Only `bundleId`, `createdAt`, and `verification.generatedAt` vary across
 separate calls -- exactly the "same Record, many Bundles" shape the
 Bundle Store is built around.
+
+## v2 (ASSURE-01): the trace projection
+
+A v2 bundle runs two projections side by side, both pure and deterministic:
+
+```
+GovernanceRecord ──▶ v2 policy (v1 fields) ──▶ source / subject / evidence   (unchanged v1 stages 1–3)
+AuthorityTrace   ──▶ v2 policy (trace fields) ──▶ trace                       (disclosed stage by stage)
+```
+
+The trace (`trace-builder.ts`) is itself already a bounded projection of the
+canonical stores — identities, digests, statuses, reason codes, timestamps —
+and never carries a request or result payload, an approval subject or
+evidence body, a revocation note, an obligation reference, a credential or a
+provider response, at any level. `discloseAuthorityTrace` then keeps, hides or
+redacts each stage per the policy (`trace.request`, `trace.decision`,
+`trace.approval`, `trace.obligations`, `trace.authority`, `trace.execution`,
+`trace.parameters`, `trace.reservation`, `trace.outcome`, `trace.resolution`,
+`trace.events`, `trace.summary`) and runs the same secret-redaction pass.
+`integrity.traceDigest` is the digest of exactly the disclosed trace.

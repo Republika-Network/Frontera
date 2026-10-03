@@ -82,8 +82,8 @@ One runbook per operational situation. Prerequisite reading:
 environment, after stopping the Host (see
 `docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`). One command covers every
 durable store the deployment composes (the registry in
-`scripts/portability/store-registry.mjs` — thirteen stores when everything is
-configured), refuses a missing required store, refuses `--cold` while a store
+`scripts/portability/store-registry.mjs` — fourteen stores when everything is
+configured, since ASSURE-01 added the Evidence Bundle Store), refuses a missing required store, refuses `--cold` while a store
 still has an un-checkpointed WAL, and never reads a secret.
 
 Check the result:

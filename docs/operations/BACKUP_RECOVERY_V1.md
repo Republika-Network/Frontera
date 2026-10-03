@@ -21,7 +21,7 @@ places. Mixing them is the most dangerous mistake an operator can make.
 
 | Domain | Contents | Where it is recovered from |
 |---|---|---|
-| **Authority data** | the thirteen SQLite stores in `scripts/portability/store-registry.mjs` (those the deployment composes) | `backup:v1` sets |
+| **Authority data** | the fourteen SQLite stores in `scripts/portability/store-registry.mjs` (those the deployment composes; thirteen at PROD-02, plus ASSURE-01's Evidence Bundle Store) | `backup:v1` sets |
 | **Secrets and key material** | API keys, operator/administrator/customer/provider credentials, the software-custody authority private key, the external signer's and the witness's service credentials | the secret manager / key custody — **never** a data backup |
 | **Freshness witness state** | the CORE-07 witness's own database and receipt key | the witness operator's own, separate backup set and schedule — **never** with the authority data |
 
@@ -55,7 +55,7 @@ management (its SHA-256 is in the manifest).
 
 ## Consistency: cold backups for disaster recovery
 
-Each SQLite store is consistent on its own; thirteen files are not one
+Each SQLite store is consistent on its own; fourteen files are not one
 transaction.
 
 - **Cold backup (required for disaster recovery and pre-upgrade):** stop the
@@ -193,7 +193,7 @@ CORE-07 anchors each authority transition as *prepare (witness) → local commit
   restore the **newest** cold backup, and re-apply post-backup revocations and
   stops from your incident records.
 - **RTO** is not an SLA. The PROD-02 drill observes the whole cycle (cold
-  backup → restore of all thirteen stores → secure-Host boot → verification)
+  backup → restore of all thirteen stores — fourteen since ASSURE-01 — → secure-Host boot → verification)
   in seconds on a small synthetic deployment; production time is dominated by
   store size, provisioning and secret injection. Measure your own.
 

@@ -108,7 +108,7 @@ exist only for forensics.
   target.
 - On success the safety directory stays as the pre-restore copy.
 
-Across thirteen files there is no filesystem transaction. The guarantee is
+Across fourteen files (thirteen before ASSURE-01) there is no filesystem transaction. The guarantee is
 procedural — stage, verify, move aside, promote, verify, roll back on any
 failure — and is qualified with failures injected after the 1st, 6th and last
 store and in post-promotion verification
