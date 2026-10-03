@@ -2,7 +2,7 @@
 
 > **Historical (v1.0.0, superseded for store coverage by PROD-02, 2026-10-02).**
 > This document records the v1.0.0 portability validation, when the Host had
-> three (later four) durable stores. The current store set — thirteen stores,
+> three (later four) durable stores. The current store set — thirteen stores at PROD-02, fourteen since ASSURE-01,
 > one registry (`scripts/portability/store-registry.mjs`) — and its
 > qualification are in `docs/security/PROD-02-COMPLETE-BACKUP-RESTORE-COVERAGE.md`.
 

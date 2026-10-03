@@ -4,7 +4,7 @@
 - **Purpose (Master Plan):** expose and verify the per-request trace; include grant, outcome and resolution in evidence bundles; make the bundle store durable.
 - **Exit criterion (Master Plan):** *a third party can fetch and verify one request's full trace via API.*
 - **Branch:** `feat/assure-01-unified-authority-outcome-trace`, from `main @ 614a52c` (the PROD-02 merge).
-- **Security records:** `THREAT_MODEL_V1.md` §7.29; `SECURITY_INVARIANTS.md` §4.24 (SEC-INV-226 … SEC-INV-236) and claim 16h; CORE-06 matrix rows `TM-7.29-1 … 19`.
+- **Security records:** `THREAT_MODEL_V1.md` §7.29; `SECURITY_INVARIANTS.md` §4.24 (SEC-INV-226 … SEC-INV-236) and claim 16h; CORE-06 matrix rows `TM-7.29-1 … 27`.
 - **Mutation evidence:** `docs/security/evidence/assure01-mutation-evidence.json`.
 
 ## 1. The principle: a projection, not a second truth
@@ -245,7 +245,7 @@ observations) is left as recorded.
 |---|---|
 | `GET /api/evidence/traces/{requestId}?level=…` | the trace disclosed at `level`; closed query (exactly one `level`); pure read |
 | `GET /api/evidence/traces/{requestId}/verify` | the structured verification; no query; pure read |
-| `POST /api/evidence/build` `{ requestId, level }` | a v2 bundle (additive: `{ evaluationId, level }` still builds v1; exactly one of the two; unknown fields refused) |
+| `POST /api/evidence/build` `{ requestId, level }` | a v2 bundle (additive: `{ evaluationId, level }` still builds v1, its unused fields still ignored as before; exactly one of the two; a v2 body is closed — unknown fields refused) |
 | `GET /api/evidence/{bundleId}`, `POST /api/evidence/verify` | unchanged routes; v2 verification adds the trace checks and freshness |
 
 API surface 56 → **58**. Authorization is the existing evidence rule
@@ -272,8 +272,7 @@ The builder is handed one read per canonical store (pinned in the composition
 root) and imports nothing holding authority, execution, signing, witness or
 resolution capability; it makes no write call (structural, with self-tested
 detectors). Fetching and verifying a trace write nothing — not even the bundle
-lifecycle. On the real Host, reading and verifying every trace at every level
-made zero adapter calls and left the approval state byte-identical; with P12
+lifecycle. On the real Host, reading and verifying every trace (at AUDITOR in the authority test, and at every level in the disclosure test) made zero adapter calls and left the approval state byte-identical; with P12
 composed, reading never queried the resolver. P8's boundary test lists the
 trace builder as the fourth documented holder of a stream reader (it decides
 nothing); P11 and P12 boundary tests list it as a read-only holder.
@@ -304,6 +303,8 @@ and verifies:
 | Emergency stop | `not-executed` | no claim, no outcome; zero adapter calls |
 | Unconfirmed → P12 resolved (both certainties; embedder composition, `assure01-trace-resolution-host.test.ts`) | `resolved-confirmed-*` | the initial observation kept as recorded; binding and resolution bound to it; the resolver never queried by reads |
 
+(The in-memory store on a secure Host is refused by composition: posture `evidenceStore` must be `durable` — pinned structurally and proven by mutation M26, whose secure Host refused to boot.)
+
 Then: a restart on the same stores, and a cold `backup:v1 --cold` → destroyed
 data directory → `restore:v1` → boot: for every request the same trace digest,
 verified; every issued bundle byte-identical with its lifecycle, and valid; the
@@ -312,7 +313,7 @@ backup; zero adapter calls throughout. Boundaries over HTTP: a foreign
 organization's key gets `404` (trace, verify, bundle, bundle verify, build);
 unauthenticated, operator and agent credentials `401`; malformed ids, unknown
 levels and any other query `400`; an unknown id `404`; writes on the trace
-paths and a trace listing unrouted; FULL refused (`403`) to an organization key.
+paths unrouted and no trace listing (a bare `/api/evidence/traces` is an unknown bundle id, `404`); FULL refused (`403`) to an organization key.
 Disclosure: every case at every level is free of every configured or issued
 secret, payloads, approval subjects, evidence hashes, obligation references and
 provider endpoints; PUBLIC / CUSTOMER / PARTNER / AUDITOR carry exactly their
@@ -334,11 +335,11 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 
 - **Review 1, `8561c64`: 11 findings** (medium-high to low), all fixed in `151aaff`: a changed recorded fact could pass as progress; verification not disclosure-filtered; FULL requestable by any organization key; issuer and mechanism sub-fields at PARTNER/CUSTOMER; pre-P11 executions misread; the claim window and a lagging stream treated as contradictions; partial P8 payload checks; misleading final states under degraded stores; concurrent builds; a version-guard gap; free text in a closed-code field.
 - **Review 2, `151aaff`: 9 findings**, the substantive ones fixed in `0c61249`: the SQLite active-bundle query scanned the oldest rows of all versions; a fact committing mid-build could seal a false contradiction (P8 now read first); `unverifiable` mis-scoped and reported as contradiction; summaries unchecked against their records; a malformed legacy withheld row; the store-wide chain position disclosed below AUDITOR; more P8 fields. Informational items are recorded as residuals (§13): the summary presence map is disclosed by design; FULL v2 differs from AUDITOR only by v1 metadata counts.
-- After `0c61249` only a test (the detector, `f73e82f`) and documentation changed.
+- **Final review, `dcbfcd8`:** no high finding; one medium code finding — the build route had begun refusing unknown fields on **v1** bodies, a v1 status change — fixed (v1 bodies ignore them again, as before; only v2 bodies are closed) with a regression test; the rest documentation accuracy, corrected. The production change after it touched only that validator; the mutation campaign and the full validation were re-run on the resulting commit (§12.4, §12.5).
 
 ### 12.4 Mutation campaign
 
-38 mutations, **38 killed** on `f73e82f` (`docs/security/evidence/assure01-mutation-evidence.json`):
+38 mutations, **38 killed** on `a426d1a` — the final production code (after it, documentation only) (`docs/security/evidence/assure01-mutation-evidence.json`):
 each an executable edit that compiled, killed by its intended test, restored
 byte for byte (source tree identical after the campaign; baseline 115/115). They
 cover every attack the milestone named — organization check removed, wrong
@@ -346,22 +347,23 @@ grant / outcome / resolution joined, event-integrity verification omitted,
 unexpected absence as not-applicable, bundle mutated after store, digest check
 bypassed, bundle lost on restart, memory store on the secure Host, evidence
 store omitted from the backup registry, foreign-organization read, a write (and
-an adapter-capable writer) reachable from the trace, duplicate overwrite,
+a grant writer) reachable from the trace, duplicate overwrite,
 schema mismatch ignored, supersession immutability broken, disclosure filter
 removed, unresolved turned into completed, resolution from another execution,
-unbounded listing — plus the review fixes. The first run (on `0c61249`) left
+unbounded listing; the "adapter call during verification" attack is represented by a write call (M28) and a grant writer handed to the trace (M29), since no adapter is reachable from it at all — plus the review fixes. The first run (on `0c61249`) left
 one survivor, M28: the structural detector missed an optional call; the
 detector was fixed (`f73e82f`) and the whole campaign re-run.
 
 ### 12.5 Validation
 
-Clean `git archive` export of `0c61249` (0 CRLF files; production code identical
-to the final commit): `npm ci`, typecheck, lint, build green; root 9 166 tests
+Clean `git archive` exports of `0c61249` and of `dcbfcd8` (0 CRLF files), each
+independently: `npm ci`, typecheck, lint, build green; root 9 166 tests
 (9 153 pass, 0 fail, 9 skipped, 4 todo); workspaces all green; API freeze 58
 endpoints (2 added), release docs, SDK surface green; protocol tarball
 validation against the vendored, lock-pinned tarball and the compatibility lock
 green; portability smoke green; legal report pre-existing advisories only;
-`git diff --check` clean, no conflict markers. The final commit's own
+`git diff --check` clean, no conflict markers. After `dcbfcd8`, the final review's
+validator fix (`a426d1a`) and documentation changed; the final commit's own
 clean-export run is reported, with its SHA, in the milestone report.
 <!-- /assure01:evidence -->
 

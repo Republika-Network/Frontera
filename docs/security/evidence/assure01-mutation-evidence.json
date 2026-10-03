@@ -1,7 +1,7 @@
 {
  "format": "frontera.mutation-evidence.v1",
  "milestone": "ASSURE-01",
- "commit": "f73e82f",
+ "commit": "a426d1a",
  "runner": "mutation-runner.mjs: per mutation, apply exact single-occurrence edits to the source, `npx tsc -b`, run the intended kill set with `node --test`, restore the original bytes and compare SHA-256",
  "killSet": [
   "dist/src/enterprise/__tests__/assure01-evidence-store.test.js",
@@ -14,7 +14,7 @@
   "tests": 115,
   "pass": 115,
   "fail": 0,
-  "note": "the ASSURE-01 suites and the portability registry structure test on the unmutated build"
+  "note": "the five kill-set suites (113 tests) plus assure01-trace-resolution-host (2 tests), on the unmutated build"
  },
  "srcTreeIdenticalAfterCampaign": true,
  "rebuiltAfterCampaign": true,
@@ -26,7 +26,8 @@
  },
  "history": [
   "First run on 0c61249: 33 killed; M28 survived \u2014 the structural write-call detector missed an optional call (`.settle?.(`); fixed in f73e82f (detector matches `?.(`, self-tested). M8 did not apply and M11, M21, M34 did not compile (anchors moved or types narrowed by the review fixes); re-anchored.",
-  "Full campaign re-run on f73e82f (production code identical to 0c61249): 38 of 38 killed."
+  "Full campaign re-run on f73e82f (production code identical to 0c61249): 38 of 38 killed.",
+  "Re-run on a426d1a after the final review changed the evidence build validator (v1 bodies lenient again): 38 of 38 killed; source tree identical; baseline 115/115."
  ],
  "mutations": [
   {
@@ -79,7 +80,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 13.1,
+   "durationS": 13.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -126,7 +127,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 14,
+   "durationS": 11.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -169,7 +170,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.5,
+   "durationS": 5.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -212,7 +213,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -255,7 +256,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.5,
+   "durationS": 5.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -298,7 +299,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.7,
+   "durationS": 5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -341,7 +342,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -384,7 +385,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 4.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -427,7 +428,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 5.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -513,7 +514,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.7,
+   "durationS": 5.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -564,7 +565,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.5,
+   "durationS": 5.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -624,7 +625,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 11.9,
+   "durationS": 11.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -676,7 +677,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.3,
+   "durationS": 13.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -774,7 +775,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 5.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -817,7 +818,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/verifier.ts",
@@ -860,7 +861,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.7,
+   "durationS": 8.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -903,7 +904,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.3,
+   "durationS": 11,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -946,7 +947,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.7,
+   "durationS": 9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -989,7 +990,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 9.3,
+   "durationS": 8.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1049,7 +1050,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.8,
+   "durationS": 12.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1092,7 +1093,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.9,
+   "durationS": 8.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1135,7 +1136,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.7,
+   "durationS": 8.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -1187,7 +1188,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 9,
+   "durationS": 9.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1247,7 +1248,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 7.7,
+   "durationS": 7.4,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1313,7 +1314,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 11.3,
+   "durationS": 11.1,
    "sha256": [
     {
      "file": "scripts/portability/store-registry.mjs",
@@ -1356,7 +1357,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1399,7 +1400,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6,
+   "durationS": 5.9,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1442,7 +1443,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.5,
+   "durationS": 13,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -1485,7 +1486,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.2,
+   "durationS": 15.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1528,7 +1529,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 11.9,
+   "durationS": 12,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1580,7 +1581,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 11.9,
+   "durationS": 12.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1631,7 +1632,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 5.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1674,7 +1675,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.5,
+   "durationS": 7.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1725,7 +1726,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 5.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1768,7 +1769,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1811,7 +1812,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",

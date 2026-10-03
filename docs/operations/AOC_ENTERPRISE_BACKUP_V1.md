@@ -56,8 +56,7 @@ to set if an embedder does compose it.
 
 **Deliberately excluded** (`EXCLUDED_DURABLE_STATE` in the registry): the
 CORE-07 freshness witness's database and receipt key (a different restore
-domain — see below), every secret and private key, the in-memory Evidence
-Bundle Store (rebuilt from the Governance Store), policy packs (in-process
+domain — see below), every secret and private key, policy packs (in-process
 composition, no durable store), library-only SQLite stores the Host never
 composes (access-governance, authority-governance, mandate and
 protected-resource stores), and the governed-action file (configuration — its
@@ -108,8 +107,8 @@ Run it with the same environment you start the Host with. Requires
 
 ## Consistency model
 
-Each store copy is transactionally consistent **for that store**. Thirteen
-files are **not** one distributed transaction, and nothing here claims they
+Each store copy is transactionally consistent **for that store**. Fourteen
+files (thirteen before ASSURE-01) are **not** one distributed transaction, and nothing here claims they
 are: the manifest records `consistency.crossStoreAtomic: false`. Stop the Host
 and pass `--cold` for strict cross-store consistency. Since PROD-02 a clean
 Host shutdown closes every store it opened, so a stopped Host's data
