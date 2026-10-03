@@ -184,12 +184,16 @@ The store's clock is the Host's injected clock (`kernelProviders.clock.now`).
 ## 5. Reading the stream
 
 `AocEnterprise.authorityEventStream` — present when the stream is composed and
-its store is available — is a frozen two-method object for trusted in-process
+its store is available — is a frozen read-only object (read, verify, bounded read) for trusted in-process
 operator and audit code:
 
 ```ts
 readStream({ organizationId }, streamId)   // verify-first; throws on corruption or another tenant
 verifyStream({ organizationId }, streamId) // reports { valid, eventCount, head, failures }
+readStreamBounded({ organizationId }, streamId, { maxEvents })
+  // ASSURE-01: sizes the stream (row count, highest sequence, sealed head) before
+  // loading any row; 'exceeds-bound' with no event, or the complete verified stream.
+  // maxEvents: integer 1 … 10 000. Never truncates.
 ```
 
 `streamId = deriveAuthorityEventStreamId({ organizationId, requestId })`. There is
