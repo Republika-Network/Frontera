@@ -376,9 +376,9 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 
 ### 12.4 Mutation campaign
 
-45 mutations, **45 killed** on `952d4e7` — the final production code (after it, documentation only) (`docs/security/evidence/assure01-mutation-evidence.json`):
+45 mutations, **45 killed** on `952d4e7` — the final production code (after it, tests and documentation only) (`docs/security/evidence/assure01-mutation-evidence.json`):
 each an executable edit that compiled, killed by its intended test, restored
-byte for byte (source tree identical after the campaign; baseline 115/115). They
+byte for byte (source tree identical after the campaign; baseline 133/133). They
 cover every attack the milestone named — organization check removed, wrong
 grant / outcome / resolution joined, event-integrity verification omitted,
 unexpected absence as not-applicable, bundle mutated after store, digest check
@@ -389,7 +389,7 @@ schema mismatch ignored, supersession immutability broken, disclosure filter
 removed, unresolved turned into completed, resolution from another execution,
 unbounded listing; the "adapter call during verification" attack is represented by a write call (M28) and a grant writer handed to the trace (M29), since no adapter is reachable from it at all — plus the review fixes. The first run (on `0c61249`) left
 one survivor, M28: the structural detector missed an optional call; the
-detector was fixed (`f73e82f`) and the whole campaign re-run. The P8 bounded read added M39 … M45; in their final form (`952d4e7`): the size check removed (rows loaded before sizing), the stream sized from its sealed head, sized from its highest sequence (each a forged value disguised as size), the in-memory bound removed, any number accepted as a bound, the trace at a larger bound, and the owner checked only after the rows are loaded. History: on the first bounded-read code (`7f4bd9d`) one mutation survived and its case was strengthened (`b608c27`, 45 of 45); a review then led to count-only sizing and tenant-before-load (`952d4e7`), the three mutations above were re-defined for it, and the complete campaign was re-run: **45 of 45**.
+detector was fixed (`f73e82f`) and the whole campaign re-run. The P8 bounded read added M39 … M45; in their final form (`952d4e7`): the size check removed (rows loaded before sizing), the stream sized from its sealed head, sized from its highest sequence (each a forged value disguised as size), the in-memory bound removed, any number accepted as a bound, the trace at a larger bound, and the owner checked only after the rows are loaded. History: on the first bounded-read code (`7f4bd9d`) one mutation survived and its case was strengthened (`b608c27`, 45 of 45); a review then led to count-only sizing and tenant-before-load (`952d4e7`), M39, M40, M41 and M45 were re-defined for it, and the complete campaign was re-run: **45 of 45**.
 
 ### 12.5 Validation
 
