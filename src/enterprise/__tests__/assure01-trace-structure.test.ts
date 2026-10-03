@@ -31,7 +31,7 @@ const TRACE = [BUILDER, DISCLOSURE, CONTRACTS];
 
 /** Every authority-, execution- or evidence-mutating call a trace could make. */
 const WRITE_CALL =
-  /\.(append|appendReference|appendEvaluation|appendLifecycleEvent|issue|issueFromDecision|revoke|revokeGrant|record|recordResolution|recordTerminal|recordAuthorization|recordOutcome|prepareAttempt|bind|bindBeforeClaim|reconcile|adoptResolutionAuthority|execute|exercise|authorize|assess|approve|reject|requestChanges|escalate|reserve|settle|release|activate|claim|transition|provision\w*|store|markVerified|markExported|supersede|governAction|evaluate|enforce)\(/;
+  /\.(append|appendReference|appendEvaluation|appendLifecycleEvent|issue|issueFromDecision|revoke|revokeGrant|record|recordResolution|recordTerminal|recordAuthorization|recordOutcome|prepareAttempt|bind|bindBeforeClaim|reconcile|adoptResolutionAuthority|execute|exercise|authorize|assess|approve|reject|requestChanges|escalate|reserve|settle|release|activate|claim|transition|provision\w*|store|markVerified|markExported|supersede|governAction|evaluate|enforce)(\?\.)?\(/;
 /** Modules that hold authority, execution or resolution capability. */
 const WRITE_MODULE =
   /execution-ledger|orchestrator|execution-adapters|execution-runtime|execution-governance|execution-reconciliation\/service|approval-authority\/service|obligation-discharge\/recorder|authority-administration|operator-control|kernel-authority\/provisioning|emergency-control\/|bounded-grant-store\/sqlite|composition-root|kernel\/|AocKernel|signer|witness/;
@@ -42,6 +42,7 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
     assert.equal(WRITE_CALL.test('await grants.revoke({ grantId })'), true);
     assert.equal(WRITE_CALL.test('await service.reconcile(request)'), true);
     assert.equal(WRITE_CALL.test('await adapter.execute(action)'), true);
+    assert.equal(WRITE_CALL.test('await ledger.settle?.(input)'), true, 'an optional call is still a call');
     assert.equal(WRITE_CALL.test('await sources.grants.read(grantId)'), false);
     assert.equal(WRITE_MODULE.test('../governed-action/execution-ledger.js'), true);
     assert.equal(WRITE_MODULE.test('../governed-action/identifiers.js'), false);
