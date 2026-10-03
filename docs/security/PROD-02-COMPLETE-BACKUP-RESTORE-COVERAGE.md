@@ -421,14 +421,22 @@ certification of any later commit), on the content of `87c1736` plus the
 - root suite **9 060 tests: 9 047 pass, 0 fail**, 9 skipped (live Pinata and
   non-durable-provider cases, pre-existing), 4 todo;
 - workspaces **1 089 / 1 089**;
-- PROD-02: exit drill 2 / 2 (software, external), stale drill 2 / 2,
-  integrity 53 / 53, structural 9 / 9, contract 21 / 21; CORE-06 BLOCKED
-  matrix and security-invariant drift checks 47 / 47;
+- PROD-02 focused suites **86 / 86**: exit drill 2 / 2 (software, external),
+  stale drill 2 / 2, integrity 53 / 53, contract 20 / 20
+  (`portability-backup-restore.contract.test.mjs`), structural 9 / 9;
+  CORE-06 BLOCKED matrix and security-invariant drift checks 47 / 47;
 - portability smoke, API freeze (56 endpoints, none added), release docs, SDK
   surface green; legal report pre-existing findings only (no dependency added);
   `git diff --check` clean.
 - `verify-release-manifest` reports the committed manifest's 28-endpoint count
   as stale — identical on `57f3369`, pre-existing (§8).
+- `validate:portability:v1` passed on the exact final SHA **with
+  `--skip-release-gate`**. Its final step, the full release gate
+  (`validate:v1-release`), currently fails on the pre-existing stale
+  `release/RELEASE_MANIFEST.json` endpoint count (manifest 28, current API
+  freeze 56). PROD-02 adds no endpoint; the mismatch already exists on
+  `origin/main`; PROD-02 does not claim to fix it. The skipped release gate
+  is **not** a PASS.
 
 The clean `git archive` export of the final commit, and its exact results, are
 in the milestone report (no commit follows that run).
