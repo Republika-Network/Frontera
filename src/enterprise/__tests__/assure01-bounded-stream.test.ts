@@ -50,6 +50,24 @@ async function filled(store: AuthorityEventStreamStore, count: number): Promise<
   for (let index = 1; index < count; index += 1) await store.append(A, attempt(`aoc.exec:bounded-${index}`));
 }
 
+/**
+ * Counts the event rows SQLite actually hands back from any statement over
+ * `authority_events` — the store's own statements included (it imports the same
+ * `better-sqlite3` module). This is what "materialized" means below.
+ */
+const materialized = { rows: 0 };
+{
+  const probe = new Database(':memory:');
+  const statementPrototype = Object.getPrototypeOf(probe.prepare('SELECT 1')) as { all: (...args: unknown[]) => unknown[]; get: (...args: unknown[]) => unknown };
+  probe.close();
+  const all = statementPrototype.all;
+  statementPrototype.all = function (this: { source: string }, ...args: unknown[]): unknown[] {
+    const rows = all.apply(this, args);
+    if (/SELECT event_id[\s\S]*FROM authority_events/.test(this.source)) materialized.rows += rows.length;
+    return rows;
+  };
+}
+
 /** A raw writer on the same file (append-only triggers dropped first, as a filesystem writer could). */
 function tamper(path: string, statements: readonly string[]): void {
   const db = new Database(path);
@@ -91,8 +109,10 @@ for (const [name, open] of providers) {
     it(`a stream one over the bound (${BOUND + 1} events) is refused, with its size — never a prefix, suffix or sample`, async () => {
       const { store } = await open();
       await filled(store, BOUND + 1);
+      materialized.rows = 0;
       const read = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
       assert.deepEqual(read, { outcome: 'exceeds-bound', maxEvents: BOUND, eventCount: BOUND + 1 });
+      assert.equal(materialized.rows, 0, 'no event row was materialized');
       assert.equal('events' in read, false, 'no events at all accompany a refusal');
     });
 
@@ -132,8 +152,12 @@ describe('ASSURE-01 bounded stream read — the SQLite store sizes the stream be
     stores.push(store);
     await filled(store, BOUND + 1);
     tamper(path, [`UPDATE authority_events SET payload_json = 'not json', references_json = 'not json' WHERE stream_id = '${STREAM}'`]);
+    materialized.rows = 0;
     await assert.rejects(store.readStream(A, STREAM), { code: 'AUTHORITY_EVENT_STREAM_CORRUPT' }, 'loading any row would fail');
+    assert.equal(materialized.rows, BOUND + 1, 'the unbounded read materializes every row (the probe is live)');
+    materialized.rows = 0;
     assert.deepEqual(await store.readStreamBounded(A, STREAM, { maxEvents: BOUND }), { outcome: 'exceeds-bound', maxEvents: BOUND, eventCount: BOUND + 1 }, 'refused from the size alone');
+    assert.equal(materialized.rows, 0, 'not one event row of the oversized stream was materialized');
   });
 
   it('a head rewritten to claim a short stream does not let the full stream through: the row count still decides', async () => {
@@ -142,7 +166,9 @@ describe('ASSURE-01 bounded stream read — the SQLite store sizes the stream be
     stores.push(store);
     await filled(store, BOUND + 1);
     tamper(path, [`UPDATE authority_event_stream_heads SET sequence = 1 WHERE stream_id = '${STREAM}'`]);
+    materialized.rows = 0;
     assert.equal((await store.readStreamBounded(A, STREAM, { maxEvents: BOUND })).outcome, 'exceeds-bound');
+    assert.equal(materialized.rows, 0);
   });
 
   it('rows deleted under a high sequence do not shrink the stream below its highest sequence', async () => {
@@ -151,7 +177,9 @@ describe('ASSURE-01 bounded stream read — the SQLite store sizes the stream be
     stores.push(store);
     await filled(store, BOUND + 1);
     tamper(path, [`DELETE FROM authority_events WHERE stream_id = '${STREAM}' AND sequence BETWEEN 2 AND 100`]);
+    materialized.rows = 0;
     assert.deepEqual(await store.readStreamBounded(A, STREAM, { maxEvents: BOUND }), { outcome: 'exceeds-bound', maxEvents: BOUND, eventCount: BOUND + 1 });
+    assert.equal(materialized.rows, 0);
   });
 
   it('within the bound, a corrupted stream is reported as invalid with no events — never repaired, never partial', async () => {
@@ -196,6 +224,8 @@ describe('ASSURE-01 bounded stream read — the trace, on the real SQLite store'
     assert.equal(built?.trace.stages.events.events.length, BOUND);
     await store.append(A, attempt('aoc.exec:bounded-over'));
     tamper(path, [`UPDATE authority_events SET payload_json = 'not json' WHERE stream_id = '${STREAM}'`]);
+    materialized.rows = 0;
     await assert.rejects(buildAuthorityTrace(within.sources, { system: true }, within.requestId), { code: 'EVIDENCE_TRACE_TOO_LARGE' }, 'refused from the size, without loading the (now unparseable) rows');
+    assert.equal(materialized.rows, 0);
   });
 });
