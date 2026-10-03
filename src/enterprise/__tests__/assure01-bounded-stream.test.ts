@@ -171,12 +171,14 @@ describe('ASSURE-01 bounded stream read — the SQLite store sizes the stream be
     assert.equal(materialized.rows, 0);
   });
 
-  it('rows deleted under a high sequence do not shrink the stream below its highest sequence', async () => {
+  it('rows deleted under a high sequence, with the head rewritten short, do not shrink the stream below its highest sequence', async () => {
     const path = freshPath();
     const store = await createSqliteAuthorityEventStreamStore(path, { now: steppingClock().now });
     stores.push(store);
     await filled(store, BOUND + 1);
-    tamper(path, [`DELETE FROM authority_events WHERE stream_id = '${STREAM}' AND sequence BETWEEN 2 AND 100`]);
+    // Rows deleted *and* the head rewritten short: neither the row count nor the
+    // head now says 257 — the highest surviving sequence still does.
+    tamper(path, [`DELETE FROM authority_events WHERE stream_id = '${STREAM}' AND sequence BETWEEN 2 AND 100`, `UPDATE authority_event_stream_heads SET sequence = 1 WHERE stream_id = '${STREAM}'`]);
     materialized.rows = 0;
     assert.deepEqual(await store.readStreamBounded(A, STREAM, { maxEvents: BOUND }), { outcome: 'exceeds-bound', maxEvents: BOUND, eventCount: BOUND + 1 });
     assert.equal(materialized.rows, 0);
