@@ -1,4 +1,6 @@
 import type { KernelDecisionStatus } from '../../kernel/index.js';
+import type { AuthorityTraceVerification } from './trace-contracts.js';
+import type { DisclosedAuthorityTrace, TraceComparisonResult } from './trace-disclosure.js';
 
 /**
  * Canonical model of the Soberanía Enterprise Evidence Bundle v1 (PR-005). An
@@ -18,6 +20,14 @@ import type { KernelDecisionStatus } from '../../kernel/index.js';
 export const AOC_EVIDENCE_BUNDLE_VERSION = '1.0.0';
 
 export const EVIDENCE_BUNDLE_SCHEMA_VERSION = 'evidence.bundle.v1';
+
+/**
+ * ASSURE-01: the trace-bearing bundle. A v2 bundle carries, beside every v1
+ * section, the disclosed Unified Authority-to-Outcome Trace of its request and
+ * that trace's digest. v1 bundles are never reinterpreted: their bytes, digests
+ * and verification are exactly what they were (`verifier.ts`).
+ */
+export const EVIDENCE_BUNDLE_SCHEMA_VERSION_V2 = 'evidence.bundle.v2';
 
 /** Projection engine identity, carried in every Bundle's provenance so the projection itself stays auditable. */
 export const EVIDENCE_PROJECTION_ENGINE_VERSION = 'aoc.evidence-projector.v1';
@@ -82,9 +92,10 @@ export interface EvidenceDisclosureMetadata {
   readonly level: DisclosureLevel;
   readonly policyId: string;
   readonly policyVersion: string;
-  readonly visibleFields: readonly EvidenceFieldKey[];
-  readonly hiddenFields: readonly EvidenceFieldKey[];
-  readonly redactedFields: readonly EvidenceFieldKey[];
+  /** v1 bundles name only `EvidenceFieldKey`s; v2 bundles may also name the trace fields (`trace-disclosure.ts`). */
+  readonly visibleFields: readonly string[];
+  readonly hiddenFields: readonly string[];
+  readonly redactedFields: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +174,8 @@ export interface EvidenceIntegrityMetadata {
   readonly canonicalizationVersion: string;
   readonly bundleDigest: string;
   readonly recordDigest: string;
+  /** v2 only: the digest of the disclosed trace this bundle carries. Absent on every v1 bundle. */
+  readonly traceDigest?: string;
   readonly verificationDigest: string;
 }
 
@@ -202,6 +215,8 @@ export interface EvidenceBundle {
   readonly evidence: EvidenceContent;
   readonly verification: EvidenceProvenance;
   readonly references: readonly EvidenceReference[];
+  /** v2 only (ASSURE-01): the disclosed Unified Authority-to-Outcome Trace of `source.requestId`. Absent on every v1 bundle. */
+  readonly trace?: DisclosedAuthorityTrace;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +231,13 @@ export interface EvidenceBundleRecord {
   readonly bundle: EvidenceBundle;
   readonly state: EvidenceBundleState;
   readonly storedAt: string;
+  /**
+   * The organization that owns the Bundle (its source record's), kept by the
+   * store apart from the Bundle's disclosed content — so a Bundle whose policy
+   * hides the organization is still readable by that organization, and only by
+   * it. Never serialized onto the wire.
+   */
+  readonly organizationId?: string;
   /** Present only when `state === 'SUPERSEDED'` -- the bundleId of the replacement Bundle a changed disclosure policy produced. */
   readonly supersededBy?: string;
 }
@@ -247,7 +269,24 @@ export interface EvidenceVerificationResult {
     readonly policyMatch: boolean;
     readonly versionSupported: boolean;
     readonly complete: boolean;
+    /** v2 only: the carried trace recomputes to `integrity.traceDigest`. */
+    readonly traceDigest?: boolean;
+    /** v2 only: the carried trace is not contradicted by the canonical records now (it may have progressed). Absent when no canonical trace could be rebuilt. */
+    readonly traceConsistent?: boolean;
+    /** v2 only: the canonical trace rebuilt now verifies (integrity, correlation, completeness). */
+    readonly sourceTraceVerified?: boolean;
   };
   readonly verifiedAt: string;
   readonly failures: readonly EvidenceIntegrityFailure[];
+  /**
+   * v2 only. Freshness, reported apart from integrity: `current` when the
+   * carried trace is exactly what the canonical records disclose now,
+   * `superseded-by-later-facts` when the request has since moved on without
+   * contradicting anything the bundle states.
+   */
+  readonly freshness?: 'current' | 'superseded-by-later-facts' | 'unknown';
+  /** v2 only: the stage-by-stage comparison against the canonical trace rebuilt now. */
+  readonly traceComparison?: TraceComparisonResult;
+  /** v2 only: the structured verification of the canonical trace rebuilt now. */
+  readonly sourceTrace?: AuthorityTraceVerification;
 }

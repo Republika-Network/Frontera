@@ -41,6 +41,9 @@ export type EnterpriseHttpErrorCode =
   | 'EVIDENCE_TENANT_SCOPE_REQUIRED'
   | 'EVIDENCE_STORE_UNAVAILABLE'
   | 'EVIDENCE_BUNDLE_ALREADY_EXISTS'
+  | 'EVIDENCE_TRACE_NOT_FOUND'
+  | 'EVIDENCE_TRACE_TOO_LARGE'
+  | 'EVIDENCE_STORE_CORRUPT'
   /** Agent Passport Runtime error codes surfaced on the wire (PR-006), mirroring how Governance Store and Evidence errors are handled. */
   | 'PASSPORT_NOT_FOUND'
   | 'PASSPORT_ALREADY_EXISTS'
@@ -169,7 +172,12 @@ export function mapEvidenceErrorToHttp(error: EvidenceError): EnterpriseHttpErro
       return new EnterpriseHttpError(400, error.code, error.message);
     case 'EVIDENCE_SOURCE_RECORD_NOT_FOUND':
     case 'EVIDENCE_BUNDLE_NOT_FOUND':
+    case 'EVIDENCE_TRACE_NOT_FOUND':
       return new EnterpriseHttpError(404, error.code, error.message);
+    case 'EVIDENCE_TRACE_TOO_LARGE':
+      return new EnterpriseHttpError(422, error.code, error.message);
+    case 'EVIDENCE_STORE_CORRUPT':
+      return new EnterpriseHttpError(500, error.code, 'An Evidence Bundle failed its integrity checks and was not returned.');
     case 'EVIDENCE_ACCESS_SCOPE_VIOLATION':
     case 'EVIDENCE_TENANT_SCOPE_REQUIRED':
       return new EnterpriseHttpError(403, error.code, error.message);

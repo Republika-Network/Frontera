@@ -58,6 +58,8 @@ export interface EnterpriseHealthPosture {
   readonly obligations: 'durable' | 'ephemeral' | 'not-configured';
   /** CORE-05: the approval store's kind, or `not-configured` when no Governance Profile declares an approval requirement. */
   readonly approvals: 'durable' | 'ephemeral' | 'not-configured';
+  /** ASSURE-01: the Evidence Bundle Store's provider — `durable` (SQLite) or `ephemeral` (process memory). A secure Host requires `durable`. */
+  readonly evidenceStore: 'durable' | 'ephemeral';
   /**
    * CORE-02: the custody of the authority signing key behind the composed
    * durable grant store. `external` — this process holds no authority private

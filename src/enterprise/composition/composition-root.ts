@@ -18,6 +18,10 @@ import type { GovernanceStore } from '../governance-store/governance-store.js';
 import type { GovernanceEnterpriseContext } from '../governance-store/contracts.js';
 import { createGovernanceReadService, type GovernanceReadService } from '../orchestration/governance-read-service.js';
 import { createInMemoryEvidenceStore, type EvidenceStore } from '../evidence/evidence-store.js';
+import { createSqliteEvidenceStore } from '../evidence/sqlite-evidence-store.js';
+import type { AuthorityTraceSources } from '../evidence/trace-builder.js';
+import type { ObligationDischargeCorrelation } from '../obligation-discharge/contracts.js';
+import { createEvidenceStoreModule } from '../modules/evidence-store-module.js';
 import { createEvidenceService, type EvidenceService } from '../evidence/evidence-service.js';
 import { createInMemoryPassportStore } from '../passport/in-memory-passport-store.js';
 import { createSqlitePassportStore } from '../passport/sqlite-passport-store.js';
@@ -1816,7 +1820,14 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       );
     }
   }
-  const evidenceStore = options.evidenceStore ?? createInMemoryEvidenceStore({ now: kernelProviders.clock.now });
+  // ASSURE-01: the durable Evidence Bundle Store whenever persistence is
+  // durable — its own file, never the Governance Store. In-memory otherwise.
+  const evidenceStore: EvidenceStore =
+    options.evidenceStore ??
+    (configuration.persistence.provider === 'sqlite'
+      ? await createSqliteEvidenceStore(configuration.evidence.sqlitePath, { now: kernelProviders.clock.now, busyTimeoutMs: configuration.persistence.busyTimeoutMs })
+      : createInMemoryEvidenceStore({ now: kernelProviders.clock.now }));
+  if (options.evidenceStore === undefined) opened.push(() => evidenceStore.close());
   const passportStore = options.passportStore ?? (await buildPassportStore(configuration, kernelProviders.clock.now, eventIdGenerator.nextId));
   if (options.passportStore === undefined) opened.push(() => passportStore.close());
   const assuranceStore = options.assuranceStore ?? (await buildAssuranceStore(configuration, kernelProviders.clock.now));
@@ -2286,6 +2297,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   registry.register(createTelemetryModule(telemetry, configuration.telemetry.enabled, kernelProviders.clock.now));
   registry.register(createEventsModule(eventPublisher, configuration.eventPublishing.enabled, kernelProviders.clock.now));
   registry.register(createGovernanceStoreModule(persistence, kernelProviders.clock.now));
+  registry.register(createEvidenceStoreModule(evidenceStore, kernelProviders.clock.now));
   registry.register(createProvidersModule(kernelProviders, kernelProviders.clock.now, options.policyPackProvider !== undefined));
   registry.register(createKernelModule(kernel, kernelProviders.clock.now));
   if (authorityControlledExecution !== undefined && options.authorityControlledExecution !== undefined) {
@@ -2456,12 +2468,36 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         });
 
   const governanceReads = createGovernanceReadService(persistence, configuration, telemetry);
+  // ASSURE-01: the trace is a projection over the canonical stores composed
+  // above, through each one's narrowest **read** — never a writer, signer,
+  // reconciler, approval command, adapter or Kernel. Each closure names exactly
+  // one read method (`trace-structure.test.ts` pins this block).
+  const traceSources: AuthorityTraceSources = {
+    governance: { getByRequestId: (context, requestId) => persistence.getByRequestId(context, requestId), verify: (context, evaluationId) => persistence.verify(context, evaluationId) },
+    ...(grantStore !== undefined ? { grants: { kind: isAuthenticatedDurableBoundedGrantStore(grantStore) ? 'authenticated-durable' : 'unauthenticated', read: (grantId: string) => grantStore.read(grantId) } } : {}),
+    ...(approvalStore !== undefined ? { approvals: { kind: approvalStore.kind, read: (organizationId: string, requestId: string) => approvalStore.read(organizationId, requestId) } } : {}),
+    ...(obligationDischargeStore !== undefined
+      ? { obligations: { kind: obligationDischargeStore.kind, read: (organizationId: string, correlation: ObligationDischargeCorrelation) => obligationDischargeStore.read(organizationId, correlation) } }
+      : {}),
+    ...(exerciseLedger !== undefined ? { reservations: { read: (reservationId: string) => exerciseLedger.read(reservationId) } } : {}),
+    ...(executionOutcomeStore !== undefined ? { outcomes: { read: (context: { readonly organizationId: string }, executionId: string) => executionOutcomeStore.read(context, executionId) } } : {}),
+    ...(executionResolutionStore !== undefined ? { resolutions: { read: (context: { readonly organizationId: string }, executionId: string) => executionResolutionStore.read(context, executionId) } } : {}),
+    ...(authorityEventStore !== undefined
+      ? {
+          events: {
+            readStream: (context: { readonly organizationId: string }, streamId: string) => authorityEventStore.readStream(context, streamId),
+            verifyStream: (context: { readonly organizationId: string }, streamId: string) => authorityEventStore.verifyStream(context, streamId),
+          },
+        }
+      : {}),
+  };
   const evidence = createEvidenceService({
     governanceStore: persistence,
     evidenceStore,
     configuration,
     now: kernelProviders.clock.now,
     nextId: eventIdGenerator.nextId,
+    traceSources,
   });
   const passports = createAgentPassportService({
     store: passportStore,
@@ -2632,6 +2668,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind === 'durable-authenticated' ? 'durable' : 'ephemeral',
     // CORE-05: likewise.
     approvals: approvalAuthority === undefined || governedActionOrchestrator === undefined ? 'not-configured' : approvalAuthority.storeKind === 'durable-authenticated' ? 'durable' : 'ephemeral',
+    // ASSURE-01: from the composed store, never from what was asked for.
+    evidenceStore: evidenceStore.providerKind === 'sqlite' ? 'durable' : 'ephemeral',
     // CORE-02: where the authority private key lives — `external` means not in this process.
     authoritySigner: composedSignerCustody,
     // CORE-07: from the composed boundary — `external` only when every durable

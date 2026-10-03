@@ -308,6 +308,27 @@ export const STORE_DEFINITIONS = Object.freeze([
     open: ({ factories }, path) => factories.controlPlane.createSqliteControlPlaneStore(path, {}),
     lossEffect: 'all issued agent credentials and active profiles lost (narrows); an older copy resurrects a revoked verifier (widens, residual)',
   },
+  {
+    name: 'evidence-bundles',
+    filename: 'evidence-bundles.sqlite',
+    envVar: 'AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH',
+    configKey: 'evidence.sqlitePath',
+    configPathOf: (config) => config.evidence.sqlitePath,
+    targetFilename: 'evidence-bundles.sqlite',
+    condition: 'always',
+    purpose: 'ASSURE-01 Evidence Bundles (v1 decision projections, v2 trace bundles) and their lifecycle',
+    version: { kind: 'versions-table', table: 'evidence_bundle_store_versions', migrationState: true },
+    supportedSchemaVersionsOf: ({ evidence }) => [evidence.EVIDENCE_STORE_SCHEMA_VERSION],
+    recordTable: 'evidence_bundles',
+    integrity: 'per-row SHA-256 digest over the exact bundle bytes plus each bundle\'s own digests; lifecycle replayed from an append-only log (unsigned)',
+    open: async ({ factories }, path) => {
+      const store = await factories.evidence.createSqliteEvidenceStore(path, { now: () => new Date().toISOString() });
+      // Every bundle, its digests and its lifecycle, re-verified on the scratch copy.
+      await store.verifyAll();
+      return store;
+    },
+    lossEffect: 'issued evidence bundles and their lifecycle lost (bundles can be rebuilt from the canonical records, but under new ids; a bundle a third party holds can no longer be looked up)',
+  },
 ]);
 
 /**
@@ -336,11 +357,6 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
     name: 'reference-authority-signer-key-file',
     envVar: 'FRONTERA_REFERENCE_SIGNER_KEY_FILE',
     reason: 'External-custody signer key: lives with the signer service, never with the Host data.',
-  },
-  {
-    name: 'evidence-bundle-store',
-    envVar: null,
-    reason: 'In-memory only; Evidence Bundles are deterministically rebuilt from the Governance Store.',
   },
   {
     name: 'policy-packs',
@@ -498,6 +514,7 @@ export async function loadRegistryModules(repoRoot) {
     obligations: await required('enterprise/obligation-discharge/contracts.js'),
     approvals: await required('enterprise/approval-authority/contracts.js'),
     controlPlane: await required('enterprise/operator-control/control-plane-store.js'),
+    evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
     authenticity: await required('enterprise/authority-authenticity/index.js'),
   };
   cachedModules.factories = {
@@ -510,6 +527,7 @@ export async function loadRegistryModules(repoRoot) {
     obligations: await required('enterprise/obligation-discharge/index.js'),
     approvals: await required('enterprise/approval-authority/index.js'),
     controlPlane: await required('enterprise/operator-control/control-plane-store.js'),
+    evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
   };
   return cachedModules;
 }
