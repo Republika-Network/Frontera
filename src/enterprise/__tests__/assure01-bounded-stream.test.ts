@@ -112,13 +112,17 @@ for (const [name, open] of providers) {
       materialized.rows = 0;
       const read = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
       assert.deepEqual(read, { outcome: 'exceeds-bound', maxEvents: BOUND, eventCount: BOUND + 1 });
-      assert.equal(materialized.rows, 0, 'no event row was materialized');
+      if (name === 'SQLite') assert.equal(materialized.rows, 0, 'no event row was materialized');
       assert.equal('events' in read, false, 'no events at all accompany a refusal');
     });
 
     it('another organization is refused — before, and regardless of, the stream’s size', async () => {
       const { store } = await open();
-      await filled(store, BOUND + 1);
+      await filled(store, 3);
+      materialized.rows = 0;
+      await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
+      if (name === 'SQLite') assert.equal(materialized.rows, 0, 'refused before any of its rows is loaded');
+      for (let index = 3; index < BOUND + 1; index += 1) await store.append(A, attempt(`aoc.exec:bounded-more-${index}`));
       await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
       await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: AUTHORITY_EVENT_STREAM_MAX_READ_BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
       await assert.rejects(store.readStreamBounded({} as never, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
@@ -171,17 +175,35 @@ describe('ASSURE-01 bounded stream read — the SQLite store sizes the stream be
     assert.equal(materialized.rows, 0);
   });
 
-  it('rows deleted under a high sequence, with the head rewritten short, do not shrink the stream below its highest sequence', async () => {
+  it('rows deleted and the head rewritten short: only the rows that exist are loaded (within the bound), and verification reports the fault', async () => {
     const path = freshPath();
     const store = await createSqliteAuthorityEventStreamStore(path, { now: steppingClock().now });
     stores.push(store);
     await filled(store, BOUND + 1);
-    // Rows deleted *and* the head rewritten short: neither the row count nor the
-    // head now says 257 — the highest surviving sequence still does.
     tamper(path, [`DELETE FROM authority_events WHERE stream_id = '${STREAM}' AND sequence BETWEEN 2 AND 100`, `UPDATE authority_event_stream_heads SET sequence = 1 WHERE stream_id = '${STREAM}'`]);
     materialized.rows = 0;
-    assert.deepEqual(await store.readStreamBounded(A, STREAM, { maxEvents: BOUND }), { outcome: 'exceeds-bound', maxEvents: BOUND, eventCount: BOUND + 1 });
-    assert.equal(materialized.rows, 0);
+    const read = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
+    assert.equal(read.outcome, 'within-bound');
+    assert.ok(read.outcome === 'within-bound');
+    assert.deepEqual([read.verification.valid, read.events.length], [false, 0], 'a cut stream is invalid, never a silent short read');
+    assert.equal(materialized.rows, BOUND + 1 - 99, 'exactly the rows that exist — never more than the bound');
+  });
+
+  it('a head or a sequence forged high is a chain fault reported with the real count — never disguised as an oversized stream', async () => {
+    const path = freshPath();
+    const store = await createSqliteAuthorityEventStreamStore(path, { now: steppingClock().now });
+    stores.push(store);
+    await filled(store, 5);
+    tamper(path, [`UPDATE authority_event_stream_heads SET sequence = 100000 WHERE stream_id = '${STREAM}'`]);
+    const raised = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
+    assert.equal(raised.outcome, 'within-bound');
+    assert.ok(raised.outcome === 'within-bound');
+    assert.equal(raised.verification.valid, false);
+    tamper(path, [`UPDATE authority_event_stream_heads SET sequence = 5 WHERE stream_id = '${STREAM}'`, `UPDATE authority_events SET sequence = 'Infinity' WHERE stream_id = '${STREAM}' AND sequence = 5`]);
+    const text = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
+    assert.equal(text.outcome, 'within-bound', 'a text sequence does not inflate the size');
+    assert.ok(text.outcome === 'within-bound');
+    assert.equal(text.verification.valid, false);
   });
 
   it('within the bound, a corrupted stream is reported as invalid with no events — never repaired, never partial', async () => {

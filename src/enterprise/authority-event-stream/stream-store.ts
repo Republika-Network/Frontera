@@ -28,8 +28,8 @@ export interface AuthorityEventStreamReader {
   verifyStream(context: AuthorityEventStreamAccessContext, streamId: string): Promise<AuthorityEventStreamVerification>;
   /**
    * Verify and read a whole stream only if it holds at most `maxEvents` events.
-   * The size is established from the stream's row count, highest sequence and
-   * sealed head before any event is loaded; a larger stream is refused
+   * The owner is checked and the events the stream actually holds are counted
+   * before any event is loaded; a larger stream is refused
    * (`exceeds-bound`) with none of its events materialized. Never truncates.
    * Tenant-confined like every read; a malformed bound is refused.
    */

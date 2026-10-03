@@ -306,8 +306,10 @@ export interface AuthorityEventStreamBoundedReadOptions {
  *   is exactly what `verifyStream` reports; `events` is the whole verified
  *   stream when it is valid, and empty when it is not.
  * - `exceeds-bound` — the stream holds more than `maxEvents` events, decided
- *   from the stream's own row count, highest sequence and sealed head **before
- *   any event is loaded**. No event of it was materialized.
+ *   from the number of events it actually holds, counted **before any event is
+ *   loaded**. No event of it was materialized. A head or a sequence that
+ *   disagrees with that count is a chain fault, reported by `verification`
+ *   (with the real count) — never disguised as size.
  */
 export type AuthorityEventStreamBoundedRead =
   | { readonly outcome: 'within-bound'; readonly verification: AuthorityEventStreamVerification; readonly events: readonly AuthorityEvent[] }

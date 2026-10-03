@@ -94,8 +94,9 @@ export function createInMemoryAuthorityEventStreamStore(options: InMemoryAuthori
       if (owner !== undefined && owner !== organizationId) {
         throw new AuthorityEventStreamError('AUTHORITY_EVENT_TENANT_VIOLATION', `The caller is not authorized to access authority event stream '${streamId}'.`);
       }
-      // Sized before anything is copied out.
-      const size = Math.max(held?.events.length ?? 0, held?.head?.head.sequence ?? 0);
+      // Sized by the events actually held, before anything is copied out; a head
+      // that disagrees is a chain fault for verification, not a size.
+      const size = held?.events.length ?? 0;
       if (size > maxEvents) return { outcome: 'exceeds-bound', maxEvents, eventCount: size };
       return boundedReadOf(streamId, load(streamId));
     },
