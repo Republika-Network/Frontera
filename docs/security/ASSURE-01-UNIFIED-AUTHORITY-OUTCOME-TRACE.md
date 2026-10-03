@@ -245,7 +245,7 @@ observations) is left as recorded.
 |---|---|
 | `GET /api/evidence/traces/{requestId}?level=…` | the trace disclosed at `level`; closed query (exactly one `level`); pure read |
 | `GET /api/evidence/traces/{requestId}/verify` | the structured verification; no query; pure read |
-| `POST /api/evidence/build` `{ requestId, level }` | a v2 bundle (additive: `{ evaluationId, level }` still builds v1, its unused fields still ignored as before; exactly one of the two; a v2 body is closed — unknown fields refused) |
+| `POST /api/evidence/build` `{ requestId, level }` | a v2 bundle (additive: `{ evaluationId, level }` still builds v1, its unused fields still ignored as before — except `requestId`, now the v2 discriminator, which must not accompany `evaluationId`; exactly one of the two; a v2 body is closed — unknown fields refused) |
 | `GET /api/evidence/{bundleId}`, `POST /api/evidence/verify` | unchanged routes; v2 verification adds the trace checks and freshness |
 
 API surface 56 → **58**. Authorization is the existing evidence rule
@@ -335,7 +335,7 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 
 - **Review 1, `8561c64`: 11 findings** (medium-high to low), all fixed in `151aaff`: a changed recorded fact could pass as progress; verification not disclosure-filtered; FULL requestable by any organization key; issuer and mechanism sub-fields at PARTNER/CUSTOMER; pre-P11 executions misread; the claim window and a lagging stream treated as contradictions; partial P8 payload checks; misleading final states under degraded stores; concurrent builds; a version-guard gap; free text in a closed-code field.
 - **Review 2, `151aaff`: 9 findings**, the substantive ones fixed in `0c61249`: the SQLite active-bundle query scanned the oldest rows of all versions; a fact committing mid-build could seal a false contradiction (P8 now read first); `unverifiable` mis-scoped and reported as contradiction; summaries unchecked against their records; a malformed legacy withheld row; the store-wide chain position disclosed below AUDITOR; more P8 fields. Informational items are recorded as residuals (§13): the summary presence map is disclosed by design; FULL v2 differs from AUDITOR only by v1 metadata counts.
-- **Final review, `dcbfcd8`:** no high finding; one medium code finding — the build route had begun refusing unknown fields on **v1** bodies, a v1 status change — fixed (v1 bodies ignore them again, as before; only v2 bodies are closed) with a regression test; the rest documentation accuracy, corrected. The production change after it touched only that validator; the mutation campaign and the full validation were re-run on the resulting commit (§12.4, §12.5).
+- **Final review, `dcbfcd8`:** no high finding; one medium code finding — the build route had begun refusing unknown fields on **v1** bodies, a v1 status change — fixed (v1 bodies ignore unused fields again, as before — except `requestId`, now the v2 discriminator, which must not accompany `evaluationId`; only v2 bodies are closed) with a regression test; the rest documentation accuracy, corrected. The production change after it touched only that validator; the mutation campaign and the full validation were re-run on the resulting commit (§12.4, §12.5).
 
 ### 12.4 Mutation campaign
 
