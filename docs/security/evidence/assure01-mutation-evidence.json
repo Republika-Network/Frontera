@@ -1,7 +1,7 @@
 {
  "format": "frontera.mutation-evidence.v1",
  "milestone": "ASSURE-01",
- "commit": "b608c27",
+ "commit": "952d4e7",
  "runner": "mutation-runner.mjs: per mutation, apply exact single-occurrence edits to the source, `npx tsc -b`, run the intended kill set with `node --test`, restore the original bytes and compare SHA-256",
  "killSet": [
   "dist/src/enterprise/__tests__/assure01-bounded-stream.test.js",
@@ -12,10 +12,10 @@
   "tests/portability-store-registry.structure.test.mjs"
  ],
  "baseline": {
-  "tests": 132,
-  "pass": 132,
+  "tests": 133,
+  "pass": 133,
   "fail": 0,
-  "note": "every ASSURE-01 suite (123 tests, the P12 host suite included) and the portability registry structure test (9), on the unmutated build"
+  "note": "every ASSURE-01 suite (124 tests, the P12 host suite included) and the portability registry structure test (9), on the unmutated build"
  },
  "srcTreeIdenticalAfterCampaign": true,
  "rebuiltAfterCampaign": true,
@@ -29,7 +29,8 @@
   "First run on 0c61249: 33 killed; M28 survived \u2014 the structural write-call detector missed an optional call (`.settle?.(`); fixed in f73e82f (detector matches `?.(`, self-tested). M8 did not apply and M11, M21, M34 did not compile (anchors moved or types narrowed by the review fixes); re-anchored.",
   "Full campaign re-run on f73e82f (production code identical to 0c61249): 38 of 38 killed.",
   "Re-run on a426d1a after the final review changed the evidence build validator (v1 bodies lenient again): 38 of 38 killed; source tree identical; baseline 115/115.",
-  "P8 bounded read (505f716, 7f4bd9d): M39 \u2026 M45 added; M9 re-anchored. Complete campaign on 7f4bd9d: 44 of 45 killed \u2014 M41 (size from row count and head only) survived because the deleted-rows case kept its head; the case was strengthened (b608c27). Complete campaign re-run on b608c27: 45 of 45 killed; source tree identical; baseline 132/132."
+  "P8 bounded read (505f716, 7f4bd9d): M39 \u2026 M45 added; M9 re-anchored. Complete campaign on 7f4bd9d: 44 of 45 killed \u2014 M41 (size from row count and head only) survived because the deleted-rows case kept its head; the case was strengthened (b608c27). Complete campaign re-run on b608c27: 45 of 45 killed; source tree identical; baseline 132/132.",
+  "Review of f895e5a: sizing from the head or MAX(sequence) disguised a forged head or sequence as size; 952d4e7 sizes by COUNT(*) only and refuses a foreign stream before loading. M39/M40/M41/M45 re-defined for the new code (M40 head sizing, M41 MAX(sequence) sizing, M45 owner after load). Complete campaign on 952d4e7: 45 of 45 killed; source tree identical; baseline 133/133."
  ],
  "mutations": [
   {
@@ -82,7 +83,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 14.1,
+   "durationS": 14.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -129,7 +130,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 11.6,
+   "durationS": 11,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -172,7 +173,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -215,7 +216,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -258,7 +259,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.3,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -301,7 +302,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 4.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -344,7 +345,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.3,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -387,7 +388,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.8,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -430,7 +431,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6.5,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -473,7 +474,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.7,
+   "durationS": 4.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -516,7 +517,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6.4,
+   "durationS": 5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -567,7 +568,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.7,
+   "durationS": 4.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -627,7 +628,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.4,
+   "durationS": 10.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -679,7 +680,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.9,
+   "durationS": 11.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -722,7 +723,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 4.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -777,7 +778,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.4,
+   "durationS": 5.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -820,7 +821,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6.7,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/verifier.ts",
@@ -863,7 +864,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 9.2,
+   "durationS": 7.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -906,7 +907,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 9.1,
+   "durationS": 8.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -949,7 +950,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.6,
+   "durationS": 8.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -992,7 +993,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.2,
+   "durationS": 8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1052,7 +1053,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.9,
+   "durationS": 11.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1095,7 +1096,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 9,
+   "durationS": 8.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1138,7 +1139,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.7,
+   "durationS": 7.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -1190,7 +1191,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.6,
+   "durationS": 7.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1250,7 +1251,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 7.4,
+   "durationS": 7,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1316,7 +1317,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 11.5,
+   "durationS": 10,
    "sha256": [
     {
      "file": "scripts/portability/store-registry.mjs",
@@ -1359,7 +1360,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.6,
+   "durationS": 4.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1402,7 +1403,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6.1,
+   "durationS": 5,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1445,7 +1446,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 13.1,
+   "durationS": 11,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -1488,7 +1489,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 13,
+   "durationS": 11.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1531,7 +1532,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.4,
+   "durationS": 10.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1583,7 +1584,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 12.4,
+   "durationS": 11.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1634,7 +1635,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.9,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1677,7 +1678,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.3,
+   "durationS": 7.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1728,7 +1729,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.8,
+   "durationS": 5.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1771,7 +1772,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.9,
+   "durationS": 4.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1814,7 +1815,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 5.3,
+   "durationS": 4.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1831,7 +1832,7 @@
    "edits": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "find": "    if (size > maxEvents) return { kind: 'exceeds', owner, size };\n",
+     "find": "    if (!Number.isSafeInteger(size) || size > maxEvents) return { kind: 'exceeds', size };\n",
      "replace": ""
     }
    ],
@@ -1840,9 +1841,9 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 15,
-    "passed": 10,
-    "failed": 5,
+    "total": 16,
+    "passed": 12,
+    "failed": 4,
     "cancelled": 0,
     "exitCode": 1
    },
@@ -1864,34 +1865,34 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "rows deleted under a high sequence, with the head rewritten short, do not shrink the stream below its highest sequence",
-     "failure": "Expected values to be strictly deep-equal:"
+     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
+     "failure": "2 subtests failed'"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
-     "failure": "3 subtests failed'"
+     "test": "a request with 257 events is refused as too large; with 256 its whole stream is in the trace",
+     "failure": "Expected values to be strictly equal:"
     }
    ],
    "result": "KILLED",
-   "durationS": 27.2,
+   "durationS": 26,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "before": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
-     "after": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
+     "before": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "after": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
      "restored": true
     }
    ]
   },
   {
    "id": "M40",
-   "change": "SQLite bounded read sized from the sealed head only",
-   "property": "a rewritten head cannot shrink the bound",
+   "change": "SQLite bounded read sized from the sealed head (a forged head disguised as size)",
+   "property": "a chain fault is never disguised as size",
    "edits": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "find": "    const size = Math.max(Number(sized.n) || 0, Number(sized.m) || 0, Number(headRow?.sequence) || 0);",
-     "replace": "    const size = Math.max(0, Number(headRow?.sequence) || 0);"
+     "find": "    const size = Number((selectStreamSize.get(streamId) as { n: unknown }).n);",
+     "replace": "    const size = Math.max(Number((selectStreamSize.get(streamId) as { n: unknown }).n), Number(headRow?.sequence) || 0);"
     }
    ],
    "killSet": [
@@ -1899,63 +1900,16 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 15,
-    "passed": 13,
-    "failed": 2,
-    "cancelled": 0,
-    "exitCode": 1
-   },
-   "killedBy": [
-    {
-     "test": "a head rewritten to claim a short stream does not let the full stream through: the row count still decides",
-     "failure": "Expected values to be strictly equal:"
-    },
-    {
-     "test": "rows deleted under a high sequence, with the head rewritten short, do not shrink the stream below its highest sequence",
-     "failure": "Expected values to be strictly deep-equal:"
-    },
-    {
-     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
-     "failure": "2 subtests failed'"
-    }
-   ],
-   "result": "KILLED",
-   "durationS": 28.9,
-   "sha256": [
-    {
-     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "before": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
-     "after": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
-     "restored": true
-    }
-   ]
-  },
-  {
-   "id": "M41",
-   "change": "SQLite bounded read sized from the row count only (highest sequence ignored)",
-   "property": "deleted rows cannot shrink the bound",
-   "edits": [
-    {
-     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "find": "    const size = Math.max(Number(sized.n) || 0, Number(sized.m) || 0, Number(headRow?.sequence) || 0);",
-     "replace": "    const size = Math.max(Number(sized.n) || 0, 0, Number(headRow?.sequence) || 0);"
-    }
-   ],
-   "killSet": [
-    "dist/src/enterprise/__tests__/assure01-bounded-stream.test.js"
-   ],
-   "compiled": true,
-   "tests": {
-    "total": 15,
-    "passed": 14,
+    "total": 16,
+    "passed": 15,
     "failed": 1,
     "cancelled": 0,
     "exitCode": 1
    },
    "killedBy": [
     {
-     "test": "rows deleted under a high sequence, with the head rewritten short, do not shrink the stream below its highest sequence",
-     "failure": "Expected values to be strictly deep-equal:"
+     "test": "a head or a sequence forged high is a chain fault reported with the real count \u2014 never disguised as an oversized stream",
+     "failure": "Expected values to be strictly equal:"
     },
     {
      "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
@@ -1963,12 +1917,59 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 27,
+   "durationS": 25.7,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "before": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
-     "after": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
+     "before": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "after": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M41",
+   "change": "SQLite bounded read sized by the highest sequence (a forged sequence disguised as size)",
+   "property": "a chain fault is never disguised as size",
+   "edits": [
+    {
+     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
+     "find": "`SELECT COUNT(*) AS n FROM authority_events WHERE stream_id = ?`",
+     "replace": "`SELECT MAX(sequence) AS n FROM authority_events WHERE stream_id = ?`"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/assure01-bounded-stream.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 16,
+    "passed": 14,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "rows deleted and the head rewritten short: only the rows that exist are loaded (within the bound), and verification reports the fault",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "a head or a sequence forged high is a chain fault reported with the real count \u2014 never disguised as an oversized stream",
+     "failure": "a text sequence does not inflate the size"
+    },
+    {
+     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
+     "failure": "2 subtests failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 24.8,
+   "sha256": [
+    {
+     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
+     "before": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "after": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
      "restored": true
     }
    ]
@@ -1989,8 +1990,8 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 15,
-    "passed": 13,
+    "total": 16,
+    "passed": 14,
     "failed": 2,
     "cancelled": 0,
     "exitCode": 1
@@ -2010,12 +2011,12 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 29.9,
+   "durationS": 25.9,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/in-memory-authority-event-stream-store.ts",
-     "before": "bfe094403c5730f083cc70f399f8604f540b56b62c0259fd97d79654813665f3",
-     "after": "bfe094403c5730f083cc70f399f8604f540b56b62c0259fd97d79654813665f3",
+     "before": "2426f9b89cadd721d10f6582aa7050407a64ef663c55d5693106bd628c2ab9e0",
+     "after": "2426f9b89cadd721d10f6582aa7050407a64ef663c55d5693106bd628c2ab9e0",
      "restored": true
     }
    ]
@@ -2036,8 +2037,8 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 15,
-    "passed": 13,
+    "total": 16,
+    "passed": 14,
     "failed": 2,
     "cancelled": 0,
     "exitCode": 1
@@ -2061,12 +2062,12 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 28.1,
+   "durationS": 24.8,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/stream-store.ts",
-     "before": "a9782dbc3b0136784f60b72a3910d3dbbd605fc597b24efce79c122d506d9376",
-     "after": "a9782dbc3b0136784f60b72a3910d3dbbd605fc597b24efce79c122d506d9376",
+     "before": "0b835416f2c4eefb7ca0ff37a739cf9af64badeb51b1bcba9be10f4a67b9dfb4",
+     "after": "0b835416f2c4eefb7ca0ff37a739cf9af64badeb51b1bcba9be10f4a67b9dfb4",
      "restored": true
     }
    ]
@@ -2113,7 +2114,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 6.6,
+   "durationS": 4.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -2125,13 +2126,18 @@
   },
   {
    "id": "M45",
-   "change": "SQLite bounded read refused on another organization only after the size answer",
-   "property": "tenant before size",
+   "change": "SQLite bounded read checks the owner only after loading the rows",
+   "property": "tenant before load",
    "edits": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "find": "      if (loaded.owner !== undefined && loaded.owner !== organizationId) {",
-     "replace": "      if (loaded.kind !== 'exceeds' && loaded.owner !== undefined && loaded.owner !== organizationId) {"
+     "find": "    if (owner !== undefined && owner !== organizationId) return { kind: 'foreign' };\n",
+     "replace": ""
+    },
+    {
+     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
+     "find": "      if (loaded.kind === 'foreign') {",
+     "replace": "      if (loaded.kind === 'foreign' || (loaded.kind === 'loaded' && (loaded.stream.head?.head.organizationId ?? loaded.stream.events[0]?.organizationId) !== organizationId && (loaded.stream.events.length > 0 || loaded.stream.head !== undefined))) {"
     }
    ],
    "killSet": [
@@ -2139,8 +2145,8 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 15,
-    "passed": 14,
+    "total": 16,
+    "passed": 15,
     "failed": 1,
     "cancelled": 0,
     "exitCode": 1
@@ -2148,7 +2154,7 @@
    "killedBy": [
     {
      "test": "another organization is refused \u2014 before, and regardless of, the stream\u2019s size",
-     "failure": "Missing expected rejection.'"
+     "failure": "refused before any of its rows is loaded"
     },
     {
      "test": "ASSURE-01 bounded stream read \u2014 SQLite store",
@@ -2156,12 +2162,12 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 42.1,
+   "durationS": 23.4,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "before": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
-     "after": "37d0f3a85c9534f7a600cca4d4ac27a3da1d9f09577bc7733d5fea7341beb95a",
+     "before": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "after": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
      "restored": true
     }
    ]

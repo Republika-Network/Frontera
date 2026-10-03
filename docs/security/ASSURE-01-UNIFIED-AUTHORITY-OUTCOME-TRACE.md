@@ -284,24 +284,31 @@ lives. The P8 event stream was the one unbounded read (its store loaded a whole
 request stream before anything could size it); ASSURE-01 adds a generic bounded
 read to the P8 reader, `readStreamBounded(context, streamId, { maxEvents })`:
 
-- inside one read transaction the store sizes the stream from its **row count**,
-  its **highest sequence** and its **sealed head** — index reads only — and
-  refuses a stream over the bound (`exceeds-bound`, with its size) before a
-  single event row is selected; the load itself is capped one past the bound;
+- inside one read transaction the store first refuses another organization's
+  stream (its owner read from the sealed head, or the first event's
+  organization), then **counts the events the stream actually holds** and
+  refuses a stream over the bound (`exceeds-bound`, with that count) before any
+  event is loaded; the load itself is capped one past the bound. Only the count
+  decides: a head or a sequence forged to disagree with it is a chain fault,
+  reported by verification (invalid, real count) — never disguised as size;
 - within the bound it returns the **complete** verified stream, or an invalid
   verification with no events — never a prefix, a suffix or a sample;
-- a foreign organization is refused before its size is told; the bound must be
-  an integer from 1 to 10 000;
+- the bound must be an integer from 1 to 10 000;
 - the trace reads the stream only through it, at its fixed bound (256); no HTTP
   query carries a bound (the trace query admits `level` only).
 
 Proof (`assure01-bounded-stream.test.ts`, both stores): 256 events read
 complete; 257 refused; a probe on the rows SQLite actually returns (shared with
 the store) shows the unbounded read materializes every row of a 257-event
-stream and the bounded read **none** — also with every row made unparseable,
-with the head rewritten short, and with rows deleted and the head rewritten
-(the highest sequence still decides); malformed and excessive bounds refused;
-the trace refuses the 257th event without loading the stream. Grants (16),
+stream and the bounded read **none** — also with every row made unparseable
+and with the head rewritten short; a foreign organization is refused with no
+row loaded; rows deleted with the head rewritten short load only the rows that
+exist and verify invalid; a head or sequence forged high (including a text
+`'Infinity'` sequence) is reported invalid, not as size; malformed and
+excessive bounds refused; the trace refuses the 257th event without loading the
+stream. The probe counts rows returned through `Statement.all` (the store's
+load path); the in-memory provider holds its events in memory and is checked by
+outcome only. Grants (16),
 approval and discharge rows (256) are bounded by the trace; bundle lists by
 `LIMIT 100`. Not claimed: protection against database growth, many concurrent
 requests or resource exhaustion elsewhere (PROD-04).
@@ -358,8 +365,8 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 | `assure01-trace-builder.test.ts` | 64 | one corruption at a time (wrong joins, deleted and fabricated components, unreadable stores, summaries, payloads, read order, degraded stores, legacy pre-P11), disclosure and comparison at every level, v2 verification, historical v1 bundles |
 | `assure01-evidence-store.test.ts` | 14 | restart, no overwrite, races, immutable content, re-sealed row, lifecycle and its log, tenant ownership, bounded lists, schema guard, health/close, in-memory contract |
 | `assure01-trace-structure.test.ts` | 12 | no write path (self-tested detectors), one read per store, no unbounded stream read, no domain vocabulary, bounds, durable composition, registry |
-| `assure01-bounded-stream.test.ts` | 15 | §11a, both stores and the trace |
-| **Total** | **123** | |
+| `assure01-bounded-stream.test.ts` | 16 | §11a, both stores and the trace |
+| **Total** | **124** | |
 
 ### 12.3 Independent adversarial reviews
 
@@ -369,7 +376,7 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 
 ### 12.4 Mutation campaign
 
-45 mutations, **45 killed** on `b608c27` — the final production code (after it, documentation only) (`docs/security/evidence/assure01-mutation-evidence.json`):
+45 mutations, **45 killed** on `952d4e7` — the final production code (after it, documentation only) (`docs/security/evidence/assure01-mutation-evidence.json`):
 each an executable edit that compiled, killed by its intended test, restored
 byte for byte (source tree identical after the campaign; baseline 115/115). They
 cover every attack the milestone named — organization check removed, wrong
@@ -382,7 +389,7 @@ schema mismatch ignored, supersession immutability broken, disclosure filter
 removed, unresolved turned into completed, resolution from another execution,
 unbounded listing; the "adapter call during verification" attack is represented by a write call (M28) and a grant writer handed to the trace (M29), since no adapter is reachable from it at all — plus the review fixes. The first run (on `0c61249`) left
 one survivor, M28: the structural detector missed an optional call; the
-detector was fixed (`f73e82f`) and the whole campaign re-run. The P8 bounded read added M39 … M45 (size check removed, head-only and count-only sizing, in-memory bound removed, any number accepted as a bound, the trace at a larger bound, tenant check after the size answer); the first complete run left M41 surviving (the deleted-rows case kept its head), the case was strengthened and the complete campaign re-run: 45 of 45.
+detector was fixed (`f73e82f`) and the whole campaign re-run. The P8 bounded read added M39 … M45 (size check removed, head-only and count-only sizing, in-memory bound removed, any number accepted as a bound, the trace at a larger bound, tenant check after the size answer); the first complete run left M41 surviving (the deleted-rows case kept its head), the case was strengthened and the complete campaign re-run (45 of 45 on `b608c27`). A review of the bounded read then found that sizing from the head or the highest sequence disguised a forged head or sequence as size; the store now sizes by the events it holds and refuses a foreign stream before loading (`952d4e7`), M40 / M41 / M45 were re-defined for that code (head sizing, highest-sequence sizing, owner after load), and the complete campaign was re-run: **45 of 45**.
 
 ### 12.5 Validation
 
@@ -393,10 +400,11 @@ endpoints (2 added), release docs, SDK surface green; protocol tarball
 validation against the vendored, lock-pinned tarball and the compatibility lock
 green; portability smoke green; legal report pre-existing advisories only;
 `git diff --check` clean, no conflict markers. After `dcbfcd8`, the final review's
-validator fix (`a426d1a`), the P8 bounded read (`505f716` … `b608c27`) and
+validator fix (`a426d1a`), the P8 bounded read (`505f716` … `952d4e7`) and
 documentation changed; the regression set (P8, ASSURE-01, PROD-02, CORE-06
 matrix, invariants, no-bypass, structure, API freeze) passed on the bounded
-read, and the final commit's own clean-export run is reported, with its SHA, in
+read; a review of it (`f895e5a`) led to count-only sizing and tenant-before-load
+(`952d4e7`), and the final commit's own clean-export run is reported, with its SHA, in
 the milestone report.
 <!-- /assure01:evidence -->
 
