@@ -61,8 +61,27 @@ export interface StoreEvidenceBundleOptions {
    * to `bundle.source.organizationId` (the pre-ASSURE-01 behaviour).
    */
   readonly organizationId?: string;
-  /** Bundles this one replaces (ASSURE-01: an earlier bundle of the same request and policy). */
+  /** Bundles this one replaces (they must belong to the same organization and request). */
   readonly supersedes?: readonly string[];
+  /**
+   * ASSURE-01: supersede, in the same atomic step, every bundle of the same
+   * organization and request that is still active under this bundle version
+   * and disclosure policy — so two concurrent builds can never leave two active
+   * bundles for one request and policy.
+   */
+  readonly supersedeActive?: boolean;
+}
+
+/** Whether `candidate` is an active bundle `bundle` replaces under `supersedeActive`. */
+export function isActivePredecessor(candidate: EvidenceBundleRecord, bundle: EvidenceBundle, organizationId: string | undefined): boolean {
+  return (
+    candidate.state !== 'SUPERSEDED' &&
+    candidate.bundle.bundleId !== bundle.bundleId &&
+    candidate.organizationId === organizationId &&
+    candidate.bundle.source.requestId === bundle.source.requestId &&
+    candidate.bundle.bundleVersion === bundle.bundleVersion &&
+    candidate.bundle.disclosure.policyId === bundle.disclosure.policyId
+  );
 }
 
 export interface EvidenceStoreHealth {
@@ -146,7 +165,8 @@ export function createInMemoryEvidenceStore(options: CreateEvidenceStoreOptions 
         throw new EvidenceError('EVIDENCE_BUNDLE_ALREADY_EXISTS', `bundleId '${bundle.bundleId}' was already stored; Bundles are immutable and never overwritten.`);
       }
       const organizationId = storeOptions.organizationId ?? bundle.source.organizationId;
-      const supersedes = storeOptions.supersedes ?? [];
+      const active = storeOptions.supersedeActive === true ? order.map((id) => bundlesById.get(id)).filter((entry): entry is EvidenceBundleRecord => entry !== undefined && isActivePredecessor(entry, bundle, organizationId)).map((entry) => entry.bundle.bundleId) : [];
+      const supersedes = [...new Set([...(storeOptions.supersedes ?? []), ...active])];
       for (const id of supersedes) {
         const previous = requireStored(id);
         if (previous.organizationId !== organizationId || previous.bundle.source.requestId !== bundle.source.requestId) {

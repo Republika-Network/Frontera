@@ -239,6 +239,14 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   }
   const attempt = outcomeRecord?.attempt;
   const terminal = outcomeRecord?.terminal;
+  // An execution claimed and answered before P11 existed: the Governance
+  // outcome summary (no digest) is its only — and its replay — record. It is
+  // shown as that summary, never as an execution with no answer.
+  const legacySummary =
+    executionId !== undefined && claimRef !== undefined && attempt === undefined && outcomeReadFailure === undefined && sources.outcomes !== undefined && outcomeRef?.externalVersion !== undefined && outcomeRef.digest === undefined
+      ? outcomeRef.externalVersion
+      : undefined;
+  if (legacySummary !== undefined) check('contract.pre-p11-execution-summary', 'contract', true, 'legacy-governance-summary');
 
   // -- authority: grants and revocations ---------------------------------------
   const grantIds = [...new Set([...authorizationRefs.map((entry) => entry.externalId), ...(attempt !== undefined ? [attempt.boundedGrantId] : [])])].sort();
@@ -286,8 +294,10 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
       check(`authenticity.grant-signature:${grantId}`, 'authenticity', false, failureCode(error));
     }
   }
+  // A write-ahead claim is only ever made under an issued grant: a claim with no grant is a missing grant.
+  if (claimRef !== undefined && grants.length === 0) check('completeness.grant-for-claim', 'completeness', false, 'claim-without-authorization');
   const authority: AuthorityTraceAuthorityStage = {
-    presence: !executable ? 'not-applicable' : grants.length === 0 ? 'not-reached' : grants.some((grant) => grant.presence === 'unreadable') ? 'unreadable' : grants.some((grant) => grant.presence === 'missing') ? 'missing' : grants.every((grant) => grant.presence === 'not-composed') ? 'not-composed' : 'recorded',
+    presence: !executable ? 'not-applicable' : grants.length === 0 ? (claimRef !== undefined ? 'missing' : 'not-reached') : grants.some((grant) => grant.presence === 'unreadable') ? 'unreadable' : grants.some((grant) => grant.presence === 'missing') ? 'missing' : grants.every((grant) => grant.presence === 'not-composed') ? 'not-composed' : 'recorded',
     ...(sources.grants !== undefined ? { storeKind: sources.grants.kind } : {}),
     grants,
   };
@@ -303,6 +313,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     if (sources.outcomes === undefined) attemptPresence = 'not-composed';
     else if (outcomeReadFailure !== undefined) attemptPresence = 'unreadable';
     else if (attempt !== undefined) attemptPresence = 'recorded';
+    else if (legacySummary !== undefined) attemptPresence = 'none-recorded';
     else attemptPresence = claimRef !== undefined ? 'missing' : 'not-reached';
     if (attemptPresence === 'missing') check('completeness.execution-attempt', 'completeness', false, 'claimed-without-attempt');
     if (attempt !== undefined) {
@@ -313,7 +324,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
       );
     }
     execution = {
-      presence: claimRef !== undefined && attemptPresence === 'recorded' ? 'recorded' : attemptPresence === 'recorded' ? 'not-reached' : attemptPresence,
+      presence: claimRef !== undefined && (attemptPresence === 'recorded' || legacySummary !== undefined) ? 'recorded' : attemptPresence === 'recorded' ? 'not-reached' : attemptPresence,
       executionId,
       claim: claimRef !== undefined ? { presence: 'recorded', claimedAt: claimRef.createdAt } : { presence: 'not-reached' },
       attempt: {
@@ -365,6 +376,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     if (terminal !== undefined) check('correlation.outcome-requires-claim', 'correlation', false, 'observation-without-claim');
   } else if (outcomeReadFailure !== undefined) outcome = { presence: 'unreadable', readFailure: outcomeReadFailure };
   else if (sources.outcomes === undefined) outcome = { presence: 'not-composed', ...(outcomeRef?.externalVersion !== undefined ? { governanceSummary: outcomeRef.externalVersion } : {}) };
+  else if (terminal === undefined && legacySummary !== undefined) outcome = { presence: 'recorded', governanceSummary: legacySummary, legacy: true };
   else if (terminal === undefined) {
     // The claim stands with no initial observation. The Governance summary is
     // written only after the canonical observation committed — so a summary
@@ -397,7 +409,12 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
 
   // -- P12 binding and resolution ----------------------------------------------
   const claimed = claimRef !== undefined;
-  const resolutionEligible = claimed && outcomeReadFailure === undefined && (terminal === undefined || (terminal.observation.kind === 'provider' && terminal.observation.certainty === 'unconfirmed'));
+  const resolutionEligible =
+    claimed &&
+    outcomeReadFailure === undefined &&
+    (legacySummary !== undefined
+      ? legacySummary.startsWith('execution-unconfirmed')
+      : terminal === undefined || (terminal.observation.kind === 'provider' && terminal.observation.certainty === 'unconfirmed'));
   let resolution: AuthorityTraceResolutionStage;
   let resolutionState: ExecutionResolutionState | undefined;
   const resolutionSummary = resolutionRef?.externalVersion !== undefined ? { governanceSummary: resolutionRef.externalVersion } : {};
@@ -424,7 +441,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
         resolved.executionId === executionId && resolved.organizationId === organizationId && resolved.attemptDigest === attempt?.attemptDigest && resolved.bindingDigest === binding?.bindingDigest,
       );
       check('correlation.resolution-basis-observation', 'correlation', resolved.basisObservationDigest === terminal?.observationDigest);
-      check('correlation.resolution-only-when-uncertain', 'correlation', resolutionEligible, resolutionEligible ? undefined : 'resolution-of-a-confirmed-outcome');
+      check('correlation.resolution-only-when-uncertain', 'correlation', outcomeReadFailure !== undefined ? 'n/a' : resolutionEligible, resolutionEligible || outcomeReadFailure !== undefined ? undefined : 'resolution-of-a-confirmed-outcome');
       if (resolutionRef?.digest !== undefined) check('integrity.resolution-summary-digest', 'integrity', resolutionRef.digest === resolved.resolutionDigest);
     }
     const presence: AuthorityTracePresence =
@@ -461,7 +478,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     let readFailure: string | undefined;
     try {
       verification = await sources.events.verifyStream(scope, streamId);
-      check('integrity.event-stream', 'integrity', verification.valid, verification.valid ? undefined : verification.failures.join(','));
+      check('integrity.event-stream', 'integrity', verification.valid, verification.valid ? undefined : 'EVENT_STREAM_CHAIN_INVALID');
       if (verification.eventCount > AUTHORITY_TRACE_LIMITS.maxEvents) throw traceTooLarge('authority events');
       if (verification.valid) stream = await sources.events.readStream(scope, streamId);
     } catch (error) {
@@ -492,10 +509,29 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
         check(`correlation.event-grant-payload:${refs.boundedGrantId ?? ''}`, 'correlation', grant !== undefined && grant.grantDigest === event.payload.grantDigest);
       } else if (event.eventType === 'execution.outcome.observed') {
         const expected = terminal === undefined ? undefined : terminal.observation.kind === 'withheld' ? 'withheld' : { 'confirmed-completed': 'executed', 'confirmed-not-completed': 'execution-failed', unconfirmed: 'execution-unconfirmed' }[terminal.observation.certainty];
-        const consistent = event.payload.outcomeRecorded ? expected === event.payload.status : terminal === undefined || expected === event.payload.status;
+        const observation = terminal?.observation;
+        const detailsAgree =
+          observation === undefined ||
+          (observation.kind === 'withheld'
+            ? event.payload.withheldBy === observation.withheldBy && canonicalList(event.payload.reasonCodes) === canonicalList(observation.reasonCodes)
+            : // The projector attributes an adapter and a provider handle only where it can (a handle only for
+              // an executed outcome): what the event states must match; what it omits is not a contradiction.
+              (event.payload.adapterId === undefined || event.payload.adapterId === observation.adapterId) &&
+              (event.payload.providerRef === undefined || event.payload.providerRef === observation.providerRef) &&
+              event.payload.failure === (observation.certainty === 'confirmed-not-completed' ? observation.failure : undefined));
+        const consistent = (event.payload.outcomeRecorded ? expected === event.payload.status : terminal === undefined || expected === event.payload.status) && detailsAgree;
         check('correlation.event-outcome-payload', 'correlation', consistent);
       } else if (event.eventType === 'execution.outcome.resolved') {
-        check('correlation.event-resolution-payload', 'correlation', resolutionState?.resolution?.resolutionDigest === event.payload.resolutionDigest);
+        const resolved = resolutionState?.resolution;
+        check('correlation.event-resolution-payload', 'correlation', resolved?.resolutionDigest === event.payload.resolutionDigest && resolved.certainty === event.payload.certainty && resolved.authorityId === event.payload.authorityId);
+      } else if (event.eventType === 'exercise.reservation.reconciled') {
+        check('correlation.event-reconciliation-payload', 'correlation', resolutionState?.resolution?.resolutionDigest === event.payload.resolutionDigest);
+      } else if (event.eventType === 'grant.revoked') {
+        const grant = recordedGrants.find((entry) => entry.grantId === refs.boundedGrantId);
+        check(`correlation.event-revocation-payload:${refs.boundedGrantId ?? ''}`, 'correlation', grant?.revocation !== undefined && grant.revocation.reason === event.payload.reason);
+      } else if (event.eventType === 'exercise.reservation.settled' || event.eventType === 'exercise.reservation.released') {
+        const kind = event.eventType === 'exercise.reservation.settled' ? 'settled' : 'released';
+        check('correlation.event-reservation-payload', 'correlation', reservation.presence === 'recorded' && reservation.state === kind && reservation.terminalReason === event.payload.reason);
       }
     }
     // Anchors: the canonical facts each require their event. The stream is a
@@ -537,9 +573,14 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   }
 
   const correlationFailed = checks.some((entry) => entry.category === 'correlation' && entry.status === 'fail');
-  const finalState: AuthorityTraceFinalState = correlationFailed
-    ? 'inconsistent'
-    : finalStateOf(path, approval, claimed, terminal, resolutionState);
+  // A store whose own integrity checks failed leaves the request's end unstatable
+  // (and makes checks that depend on it fail as a consequence): unverifiable first.
+  const finalState: AuthorityTraceFinalState =
+    outcomeReadFailure !== undefined || approval.presence === 'unreadable'
+      ? 'unverifiable'
+      : correlationFailed
+        ? 'inconsistent'
+        : finalStateOf(path, approval, claimed, terminal, resolutionState, legacySummary, authorizationRefs.length > 0);
 
   const trace: AuthorityTrace = {
     traceVersion: AUTHORITY_TRACE_VERSION,
@@ -590,15 +631,26 @@ function finalStateOf(
   claimed: boolean,
   terminal: ExecutionOutcomeRecord['terminal'],
   resolutionState: ExecutionResolutionState | undefined,
+  legacySummary: string | undefined,
+  authorized: boolean,
 ): AuthorityTraceFinalState {
   if (path === 'denied') return 'denied';
   if (path === 'indeterminate') return 'indeterminate';
   if (!claimed) {
-    if (path === 'approval_required' && !approval.records.some((row) => row.kind === 'approved' || row.kind === 'rejected' || row.kind === 'revoked')) return 'approval-pending';
+    // Pending only when the approval log is actually read and shows no verdict and no grant was issued.
+    const logRead = approval.presence === 'recorded' || approval.presence === 'none-recorded';
+    if (path === 'approval_required' && logRead && !authorized && !approval.records.some((row) => row.kind === 'approved' || row.kind === 'rejected' || row.kind === 'revoked')) return 'approval-pending';
     return 'not-executed';
   }
   const resolved = resolutionState?.resolution;
   if (resolved !== undefined) return resolved.certainty === 'confirmed-completed' ? 'resolved-confirmed-completed' : 'resolved-confirmed-not-completed';
+  if (terminal === undefined && legacySummary !== undefined) {
+    if (legacySummary === 'executed' || legacySummary.startsWith('executed@')) return 'executed-confirmed-completed';
+    if (legacySummary.startsWith('withheld:')) return 'withheld-at-exercise';
+    if (legacySummary.startsWith('execution-failed:')) return 'executed-confirmed-not-completed';
+    if (legacySummary.startsWith('execution-unconfirmed')) return 'executed-unconfirmed';
+    return 'claimed-outcome-unrecorded';
+  }
   if (terminal === undefined) return 'claimed-outcome-unrecorded';
   const observation = terminal.observation;
   if (observation.kind === 'withheld') return 'withheld-at-exercise';
@@ -627,3 +679,7 @@ export function authorityTraceVerificationOf(build: AuthorityTraceBuild, verifie
 }
 
 const AUTHORITY_TRACE_CHECK_CATEGORIES: readonly AuthorityTraceCheckCategory[] = ['contract', 'integrity', 'authenticity', 'correlation', 'completeness'];
+
+function canonicalList(list: readonly string[] | undefined): string {
+  return JSON.stringify(list ?? []);
+}

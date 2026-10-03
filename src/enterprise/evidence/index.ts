@@ -96,6 +96,7 @@ export {
   findDisclosurePolicyV2ById,
   listDisclosurePoliciesV2,
   discloseAuthorityTrace,
+  discloseTraceVerification,
   disclosedTraceDigest,
   summarizeTrace,
   compareDisclosedTraces,

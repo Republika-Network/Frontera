@@ -73,6 +73,8 @@ export type AuthorityTraceFinalState =
   | 'claimed-outcome-unrecorded'
   | 'resolved-confirmed-completed'
   | 'resolved-confirmed-not-completed'
+  /** A canonical store this request depends on failed its own integrity checks: where the request ended cannot be stated. */
+  | 'unverifiable'
   | 'inconsistent';
 
 export interface AuthorityTraceRequestStage {
@@ -211,6 +213,8 @@ export interface AuthorityTraceOutcomeStage {
   readonly observationDigest?: string;
   /** The compact summary the Governance execution ledger recorded (`executed`, `execution-unconfirmed`, `withheld:…`). */
   readonly governanceSummary?: string;
+  /** True for an execution answered before P11 existed: the Governance summary is its only (and replay) record. */
+  readonly legacy?: boolean;
   readonly readFailure?: string;
 }
 
@@ -328,8 +332,8 @@ export interface AuthorityTraceVerification {
   readonly verified: boolean;
   readonly categories: Readonly<Record<AuthorityTraceCheckCategory, 'pass' | 'fail'>>;
   readonly checks: readonly AuthorityTraceCheck[];
-  /** Digest of the canonical trace this verification was computed over (`aoc.canonical-json.v1`, SHA-256). Integrity of the projection, not a signature. */
-  readonly traceDigest: string;
+  /** Digest of the canonical trace this verification was computed over (`aoc.canonical-json.v1`, SHA-256). Integrity of the projection, not a signature. Absent from a verification disclosed below AUDITOR. */
+  readonly traceDigest?: string;
   readonly finalState: AuthorityTraceFinalState;
   readonly verifiedAt: string;
   /** What this verification does not establish, stated rather than implied. */

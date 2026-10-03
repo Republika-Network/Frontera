@@ -16,6 +16,7 @@ import {
   buildEvidenceBundleV2,
   compareDisclosedTraces,
   discloseAuthorityTrace,
+  discloseTraceVerification,
   listDisclosurePolicies,
   listDisclosurePoliciesV2,
   verifyEvidenceBundle,
@@ -65,7 +66,7 @@ interface World {
   approvals: Record<string, unknown>[];
   governanceValid: boolean;
   throwOn?: string;
-  reservation?: Record<string, unknown>;
+  reservation?: Record<string, unknown> | undefined;
 }
 
 const ref = (referenceId: string, referenceType: GovernanceReferenceRecord['referenceType'], externalId: string, extra: Partial<GovernanceReferenceRecord> = {}): GovernanceReferenceRecord => ({
@@ -110,7 +111,7 @@ function executedWorld(): World {
       event(1, 'governance.decision.committed', { evaluationId: EVALUATION, decisionId: DECISION }, { status: 'allowed', reasonCodes: [], evaluatedAt: T, aggregateDigest: AGGREGATE }),
       event(2, 'grant.issued', { decisionId: DECISION, boundedGrantId: GRANT }, { grantDigest: GRANT_DIGEST, expiresAt: T }),
       event(3, 'execution.attempt.claimed', { evaluationId: EVALUATION, decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION }, {}),
-      event(4, 'execution.outcome.observed', { evaluationId: EVALUATION, decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION }, { status: 'executed', reasonCodes: [], outcomeRecorded: true }),
+      event(4, 'execution.outcome.observed', { evaluationId: EVALUATION, decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION }, { status: 'executed', reasonCodes: [], adapterId: 'adapter-unit', outcomeRecorded: true }),
     ],
     streamValid: true,
     approvals: [],
@@ -124,7 +125,7 @@ function resolvedWorld(): World {
   world.terminal = { ...world.terminal, observation: { kind: 'provider', certainty: 'unconfirmed', adapterId: 'adapter-unit', observedAt: T } };
   world.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'execution-unconfirmed@adapter-unit', digest: OBSERVATION_DIGEST });
   world.references.push(ref(executionResolutionReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'resolved:confirmed-completed', digest: RESOLUTION_DIGEST }));
-  (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-unconfirmed', reasonCodes: [], outcomeRecorded: true };
+  (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-unconfirmed', reasonCodes: [], adapterId: 'adapter-unit', outcomeRecorded: true };
   world.binding = { organizationId: ORG, executionId: EXECUTION, attemptDigest: ATTEMPT_DIGEST, authorityId: 'resolver', origin: 'pre-claim', boundAt: T, recordedAt: T, schemaVersion: 'v1', bindingDigest: BINDING_DIGEST };
   world.resolution = { organizationId: ORG, executionId: EXECUTION, attemptDigest: ATTEMPT_DIGEST, bindingDigest: BINDING_DIGEST, basisObservationDigest: OBSERVATION_DIGEST, authorityId: 'resolver', certainty: 'confirmed-completed', resolvedAt: T, recordedAt: T, schemaVersion: 'v1', resolutionDigest: RESOLUTION_DIGEST };
   world.events.push(event(5, 'execution.outcome.resolved', { evaluationId: EVALUATION, decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION }, { certainty: 'confirmed-completed', authorityId: 'resolver', resolutionDigest: RESOLUTION_DIGEST }));
@@ -231,7 +232,7 @@ describe('ASSURE-01 trace builder — wrong joins are correlation failures, and 
     ['an event naming another execution', (world) => { (world.events[2] as unknown as { references: Record<string, string> }).references = { requestId: REQUEST, executionId: 'aoc.exec:other' }; }, 'correlation:correlation.event:3'],
     ['a decision event of another aggregate', (world) => { (world.events[0] as { payload: Record<string, unknown> }).payload = { status: 'allowed', reasonCodes: [], evaluatedAt: T, aggregateDigest: 'sha256:other' }; }, 'correlation:correlation.event-decision-payload'],
     ['a grant event with another grant digest', (world) => { (world.events[1] as { payload: Record<string, unknown> }).payload = { grantDigest: 'sha256:forged', expiresAt: T }; }, `correlation:correlation.event-grant-payload:${GRANT}`],
-    ['an outcome event contradicting the observation', (world) => { (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-failed', reasonCodes: [], outcomeRecorded: true }; }, 'correlation:correlation.event-outcome-payload'],
+    ['an outcome event contradicting the observation', (world) => { (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-failed', reasonCodes: [], adapterId: 'adapter-unit', failure: 'PROVIDER_REJECTED', outcomeRecorded: true }; }, 'correlation:correlation.event-outcome-payload'],
     ['a reservation of another execution', (world) => { world.reservation = { reservation: { executionId: 'aoc.exec:other', boundedGrantId: GRANT }, state: 'settled' }; }, 'correlation:correlation.reservation'],
     ['an approval on an allowed decision', (world) => { world.approvals = [{ organizationId: ORG, requestId: REQUEST, decisionId: DECISION, kind: 'approved', subjectDigest: 'sha256:s', recordedBy: 'x', recordedAt: T, sequence: 1, digest: 'sha256:a' }]; }, 'correlation:correlation.approval-only-on-approval-path'],
   ];
@@ -258,7 +259,7 @@ describe('ASSURE-01 trace builder — wrong joins are correlation failures, and 
       'a resolution of an outcome that was already confirmed',
       (world) => {
         world.terminal = { ...world.terminal, observation: { kind: 'provider', certainty: 'confirmed-completed', adapterId: 'adapter-unit', observedAt: T } };
-        (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'executed', reasonCodes: [], outcomeRecorded: true };
+        (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'executed', reasonCodes: [], adapterId: 'adapter-unit', outcomeRecorded: true };
       },
       'correlation:correlation.resolution-only-when-uncertain',
     ],
@@ -449,7 +450,7 @@ describe('ASSURE-01 disclosure — v2 policies, projection and comparison', () =
     assert.equal(regrantComparison.stages.authority, 'contradicted');
     const failedWorld = executedWorld();
     failedWorld.terminal = { ...failedWorld.terminal, observation: { kind: 'provider', certainty: 'confirmed-not-completed', adapterId: 'adapter-unit', failure: 'PROVIDER_REJECTED', observedAt: T } };
-    (failedWorld.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-failed', reasonCodes: [], outcomeRecorded: true };
+    (failedWorld.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-failed', reasonCodes: [], adapterId: 'adapter-unit', failure: 'PROVIDER_REJECTED', outcomeRecorded: true };
     const confirmed = (await build(executedWorld())).trace;
     const contradicted = (await build(failedWorld)).trace;
     for (const policy of [AUDITOR_DISCLOSURE_POLICY_V2, PUBLIC_DISCLOSURE_POLICY_V2]) {
@@ -506,5 +507,135 @@ describe('ASSURE-01 bundles — v2 verification, and historical v1 bundles uncha
     assert.equal(leakedResult.checks.policyMatch, false, 'a hidden stage that reappears is a disclosure breach');
     const contradicted = { disclosed: { ...current.disclosed, stages: { ...current.disclosed.stages, decision: { presence: 'recorded', status: 'denied' } } }, verification: current.verification };
     assert.equal(verifyEvidenceBundle(bundle, { record, now: () => T, currentTrace: contradicted }).checks.traceConsistent, false);
+  });
+});
+
+describe('ASSURE-01 review hardening — a recorded fact never passes as progress; history is read as it was written', () => {
+  const PARTNER = listDisclosurePoliciesV2().find((policy) => policy.level === 'PARTNER');
+  assert.ok(PARTNER !== undefined);
+  const levels = [AUDITOR_DISCLOSURE_POLICY_V2, PARTNER];
+
+  function unresolvedWorld(): World {
+    const world = resolvedWorld();
+    world.resolution = undefined;
+    world.references.pop();
+    world.events.pop();
+    return world;
+  }
+
+  it('an unresolved execution whose binding is later replaced is contradicted, not progressed', async () => {
+    const before = (await build(unresolvedWorld())).trace;
+    const rebound = resolvedWorld();
+    (rebound.binding as Record<string, unknown>)['authorityId'] = 'resolver-other';
+    (rebound.binding as Record<string, unknown>)['bindingDigest'] = `sha256:${'7'.repeat(64)}`;
+    (rebound.resolution as Record<string, unknown>)['bindingDigest'] = `sha256:${'7'.repeat(64)}`;
+    const after = (await build(rebound)).trace;
+    for (const policy of levels) {
+      const comparison = compareDisclosedTraces(discloseAuthorityTrace(before, policy), discloseAuthorityTrace(after, policy));
+      assert.equal(comparison.result, 'contradicted', policy.policyId);
+      assert.equal(comparison.stages.resolution, 'contradicted', policy.policyId);
+    }
+  });
+
+  it('a prepared attempt whose digest changes before its claim is contradicted, not progressed', async () => {
+    const prepared = executedWorld();
+    prepared.references = prepared.references.filter((entry) => entry.referenceType === 'authorization_artifact');
+    prepared.terminal = undefined;
+    prepared.events = prepared.events.slice(0, 2);
+    prepared.reservation = undefined;
+    const before = (await build(prepared)).trace;
+    assert.equal(before.stages.execution.presence, 'not-reached');
+    assert.equal(before.stages.execution.attempt?.presence, 'recorded');
+    const swapped = executedWorld();
+    (swapped.attempt as Record<string, unknown>)['attemptDigest'] = `sha256:${'8'.repeat(64)}`;
+    (swapped.terminal as Record<string, unknown>)['attemptDigest'] = `sha256:${'8'.repeat(64)}`;
+    const after = (await build(swapped)).trace;
+    for (const policy of levels) assert.equal(compareDisclosedTraces(discloseAuthorityTrace(before, policy), discloseAuthorityTrace(after, policy)).stages.execution, 'contradicted', policy.policyId);
+    // The same request with its attempt unchanged did progress.
+    const claimed = (await build(executedWorld())).trace;
+    for (const policy of levels) assert.equal(compareDisclosedTraces(discloseAuthorityTrace(before, policy), discloseAuthorityTrace(claimed, policy)).result, 'progressed', policy.policyId);
+  });
+
+  it('the in-flight window (claimed, observation not yet recorded) and a lagging event stream move on as progress', async () => {
+    const inFlight = executedWorld();
+    inFlight.terminal = undefined;
+    inFlight.references = inFlight.references.filter((entry) => entry.externalVersion !== 'executed@adapter-unit');
+    inFlight.events = [];
+    const before = (await build(inFlight)).trace;
+    assert.equal(before.finalState, 'claimed-outcome-unrecorded');
+    assert.equal(before.stages.events.presence, 'missing');
+    const after = (await build(executedWorld())).trace;
+    for (const policy of [...levels, PUBLIC_DISCLOSURE_POLICY_V2]) assert.equal(compareDisclosedTraces(discloseAuthorityTrace(before, policy), discloseAuthorityTrace(after, policy)).result, 'progressed', policy.policyId);
+  });
+
+  it('an execution answered before P11 existed is shown as its Governance summary — never as unanswered, never eligible for resolution', async () => {
+    const legacy = executedWorld();
+    legacy.attempt = undefined;
+    legacy.terminal = undefined;
+    legacy.reservation = undefined;
+    legacy.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'withheld:grant-exercise:GRANT_EXPIRED' });
+    legacy.events = legacy.events.slice(0, 3);
+    const result = await build(legacy);
+    assert.deepEqual(failed(result.verification), []);
+    assert.equal(result.trace.stages.outcome.presence, 'recorded');
+    assert.equal(result.trace.stages.outcome.legacy, true);
+    assert.equal(result.trace.stages.outcome.governanceSummary, 'withheld:grant-exercise:GRANT_EXPIRED');
+    assert.equal(result.trace.finalState, 'withheld-at-exercise');
+    assert.equal(result.trace.stages.resolution.presence, 'not-applicable');
+    assert.equal(result.trace.stages.execution.attempt?.presence, 'none-recorded');
+  });
+
+  it('event payloads are compared field by field: withholding layer, failure, revocation reason and reservation reason', async () => {
+    const withheld = executedWorld();
+    withheld.terminal = { ...withheld.terminal, observation: { kind: 'withheld', withheldBy: 'exercise-control', reasonCodes: ['LIMIT'], observedAt: T } };
+    withheld.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'withheld:exercise-control:LIMIT', digest: OBSERVATION_DIGEST });
+    (withheld.events[3] as { payload: Record<string, unknown> }).payload = { status: 'withheld', withheldBy: 'emergency-control', reasonCodes: ['LIMIT'], outcomeRecorded: true };
+    assert.ok(failed((await build(withheld)).verification).includes('correlation:correlation.event-outcome-payload'));
+
+    const revoked = executedWorld();
+    revoked.revocation = { grantId: GRANT, revokedAt: T, reason: 'security-incident', issuerRef: 'operator:x' };
+    revoked.events.push(event(5, 'grant.revoked', { decisionId: DECISION, boundedGrantId: GRANT }, { reason: 'policy-changed' }));
+    assert.ok(failed((await build(revoked)).verification).includes(`correlation:correlation.event-revocation-payload:${GRANT}`));
+
+    const settled = executedWorld();
+    settled.events.push(event(5, 'exercise.reservation.settled', { decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION, reservationId: RESERVATION }, { reason: 'execution-unconfirmed' }));
+    assert.ok(failed((await build(settled)).verification).includes('correlation:correlation.event-reservation-payload'));
+  });
+
+  it('a degraded store never yields a reassuring final state', async () => {
+    const approvalUnreadable = executedWorld();
+    approvalUnreadable.status = 'approval_required';
+    approvalUnreadable.throwOn = 'approval';
+    (approvalUnreadable.events[0] as { payload: Record<string, unknown> }).payload = { status: 'approval_required', reasonCodes: [], evaluatedAt: T, aggregateDigest: AGGREGATE };
+    assert.equal((await build(approvalUnreadable)).trace.finalState, 'unverifiable');
+
+    const outcomeUnreadable = resolvedWorld();
+    outcomeUnreadable.throwOn = 'outcome';
+    const unreadable = await build(outcomeUnreadable);
+    assert.equal(unreadable.trace.finalState, 'unverifiable');
+    assert.equal(unreadable.verification.checks.some((entry) => entry.detail === 'resolution-of-a-confirmed-outcome'), false, 'an unreadable observation is not reported as a confirmed one');
+
+    const claimNoGrant = executedWorld();
+    claimNoGrant.references = claimNoGrant.references.filter((entry) => entry.referenceType !== 'authorization_artifact');
+    claimNoGrant.attempt = undefined;
+    claimNoGrant.terminal = undefined;
+    const ungranted = await build(claimNoGrant, { composed: { outcomes: false } });
+    assert.equal(ungranted.trace.stages.authority.presence, 'missing');
+    assert.ok(failed(ungranted.verification).includes('completeness:completeness.grant-for-claim'));
+  });
+
+  it('below AUDITOR, a verification discloses no identity, detail or canonical digest', async () => {
+    const world = executedWorld();
+    world.grant = undefined;
+    const verification = (await build(world)).verification;
+    const customer = listDisclosurePoliciesV2().find((policy) => policy.level === 'CUSTOMER');
+    assert.ok(customer !== undefined);
+    const disclosed = discloseTraceVerification(verification, customer);
+    assert.equal(disclosed.traceDigest, undefined);
+    assert.equal(JSON.stringify(disclosed).includes(GRANT), false);
+    assert.ok(disclosed.checks.some((entry) => entry.check === 'completeness.grant'));
+    assert.ok(disclosed.checks.every((entry) => entry.status === 'fail' && entry.detail === undefined && !entry.check.includes(':')));
+    assert.equal(disclosed.verified, false);
+    assert.equal(discloseTraceVerification(verification, AUDITOR_DISCLOSURE_POLICY_V2), verification, 'AUDITOR sees every check');
   });
 });

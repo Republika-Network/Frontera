@@ -5,10 +5,10 @@ import { resolveGovernanceAccessContext } from '../orchestration/governance-read
 import { EVIDENCE_BUNDLE_SCHEMA_VERSION_V2 } from './contracts.js';
 import { getDisclosurePolicy } from './disclosure-policies.js';
 import { EvidenceError } from './errors.js';
-import { buildEvidenceBundle, buildEvidenceBundleV2 } from './projector.js';
+import { EVIDENCE_PROJECTION_ENGINE_VERSION_V2, buildEvidenceBundle, buildEvidenceBundleV2 } from './projector.js';
 import { authorityTraceVerificationOf, buildAuthorityTrace, validateTraceRequestId, type AuthorityTraceBuild, type AuthorityTraceSources } from './trace-builder.js';
 import type { AuthorityTraceVerification } from './trace-contracts.js';
-import { discloseAuthorityTrace, disclosedTraceDigest, findDisclosurePolicyV2ById, getDisclosurePolicyV2, type DisclosedAuthorityTrace, type DisclosurePolicyV2 } from './trace-disclosure.js';
+import { discloseAuthorityTrace, discloseTraceVerification, disclosedTraceDigest, findDisclosurePolicyV2ById, getDisclosurePolicyV2, type DisclosedAuthorityTrace, type DisclosurePolicyV2 } from './trace-disclosure.js';
 import { verifyEvidenceBundle, type EvidenceBundleCurrentTrace } from './verifier.js';
 import type { EvidenceStore } from './evidence-store.js';
 import type { EvidenceBundleRecord, EvidenceDisclosureMetadata, EvidenceReference, EvidenceVerificationResult } from './contracts.js';
@@ -71,6 +71,20 @@ export interface EvidenceServiceDependencies {
   readonly traceSources?: AuthorityTraceSources;
 }
 
+/**
+ * FULL is internal (`disclosure-policies.ts`): an organization-scoped
+ * credential — a third party's — receives at most AUDITOR for a trace or a v2
+ * bundle; only a system-scope credential may ask for FULL. (v1 builds keep
+ * their original semantics.)
+ */
+function permittedPolicyV2(context: GovernanceStoreAccessContext, level: string): DisclosurePolicyV2 {
+  const policy = getDisclosurePolicyV2(level);
+  if (policy.level === 'FULL' && !context.system) {
+    throw new EvidenceError('EVIDENCE_DISCLOSURE_NOT_PERMITTED', 'FULL disclosure is internal; an organization-scoped credential may request at most AUDITOR.');
+  }
+  return policy;
+}
+
 function disclosureOf(policy: DisclosurePolicyV2): EvidenceDisclosureMetadata {
   return { level: policy.level, policyId: policy.policyId, policyVersion: policy.version, visibleFields: policy.visibleFields, hiddenFields: policy.hiddenFields, redactedFields: policy.redactedFields };
 }
@@ -87,7 +101,7 @@ export function createEvidenceService(deps: EvidenceServiceDependencies): Eviden
 
   async function buildV2(context: GovernanceStoreAccessContext, input: BuildEvidenceBundleInput & { readonly requestId: string }): Promise<EvidenceBundleRecord> {
     const requestId = validateTraceRequestId(input.requestId);
-    const policy = getDisclosurePolicyV2(input.level);
+    const policy = permittedPolicyV2(context, input.level);
     const build = await requireTrace(context, requestId);
     const organizationId = build.trace.organizationId;
     const disclosed = discloseAuthorityTrace(build.trace, policy);
@@ -98,7 +112,14 @@ export function createEvidenceService(deps: EvidenceServiceDependencies): Eviden
     const earlier = (await evidenceStore.listByRequestId({ system: false, organizationId }, requestId)).filter(
       (entry) => entry.bundle.bundleVersion === EVIDENCE_BUNDLE_SCHEMA_VERSION_V2 && entry.bundle.disclosure.policyId === policy.policyId && entry.state !== 'SUPERSEDED',
     );
-    const same = earlier.find((entry) => entry.bundle.integrity.traceDigest === traceDigest && entry.bundle.integrity.recordDigest === build.record.integrity.aggregateDigest);
+    const createdBy = input.createdBy ?? EVIDENCE_PROJECTION_ENGINE_VERSION_V2;
+    const same = earlier.find(
+      (entry) =>
+        entry.bundle.integrity.traceDigest === traceDigest &&
+        entry.bundle.integrity.recordDigest === build.record.integrity.aggregateDigest &&
+        entry.bundle.verification.createdBy === createdBy &&
+        JSON.stringify(entry.bundle.references) === JSON.stringify(input.references ?? []),
+    );
     if (same !== undefined) return same;
     const bundle = buildEvidenceBundleV2(build.record, build.trace, policy, {
       now,
@@ -106,7 +127,8 @@ export function createEvidenceService(deps: EvidenceServiceDependencies): Eviden
       ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
       ...(input.references !== undefined ? { references: input.references } : {}),
     });
-    return evidenceStore.store(bundle, { organizationId, supersedes: earlier.map((entry) => entry.bundle.bundleId) });
+    // Every still-active bundle of this request and policy is superseded inside the store's own write transaction.
+    return evidenceStore.store(bundle, { organizationId, supersedeActive: true });
   }
 
   return {
@@ -170,7 +192,7 @@ export function createEvidenceService(deps: EvidenceServiceDependencies): Eviden
           const build = await buildAuthorityTrace(traceSources, context, stored.bundle.source.requestId);
           if (build !== null) {
             record = build.record;
-            if (policy !== undefined) current = { disclosed: discloseAuthorityTrace(build.trace, policy), verification: authorityTraceVerificationOf(build, now()) };
+            if (policy !== undefined) current = { disclosed: discloseAuthorityTrace(build.trace, policy), verification: discloseTraceVerification(authorityTraceVerificationOf(build, now()), policy) };
           }
         } catch {
           current = undefined;
@@ -194,7 +216,7 @@ export function createEvidenceService(deps: EvidenceServiceDependencies): Eviden
     async getTrace(authorizationHeader, requestId, level) {
       const context = resolveGovernanceAccessContext(authorizationHeader, configuration);
       validateTraceRequestId(requestId);
-      const policy = getDisclosurePolicyV2(level);
+      const policy = permittedPolicyV2(context, level);
       const build = await requireTrace(context, requestId);
       const trace = discloseAuthorityTrace(build.trace, policy);
       return { requestId, disclosure: disclosureOf(policy), trace, traceDigest: disclosedTraceDigest(trace), generatedAt: now() };

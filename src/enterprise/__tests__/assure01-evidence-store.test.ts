@@ -177,6 +177,22 @@ describe('ASSURE-01 durable Evidence Bundle Store', () => {
     await assert.rejects(store.getByBundleId(ORG_SCOPE, older.bundleId), (error: { code?: string; details?: { check?: string } }) => error.code === 'EVIDENCE_STORE_CORRUPT' && error.details?.check === 'lifecycle-log', 'a lifecycle rolled back behind the triggers disagrees with its own log');
   });
 
+  it('two builds racing for the same request and policy leave exactly one active bundle', async () => {
+    const path = join(dir(), 'e.sqlite');
+    const [a, b] = [await open(path), await open(path)];
+    const first = bundle();
+    const second = bundle();
+    await Promise.all([a.store(first, { organizationId: ORG, supersedeActive: true }), b.store(second, { organizationId: ORG, supersedeActive: true })]);
+    const active = (await a.listByRequestId(ORG_SCOPE, first.source.requestId)).filter((record) => record.state !== 'SUPERSEDED');
+    assert.deepEqual(active.map((record) => record.bundle.bundleId), [second.bundleId], 'the later store superseded the earlier inside its own transaction');
+    const memory = createInMemoryEvidenceStore();
+    const m1 = bundle();
+    const m2 = bundle();
+    await memory.store(m1, { organizationId: ORG, supersedeActive: true });
+    await memory.store(m2, { organizationId: ORG, supersedeActive: true });
+    assert.equal((await memory.getByBundleId(ORG_SCOPE, m1.bundleId))?.state, 'SUPERSEDED');
+  });
+
   it('a bundle may only supersede one of the same organization and request', async () => {
     const store = await open(join(dir(), 'e.sqlite'));
     const foreign = bundle();
@@ -217,6 +233,12 @@ describe('ASSURE-01 durable Evidence Bundle Store', () => {
     await store.close();
     withDb(path, (db) => db.prepare(`INSERT INTO evidence_bundle_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.evidence-bundle-store.schema.v99', 'current', 'x')`).run());
     await assert.rejects(createSqliteEvidenceStore(path, { now: () => 'x' }), { code: 'EVIDENCE_STORE_UNAVAILABLE' });
+    const emptied = join(dir(), 'emptied.sqlite');
+    const seeded = await open(emptied);
+    await seeded.store(bundle(), { organizationId: ORG });
+    await seeded.close();
+    withDb(emptied, (db) => db.exec('DELETE FROM evidence_bundle_store_versions'));
+    await assert.rejects(createSqliteEvidenceStore(emptied, { now: () => 'x' }), { code: 'EVIDENCE_STORE_UNAVAILABLE' }, 'rows with an emptied version record are refused, never re-stamped');
     const orphan = join(dir(), 'orphan.sqlite');
     withDb(orphan, (db) => db.exec('CREATE TABLE evidence_bundles (bundle_id TEXT)'));
     await assert.rejects(createSqliteEvidenceStore(orphan, { now: () => 'x' }), { code: 'EVIDENCE_STORE_UNAVAILABLE' });

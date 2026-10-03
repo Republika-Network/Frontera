@@ -394,7 +394,7 @@ describe('ASSURE-01 — a third party fetches and verifies one request’s full 
     const before = adapter.calls.length;
     const pendingBefore = expectStatus(await call(baseUrl, 'GET', '/api/admin/approvals?view=all', { authorization: auth.observer }), 200, 'approvals').text;
     for (const name of Object.keys(cases).filter((entry) => cases[entry]?.body['requestId'] !== undefined)) {
-      await fetchTrace(baseUrl, requestIdOf(name), 'FULL');
+      await fetchTrace(baseUrl, requestIdOf(name), 'AUDITOR');
       await verifyTrace(baseUrl, requestIdOf(name));
     }
     assert.equal(adapter.calls.length, before, 'zero adapter calls from any trace read or verification');
@@ -417,7 +417,7 @@ describe('ASSURE-01 — tenant, authentication and input boundaries', () => {
     const bundleId = (cases['revokedBundle']?.body['bundle'] as Record<string, unknown>)['bundleId'] as string;
     assert.equal((await call(baseUrl, 'GET', `/api/evidence/${encodeURIComponent(bundleId)}`, { authorization: FOREIGN })).status, 404);
     assert.equal((await call(baseUrl, 'POST', '/api/evidence/verify', { authorization: FOREIGN, body: { bundleId } })).status, 404);
-    assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: FOREIGN, body: { requestId, level: 'FULL' } })).status, 404);
+    assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: FOREIGN, body: { requestId, level: 'AUDITOR' } })).status, 404);
   });
 
   it('malformed and unknown request ids, unknown levels and any other query are refused before a store is read', async () => {
@@ -436,7 +436,18 @@ describe('ASSURE-01 — tenant, authentication and input boundaries', () => {
     assert.equal((await call(baseUrl, 'GET', `${verifyPath(requestId)}?organizationId=other`, { authorization: AUDITOR })).status, 400);
     for (const method of ['POST', 'PUT', 'DELETE']) assert.equal((await call(baseUrl, method, tracePath(requestId), { authorization: AUDITOR, body: {} })).status, 404, `${method} is unrouted`);
     assert.equal((await call(baseUrl, 'GET', '/api/evidence/traces', { authorization: AUDITOR })).status, 404, 'no listing of traces');
-    assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { requestId, evaluationId: 'x', level: 'FULL' } })).status, 400, 'exactly one of requestId / evaluationId');
+    assert.equal((await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { requestId, evaluationId: 'x', level: 'AUDITOR' } })).status, 400, 'exactly one of requestId / evaluationId');
+  });
+
+  it('FULL is internal: an organization-scoped key is refused it, for a trace and for a v2 bundle', async () => {
+    const { baseUrl } = booted;
+    const requestId = requestIdOf('monetary');
+    for (const reply of [
+      await call(baseUrl, 'GET', tracePath(requestId, 'FULL'), { authorization: AUDITOR }),
+      await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { requestId, level: 'FULL' } }),
+    ]) {
+      assert.deepEqual([reply.status, (reply.body['error'] as Record<string, unknown>)['code']], [403, 'EVIDENCE_DISCLOSURE_NOT_PERMITTED'], reply.text);
+    }
   });
 });
 
@@ -445,7 +456,7 @@ describe('ASSURE-01 — disclosure: Truth ≠ Disclosure', () => {
     const { baseUrl } = booted;
     const secrets = [...deployment.secretValues(), auditorKey, foreignKey, payables, releaseAgent];
     for (const name of Object.keys(cases).filter((entry) => cases[entry]?.body['requestId'] !== undefined)) {
-      for (const level of ['FULL', 'AUDITOR', 'PARTNER', 'CUSTOMER', 'PUBLIC']) {
+      for (const level of ['AUDITOR', 'PARTNER', 'CUSTOMER', 'PUBLIC']) {
         const view = await fetchTrace(baseUrl, requestIdOf(name), level);
         for (const secret of secrets) assert.equal(view.text.includes(secret), false, `${name}@${level} leaks no secret`);
         for (const forbidden of ['requestPayload', 'resultPayload', 'frontera.approval-subject', EVIDENCE_HASH, 'CAB-ASSURE01', 'privateKey', 'bearerCredential', 'erp.example.com']) {
@@ -469,6 +480,13 @@ describe('ASSURE-01 — disclosure: Truth ≠ Disclosure', () => {
     assert.deepEqual(Object.keys(customer.stages).sort(), ['decision', 'outcome', 'resolution']);
     assert.equal(customer.text.includes(RELEASE), false);
     assert.equal(customer.text.includes('aoc.grant:'), false);
+    for (const mechanism of [ADAPTER_ID, 'provider-ref', '"adapterId"', '"providerRef"', '"authorityId"']) assert.equal(customer.text.includes(mechanism), false, `CUSTOMER hides how it ran: ${mechanism}`);
+    // A revocation's issuer is a human identity: hidden wherever approvals are.
+    const revokedPartner = await fetchTrace(baseUrl, requestIdOf('revoked'), 'PARTNER');
+    const revocation = ((revokedPartner.stages['authority']?.['grants'] as Record<string, unknown>[])[0] ?? {})['revocation'] as Record<string, unknown>;
+    assert.equal(revocation['reason'], 'security-incident');
+    assert.equal(revocation['issuerRef'], undefined, 'PARTNER does not learn who revoked');
+    assert.equal(revokedPartner.text.includes('ops-responder'), false);
     const partner = await fetchTrace(baseUrl, requestId, 'PARTNER');
     assert.deepEqual(Object.keys(partner.stages).sort(), ['authority', 'decision', 'execution', 'outcome', 'resolution']);
     assert.equal(partner.text.includes(RELEASE), false, 'PARTNER does not learn who asked');
@@ -477,8 +495,13 @@ describe('ASSURE-01 — disclosure: Truth ≠ Disclosure', () => {
     assert.equal(Object.keys(auditor.stages).length, 11, 'AUDITOR: the whole trace');
     // A PUBLIC bundle verifies like any other.
     const built = expectStatus(await call(baseUrl, 'POST', '/api/evidence/build', { authorization: AUDITOR, body: { requestId, level: 'PUBLIC' } }), 201, 'public bundle').body;
-    const verified = expectStatus(await call(baseUrl, 'POST', '/api/evidence/verify', { authorization: AUDITOR, body: { bundleId: (built['bundle'] as Record<string, unknown>)['bundleId'] } }), 200, 'verify public').body;
+    const verifiedReply = expectStatus(await call(baseUrl, 'POST', '/api/evidence/verify', { authorization: AUDITOR, body: { bundleId: (built['bundle'] as Record<string, unknown>)['bundleId'] } }), 200, 'verify public');
+    const verified = verifiedReply.body;
     assert.equal(verified['valid'], true, JSON.stringify(verified['failures']));
+    // The verification of a PUBLIC bundle is itself disclosed at PUBLIC: no grant id, no actor, no canonical digest.
+    for (const hidden of ['aoc.grant:', RELEASE, 'operator:approver-a', ADAPTER_ID]) assert.equal(verifiedReply.text.includes(hidden), false, `PUBLIC verification hides ${hidden}`);
+    assert.equal((verified['sourceTrace'] as Record<string, unknown>)['traceDigest'], undefined);
+    assert.equal((verified['sourceTrace'] as Record<string, unknown>)['verified'], true);
     // The organization reads its own PUBLIC bundle (whose content hides the organization) — and only it does.
     const bundleId = (built['bundle'] as Record<string, unknown>)['bundleId'] as string;
     assert.equal((await call(baseUrl, 'GET', `/api/evidence/${encodeURIComponent(bundleId)}`, { authorization: AUDITOR })).status, 200);
@@ -495,7 +518,7 @@ describe('ASSURE-01 — the official exit drill: fetch and verify through HTTP, 
     const snapshot = async (baseUrl: string): Promise<Record<string, string>> => {
       const digests: Record<string, string> = {};
       for (const requestId of requests) {
-        digests[requestId] = (await fetchTrace(baseUrl, requestId, 'FULL')).traceDigest;
+        digests[requestId] = (await fetchTrace(baseUrl, requestId, 'AUDITOR')).traceDigest;
         assert.equal((await verifyTrace(baseUrl, requestId))['verified'], true, requestId);
       }
       return digests;

@@ -5,7 +5,7 @@ import type { GovernanceStoreAccessContext } from '../governance-store/contracts
 import { computeDigest } from '../governance-store/digest.js';
 import { EVIDENCE_BUNDLE_SCHEMA_VERSION, EVIDENCE_BUNDLE_SCHEMA_VERSION_V2, type EvidenceBundle, type EvidenceBundleRecord, type EvidenceBundleState } from './contracts.js';
 import { EvidenceError } from './errors.js';
-import { EVIDENCE_STORE_LIST_LIMIT, canSeeEvidenceBundle, isForwardEvidenceTransition, requireEvidenceReadScope, type EvidenceStore, type EvidenceStoreHealth, type StoreEvidenceBundleOptions } from './evidence-store.js';
+import { EVIDENCE_STORE_LIST_LIMIT, canSeeEvidenceBundle, isActivePredecessor, isForwardEvidenceTransition, requireEvidenceReadScope, type EvidenceStore, type EvidenceStoreHealth, type StoreEvidenceBundleOptions } from './evidence-store.js';
 import { bundleDigestInput, bundleDigestInputV2 } from './projector.js';
 
 /**
@@ -203,6 +203,9 @@ export async function createSqliteEvidenceStore(dbPath: string, options: CreateS
       if (existing !== undefined && existing.schema_version !== EVIDENCE_STORE_SCHEMA_VERSION) {
         throw unavailable(`The Evidence Bundle Store is recorded under schema version '${String(existing.schema_version)}', which this runtime does not implement (expected '${EVIDENCE_STORE_SCHEMA_VERSION}'). Refusing to open it.`);
       }
+      if (existing === undefined && tableExists(db, 'evidence_bundles') && db.prepare('SELECT 1 FROM evidence_bundles LIMIT 1').get() !== undefined) {
+        throw unavailable('The Evidence Bundle Store holds bundle rows but an empty schema version record. Refusing to open it.');
+      }
     } else if (tableExists(db, 'evidence_bundles')) {
       throw unavailable('The Evidence Bundle Store holds bundle rows but no schema version record. Refusing to open it.');
     }
@@ -315,10 +318,13 @@ export async function createSqliteEvidenceStore(dbPath: string, options: CreateS
     return { ...current, state: to, ...(supersededBy !== undefined ? { supersededBy } : {}) };
   }
 
-  const runStore = db.transaction((bundle: EvidenceBundle, organizationId: string | undefined, supersedes: readonly string[]): EvidenceBundleRecord => {
+  const runStore = db.transaction((bundle: EvidenceBundle, organizationId: string | undefined, requested: readonly string[], supersedeActive: boolean): EvidenceBundleRecord => {
     if (selectById.get(bundle.bundleId) !== undefined) {
       throw new EvidenceError('EVIDENCE_BUNDLE_ALREADY_EXISTS', `bundleId '${bundle.bundleId}' was already stored; Bundles are immutable and never overwritten.`);
     }
+    // Read under the write lock, so a concurrent build is seen.
+    const active = supersedeActive ? (selectActiveByRequest.all(bundle.source.requestId) as BundleRow[]).map(decode).filter((entry) => isActivePredecessor(entry, bundle, organizationId)).map((entry) => entry.bundle.bundleId) : [];
+    const supersedes = [...new Set([...requested, ...active])];
     const predecessors = supersedes.map((id) => {
       const previous = load(id);
       if (previous === undefined) throw new EvidenceError('EVIDENCE_BUNDLE_NOT_FOUND', `No Evidence Bundle for bundleId '${id}'.`);
@@ -346,6 +352,7 @@ export async function createSqliteEvidenceStore(dbPath: string, options: CreateS
     return stored;
   });
 
+  const selectActiveByRequest = db.prepare(`SELECT ${COLUMNS} FROM evidence_bundles WHERE request_id = ? AND state != 'SUPERSEDED' ORDER BY sequence ASC LIMIT ${EVIDENCE_STORE_LIST_LIMIT}`);
   const selectAll = db.prepare(`SELECT ${COLUMNS} FROM evidence_bundles ORDER BY sequence ASC`);
   const runVerifyAll = db.transaction(() => (selectAll.all() as BundleRow[]).map(decode).length);
   const runTransition = db.transaction((bundleId: string, to: EvidenceBundleState, supersededBy?: string) => transitionNow(bundleId, to, supersededBy));
@@ -374,7 +381,7 @@ export async function createSqliteEvidenceStore(dbPath: string, options: CreateS
       }
       const organizationId = storeOptions.organizationId ?? bundle.source.organizationId;
       // BEGIN IMMEDIATE; durable before this resolves (`synchronous = FULL`).
-      return runStore.immediate(bundle, organizationId, storeOptions.supersedes ?? []);
+      return runStore.immediate(bundle, organizationId, storeOptions.supersedes ?? [], storeOptions.supersedeActive === true);
     },
 
     async getByBundleId(context, bundleId) {

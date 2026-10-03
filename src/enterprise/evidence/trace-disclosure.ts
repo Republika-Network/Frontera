@@ -2,7 +2,7 @@ import { computeDigest } from '../governance-store/digest.js';
 import { redactSensitiveValues } from '../governance-store/redaction.js';
 import { EVIDENCE_FIELD_KEYS, type DisclosureLevel, type EvidenceFieldKey } from './contracts.js';
 import { EvidenceError } from './errors.js';
-import { AUTHORITY_TRACE_STAGE_NAMES, type AuthorityTrace, type AuthorityTraceFinalState, type AuthorityTracePresence, type AuthorityTraceStageName, type AuthorityTraceDecisionPath } from './trace-contracts.js';
+import { AUTHORITY_TRACE_STAGE_NAMES, type AuthorityTraceVerification, type AuthorityTrace, type AuthorityTraceFinalState, type AuthorityTracePresence, type AuthorityTraceStageName, type AuthorityTraceDecisionPath } from './trace-contracts.js';
 
 /**
  * ASSURE-01 — disclosure for the unified trace (`Truth ≠ Disclosure`).
@@ -225,7 +225,7 @@ export function discloseAuthorityTrace(trace: AuthorityTrace, policy: Disclosure
   const stages: Partial<Record<AuthorityTraceStageName, unknown>> = {};
   for (const [field, stage] of Object.entries(STAGE_OF_FIELD) as [TraceFieldKey, AuthorityTraceStageName][]) {
     if (hidden.has(field)) continue;
-    stages[stage] = redacted.has(field) ? TRACE_DISCLOSURE_REDACTED_VALUE : trace.stages[stage];
+    stages[stage] = redacted.has(field) ? TRACE_DISCLOSURE_REDACTED_VALUE : withinPolicy(stage, trace.stages[stage], hidden);
   }
   const summary = hidden.has('trace.summary') ? undefined : redacted.has('trace.summary') ? TRACE_DISCLOSURE_REDACTED_VALUE : summarizeTrace(trace);
   const disclosed: DisclosedAuthorityTrace = {
@@ -240,6 +240,53 @@ export function discloseAuthorityTrace(trace: AuthorityTrace, policy: Disclosure
   };
   // Defence in depth, as for v1: a secret-shaped key can never reach a third party.
   return redactSensitiveValues(disclosed);
+}
+
+/** Identifiers of people and mechanisms that a visible stage may carry, and the field whose visibility each depends on. */
+const PEOPLE_FIELDS = ['issuerRef'] as const;
+const MECHANISM_FIELDS = ['adapterId', 'routedBy', 'providerRef', 'authorityId', 'binding'] as const;
+
+function strip(value: unknown, keys: readonly string[]): unknown {
+  if (Array.isArray(value)) return value.map((item) => strip(item, keys));
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)).map(([key, inner]) => [key, strip(inner, keys)]));
+}
+
+/**
+ * Sub-fields a visible stage carries that another field's policy governs: who
+ * acted (a revocation's issuer — hidden wherever approvals, the other human
+ * identities, are), and which mechanism ran (adapter, router, provider handle,
+ * resolution authority — hidden wherever the authority that reached it is).
+ */
+function withinPolicy(stage: AuthorityTraceStageName, value: unknown, hidden: ReadonlySet<EvidenceFieldKeyV2>): unknown {
+  let out = value;
+  if (hidden.has('trace.approval')) out = strip(out, PEOPLE_FIELDS);
+  if (hidden.has('trace.authority') && (stage === 'outcome' || stage === 'resolution')) {
+    out = strip(out, MECHANISM_FIELDS);
+    // The Governance summary names the adapter after `@` (`executed@<adapter>`): keep the outcome, drop the mechanism.
+    if (typeof out === 'object' && out !== null && typeof (out as Record<string, unknown>)['governanceSummary'] === 'string') {
+      const summary = (out as Record<string, string>)['governanceSummary'] ?? '';
+      out = { ...(out as Record<string, unknown>), governanceSummary: summary.split('@')[0] };
+    }
+  }
+  return out;
+}
+
+/**
+ * The verification a caller at this level may see. FULL and AUDITOR (every
+ * stage visible) see every check. Below them, the result is reduced to what
+ * cannot disclose a hidden stage: the verdict, the categories, the final state
+ * (always visible through the summary) and the names of failing checks with
+ * any embedded identity removed — no details, no canonical digest.
+ */
+export function discloseTraceVerification(verification: AuthorityTraceVerification, policy: DisclosurePolicyV2): AuthorityTraceVerification {
+  if (TRACE_FIELD_KEYS.every((field) => !policy.hiddenFields.includes(field) && !policy.redactedFields.includes(field))) return verification;
+  const { traceDigest: _digest, ...rest } = verification;
+  void _digest;
+  return {
+    ...rest,
+    checks: verification.checks.filter((entry) => entry.status === 'fail').map((entry) => ({ check: entry.check.split(':')[0] ?? entry.check, category: entry.category, status: entry.status })),
+  };
 }
 
 export function disclosedTraceDigest(disclosed: DisclosedAuthorityTrace): string {
@@ -270,51 +317,67 @@ export interface TraceComparisonResult {
 const canonical = (value: unknown): string => computeDigest(value ?? null);
 
 const OPEN_PRESENCE: ReadonlySet<string> = new Set(['not-reached', 'unresolved', 'none-recorded']);
+/** A broken presence never counts as progress. */
+const BROKEN_PRESENCE: ReadonlySet<string> = new Set(['missing', 'unreadable']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** True when `before` is a prefix of `after` (same elements, same order). */
-function isPrefix(before: unknown, after: unknown): boolean {
-  if (!Array.isArray(before) || !Array.isArray(after) || before.length > after.length) return false;
-  return before.every((item, index) => canonical(item) === canonical(after[index]));
+/** Lists that only ever grow by appending (append-only logs and streams). */
+const APPEND_ONLY_LISTS: ReadonlySet<string> = new Set(['records', 'discharges', 'events']);
+/** Keys a recorded object may gain later without any earlier fact changing. */
+const LATER_KEYS: ReadonlySet<string> = new Set(['revocation', 'resolution', 'terminalReason', 'governanceSummary', 'head']);
+
+/**
+ * True when every fact `before` states is still exactly stated by `after`.
+ *
+ * - A presence may move only from an open value (`not-reached`, `unresolved`,
+ *   `none-recorded` — and, for the best-effort event stream only, `missing`) to
+ *   anything but a broken one.
+ * - Every other key `before` carries must still be there, compared the same way
+ *   (recursively); a primitive must be identical — except a reservation that
+ *   was `reserved`, which may since have settled or been released.
+ * - An append-only list may only grow at its end; the grant list may gain
+ *   grants, each earlier grant still matching.
+ * - New keys may appear on an open object; on a recorded one only the few that
+ *   are later facts by nature (a revocation, a resolution, a terminal reason, a
+ *   summary, a newer stream head).
+ */
+function preserved(before: unknown, after: unknown, key: string, stage: AuthorityTraceStageName): boolean {
+  if (canonical(before) === canonical(after)) return true;
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (APPEND_ONLY_LISTS.has(key)) return before.length <= after.length && before.every((item, index) => canonical(item) === canonical(after[index]));
+    if (key === 'grants') {
+      return before.every((grant) => {
+        const id = isRecord(grant) ? grant['grantId'] : undefined;
+        const now = after.find((candidate) => isRecord(candidate) && candidate['grantId'] === id);
+        return now !== undefined && preserved(grant, now, 'grant', stage);
+      });
+    }
+    return false;
+  }
+  if (isRecord(before) && isRecord(after)) {
+    const was = before['presence'];
+    const now = after['presence'];
+    const open = typeof was === 'string' && (OPEN_PRESENCE.has(was) || (stage === 'events' && key === 'stage' && was === 'missing'));
+    if (was !== now && (!open || BROKEN_PRESENCE.has(String(now)))) return false;
+    for (const [field, value] of Object.entries(before)) {
+      if (field === 'presence') continue;
+      if (!(field in after)) return false;
+      if (field === 'head' && stage === 'events') continue; // the head moves with appended events, checked through them
+      if (field === 'state' && stage === 'reservation' && value === 'reserved' && ['settled', 'released'].includes(String(after[field]))) continue;
+      if (!preserved(value, after[field], field, stage)) return false;
+    }
+    if (!open) for (const field of Object.keys(after)) if (!(field in before) && !LATER_KEYS.has(field)) return false;
+    return true;
+  }
+  return false;
 }
 
 function stageProgressed(name: AuthorityTraceStageName, before: unknown, after: unknown): boolean {
   if (!isRecord(before) || !isRecord(after)) return false;
-  // A stage that had not happened, or had no answer yet, may since have happened.
-  if (OPEN_PRESENCE.has(String(before['presence'])) && !['missing', 'unreadable'].includes(String(after['presence']))) return true;
-  const sameExcept = (keys: readonly string[]): boolean => {
-    const strip = (stage: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(stage).filter(([key]) => !keys.includes(key)));
-    return canonical(strip(before)) === canonical(strip(after));
-  };
-  switch (name) {
-    case 'approval':
-      return sameExcept(['records', 'presence']) && isPrefix(before['records'], after['records']);
-    case 'obligations':
-      return sameExcept(['discharges', 'presence']) && isPrefix(before['discharges'], after['discharges']);
-    case 'events':
-      return sameExcept(['events', 'head', 'presence']) && isPrefix(before['events'], after['events']);
-    case 'authority': {
-      if (!sameExcept(['grants', 'presence']) || !Array.isArray(before['grants']) || !Array.isArray(after['grants'])) return false;
-      const later = after['grants'] as Record<string, unknown>[];
-      // Each earlier grant still stands exactly — it may only have been revoked since.
-      return (before['grants'] as Record<string, unknown>[]).every((grant) => {
-        const now = later.find((candidate) => candidate['grantId'] === grant['grantId']);
-        if (now === undefined) return false;
-        if (grant['revocation'] !== undefined) return canonical(now) === canonical(grant);
-        return canonical(Object.fromEntries(Object.entries(now).filter(([key]) => key !== 'revocation'))) === canonical(grant);
-      });
-    }
-    case 'reservation':
-      return before['reservationId'] === after['reservationId'] && (before['state'] === 'reserved' || (before['state'] === after['state'] && before['terminalReason'] === after['terminalReason'] && before['resolution'] === undefined));
-    case 'resolution':
-      // A binding that stood with no resolution may since have been resolved; the binding itself never changes.
-      return canonical(before['binding']) === canonical(after['binding']) && before['resolution'] === undefined;
-    default:
-      return false;
-  }
+  return preserved(before, after, 'stage', name);
 }
 
 /**
@@ -324,7 +387,8 @@ function stageProgressed(name: AuthorityTraceStageName, before: unknown, after: 
 const FINAL_STATE_SUCCESSORS: Readonly<Partial<Record<AuthorityTraceFinalState, readonly AuthorityTraceFinalState[]>>> = {
   'approval-pending': ['not-executed', 'withheld-at-exercise', 'executed-confirmed-completed', 'executed-confirmed-not-completed', 'executed-unconfirmed', 'claimed-outcome-unrecorded', 'resolved-confirmed-completed', 'resolved-confirmed-not-completed'],
   'not-executed': ['withheld-at-exercise', 'executed-confirmed-completed', 'executed-confirmed-not-completed', 'executed-unconfirmed', 'claimed-outcome-unrecorded', 'resolved-confirmed-completed', 'resolved-confirmed-not-completed'],
-  'claimed-outcome-unrecorded': ['resolved-confirmed-completed', 'resolved-confirmed-not-completed'],
+  // The write-ahead claim is recorded before the observation: the window between them is normal.
+  'claimed-outcome-unrecorded': ['withheld-at-exercise', 'executed-confirmed-completed', 'executed-confirmed-not-completed', 'executed-unconfirmed', 'resolved-confirmed-completed', 'resolved-confirmed-not-completed'],
   'executed-unconfirmed': ['resolved-confirmed-completed', 'resolved-confirmed-not-completed'],
 };
 
@@ -334,7 +398,9 @@ function summaryProgressed(before: DisclosedAuthorityTraceSummary, after: Disclo
   return AUTHORITY_TRACE_STAGE_NAMES.every((name) => {
     const was = before.presence?.[name];
     const now = after.presence?.[name];
-    return was === now || (OPEN_PRESENCE.has(String(was)) && now !== 'missing' && now !== 'unreadable');
+    // The event stream is a best-effort projection that may lag: its `missing` is open.
+    const open = OPEN_PRESENCE.has(String(was)) || (name === 'events' && was === 'missing');
+    return was === now || (open && !BROKEN_PRESENCE.has(String(now)));
   });
 }
 
