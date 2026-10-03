@@ -365,8 +365,8 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 | `assure01-trace-builder.test.ts` | 64 | one corruption at a time (wrong joins, deleted and fabricated components, unreadable stores, summaries, payloads, read order, degraded stores, legacy pre-P11), disclosure and comparison at every level, v2 verification, historical v1 bundles |
 | `assure01-evidence-store.test.ts` | 14 | restart, no overwrite, races, immutable content, re-sealed row, lifecycle and its log, tenant ownership, bounded lists, schema guard, health/close, in-memory contract |
 | `assure01-trace-structure.test.ts` | 12 | no write path (self-tested detectors), one read per store, no unbounded stream read, no domain vocabulary, bounds, durable composition, registry |
-| `assure01-bounded-stream.test.ts` | 16 | §11a, both stores and the trace |
-| **Total** | **124** | |
+| `assure01-bounded-stream.test.ts` | 17 | §11a, both stores and the trace |
+| **Total** | **125** | |
 
 ### 12.3 Independent adversarial reviews
 
@@ -389,7 +389,7 @@ schema mismatch ignored, supersession immutability broken, disclosure filter
 removed, unresolved turned into completed, resolution from another execution,
 unbounded listing; the "adapter call during verification" attack is represented by a write call (M28) and a grant writer handed to the trace (M29), since no adapter is reachable from it at all — plus the review fixes. The first run (on `0c61249`) left
 one survivor, M28: the structural detector missed an optional call; the
-detector was fixed (`f73e82f`) and the whole campaign re-run. The P8 bounded read added M39 … M45 (size check removed, head-only and count-only sizing, in-memory bound removed, any number accepted as a bound, the trace at a larger bound, tenant check after the size answer); the first complete run left M41 surviving (the deleted-rows case kept its head), the case was strengthened and the complete campaign re-run (45 of 45 on `b608c27`). A review of the bounded read then found that sizing from the head or the highest sequence disguised a forged head or sequence as size; the store now sizes by the events it holds and refuses a foreign stream before loading (`952d4e7`), M40 / M41 / M45 were re-defined for that code (head sizing, highest-sequence sizing, owner after load), and the complete campaign was re-run: **45 of 45**.
+detector was fixed (`f73e82f`) and the whole campaign re-run. The P8 bounded read added M39 … M45; in their final form (`952d4e7`): the size check removed (rows loaded before sizing), the stream sized from its sealed head, sized from its highest sequence (each a forged value disguised as size), the in-memory bound removed, any number accepted as a bound, the trace at a larger bound, and the owner checked only after the rows are loaded. History: on the first bounded-read code (`7f4bd9d`) one mutation survived and its case was strengthened (`b608c27`, 45 of 45); a review then led to count-only sizing and tenant-before-load (`952d4e7`), the three mutations above were re-defined for it, and the complete campaign was re-run: **45 of 45**.
 
 ### 12.5 Validation
 
@@ -404,7 +404,7 @@ validator fix (`a426d1a`), the P8 bounded read (`505f716` … `952d4e7`) and
 documentation changed; the regression set (P8, ASSURE-01, PROD-02, CORE-06
 matrix, invariants, no-bypass, structure, API freeze) passed on the bounded
 read; a review of it (`f895e5a`) led to count-only sizing and tenant-before-load
-(`952d4e7`), and the final commit's own clean-export run is reported, with its SHA, in
+(`952d4e7`); its final review's low items were closed in tests and documentation only, and the final commit's own clean-export run is reported, with its SHA, in
 the milestone report.
 <!-- /assure01:evidence -->
 

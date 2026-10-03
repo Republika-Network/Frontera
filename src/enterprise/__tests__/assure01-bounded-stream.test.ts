@@ -20,9 +20,10 @@ import { ORG_A, ORG_B, attempt, decision, steppingClock } from './authority-even
  * ASSURE-01 — the bounded event-stream read.
  *
  * A trace is complete for its request or refused; it is never truncated. The
- * bound is enforced by the P8 store itself: a stream over the bound is refused
- * from its row count, highest sequence and sealed head **before any event row
- * is loaded**. These tests prove that on the real SQLite store (where every
+ * bound is enforced by the P8 store itself: another organization's stream is
+ * refused, then a stream over the bound is refused from the number of events it
+ * actually holds, **before any event row is loaded**; a forged head or sequence
+ * is a chain fault for verification, never a size. These tests prove that on the real SQLite store (where every
  * event row of the oversized stream is made unparseable, so loading even one
  * would fail differently) and on the in-memory store, and through the trace.
  */
@@ -199,11 +200,28 @@ describe('ASSURE-01 bounded stream read — the SQLite store sizes the stream be
     assert.equal(raised.outcome, 'within-bound');
     assert.ok(raised.outcome === 'within-bound');
     assert.equal(raised.verification.valid, false);
+    assert.equal(raised.verification.eventCount, 5, 'the real count, not the forged head');
     tamper(path, [`UPDATE authority_event_stream_heads SET sequence = 5 WHERE stream_id = '${STREAM}'`, `UPDATE authority_events SET sequence = 'Infinity' WHERE stream_id = '${STREAM}' AND sequence = 5`]);
     const text = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
     assert.equal(text.outcome, 'within-bound', 'a text sequence does not inflate the size');
     assert.ok(text.outcome === 'within-bound');
     assert.equal(text.verification.valid, false);
+    assert.equal(text.verification.eventCount, 5, 'the real count');
+  });
+
+  it('with no sealed head, the owner is the first event’s organization: another organization is refused with no row loaded', async () => {
+    const path = freshPath();
+    const store = await createSqliteAuthorityEventStreamStore(path, { now: steppingClock().now });
+    stores.push(store);
+    await filled(store, 5);
+    tamper(path, [`DELETE FROM authority_event_stream_heads WHERE stream_id = '${STREAM}'`]);
+    materialized.rows = 0;
+    await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
+    assert.equal(materialized.rows, 0);
+    const own = await store.readStreamBounded(A, STREAM, { maxEvents: BOUND });
+    assert.equal(own.outcome, 'within-bound');
+    assert.ok(own.outcome === 'within-bound');
+    assert.equal(own.verification.valid, false, 'a stream that lost its head does not verify');
   });
 
   it('within the bound, a corrupted stream is reported as invalid with no events — never repaired, never partial', async () => {
