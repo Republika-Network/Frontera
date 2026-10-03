@@ -15,7 +15,7 @@
   "tests": 133,
   "pass": 133,
   "fail": 0,
-  "note": "every ASSURE-01 suite (124 tests, the P12 host suite included) and the portability registry structure test (9), on the unmutated build"
+  "note": "every ASSURE-01 suite (124 tests: the five kill-set suites plus the P12 host suite, run in the baseline in addition to the kill set) and the portability registry structure test (9), on the unmutated build"
  },
  "srcTreeIdenticalAfterCampaign": true,
  "rebuiltAfterCampaign": true,

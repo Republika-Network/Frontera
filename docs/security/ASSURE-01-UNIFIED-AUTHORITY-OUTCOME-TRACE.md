@@ -305,7 +305,9 @@ and with the head rewritten short; a foreign organization is refused with no
 row loaded; rows deleted with the head rewritten short load only the rows that
 exist and verify invalid; a head or sequence forged high (including a text
 `'Infinity'` sequence) is reported invalid, not as size; malformed and
-excessive bounds refused; the trace refuses the 257th event without loading the
+excessive bounds refused; with no sealed head the owner is the first event's
+organization and a foreign caller is refused with no row loaded; the trace
+refuses the 257th event without loading the
 stream. The probe counts rows returned through `Statement.all` (the store's
 load path); the in-memory provider holds its events in memory and is checked by
 outcome only. Grants (16),
