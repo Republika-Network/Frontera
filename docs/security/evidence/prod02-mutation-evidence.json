@@ -1,0 +1,1796 @@
+{
+ "format": "frontera.prod02.mutation-evidence.v1",
+ "commit": "6cc052960088a288b523caf31bf8a39863845f16",
+ "runner": "scripted, outside the repository, on a native-Linux git-archive export of the commit: apply edits (each find verified to occur exactly once) -> tsc -b (TypeScript) or node --check (.mjs) -> node --test --test-reporter=tap <kill set> -> killed when the kill set exits non-zero (a failed test, a failed hook or a cancelled test) -> restore original bytes -> SHA-256 compare -> rebuild after a TypeScript mutation; then the whole export diffed against a fresh git archive of the commit",
+ "killSet": [
+  "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js",
+  "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js",
+  "dist/src/enterprise/__tests__/prod02-stale-restore-host.test.js",
+  "tests/portability-backup-restore.contract.test.mjs",
+  "tests/portability-store-registry.structure.test.mjs"
+ ],
+ "baseline": {
+  "compiled": true,
+  "total": 86,
+  "passed": 86,
+  "failed": 0
+ },
+ "srcTreeIdenticalAfterCampaign": true,
+ "rebuiltAfterCampaign": true,
+ "totals": {
+  "defined": 41,
+  "counted": 41,
+  "killed": 41,
+  "survived": 0
+ },
+ "history": "A first campaign on 122e6e1 (M1-M32) was stopped after M13 when the first adversarial review's fixes changed mutated code. A run on e2e0304 was stopped at M21 when the second review's fixes did. A complete run on 87c1736 (M1-M41) found M23 SURVIVED -- dropping the execution-outcome store from a restore went unnoticed because the committed claim also prevents a duplicate execution -- and counted M31 as survived only because its runner read the TAP fail count, while M31 makes the integrity suite's before() hook fail (tests cancelled, exit code 1); M37's find string was stale. The drill was strengthened (the restored outcome record must name the pre-backup grant, 6cc0529), the runner switched to the kill set's exit code and M37's find was corrected. The authoritative run recorded here is the complete run on 6cc0529.",
+ "mutations": [
+  {
+   "id": "M1",
+   "change": "bounded-grant store omitted from the backup",
+   "property": "every composed store is backed up (bounded grants)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'bounded-grants').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.4,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M2",
+   "change": "emergency-control store omitted from the backup",
+   "property": "every composed store is backed up (emergency controls)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'emergency-controls').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.9,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M3",
+   "change": "exercise ledger omitted from the backup",
+   "property": "every composed store is backed up (exercise ledger)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'exercise-ledger').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.4,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M4",
+   "change": "authority event stream omitted from the backup",
+   "property": "every composed store is backed up (event stream)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'authority-event-stream').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 8.9,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M5",
+   "change": "execution outcome store omitted from the backup",
+   "property": "every composed store is backed up (outcomes)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'execution-outcomes').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.4,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M6",
+   "change": "execution resolution store omitted from the backup",
+   "property": "an explicitly configured store is backed up (P12)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'execution-resolutions').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.8,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M7",
+   "change": "obligation discharge store omitted from the backup",
+   "property": "every composed store is backed up (obligations)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'obligation-discharges').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.4,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M8",
+   "change": "approval store omitted from the backup",
+   "property": "every composed store is backed up (approvals)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'approvals').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.8,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M9",
+   "change": "control-plane store omitted from the backup",
+   "property": "every composed store is backed up (control plane)",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "  const plan = STORE_DEFINITIONS.map((storeDef) => {",
+     "replace": "  const plan = STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'control-plane').map((storeDef) => {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "all thirteen registry stores are in the backup"
+    }
+   ],
+   "durationS": 7.8,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M10",
+   "change": "a configured missing store treated as complete",
+   "property": "an incomplete backup is never marked complete",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "    const complete = coverageStores.every((entry) => !entry.required || entry.included);",
+     "replace": "    const complete = true;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "an incomplete backup (missing stores explicitly allowed) is refused; with --allow-incomplete it restores without inventing the missing store, and the secure Host still refuses it",
+     "failure": "Expected values to be strictly equal:"
+    }
+   ],
+   "durationS": 13.6,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M11",
+   "change": "restore skips checksum validation",
+   "property": "a modified store file is refused",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "  if (actualChecksum !== entry.checksum) {",
+     "replace": "  if (false) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a checksum mismatch in the exercise ledger",
+     "failure": "The input did not match the regular expression /Checksum mismatch for store 'exercise-ledger'/. Input:"
+    }
+   ],
+   "durationS": 14.7,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M12",
+   "change": "restore skips SQLite integrity_check",
+   "property": "a corrupted store is refused as an integrity failure",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "  const integrity = await sqliteIntegrityCheck(filePath);",
+     "replace": "  const integrity = { ok: true, detail: 'ok' };"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses SQLite corruption behind a recomputed checksum (emergency controls)",
+     "failure": "The input did not match the regular expression /SQLite integrity check failed for store 'emergency-controls'/. Input:"
+    }
+   ],
+   "durationS": 13.9,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M13",
+   "change": "restore accepts an unsupported schema version",
+   "property": "an unsupported schema is refused",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "  if (!supported.includes(entry.schemaVersion)) {",
+     "replace": "  if (false) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a schema version this build does not support (control plane)",
+     "failure": "The input did not match the regular expression /control-plane' was backed up under schema version 'frontera\\.control-plane\\.schema\\.v99'/. Input:"
+    }
+   ],
+   "durationS": 13.8,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M14",
+   "change": "restore accepts an unmanifested extra file",
+   "property": "only declared files are restored",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    if (!expected.has(file)) {",
+     "replace": "    if (false) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 51,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses an unexpected extra store file",
+     "failure": "'Missing expected rejection.'"
+    },
+    {
+     "test": "refuses a witness database planted in the backup set",
+     "failure": "'Missing expected rejection.'"
+    }
+   ],
+   "durationS": 14.9,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M15",
+   "change": "restore allows a symlinked store",
+   "property": "symlinks are refused",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    assertNotSymlink(filePath, `Store '${storeDef.name}' file`);",
+     "replace": "    void 0;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a symlinked store",
+     "failure": "The input did not match the regular expression /symlink/. Input:"
+    }
+   ],
+   "durationS": 14.5,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M16",
+   "change": "restore allows a path-escaping filename",
+   "property": "filenames stay inside stores/ under their registry name",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    if (entry.filename !== storeDef.filename) {",
+     "replace": "    if (false) {"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    const filePath = assertContained(storesDir, entry.filename, `Store '${storeDef.name}' filename`);",
+     "replace": "    const filePath = join(storesDir, entry.filename);"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a path-traversing filename",
+     "failure": "The input did not match the regular expression /must be stored as 'stores\\/obligation-discharges\\.sqlite'/. Input:"
+    }
+   ],
+   "durationS": 13.9,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M17",
+   "change": "backup serializes referenced secret values",
+   "property": "no secret value enters a backup artifact",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "        secretValuesIncluded: false,",
+     "replace": "        secretValuesIncluded: false,\n        secretValues: requirements.secretReferenceEnvVars.map((name) => env[name]),"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "no canary appears anywhere in the backup set or the CLI output"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "no canary appears anywhere in the backup set or the CLI output"
+    }
+   ],
+   "durationS": 8.1,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M18",
+   "change": "an approval head that does not commit to its rows tolerated",
+   "property": "signed head and rows restore together",
+   "edits": [
+    {
+     "file": "scripts/portability/lib-portability.mjs",
+     "find": "      const consistent = rows.count === head.sequence && (rows.max ?? 0) === head.sequence;",
+     "replace": "      const consistent = true;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a signed approval head without the rows it commits to",
+     "failure": "The input did not match the regular expression /approvals' has an inconsistent signed head/. Input:"
+    }
+   ],
+   "durationS": 14.2,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/lib-portability.mjs",
+     "before": "05d5f3ea1d46b608066913207e5d1d530a5dd7d018db075585fbeef1c0c17521",
+     "after": "05d5f3ea1d46b608066913207e5d1d530a5dd7d018db075585fbeef1c0c17521",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M19",
+   "change": "restore skips post-copy verification of staged files",
+   "property": "a damaged copy is never promoted",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      if (sha256File(join(staging, storeDef.targetFilename)) !== entry.checksum) {",
+     "replace": "      if (false) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "a staged copy damaged before promotion is refused by the post-copy checksum, and the target is untouched",
+     "failure": "The input did not match the regular expression /Post-copy checksum mismatch for store 'approvals'/. Input:"
+    }
+   ],
+   "durationS": 14.1,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M20",
+   "change": "partial restore without rollback",
+   "property": "the target ends exactly old or exactly new",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    for (const file of promoted.reverse()) {",
+     "replace": "    for (const file of [].reverse()) {"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    for (const { from, to } of movedAside.reverse()) {",
+     "replace": "    for (const { from, to } of [].reverse()) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 48,
+    "failed": 5,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "a failure after 1 store(s) were promoted rolls every managed file back",
+     "failure": "byte-for-byte the state before the restore"
+    },
+    {
+     "test": "a failure after 6 store(s) were promoted rolls every managed file back",
+     "failure": "byte-for-byte the state before the restore"
+    },
+    {
+     "test": "a failure after 12 store(s) were promoted rolls every managed file back",
+     "failure": "byte-for-byte the state before the restore"
+    },
+    {
+     "test": "a promoted file altered before post-promotion verification is caught and the target rolled back",
+     "failure": "Expected values to be strictly deep-equal:"
+    }
+   ],
+   "durationS": 17.3,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M21",
+   "change": "restore drops the emergency-control store (stop released on restart)",
+   "property": "an active stop survives restore",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      renameSync(join(staging, storeDef.targetFilename), destination);",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'emergency-controls') continue;\n      renameSync(join(staging, storeDef.targetFilename), destination);"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      if (sha256File(destination) !== entry.checksum) throw",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'emergency-controls') continue;\n      if (sha256File(destination) !== entry.checksum) throw"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "Expected values to be strictly deep-equal:"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "Expected values to be strictly deep-equal:"
+    }
+   ],
+   "durationS": 10.7,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M22",
+   "change": "restore drops the exercise ledger (consumption reset)",
+   "property": "consumed limits stay consumed",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      renameSync(join(staging, storeDef.targetFilename), destination);",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'exercise-ledger') continue;\n      renameSync(join(staging, storeDef.targetFilename), destination);"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      if (sha256File(destination) !== entry.checksum) throw",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'exercise-ledger') continue;\n      if (sha256File(destination) !== entry.checksum) throw"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "Expected values to be strictly equal:"
+    }
+   ],
+   "durationS": 10.1,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M23",
+   "change": "restore drops execution outcomes (completed execution retried through the adapter)",
+   "property": "no duplicate provider effect",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      renameSync(join(staging, storeDef.targetFilename), destination);",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'execution-outcomes') continue;\n      renameSync(join(staging, storeDef.targetFilename), destination);"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      if (sha256File(destination) !== entry.checksum) throw",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'execution-outcomes') continue;\n      if (sha256File(destination) !== entry.checksum) throw"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "execution lookup: {\"error\":{\"code\":\"AUTHORITY_ADMIN_TARGET_NOT_FOUND\",\"message\":\"No execution with that id is recorded for this organization.\"}}"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "execution lookup: {\"error\":{\"code\":\"AUTHORITY_ADMIN_TARGET_NOT_FOUND\",\"message\":\"No execution with that id is recorded for this organization.\"}}"
+    }
+   ],
+   "durationS": 9.6,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M24",
+   "change": "restore drops the execution-resolution store (binding re-inferred)",
+   "property": "the binding is restored, never re-inferred",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      renameSync(join(staging, storeDef.targetFilename), destination);",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'execution-resolutions') continue;\n      renameSync(join(staging, storeDef.targetFilename), destination);"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      if (sha256File(destination) !== entry.checksum) throw",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'execution-resolutions') continue;\n      if (sha256File(destination) !== entry.checksum) throw"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "Expected values to be strictly equal:"
+    }
+   ],
+   "durationS": 11.2,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M25",
+   "change": "restore drops the obligation discharge store (discharge lost)",
+   "property": "a verified discharge survives restore",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      renameSync(join(staging, storeDef.targetFilename), destination);",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'obligation-discharges') continue;\n      renameSync(join(staging, storeDef.targetFilename), destination);"
+    },
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "      const destination = paths[storeDef.name];\n      if (sha256File(destination) !== entry.checksum) throw",
+     "replace": "      const destination = paths[storeDef.name];\n      if (storeDef.name === 'obligation-discharges') continue;\n      if (sha256File(destination) !== entry.checksum) throw"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "\"The obligation-discharge-state store is empty, and the freshness witness holds this organization's obligation-discharge-state beyond genesis. A deleted or replaced store is never re-initialized.\""
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "\"The obligation-discharge-state store is empty, and the freshness witness holds this organization's obligation-discharge-state beyond genesis. A deleted or replaced store is never re-initialized.\""
+    }
+   ],
+   "durationS": 8.7,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M26",
+   "change": "backup un-revokes agent credentials in the control-plane copy",
+   "property": "a revocation in the backup stays a revocation",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "        await safeSqliteCopy(entry.sourcePath, destPath);\n      } catch (error) {",
+     "replace": "        await safeSqliteCopy(entry.sourcePath, destPath);\n        if (storeDef.name === 'control-plane') { const { default: Database } = await import('better-sqlite3'); const db = new Database(destPath); db.exec(\"DROP TRIGGER IF EXISTS agent_credentials_revocation_only; UPDATE agent_credentials SET status = 'active', revoked_by = NULL, revoked_at = NULL, revocation_reason = NULL\"); db.close(); }\n      } catch (error) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "a rotated-out credential stays dead"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "a rotated-out credential stays dead"
+    }
+   ],
+   "durationS": 11.6,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M27",
+   "change": "restore re-enrolls the witness at the restored heads",
+   "property": "restore never resets or re-enrolls the witness",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "  cleanupDir(staging);\n\n  return report;",
+     "replace": "  cleanupDir(staging);\n  if (env?.FRONTERA_REFERENCE_WITNESS_DB !== undefined) { const { default: Database } = await import('better-sqlite3'); const w = new Database(env.FRONTERA_REFERENCE_WITNESS_DB); for (const { name } of w.prepare(\"SELECT name FROM sqlite_master WHERE type = 'trigger'\").all()) w.exec(`DROP TRIGGER \"${name}\"`); for (const entry of manifest.stores) { if (entry.signedHead === undefined) continue; w.prepare('UPDATE witness_bindings SET committed_sequence = ?, committed_digest = ?, pending_sequence = NULL, pending_digest = NULL WHERE state_kind = ?').run(entry.signedHead.sequence, entry.signedHead.stateDigest, entry.signedHead.freshnessStateKind); } w.close(); }\n\n  return report;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-stale-restore-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 1,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "S1 → backup A → S2 (revoke grant, revoke approval, discharge obligation) → restore A → refused before any authority, adapter untouched, witness unchanged; each signed store alone is refused; restore of S2 works",
+     "failure": "'the Host booted, but it must refuse'"
+    }
+   ],
+   "durationS": 8.3,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M28",
+   "change": "a store older than the witness accepted as ready",
+   "property": "a stale authority restore stays fail-closed",
+   "edits": [
+    {
+     "file": "src/enterprise/authority-state-freshness/session.ts",
+     "find": "  if (local.sequence < committed.sequence) {\n    throw freshness('AUTHORITY_FRESHNESS_ROLLBACK_DETECTED'",
+     "replace": "  if (local.sequence < committed.sequence) {\n    if (local.sequence >= 0) return 'ready';\n    throw freshness('AUTHORITY_FRESHNESS_ROLLBACK_DETECTED'"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-stale-restore-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 1,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "S1 → backup A → S2 (revoke grant, revoke approval, discharge obligation) → restore A → refused before any authority, adapter untouched, witness unchanged; each signed store alone is refused; restore of S2 works",
+     "failure": "'the Host booted, but it must refuse'"
+    }
+   ],
+   "durationS": 8.3,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "src/enterprise/authority-state-freshness/session.ts",
+     "before": "2d6abf442dd6494bca961e8285d08a301fc82f85f5cd42bf344ab6472586f3e5",
+     "after": "2d6abf442dd6494bca961e8285d08a301fc82f85f5cd42bf344ab6472586f3e5",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M29",
+   "change": "witness state added to the backup definitions",
+   "property": "the witness is outside the restore domain",
+   "edits": [
+    {
+     "file": "scripts/portability/store-registry.mjs",
+     "find": "export const STORE_DEFINITIONS = Object.freeze([\n",
+     "replace": "export const STORE_DEFINITIONS = Object.freeze([\n  { name: 'authority-state-witness', filename: 'witness.sqlite', envVar: 'FRONTERA_REFERENCE_WITNESS_DB', configKey: 'witness', configPathOf: () => process.env.FRONTERA_REFERENCE_WITNESS_DB ?? '.data/witness.sqlite', targetFilename: 'witness.sqlite', condition: 'embedder-reconciliation', purpose: 'witness', version: { kind: 'versions-table', table: 'witness_versions', migrationState: false }, supportedSchemaVersionsOf: () => ['x'], recordTable: 'witness_bindings', integrity: 'x', open: () => undefined, lossEffect: 'x' },\n"
+    }
+   ],
+   "killSet": [
+    "tests/portability-store-registry.structure.test.mjs"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 9,
+    "passed": 5,
+    "failed": 4,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "every durable SQLite path the Host configuration reads is classified by the registry (backed up or excluded with a reason)",
+     "failure": "'authority-state-witness: FRONTERA_REFERENCE_WITNESS_DB is a Host variable'"
+    },
+    {
+     "test": "every registry entry maps its variable to the configuration field the Host reads, and restores under the Host's own default filename",
+     "failure": "authority-state-witness: configPathOf reads FRONTERA_REFERENCE_WITNESS_DB"
+    },
+    {
+     "test": "registry entries are complete, unique and closed",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "the CORE-07 freshness witness is never part of the backup definitions",
+     "failure": "authority-state-witness.name"
+    }
+   ],
+   "durationS": 0.3,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/store-registry.mjs",
+     "before": "936a38b2a604aa7280665fd8b233cdfccd1abb6fd3898970e90509aa2df50660",
+     "after": "936a38b2a604aa7280665fd8b233cdfccd1abb6fd3898970e90509aa2df50660",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M30",
+   "change": "a pre-PROD-02 backup accepted as complete",
+   "property": "a historical incomplete backup is never complete",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    return { model: 'legacy', complete: false, missingForSource: null, missingForTarget, reason: 'pre-PROD-02 backup: no coverage record, so it cannot be shown to be complete' };",
+     "replace": "    return { model: COVERAGE_MODEL, complete: true, missingForSource: [], missingForTarget: [], reason: '' };"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 51,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "a pre-PROD-02 (legacy) backup is never accepted as complete; with the explicit flag it restores and says so",
+     "failure": "'Missing expected rejection.'"
+    },
+    {
+     "test": "a historical four-store backup is refused for a deployment that requires the governed stores — even when legacy backups are allowed",
+     "failure": "'Missing expected rejection.'"
+    }
+   ],
+   "durationS": 14.2,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M31",
+   "change": "Host shutdown leaves the approval, obligation and control-plane stores open",
+   "property": "a clean shutdown releases every store (cold-backup precondition)",
+   "edits": [
+    {
+     "file": "src/enterprise/composition/composition-root.ts",
+     "find": "      await closeComposedExecutionResolutionStore();\n      await closeComposedGovernedStateStores();\n    },\n    stop:",
+     "replace": "      await closeComposedExecutionResolutionStore();\n    },\n    stop:"
+    },
+    {
+     "file": "src/enterprise/composition/composition-root.ts",
+     "find": "      await closeComposedGovernedStateStores();\n    },\n  };",
+     "replace": "    },\n  };"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 0,
+    "failed": 0,
+    "cancelled": 53,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "PROD-02 restore refuses a damaged or incomplete backup before touching the target",
+     "failure": "'--cold was requested, but store(s) obligation-discharges, approvals, control-plane have a non-empty WAL sidecar: a Host appears to be running (or did not shut down cleanly). Stop the Host and retry; a cold backup is the only cross-store-consistent backup.'"
+    },
+    {
+     "test": "PROD-02 restore replacement: exactly the old state or exactly the new one",
+     "failure": "'--cold was requested, but store(s) obligation-discharges, approvals, control-plane have a non-empty WAL sidecar: a Host appears to be running (or did not shut down cleanly). Stop the Host and retry; a cold backup is the only cross-store-consistent backup.'"
+    },
+    {
+     "test": "PROD-02 backup refusals and evidence",
+     "failure": "'--cold was requested, but store(s) obligation-discharges, approvals, control-plane have a non-empty WAL sidecar: a Host appears to be running (or did not shut down cleanly). Stop the Host and retry; a cold backup is the only cross-store-consistent backup.'"
+    },
+    {
+     "test": "PROD-02 registry ↔ composition: the derived requirements are exactly the stores the Host opens",
+     "failure": "'--cold was requested, but store(s) obligation-discharges, approvals, control-plane have a non-empty WAL sidecar: a Host appears to be running (or did not shut down cleanly). Stop the Host and retry; a cold backup is the only cross-store-consistent backup.'"
+    }
+   ],
+   "durationS": 2.8,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "src/enterprise/composition/composition-root.ts",
+     "before": "3eb4c292c72d62774a05a9a302e94a933dbc8f89ee6482c152b31e73a976e332",
+     "after": "3eb4c292c72d62774a05a9a302e94a933dbc8f89ee6482c152b31e73a976e332",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M32",
+   "change": "restore writes stores under their backup filenames, not the Host's",
+   "property": "each restored file is the one its Host variable names",
+   "edits": [
+    {
+     "file": "scripts/portability/store-registry.mjs",
+     "find": "  return Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.name, resolve(targetDir, storeDef.targetFilename)]));",
+     "replace": "  return Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.name, resolve(targetDir, storeDef.filename)]));"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 2,
+    "passed": 0,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "AOC_ENTERPRISE_SQLITE_PATH"
+    },
+    {
+     "test": "stop → cold backup → destroy → restore into a fresh directory → secure Host boots on the surviving witness → every security property holds by behaviour",
+     "failure": "AOC_ENTERPRISE_SQLITE_PATH"
+    }
+   ],
+   "durationS": 8.2,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/store-registry.mjs",
+     "before": "936a38b2a604aa7280665fd8b233cdfccd1abb6fd3898970e90509aa2df50660",
+     "after": "936a38b2a604aa7280665fd8b233cdfccd1abb6fd3898970e90509aa2df50660",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M33",
+   "change": "non-boolean deployment flags accepted",
+   "property": "the producer record is strictly typed",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    if (typeof coverage.deployment[flag] !== 'boolean') throw new RestoreValidationError(`Malformed manifest: coverage.deployment.${flag} must be a boolean.`);",
+     "replace": "    void flag;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a deployment flag that is not a boolean (a string \"true\" must not quietly un-require a store)",
+     "failure": "'Missing expected rejection.'"
+    }
+   ],
+   "durationS": 15.1,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M34",
+   "change": "a store recorded as required-but-absent ignored",
+   "property": "a required store the backup lacks keeps it incomplete",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "  const declaredMissing = coverage.stores.filter((entry) => entry.required === true && entry.included !== true).map((entry) => entry.name);",
+     "replace": "  const declaredMissing = [];"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a backup that records a required store as not included, even when its flags were rewritten and no restoring deployment is given",
+     "failure": "'Missing expected rejection.'"
+    }
+   ],
+   "durationS": 14.1,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M35",
+   "change": "no in-progress marker during promotion",
+   "property": "an uncatchable interruption is visible to the next restore",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    writeFileSync(markerPath, `${manifest.backupId}\\n`, { flag: 'wx' });",
+     "replace": "    void 0;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 42,
+    "failed": 11,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "RESIDUAL: a manifest forged consistently (flags and coverage both rewritten) passes only when no restoring deployment is given — and the report says the target was not checked",
+     "failure": "\"ENOENT: no such file or directory, lstat '/tmp/frontera-prod02-forged-Lvr3x8/data/.restore-in-progress'\""
+    },
+    {
+     "test": "refuses a target that changed while the backup was being verified, and leaves the newcomer alone",
+     "failure": "\"ENOENT: no such file or directory, lstat '/tmp/frontera-prod02-changed-InOMAU/data/.restore-in-progress'\""
+    },
+    {
+     "test": "marks the target while promoting; an interrupted restore is refused until an operator has looked",
+     "failure": "\"ENOENT: no such file or directory, lstat '/tmp/frontera-prod02-marker-xxpwGz/data/.restore-in-progress'\""
+    },
+    {
+     "test": "a pre-PROD-02 (legacy) backup is never accepted as complete; with the explicit flag it restores and says so",
+     "failure": "\"ENOENT: no such file or directory, lstat '/tmp/frontera-prod02-legacy-6ugxC5/data/.restore-in-progress'\""
+    }
+   ],
+   "durationS": 12.0,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M36",
+   "change": "a symlink at a target store path accepted",
+   "property": "restore never writes through or replaces a link",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    if (lstatSync(file).isSymbolicLink()) throw new RestoreValidationError",
+     "replace": "    if (false) throw new RestoreValidationError"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 51,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a symlink at a target store path, even a dangling one",
+     "failure": "'Missing expected rejection.'"
+    },
+    {
+     "test": "refuses a symlinked sidecar or report in the target",
+     "failure": "'Missing expected rejection: approvals.sqlite-wal'"
+    }
+   ],
+   "durationS": 14.5,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M37",
+   "change": "overlap judged on spelled paths",
+   "property": "a target resolving into the backup is refused",
+   "edits": [
+    {
+     "file": "scripts/portability/lib-portability.mjs",
+     "find": "  const a = fold(realResolve(pathA));\n  const b = fold(realResolve(pathB));",
+     "replace": "  const a = fold(resolve(pathA));\n  const b = fold(resolve(pathB));"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a target that is a symlink into the backup directory",
+     "failure": "The input did not match the regular expression /must not be nested|must not be identical/. Input:"
+    }
+   ],
+   "durationS": 14.9,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/lib-portability.mjs",
+     "before": "05d5f3ea1d46b608066913207e5d1d530a5dd7d018db075585fbeef1c0c17521",
+     "after": "05d5f3ea1d46b608066913207e5d1d530a5dd7d018db075585fbeef1c0c17521",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M38",
+   "change": "signed-store binding not checked against the restoring organization",
+   "property": "no store is transplanted between organizations",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    if (boundTo !== null && boundTo !== undefined && targetOrganizationId !== undefined && boundTo !== targetOrganizationId) {",
+     "replace": "    if (false) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a legacy backup whose signed stores belong to another organization than the restoring deployment",
+     "failure": "The input did not match the regular expression /is bound to organization 'org-prod02', but the restoring deployment serves 'org-elsewhere'/. Input:"
+    }
+   ],
+   "durationS": 14.1,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M39",
+   "change": "an unclaimed default-path store silently skipped",
+   "property": "a skipped store is never silent",
+   "edits": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "find": "    const unclaimed = !required && !named && onDisk;",
+     "replace": "    const unclaimed = false;"
+    }
+   ],
+   "killSet": [
+    "tests/portability-backup-restore.contract.test.mjs"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 20,
+    "passed": 19,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "a store file at a default path the deployment neither requires nor names is never swept into the backup (PROD-02)",
+     "failure": "skipped, but never silently"
+    }
+   ],
+   "durationS": 7.6,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/backup-enterprise-v1.mjs",
+     "before": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "after": "9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M40",
+   "change": "the target is not re-inspected before promotion",
+   "property": "a store appearing during verification is never overwritten",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    if (now.length !== existing.length || now.some((file, index) => file !== existing[index])) {",
+     "replace": "    if (false) {"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 53,
+    "passed": 52,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a target that changed while the backup was being verified, and leaves the newcomer alone",
+     "failure": "The input did not match the regular expression /The target changed while the backup was being verified/. Input:"
+    }
+   ],
+   "durationS": 14.2,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M41",
+   "change": "the report is registered for rollback only after it is written",
+   "property": "a partial report never survives a failed restore",
+   "edits": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "find": "    promoted.push(reportPath);\n    writeFileSync(reportPath, stableJsonStringify(report), { flag: 'wx' });",
+     "replace": "    writeFileSync(reportPath, stableJsonStringify(report), { flag: 'wx' });\n    promoted.push(reportPath);"
+    }
+   ],
+   "killSet": [
+    "tests/portability-store-registry.structure.test.mjs"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 9,
+    "passed": 8,
+    "failed": 1,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "restore never opens (and so never creates) a store it did not just copy and verify",
+     "failure": "'the report is registered for rollback before it is written'"
+    }
+   ],
+   "durationS": 0.3,
+   "result": "KILLED",
+   "sha256": [
+    {
+     "file": "scripts/portability/restore-enterprise-v1.mjs",
+     "before": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "after": "0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb",
+     "restored": true
+    }
+   ]
+  }
+ ]
+}

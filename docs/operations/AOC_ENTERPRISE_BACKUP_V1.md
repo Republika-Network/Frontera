@@ -2,187 +2,205 @@
 
 Automated counterpart to the manual procedure in
 `docs/operations/BACKUP_RECOVERY_V1.md`. That document remains the
-authority on *why* (consistency model, frequency, retention); this
-document covers the `backup:v1` **command** it now recommends as the
-default way to take a backup. Companion document:
-`docs/operations/AOC_ENTERPRISE_RESTORE_V1.md`.
+authority on *why* (consistency model, frequency, retention, key material);
+this document covers the `backup:v1` **command**. Companion documents:
+`docs/operations/AOC_ENTERPRISE_RESTORE_V1.md` (restore) and
+`docs/security/PROD-02-COMPLETE-BACKUP-RESTORE-COVERAGE.md` (the PROD-02
+qualification: what is proven, how, and what remains residual).
 
-## What it backs up
+## What it backs up — the store registry
 
-Exactly the three independent SQLite stores the Enterprise Host itself
-uses (see `docs/release/AOC_ENTERPRISE_V1_PORTABILITY_CURRENT_STATE.md`
-for how this was verified against source, not assumed):
+Since PROD-02 the store list is **one registry**,
+`scripts/portability/store-registry.mjs`. Backup discovery, restore mapping,
+manifest validation, the fixture, the comparison and the tests all derive from
+it; a structural test (`tests/portability-store-registry.structure.test.mjs`)
+fails when the Host's configuration loader reads a `*_SQLITE_PATH` variable the
+registry neither declares nor excludes, and a Host-level test boots real Hosts
+to prove the registry predicts exactly the store files the composition root
+opens.
 
-| Store | Config variable read | Backup filename |
-|---|---|---|
-| Governance Store | `AOC_ENTERPRISE_SQLITE_PATH` | `stores/governance.sqlite` |
-| Agent Passport Store | `AOC_ENTERPRISE_PASSPORT_SQLITE_PATH` | `stores/agent-passport.sqlite` |
-| Assurance Store | `AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH` | `stores/assurance.sqlite` |
+The registry declares **thirteen** durable SQLite stores — every store the
+Enterprise Host can compose:
 
-**Evidence Bundles are not backed up.** The Evidence Bundle Store has no
-SQLite implementation in v1 — it is always in-memory
-(`createInMemoryEvidenceStore`), regardless of
-`AOC_ENTERPRISE_PERSISTENCE_PROVIDER`. A Bundle is a deterministic,
-disclosure-scoped projection *of* a Governance Record; it is always
-rebuildable on demand (`POST /api/evidence` with the same
-`evaluationId`/`level`) once the Governance Store is restored. Only the
-already-issued `bundleId` and its lifecycle bookkeeping
-(`GENERATED`/`VERIFIED`/`EXPORTED`) do not survive a restart — this is a
-documented v1 limitation, not something this tooling works around.
+| Store | Variable | Backup file | Required when | Integrity |
+|---|---|---|---|---|
+| governance | `AOC_ENTERPRISE_SQLITE_PATH` | `stores/governance.sqlite` | always | per-record digests |
+| agent-passport | `AOC_ENTERPRISE_PASSPORT_SQLITE_PATH` | `stores/agent-passport.sqlite` | always | per-passport digest chain |
+| assurance | `AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH` | `stores/assurance.sqlite` | always | per-assessment digests |
+| kernel-authority | `AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH` | `stores/kernel-authority.sqlite` | `AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED=true` | digest-chained events (unsigned) |
+| bounded-grants | `AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH` | `stores/bounded-grants.sqlite` | governed actions configured | **Ed25519-signed**, CORE-07 anchored |
+| emergency-controls | `AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH` | `stores/emergency-controls.sqlite` | governed actions configured | digest-chained head (unsigned) |
+| exercise-ledger | `AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH` | `stores/exercise-ledger.sqlite` | governed actions configured | per-record digests (unsigned) |
+| authority-event-stream | `AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH` | `stores/authority-event-stream.sqlite` | governed actions configured | digest-chained events (unsigned) |
+| execution-outcomes | `AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH` | `stores/execution-outcomes.sqlite` | governed actions configured | per-attempt digests (unsigned) |
+| execution-resolutions | `AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH` | `stores/execution-resolutions.sqlite` | never from configuration (P12 is embedder-composed); backed up when its variable is set and the file exists | binding/resolution digests |
+| obligation-discharges | `AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH` | `stores/obligation-discharges.sqlite` | the governed-action file declares `obligations` | **Ed25519-signed** chain head, CORE-07 anchored |
+| approvals | `AOC_ENTERPRISE_APPROVAL_SQLITE_PATH` | `stores/approvals.sqlite` | some Governance Profile declares `approval` | **Ed25519-signed** chain head, CORE-07 anchored |
+| control-plane | `AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH` | `stores/control-plane.sqlite` | the governed-action file declares `operators` | append-only triggers (unsigned, **not** anchored) |
+
+Which conditional stores a deployment composes is read from the environment
+and the **structure** of the governed-action file (`deriveDeploymentRequirements`):
+the file is parsed as JSON and only its shape is inspected. No secret it
+references is resolved, so the backup operator's process never needs, and
+never touches, a credential value. A configured file that cannot be read or
+parsed refuses the backup — the required stores would be unknowable.
+
+A store that is **not required** is read only when its variable is explicitly
+set **and** its file exists (an embedder's P12 store, for example). A default
+path that merely happens to exist is never swept in — it is not this
+deployment's state — but never silently either: it is recorded as
+`present-not-configured` and the command prints a warning naming the variable
+to set if an embedder does compose it.
+
+**Deliberately excluded** (`EXCLUDED_DURABLE_STATE` in the registry): the
+CORE-07 freshness witness's database and receipt key (a different restore
+domain — see below), every secret and private key, the in-memory Evidence
+Bundle Store (rebuilt from the Governance Store), policy packs (in-process
+composition, no durable store), library-only SQLite stores the Host never
+composes (access-governance, authority-governance, mandate and
+protected-resource stores), and the governed-action file (configuration — its
+SHA-256 is recorded so a restore can be matched to it).
 
 ## Command
 
 ```bash
-npm run backup:v1 -- --output <directory> [--force]
+npm run backup:v1 -- --output <directory> [--cold] [--force] [--allow-missing-stores]
 ```
 
-Reads store locations from the same environment variables the Enterprise
-Host itself reads (`loadEnterpriseConfiguration()` — there is no separate
-backup-specific configuration surface). Run it with the same environment
-you'd use to start the Host, e.g.:
+Run it with the same environment you start the Host with. Requires
+`npm run build` to have run.
 
-```bash
-AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite \
-AOC_ENTERPRISE_SQLITE_PATH=/var/lib/aoc-enterprise/enterprise-host.sqlite \
-AOC_ENTERPRISE_PASSPORT_SQLITE_PATH=/var/lib/aoc-enterprise/agent-passport.sqlite \
-AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH=/var/lib/aoc-enterprise/assurance.sqlite \
-npm run backup:v1 -- --output /backups/2026-07-13
-```
+- `--output <dir>` (required) — must not exist, or must be empty, unless
+  `--force`/`--replace`.
+- `--cold` — the operator attests the Host is stopped. The tool **cannot
+  prove** a Host is stopped; it refuses when it sees evidence that one is not
+  (a non-empty `-wal` sidecar beside any source store) and records the
+  attestation and what it observed. Use it for every disaster-recovery and
+  pre-upgrade backup: it is the only cross-store-consistent backup.
+- `--allow-missing-stores` — development/forensics only. A required store
+  whose file is absent is recorded as `missing-allowed`, the manifest says
+  `coverage.complete: false`, `RESTORE.md` says **INCOMPLETE**, and a restore
+  refuses it unless explicitly told to accept an incomplete backup.
 
-Requires `npm run build` to have already run (the command loads
-`dist/src/enterprise/index.js`, the built package's public surface).
+## What the command does
 
-Flags:
+1. Refuses anything but `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite`.
+2. Derives the deployment's required stores; refuses a missing required store
+   (naming it, its variable and its condition) unless `--allow-missing-stores`.
+3. With `--cold`, refuses if any source store has a non-empty WAL.
+4. Refuses an `--output` nested in (or containing) any source store path.
+5. Copies each store with **SQLite's Online Backup API** (`Database#backup()`),
+   never a byte-level `cp`; switches the copy out of WAL mode so it is one
+   self-contained file. The **whole** database is copied — a signed head
+   travels inside the same file as its rows and is never reconstructed.
+6. On each copy: `PRAGMA integrity_check` (any failure aborts the whole
+   backup), the store's recorded schema version (refused unless this build
+   supports it), SHA-256, byte size, the row count of every table, and — for
+   the three signed stores — the signed head's store id, organization,
+   sequence, state digest and signing key id, refusing a head that does not
+   commit to exactly the rows present.
+7. Writes `backup-manifest.json`, `checksums.sha256`, `metadata/*.json` and
+   `RESTORE.md` into a staging directory beside `--output` and promotes it
+   with one rename only after everything succeeded; any failure deletes the
+   staging directory.
 
-- `--output <dir>` (required) — destination directory. Must not exist, or
-  must be empty, unless `--force`/`--replace` is passed.
-- `--force` / `--replace` — permit replacing an existing, non-empty output
-  directory.
-- `--allow-missing-stores` — permit backing up fewer than three stores,
-  for a deployment that deliberately never uses one of them (e.g. Passport
-  disabled). Without this flag, a missing store file is treated as an
-  error, not a silent skip — see "Fails closed" below.
+## Consistency model
 
-## What the command actually does (Phase 5/6/7 of the portability mission)
+Each store copy is transactionally consistent **for that store**. Thirteen
+files are **not** one distributed transaction, and nothing here claims they
+are: the manifest records `consistency.crossStoreAtomic: false`. Stop the Host
+and pass `--cold` for strict cross-store consistency. Since PROD-02 a clean
+Host shutdown closes every store it opened, so a stopped Host's data
+directory carries no WAL sidecars (previously the approval, obligation and
+control-plane stores stayed open past `close()`).
 
-1. Validates `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite` — the `memory`
-   provider has nothing durable to back up and the command refuses to run
-   against it.
-2. Rejects an `--output` path that is nested inside (or is an ancestor
-   of) any source store's directory.
-3. For each store, copies the live database using **SQLite's Online
-   Backup API** (`better-sqlite3`'s `Database#backup()`), never a plain
-   byte-level `cp`. This is safe against a live writer and produces a
-   transactionally consistent snapshot of that file, exactly like the
-   manual procedure's `sqlite3 <db> ".backup ..."` (see Phase 6 in
-   `AOC_ENTERPRISE_V1_PORTABILITY_REPORT.md` for why a raw `cp` of a
-   WAL-mode database is unsafe). If the copy inherits WAL mode from the
-   source, it is switched to `journal_mode = DELETE` immediately
-   afterward, so the backup artifact is one self-contained file with no
-   `-wal`/`-shm` sidecars.
-4. Runs `PRAGMA integrity_check` on every copied file. Any result other
-   than `ok` aborts the entire backup — no partial backup is ever
-   promoted.
-5. Reads each store's own schema-version table
-   (`governance_store_versions`, `agent_passport_store_versions`,
-   `assurance_store_versions`) and refuses to back up a store whose
-   recorded schema this build's own runtime does not support.
-6. Computes a SHA-256 checksum of each copied file.
-7. Writes the canonical `backup-manifest.json` (format
-   `aoc.enterprise.backup.v1`; see the schema below), `checksums.sha256`,
-   `metadata/*.json`, and a generated `RESTORE.md`.
-8. Assembles all of this in a staging directory (a sibling of `--output`,
-   so the final move is a same-filesystem, effectively atomic rename),
-   then promotes it into `--output` only once everything above has
-   succeeded.
-9. On **any** failure, the staging directory is deleted and `--output` is
-   left exactly as it was before the command ran — there is no partial
-   backup on disk to trust by accident.
-10. Never reads or copies `.env`, `AOC_ENTERPRISE_API_KEYS`, or any other
-    secret. The manifest records which environment variables are required
-    to restore and which are deliberately excluded
-    (`configuration.excludedSecrets`).
+## Backup manifest (`aoc.enterprise.backup.v1`, coverage model `aoc.enterprise.backup.coverage.v1`)
 
-### "Fails closed" on a missing store
-
-Unlike the runtime itself (which auto-creates an empty, schema-stamped
-SQLite file for a store it has never used), `backup:v1` treats a missing
-store file as an error by default. A missing file is ambiguous — it could
-mean "this store was never used" or "the wrong path was configured" — and
-a backup command should never guess. Start the Host once against the
-target configuration (which creates the empty, schema-stamped file), or
-pass `--allow-missing-stores` if the omission is intentional.
-
-## Backup manifest (`aoc.enterprise.backup.v1`)
+The format identifier is unchanged; PROD-02 adds fields. Abbreviated:
 
 ```json
 {
   "backupFormat": "aoc.enterprise.backup.v1",
   "backupId": "backup-<timestamp>-<short-commit>",
-  "createdAt": "<ISO-8601, non-deterministic>",
-  "source": { "commit": "...", "branch": "...", "releaseVersion": "1.0.0", "nodeVersion": "v22.x", "platform": "linux", "architecture": "x64" },
-  "enterprise": { "enterpriseVersion": "...", "governanceStoreVersion": "...", "evidenceRuntimeVersion": "...", "passportRuntimeVersion": "...", "assuranceRuntimeVersion": "..." },
+  "source": { "commit": "...", "branch": "...", "releaseVersion": "...", "nodeVersion": "...", "platform": "...", "architecture": "..." },
+  "enterprise": { "enterpriseVersion": "...", "governanceStoreVersion": "...", "...": "..." },
   "stores": [
-    { "name": "governance", "filename": "governance.sqlite", "originalPath": "...", "sizeBytes": 0, "checksum": "sha256:...", "schemaVersion": "...", "migrationState": "...", "required": true, "recordCount": 0, "integrityCheck": "ok" }
+    {
+      "name": "approvals", "filename": "approvals.sqlite", "envVar": "AOC_ENTERPRISE_APPROVAL_SQLITE_PATH",
+      "checksum": "sha256:...", "sizeBytes": 0, "schemaVersion": 1, "required": true, "condition": "approvals-declared",
+      "recordCount": 0, "tableCounts": { "approval_records": 0, "...": 0 }, "integrityCheck": "ok",
+      "signedHead": { "storeId": "approval-store:...", "organizationId": "...", "sequence": 0, "stateDigest": "sha256:...", "signingKeyId": "...", "freshnessStateKind": "approval-state" }
+    }
   ],
-  "configuration": { "requiredEnvironmentVariables": ["AOC_ENTERPRISE_PERSISTENCE_PROVIDER", "..."], "excludedSecrets": ["AOC_ENTERPRISE_API_KEYS"] },
-  "verification": { "checksumAlgorithm": "sha256", "sqliteIntegrityChecked": true, "recordIntegrityChecked": false }
+  "coverage": {
+    "coverageModel": "aoc.enterprise.backup.coverage.v1",
+    "complete": true,
+    "registry": ["governance", "...thirteen names..."],
+    "deployment": { "environment": "production", "organizationId": "...", "governedActions": true, "obligationsDeclared": true, "approvalsDeclared": true, "operatorsConfigured": true, "kernelAuthorityEnabled": true, "executionReconciliation": false, "governedActionsFileDigest": "sha256:..." },
+    "stores": [{ "name": "...", "envVar": "...", "condition": "...", "required": true, "present": true, "included": true, "status": "included | not-configured | missing-allowed" }],
+    "excluded": [{ "name": "authority-state-witness", "reason": "..." }]
+  },
+  "consistency": { "mode": "cold-attested | live-per-file", "operatorAttestedStopped": true, "nonEmptyWalObserved": [], "toolVerifiedHostStopped": false, "crossStoreAtomic": false },
+  "authority": {
+    "signer": { "mode": "software | external", "activeSigningKeyId": "...", "trustedVerificationKeys": [{ "keyId": "...", "algorithm": "ed25519-v1", "publicKeyFingerprint": "sha256:..." }], "privateKeyIncluded": false, "signerCredentialIncluded": false },
+    "freshness": { "mode": "external", "witnessId": "...", "witnessPublicKeyFingerprint": "sha256:...", "witnessStateIncluded": false, "witnessCredentialIncluded": false }
+  },
+  "configuration": { "requiredEnvironmentVariables": ["..."], "secretEnvironmentVariables": ["AOC_ENTERPRISE_API_KEYS", "..."], "excludedSecrets": ["..."], "secretValuesIncluded": false }
 }
 ```
 
-- `stores` is always ordered `governance`, `agent-passport`, `assurance`
-  (a fixed, stable order — never reflects filesystem iteration order).
-- Every field is written through a stable-key-sorted JSON serializer
-  (`scripts/portability/lib-portability.mjs`'s `stableJsonStringify`), so
-  two backups of identical logical content diff cleanly. `createdAt` and
-  `backupId` are the only fields that are inherently non-deterministic
-  (they encode the moment the backup was taken).
-- `verification.recordIntegrityChecked` is `false` in v1: `backup:v1`
-  verifies SQLite-level integrity (`PRAGMA integrity_check`) and
-  checksums, but does not additionally re-run the Governance/Passport/
-  Assurance store's own digest-verification endpoints against every
-  record during backup (that would make routine backups scan the entire
-  history). Run the sampled `verify` endpoints from
-  `BACKUP_RECOVERY_V1.md` §"Verifying backups" for that, or rely on
-  `restore:v1`'s post-restore verification, which does open every
-  restored store and confirm it reports `healthy`.
+- `stores` follows the registry's order. Every file is written with a
+  stable-key serializer, so two backups of identical content diff cleanly.
+- `coverage` is what lets a restore tell a complete backup from an
+  incomplete one, and a pre-PROD-02 backup (which has none) from both — see
+  `AOC_ENTERPRISE_RESTORE_V1.md` §"Coverage".
+- `configuration.secretEnvironmentVariables` lists **names** only: the four
+  static secret variables plus every `apiKeyEnv` / `tokenEnv` / `valueEnv`
+  reference in the governed-action file. Values are never read.
+- `authority` records only public, non-secret identities. The fingerprint is
+  the SHA-256 of the public key's SPKI DER.
 
-## Consistency model (Phase 6)
+## Secrets and key material
 
-`backup:v1`'s Online-Backup-API copy is **per-file consistent**: safe
-against a live writer, and internally coherent for that one store. It is
-**not** a cross-store transactional snapshot — the three copies still
-happen at slightly different instants if the Host is running, exactly as
-documented in `BACKUP_RECOVERY_V1.md`. For strict cross-store consistency
-(pre-upgrade, compliance snapshots), stop the Host first, then run
-`backup:v1` — the existing "cold backup" recommendation is unchanged by
-this tooling; `backup:v1` just replaces the manual `sqlite3 .backup`
-invocations and adds a manifest, checksums, and integrity verification
-around them.
+`backup:v1` never reads a secret value: not `AOC_ENTERPRISE_API_KEYS`, not the
+authority private key, not the external signer's token, not the witness
+token, not an operator, administrator, customer or provider credential. The
+PROD-02 drill plants a unique random canary in every one of those sources and
+scans every byte of the backup set and the CLI's output: zero occurrences,
+under software and external custody. Operator-issued agent secrets are not in
+the control-plane store at all (it holds SHA-256 verifiers). Restoring
+secrets is a secret-manager procedure, never a data restore —
+`BACKUP_RECOVERY_V1.md` §"Key material and secrets".
+
+## The freshness witness is never in a backup
+
+The CORE-07 witness's state lives in a **different restore domain**: another
+volume, another backup set, another snapshot schedule. `backup:v1` has no
+definition for it, never contacts it, and never enrolls or resets it. Backing
+the witness up *with* the authority stores and restoring both to the same
+moment would make an old authority state look current — the one attack CORE-07
+cannot detect.
 
 ## Security
 
-- Never copies `.env`, API keys, tokens, or credentials — it only ever
-  reads the three configured SQLite paths.
-- Rejects an output path that recurses into a source store directory.
-- Refuses to follow symlinks when reading store files (see
-  `restore:v1`'s equivalent guard; backup reads sources directly by path,
-  so this matters most on restore, where the *backup* becomes untrusted
-  input).
-- Sets no special permissions on the output directory beyond the
-  process's umask — **the operator is responsible for storing backups
-  encrypted, access-controlled, and off-host.** Governed records may
-  still contain sensitive business data even though credentials are
-  excluded; treat a backup with the same care as the live store.
-- Commit only this tooling (scripts, docs, fixtures) to Git — never a
-  real backup. `.gitignore` excludes `/backups/`, `/.portability-drill/`,
-  and `*.aoc-enterprise-backup/`.
+- Never copies `.env`, keys, tokens or credentials; reads only the registry's
+  store paths.
+- Refuses an output path overlapping a source store.
+- Sets no permissions beyond the process umask — **store backups encrypted,
+  access-controlled and off-host.** Governed records, approval subjects and
+  credential verifiers are sensitive.
+- Backups are checksummed, not signed: whoever controls the backup storage
+  can rewrite files and manifest together. The three signed stores still
+  verify under the trusted authority keys on restore, and CORE-07 still
+  refuses a stale signed state at startup; the unsigned stores have no such
+  defense (`THREAT_MODEL_V1.md` §7.28).
 
-## RPO/RTO (see the portability report for the measured drill numbers)
+## RPO / RTO
 
-Backup duration is dominated by store size; the synthetic fixture used in
-CI/drill validation backs up in well under a second per store. Production
-RPO is still **your backup interval** — see `BACKUP_RECOVERY_V1.md`
-("RPO = your backup interval") — `backup:v1` does not add replication or
-point-in-time recovery, it only makes taking a *verified* backup a single
-command instead of a five-step manual procedure.
+RPO is **your backup interval** — no replication, no point-in-time recovery.
+Restoring anything older than the newest state also forgets every unanchored
+change made after the backup (exercise consumption, outcomes, emergency
+controls, Kernel Authority and control-plane changes); if any of the three
+anchored stores changed after the backup, the secure Host refuses to start on
+it instead. See `BACKUP_RECOVERY_V1.md` §"RPO and RTO" and the
+qualification document for the observed (not guaranteed) drill timings.

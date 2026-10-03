@@ -147,8 +147,10 @@ directory):
   a database restored without its `-wal` is a mixed-generation file set
   and will fail digest verification.
 - Do not place the data directory on NFS/SMB.
-- The three paths are independently configurable; keep all three on the
-  same volume so a snapshot captures a consistent set.
+- Every `*_SQLITE_PATH` is independently configurable; keep all of them on
+  the same volume so a snapshot captures a consistent set — and keep the
+  CORE-07 freshness witness's database on a **different** volume, backup set
+  and snapshot schedule (`BACKUP_RECOVERY_V1.md`).
 
 ## SQLite / WAL operational notes
 
@@ -258,7 +260,7 @@ its own bound.
 - Run as a **non-root user**; the image needs only `node`, `dist/`,
   `node_modules/`, `scripts/`, and `package.json`.
 - Mount a **named volume** (or host path) at the data directory and point
-  all three `*_SQLITE_PATH` variables into it. Never keep the databases
+  every `*_SQLITE_PATH` variable into it. Never keep the databases
   on the container's writable layer.
 - Read-only root filesystem is supported: the Host writes only to the
   data directory (and stdout). Mount the volume read-write, everything

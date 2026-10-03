@@ -2244,6 +2244,19 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     if (typeof closable.close === 'function') await closable.close();
   }
 
+  /**
+   * PROD-02: the obligation discharge, approval and control-plane stores, under
+   * the same ownership discipline — closed only when this root opened them.
+   * Leaving them open past `close()` kept their SQLite connections (and an
+   * un-checkpointed WAL) alive after a clean shutdown, so a stopped Host's data
+   * directory was not the self-contained file set a cold backup expects.
+   */
+  async function closeComposedGovernedStateStores(): Promise<void> {
+    if (obligationDischargeStoreOpenedHere && obligationDischargeStore !== undefined) await closeIfClosable(obligationDischargeStore);
+    if (approvalStoreOpenedHere && approvalStore !== undefined) await closeIfClosable(approvalStore);
+    if (controlPlaneStore !== undefined) await controlPlaneStore.close();
+  }
+
   const unsubscribeLifecyclePersistence = eventPublisher.subscribe((event) => {
     if ('lifecycleCorrelationId' in event) {
       void persistence.appendLifecycleEvent(event).catch(() => {});
@@ -2753,6 +2766,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       await closeComposedAuthorityEventStore();
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
+      await closeComposedGovernedStateStores();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -2764,6 +2778,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       await closeComposedAuthorityEventStore();
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
+      await closeComposedGovernedStateStores();
     },
   };
 

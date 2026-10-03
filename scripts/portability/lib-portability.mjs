@@ -10,7 +10,7 @@
 // second canonicalization -- see AOC_ENTERPRISE_V1_PORTABILITY_CURRENT_STATE.md.
 
 import { createHash } from 'node:crypto';
-import { readFileSync, existsSync, statSync, lstatSync, mkdirSync, readdirSync, rmSync, renameSync, mkdtempSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, lstatSync, mkdirSync, readdirSync, rmSync, renameSync, mkdtempSync, realpathSync } from 'node:fs';
 import { resolve, join, dirname, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -19,73 +19,14 @@ export const BACKUP_FORMAT = 'aoc.enterprise.backup.v1';
 
 export const REPO_ROOT = resolve(new URL('../..', import.meta.url).pathname);
 
-/**
- * The durable SQLite stores backed up as one set (Phase 1 inventory).
- *
- * Evidence Bundles still have no SQLite store -- see the current-state doc --
- * so there is deliberately no entry for them.
- *
- * The Kernel Authority Store (P0-PKG-07) IS here, and its inclusion is not
- * optional the way an audit store's would be: it is authority
- * source-of-truth, so a disaster recovery that restored evaluation history
- * but not the authority world would come back with every actor unrecognized
- * and every action denied. A backup that loses it is not a backup.
- */
-export const STORE_DEFINITIONS = [
-  {
-    name: 'governance',
-    filename: 'governance.sqlite',
-    configPathOf: (config) => config.persistence.sqlitePath,
-    versionTable: 'governance_store_versions',
-    recordTable: 'governance_evaluations',
-    schemaVersionKeyOf: (enterprise) => enterprise.GOVERNANCE_STORE_SCHEMA_VERSION,
-    openStore: (enterprise, path) => enterprise.createSqliteGovernanceStore(path),
-  },
-  {
-    name: 'agent-passport',
-    filename: 'agent-passport.sqlite',
-    configPathOf: (config) => config.passport.sqlitePath,
-    versionTable: 'agent_passport_store_versions',
-    recordTable: 'agent_passport_events',
-    schemaVersionKeyOf: (enterprise) => enterprise.AGENT_PASSPORT_SCHEMA_VERSION,
-    openStore: (enterprise, path) => enterprise.createSqlitePassportStore(path),
-  },
-  {
-    name: 'assurance',
-    filename: 'assurance.sqlite',
-    configPathOf: (config) => config.assurance.sqlitePath,
-    versionTable: 'assurance_store_versions',
-    recordTable: 'assurance_assessments',
-    schemaVersionKeyOf: (enterprise) => enterprise.ASSURANCE_STORE_SCHEMA_VERSION,
-    openStore: (enterprise, path) => enterprise.createSqliteAssuranceStore(path),
-  },
-  {
-    name: 'kernel-authority',
-    filename: 'kernel-authority.sqlite',
-    configPathOf: (config) => config.kernelAuthority.sqlitePath,
-    versionTable: 'kernel_authority_store_versions',
-    recordTable: 'kernel_authority_events',
-    schemaVersionKeyOf: (enterprise) => enterprise.KERNEL_AUTHORITY_SCHEMA_VERSION,
-    openStore: (enterprise, path) => enterprise.createSqliteKernelAuthorityStore(path),
-    // Durable authority is opt-in and defaults to off, so a deployment that
-    // has not adopted it has no such database -- and never will, since a
-    // disabled feature never creates one. Demanding it unconditionally would
-    // break every previously-working `backup:v1` invocation on upgrade, and
-    // the standard remedy the error suggests ("start the Host once") cannot
-    // help. When the feature is enabled the store is required exactly like its
-    // siblings: it is authority source-of-truth, and a backup that omits it
-    // restores a deployment in which every actor is unrecognized.
-    isConfigured: (config) => config.kernelAuthority?.enabled === true,
-  },
-];
+// PROD-02: the store list lives in ONE place, `store-registry.mjs`, and is
+// re-exported here so every existing importer keeps working. Nothing in this
+// directory maintains a second list.
+export { STORE_DEFINITIONS } from './store-registry.mjs';
+import { STATIC_SECRET_ENV_VARS } from './store-registry.mjs';
 
-/** The stores a given configuration actually expects on disk. Stores gate themselves via `isConfigured`; one without it is always expected. */
-export function configuredStoreDefinitions(configuration) {
-  return STORE_DEFINITIONS.filter((storeDef) => storeDef.isConfigured === undefined || storeDef.isConfigured(configuration));
-}
-
-/** Secrets that must never be copied into a backup, even if present in the ambient environment (Phase 7). */
-export const EXCLUDED_SECRET_ENV_VARS = ['AOC_ENTERPRISE_API_KEYS'];
+/** Secrets that must never be copied into a backup (Phase 7; PROD-02 extends the inventory). Names only — never values. */
+export const EXCLUDED_SECRET_ENV_VARS = STATIC_SECRET_ENV_VARS;
 
 let cachedEnterpriseModule;
 let cachedBetterSqlite3;
@@ -134,10 +75,30 @@ export function stableJsonStringify(value) {
   return `${JSON.stringify(sortKeysDeep(value), null, 2)}\n`;
 }
 
+/**
+ * The real location of `path`: symlinks in its nearest existing ancestor are
+ * resolved, the not-yet-existing remainder appended. Overlap is judged on where
+ * files actually live, never on how a path is spelled.
+ */
+export function realResolve(path) {
+  let current = resolve(path);
+  const rest = [];
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) break;
+    rest.unshift(current.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
+    current = parent;
+  }
+  const base = existsSync(current) ? realpathSync.native(current) : current;
+  return rest.length === 0 ? base : join(base, ...rest);
+}
+
 /** Resolves an absolute path and asserts it does not sit inside `ancestorPath` (or vice versa) -- guards against a backup destination recursing into a source store directory, or a restore target escaping via `..` (Phase 7/8 path-traversal requirements). */
 export function assertNoPathOverlap(pathA, pathB, description) {
-  const a = resolve(pathA);
-  const b = resolve(pathB);
+  // Case-insensitive filesystems (Windows, macOS defaults) compare folded.
+  const fold = (path) => (process.platform === 'win32' || process.platform === 'darwin' ? path.toLowerCase() : path);
+  const a = fold(realResolve(pathA));
+  const b = fold(realResolve(pathB));
   if (a === b) throw new Error(`${description}: paths must not be identical (${a}).`);
   const aWithSep = `${a}${sep}`;
   const bWithSep = `${b}${sep}`;
@@ -166,25 +127,39 @@ export function assertNotSymlink(path, description) {
 
 export async function sqliteIntegrityCheck(dbPath) {
   const Database = await loadBetterSqlite3();
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  let db;
   try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.pragma('integrity_check');
     const ok = rows.length === 1 && rows[0].integrity_check === 'ok';
     return { ok, detail: ok ? 'ok' : rows.map((row) => row.integrity_check).join('; ') };
+  } catch (error) {
+    // A file so damaged that the check itself cannot run is an integrity failure, not a crash.
+    return { ok: false, detail: error.message };
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
-export async function readStoreVersion(dbPath, versionTable) {
+/**
+ * The schema version a store file records, read the way its own store reads
+ * it: a `versions` table (newest row; with or without `migration_state`) or a
+ * single-row `meta` table (integer version). `{ schemaVersion: null }` when the
+ * file carries no version record at all.
+ */
+export async function readStoreVersion(dbPath, version) {
+  const descriptor = typeof version === 'string' ? { kind: 'versions-table', table: version, migrationState: true } : version;
   const Database = await loadBetterSqlite3();
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    const tableExists = db
-      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
-      .get(versionTable);
+    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(descriptor.table);
     if (tableExists === undefined) return { schemaVersion: null, migrationState: null };
-    const row = db.prepare(`SELECT schema_version, migration_state FROM ${versionTable} ORDER BY id DESC LIMIT 1`).get();
+    if (descriptor.kind === 'meta-row') {
+      const row = db.prepare(`SELECT schema_version FROM ${descriptor.table} WHERE id = 1`).get();
+      return { schemaVersion: row?.schema_version ?? null, migrationState: null };
+    }
+    const columns = descriptor.migrationState ? 'schema_version, migration_state' : 'schema_version';
+    const row = db.prepare(`SELECT ${columns} FROM ${descriptor.table} ORDER BY id DESC LIMIT 1`).get();
     return { schemaVersion: row?.schema_version ?? null, migrationState: row?.migration_state ?? null };
   } finally {
     db.close();
@@ -202,6 +177,86 @@ export async function recordCount(dbPath, table) {
   } finally {
     db.close();
   }
+}
+
+/** Row counts of every user table in the file — logical evidence beside the byte checksum. */
+export async function tableCounts(dbPath) {
+  const Database = await loadBetterSqlite3();
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all().map((row) => row.name);
+    return Object.fromEntries(tables.map((table) => [table, db.prepare(`SELECT COUNT(*) AS count FROM "${table.replace(/"/g, '""')}"`).get().count]));
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The identity and head of a signed (CORE-01/04/05) store, read from the file
+ * itself: store id, organization, head sequence and digest, the signing key id
+ * and the count of rows the head commits to. Never a signature value used for
+ * anything but its key id. `null` for a store without a signed head.
+ *
+ * Also the structural consistency check a restore can always run, with or
+ * without trusted verification keys: a head without rows, rows without a head,
+ * or a head whose sequence does not equal the rows it commits to is refused.
+ */
+export async function readSignedHead(dbPath, signedHead) {
+  if (signedHead === undefined) return null;
+  const Database = await loadBetterSqlite3();
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const has = (table) => db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table) !== undefined;
+    for (const table of [signedHead.table, signedHead.rowTable, ...(signedHead.metaTable !== undefined ? [signedHead.metaTable] : [])]) {
+      if (!has(table)) return { consistent: false, problem: `missing table '${table}'` };
+    }
+    if (signedHead.metaTable !== undefined) {
+      const meta = db.prepare(`SELECT store_id, organization_id FROM ${signedHead.metaTable} WHERE id = 1`).get();
+      const head = db.prepare(`SELECT sequence, chain_digest, signature_json FROM ${signedHead.table} WHERE id = 1`).get();
+      const rows = db.prepare(`SELECT COUNT(*) AS count, MAX(sequence) AS max FROM ${signedHead.rowTable}`).get();
+      if (meta === undefined) return { consistent: false, problem: 'no store identity' };
+      if (head === undefined) return { consistent: false, problem: 'rows without a signed head' };
+      let keyId = null;
+      try {
+        keyId = JSON.parse(head.signature_json)?.keyId ?? null;
+      } catch {
+        keyId = null;
+      }
+      const consistent = rows.count === head.sequence && (rows.max ?? 0) === head.sequence;
+      return {
+        consistent,
+        ...(consistent ? {} : { problem: `head sequence ${head.sequence} does not commit to the ${rows.count} rows present` }),
+        storeId: meta.store_id,
+        organizationId: meta.organization_id,
+        sequence: head.sequence,
+        stateDigest: head.chain_digest,
+        signingKeyId: keyId,
+        rowCount: rows.count,
+      };
+    }
+    const head = db.prepare(`SELECT store_id, sequence, revocation_set_digest, signing_key_id FROM ${signedHead.table}`).all();
+    const revocations = db.prepare(`SELECT COUNT(*) AS count FROM ${signedHead.rowTable}`).get();
+    if (head.length !== 1) return { consistent: false, problem: head.length === 0 ? 'no signed revocation-state commitment' : 'more than one revocation-state commitment' };
+    const [state] = head;
+    const consistent = revocations.count === state.sequence;
+    return {
+      consistent,
+      ...(consistent ? {} : { problem: `revocation-state sequence ${state.sequence} does not commit to the ${revocations.count} revocations present` }),
+      storeId: state.store_id,
+      organizationId: null,
+      sequence: state.sequence,
+      stateDigest: state.revocation_set_digest,
+      signingKeyId: state.signing_key_id,
+      rowCount: revocations.count,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** The SQLite sidecars of a database path that exist on disk (`-wal`, `-shm`, `-journal`). */
+export function sqliteSidecars(dbPath) {
+  return ['-wal', '-shm', '-journal'].map((suffix) => `${dbPath}${suffix}`).filter((path) => existsSync(path));
 }
 
 /**

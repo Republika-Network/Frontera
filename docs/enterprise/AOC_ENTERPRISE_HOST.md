@@ -753,16 +753,22 @@ shutdown failed.
 - **Profile content** (a new Governance Profile version) is a configuration
   change and a restart; promoting or retiring a catalog version is an API call
   (CTRL-02).
-- **The control-plane store** (`control-plane.sqlite`) is not in `backup:v1`
-  and is neither signed nor witnessed: restoring an older copy resurrects
-  revoked or rotated-out agent credentials and earlier profile lifecycle state.
-  After any such restore, re-revoke affected credentials or the agents' actors.
+- **The control-plane store** (`control-plane.sqlite`) is in `backup:v1`
+  (PROD-02) but is neither signed nor witnessed: restoring an older copy
+  resurrects revoked or rotated-out agent credentials and earlier profile
+  lifecycle state (pinned by `prod02-stale-restore-host.test.ts`). After any
+  such restore, re-revoke affected credentials or the agents' actors
+  (`RUNBOOKS_V1.md` §5.2).
 - **Typed parameter authority** (e.g. `replicaCount ≤ 3`) is provisioned on the
   standing grant over the API (`parameterBounds`, CTRL-02) — no policy pack or
   source change is needed for a standing parameter ceiling.
-- **Backup/restore** covers four stores; the governed-action stores are
-  PROD-02. Never back up or restore the authority-state witness's database
-  together with the authority stores (CORE-07).
+- **Backup/restore** (PROD-02) covers every store the Host composes — the
+  thirteen-store registry in `scripts/portability/store-registry.mjs` — with
+  explicit coverage, signed-state verification and rollback
+  (`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`). Never back up or restore the
+  authority-state witness's database together with the authority stores
+  (CORE-07); secrets and key material come from the secret manager, never a
+  backup.
 - **First enrollment** of existing stores at a new witness is the explicit
   ceremony above (CORE-07).
 - The authority signing key is process-resident under software custody (AA-001); external custody (CORE-02) removes it from the process.

@@ -25,8 +25,9 @@ One runbook per operational situation. Prerequisite reading:
    `AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`. It refuses to start otherwise,
    printing `refused to start [CODE]`.
 4. Start the service (`systemctl start aoc-enterprise` or
-   `npm run start:enterprise`). First boot creates the three databases
-   and records their schema versions.
+   `npm run start:enterprise`). First boot creates every store the
+   deployment composes (see `BACKUP_RECOVERY_V1.md` §"What to back up") and
+   records their schema versions.
 5. Run the health verification runbook (section 12).
 6. Seed governance data (actors, trust domains) via the
    recognition/authority runtimes — the Host boots fail-closed with zero
@@ -41,7 +42,8 @@ One runbook per operational situation. Prerequisite reading:
 1. Announce/schedule; the Host will be unavailable for the duration.
 2. Stop the Host cleanly (`SIGTERM`; systemd `stop`). Confirm the
    process exited — a clean close checkpoints the WAL.
-3. **Back up all three database files** (see
+3. **Take a cold backup of every store**
+   (`npm run backup:v1 -- --output <dir> --cold`; see
    `BACKUP_RECOVERY_V1.md`). Do not skip this: it is the only rollback
    path if the new build migrates or re-stamps the schema.
 4. Deploy the new build (`git checkout <tag>`, `npm ci`,
@@ -68,58 +70,113 @@ One runbook per operational situation. Prerequisite reading:
    the mismatched version). If the upgraded build wrote a newer schema
    version, the older runtime will therefore **refuse the database** —
    this is fail-closed by design, never data loss. In that case restore
-   the pre-upgrade backup taken in the upgrade runbook (all three
-   databases together, as a set) and start the old build against it.
+   the pre-upgrade backup taken in the upgrade runbook (every store
+   together, as one set, with `restore:v1` — section 5) and start the old build against it.
    Records written between the upgrade and the rollback exist only in
    the newer-schema files; preserve those files for later re-upgrade or
    review.
 
 ## 4. Backup
 
-**Preferred:** `npm run backup:v1 -- --output <dir>` (see
-`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`) — a single command that
-performs the consistency-safe SQLite copy, `PRAGMA integrity_check`,
-checksums, and a versioned manifest, and refuses to produce a partial
-backup on any failure.
+**Preferred:** `npm run backup:v1 -- --output <dir> --cold` with the Host's
+environment, after stopping the Host (see
+`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`). One command covers every
+durable store the deployment composes (the registry in
+`scripts/portability/store-registry.mjs` — thirteen stores when everything is
+configured), refuses a missing required store, refuses `--cold` while a store
+still has an un-checkpointed WAL, and never reads a secret.
 
-Manual fallback (see `docs/operations/BACKUP_RECOVERY_V1.md` for the full
-strategy):
+Check the result:
 
-- Stop the Host, copy the three database files, restart.
-- Online: `sqlite3 <db> ".backup '<dest>'"` per database file (SQLite's
-  online backup API — safe against a live writer). Never plain-`cp` a
-  live WAL database.
-- Always back up all three stores together as one consistent set, and
-  verify the backup (integrity check + spot verification) before
-  trusting it.
+- `backup-manifest.json` → `coverage.complete: true`, `consistency.mode:
+  cold-attested`;
+- `RESTORE.md` → the secret **names** to restore from the secret manager.
+
+Never put the freshness witness's database in the same backup set, volume
+snapshot or schedule as the authority stores (CORE-07).
+
+Manual fallback (`BACKUP_RECOVERY_V1.md`): stop the Host, then
+`sqlite3 <db> ".backup '<dest>'"` for **every** composed store, from one
+stopped moment. Never plain-`cp` a live WAL database.
 
 ## 5. Restore
 
-**When:** replacing the live store set with a backup.
+**When:** replacing the store set with a backup, or recovering a lost host.
 
-**Preferred:** `npm run restore:v1 -- --backup <dir> --target <dir>`
-(see `docs/operations/AOC_ENTERPRISE_RESTORE_V1.md`) — validates the
-backup's format, checksums, SQLite integrity, and schema compatibility
-before touching `--target`; refuses to overwrite existing stores without
-`--force`; takes a pre-restore safety copy; and rolls back on any
-post-restore verification failure. Point
-`AOC_ENTERPRISE_*_SQLITE_PATH` at the restored files afterward.
+**Preferred:** `npm run restore:v1 -- --backup <dir> --target <dir>
+[--force]`, run with the deployment's environment (see
+`docs/operations/AOC_ENTERPRISE_RESTORE_V1.md`). It validates coverage
+(refusing an incomplete or pre-PROD-02 backup as a complete image), the
+organization, checksums, SQLite integrity, schema versions and the signed
+heads, verifies the signed stores under the trusted public keys, moves
+every existing store file and sidecar aside, and rolls the target back on
+any failure.
 
-Manual fallback:
+### 5.1 Procedure
 
-1. Stop the Host.
-2. Move the current database files (all of `<db>`, `<db>-wal`,
-   `<db>-shm` for each store) aside — never delete them; they may be
-   evidence.
-3. Copy the backup set into place; restore all three stores from the
-   **same** backup run. `.backup`-produced files have no sidecars; a
-   cold-copy backup must be restored with whatever sidecars it was taken
-   with, together.
-4. Fix ownership/permissions (service user, `0700` directory).
-5. Start the Host; run section 12; spot-run the verify endpoints on
-   recent records (section 8's commands) to confirm digest integrity.
-6. Announce the recovery point: everything written after the backup was
-   taken is gone (see RPO in `BACKUP_RECOVERY_V1.md`).
+1. Stop the Host. Keep the current data directory as evidence.
+2. Restore secrets from the secret manager — the names are in the backup's
+   `RESTORE.md` (`BACKUP_RECOVERY_V1.md` §"Key material and secrets"). Make the
+   external signer (if used) and the **surviving** freshness witness
+   reachable. Do **not** restore the witness from anywhere.
+3. Run `restore:v1` **in the deployment's environment** (the CLI refuses to run
+   without it unless `--no-target-check`). Set each printed
+   `AOC_ENTERPRISE_*_SQLITE_PATH`. If the target carries `.restore-in-progress`,
+   an earlier restore was interrupted mid-promotion: do not start the Host;
+   inspect the `.pre-restore-safety-*` and `.restore-staging-*` directories,
+   remove the marker deliberately, and restore again with `--force`.
+4. Start the matching build. Outcomes:
+   - starts and `/ready` is 200 → continue;
+   - `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED` → the backup predates an authority
+     transition the witness recorded; restore a newer backup (§5.3 if none);
+   - `AUTHORITY_FRESHNESS_PENDING_RECOVERY` → §5.3;
+   - `AUTHORITY_FRESHNESS_BINDING_MISMATCH` → a store from another deployment;
+     restore this deployment's own backup.
+5. **Re-apply control-plane changes made after the backup** (§5.2).
+6. Run §12; spot-verify recent records (§8); announce the recovery point —
+   everything after the backup is gone, and unanchored state (ledger
+   consumption, outcomes, emergency controls, Kernel Authority, control
+   plane) is as of the backup.
+
+### 5.2 Control-plane and unanchored state after a restore (PROD-02 residual)
+
+The control-plane store (agent credential verifiers, profile lifecycle),
+emergency controls, the exercise ledger and Kernel Authority are **not**
+witness-anchored. A restore of a backup older than the newest state brings
+back their older state, including a credential revoked after the backup
+(proven: `prod02-stale-restore-host.test.ts`, the RESIDUAL case). From your
+incident/change records since the backup time:
+
+1. Revoke again every agent credential revoked or rotated out since
+   (`POST /api/admin/agents/{actorId}/credentials/{id}/revoke`); revoke any
+   offboarded agent's actor.
+2. Retire again every profile version retired since; check
+   `GET /api/admin/governance-profiles` against the change record.
+3. Re-activate every emergency stop declared since; re-revoke Kernel
+   Authority entities revoked since.
+4. If an agent lost its one-time credential, **rotate or reissue** it — a
+   backup never contains agent secrets.
+
+### 5.3 Pending witness transition (`PENDING_RECOVERY`)
+
+The witness holds a prepared successor the restored store does not hold.
+That is indistinguishable from "a transition was committed, then an older
+state was restored". There is no abort or force-clear API, and the tooling
+adds none. Trusted operational recovery:
+
+1. Find a backup whose signed head **is** the pending checkpoint (compare the
+   manifest's `signedHead.sequence`/`stateDigest` with the witness's pending
+   values, read through the witness operator's own tooling) and restore it;
+   the Host then finalizes it.
+2. If none exists, the state after the prepared transition is lost. Escalate:
+   resolving it means a deliberate, recorded decision by the witness operator
+   and the deployment's security owner, outside Frontera. Never reset the
+   witness slot to make the old store start.
+
+Manual fallback (no Node available): stop the Host; move every store and
+sidecar aside; copy the backup's `stores/*.sqlite` into place under the Host's
+filenames, all from **one** backup set; verify each with
+`PRAGMA integrity_check`; then §5.1 steps 4–6.
 
 ## 6. Incident response (triage)
 
