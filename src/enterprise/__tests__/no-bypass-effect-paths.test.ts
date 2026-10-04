@@ -201,6 +201,10 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
         // the composition root hands to the registry. It invokes no adapter;
         // its one outbound call is enumerated by the network scan below.
         'src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts',
+        // ANDREW-P0-06: the XRPL adapter **implements** the port — a registry
+        // child an embedder composes; it invokes no adapter and opens no
+        // network client (its transport is injected; none ships).
+        'src/enterprise/execution-adapters/xrpl/xrpl-execution-adapter.ts',
         'src/enterprise/execution-governance/service.ts',
         // Type-only (PROD-01): the Enterprise Host bootstrap hands embedder
         // adapters to the composition root's registry and supplies the trusted

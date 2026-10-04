@@ -354,7 +354,7 @@ export interface Booted {
   readonly baseUrl: string;
 }
 
-export async function boot(workspace: Workspace, env: Record<string, string | undefined>, options: { readonly context?: ContextTable; readonly policy?: PolicyPackProvider | null } = {}): Promise<Booted> {
+export async function boot(workspace: Workspace, env: Record<string, string | undefined>, options: { readonly context?: ContextTable; readonly policy?: PolicyPackProvider | null; readonly executionAdapters?: readonly ExecutionAdapter[] } = {}): Promise<Booted> {
   const calls: ValidatedExecutionAction[] = [];
   const adapter: ExecutionAdapter = {
     adapterId: ADAPTER_ID,
@@ -365,7 +365,7 @@ export async function boot(workspace: Workspace, env: Record<string, string | un
   };
   const host = workspace.track(
     await bootEnterpriseHost({ env: await withDeploymentWitness(env),
-      executionAdapters: [adapter],
+      executionAdapters: [adapter, ...(options.executionAdapters ?? [])],
       ...(options.context !== undefined ? { contextProvider: options.context.provider } : {}),
       ...(options.policy === null ? {} : { policyPackProvider: options.policy ?? policyPackProvider() }),
     }),
