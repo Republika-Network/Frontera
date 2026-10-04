@@ -20,8 +20,9 @@
  * `LastLedgerSequence`, network selection or ledger validation. Those are
  * live-ledger and key-custody concerns that belong behind the transport port
  * (ANDREW-P0-07 / P0-08). So the instruction carries no `Account`, and the
- * configuration has no endpoint, seed, secret or network field — a key this
- * contract does not declare is refused at construction.
+ * configuration has no endpoint, seed or secret field — a key this contract
+ * does not declare is refused at construction. Its one network-related option
+ * (`network`, P0-07) is a label the transport must match, never a selector.
  *
  * See `docs/demo/andrew/ANDREW-P0-06-XRPL-ADAPTER.md`.
  */
@@ -40,10 +41,22 @@ export const XRPL_DESTINATION_NAMESPACE = 'xrpl';
  *   `currency`, so `EUR` can never be configured to send issued `USD`.
  * - `native`: XRP, sent as a string of drops. Only an asset whose code is
  *   `XRP` may map to it, so `USD` can never be configured to send XRP.
+ * - `pinned` (ANDREW-P0-07): an **operator-pinned rail representation** — the
+ *   governed asset is settled on this rail as one specific issued token, with
+ *   the identical decimal value. Governed `USD` represented as RLUSD is the
+ *   case it exists for. It is a statement about *which token carries the
+ *   governed unit here*, never a rate: there is no factor, no oracle and no
+ *   arithmetic, and the grant, ceilings and policy stay in the governed unit.
+ *   Accepted only when `denominates` restates the mapping's asset id exactly,
+ *   that asset id is a bare governed unit (no rail namespace, no issuer), and
+ *   `currency` is a 160-bit token code — a standard three-character code must
+ *   use `issued`, where it has to equal the asset, so this kind can never turn
+ *   `EUR` into issued `USD`.
  */
 export type XrplAssetRepresentation =
   | { readonly kind: 'issued'; readonly currency: string; readonly issuer: string }
-  | { readonly kind: 'native' };
+  | { readonly kind: 'native' }
+  | { readonly kind: 'pinned'; readonly denominates: string; readonly currency: string; readonly issuer: string };
 
 /** One explicit mapping: the Frontera asset id (P9 `MonetaryAmount.unit`, exactly) and its XRPL representation. */
 export interface XrplAssetMapping {
@@ -62,6 +75,16 @@ export interface XrplExecutionAdapterOptions {
    * that is the transport's configuration.
    */
   readonly namespace?: string;
+  /**
+   * ANDREW-P0-07: the operator's label for the one ledger network this
+   * adapter's payments belong to (lowercase, e.g. a deployment's own name for
+   * a test network). It selects nothing here — the adapter has no endpoint —
+   * but it travels on every submission so the transport can refuse to submit
+   * on any other network: a transport connected elsewhere fails closed instead
+   * of settling. Absent, submissions carry no network and a transport that
+   * requires one must refuse them.
+   */
+  readonly network?: string;
   /** Every Frontera asset this adapter may move, each with its explicit XRPL representation. At least one. */
   readonly assets: readonly XrplAssetMapping[];
 }
@@ -103,6 +126,27 @@ export interface XrplPaymentSubmission {
   readonly decisionId: string;
   /** The covering grant's expiry. A transport must not let a transaction become valid after it. */
   readonly notAfter: string;
+  /** ANDREW-P0-07: the configured network label, present exactly when the adapter was configured with one. The transport must submit only on that network. */
+  readonly network?: string;
+}
+
+/**
+ * ANDREW-P0-07 — what a transport may report *in addition to* an outcome, as
+ * evidence for the execution record and the demo. Defined now so P0-08's
+ * transport has one shape to fill; the adapter does not yet read these, and
+ * none of them can turn an outcome into another one.
+ *
+ * - `ledgerIndex`: the validated ledger the transaction was included in, as
+ *   decimal text.
+ * - `engineResult`: the transaction result code from that ledger (for example
+ *   `tesSUCCESS`, or a `tec…` code in a validated ledger).
+ * - `deliveredAmount`: the amount the ledger reports as delivered, in the same
+ *   form as the instruction's `Amount`.
+ */
+export interface XrplLedgerEvidence {
+  readonly ledgerIndex?: string;
+  readonly engineResult?: string;
+  readonly deliveredAmount?: string | XrplIssuedCurrencyAmount;
 }
 
 /**
@@ -117,11 +161,11 @@ export type XrplSubmissionObservation =
   /** Proven not to have reached the network: nothing was submitted. */
   | { readonly kind: 'not-submitted' }
   /** The network definitively refused the transaction; it cannot apply. */
-  | { readonly kind: 'rejected'; readonly transactionHash?: string }
+  | ({ readonly kind: 'rejected'; readonly transactionHash?: string } & XrplLedgerEvidence)
   /** It may have been applied, and whether it was is not known. */
   | { readonly kind: 'unconfirmed'; readonly transactionHash?: string }
   /** Applied successfully in a validated ledger. */
-  | { readonly kind: 'validated'; readonly transactionHash?: string };
+  | ({ readonly kind: 'validated'; readonly transactionHash?: string } & XrplLedgerEvidence);
 
 /**
  * The network boundary. P0-06 ships **no implementation**: tests inject a fake,
@@ -138,6 +182,7 @@ export type XrplConfigurationErrorCode =
   | 'XRPL_OPTIONS_INVALID'
   | 'XRPL_ADAPTER_ID_INVALID'
   | 'XRPL_NAMESPACE_INVALID'
+  | 'XRPL_NETWORK_INVALID'
   | 'XRPL_ASSET_MAPPING_INVALID'
   | 'XRPL_ISSUER_INVALID'
   | 'XRPL_CURRENCY_INVALID'

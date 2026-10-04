@@ -3,7 +3,7 @@ import { canonicalDecimalScale, isCanonicalDecimal } from '../../../features/mon
 
 /**
  * The XRPL rail grammar this adapter needs, and only that: classic addresses,
- * standard currency codes, issued-currency values and XRP drops.
+ * standard and 160-bit currency codes, issued-currency values and XRP drops.
  *
  * ## Why the address codec is implemented here rather than imported
  *
@@ -42,6 +42,8 @@ export const XRPL_DROPS_SCALE = 6;
 export const XRPL_MAXIMUM_DROPS = 100_000_000_000_000_000n;
 
 const STANDARD_CURRENCY_CODE = /^[A-Za-z0-9?!@#$%^&*<>(){}[\]|]{3}$/;
+/** 160 bits as exactly 40 hexadecimal digits, uppercase only: one spelling per code. */
+const NONSTANDARD_CURRENCY_CODE = /^[0-9A-F]{40}$/;
 
 function sha256(bytes: Uint8Array): Uint8Array {
   return createHash('sha256').update(bytes).digest();
@@ -82,6 +84,21 @@ export function isXrplClassicAddress(value: unknown): value is string {
 /** A standard three-character XRPL currency code. `XRP` is reserved for the native asset and is never an issued currency. */
 export function isXrplStandardCurrencyCode(value: unknown): value is string {
   return typeof value === 'string' && STANDARD_CURRENCY_CODE.test(value) && value.toUpperCase() !== 'XRP';
+}
+
+/**
+ * A nonstandard (160-bit) XRPL currency code, as RLUSD uses
+ * (`524C555344000000000000000000000000000000`, "RLUSD" zero-padded).
+ *
+ * Exactly 40 uppercase hexadecimal digits, so one code has exactly one
+ * accepted spelling: lowercase or mixed case is refused rather than folded.
+ * The first byte may not be `0x00`: on XRPL that byte marks the *standard*
+ * layout (a three-character code inside 160 bits, and all zeros for XRP), so
+ * a hex code beginning `00` would be a second spelling of a standard code or of
+ * XRP — an ambiguity, refused.
+ */
+export function isXrplNonStandardCurrencyCode(value: unknown): value is string {
+  return typeof value === 'string' && NONSTANDARD_CURRENCY_CODE.test(value) && !value.startsWith('00');
 }
 
 /** The integer and fractional digit strings of a canonical decimal. */

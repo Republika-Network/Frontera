@@ -8,7 +8,7 @@ import {
   type XrplConfigurationErrorCode,
   type XrplExecutionAdapterOptions,
 } from './contracts.js';
-import { isXrplClassicAddress, isXrplStandardCurrencyCode } from './xrpl-codec.js';
+import { isXrplClassicAddress, isXrplNonStandardCurrencyCode, isXrplStandardCurrencyCode } from './xrpl-codec.js';
 
 /**
  * Construct → validate → snapshot → freeze, the discipline the Generic HTTP
@@ -28,6 +28,8 @@ export const XRPL_MAXIMUM_ASSET_MAPPINGS = 64;
 export interface XrplPlan {
   readonly adapterId: string;
   readonly namespace: string;
+  /** ANDREW-P0-07: the network label every submission carries, when configured. */
+  readonly network?: string;
   /** Frontera asset id → XRPL representation. Exact keys; no alias, no fallback. */
   readonly assets: ReadonlyMap<string, XrplAssetRepresentation>;
 }
@@ -69,6 +71,14 @@ function assetIdParts(assetId: string): { readonly namespace?: string; readonly 
   return { ...(namespace !== undefined ? { namespace } : {}), code, ...(issuer !== undefined ? { issuer } : {}) };
 }
 
+/** A network label: lowercase-led, lowercase letters and digits joined by single `-` or `.`, at most 64 characters. A label, never a URL. */
+const NETWORK_LABEL = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
+const NETWORK_LABEL_MAXIMUM_LENGTH = 64;
+
+export function isXrplNetworkLabel(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= NETWORK_LABEL_MAXIMUM_LENGTH && NETWORK_LABEL.test(value);
+}
+
 function isXrplNamespace(value: unknown): value is string {
   return isDestinationNamespace(value) && (value === XRPL_DESTINATION_NAMESPACE || value.startsWith(`${XRPL_DESTINATION_NAMESPACE}.`));
 }
@@ -92,14 +102,27 @@ function snapshotRepresentation(raw: unknown, assetId: string, index: number): X
     if (parts.issuer !== undefined && parts.issuer !== issuer) fail('XRPL_ASSET_MAPPING_INVALID', `Asset mapping #${index} names an issuer other than the one its asset id states.`);
     return Object.freeze({ kind: 'issued', currency, issuer });
   }
+  if (kindValue === 'pinned') {
+    const record = readRecord(raw, ['kind', 'denominates', 'currency', 'issuer'], what);
+    const { denominates, currency, issuer } = record;
+    // A pinned representation carries a governed unit, so the asset must be one: no rail namespace, no issuer.
+    if (parts.namespace !== undefined || parts.issuer !== undefined) fail('XRPL_ASSET_MAPPING_INVALID', `Asset mapping #${index} pins a representation for an asset that is not a bare governed unit.`);
+    // The operator restates the governed unit; a mismatch is a configuration defect, never a conversion.
+    if (denominates !== assetId) fail('XRPL_ASSET_MAPPING_INVALID', `Asset mapping #${index} pins a representation that denominates a different asset.`);
+    // Only a 160-bit token code: a standard code must use 'issued', where it has to equal the asset.
+    if (!isXrplNonStandardCurrencyCode(currency)) fail('XRPL_CURRENCY_INVALID', `Asset mapping #${index} pins a representation whose currency is not a canonical 160-bit XRPL currency code.`);
+    if (!isXrplClassicAddress(issuer)) fail('XRPL_ISSUER_INVALID', `Asset mapping #${index} needs an issuer that is a valid XRPL classic address.`);
+    return Object.freeze({ kind: 'pinned', denominates, currency, issuer });
+  }
   if (kindValue === 'native') {
     readRecord(raw, ['kind'], what);
     if (parts.code !== 'XRP' || parts.issuer !== undefined) fail('XRPL_ASSET_MAPPING_INVALID', `Asset mapping #${index} maps an asset that is not XRP to native XRP.`);
     return Object.freeze({ kind: 'native' });
   }
-  return fail('XRPL_ASSET_MAPPING_INVALID', `${what} must be of kind 'issued' or 'native'.`);
+  return fail('XRPL_ASSET_MAPPING_INVALID', `${what} must be of kind 'issued', 'pinned' or 'native'.`);
 }
 
+/** The XRPL amount a representation sends. `issued` and `pinned` share one key space, so no token can carry two Frontera assets. */
 function representationKey(representation: XrplAssetRepresentation): string {
   return representation.kind === 'native' ? 'native' : `issued:${representation.currency}/${representation.issuer}`;
 }
@@ -108,7 +131,7 @@ export function snapshotXrplOptions(options: XrplExecutionAdapterOptions): XrplP
   let record: Readonly<Record<string, unknown>>;
   let mappings: readonly unknown[];
   try {
-    record = readRecord(options, ['adapterId', 'namespace', 'assets'], 'XRPL adapter options');
+    record = readRecord(options, ['adapterId', 'namespace', 'network', 'assets'], 'XRPL adapter options');
     const assets = record['assets'];
     if (!Array.isArray(assets)) fail('XRPL_ASSET_MAPPING_INVALID', 'XRPL adapter options need an assets array.');
     mappings = Array.from(assets as readonly unknown[]);
@@ -121,6 +144,8 @@ export function snapshotXrplOptions(options: XrplExecutionAdapterOptions): XrplP
   if (typeof adapterId !== 'string' || !isRecordableExecutionAdapterId(adapterId)) fail('XRPL_ADAPTER_ID_INVALID', 'The XRPL adapter needs a recordable adapterId.');
   const namespace = record['namespace'] ?? XRPL_DESTINATION_NAMESPACE;
   if (!isXrplNamespace(namespace)) fail('XRPL_NAMESPACE_INVALID', `The XRPL adapter namespace must be '${XRPL_DESTINATION_NAMESPACE}' or '${XRPL_DESTINATION_NAMESPACE}.<label>'.`);
+  const network = record['network'];
+  if (network !== undefined && !isXrplNetworkLabel(network)) fail('XRPL_NETWORK_INVALID', 'The XRPL adapter network must be a lowercase label of at most 64 characters.');
 
   if (mappings.length === 0 || mappings.length > XRPL_MAXIMUM_ASSET_MAPPINGS) {
     fail('XRPL_ASSET_MAPPING_INVALID', `The XRPL adapter needs between 1 and ${XRPL_MAXIMUM_ASSET_MAPPINGS} asset mappings.`);
@@ -140,5 +165,5 @@ export function snapshotXrplOptions(options: XrplExecutionAdapterOptions): XrplP
     assets.set(assetId, representation);
   });
 
-  return Object.freeze({ adapterId, namespace, assets });
+  return Object.freeze({ adapterId, namespace, ...(network !== undefined ? { network } : {}), assets });
 }

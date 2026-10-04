@@ -387,14 +387,20 @@ code `524C555344000000000000000000000000000000`, and this adapter accepts only
 standard 3-character codes (§9), and requires the Frontera asset's own code to
 equal the XRPL currency, so `USD` → RLUSD is refused today as conversion by
 configuration. Two options: (a) keep the governed unit `USD` (so the P10 USD
-ceiling and P0-05 USD threshold keep applying unchanged) and add an explicit,
+100,000 authority ceiling keeps applying unchanged) and add an explicit,
 declared *denomination* mapping `USD` → issued `RLUSD`/issuer — a 1:1
 representation chosen by configuration, never a rate; or (b) make the governed
-unit an RLUSD asset id, which would put the USD ceiling and threshold in a
-different unit and withhold the grant. (a) is the coherent choice; it is a
-small, tested amendment to `xrpl-codec.ts` (hex currency codes) and
-`configuration.ts` (the declared-denomination rule) with no change to grants,
-policy or the port.
+unit an RLUSD asset id, which would put the USD ceiling in a different unit and
+withhold the grant. (a) is the coherent choice; it is a small, tested
+amendment to `xrpl-codec.ts` (hex currency codes) and `configuration.ts` (the
+declared-denomination rule) with no change to grants, policy or the port.
+
+*Correction (ANDREW-P0-07):* an earlier version of this paragraph also named a
+"P0-05 USD threshold". There is none. The P0-05 destination approval policy
+deliberately reads neither amount nor currency; USD 75,000 is Andrew's scenario
+amount, not a policy threshold. The USD 100,000 authority ceiling is the only
+monetary control that depends on USD. Implemented in P0-07 as option (a): see
+`ANDREW-P0-07-TESTNET-RLUSD-COMPOSITION.md`.
 
 ## 25. Impact on ANDREW-P0-08
 

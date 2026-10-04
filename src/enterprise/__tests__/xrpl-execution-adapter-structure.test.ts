@@ -60,6 +60,7 @@ describe('ANDREW-P0-06 structure — the XRPL adapter module', () => {
       `${XRPL_DIR}/contracts.ts`,
       `${XRPL_DIR}/index.ts`,
       `${XRPL_DIR}/payment-translation.ts`,
+      `${XRPL_DIR}/settlement.ts`,
       `${XRPL_DIR}/xrpl-codec.ts`,
       `${XRPL_DIR}/xrpl-execution-adapter.ts`,
     ]);
@@ -74,6 +75,7 @@ describe('ANDREW-P0-06 structure — the XRPL adapter module', () => {
       './contracts.js',
       './configuration.js',
       './payment-translation.js',
+      './settlement.js',
       './xrpl-codec.js',
       './xrpl-execution-adapter.js',
     ]);
