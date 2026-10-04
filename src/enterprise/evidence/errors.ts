@@ -20,7 +20,15 @@ export type EvidenceErrorCode =
   /** The Bundle Store cannot be reached. */
   | 'EVIDENCE_STORE_UNAVAILABLE'
   /** A supplied `bundleId` was already stored -- Bundles are immutable and never overwritten. */
-  | 'EVIDENCE_BUNDLE_ALREADY_EXISTS';
+  | 'EVIDENCE_BUNDLE_ALREADY_EXISTS'
+  /** ASSURE-01: no governed request with this id exists within the caller's scope. */
+  | 'EVIDENCE_TRACE_NOT_FOUND'
+  /** ASSURE-01: the requested disclosure level exceeds what this credential may receive (FULL is internal: system scope only). */
+  | 'EVIDENCE_DISCLOSURE_NOT_PERMITTED'
+  /** ASSURE-01: the request's canonical records exceed the trace bounds; refused, never truncated. */
+  | 'EVIDENCE_TRACE_TOO_LARGE'
+  /** ASSURE-01: a durable Bundle Store row failed its integrity checks on read (digest, identity, lifecycle). Never repaired, never returned. */
+  | 'EVIDENCE_STORE_CORRUPT';
 
 export class EvidenceError extends Error {
   constructor(

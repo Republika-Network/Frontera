@@ -288,6 +288,14 @@ export interface EnterpriseConfiguration {
    * `sqlite` persistence. Its own file. Not an authority store: Kernel
    * Authority stays the only authority source.
    */
+  /**
+   * ASSURE-01 — the durable Evidence Bundle Store, composed whenever
+   * persistence is `sqlite` (a secure Host refuses an ephemeral one). Its own
+   * file: bundles are never stored inside the Governance Store.
+   */
+  readonly evidence: {
+    readonly sqlitePath: string;
+  };
   readonly controlPlane: {
     readonly sqlitePath: string;
   };
@@ -858,6 +866,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     controlPlane: {
       sqlitePath: env.AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH ?? '.data/control-plane.sqlite',
+    },
+    evidence: {
+      sqlitePath: env.AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH ?? '.data/evidence-bundles.sqlite',
     },
     authorityAuthenticity: loadAuthorityAuthenticity(env),
     authorityFreshness: loadAuthorityFreshness(env),

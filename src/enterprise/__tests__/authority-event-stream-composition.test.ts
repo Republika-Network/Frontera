@@ -151,7 +151,7 @@ describe('P8 composition — present exactly with governed actions', () => {
     assert.equal(existsSync(config.authorityEventStream.sqlitePath), false, 'memory persistence selects the process-local store');
     const reader = enterprise.authorityEventStream;
     assert.ok(reader !== undefined);
-    assert.deepEqual(Object.keys(reader).sort(), ['readStream', 'verifyStream'], 'no append, no health, no close');
+    assert.deepEqual(Object.keys(reader).sort(), ['readStream', 'readStreamBounded', 'verifyStream'], 'no append, no health, no close');
     const result = await govern(enterprise);
     assert.equal(result.status, 'executed');
     await projected(enterprise);

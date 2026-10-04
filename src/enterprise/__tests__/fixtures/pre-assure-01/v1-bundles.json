@@ -1,0 +1,423 @@
+{
+  "generatedBy": "buildEvidenceBundle at main@57f3369 (pre-ASSURE-01 evidence code, identical to 614a52c)",
+  "record": {
+    "recordId": "gov-record-historical",
+    "request": {
+      "recordId": "r",
+      "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+      "actorId": "actor-historical",
+      "organizationId": "org-historical",
+      "actionType": "deploy-release",
+      "resourceScope": "production-cluster",
+      "requestedAt": "2026-10-01T00:00:00.000Z",
+      "receivedAt": "2026-10-01T00:00:00.001Z",
+      "requestContract": "c",
+      "requestPayload": {},
+      "payloadDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "evaluation": {
+      "recordId": "e",
+      "evaluationId": "gov-evaluation-historical",
+      "decisionId": "decision-historical",
+      "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+      "status": "allowed",
+      "summary": "allowed",
+      "reasonCodes": [
+        "KERNEL_ALLOW"
+      ],
+      "evaluatedAt": "2026-10-01T00:00:00.002Z",
+      "persistedAt": "2026-10-01T00:00:00.003Z",
+      "kernelVersion": "k1",
+      "enterpriseVersion": "e1",
+      "evaluationContract": "c",
+      "resultPayload": {},
+      "resultDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "trace": [
+      {
+        "traceRecordId": "t",
+        "evaluationId": "gov-evaluation-historical",
+        "sequence": 1,
+        "operator": "recognition",
+        "status": "pass",
+        "reasonCodes": [],
+        "traceContract": "c",
+        "traceDigest": "d"
+      }
+    ],
+    "reasons": [],
+    "events": [
+      {
+        "eventType": "governance.evaluated",
+        "occurredAt": "2026-10-01T00:00:00.004Z"
+      }
+    ],
+    "metadata": {
+      "metadataId": "m",
+      "evaluationId": "gov-evaluation-historical",
+      "enterpriseVersion": "e1",
+      "kernelVersion": "k1",
+      "lifecycleState": "running",
+      "moduleSnapshot": [],
+      "createdAt": "2026-10-01T00:00:00.005Z",
+      "schemaVersion": "aoc.governance-store.schema.v1"
+    },
+    "integrity": {
+      "integrityId": "i",
+      "evaluationId": "gov-evaluation-historical",
+      "algorithm": "sha256",
+      "canonicalizationVersion": "aoc.canonical-json.v1",
+      "requestDigest": "a",
+      "evaluationDigest": "b",
+      "traceDigest": "c",
+      "eventsDigest": "d",
+      "metadataDigest": "e",
+      "aggregateDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "chainPosition": 1,
+      "createdAt": "2026-10-01T00:00:00.006Z"
+    },
+    "references": []
+  },
+  "bundles": {
+    "FULL": {
+      "bundleId": "evidence-bundle-historical-1",
+      "bundleVersion": "evidence.bundle.v1",
+      "createdAt": "2026-10-01T00:00:01.000Z",
+      "source": {
+        "evaluationId": "gov-evaluation-historical",
+        "decisionId": "decision-historical",
+        "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+        "organizationId": "org-historical",
+        "kernelVersion": "k1",
+        "enterpriseVersion": "e1",
+        "schemaVersion": "aoc.governance-store.schema.v1"
+      },
+      "subject": {
+        "subjectType": "policy_decision",
+        "actionType": "deploy-release",
+        "resourceScope": "production-cluster",
+        "description": "deploy-release on production-cluster"
+      },
+      "disclosure": {
+        "level": "FULL",
+        "policyId": "evidence.disclosure.full.v1",
+        "policyVersion": "1.0.0",
+        "visibleFields": [
+          "source.organizationId",
+          "subject.actionType",
+          "subject.resourceScope",
+          "subject.description",
+          "evidence.status",
+          "evidence.summary",
+          "evidence.reasonCodes",
+          "evidence.trace",
+          "evidence.events",
+          "evidence.metadata"
+        ],
+        "hiddenFields": [],
+        "redactedFields": []
+      },
+      "evidence": {
+        "status": "allowed",
+        "summary": "allowed",
+        "reasonCodes": [
+          "KERNEL_ALLOW"
+        ],
+        "trace": [
+          {
+            "sequence": 1,
+            "operator": "recognition",
+            "status": "pass",
+            "reasonCodes": []
+          }
+        ],
+        "events": [
+          {
+            "eventType": "governance.evaluated",
+            "occurredAt": "2026-10-01T00:00:00.004Z"
+          }
+        ],
+        "metadata": {
+          "lifecycleState": "running",
+          "moduleCount": 0,
+          "traceStepCount": 1,
+          "eventCount": 1
+        }
+      },
+      "verification": {
+        "createdBy": "aoc.evidence-projector.v1",
+        "generatedAt": "2026-10-01T00:00:01.000Z",
+        "projectionVersion": "1.0.0",
+        "projectionPolicy": "evidence.disclosure.full.v1",
+        "projectionEngine": "aoc.evidence-projector.v1"
+      },
+      "references": [],
+      "integrity": {
+        "algorithm": "sha256",
+        "canonicalizationVersion": "aoc.canonical-json.v1",
+        "bundleDigest": "sha256:a9b6a1cef6c785af397e258041c75c9c1a55b7487ed475f5958c4c5910952fc1",
+        "recordDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "verificationDigest": "sha256:c0f53db9ef7b80e5fc090c7ca9bf608821796c5306c69df74d58113f2c99e747"
+      }
+    },
+    "AUDITOR": {
+      "bundleId": "evidence-bundle-historical-2",
+      "bundleVersion": "evidence.bundle.v1",
+      "createdAt": "2026-10-01T00:00:01.000Z",
+      "source": {
+        "evaluationId": "gov-evaluation-historical",
+        "decisionId": "decision-historical",
+        "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+        "organizationId": "org-historical",
+        "kernelVersion": "k1",
+        "enterpriseVersion": "e1",
+        "schemaVersion": "aoc.governance-store.schema.v1"
+      },
+      "subject": {
+        "subjectType": "policy_decision",
+        "actionType": "deploy-release",
+        "resourceScope": "production-cluster",
+        "description": "deploy-release on production-cluster"
+      },
+      "disclosure": {
+        "level": "AUDITOR",
+        "policyId": "evidence.disclosure.auditor.v1",
+        "policyVersion": "1.0.0",
+        "visibleFields": [
+          "source.organizationId",
+          "subject.actionType",
+          "subject.resourceScope",
+          "subject.description",
+          "evidence.status",
+          "evidence.summary",
+          "evidence.reasonCodes",
+          "evidence.trace",
+          "evidence.events"
+        ],
+        "hiddenFields": [
+          "evidence.metadata"
+        ],
+        "redactedFields": []
+      },
+      "evidence": {
+        "status": "allowed",
+        "summary": "allowed",
+        "reasonCodes": [
+          "KERNEL_ALLOW"
+        ],
+        "trace": [
+          {
+            "sequence": 1,
+            "operator": "recognition",
+            "status": "pass",
+            "reasonCodes": []
+          }
+        ],
+        "events": [
+          {
+            "eventType": "governance.evaluated",
+            "occurredAt": "2026-10-01T00:00:00.004Z"
+          }
+        ]
+      },
+      "verification": {
+        "createdBy": "aoc.evidence-projector.v1",
+        "generatedAt": "2026-10-01T00:00:01.000Z",
+        "projectionVersion": "1.0.0",
+        "projectionPolicy": "evidence.disclosure.auditor.v1",
+        "projectionEngine": "aoc.evidence-projector.v1"
+      },
+      "references": [],
+      "integrity": {
+        "algorithm": "sha256",
+        "canonicalizationVersion": "aoc.canonical-json.v1",
+        "bundleDigest": "sha256:fc34b3124e21bc4864829bffd818945eb9946fa81faf64e2818f08be042b0de5",
+        "recordDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "verificationDigest": "sha256:4088750806d8b034c8c2edd0a84a83e955b8515a539af26b112c94effb49d928"
+      }
+    },
+    "PARTNER": {
+      "bundleId": "evidence-bundle-historical-3",
+      "bundleVersion": "evidence.bundle.v1",
+      "createdAt": "2026-10-01T00:00:01.000Z",
+      "source": {
+        "evaluationId": "gov-evaluation-historical",
+        "decisionId": "decision-historical",
+        "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+        "kernelVersion": "k1",
+        "enterpriseVersion": "e1",
+        "schemaVersion": "aoc.governance-store.schema.v1"
+      },
+      "subject": {
+        "subjectType": "policy_decision",
+        "actionType": "deploy-release",
+        "resourceScope": "production-cluster",
+        "description": "deploy-release on production-cluster"
+      },
+      "disclosure": {
+        "level": "PARTNER",
+        "policyId": "evidence.disclosure.partner.v1",
+        "policyVersion": "1.0.0",
+        "visibleFields": [
+          "subject.actionType",
+          "subject.resourceScope",
+          "subject.description",
+          "evidence.status",
+          "evidence.summary",
+          "evidence.reasonCodes",
+          "evidence.events"
+        ],
+        "hiddenFields": [
+          "source.organizationId",
+          "evidence.trace",
+          "evidence.metadata"
+        ],
+        "redactedFields": []
+      },
+      "evidence": {
+        "status": "allowed",
+        "summary": "allowed",
+        "reasonCodes": [
+          "KERNEL_ALLOW"
+        ],
+        "events": [
+          {
+            "eventType": "governance.evaluated",
+            "occurredAt": "2026-10-01T00:00:00.004Z"
+          }
+        ]
+      },
+      "verification": {
+        "createdBy": "aoc.evidence-projector.v1",
+        "generatedAt": "2026-10-01T00:00:01.000Z",
+        "projectionVersion": "1.0.0",
+        "projectionPolicy": "evidence.disclosure.partner.v1",
+        "projectionEngine": "aoc.evidence-projector.v1"
+      },
+      "references": [],
+      "integrity": {
+        "algorithm": "sha256",
+        "canonicalizationVersion": "aoc.canonical-json.v1",
+        "bundleDigest": "sha256:961462d46354a80853d6a22ef12d5a8d9c7955a76a6607b3bc1762461a1fd398",
+        "recordDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "verificationDigest": "sha256:883c89425b0b8d22eba184ecdb7b75dff683d8e4d9091fcf0e9edf926daccd49"
+      }
+    },
+    "CUSTOMER": {
+      "bundleId": "evidence-bundle-historical-4",
+      "bundleVersion": "evidence.bundle.v1",
+      "createdAt": "2026-10-01T00:00:01.000Z",
+      "source": {
+        "evaluationId": "gov-evaluation-historical",
+        "decisionId": "decision-historical",
+        "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+        "kernelVersion": "k1",
+        "enterpriseVersion": "e1",
+        "schemaVersion": "aoc.governance-store.schema.v1"
+      },
+      "subject": {
+        "subjectType": "policy_decision",
+        "description": "deploy-release on production-cluster"
+      },
+      "disclosure": {
+        "level": "CUSTOMER",
+        "policyId": "evidence.disclosure.customer.v1",
+        "policyVersion": "1.0.0",
+        "visibleFields": [
+          "subject.description",
+          "evidence.status",
+          "evidence.summary",
+          "evidence.reasonCodes"
+        ],
+        "hiddenFields": [
+          "source.organizationId",
+          "subject.actionType",
+          "subject.resourceScope",
+          "evidence.trace",
+          "evidence.events",
+          "evidence.metadata"
+        ],
+        "redactedFields": []
+      },
+      "evidence": {
+        "status": "allowed",
+        "summary": "allowed",
+        "reasonCodes": [
+          "KERNEL_ALLOW"
+        ]
+      },
+      "verification": {
+        "createdBy": "aoc.evidence-projector.v1",
+        "generatedAt": "2026-10-01T00:00:01.000Z",
+        "projectionVersion": "1.0.0",
+        "projectionPolicy": "evidence.disclosure.customer.v1",
+        "projectionEngine": "aoc.evidence-projector.v1"
+      },
+      "references": [],
+      "integrity": {
+        "algorithm": "sha256",
+        "canonicalizationVersion": "aoc.canonical-json.v1",
+        "bundleDigest": "sha256:e6ffa4fb7f60ceab56ff695e4b6aa82dc33876259de6937ad8efceda5e0d2c4f",
+        "recordDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "verificationDigest": "sha256:1ba6c6074eb8909c8b7993e02912ed9cc59c740916db9adb9b3bdb5d83b61a89"
+      }
+    },
+    "PUBLIC": {
+      "bundleId": "evidence-bundle-historical-5",
+      "bundleVersion": "evidence.bundle.v1",
+      "createdAt": "2026-10-01T00:00:01.000Z",
+      "source": {
+        "evaluationId": "gov-evaluation-historical",
+        "decisionId": "decision-historical",
+        "requestId": "aoc.gar:0123456789abcdef0123456789abcdef",
+        "kernelVersion": "k1",
+        "enterpriseVersion": "e1",
+        "schemaVersion": "aoc.governance-store.schema.v1"
+      },
+      "subject": {
+        "subjectType": "policy_decision",
+        "description": "[REDACTED-BY-DISCLOSURE-POLICY]"
+      },
+      "disclosure": {
+        "level": "PUBLIC",
+        "policyId": "evidence.disclosure.public.v1",
+        "policyVersion": "1.0.0",
+        "visibleFields": [
+          "subject.description",
+          "evidence.status"
+        ],
+        "hiddenFields": [
+          "source.organizationId",
+          "subject.actionType",
+          "subject.resourceScope",
+          "evidence.summary",
+          "evidence.reasonCodes",
+          "evidence.trace",
+          "evidence.events",
+          "evidence.metadata"
+        ],
+        "redactedFields": [
+          "subject.description"
+        ]
+      },
+      "evidence": {
+        "status": "allowed"
+      },
+      "verification": {
+        "createdBy": "aoc.evidence-projector.v1",
+        "generatedAt": "2026-10-01T00:00:01.000Z",
+        "projectionVersion": "1.0.0",
+        "projectionPolicy": "evidence.disclosure.public.v1",
+        "projectionEngine": "aoc.evidence-projector.v1"
+      },
+      "references": [],
+      "integrity": {
+        "algorithm": "sha256",
+        "canonicalizationVersion": "aoc.canonical-json.v1",
+        "bundleDigest": "sha256:2886e8aa9679901c60efbd2a9939653b45629f6ad09605bfbd685c4447f35973",
+        "recordDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "verificationDigest": "sha256:c0bac4219fc55d589dca59a4af77c0a28966103058494ed74c0505e81278157f"
+      }
+    }
+  }
+}

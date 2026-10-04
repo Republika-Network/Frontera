@@ -19,8 +19,9 @@ registry neither declares nor excludes, and a Host-level test boots real Hosts
 to prove the registry predicts exactly the store files the composition root
 opens.
 
-The registry declares **thirteen** durable SQLite stores — every store the
-Enterprise Host can compose:
+The registry declares **fourteen** durable SQLite stores — every store the
+Enterprise Host can compose (thirteen at PROD-02; ASSURE-01 added the durable
+Evidence Bundle Store):
 
 | Store | Variable | Backup file | Required when | Integrity |
 |---|---|---|---|---|
@@ -37,6 +38,7 @@ Enterprise Host can compose:
 | obligation-discharges | `AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH` | `stores/obligation-discharges.sqlite` | the governed-action file declares `obligations` | **Ed25519-signed** chain head, CORE-07 anchored |
 | approvals | `AOC_ENTERPRISE_APPROVAL_SQLITE_PATH` | `stores/approvals.sqlite` | some Governance Profile declares `approval` | **Ed25519-signed** chain head, CORE-07 anchored |
 | control-plane | `AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH` | `stores/control-plane.sqlite` | the governed-action file declares `operators` | append-only triggers (unsigned, **not** anchored) |
+| evidence-bundles | `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH` | `stores/evidence-bundles.sqlite` | always (ASSURE-01) | per-row digest over the exact bundle bytes plus each bundle's own digests; lifecycle replayed from an append-only log (unsigned) |
 
 Which conditional stores a deployment composes is read from the environment
 and the **structure** of the governed-action file (`deriveDeploymentRequirements`):
@@ -54,8 +56,7 @@ to set if an embedder does compose it.
 
 **Deliberately excluded** (`EXCLUDED_DURABLE_STATE` in the registry): the
 CORE-07 freshness witness's database and receipt key (a different restore
-domain — see below), every secret and private key, the in-memory Evidence
-Bundle Store (rebuilt from the Governance Store), policy packs (in-process
+domain — see below), every secret and private key, policy packs (in-process
 composition, no durable store), library-only SQLite stores the Host never
 composes (access-governance, authority-governance, mandate and
 protected-resource stores), and the governed-action file (configuration — its
@@ -106,8 +107,8 @@ Run it with the same environment you start the Host with. Requires
 
 ## Consistency model
 
-Each store copy is transactionally consistent **for that store**. Thirteen
-files are **not** one distributed transaction, and nothing here claims they
+Each store copy is transactionally consistent **for that store**. Fourteen
+files (thirteen before ASSURE-01) are **not** one distributed transaction, and nothing here claims they
 are: the manifest records `consistency.crossStoreAtomic: false`. Stop the Host
 and pass `--cold` for strict cross-store consistency. Since PROD-02 a clean
 Host shutdown closes every store it opened, so a stopped Host's data
@@ -135,7 +136,7 @@ The format identifier is unchanged; PROD-02 adds fields. Abbreviated:
   "coverage": {
     "coverageModel": "aoc.enterprise.backup.coverage.v1",
     "complete": true,
-    "registry": ["governance", "...thirteen names..."],
+    "registry": ["governance", "...fourteen names..."],
     "deployment": { "environment": "production", "organizationId": "...", "governedActions": true, "obligationsDeclared": true, "approvalsDeclared": true, "operatorsConfigured": true, "kernelAuthorityEnabled": true, "executionReconciliation": false, "governedActionsFileDigest": "sha256:..." },
     "stores": [{ "name": "...", "envVar": "...", "condition": "...", "required": true, "present": true, "included": true, "status": "included | not-configured | missing-allowed" }],
     "excluded": [{ "name": "authority-state-witness", "reason": "..." }]

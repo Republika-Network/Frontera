@@ -646,7 +646,8 @@ variable, never a value). A secret used by two credentials refuses
 | Obligations (CORE-04) | composed when the file declares `obligations`; durable discharge store, required durable on the secure profile (`posture.obligations`) |
 | Exercise-time lineage revalidation (CORE-04) | composed with P7/P10: every action class, not only financial |
 | Durable approvals (CORE-05) | composed when a profile declares `approval`; authenticated durable approval store, required durable on the secure profile (`posture.approvals`); a profile without `approval` leaves `approval_required` withheld |
-| Evidence bundle store | in-memory on every Host (ASSURE) |
+| Evidence bundle store (ASSURE-01) | **durable**: SQLite at `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH` (default `.data/evidence-bundles.sqlite`) whenever persistence is `sqlite`; required durable on the secure profile (`posture.evidenceStore`); in-memory only on an ephemeral Host |
+| Unified Authority-to-Outcome Trace (ASSURE-01) | always mounted: `GET /api/evidence/traces/{requestId}?level=…` and `…/verify`, pure reads over the composed canonical stores, authorized exactly like the other evidence routes (API keys; an organization-scoped key sees its organization only). Stages whose store this Host does not compose (P12 on the shipped Host) are reported `not-composed` |
 
 The authority binding every grant states is
 `HOST_ORGANIZATIONAL_AUTHORITY_BINDING` (`organizational-authority`): the Host
@@ -710,8 +711,9 @@ store.
   `not-configured`, CTRL-01), `trustedContext` (`composed` / `not-configured`,
   CORE-04), `obligations` (`durable` / `ephemeral` / `not-configured`,
   CORE-04), `approvals` (`durable` / `ephemeral` / `not-configured`,
-  CORE-05), `authoritySigner` (`external` / `software` / `not-composed`,
-  CORE-02) and `authorityFreshness` (`external` / `not-composed`, CORE-07).
+  CORE-05), `evidenceStore` (`durable` / `ephemeral`, ASSURE-01),
+  `authoritySigner` (`external` / `software` / `not-composed`, CORE-02) and
+  `authorityFreshness` (`external` / `not-composed`, CORE-07).
   Beside the posture, `authorityFreshness` reports the witness id, the
   witness's state and each anchored store's `{stateKind, status, reason?,
   sequence}`: a store `regressed` / `forked` / `pending-recovery` / `unbound`
@@ -763,7 +765,9 @@ shutdown failed.
   standing grant over the API (`parameterBounds`, CTRL-02) — no policy pack or
   source change is needed for a standing parameter ceiling.
 - **Backup/restore** (PROD-02) covers every store the Host composes — the
-  thirteen-store registry in `scripts/portability/store-registry.mjs` — with
+  registry in `scripts/portability/store-registry.mjs`, thirteen stores at
+  PROD-02 and fourteen since ASSURE-01 made the Evidence Bundle Store
+  durable — with
   explicit coverage, signed-state verification and rollback
   (`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`). Never back up or restore the
   authority-state witness's database together with the authority stores

@@ -109,3 +109,22 @@ the model already carries `bundleVersion`, `verification` (provenance), and
   rewrites a Bundle and its digest together). This is documented, not
   hidden, and is exactly the gap the future Assurance/signature layer
   closes.
+
+## Addendum — ASSURE-01 (2026-10-03): the trace, v2 bundles, a durable store
+
+- **Decision: a versioned trace referenced by a new bundle version, not a
+  reinterpretation of v1.** The Unified Authority-to-Outcome Trace
+  (`aoc.authority-trace.v1`) is a read-only projection over the canonical
+  stores, rebuilt on every read. `evidence.bundle.v2` carries it, disclosed
+  under five new v2 policies, with `integrity.traceDigest` bound into the
+  verification digest. v1 builds, policies, digests and verification are
+  unchanged; the v1 policies are not widened because their field lists are
+  embedded in, and re-checked against, every historical v1 bundle.
+- **Decision: the Bundle Store becomes durable** (SQLite, its own file),
+  composed whenever persistence is `sqlite` and required by the secure Host;
+  backed up as registry store fourteen. "No update method" is kept: the
+  lifecycle (`GENERATED → VERIFIED → EXPORTED`, any → `SUPERSEDED`) is now
+  forward-only and replayed from an append-only log.
+- **Consequence:** the deferred risk above is unchanged — integrity, not
+  authenticity; ASSURE-02 signs. See
+  `docs/security/ASSURE-01-UNIFIED-AUTHORITY-OUTCOME-TRACE.md`.

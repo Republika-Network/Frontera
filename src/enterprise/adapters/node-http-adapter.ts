@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EnterpriseHttpError, mapEvidenceErrorToHttp, mapAgentPassportErrorToHttp, mapAssuranceErrorToHttp } from '../api/enterprise-http-errors.js';
 import type { AocEnterprise } from '../composition/composition-root.js';
 import { getInternalEnterpriseConfiguration } from '../composition/composition-root.js';
-import { validateEvidenceBuildRequestBody, validateEvidenceVerifyRequestBody, toEvidenceBundleResponseBody, toEvidenceVerifyResponseBody } from '../api/evidence-contract.js';
+import { validateEvidenceBuildRequestBody, validateEvidenceTraceQuery, validateEvidenceTraceVerifyQuery, validateEvidenceVerifyRequestBody, toEvidenceBundleResponseBody, toEvidenceVerifyResponseBody } from '../api/evidence-contract.js';
 import { isEvidenceError } from '../evidence/errors.js';
 import { resolveGovernanceAccessContext } from '../orchestration/governance-read-service.js';
 import {
@@ -344,6 +344,32 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
           .then((result) => writeJson(res, 200, toEvidenceVerifyResponseBody(result)))
           .catch(fail);
         return;
+      }
+
+      // -- ASSURE-01 Unified Authority-to-Outcome Trace: two pure reads over the
+      // canonical stores, scoped exactly as the bundle routes above. The
+      // request id is the only path input; the query is closed.
+      if (method === 'GET') {
+        const traceVerifyMatch = /^\/api\/evidence\/traces\/([^/]+)\/verify$/.exec(url.pathname);
+        if (traceVerifyMatch?.[1] !== undefined) {
+          const requestId = decodeURIComponent(traceVerifyMatch[1]);
+          Promise.resolve()
+            .then(() => validateEvidenceTraceVerifyQuery(url.searchParams))
+            .then(() => enterprise.evidence.verifyTrace(req.headers.authorization, requestId))
+            .then((verification) => writeJson(res, 200, verification))
+            .catch(fail);
+          return;
+        }
+        const traceMatch = /^\/api\/evidence\/traces\/([^/]+)$/.exec(url.pathname);
+        if (traceMatch?.[1] !== undefined) {
+          const requestId = decodeURIComponent(traceMatch[1]);
+          Promise.resolve()
+            .then(() => validateEvidenceTraceQuery(url.searchParams))
+            .then(({ level }) => enterprise.evidence.getTrace(req.headers.authorization, requestId, level))
+            .then((view) => writeJson(res, 200, view))
+            .catch(fail);
+          return;
+        }
       }
 
       if (method === 'GET') {

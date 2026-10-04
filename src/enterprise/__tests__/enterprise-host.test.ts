@@ -362,6 +362,8 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       authoritySigner: 'software',
       // CORE-07: a secure Host anchors its durable authority at an external witness.
       authorityFreshness: 'external',
+      // ASSURE-01: evidence bundles are durable on a secure Host.
+      evidenceStore: 'durable',
     });
     const health = await getJson(baseUrl, '/health');
     assert.equal(health.status, 200);
