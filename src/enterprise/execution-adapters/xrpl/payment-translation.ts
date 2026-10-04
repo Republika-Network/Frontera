@@ -69,6 +69,8 @@ export function translateXrplPayment(plan: XrplPlan, action: ValidatedExecutionA
     if (drops === undefined) return refuse('amount-unrepresentable');
     return { ok: true, instruction: Object.freeze({ TransactionType: 'Payment', Destination: destination.identifier, Amount: drops }) };
   }
+  // `issued` or `pinned`: the governed value, verbatim, as the configured token.
+  // A pinned representation changes which token carries the unit, never the number.
   const value = xrplIssuedCurrencyValue(amount.value);
   if (value === undefined) return refuse('amount-unrepresentable');
   return {

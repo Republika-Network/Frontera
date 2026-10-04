@@ -277,11 +277,18 @@ describe('ANDREW-P0-06 — issuer and currency configuration fail fast', () => {
     assert.equal(isXrplStandardCurrencyCode('EU$'), true, 'XRPL standard codes admit a few symbols');
   });
 
-  it('refuses undeclared options — no seed, secret, key, endpoint or network may be configured here', () => {
-    for (const key of ['seed', 'secret', 'privateKey', 'mnemonic', 'endpoint', 'url', 'network', 'account', 'fee']) {
+  it('refuses undeclared options — no seed, secret, key, endpoint or account may be configured here', () => {
+    for (const key of ['seed', 'secret', 'privateKey', 'mnemonic', 'endpoint', 'url', 'account', 'fee', 'server', 'networkUrl']) {
       assert.equal(configurationError({ ...USD_ISSUED_OPTIONS, [key]: 'x' }).code, 'XRPL_OPTIONS_INVALID', key);
     }
     assert.equal(configurationError({ adapterId: XRPL_ADAPTER_ID, assets: [{ assetId: 'USD', representation: { kind: 'issued', currency: 'USD', issuer: XRPL_ISSUER, secret: 'x' } }] }).code, 'XRPL_OPTIONS_INVALID');
+  });
+
+  it('ANDREW-P0-07: `network` is declared only as a label — never an endpoint, URL or credential', () => {
+    for (const value of ['wss://ledger.example:51233', 'https://ledger.example', 'ledger.example:443', 'Upper-Case', 'has space', '-leading', 'trailing-', 'a..b', '', 'x'.repeat(65), 42, null]) {
+      assert.equal(configurationError({ ...USD_ISSUED_OPTIONS, network: value }).code, 'XRPL_NETWORK_INVALID', String(value));
+    }
+    assert.doesNotThrow(() => createXrplExecutionAdapter({ ...USD_ISSUED_OPTIONS, network: 'ledger-a.test' }, createSpyXrplTransport()));
   });
 
   it('refuses accessors, unrecordable ids, unknown kinds and a missing transport', () => {

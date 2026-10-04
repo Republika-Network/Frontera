@@ -194,6 +194,10 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
     assert.deepEqual(
       holders.slice().sort(),
       [
+        // Type-only (ANDREW-P0-07): the demo composition builds the XRPL adapter
+        // and hands it to `bootEnterpriseHost` as an embedder adapter, the way
+        // every embedder does. It invokes nothing.
+        'src/enterprise/andrew-demo/andrew-demo-composition.ts',
         // Type-only: the composition root builds the registry from the host's
         // trusted routing table and hands the result to ACE. It invokes nothing.
         'src/enterprise/composition/composition-root.ts',

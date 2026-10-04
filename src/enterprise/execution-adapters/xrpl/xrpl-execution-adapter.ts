@@ -83,7 +83,7 @@ function createXrplExecutionAdapterCore(plan: XrplPlan, transport: XrplPaymentTr
       const translation = translateXrplPayment(plan, action);
       if (!translation.ok) return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL[translation.refusal] };
       const { executionId, requestId, decisionId } = action.correlation;
-      submission = Object.freeze({ instruction: translation.instruction, executionId, requestId, decisionId, notAfter: action.notAfter });
+      submission = Object.freeze({ instruction: translation.instruction, executionId, requestId, decisionId, notAfter: action.notAfter, ...(plan.network !== undefined ? { network: plan.network } : {}) });
     } catch {
       return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.unconfirmed };
     }

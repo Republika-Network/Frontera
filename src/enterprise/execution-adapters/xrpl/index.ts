@@ -18,12 +18,21 @@ export {
   type XrplConfigurationErrorCode,
   type XrplExecutionAdapterOptions,
   type XrplIssuedCurrencyAmount,
+  type XrplLedgerEvidence,
   type XrplPaymentInstruction,
   type XrplPaymentSubmission,
   type XrplPaymentTransport,
   type XrplSubmissionObservation,
 } from './contracts.js';
-export { XRPL_MAXIMUM_ASSET_MAPPINGS } from './configuration.js';
+export { XRPL_MAXIMUM_ASSET_MAPPINGS, isXrplNetworkLabel } from './configuration.js';
+export {
+  checkXrplSettlement,
+  createXrplSettlementProfile,
+  type XrplSettledToken,
+  type XrplSettlementCheck,
+  type XrplSettlementProfile,
+  type XrplSettlementRefusal,
+} from './settlement.js';
 export {
   XRPL_DROPS_SCALE,
   XRPL_ISSUED_MAXIMUM_EXPONENT,
@@ -31,6 +40,7 @@ export {
   XRPL_ISSUED_MINIMUM_EXPONENT,
   XRPL_MAXIMUM_DROPS,
   isXrplClassicAddress,
+  isXrplNonStandardCurrencyCode,
   isXrplStandardCurrencyCode,
   xrplDropsFromXrp,
   xrplIssuedCurrencyValue,
