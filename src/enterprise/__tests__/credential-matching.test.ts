@@ -121,28 +121,33 @@ describe('extractBearerToken — adversarial headers (no backtracking path)', ()
 });
 
 describe('extractBearerToken — structure', () => {
-  /** The body of `extractBearerToken` in the production source, comments removed. */
-  function parserBody(source: string): string {
-    const start = source.indexOf('export function extractBearerToken(');
-    assert.ok(start >= 0, 'extractBearerToken is defined in credential-matching.ts');
-    const end = source.indexOf('\n}\n', start);
+  /**
+   * The module's executable code: comments and import lines removed. The whole
+   * module is measured, so a pattern defined beside the parser (a module-scope
+   * constant) counts as much as one inside it.
+   */
+  function moduleCode(source: string): string {
     return source
-      .slice(start, end)
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
       .split('\n')
-      .map((line) => line.replace(/^\s*\/\/.*$/, ''))
+      .map((line) => line.replace(/^\s*\/\/.*$/, '').replace(/^import\s.*$/, ''))
       .join('\n');
   }
-  // A regular expression needs a `/` (literal) or `RegExp`; the parser has no division either.
-  const usesRegex = (code: string): boolean => code.includes('/') || /\bRegExp\b|\.(exec|match|matchAll|search|replace|replaceAll|split)\(/.test(code);
+  // A regular expression needs a `/` (literal) or `RegExp`, and is run by one of these methods; the module has no division either.
+  const usesRegex = (code: string): boolean => code.includes('/') || /\bRegExp\b|Symbol\.(match|matchAll|replace|search|split)\b|\.(exec|test|match|matchAll|search|replace|replaceAll|split)\(/.test(code);
 
-  it('the detector flags the old regex-based parser', () => {
-    assert.equal(usesRegex(parserBody("export function extractBearerToken(h) {\n  const match = /^Bearer\\s+(.+)$/i.exec(h.trim());\n}\n")), true);
-    assert.equal(usesRegex(parserBody("export function extractBearerToken(h) {\n  return new RegExp('^Bearer').test(h);\n}\n")), true);
-    assert.equal(usesRegex(parserBody("export function extractBearerToken(h) {\n  return h.trim().split(' ')[1];\n}\n")), true);
+  it('the detector flags the old regex-based parser and a pattern kept beside the parser', () => {
+    assert.equal(usesRegex(moduleCode("export function extractBearerToken(h) {\n  const match = /^Bearer\\s+(.+)$/i.exec(h.trim());\n}\n")), true);
+    assert.equal(usesRegex(moduleCode("const SCHEME = new RegExp('^Bearer');\nexport function extractBearerToken(h) {\n  return SCHEME.test(h);\n}\n")), true);
+    assert.equal(usesRegex(moduleCode("export function extractBearerToken(h, scheme) {\n  return scheme.test(h);\n}\n")), true);
+    assert.equal(usesRegex(moduleCode("export function extractBearerToken(h) {\n  return h.trim().split(' ')[1];\n}\n")), true);
+    assert.equal(usesRegex(moduleCode("import { createHash } from 'node:crypto';\n/** `/^Bearer/` in prose */\nexport function extractBearerToken(h) {\n  return h;\n}\n")), false);
   });
 
   it('runs no regular expression over the Authorization header', () => {
-    const body = parserBody(readFileSync('src/enterprise/orchestration/credential-matching.ts', 'utf8'));
-    assert.equal(usesRegex(body), false, body);
+    const source = readFileSync('src/enterprise/orchestration/credential-matching.ts', 'utf8');
+    assert.ok(source.includes('export function extractBearerToken('), 'extractBearerToken is defined in credential-matching.ts');
+    const code = moduleCode(source);
+    assert.equal(usesRegex(code), false, code);
   });
 });
