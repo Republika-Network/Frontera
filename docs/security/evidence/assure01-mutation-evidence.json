@@ -1,7 +1,7 @@
 {
  "format": "frontera.mutation-evidence.v1",
  "milestone": "ASSURE-01",
- "commit": "3b6696e",
+ "commit": "725591d",
  "runner": "mutation-runner.mjs: per mutation, apply exact single-occurrence edits to the source, `npx tsc -b`, run the intended kill set with `node --test`, restore the original bytes and compare SHA-256",
  "killSet": [
   "dist/src/enterprise/__tests__/assure01-bounded-stream.test.js",
@@ -16,13 +16,13 @@
   "tests": 147,
   "pass": 147,
   "fail": 0,
-  "note": "every ASSURE-01 suite (125 tests: the six kill-set suites plus the P12 host suite, run in the baseline in addition to the kill set), the bearer-parsing suite credential-matching.test.ts (13) and the portability registry structure test (9), on the unmutated build of 3b6696e"
+  "note": "every ASSURE-01 suite (125 tests: the six kill-set suites plus the P12 host suite, run in the baseline in addition to the kill set), the bearer-parsing suite credential-matching.test.ts (13) and the portability registry structure test (9), on the unmutated build of 725591d"
  },
  "srcTreeIdenticalAfterCampaign": true,
  "rebuiltAfterCampaign": true,
  "totals": {
-  "mutations": 50,
-  "killed": 50,
+  "mutations": 51,
+  "killed": 51,
   "survived": 0,
   "notCompiled": 0
  },
@@ -32,7 +32,8 @@
   "Re-run on a426d1a after the final review changed the evidence build validator (v1 bodies lenient again): 38 of 38 killed; source tree identical; baseline 115/115.",
   "P8 bounded read (505f716, 7f4bd9d): M39 … M45 added; M9 re-anchored. Complete campaign on 7f4bd9d: 44 of 45 killed — M41 (size from row count and head only) survived because the deleted-rows case kept its head; the case was strengthened (b608c27). Complete campaign re-run on b608c27: 45 of 45 killed; source tree identical; baseline 132/132.",
   "Review of f895e5a: sizing from the head or MAX(sequence) disguised a forged head or sequence as size; 952d4e7 sizes by COUNT(*) only and refuses a foreign stream before loading. M39/M40/M41/M45 re-defined for the new code (M40 head sizing, M41 MAX(sequence) sizing, M45 owner after load). Complete campaign on 952d4e7: 45 of 45 killed; source tree identical; baseline 133/133.",
-  "PR #163 CodeQL js/polynomial-redos fix (3b6696e): the earlier campaign mutated no credential-matching code, so M46 … M50 were added for the new bearer parser (regex restored, separator not required, line-terminator check removed, scheme letters not compared, header not trimmed), each killed by credential-matching.test.ts. Complete campaign on 3b6696e: 50 of 50 killed; source tree identical; baseline 147/147."
+  "PR #163 CodeQL js/polynomial-redos fix (3b6696e): the earlier campaign mutated no credential-matching code, so M46 … M50 were added for the new bearer parser (regex restored, separator not required, line-terminator check removed, scheme letters not compared, header not trimmed), each killed by credential-matching.test.ts. Complete campaign on 3b6696e: 50 of 50 killed; source tree identical; baseline 147/147.",
+  "Independent review of 1d1e4a8 (low): the structural check read only the parser body and did not list `.test(`; 725591d (tests only) measures the whole module and flags `.test(`. M51 added: the polynomial pattern kept at module scope as a RegExp and run with .test() before the parse. Complete campaign on 725591d: 50 of 51 killed and M51 NOT-APPLIED — its replacement text held `$'`, which String.prototype.replace expands (the runner restored the file; no other mutation's replacement holds a replacement pattern). M51 re-defined without a `$` and run on the same commit: KILLED. 51 of 51; source tree identical; baseline 147/147."
  ],
  "mutations": [
   {
@@ -85,7 +86,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 190.3,
+   "durationS": 66.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -132,7 +133,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 145.8,
+   "durationS": 72.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -175,7 +176,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 35.6,
+   "durationS": 23.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -218,7 +219,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 65.6,
+   "durationS": 23,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -261,7 +262,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 65.9,
+   "durationS": 22.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -304,7 +305,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 62.7,
+   "durationS": 22.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -347,7 +348,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 32.1,
+   "durationS": 22.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -390,7 +391,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 37.7,
+   "durationS": 22.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -433,7 +434,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 35.9,
+   "durationS": 22.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -476,7 +477,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 33.9,
+   "durationS": 22.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -519,7 +520,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 29.9,
+   "durationS": 22.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -570,7 +571,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 29,
+   "durationS": 22.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -630,7 +631,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 97.4,
+   "durationS": 57.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -682,7 +683,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 127.7,
+   "durationS": 56.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -725,7 +726,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 46,
+   "durationS": 22.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -780,7 +781,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 35.8,
+   "durationS": 23.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -823,7 +824,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 34.3,
+   "durationS": 22.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/verifier.ts",
@@ -866,7 +867,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 41.2,
+   "durationS": 25.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -909,7 +910,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 39.3,
+   "durationS": 26,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -952,7 +953,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 38.3,
+   "durationS": 26,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -995,7 +996,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 37.6,
+   "durationS": 25.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1055,7 +1056,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 61,
+   "durationS": 39.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1098,7 +1099,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 36.2,
+   "durationS": 25.5,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1141,7 +1142,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 36,
+   "durationS": 25.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -1193,7 +1194,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 36.4,
+   "durationS": 26.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1253,7 +1254,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 49.5,
+   "durationS": 37.2,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1319,7 +1320,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 66.8,
+   "durationS": 51,
    "sha256": [
     {
      "file": "scripts/portability/store-registry.mjs",
@@ -1362,7 +1363,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.7,
+   "durationS": 21.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1405,7 +1406,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.3,
+   "durationS": 21.5,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1448,7 +1449,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 68.8,
+   "durationS": 57.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -1491,7 +1492,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 67.4,
+   "durationS": 57.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1534,7 +1535,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 69,
+   "durationS": 57.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1586,7 +1587,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 67.3,
+   "durationS": 56.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1637,7 +1638,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 27.2,
+   "durationS": 22.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1680,7 +1681,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 29.7,
+   "durationS": 25.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1731,7 +1732,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 27.3,
+   "durationS": 22.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1774,7 +1775,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.6,
+   "durationS": 22.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1817,7 +1818,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.8,
+   "durationS": 22.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1876,7 +1877,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 50.4,
+   "durationS": 45.5,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -1919,7 +1920,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 49.5,
+   "durationS": 44.8,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -1966,7 +1967,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 52,
+   "durationS": 44.3,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -2013,7 +2014,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 52.6,
+   "durationS": 44.6,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/in-memory-authority-event-stream-store.ts",
@@ -2064,7 +2065,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 46.6,
+   "durationS": 45.1,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/stream-store.ts",
@@ -2116,7 +2117,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 24.6,
+   "durationS": 22.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -2172,7 +2173,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 48.8,
+   "durationS": 42,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -2215,7 +2216,7 @@
     },
     {
      "test": "runs no regular expression over the Authorization header",
-     "failure": "export function extractBearerToken(authorizationHeader: string | undefined): string | undefined {"
+     "failure": "const BEARER_SCHEME = 'bearer';"
     },
     {
      "test": "extractBearerToken — structure",
@@ -2223,7 +2224,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 67.7,
+   "durationS": 57.4,
    "sha256": [
     {
      "file": "src/enterprise/orchestration/credential-matching.ts",
@@ -2278,7 +2279,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.8,
+   "durationS": 22.2,
    "sha256": [
     {
      "file": "src/enterprise/orchestration/credential-matching.ts",
@@ -2337,7 +2338,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.2,
+   "durationS": 21.3,
    "sha256": [
     {
      "file": "src/enterprise/orchestration/credential-matching.ts",
@@ -2380,7 +2381,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26.1,
+   "durationS": 21.7,
    "sha256": [
     {
      "file": "src/enterprise/orchestration/credential-matching.ts",
@@ -2427,7 +2428,63 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 25.9,
+   "durationS": 21.5,
+   "sha256": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "before": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "after": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M51",
+   "change": "the polynomial pattern kept at module scope and run with .test() before the parse",
+   "property": "no backtracking parse of the bearer header",
+   "edits": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "const BEARER_SCHEME = 'bearer';",
+     "replace": "const BEARER_SCHEME = 'bearer';\nconst BEARER_HEADER = new RegExp('^Bearer\\\\s+(.+)\\x24', 'i');"
+    },
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "  const header = authorizationHeader.trim();\n",
+     "replace": "  if (!BEARER_HEADER.test(authorizationHeader.trim())) return undefined;\n  const header = authorizationHeader.trim();\n"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/credential-matching.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 13,
+    "passed": 11,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses the old worst case at 100 000 separators, and at every shape near it",
+     "failure": "adversarial headers are parsed in linear time'"
+    },
+    {
+     "test": "extractBearerToken — adversarial headers (no backtracking path)",
+     "failure": "1 subtest failed'"
+    },
+    {
+     "test": "runs no regular expression over the Authorization header",
+     "failure": "const BEARER_SCHEME = 'bearer';"
+    },
+    {
+     "test": "extractBearerToken — structure",
+     "failure": "1 subtest failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 57.9,
    "sha256": [
     {
      "file": "src/enterprise/orchestration/credential-matching.ts",

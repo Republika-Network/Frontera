@@ -378,9 +378,9 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 
 ### 12.4 Mutation campaign
 
-50 mutations, **50 killed** on `3b6696e` — the final production code, after the PR #163 bearer-parser fix (§12.6) (`docs/security/evidence/assure01-mutation-evidence.json`):
+51 mutations, **51 killed** on `725591d` — the final production code is `3b6696e`, the PR #163 bearer-parser fix (§12.6); `725591d` changed only its test (`docs/security/evidence/assure01-mutation-evidence.json`):
 each an executable edit that compiled, killed by its intended test, restored
-byte for byte (source tree identical after the campaign; baseline 147/147). M1 … M45 are the milestone's own (below); M46 … M50 mutate the bearer parser (§12.6). The first 45
+byte for byte (source tree identical after the campaign; baseline 147/147). M1 … M45 are the milestone's own (below); M46 … M51 mutate the bearer parser (§12.6). The first 45
 cover every attack the milestone named — organization check removed, wrong
 grant / outcome / resolution joined, event-integrity verification omitted,
 unexpected absence as not-applicable, bundle mutated after store, digest check
@@ -437,12 +437,28 @@ dismissed.
   far below the old cost and far above the linear parse — not the primary
   guard); a 1 MB token accepted whole; customer (`REQUIRED` / `MALFORMED` /
   `INVALID` kept apart), operator and governance-read callers; and,
-  structurally, no regular expression in the parser body, with the detector
-  first shown to flag the old parser.
+  structurally, no regular expression in the module (since `725591d`; the
+  parser body before), with the detector first shown to flag the old parser
+  and a module-scope pattern.
 - **Mutation** — the earlier campaign mutated no credential code, so M46 … M50
   were added (regex restored, separator not required, line-terminator check
-  removed, scheme letters not compared, header not trimmed) and the complete
-  campaign re-run: **50 of 50** (§12.4).
+  removed, scheme letters not compared, header not trimmed); the complete
+  campaign on `3b6696e` killed 50 of 50. After the review (below), M51 (the
+  pattern kept at module scope as a `RegExp`, run with `.test()`) was added and
+  the complete campaign re-run on `725591d`: **51 of 51** (§12.4). M51 first did
+  not apply — its replacement held `$'`, which `String.prototype.replace`
+  expands; the runner restored the file, no other mutation holds such a
+  pattern — and was re-defined and run on the same commit.
+- **Independent review of `1d1e4a8`** — no high or medium finding; the
+  points checked (no regex on the bearer path, semantics, linear cost,
+  `matchApiKey` byte-identical, caller refusal semantics, no credential
+  exposure, test meaning, these records) confirmed, with its own differential
+  run of 2.16 M headers (0 mismatches). Low: the structural check read only
+  the parser body and missed `.test(` — fixed in `725591d` (whole module,
+  `.test(` and the `Symbol.match` family), test only. Low, accepted: the
+  agent-credential format check (`agent-credentials.ts`, `/^fra1\.(agc-[0-9a-f]{32})\.([A-Za-z0-9_-]{43})$/`)
+  still runs on a bearer token; it is anchored with fixed-length,
+  non-overlapping classes — linear, no backtracking — and predates this branch.
 - **Validation of `3b6696e`** (clean `git archive` export, 0 CRLF files):
   `npm ci`, typecheck, lint, build green; root 9 198 tests (9 185 pass, 0 fail,
   9 skipped, 4 todo); workspaces green; API freeze, release docs, SDK surface
@@ -451,7 +467,8 @@ dismissed.
   smoke green; legal report pre-existing advisories only; `git diff --check`
   clean, no conflict markers. Focused credential, customer-identity, operator,
   governed-action, governance-read, HTTP and ASSURE-01 suites: 89 files, 2 446
-  tests, 0 fail.
+  tests, 0 fail. The same clean-export run on `1d1e4a8` was green; the final commit's own
+  run is reported, with its SHA, in the PR.
 <!-- /assure01:evidence -->
 
 ## 13. Residual risks
