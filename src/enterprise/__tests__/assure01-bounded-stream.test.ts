@@ -48,11 +48,16 @@ function freshPath(): string {
 
 async function filled(store: AuthorityEventStreamStore, count: number): Promise<void> {
   await store.append(A, decision());
-  for (let index = 1; index < count; index += 1) await store.append(A, attempt(`aoc.exec:bounded-${index}`));
+  await extended(store, 1, count, 'bounded');
+}
+
+/** Appends attempts with sequence numbers `from` up to (not including) `to`. */
+async function extended(store: AuthorityEventStreamStore, from: number, to: number, label: string): Promise<void> {
+  for (let index = from; index < to; index += 1) await store.append(A, attempt(`aoc.exec:${label}-${index}`));
 }
 
 /**
- * Counts the event rows SQLite actually hands back from any statement over
+ * Counts the event rows SQLite actually hands back from every statement over
  * `authority_events` — the store's own statements included (it imports the same
  * `better-sqlite3` module). This is what "materialized" means below.
  */
@@ -123,7 +128,7 @@ for (const [name, open] of providers) {
       materialized.rows = 0;
       await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
       if (name === 'SQLite') assert.equal(materialized.rows, 0, 'refused before any of its rows is loaded');
-      for (let index = 3; index < BOUND + 1; index += 1) await store.append(A, attempt(`aoc.exec:bounded-more-${index}`));
+      await extended(store, 3, BOUND + 1, 'bounded-more');
       await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
       await assert.rejects(store.readStreamBounded(B, STREAM, { maxEvents: AUTHORITY_EVENT_STREAM_MAX_READ_BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
       await assert.rejects(store.readStreamBounded({} as never, STREAM, { maxEvents: BOUND }), { code: 'AUTHORITY_EVENT_TENANT_VIOLATION' });
