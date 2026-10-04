@@ -378,9 +378,9 @@ PUBLIC bundle's verification carries no grant id, actor or canonical digest.
 
 ### 12.4 Mutation campaign
 
-45 mutations, **45 killed** on `952d4e7` — the final production code (after it, tests and documentation only) (`docs/security/evidence/assure01-mutation-evidence.json`):
+50 mutations, **50 killed** on `3b6696e` — the final production code, after the PR #163 bearer-parser fix (§12.6) (`docs/security/evidence/assure01-mutation-evidence.json`):
 each an executable edit that compiled, killed by its intended test, restored
-byte for byte (source tree identical after the campaign; baseline 133/133). They
+byte for byte (source tree identical after the campaign; baseline 147/147). M1 … M45 are the milestone's own (below); M46 … M50 mutate the bearer parser (§12.6). The first 45
 cover every attack the milestone named — organization check removed, wrong
 grant / outcome / resolution joined, event-integrity verification omitted,
 unexpected absence as not-applicable, bundle mutated after store, digest check
@@ -408,6 +408,50 @@ matrix, invariants, no-bypass, structure, API freeze) passed on the bounded
 read; a review of it (`f895e5a`) led to count-only sizing and tenant-before-load
 (`952d4e7`); its final review's low items were closed in tests and documentation only, and the final commit's own clean-export run is reported, with its SHA, in
 the milestone report.
+
+### 12.6 PR #163 — CodeQL js/polynomial-redos on the bearer parser
+
+GitHub CodeQL reported one HIGH finding on PR #163:
+`src/enterprise/orchestration/credential-matching.ts:7`, *polynomial regular
+expression used on uncontrolled data*. `extractBearerToken` ran
+`/^Bearer\s+(.+)$/i` over the trimmed `Authorization` header; `\s+` and `.+`
+both match spaces, so `Bearer`, many spaces and a line terminator inside the
+token backtracked quadratically before refusing (measured: 25 ms at 5 000
+spaces, 340 ms at 20 000, 1.4 s at 40 000). **ASSURE-01 did not introduce the
+pattern**: it dates from the Runtime Host v1 (`4440af71`) and the file is
+unchanged against `main`; the finding was closed on this branch regardless, not
+dismissed.
+
+- **Fix (`3b6696e`)** — a linear string parse, the only production change: the
+  scheme compared as ASCII `bearer` case-insensitively; `trimStart` for the
+  separator (it strips exactly the characters `\s` matches); at least one
+  separator; a non-empty token; no line terminator in it (what `.` refused).
+  `matchApiKey` and every caller are unchanged.
+- **Same contract** — a differential run against the old pattern over 688 561
+  headers (exhaustive to length 3 over whitespace, line terminators, scheme
+  letters and lookalikes; 300 000 random; every UTF-16 code unit as separator,
+  scheme letter and token character): 0 mismatches.
+- **Tests** — `credential-matching.test.ts` (13): accepted and refused headers;
+  ASCII-only scheme; multi-line tokens; prefix and superstring keys; the old
+  worst case at 100 000 separators and shapes near it refused (bounded at 2 s,
+  far below the old cost and far above the linear parse — not the primary
+  guard); a 1 MB token accepted whole; customer (`REQUIRED` / `MALFORMED` /
+  `INVALID` kept apart), operator and governance-read callers; and,
+  structurally, no regular expression in the parser body, with the detector
+  first shown to flag the old parser.
+- **Mutation** — the earlier campaign mutated no credential code, so M46 … M50
+  were added (regex restored, separator not required, line-terminator check
+  removed, scheme letters not compared, header not trimmed) and the complete
+  campaign re-run: **50 of 50** (§12.4).
+- **Validation of `3b6696e`** (clean `git archive` export, 0 CRLF files):
+  `npm ci`, typecheck, lint, build green; root 9 198 tests (9 185 pass, 0 fail,
+  9 skipped, 4 todo); workspaces green; API freeze, release docs, SDK surface
+  green; protocol tarball validation against the vendored, lock-pinned
+  `aoc-protocol-0.2.0-rc.1.tgz` and the compatibility lock green; portability
+  smoke green; legal report pre-existing advisories only; `git diff --check`
+  clean, no conflict markers. Focused credential, customer-identity, operator,
+  governed-action, governance-read, HTTP and ASSURE-01 suites: 89 files, 2 446
+  tests, 0 fail.
 <!-- /assure01:evidence -->
 
 ## 13. Residual risks

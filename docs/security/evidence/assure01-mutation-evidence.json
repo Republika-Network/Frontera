@@ -1,7 +1,7 @@
 {
  "format": "frontera.mutation-evidence.v1",
  "milestone": "ASSURE-01",
- "commit": "952d4e7",
+ "commit": "3b6696e",
  "runner": "mutation-runner.mjs: per mutation, apply exact single-occurrence edits to the source, `npx tsc -b`, run the intended kill set with `node --test`, restore the original bytes and compare SHA-256",
  "killSet": [
   "dist/src/enterprise/__tests__/assure01-bounded-stream.test.js",
@@ -9,28 +9,30 @@
   "dist/src/enterprise/__tests__/assure01-trace-builder.test.js",
   "dist/src/enterprise/__tests__/assure01-trace-host.test.js",
   "dist/src/enterprise/__tests__/assure01-trace-structure.test.js",
+  "dist/src/enterprise/__tests__/credential-matching.test.js",
   "tests/portability-store-registry.structure.test.mjs"
  ],
  "baseline": {
-  "tests": 133,
-  "pass": 133,
+  "tests": 147,
+  "pass": 147,
   "fail": 0,
-  "note": "every ASSURE-01 suite (124 tests: the five kill-set suites plus the P12 host suite, run in the baseline in addition to the kill set) and the portability registry structure test (9), on the unmutated build"
+  "note": "every ASSURE-01 suite (125 tests: the six kill-set suites plus the P12 host suite, run in the baseline in addition to the kill set), the bearer-parsing suite credential-matching.test.ts (13) and the portability registry structure test (9), on the unmutated build of 3b6696e"
  },
  "srcTreeIdenticalAfterCampaign": true,
  "rebuiltAfterCampaign": true,
  "totals": {
-  "mutations": 45,
-  "killed": 45,
+  "mutations": 50,
+  "killed": 50,
   "survived": 0,
   "notCompiled": 0
  },
  "history": [
-  "First run on 0c61249: 33 killed; M28 survived \u2014 the structural write-call detector missed an optional call (`.settle?.(`); fixed in f73e82f (detector matches `?.(`, self-tested). M8 did not apply and M11, M21, M34 did not compile (anchors moved or types narrowed by the review fixes); re-anchored.",
+  "First run on 0c61249: 33 killed; M28 survived — the structural write-call detector missed an optional call (`.settle?.(`); fixed in f73e82f (detector matches `?.(`, self-tested). M8 did not apply and M11, M21, M34 did not compile (anchors moved or types narrowed by the review fixes); re-anchored.",
   "Full campaign re-run on f73e82f (production code identical to 0c61249): 38 of 38 killed.",
   "Re-run on a426d1a after the final review changed the evidence build validator (v1 bodies lenient again): 38 of 38 killed; source tree identical; baseline 115/115.",
-  "P8 bounded read (505f716, 7f4bd9d): M39 \u2026 M45 added; M9 re-anchored. Complete campaign on 7f4bd9d: 44 of 45 killed \u2014 M41 (size from row count and head only) survived because the deleted-rows case kept its head; the case was strengthened (b608c27). Complete campaign re-run on b608c27: 45 of 45 killed; source tree identical; baseline 132/132.",
-  "Review of f895e5a: sizing from the head or MAX(sequence) disguised a forged head or sequence as size; 952d4e7 sizes by COUNT(*) only and refuses a foreign stream before loading. M39/M40/M41/M45 re-defined for the new code (M40 head sizing, M41 MAX(sequence) sizing, M45 owner after load). Complete campaign on 952d4e7: 45 of 45 killed; source tree identical; baseline 133/133."
+  "P8 bounded read (505f716, 7f4bd9d): M39 … M45 added; M9 re-anchored. Complete campaign on 7f4bd9d: 44 of 45 killed — M41 (size from row count and head only) survived because the deleted-rows case kept its head; the case was strengthened (b608c27). Complete campaign re-run on b608c27: 45 of 45 killed; source tree identical; baseline 132/132.",
+  "Review of f895e5a: sizing from the head or MAX(sequence) disguised a forged head or sequence as size; 952d4e7 sizes by COUNT(*) only and refuses a foreign stream before loading. M39/M40/M41/M45 re-defined for the new code (M40 head sizing, M41 MAX(sequence) sizing, M45 owner after load). Complete campaign on 952d4e7: 45 of 45 killed; source tree identical; baseline 133/133.",
+  "PR #163 CodeQL js/polynomial-redos fix (3b6696e): the earlier campaign mutated no credential-matching code, so M46 … M50 were added for the new bearer parser (regex restored, separator not required, line-terminator check removed, scheme letters not compared, header not trimmed), each killed by credential-matching.test.ts. Complete campaign on 3b6696e: 50 of 50 killed; source tree identical; baseline 147/147."
  ],
  "mutations": [
   {
@@ -70,20 +72,20 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 in-memory Evidence Bundle Store \u2014 the same lifecycle contract",
+     "test": "ASSURE-01 in-memory Evidence Bundle Store — the same lifecycle contract",
      "failure": "1 subtest failed'"
     },
     {
-     "test": "another organization\u2019s key, an unauthenticated caller, an operator bearer and an agent credential cannot see a trace",
+     "test": "another organization’s key, an unauthenticated caller, an operator bearer and an agent credential cannot see a trace",
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 \u2014 tenant, authentication and input boundaries",
+     "test": "ASSURE-01 — tenant, authentication and input boundaries",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 14.2,
+   "durationS": 190.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -117,7 +119,7 @@
    },
    "killedBy": [
     {
-     "test": "another organization\u2019s key, an unauthenticated caller, an operator bearer and an agent credential cannot see a trace",
+     "test": "another organization’s key, an unauthenticated caller, an operator bearer and an agent credential cannot see a trace",
      "failure": "\"Cannot read properties of undefined (reading 'code')\""
     },
     {
@@ -125,12 +127,12 @@
      "failure": "\"Cannot read properties of undefined (reading 'code')\""
     },
     {
-     "test": "ASSURE-01 \u2014 tenant, authentication and input boundaries",
+     "test": "ASSURE-01 — tenant, authentication and input boundaries",
      "failure": "2 subtests failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 11,
+   "durationS": 145.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -168,12 +170,12 @@
      "failure": "correlation:correlation.grant:aoc.grant:cccccccccccccccccccccccccccccccc in []'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 35.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -211,12 +213,12 @@
      "failure": "correlation:correlation.grant:aoc.grant:cccccccccccccccccccccccccccccccc in []'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 65.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -254,12 +256,12 @@
      "failure": "correlation:correlation.execution-attempt in []'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 65.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -297,12 +299,12 @@
      "failure": "correlation:correlation.resolution-binds-execution in []'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.9,
+   "durationS": 62.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -340,12 +342,12 @@
      "failure": "correlation:correlation.resolution-binds-execution in []'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 32.1,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -383,12 +385,12 @@
      "failure": "correlation:correlation.resolution-only-when-uncertain in [\"correlation:correlation.outcome-summary-text\"]'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 37.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -426,12 +428,12 @@
      "failure": "The expression evaluated to a falsy value:"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 store integrity failures are reported, never hidden",
+     "test": "ASSURE-01 trace builder — store integrity failures are reported, never hidden",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 35.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -469,12 +471,12 @@
      "failure": "correlation:correlation.event:3 in []'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 wrong joins are correlation failures, and the request becomes \"inconsistent\"",
+     "test": "ASSURE-01 trace builder — wrong joins are correlation failures, and the request becomes \"inconsistent\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.8,
+   "durationS": 33.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -512,12 +514,12 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 \"missing unexpectedly\" is never \"not applicable\"",
+     "test": "ASSURE-01 trace builder — \"missing unexpectedly\" is never \"not applicable\"",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 5,
+   "durationS": 29.9,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -555,7 +557,7 @@
      "failure": "The expression evaluated to a falsy value:"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 \"missing unexpectedly\" is never \"not applicable\"",
+     "test": "ASSURE-01 trace builder — \"missing unexpectedly\" is never \"not applicable\"",
      "failure": "1 subtest failed'"
     },
     {
@@ -563,12 +565,12 @@
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "ASSURE-01 second review \u2014 read order, degraded stores, summaries and history",
+     "test": "ASSURE-01 second review — read order, degraded stores, summaries and history",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.9,
+   "durationS": 29,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -603,11 +605,11 @@
    },
    "killedBy": [
     {
-     "test": "unconfirmed with no resolution yet: unresolved \u2014 never completed",
+     "test": "unconfirmed with no resolution yet: unresolved — never completed",
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 a consistent world verifies, deterministically",
+     "test": "ASSURE-01 trace builder — a consistent world verifies, deterministically",
      "failure": "1 subtest failed'"
     },
     {
@@ -615,20 +617,20 @@
      "failure": "never resolved by a summary alone"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 \"missing unexpectedly\" is never \"not applicable\"",
+     "test": "ASSURE-01 trace builder — \"missing unexpectedly\" is never \"not applicable\"",
      "failure": "1 subtest failed'"
     },
     {
-     "test": "progression is recognized; a changed recorded fact, or an illegal final-state move, is a contradiction \u2014 at every level, PUBLIC included",
+     "test": "progression is recognized; a changed recorded fact, or an illegal final-state move, is a contradiction — at every level, PUBLIC included",
      "failure": "evidence.disclosure.auditor.v2"
     },
     {
-     "test": "ASSURE-01 disclosure \u2014 v2 policies, projection and comparison",
+     "test": "ASSURE-01 disclosure — v2 policies, projection and comparison",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 10.9,
+   "durationS": 97.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -667,7 +669,7 @@
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "ASSURE-01 disclosure \u2014 v2 policies, projection and comparison",
+     "test": "ASSURE-01 disclosure — v2 policies, projection and comparison",
      "failure": "1 subtest failed'"
     },
     {
@@ -675,12 +677,12 @@
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "ASSURE-01 \u2014 disclosure: Truth \u2260 Disclosure",
+     "test": "ASSURE-01 — disclosure: Truth ≠ Disclosure",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 11.3,
+   "durationS": 127.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -718,12 +720,12 @@
      "failure": "Missing expected rejection.'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 a consistent world verifies, deterministically",
+     "test": "ASSURE-01 trace builder — a consistent world verifies, deterministically",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.7,
+   "durationS": 46,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -757,11 +759,11 @@
    },
    "killedBy": [
     {
-     "test": "progression is recognized; a changed recorded fact, or an illegal final-state move, is a contradiction \u2014 at every level, PUBLIC included",
+     "test": "progression is recognized; a changed recorded fact, or an illegal final-state move, is a contradiction — at every level, PUBLIC included",
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 disclosure \u2014 v2 policies, projection and comparison",
+     "test": "ASSURE-01 disclosure — v2 policies, projection and comparison",
      "failure": "1 subtest failed'"
     },
     {
@@ -773,12 +775,12 @@
      "failure": "evidence.disclosure.auditor.v2"
     },
     {
-     "test": "ASSURE-01 review hardening \u2014 a recorded fact never passes as progress; history is read as it was written",
+     "test": "ASSURE-01 review hardening — a recorded fact never passes as progress; history is read as it was written",
      "failure": "2 subtests failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 5.1,
+   "durationS": 35.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -816,12 +818,12 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 bundles \u2014 v2 verification, and historical v1 bundles unchanged",
+     "test": "ASSURE-01 bundles — v2 verification, and historical v1 bundles unchanged",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 34.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/verifier.ts",
@@ -855,7 +857,7 @@
    },
    "killedBy": [
     {
-     "test": "a rewritten bundle whose row digest is re-sealed still fails the bundle\u2019s own digest",
+     "test": "a rewritten bundle whose row digest is re-sealed still fails the bundle’s own digest",
      "failure": "Missing expected rejection.'"
     },
     {
@@ -864,7 +866,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 7.7,
+   "durationS": 41.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -898,7 +900,7 @@
    },
    "killedBy": [
     {
-     "test": "the lifecycle moves forward only; SUPERSEDED is terminal; supersession never touches the old bundle\u2019s content",
+     "test": "the lifecycle moves forward only; SUPERSEDED is terminal; supersession never touches the old bundle’s content",
      "failure": "Missing expected rejection: a lifecycle rolled back behind the triggers disagrees with its own log'"
     },
     {
@@ -907,7 +909,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.5,
+   "durationS": 39.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -950,7 +952,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.2,
+   "durationS": 38.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -993,7 +995,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8,
+   "durationS": 37.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1040,20 +1042,20 @@
      "failure": "The input did not match the regular expression /immutable/. Input:"
     },
     {
-     "test": "the row digest and the bundle\u2019s own digest are both checked: re-sealing one is not enough",
+     "test": "the row digest and the bundle’s own digest are both checked: re-sealing one is not enough",
      "failure": "no such trigger: evidence_bundles_content_immutable'"
     },
     {
-     "test": "a rewritten bundle whose row digest is re-sealed still fails the bundle\u2019s own digest",
+     "test": "a rewritten bundle whose row digest is re-sealed still fails the bundle’s own digest",
      "failure": "no such trigger: evidence_bundles_content_immutable'"
     },
     {
-     "test": "the lifecycle moves forward only; SUPERSEDED is terminal; supersession never touches the old bundle\u2019s content",
+     "test": "the lifecycle moves forward only; SUPERSEDED is terminal; supersession never touches the old bundle’s content",
      "failure": "The input did not match the regular expression /forward only/. Input:"
     }
    ],
    "result": "KILLED",
-   "durationS": 11.6,
+   "durationS": 61,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1096,7 +1098,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 8.4,
+   "durationS": 36.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1134,12 +1136,12 @@
      "failure": "supersession never touches content"
     },
     {
-     "test": "ASSURE-01 in-memory Evidence Bundle Store \u2014 the same lifecycle contract",
+     "test": "ASSURE-01 in-memory Evidence Bundle Store — the same lifecycle contract",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 7.9,
+   "durationS": 36,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-store.ts",
@@ -1186,12 +1188,12 @@
      "failure": "the one parameterized list query is bounded"
     },
     {
-     "test": "ASSURE-01 structure \u2014 action neutrality and bounds",
+     "test": "ASSURE-01 structure — action neutrality and bounds",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 7.6,
+   "durationS": 36.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1226,7 +1228,7 @@
    },
    "killedBy": [
     {
-     "test": "ALLOW \u2192 executed \u2192 confirmed-completed: every canonical stage is reached, recorded and verifies",
+     "test": "ALLOW → executed → confirmed-completed: every canonical stage is reached, recorded and verifies",
      "failure": "test did not finish before its parent and was cancelled'"
     },
     {
@@ -1234,7 +1236,7 @@
      "failure": "test did not finish before its parent and was cancelled'"
     },
     {
-     "test": "DENY: the trace says denied \u2014 no fictional grant, execution, outcome or resolution \u2014 and the adapter was never called for it",
+     "test": "DENY: the trace says denied — no fictional grant, execution, outcome or resolution — and the adapter was never called for it",
      "failure": "test did not finish before its parent and was cancelled'"
     },
     {
@@ -1246,12 +1248,12 @@
      "failure": "test did not finish before its parent and was cancelled'"
     },
     {
-     "test": "obligations: the discharge that released the request is in its trace, with the store\u2019s authenticated chain",
+     "test": "obligations: the discharge that released the request is in its trace, with the store’s authenticated chain",
      "failure": "test did not finish before its parent and was cancelled'"
     }
    ],
    "result": "KILLED",
-   "durationS": 7,
+   "durationS": 49.5,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1296,7 +1298,7 @@
      "failure": "the Evidence Bundle Store is in the backup'"
     },
     {
-     "test": "ASSURE-01 \u2014 the official exit drill: fetch and verify through HTTP, across restart and a cold backup / restore",
+     "test": "ASSURE-01 — the official exit drill: fetch and verify through HTTP, across restart and a cold backup / restore",
      "failure": "1 subtest failed'"
     },
     {
@@ -1304,7 +1306,7 @@
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "ASSURE-01 structure \u2014 durability on the secure Host",
+     "test": "ASSURE-01 structure — durability on the secure Host",
      "failure": "1 subtest failed'"
     },
     {
@@ -1317,7 +1319,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 10,
+   "durationS": 66.8,
    "sha256": [
     {
      "file": "scripts/portability/store-registry.mjs",
@@ -1355,12 +1357,12 @@
      "failure": "src/enterprise/evidence/trace-builder.ts makes a write call: .settle?.("
     },
     {
-     "test": "ASSURE-01 structure \u2014 the trace is a projection: no write path into any authority",
+     "test": "ASSURE-01 structure — the trace is a projection: no write path into any authority",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.5,
+   "durationS": 26.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1394,16 +1396,16 @@
    },
    "killedBy": [
     {
-     "test": "the composition hands the trace one read per store \u2014 never a writer, signer, reconciler, approval command or adapter",
+     "test": "the composition hands the trace one read per store — never a writer, signer, reconciler, approval command or adapter",
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "ASSURE-01 structure \u2014 the trace is a projection: no write path into any authority",
+     "test": "ASSURE-01 structure — the trace is a projection: no write path into any authority",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 5,
+   "durationS": 26.3,
    "sha256": [
     {
      "file": "src/enterprise/composition/composition-root.ts",
@@ -1441,12 +1443,12 @@
      "failure": "\"Cannot read properties of undefined (reading 'code')\""
     },
     {
-     "test": "ASSURE-01 \u2014 tenant, authentication and input boundaries",
+     "test": "ASSURE-01 — tenant, authentication and input boundaries",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 11,
+   "durationS": 68.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/evidence-service.ts",
@@ -1484,12 +1486,12 @@
      "failure": "PARTNER does not learn who revoked"
     },
     {
-     "test": "ASSURE-01 \u2014 disclosure: Truth \u2260 Disclosure",
+     "test": "ASSURE-01 — disclosure: Truth ≠ Disclosure",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 11.4,
+   "durationS": 67.4,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1527,12 +1529,12 @@
      "failure": "CUSTOMER hides how it ran: pilot.recording"
     },
     {
-     "test": "ASSURE-01 \u2014 disclosure: Truth \u2260 Disclosure",
+     "test": "ASSURE-01 — disclosure: Truth ≠ Disclosure",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 10.3,
+   "durationS": 69,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1571,7 +1573,7 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 review hardening \u2014 a recorded fact never passes as progress; history is read as it was written",
+     "test": "ASSURE-01 review hardening — a recorded fact never passes as progress; history is read as it was written",
      "failure": "1 subtest failed'"
     },
     {
@@ -1579,12 +1581,12 @@
      "failure": "PUBLIC verification hides aoc.grant:"
     },
     {
-     "test": "ASSURE-01 \u2014 disclosure: Truth \u2260 Disclosure",
+     "test": "ASSURE-01 — disclosure: Truth ≠ Disclosure",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 11.3,
+   "durationS": 67.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-disclosure.ts",
@@ -1618,11 +1620,11 @@
    },
    "killedBy": [
     {
-     "test": "an execution answered before P11 existed is shown as its Governance summary \u2014 never as unanswered, never eligible for resolution",
+     "test": "an execution answered before P11 existed is shown as its Governance summary — never as unanswered, never eligible for resolution",
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "ASSURE-01 review hardening \u2014 a recorded fact never passes as progress; history is read as it was written",
+     "test": "ASSURE-01 review hardening — a recorded fact never passes as progress; history is read as it was written",
      "failure": "1 subtest failed'"
     },
     {
@@ -1630,12 +1632,12 @@
      "failure": "the Prompt 3 form (no layer) decodes as grant-exercise"
     },
     {
-     "test": "ASSURE-01 second review \u2014 read order, degraded stores, summaries and history",
+     "test": "ASSURE-01 second review — read order, degraded stores, summaries and history",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 27.2,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1678,7 +1680,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 7.4,
+   "durationS": 29.7,
    "sha256": [
     {
      "file": "src/enterprise/evidence/sqlite-evidence-store.ts",
@@ -1716,7 +1718,7 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 review hardening \u2014 a recorded fact never passes as progress; history is read as it was written",
+     "test": "ASSURE-01 review hardening — a recorded fact never passes as progress; history is read as it was written",
      "failure": "1 subtest failed'"
     },
     {
@@ -1724,12 +1726,12 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 second review \u2014 read order, degraded stores, summaries and history",
+     "test": "ASSURE-01 second review — read order, degraded stores, summaries and history",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 5.1,
+   "durationS": 27.3,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1767,12 +1769,12 @@
      "failure": "located, then re-read after the stream"
     },
     {
-     "test": "ASSURE-01 second review \u2014 read order, degraded stores, summaries and history",
+     "test": "ASSURE-01 second review — read order, degraded stores, summaries and history",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.7,
+   "durationS": 26.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1810,12 +1812,12 @@
      "failure": "The expression evaluated to a falsy value:"
     },
     {
-     "test": "ASSURE-01 second review \u2014 read order, degraded stores, summaries and history",
+     "test": "ASSURE-01 second review — read order, degraded stores, summaries and history",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.6,
+   "durationS": 26.8,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -1841,19 +1843,19 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 16,
-    "passed": 12,
+    "total": 17,
+    "passed": 13,
     "failed": 4,
     "cancelled": 0,
     "exitCode": 1
    },
    "killedBy": [
     {
-     "test": "a stream one over the bound (257 events) is refused, with its size \u2014 never a prefix, suffix or sample",
+     "test": "a stream one over the bound (257 events) is refused, with its size — never a prefix, suffix or sample",
      "failure": "no event row was materialized"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 SQLite store",
+     "test": "ASSURE-01 bounded stream read — SQLite store",
      "failure": "1 subtest failed'"
     },
     {
@@ -1865,7 +1867,7 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
+     "test": "ASSURE-01 bounded stream read — the SQLite store sizes the stream before loading a single row",
      "failure": "2 subtests failed'"
     },
     {
@@ -1874,7 +1876,7 @@
     }
    ],
    "result": "KILLED",
-   "durationS": 26,
+   "durationS": 50.4,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -1900,24 +1902,24 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 16,
-    "passed": 15,
+    "total": 17,
+    "passed": 16,
     "failed": 1,
     "cancelled": 0,
     "exitCode": 1
    },
    "killedBy": [
     {
-     "test": "a head or a sequence forged high is a chain fault reported with the real count \u2014 never disguised as an oversized stream",
+     "test": "a head or a sequence forged high is a chain fault reported with the real count — never disguised as an oversized stream",
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
+     "test": "ASSURE-01 bounded stream read — the SQLite store sizes the stream before loading a single row",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 25.7,
+   "durationS": 49.5,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -1943,8 +1945,8 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 16,
-    "passed": 14,
+    "total": 17,
+    "passed": 15,
     "failed": 2,
     "cancelled": 0,
     "exitCode": 1
@@ -1955,16 +1957,16 @@
      "failure": "Expected values to be strictly equal:"
     },
     {
-     "test": "a head or a sequence forged high is a chain fault reported with the real count \u2014 never disguised as an oversized stream",
+     "test": "a head or a sequence forged high is a chain fault reported with the real count — never disguised as an oversized stream",
      "failure": "a text sequence does not inflate the size"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 the SQLite store sizes the stream before loading a single row",
+     "test": "ASSURE-01 bounded stream read — the SQLite store sizes the stream before loading a single row",
      "failure": "2 subtests failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 24.8,
+   "durationS": 52,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
@@ -1990,28 +1992,28 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 16,
-    "passed": 14,
+    "total": 17,
+    "passed": 15,
     "failed": 2,
     "cancelled": 0,
     "exitCode": 1
    },
    "killedBy": [
     {
-     "test": "a stream one over the bound (257 events) is refused, with its size \u2014 never a prefix, suffix or sample",
+     "test": "a stream one over the bound (257 events) is refused, with its size — never a prefix, suffix or sample",
      "failure": "Expected values to be strictly deep-equal:"
     },
     {
-     "test": "a malformed or excessive bound is refused before any state is read \u2014 there is no unbounded bounded read",
+     "test": "a malformed or excessive bound is refused before any state is read — there is no unbounded bounded read",
      "failure": "a smaller bound refuses a larger stream"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 in-memory store",
+     "test": "ASSURE-01 bounded stream read — in-memory store",
      "failure": "2 subtests failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 25.9,
+   "durationS": 52.6,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/in-memory-authority-event-stream-store.ts",
@@ -2037,32 +2039,32 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 16,
-    "passed": 14,
+    "total": 17,
+    "passed": 15,
     "failed": 2,
     "cancelled": 0,
     "exitCode": 1
    },
    "killedBy": [
     {
-     "test": "a malformed or excessive bound is refused before any state is read \u2014 there is no unbounded bounded read",
+     "test": "a malformed or excessive bound is refused before any state is read — there is no unbounded bounded read",
      "failure": "Missing expected rejection: 0'"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 SQLite store",
+     "test": "ASSURE-01 bounded stream read — SQLite store",
      "failure": "1 subtest failed'"
     },
     {
-     "test": "a malformed or excessive bound is refused before any state is read \u2014 there is no unbounded bounded read",
+     "test": "a malformed or excessive bound is refused before any state is read — there is no unbounded bounded read",
      "failure": "Missing expected rejection: 0'"
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 in-memory store",
+     "test": "ASSURE-01 bounded stream read — in-memory store",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 24.8,
+   "durationS": 46.6,
    "sha256": [
     {
      "file": "src/enterprise/authority-event-stream/stream-store.ts",
@@ -2097,24 +2099,24 @@
    },
    "killedBy": [
     {
-     "test": "a request whose event stream exceeds the bound is refused by the store\u2019s bounded read \u2014 never truncated",
+     "test": "a request whose event stream exceeds the bound is refused by the store’s bounded read — never truncated",
      "failure": "Missing expected rejection.'"
     },
     {
-     "test": "ASSURE-01 trace builder \u2014 a consistent world verifies, deterministically",
+     "test": "ASSURE-01 trace builder — a consistent world verifies, deterministically",
      "failure": "1 subtest failed'"
     },
     {
-     "test": "the trace reads the event stream only through the store\u2019s bounded read, at the trace\u2019s own fixed bound",
+     "test": "the trace reads the event stream only through the store’s bounded read, at the trace’s own fixed bound",
      "failure": "The input did not match the regular expression /readStreamBounded\\(scope, streamId, \\{ maxEvents: AUTHORITY_TRACE_LIMITS\\.maxEvents \\}\\)/. Input:"
     },
     {
-     "test": "ASSURE-01 structure \u2014 the trace is a projection: no write path into any authority",
+     "test": "ASSURE-01 structure — the trace is a projection: no write path into any authority",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 4.8,
+   "durationS": 24.6,
    "sha256": [
     {
      "file": "src/enterprise/evidence/trace-builder.ts",
@@ -2145,29 +2147,292 @@
    ],
    "compiled": true,
    "tests": {
-    "total": 16,
+    "total": 17,
     "passed": 15,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "another organization is refused — before, and regardless of, the stream’s size",
+     "failure": "refused before any of its rows is loaded"
+    },
+    {
+     "test": "ASSURE-01 bounded stream read — SQLite store",
+     "failure": "1 subtest failed'"
+    },
+    {
+     "test": "with no sealed head, the owner is the first event’s organization: another organization is refused with no row loaded",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "ASSURE-01 bounded stream read — the SQLite store sizes the stream before loading a single row",
+     "failure": "1 subtest failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 48.8,
+   "sha256": [
+    {
+     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
+     "before": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "after": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M46",
+   "change": "regex-based parser restored (the CodeQL polynomial pattern)",
+   "property": "no backtracking parse of the bearer header",
+   "edits": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "  const header = authorizationHeader.trim();\n  if (header.length <= BEARER_SCHEME.length) return undefined;\n  for (let index = 0; index < BEARER_SCHEME.length; index += 1) {\n    const code = header.charCodeAt(index);\n    const lower = code >= 0x41 && code <= 0x5a ? code + 0x20 : code;\n    if (lower !== BEARER_SCHEME.charCodeAt(index)) return undefined;\n  }\n  const afterScheme = header.slice(BEARER_SCHEME.length);\n  const token = afterScheme.trimStart();\n  if (token.length === afterScheme.length || token.length === 0) return undefined;\n  for (let index = 0; index < token.length; index += 1) {\n    const code = token.charCodeAt(index);\n    if (code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029) return undefined;\n  }\n  return token;\n",
+     "replace": "  const match = /^Bearer\\s+(.+)$/i.exec(authorizationHeader.trim());\n  return match?.[1];\n"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/credential-matching.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 13,
+    "passed": 11,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses the old worst case at 100 000 separators, and at every shape near it",
+     "failure": "adversarial headers are parsed in linear time'"
+    },
+    {
+     "test": "extractBearerToken — adversarial headers (no backtracking path)",
+     "failure": "1 subtest failed'"
+    },
+    {
+     "test": "runs no regular expression over the Authorization header",
+     "failure": "export function extractBearerToken(authorizationHeader: string | undefined): string | undefined {"
+    },
+    {
+     "test": "extractBearerToken — structure",
+     "failure": "1 subtest failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 67.7,
+   "sha256": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "before": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "after": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M47",
+   "change": "whitespace separator not required",
+   "property": "Bearer<token> without a separator is malformed",
+   "edits": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "  if (token.length === afterScheme.length || token.length === 0) return undefined;",
+     "replace": "  if (token.length === 0) return undefined;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/credential-matching.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 13,
+    "passed": 10,
+    "failed": 3,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a missing scheme, a missing separator, a missing token and other schemes",
+     "failure": "\"BearerAOC_BEARER_PARSING_SENTINEL_DO_NOT_USE\""
+    },
+    {
+     "test": "matches the scheme in ASCII only: lookalike letters are refused",
+     "failure": "\"Bearer​AOC_BEARER_PARSING_SENTINEL_DO_NOT_USE\""
+    },
+    {
+     "test": "extractBearerToken — accepted and refused headers (unchanged contract)",
+     "failure": "2 subtests failed'"
+    },
+    {
+     "test": "callers keep REQUIRED, MALFORMED and INVALID apart",
+     "failure": "\"BearerAOC_BEARER_PARSING_SENTINEL_DO_NOT_USE\""
+    },
+    {
+     "test": "extractBearerToken — adversarial headers (no backtracking path)",
+     "failure": "1 subtest failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 26.8,
+   "sha256": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "before": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "after": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M48",
+   "change": "line-terminator check removed",
+   "property": "a multi-line token is malformed",
+   "edits": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "    if (code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029) return undefined;",
+     "replace": "    if (code === -1) return undefined;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/credential-matching.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 13,
+    "passed": 9,
+    "failed": 4,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "refuses a token that spans lines",
+     "failure": "\"\\n\""
+    },
+    {
+     "test": "extractBearerToken — accepted and refused headers (unchanged contract)",
+     "failure": "1 subtest failed'"
+    },
+    {
+     "test": "refuses the old worst case at 100 000 separators, and at every shape near it",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "every caller refuses the adversarial header with its usual malformed-credential outcome",
+     "failure": "Expected values to be strictly deep-equal:"
+    },
+    {
+     "test": "callers keep REQUIRED, MALFORMED and INVALID apart",
+     "failure": "\"Bearer a\\nb\""
+    },
+    {
+     "test": "extractBearerToken — adversarial headers (no backtracking path)",
+     "failure": "3 subtests failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 26.2,
+   "sha256": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "before": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "after": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M49",
+   "change": "scheme letters not compared",
+   "property": "only the Bearer scheme (ASCII, case-insensitive) is accepted",
+   "edits": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "    if (lower !== BEARER_SCHEME.charCodeAt(index)) return undefined;",
+     "replace": "    if (lower === -1) return undefined;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/credential-matching.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 13,
+    "passed": 12,
     "failed": 1,
     "cancelled": 0,
     "exitCode": 1
    },
    "killedBy": [
     {
-     "test": "another organization is refused \u2014 before, and regardless of, the stream\u2019s size",
-     "failure": "refused before any of its rows is loaded"
+     "test": "matches the scheme in ASCII only: lookalike letters are refused",
+     "failure": "\"Bеarer AOC_BEARER_PARSING_SENTINEL_DO_NOT_USE\""
     },
     {
-     "test": "ASSURE-01 bounded stream read \u2014 SQLite store",
+     "test": "extractBearerToken — accepted and refused headers (unchanged contract)",
      "failure": "1 subtest failed'"
     }
    ],
    "result": "KILLED",
-   "durationS": 23.4,
+   "durationS": 26.1,
    "sha256": [
     {
-     "file": "src/enterprise/authority-event-stream/sqlite-authority-event-stream-store.ts",
-     "before": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
-     "after": "9931a0a957fd7d77a380cffbd7c7b97e6736d9a76041722df387bf10a7c9ba18",
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "before": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "after": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "restored": true
+    }
+   ]
+  },
+  {
+   "id": "M50",
+   "change": "header not trimmed",
+   "property": "surrounding whitespace is ignored, as before",
+   "edits": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "find": "  const header = authorizationHeader.trim();",
+     "replace": "  const header = authorizationHeader;"
+    }
+   ],
+   "killSet": [
+    "dist/src/enterprise/__tests__/credential-matching.test.js"
+   ],
+   "compiled": true,
+   "tests": {
+    "total": 13,
+    "passed": 11,
+    "failed": 2,
+    "cancelled": 0,
+    "exitCode": 1
+   },
+   "killedBy": [
+    {
+     "test": "accepts one or more whitespace separators of every kind and trims the header",
+     "failure": "\"  Bearer AOC_BEARER_PARSING_SENTINEL_DO_NOT_USE  \""
+    },
+    {
+     "test": "keeps inner spaces as part of the token, as before",
+     "failure": "Expected values to be strictly equal:"
+    },
+    {
+     "test": "extractBearerToken — accepted and refused headers (unchanged contract)",
+     "failure": "2 subtests failed'"
+    }
+   ],
+   "result": "KILLED",
+   "durationS": 25.9,
+   "sha256": [
+    {
+     "file": "src/enterprise/orchestration/credential-matching.ts",
+     "before": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
+     "after": "e7ce77067cd211ece898b910f391906d6df7b6df0898d436865f979600ae24d2",
      "restored": true
     }
    ]
