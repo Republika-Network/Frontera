@@ -34,6 +34,9 @@ meaning within v1.x; a new schema gets a new identifier:
 | --- | --- |
 | `aoc.governance-store.schema.v1` | `src/enterprise/governance-store/contracts.ts` |
 | `evidence.bundle.v1` | `src/enterprise/evidence/contracts.ts` |
+| `evidence.bundle.v2` (ASSURE-01: trace-bearing; v1 unchanged) | `src/enterprise/evidence/contracts.ts` |
+| `aoc.authority-trace.v1`, `aoc.authority-trace-verification.v1` (ASSURE-01) | `src/enterprise/evidence/trace-contracts.ts` |
+| `aoc.evidence-bundle-store.schema.v1` (ASSURE-01) | `src/enterprise/evidence/sqlite-evidence-store.ts` |
 | `aoc.agent-passport.schema.v1` | `src/enterprise/passport/contracts.ts` |
 | `aoc.assurance-store.schema.v1` | `src/enterprise/assurance/contracts.ts` |
 | `aoc.canonical-json.v1` | `src/enterprise/governance-store/canonical-json.ts` |
@@ -148,8 +151,10 @@ No request bodies, no idempotency semantics (reads).
 
 | Method + Path | Purpose | Request fields | Success | Errors |
 | --- | --- | --- | --- | --- |
-| `POST /api/evidence/build` | Build and store an Evidence Bundle from a stored evaluation. | Required: `evaluationId`, `level`. Optional: `createdBy`. | `201` `{ bundle, state, storedAt, supersededBy? }` | `400 INVALID_REQUEST` / `EVIDENCE_VALIDATION_ERROR` / `EVIDENCE_DISCLOSURE_POLICY_UNKNOWN`; `403 EVIDENCE_ACCESS_SCOPE_VIOLATION` / `EVIDENCE_TENANT_SCOPE_REQUIRED`; `404 EVIDENCE_SOURCE_RECORD_NOT_FOUND`; `409 EVIDENCE_BUNDLE_ALREADY_EXISTS`; `503 EVIDENCE_STORE_UNAVAILABLE` |
-| `POST /api/evidence/verify` | Re-verify a stored Bundle's digests. | Required: `bundleId`. | `200` `EvidenceVerificationResult` (`bundleId`, `valid`, `checks.*`, `verifiedAt`, `failures`). **Always 200 when the Bundle exists; `valid: false` is in the body.** | `400 INVALID_REQUEST`; `404 EVIDENCE_BUNDLE_NOT_FOUND`; `403`; `503` as above |
+| `POST /api/evidence/build` | Build and store an Evidence Bundle: a v1 bundle of one stored evaluation (`evaluationId`), or — additive since ASSURE-01 — a v2 bundle carrying one governed request's trace (`requestId`). | Required: exactly one of `evaluationId` / `requestId`; `level`. Optional: `createdBy`. A v2 (`requestId`) body is closed — any other field is refused; a v1 (`evaluationId`) body's unused fields are ignored as before ASSURE-01 — except `requestId`, which now selects a v2 bundle and must not accompany `evaluationId` (a v1 body that also carried a `requestId` key was accepted before and is now `400`). | `201` `{ bundle, state, storedAt, supersededBy? }`. A v2 build of an unchanged trace at the same level returns the bundle already stored; a changed trace supersedes the earlier bundle of the same request and policy | `400 INVALID_REQUEST` / `EVIDENCE_VALIDATION_ERROR` / `EVIDENCE_DISCLOSURE_POLICY_UNKNOWN`; `403 EVIDENCE_ACCESS_SCOPE_VIOLATION` / `EVIDENCE_TENANT_SCOPE_REQUIRED` / `EVIDENCE_DISCLOSURE_NOT_PERMITTED` (v2 FULL by an organization-scoped key); `404 EVIDENCE_SOURCE_RECORD_NOT_FOUND` / `EVIDENCE_TRACE_NOT_FOUND`; `409 EVIDENCE_BUNDLE_ALREADY_EXISTS`; `422 EVIDENCE_TRACE_TOO_LARGE`; `500 EVIDENCE_STORE_CORRUPT`; `503 EVIDENCE_STORE_UNAVAILABLE` |
+| `POST /api/evidence/verify` | Re-verify a stored Bundle's digests (a v2 bundle also against its request's canonical trace now). | Required: `bundleId`. | `200` `EvidenceVerificationResult` (`bundleId`, `valid`, `checks.*`, `verifiedAt`, `failures`; v2 adds `checks.traceDigest` / `traceConsistent` / `sourceTraceVerified`, `freshness`, `traceComparison`, `sourceTrace`). **Always 200 when the Bundle exists; `valid: false` is in the body.** | `400 INVALID_REQUEST`; `404 EVIDENCE_BUNDLE_NOT_FOUND`; `403`; `500 EVIDENCE_STORE_CORRUPT`; `503` as above |
+| `GET /api/evidence/traces/{requestId}?level=…` | ASSURE-01: one governed request's Unified Authority-to-Outcome Trace, rebuilt from the canonical stores and disclosed at `level`. A pure read. | Path: a governed request id (`aoc.gar:` + 32 lowercase hex). Query: exactly `level` (`FULL` / `AUDITOR` / `PARTNER` / `CUSTOMER` / `PUBLIC`); nothing else. | `200` `{ requestId, disclosure, trace, traceDigest, generatedAt }` | `400 INVALID_REQUEST` / `EVIDENCE_VALIDATION_ERROR` / `EVIDENCE_DISCLOSURE_POLICY_UNKNOWN`; `403 EVIDENCE_DISCLOSURE_NOT_PERMITTED` (FULL requested by an organization-scoped key — FULL is internal; at most AUDITOR); `404 EVIDENCE_TRACE_NOT_FOUND` (unknown, or another organization's); `422 EVIDENCE_TRACE_TOO_LARGE` |
+| `GET /api/evidence/traces/{requestId}/verify` | ASSURE-01: the structured verification of that request's canonical trace. A pure read. | No query. | `200` `AuthorityTraceVerification` (`verified`, `categories` — contract / integrity / authenticity / correlation / completeness —, `checks[]`, `traceDigest`, `finalState`, `verifiedAt`, `boundary`). **Always 200 when the request exists; `verified: false` is in the body.** | as above |
 | `GET /api/evidence/{bundleId}` | Fetch a stored Bundle. | -- | `200` `{ bundle, state, storedAt, supersededBy? }` | `404 EVIDENCE_BUNDLE_NOT_FOUND`; `403`; `503` as above |
 
 No idempotency semantics.
@@ -543,13 +548,15 @@ else. Mutation bodies are closed `application/json` schemas of at most 16 KiB
 full error model: `docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md`. The SDK
 has no method for these routes (transport for customers only).
 
-### 2.8 Operator plane (capability-gated; added by CTRL-02 and CTRL-03, unreleased)
+### 2.8 Operator plane (capability-gated; added by CTRL-02, CTRL-03 and CTRL-04, unreleased)
 
 Mounted only when the deployment declares `operators` in its governed-action
 file; otherwise every path below is the unmounted-route `404 NOT_FOUND`.
 CTRL-02 added eleven endpoints (36 → **47**); CTRL-03 added two **read-only**
-endpoints for the web control plane (47 → **49**). No existing route, field,
-status or code changed.
+endpoints for the web control plane (47 → **49**); CTRL-04 added seven
+approval endpoints (49 → **56**), mounted only when CORE-05 approvals are
+composed as well. No existing route, field, status or code changed.
+(ASSURE-01 then added the two always-mounted trace reads of §2.3: 56 → **58**.)
 
 | Method | Path | Added by |
 | --- | --- | --- |
@@ -566,6 +573,13 @@ status or code changed.
 | `POST` | `/api/admin/governance-profiles/{profileId}/versions/{version}/retire` | CTRL-02 |
 | `GET` | `/api/admin/activity/decisions` | CTRL-03 |
 | `GET` | `/api/admin/evidence/decisions/{evaluationId}` | CTRL-03 |
+| `GET` | `/api/admin/approvals` | CTRL-04 |
+| `GET` | `/api/admin/approvals/{approvalRequestId}` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/approve` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/reject` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/request-changes` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/escalate` | CTRL-04 |
+| `POST` | `/api/admin/approvals/{approvalRequestId}/revoke` | CTRL-04 |
 
 An **operator** Bearer credential is always required (a CTRL-01
 administrator credential reaches only the CTRL-01 routes of §2.7; ordinary and
@@ -574,8 +588,12 @@ body is read. The CTRL-03 reads answer the §5 limitation "no HTTP-exposed
 governance query endpoint" for operators only: committed decisions of the
 served organization, paged, with closed query strings, and one decision record
 with the Governance Store's own verification. Reference:
-`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md` §10 and §11. The SDK has
-no method for these routes.
+`docs/enterprise/AOC_AUTHORITY_ADMINISTRATION_API.md` §10 and §11. The CTRL-04
+approval routes expose the human side of CORE-05's durable approvals: the inbox
+and one request's canonical subject (`approval.read`), and one verdict per
+`POST` path (`approval.approve` / `approval.restrict`) whose acting approver is
+always the authenticated operator; CORE-05 decides whether a verdict counts.
+Reference: §12 of the same document. The SDK has no method for these routes.
 
 ## 3. Error Taxonomy
 

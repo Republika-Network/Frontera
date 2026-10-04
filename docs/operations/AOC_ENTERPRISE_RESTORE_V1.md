@@ -1,192 +1,182 @@
 # AOC Enterprise v1 — Automated Restore (`restore:v1`)
 
 Companion to `docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`. Validates an
-`aoc.enterprise.backup.v1` backup set thoroughly **before** touching the
-target directory, and fails closed — never silently repairs, migrates, or
-partially restores a backup it cannot fully verify.
+`aoc.enterprise.backup.v1` backup set completely **before** touching the
+target directory, and fails closed — it never repairs, migrates, invents or
+partially restores. The store list, the target filenames and the variable each
+file serves all come from the one registry,
+`scripts/portability/store-registry.mjs`.
 
 ## Command
 
 ```bash
-npm run restore:v1 -- --backup <backup-directory> --target <target-directory> [--force]
+npm run restore:v1 -- --backup <backup-directory> --target <target-directory> \
+  [--force] [--allow-incomplete] [--allow-legacy-backup]
 ```
 
-- `--backup <dir>` (required) — a directory produced by `backup:v1`
-  (containing `backup-manifest.json`, `checksums.sha256`, `stores/`).
-- `--target <dir>` (required) — where to place the restored SQLite files.
-  Created if it does not exist. The restored files are always named
-  `enterprise-host.sqlite`, `agent-passport.sqlite`, `assurance.sqlite` —
-  point your `AOC_ENTERPRISE_*_SQLITE_PATH` variables at them after
-  restore completes.
-- `--force` / `--replace` — required if `--target` already contains any of
-  those three filenames; without it, restore refuses to touch an existing
+Run it **with the restoring deployment's environment** (the CLI passes
+`process.env`): that is how restore knows which stores the deployment needs,
+which organization it serves, and which public authority keys it trusts. The
+CLI refuses to run without a `sqlite` deployment environment unless
+`--no-target-check` is passed; a secure-profile environment
+(`production`/`staging`) must supply its trusted verification keys.
+
+- `--target <dir>` — restored files are written under the registry's target
+  names, which are the Host's own default basenames (`enterprise-host.sqlite`,
+  `bounded-grants.sqlite`, `approvals.sqlite`, …). The command prints, and
+  `restore-report.json` records, the exact `VARIABLE=path` for each restored
   store.
+- `--force` / `--replace` — required when the target already holds any
+  registry-managed file or sidecar.
+- `--allow-incomplete` — forensics only: accept a backup that does not contain
+  every required store. The missing store is **not created**.
+- `--allow-legacy-backup` — accept a pre-PROD-02 backup (no coverage record)
+  explicitly; it is reported as `coverage.model: legacy, complete: false`.
+- `--no-target-check` — restore against the backup's own record only. Backups
+  are checksummed, not signed, so a consistently forged manifest cannot be
+  caught this way; the report says `targetCoverageChecked: false`.
 
-Requires `npm run build` to have already run.
+Requires `npm run build`.
 
-## Validation order (all of this happens before any file is copied)
+## Validation order (all before the target is touched)
 
-1. **Format version** — `backup-manifest.json`'s `backupFormat` must be
-   exactly `aoc.enterprise.backup.v1`. Anything else — a future format
-   this build predates, or an unrecognized string — is rejected outright.
-   There is no "best effort" reading of an unknown format.
-2. **Manifest structure** — every required top-level field
-   (`backupId`, `createdAt`, `source`, `enterprise`, `stores`,
-   `configuration`, `verification`) must be present, and `stores` must be
-   a non-empty array. A manifest that is not even valid JSON is rejected
-   with that fact stated plainly.
-3. **No unexpected files** — the set of files actually present under
-   `stores/` must exactly equal the set the manifest declares. An extra
-   file (planted, or left over from a different backup) fails the
-   restore; a missing declared file fails the restore.
-4. **Path containment** — every manifest-declared filename is resolved
-   and asserted to still live inside `stores/` after resolution — a
-   `filename` of `../../etc/passwd` is rejected before it is ever opened.
-5. **No symlinks** — every store file must be a regular file. A symlinked
-   store file (which could point anywhere on the restoring host) is
-   rejected.
-6. **Checksum** — each file's SHA-256 must match the manifest's recorded
-   checksum. This is the primary corruption/tamper detector; because any
-   single-byte change anywhere in a SQLite file changes its checksum,
-   this check alone already implies the file is byte-identical to what
-   `backup:v1` produced.
-7. **SQLite integrity** — `PRAGMA integrity_check` must report `ok` on
-   every store file (defense in depth beyond the checksum: catches
-   corruption a matching checksum could theoretically still carry, e.g.
-   a bit-identical copy of an already-corrupt source).
-8. **Schema-version compatibility** — each store's manifest-recorded
-   schema version must equal what *this build's own runtime* exports
-   (`GOVERNANCE_STORE_SCHEMA_VERSION` and siblings from
-   `dist/src/enterprise/index.js`). A mismatch — older or newer — is
-   rejected with the exact versions named. **v1 has no migration runner:**
-   a schema mismatch is never silently migrated, only refused. Restore
-   the backup using the build generation recorded in
-   `metadata/release-context.json` instead (see the compatibility matrix
-   below).
+1. **Manifest** — exact format `aoc.enterprise.backup.v1`; required fields;
+   a safe `backupId`; every store entry names a store this registry knows
+   (an unknown store is refused, never dropped), under its registry filename;
+   no duplicate store name or filename.
+2. **Organization** — when the restoring deployment is given, the backup's
+   organization must be the one it serves; every signed store must be bound
+   to the backup's organization. A store is never transplanted.
+3. **Coverage** (below).
+4. **Files** — exactly the declared files under `stores/` (an extra file —
+   including a planted witness database — is refused); no symlink; no path
+   escape; SHA-256; `PRAGMA integrity_check`; the schema version is one this
+   build supports *and* is the version the file itself records; for the
+   three signed stores, the signed head commits to exactly the rows present
+   (never rows without a head, never a head without its rows) and equals the
+   head the manifest recorded at backup time. A file SQLite cannot read is a
+   named refusal.
+5. **Staging** — every store copied into a staging directory beside the
+   target and re-checksummed.
+6. **Deep verification** — each staged store is opened through its **own
+   factory** on a scratch copy (never on the target, never on a missing path:
+   a factory creates a store when the file is absent, which restore must never
+   do). The three signed stores are opened with the restoring deployment's
+   **trusted verification keys** (`AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`,
+   public keys) and a signer that refuses to sign, so they open only if their
+   signed state verifies; the report says `verified-under-trusted-keys`, or
+   `not-checked` when no keys were supplied. Opening never re-signs, strips a
+   signature or replaces a key id: a rotated key's re-attestation is a
+   best-effort write that the refusing signer skips, on a copy that is thrown
+   away.
 
-Only after all of the above pass does restore touch the target directory.
+### Coverage
 
-## Target handling
+| Backup | Result |
+|---|---|
+| PROD-02 manifest with strictly typed deployment flags and every registry store recorded once; every store its recorded deployment composes is included (the rules are this build's, re-applied — the flags are the producer's record), nothing it records as required is absent, and every store the restoring deployment requires is included | **restored** |
+| a required store is missing (from either point of view), or the manifest claims `complete` while omitting a store | **refused** — `--allow-incomplete` restores the rest and creates nothing for the missing store |
+| unknown (newer) coverage model | **refused** |
+| pre-PROD-02 (no `coverage`) | **refused** — `--allow-legacy-backup` restores it as `legacy`, incomplete; still refused if the restoring deployment requires a store it lacks, unless `--allow-incomplete` too |
 
-- If `--target` doesn't exist, it's created.
-- If it exists but is empty of the three expected filenames, restore
-  proceeds without `--force`.
-- If any of the three filenames already exists in `--target`, restore
-  refuses **unless** `--force`/`--replace` is passed.
-- With `--force`, before copying anything in, existing target files are
-  copied aside into
-  `<target>/.pre-restore-safety-<backupId>/` — a safety net, never
-  deleted by this command. Nothing is overwritten silently.
-- Files are then copied from the (already fully verified) backup into
-  `--target`, each re-checksummed immediately after the copy (defense
-  against a copy-time I/O error).
-- Each restored store is then opened through the **real runtime store
-  constructor** (`createSqliteGovernanceStore`, etc. — from
-  `dist/src/enterprise/index.js`, the exact same code the Enterprise Host
-  itself uses) and its `.health()` is checked. This is what actually
-  proves the restore: not "the bytes matched," but "this build can open
-  this store and it reports healthy."
-- **If any store fails this final open-and-health-check, restore rolls
-  back**: every file it copied in this run is removed. If a
-  pre-restore safety copy was taken, the target is left in the (safe,
-  pre-restore) state that copy represents — restore never leaves a
-  target directory in an unverified, half-restored condition.
-- On full success, a `restore-report.json` is written into `--target`
-  (see the schema below).
+An incomplete restore never silently becomes a deployment with an empty
+authority store: on a secure Host the surviving witness refuses the fresh
+genesis the store would otherwise create
+(`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`); an unsigned store (emergency
+controls, ledger, control plane) has no such defense, which is why the flags
+exist only for forensics.
+
+## Replacement and rollback
+
+- Target paths are examined with `lstat`: a symlink at any store path,
+  sidecar or the report — even a dangling one — is refused, and overlap with
+  the backup is judged on real paths. Staging and safety directories get
+  unpredictable names; the report and an in-progress marker
+  (`.restore-in-progress`) are created exclusively.
+- Every registry-managed file already in the target — **including stores the
+  backup does not contain, every `-wal`/`-shm` sidecar, and the previous
+  `restore-report.json`** — is moved (not
+  copied) into `<target>/.pre-restore-safety-<backupId>-<time>/` first, so the
+  restored target is exactly the backup set, never a hybrid with a stale file
+  or a foreign WAL.
+- Staged files are then renamed into place one by one and verified again
+  (checksum, no sidecar).
+- **Any failure after the first move rolls the target back**: every promoted
+  file is removed and every moved-aside file is renamed back, so the target
+  ends byte-for-byte as it was. If the rollback itself cannot complete, the
+  error says so and names the safety directory; do not start the Host on that
+  target.
+- On success the safety directory stays as the pre-restore copy.
+
+Across fourteen files (thirteen before ASSURE-01) there is no filesystem transaction. The guarantee is
+procedural — stage, verify, move aside, promote, verify, roll back on any
+failure — and is qualified with failures injected after the 1st, 6th and last
+store and in post-promotion verification
+(`prod02-backup-integrity-host.test.ts`). An external `SIGKILL` mid-promotion
+can still leave a mixed target. It is then **marked**: `.restore-in-progress`
+stays, the next restore refuses the target until an operator has inspected the
+safety and staging directories (both sides are there) and removed the marker
+deliberately, and re-running `restore:v1 --force` recovers. The Host does not
+read the marker — do not start it on a marked target.
+
+## Freshness witness
+
+Restore never touches the CORE-07 witness: not its database (never in a
+backup), not its slots (no reset, no enrollment). After a restore, start the
+Host against the **surviving** witness:
+
+- the backup holds the latest authority heads → the Host starts;
+- the backup is older than an authority transition the witness recorded (a
+  grant revocation, an obligation discharge, an approval verdict) → the Host
+  refuses to start before handing out any authority
+  (`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`). Restore a newer backup. Never
+  reset or re-enroll the witness to make an old backup start — that is the
+  attack CORE-07 exists to stop.
 
 ## Restore report
 
 ```json
 {
   "backupId": "backup-...",
-  "targetPath": "/path/to/target",
-  "compatibilityResult": "supported",
-  "checksumResult": "ok",
-  "sqliteIntegrityResult": "ok",
-  "migrationsApplied": [],
-  "objectVerification": {
-    "governance": { "opened": true, "status": "healthy", "schemaVersion": "...", "readable": true, "writable": true },
-    "agent-passport": { "...": "..." },
-    "assurance": { "...": "..." }
-  },
   "status": "restored",
-  "startedAt": "...",
-  "finishedAt": "...",
-  "durationMs": 0,
+  "coverage": { "model": "aoc.enterprise.backup.coverage.v1", "complete": true },
+  "objectVerification": { "approvals": { "opened": true, "status": "healthy", "authenticity": "verified-under-trusted-keys", "signedHead": "structurally-consistent" }, "...": {} },
+  "targets": [{ "store": "approvals", "envVar": "AOC_ENTERPRISE_APPROVAL_SQLITE_PATH", "path": "/data/approvals.sqlite" }],
+  "notRestored": ["execution-resolutions"],
+  "freshnessWitness": "not restored (never part of a backup); start the Host against the surviving witness",
   "preRestoreSafetyCopy": null
 }
 ```
 
-`migrationsApplied` is always `[]` in v1 — see "No migration runner"
-below.
+## Compatibility
 
-## Compatibility matrix
+| Backup | Store schema | Result |
+|---|---|---|
+| `aoc.enterprise.backup.v1` | a version this build opens (the execution-outcome store opens v1 and v2) | supported |
+| `aoc.enterprise.backup.v1` | any other version | refused — no migration runner; use the build recorded in `metadata/release-context.json` |
+| any other format | any | refused |
 
-| Backup format | Store schema | Runtime build | Restore result |
-|---|---|---|---|
-| `aoc.enterprise.backup.v1` | matches this build's exported schema version | same/compatible build | **supported** — proceeds |
-| `aoc.enterprise.backup.v1` | older, unsupported schema version | current build | **rejected** — "no migration runner" (see below); restore using the build generation named in `metadata/release-context.json` |
-| `aoc.enterprise.backup.v1` | newer schema version than this build supports | older build | **rejected** — this build cannot safely read a store from a newer generation |
-| anything other than `aoc.enterprise.backup.v1` | any | any | **rejected outright** — unknown/future formats are never guessed at |
+## Failure modes (each refused before the target is touched, each tested)
 
-No backward- or forward-compatibility is claimed beyond exact schema-
-version equality, because none has been implemented or tested. This
-mirrors the existing store-level guard already in production
-(`GOVERNANCE_SCHEMA_VERSION_UNSUPPORTED`, `PASSPORT_STORE_UNAVAILABLE`,
-`ASSURANCE_STORE_UNAVAILABLE` — see
-`docs/enterprise/MIGRATION_REVIEW_V1.md`); `restore:v1` simply checks the
-same fact earlier, against the manifest, before ever touching disk.
-
-### No migration runner (v1 limitation, stated plainly)
-
-There is no schema migration tooling anywhere in this codebase — each
-store either opens under the schema version it was written with, or it
-refuses to open. `restore:v1` inherits this exactly: it never attempts to
-transform an older or newer schema into the current one. If you need to
-restore a backup taken under a different schema version, deploy the
-matching build generation first (kept available for exactly this reason
-— see `docs/operations/AOC_ENTERPRISE_BACKUP_V1.md` and the existing
-Rollback runbook, `RUNBOOKS_V1.md` §3).
-
-## Failure modes (all fail closed, all produce an actionable message)
-
-| Injected failure | Result |
-|---|---|
-| A backup database's bytes were modified | checksum mismatch — rejected |
-| The manifest's checksum field was tampered with | checksum mismatch — rejected |
-| Unsupported/future `backupFormat` | rejected outright |
-| Unsupported/future store schema version | rejected — no migration attempted |
-| Manifest declares a store not present in `stores/` | rejected — missing required file |
-| A store's manifest filename path-traverses out of `stores/` | rejected — path containment violation |
-| A store file is a symlink | rejected — symlinks are never permitted |
-| An extra, unmanifested file sits in `stores/` | rejected — unexpected file |
-| Malformed (non-JSON) manifest | rejected — parse error surfaced directly |
-| `--target` already has store files, no `--force` | rejected — pass `--force` explicitly |
-| Store fails to open/health-check after copying | restore rolls back its own copy; any pre-restore safety copy is left intact |
-
-Every one of the above is exercised by
+Unsupported format; malformed or missing manifest; a store silently dropped
+from the manifest; a missing store file; an unexpected extra file (including a
+witness database); a checksum mismatch; SQLite corruption behind a recomputed
+checksum; an unsupported schema version; a file whose own schema disagrees with
+the manifest; a symlinked store; a path-traversing filename; a store mapped to
+another store's file; duplicate store names; an unknown store; an unknown
+coverage model; approval rows without their signed head; a signed head without
+the rows it commits to; a revocation-state commitment that no longer matches
+its revocations; a substituted signed head; a forged signed head with a
+rewritten manifest (caught by the trusted keys); a backup of another
+organization; a signed store bound to another organization; a source/target
+overlap; a pre-PROD-02 backup; an incomplete backup. Evidence:
+`src/enterprise/__tests__/prod02-backup-integrity-host.test.ts`,
 `tests/portability-backup-restore.contract.test.mjs`.
 
-## Post-restore verification
+## After a restore
 
-`restore:v1` proves the runtime *can open* every store. It does not, by
-itself, replay every governed record's digest. For a release-grade
-restore, follow it with:
-
-```bash
-node scripts/portability/compare-portability-state.mjs \
-  --pre <known-good-reference-dir> --post <target-dir> --fixture <fixture-manifest.json>
-```
-
-(against a known-good reference, e.g. from the clean-room drill), or the
-sampled `verify` endpoint calls in `BACKUP_RECOVERY_V1.md` §"Verifying
-backups" against the restored, running Host.
-
-## Use-after-restore
-
-Restored stores are ordinary SQLite files understood by this build like
-any other — they can be closed and reopened repeatedly, and the
-Enterprise Host can be started directly against them by pointing
-`AOC_ENTERPRISE_*_SQLITE_PATH` at the restored filenames. This is
-exercised directly in the contract test suite (open, close, reopen,
-health-check again).
+Start the Host (the matching build) with the printed variables, the
+deployment's secrets from the secret manager, and the surviving witness. Then
+follow `RUNBOOKS_V1.md` §5 (restore) — including the control-plane step: the
+control-plane store is not witness-anchored, so any agent credential revoked
+or profile retired after the backup must be revoked or retired again.

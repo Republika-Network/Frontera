@@ -200,6 +200,9 @@ describe('P12 boundaries — who may hold the resolution store', () => {
     'src/enterprise/execution-reconciliation/authority.ts',
     'src/enterprise/execution-reconciliation/contracts.ts',
     'src/enterprise/index.ts',
+    // ASSURE-01: the read-only trace — one execution's verified state through the
+    // reader it is handed (a type import only); it binds and records nothing.
+    'src/enterprise/evidence/trace-builder.ts',
   ]);
 
   it('no other production module imports it — no Kernel, grant, P7, emergency, P8, identity or adapter module', () => {

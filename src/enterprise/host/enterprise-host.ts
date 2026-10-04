@@ -173,6 +173,8 @@ function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly str
     exerciseControls: 'composed',
     // CORE-07: every durable authority store anchored at the external witness.
     authorityFreshness: 'external',
+    // ASSURE-01: evidence bundles survive a restart and travel with backups.
+    evidenceStore: 'durable',
   };
   const shortfalls = Object.entries(expected)
     .filter(([key, value]) => posture[key as keyof EnterpriseHealthPosture] !== value)

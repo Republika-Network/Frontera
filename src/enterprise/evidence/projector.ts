@@ -2,9 +2,12 @@ import type { GovernanceRecord } from '../governance-store/contracts.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { redactSensitiveValues } from '../governance-store/redaction.js';
 import { AOC_CANONICALIZATION_VERSION } from '../governance-store/canonical-json.js';
+import type { AuthorityTrace } from './trace-contracts.js';
+import { discloseAuthorityTrace, disclosedTraceDigest, type DisclosurePolicyV2 } from './trace-disclosure.js';
 import {
   AOC_EVIDENCE_BUNDLE_VERSION,
   EVIDENCE_BUNDLE_SCHEMA_VERSION,
+  EVIDENCE_BUNDLE_SCHEMA_VERSION_V2,
   EVIDENCE_FIELD_KEYS,
   EVIDENCE_PROJECTION_ENGINE_VERSION,
   type DisclosurePolicy,
@@ -92,9 +95,9 @@ function buildFullFieldView(record: GovernanceRecord): Readonly<Record<EvidenceF
 }
 
 /** Applies a `DisclosurePolicy` over the full field view: hidden fields are omitted entirely, redacted fields keep their key but lose their value, visible fields pass through unchanged. */
-function applyDisclosurePolicy(fullView: Readonly<Record<EvidenceFieldKey, unknown>>, policy: DisclosurePolicy): Partial<Record<EvidenceFieldKey, unknown>> {
-  const hidden = new Set(policy.hiddenFields);
-  const redacted = new Set(policy.redactedFields);
+function applyDisclosurePolicy(fullView: Readonly<Record<EvidenceFieldKey, unknown>>, policy: Pick<DisclosurePolicy, 'hiddenFields' | 'redactedFields'> | Pick<DisclosurePolicyV2, 'hiddenFields' | 'redactedFields'>): Partial<Record<EvidenceFieldKey, unknown>> {
+  const hidden = new Set<string>(policy.hiddenFields);
+  const redacted = new Set<string>(policy.redactedFields);
   const disclosed: Partial<Record<EvidenceFieldKey, unknown>> = {};
   for (const field of EVIDENCE_FIELD_KEYS) {
     if (hidden.has(field)) continue;
@@ -209,4 +212,81 @@ export function buildEvidenceBundle(record: GovernanceRecord, policy: Disclosure
   };
 
   return { ...withoutIntegrity, integrity };
+}
+
+// ---------------------------------------------------------------------------
+// v2 (ASSURE-01): the trace-bearing bundle
+// ---------------------------------------------------------------------------
+
+/** Projection engine identity for v2 bundles. */
+export const EVIDENCE_PROJECTION_ENGINE_VERSION_V2 = 'aoc.evidence-projector.v2';
+
+/** v2 digest input: every v1 section plus the disclosed trace. */
+export function bundleDigestInputV2(bundle: Omit<EvidenceBundle, 'integrity'>): Readonly<Record<string, unknown>> {
+  const { bundleId, bundleVersion, createdAt, source, subject, disclosure, evidence, verification, references, trace } = bundle;
+  return { bundleId, bundleVersion, createdAt, source, subject, disclosure, evidence, verification, references, trace: trace ?? null };
+}
+
+/** v2 binding: bundle digest, record digest, trace digest and policy identity — none can be swapped without the others. */
+export function verificationDigestInputV2(parts: {
+  readonly bundleDigest: string;
+  readonly recordDigest: string;
+  readonly traceDigest: string;
+  readonly policyId: string;
+  readonly policyVersion: string;
+  readonly bundleVersion: string;
+}): Readonly<Record<string, unknown>> {
+  return { ...parts };
+}
+
+/**
+ * Builds one immutable v2 bundle: the v1 projection of the request's
+ * Governance Record under the v2 policy's v1 fields, plus the trace disclosed
+ * under the same policy. The trace must be the one built for this record.
+ */
+export function buildEvidenceBundleV2(record: GovernanceRecord, trace: AuthorityTrace, policy: DisclosurePolicyV2, deps: EvidenceProjectionDependencies): EvidenceBundle {
+  if (trace.evaluationId !== record.evaluation.evaluationId || trace.requestId !== record.request.requestId || trace.decisionId !== record.evaluation.decisionId) {
+    throw new Error('buildEvidenceBundleV2: the trace does not belong to this Governance Record.');
+  }
+  const fullView = buildFullFieldView(record);
+  const disclosed = applyDisclosurePolicy(fullView, policy);
+  const source = toSource(record, disclosed);
+  const subject = redactSensitiveValues(toSubject(record, disclosed));
+  const evidence = redactSensitiveValues(toEvidenceContent(disclosed));
+  const disclosedTrace = discloseAuthorityTrace(trace, policy);
+
+  const createdAt = deps.now();
+  const bundleId = deps.nextId('evidence-bundle');
+  const withoutIntegrity: Omit<EvidenceBundle, 'integrity'> = {
+    bundleId,
+    bundleVersion: EVIDENCE_BUNDLE_SCHEMA_VERSION_V2,
+    createdAt,
+    source,
+    subject,
+    disclosure: {
+      level: policy.level,
+      policyId: policy.policyId,
+      policyVersion: policy.version,
+      visibleFields: policy.visibleFields,
+      hiddenFields: policy.hiddenFields,
+      redactedFields: policy.redactedFields,
+    },
+    evidence,
+    verification: {
+      createdBy: deps.createdBy ?? EVIDENCE_PROJECTION_ENGINE_VERSION_V2,
+      generatedAt: createdAt,
+      projectionVersion: AOC_EVIDENCE_BUNDLE_VERSION,
+      projectionPolicy: policy.policyId,
+      projectionEngine: EVIDENCE_PROJECTION_ENGINE_VERSION_V2,
+    },
+    references: deps.references ?? [],
+    trace: disclosedTrace,
+  };
+  const bundleDigest = computeDigest(bundleDigestInputV2(withoutIntegrity));
+  const recordDigest = record.integrity.aggregateDigest;
+  const traceDigest = disclosedTraceDigest(disclosedTrace);
+  const verificationDigest = computeDigest(
+    verificationDigestInputV2({ bundleDigest, recordDigest, traceDigest, policyId: policy.policyId, policyVersion: policy.version, bundleVersion: EVIDENCE_BUNDLE_SCHEMA_VERSION_V2 }),
+  );
+  return { ...withoutIntegrity, integrity: { algorithm: 'sha256', canonicalizationVersion: AOC_CANONICALIZATION_VERSION, bundleDigest, recordDigest, traceDigest, verificationDigest } };
 }

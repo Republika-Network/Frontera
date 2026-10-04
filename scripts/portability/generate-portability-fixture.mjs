@@ -2,7 +2,7 @@
 // Synthetic, non-sensitive, deterministic portability fixture (Phase 10).
 //
 // Seeds a fresh SQLite store set (governance + agent-passport + assurance +
-// kernel-authority)
+// kernel-authority + evidence-bundles, the last durable since ASSURE-01)
 // under `--target` with a real, representative slice of governed history --
 // built through the actual Enterprise Host services (never hand-crafted
 // rows), so a backup/restore drill exercises the same code paths production
@@ -16,6 +16,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 import { loadEnterpriseModule, stableJsonStringify } from './lib-portability.mjs';
+import { targetStorePaths as registryTargetPaths } from './store-registry.mjs';
 
 const FIXTURE_ORG = 'org-portability-fixture';
 const FIXTURE_NOW = '2026-01-01T00:00:00.000Z';
@@ -31,13 +32,10 @@ function parseArgs(argv) {
   return args;
 }
 
+/** The fixture's five stores, at the registry's own target filenames (no second list). */
 export function targetStorePaths(targetDir) {
-  return {
-    governance: join(targetDir, 'enterprise-host.sqlite'),
-    passport: join(targetDir, 'agent-passport.sqlite'),
-    assurance: join(targetDir, 'assurance.sqlite'),
-    kernelAuthority: join(targetDir, 'kernel-authority.sqlite'),
-  };
+  const paths = registryTargetPaths(targetDir);
+  return { governance: paths.governance, passport: paths['agent-passport'], assurance: paths.assurance, kernelAuthority: paths['kernel-authority'], evidence: paths['evidence-bundles'] };
 }
 
 async function loadAuthorityFixture() {
@@ -72,6 +70,8 @@ export async function generateFixture({ target }) {
     AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: paths.passport,
     AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: paths.assurance,
     AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: paths.kernelAuthority,
+    // ASSURE-01: the bundles below are durable, in the target set like every other store.
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: paths.evidence,
   });
 
   const kernelProviders = support.buildTestKernelProviders();

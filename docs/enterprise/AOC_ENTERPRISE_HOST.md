@@ -608,13 +608,13 @@ reviewed example: `examples/enterprise-host/governed-actions.example.json`.
 | `grantLifetimeSeconds` | Bounded-grant lifetime from the committed decision, 1 … 3600 |
 | `customerPrincipals[]` | `principalId`, `externalSubject {system, subjectId}`, `apiKeyEnv`. Each becomes a customer credential scoped to `AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID`, bound to the Kernel Authority actor carrying that external subject. At least one is required **unless `operators[]` is configured** (CTRL-02), in which case it may be `[]`: agents then receive operator-issued credentials over the API. A principal id may not start with `agent:` (reserved for operator-issued principals) |
 | `administrators[]` | Optional (CTRL-01). `operatorId`, `apiKeyEnv`. Each becomes an **administrator** credential for `/api/admin/...` only — never an ordinary API key. Secret ≥ 32 characters. Since CTRL-02 an administrator is the `legacy-administrator` class: exactly inspect, revoke, emergency stop and release — **never provisioning**. See `AOC_AUTHORITY_ADMINISTRATION_API.md` |
-| `operators[]` | Optional (CTRL-02). `operatorId`, `role` (`observer` \| `responder` \| `provisioner` \| `profile-steward` \| `organization-administrator`), `apiKeyEnv`. Each becomes an identified **operator** credential for `/api/admin/...` only, authorized per operation by its role. Secret ≥ 32 characters; an operator id is one identity across `administrators[]` and `operators[]` (`HOST_OPERATOR_INVALID`). Enables the CTRL-02 operator plane: agent inventory, operator-issued agent credentials, Kernel-Authority provisioning, Governance Profile lifecycle. See `docs/architecture/ADR-CTRL-02-OPERATOR-AGENT-IDENTITY.md` |
+| `operators[]` | Optional (CTRL-02). `operatorId`, `role` (`observer` \| `responder` \| `provisioner` \| `profile-steward` \| `approver` \| `organization-administrator`), `apiKeyEnv`. Each becomes an identified **operator** credential for `/api/admin/...` only, authorized per operation by its role. Secret ≥ 32 characters; an operator id is one identity across `administrators[]` and `operators[]` (`HOST_OPERATOR_INVALID`). Enables the CTRL-02 operator plane: agent inventory, operator-issued agent credentials, Kernel-Authority provisioning, Governance Profile lifecycle — and, with CORE-05 approvals composed, the CTRL-04 approval workflow (`approver`: reads plus `approval.read` / `approval.approve` / `approval.restrict`). See `docs/architecture/ADR-CTRL-02-OPERATOR-AGENT-IDENTITY.md` |
 | `profileLifecycle` | Optional (CTRL-02). `"operator-promoted"`: `governance.profiles` becomes a catalog of immutable versions (several versions of one profile allowed, all on the same action class × resource class); a version resolves only after a `profile-steward` or `organization-administrator` activates it over the API, and only while its content digest is the activated one. Requires `governance.profiles` and an operator able to promote. Lifecycle history is durable in `AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH` |
 | `monetary` | Optional. `assets [{assetId, scale}]`, `financialActions []` (P9) |
 | `governance` | Optional (CORE-03). `parameterDimensions [{id, type: integer\|token\|boolean, bound: exact\|maximum}]`, `actionClasses [{id, actions[]}]`, `resourceClasses [{id, resources[]}]`, `profiles [{profileId, version, owner, provenance {authoredBy, approvedBy}, actionClass, resourceClass, parameters [{dimension, required}], materialFacts [], relevantPolicies [], restrictiveFacts? [], obligations? [{obligationType, blocking}]}]`, `reservedContextKeys []` (trusted extensions of the reserved `assertedContext` keys). Validated completely at startup; anything malformed, undeclared or executable-looking refuses to boot (`HOST_GOVERNED_ACTIONS_FILE_INVALID`). Absent: nothing is classified and no governed action may carry `parameters`. See `docs/architecture/ADR-GOVERNED-ACTION-SEMANTIC-PARAMETER-MODEL.md` |
 | `trustedContext` | Required when a profile declares `materialFacts` or `restrictiveFacts` (CORE-04); otherwise omit it. `sources [{sourceId, kind, name, trustClass: authoritative\|attested, organizationId, attests [{factClass, maxAgeSeconds}]}]`, `maxFutureSkewSeconds` (0 … 300, default 0). The **source registry**: which source may attest which fact classes, for this organization only, and how long each reading stays fresh. A `request` kind, an `asserted` class, another organization, a missing freshness bound, an attestation of an undeclared fact class, or a declared fact no source attests refuses to boot. Every reading must carry a provenance reference and digest. The retrieval side — the **context provider** — and the **policy** are trusted in-process inputs (`bootEnterpriseHost({ contextProvider, policyPackProvider })`); without both, a file declaring facts refuses to start. See `docs/architecture/ADR-TRUSTED-CONTEXT-AND-OBLIGATIONS-ON-THE-GOVERNED-PATH.md` |
 | `obligations` | Required when a profile declares `obligations` (CORE-04). `sources [{sourceId, kind, name, verificationClass: independent\|self_reported}]` — who may report discharges and what each report is worth. Reports are recorded durably (`AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH`, default `.data/obligation-discharges.sqlite`) only through the trusted in-process writer `enterprise.obligationDischarges.record(...)`; no HTTP route exists. The store is authenticated: its history is committed to a hash chain whose head is signed with the authority signing key and verified at startup and before every issuance, so a forged or foreign store refuses the Host (`AUTHORITY_ARTIFACT_AUTHENTICITY.md` §27) |
-| `governance.profiles[].approval` | Optional (CORE-05). `{approverAction, minimumApprovals (1 … 16), requestTtlSeconds (60 … 30 d), approvalValiditySeconds (60 … 7 d), requiredEvidence? []}` — **how** a decision under this profile that policy sends to review can be approved; deterministic policy (`require_approval`) still decides **whether**. `approverAction` is the Kernel-Authority action an approver must hold live authority for over the resource, and must not be a governed action (refused at startup). Approval requests and verdicts are recorded durably (`AOC_ENTERPRISE_APPROVAL_SQLITE_PATH`, default `.data/approvals.sqlite`) in an authenticated store (signed state commitment, verified at startup and on every read; `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §28). Approvers act only through the in-process command port `enterprise.approvals` (`approve` / `reject` / `requestChanges` / `escalate` / `revoke`, with an authenticated actor context); no HTTP route exists (CTRL-04). A retry of the withheld request (same idempotency key) resumes the same committed decision once approved. See `docs/architecture/ADR-DURABLE-APPROVALS-ON-THE-GOVERNED-PATH.md` |
+| `governance.profiles[].approval` | Optional (CORE-05). `{approverAction, minimumApprovals (1 … 16), requestTtlSeconds (60 … 30 d), approvalValiditySeconds (60 … 7 d), requiredEvidence? []}` — **how** a decision under this profile that policy sends to review can be approved; deterministic policy (`require_approval`) still decides **whether**. `approverAction` is the Kernel-Authority action an approver must hold live authority for over the resource, and must not be a governed action (refused at startup). Approval requests and verdicts are recorded durably (`AOC_ENTERPRISE_APPROVAL_SQLITE_PATH`, default `.data/approvals.sqlite`) in an authenticated store (signed state commitment, verified at startup and on every read; `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §28). Since CTRL-04, identified operators act on approvals over the operator plane (`/api/admin/approvals…`, `AOC_AUTHORITY_ADMINISTRATION_API.md` §12) and the web control plane's Approvals section: the approver is always the authenticated operator, and the verdict counts only if the Kernel-Authority actor `operator:<operatorId>` holds live authority for `approverAction` over the resource. The in-process command port `enterprise.approvals` remains for trusted embedders. A retry of the withheld request (same idempotency key) resumes the same committed decision once approved. See `docs/architecture/ADR-DURABLE-APPROVALS-ON-THE-GOVERNED-PATH.md` |
 | `genericHttpAdapters[]` | `EnterpriseGenericHttpExecutionAdapterOptions` (`AOC_GENERIC_HTTP_EXECUTION_ADAPTER.md`), except `credential` is `{kind:'bearer', tokenEnv}` or `{kind:'header', name, valueEnv}` |
 | `routes[]` | `{action, adapterId}`. An action with no route reaches no adapter |
 
@@ -637,6 +637,7 @@ variable, never a value). A secret used by two credentials refuses
 | Durable emergency control (P4) | composed; operable over `/api/admin/emergency-controls` when an administrator is configured (CTRL-01) |
 | Authority administration API (CTRL-01) | mounted when `administrators[]` or `operators[]` is configured (`posture.authorityAdministration`) |
 | Operator plane (CTRL-02): agent inventory, operator-issued agent credentials, Kernel-Authority provisioning, Governance Profile lifecycle | mounted only when `operators[]` is configured; the control-plane store (`AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH`, default `.data/control-plane.sqlite`) is opened then |
+| Approval workflow (CTRL-04): approval inbox, canonical subject, approve / reject / request-changes / escalate / revoke | mounted only when `operators[]` is configured **and** a profile declares `approval`; no store of its own — every verdict is a CORE-05 command by the authenticated operator |
 | P8 authority event stream | optional by design (evidence never blocks) |
 | Generic HTTP adapter(s) behind the trusted registry, routed by the file | composed as configured |
 | P12 reconciliation | not wired: no resolution authority implementation ships |
@@ -645,7 +646,8 @@ variable, never a value). A secret used by two credentials refuses
 | Obligations (CORE-04) | composed when the file declares `obligations`; durable discharge store, required durable on the secure profile (`posture.obligations`) |
 | Exercise-time lineage revalidation (CORE-04) | composed with P7/P10: every action class, not only financial |
 | Durable approvals (CORE-05) | composed when a profile declares `approval`; authenticated durable approval store, required durable on the secure profile (`posture.approvals`); a profile without `approval` leaves `approval_required` withheld |
-| Evidence bundle store | in-memory on every Host (ASSURE) |
+| Evidence bundle store (ASSURE-01) | **durable**: SQLite at `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH` (default `.data/evidence-bundles.sqlite`) whenever persistence is `sqlite`; required durable on the secure profile (`posture.evidenceStore`); in-memory only on an ephemeral Host |
+| Unified Authority-to-Outcome Trace (ASSURE-01) | always mounted: `GET /api/evidence/traces/{requestId}?level=…` and `…/verify`, pure reads over the composed canonical stores, authorized exactly like the other evidence routes (API keys; an organization-scoped key sees its organization only). Stages whose store this Host does not compose (P12 on the shipped Host) are reported `not-composed` |
 
 The authority binding every grant states is
 `HOST_ORGANIZATIONAL_AUTHORITY_BINDING` (`organizational-authority`): the Host
@@ -709,8 +711,9 @@ store.
   `not-configured`, CTRL-01), `trustedContext` (`composed` / `not-configured`,
   CORE-04), `obligations` (`durable` / `ephemeral` / `not-configured`,
   CORE-04), `approvals` (`durable` / `ephemeral` / `not-configured`,
-  CORE-05), `authoritySigner` (`external` / `software` / `not-composed`,
-  CORE-02) and `authorityFreshness` (`external` / `not-composed`, CORE-07).
+  CORE-05), `evidenceStore` (`durable` / `ephemeral`, ASSURE-01),
+  `authoritySigner` (`external` / `software` / `not-composed`, CORE-02) and
+  `authorityFreshness` (`external` / `not-composed`, CORE-07).
   Beside the posture, `authorityFreshness` reports the witness id, the
   witness's state and each anchored store's `{stateKind, status, reason?,
   sequence}`: a store `regressed` / `forked` / `pending-recovery` / `unbound`
@@ -752,16 +755,24 @@ shutdown failed.
 - **Profile content** (a new Governance Profile version) is a configuration
   change and a restart; promoting or retiring a catalog version is an API call
   (CTRL-02).
-- **The control-plane store** (`control-plane.sqlite`) is not in `backup:v1`
-  and is neither signed nor witnessed: restoring an older copy resurrects
-  revoked or rotated-out agent credentials and earlier profile lifecycle state.
-  After any such restore, re-revoke affected credentials or the agents' actors.
+- **The control-plane store** (`control-plane.sqlite`) is in `backup:v1`
+  (PROD-02) but is neither signed nor witnessed: restoring an older copy
+  resurrects revoked or rotated-out agent credentials and earlier profile
+  lifecycle state (pinned by `prod02-stale-restore-host.test.ts`). After any
+  such restore, re-revoke affected credentials or the agents' actors
+  (`RUNBOOKS_V1.md` §5.2).
 - **Typed parameter authority** (e.g. `replicaCount ≤ 3`) is provisioned on the
   standing grant over the API (`parameterBounds`, CTRL-02) — no policy pack or
   source change is needed for a standing parameter ceiling.
-- **Backup/restore** covers four stores; the governed-action stores are
-  PROD-02. Never back up or restore the authority-state witness's database
-  together with the authority stores (CORE-07).
+- **Backup/restore** (PROD-02) covers every store the Host composes — the
+  registry in `scripts/portability/store-registry.mjs`, thirteen stores at
+  PROD-02 and fourteen since ASSURE-01 made the Evidence Bundle Store
+  durable — with
+  explicit coverage, signed-state verification and rollback
+  (`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`). Never back up or restore the
+  authority-state witness's database together with the authority stores
+  (CORE-07); secrets and key material come from the secret manager, never a
+  backup.
 - **First enrollment** of existing stores at a new witness is the explicit
   ceremony above (CORE-07).
 - The authority signing key is process-resident under software custody (AA-001); external custody (CORE-02) removes it from the process.

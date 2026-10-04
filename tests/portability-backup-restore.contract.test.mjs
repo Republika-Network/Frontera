@@ -31,6 +31,7 @@ function backupEnvFor(preDir) {
     AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(preDir, 'agent-passport.sqlite'),
     AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(preDir, 'assurance.sqlite'),
     AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: join(preDir, 'kernel-authority.sqlite'),
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(preDir, 'evidence-bundles.sqlite'),
     AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
   };
 }
@@ -61,10 +62,15 @@ test.after(() => {
 test('complete backup: manifest, checksums, RESTORE.md, and stable store ordering', () => {
   const manifest = JSON.parse(readFileSync(join(sharedBackupDir, 'backup-manifest.json'), 'utf8'));
   assert.equal(manifest.backupFormat, 'aoc.enterprise.backup.v1');
-  // Four stores as of P0-PKG-07: the Kernel Authority Store is authority
-  // source-of-truth, so a backup that omitted it would restore a deployment in
-  // which every actor is unrecognized and every action denied.
-  assert.deepEqual(manifest.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'kernel-authority']);
+  assert.equal(manifest.coverage.complete, true, 'PROD-02: every store this deployment composes is included');
+  // The fixture deployment composes five stores (no governed actions): the
+  // Kernel Authority Store is authority source-of-truth, so a backup that
+  // omitted it would restore a deployment in which every actor is unrecognized
+  // and every action denied; since ASSURE-01 the Evidence Bundle Store is
+  // durable and composed whenever persistence is. The full registry (thirteen
+  // stores at PROD-02, fourteen since ASSURE-01) is qualified on the real Host
+  // (src/enterprise/__tests__/prod02-*.test.ts, assure01-trace-host.test.ts).
+  assert.deepEqual(manifest.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'kernel-authority', 'evidence-bundles']);
   assert.ok(existsSync(join(sharedBackupDir, 'checksums.sha256')));
   assert.ok(existsSync(join(sharedBackupDir, 'RESTORE.md')));
   assert.ok(existsSync(join(sharedBackupDir, 'metadata', 'store-versions.json')));
@@ -90,17 +96,41 @@ test('backup does not demand the authority store when durable authority is disab
 
   assert.deepEqual(
     report.stores.map((s) => s.name),
-    ['governance', 'agent-passport', 'assurance'],
+    ['governance', 'agent-passport', 'assurance', 'evidence-bundles'],
     'a disabled authority store must simply not be part of the backup set',
   );
   assert.equal(existsSync(join(backupDir, 'stores', 'kernel-authority.sqlite')), false);
   // And the backup is a real, restorable one rather than a partial write.
   const manifest = JSON.parse(readFileSync(join(backupDir, 'backup-manifest.json'), 'utf8'));
-  assert.deepEqual(manifest.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance']);
+  assert.deepEqual(manifest.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'evidence-bundles']);
   const target = join(root, 'restored');
   const restored = await runRestore({ backup: backupDir, target });
   assert.equal(restored.status, 'restored');
   rmSync(root, { recursive: true, force: true });
+});
+
+test('a store file at a default path the deployment neither requires nor names is never swept into the backup (PROD-02)', async () => {
+  // The four-store fixture deployment composes no governed actions. A stray
+  // governed-action store left at its *default* relative path (here under the
+  // working directory's .data/) is not this deployment's state.
+  const root = workDir('stray-default');
+  const original = process.cwd();
+  try {
+    await generateFixture({ target: join(root, 'pre') });
+    const enterprise = await import('../dist/src/enterprise/index.js');
+    process.chdir(root);
+    const stray = await enterprise.createSqliteGovernanceStore(join(root, '.data', 'authority-event-stream.sqlite'));
+    await stray.close();
+    const report = await runBackup({ output: join(root, 'backup'), env: backupEnvFor(join(root, 'pre')) });
+    assert.deepEqual(report.stores.map((s) => s.name), ['governance', 'agent-passport', 'assurance', 'kernel-authority', 'evidence-bundles']);
+    const manifest = JSON.parse(readFileSync(join(root, 'backup', 'backup-manifest.json'), 'utf8'));
+    assert.equal(manifest.coverage.stores.find((s) => s.name === 'authority-event-stream').status, 'present-not-configured', 'skipped, but never silently');
+    assert.equal(report.warnings.length, 1);
+    assert.match(report.warnings[0], /authority-event-stream.*NOT backed up/);
+  } finally {
+    process.chdir(original);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('secret exclusion: manifest declares excluded secrets and never embeds them', () => {

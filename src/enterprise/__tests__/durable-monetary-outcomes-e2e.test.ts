@@ -130,6 +130,7 @@ async function openHost(dir: string, options: HostOptions = {}): Promise<Host> {
     AOC_ENTERPRISE_SQLITE_PATH: file.governance,
     AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(dir, 'passport.sqlite'),
     AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(dir, 'assurance.sqlite'),
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(dir, 'evidence-bundles.sqlite'),
     AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: file.grants,
     AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH: file.ledger,
     AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: file.outcomes,
@@ -431,6 +432,7 @@ describe('P11 §141 — P8 cannot be load-bearing', () => {
         append: append as AuthorityEventStreamStore['append'],
         readStream: async () => [],
         verifyStream: async (_context, streamId) => ({ streamId, valid: true, eventCount: 0, failures: [] }),
+        readStreamBounded: async (_context, streamId) => ({ outcome: 'within-bound', verification: { streamId, valid: true, eventCount: 0, failures: [] }, events: [] }),
         health: async () => ({ status: 'healthy', readable: true, writable: true, schemaVersion: 'x', checkedAt: new Date().toISOString() }),
         close: async () => {},
       };

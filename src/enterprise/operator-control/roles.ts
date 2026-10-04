@@ -44,6 +44,26 @@ export const OPERATOR_PERMISSIONS = [
   'emergency.stop',
   /** Release an emergency stop — restores execution, so it is never a restrict-only permission. */
   'emergency.release',
+  /**
+   * CTRL-04 — read the approval inbox and one approval request: the canonical
+   * subject (actor, action, resource, amount, counterparty, typed parameters),
+   * its requirement snapshot and its derived state. Inspection only.
+   */
+  'approval.read',
+  /**
+   * CTRL-04 — *attempt* an approving verdict. **Permitting**: never part of a
+   * restrict-only role. It confers no approval authority — CORE-05 still
+   * requires the operator's own live Kernel-Authority standing for the
+   * requirement's approver action over the request's resource.
+   */
+  'approval.approve',
+  /**
+   * CTRL-04 — *attempt* a verdict that only narrows or records: reject (final),
+   * request changes, escalate (both inert), revoke an approval. Restrict-only:
+   * it never implies `approval.approve`. CORE-05 still requires live
+   * Kernel-Authority standing.
+   */
+  'approval.restrict',
   /** ANDREW-P0-03: approve a registered destination for this organization's governed use. Widens, so it is never a restrict-only permission. */
   'destination.approve',
   /** ANDREW-P0-03: revoke this organization's active approval of a destination. Narrows only. */
@@ -65,10 +85,23 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  *   organization bootstrap, no profile promotion, no emergency release.
  * - `profile-steward` — promotes and retires Governance Profile versions. No
  *   authority, no credentials.
+ * - `approver` — CTRL-04: reads, the approval inbox, and attempting every
+ *   approval verdict. No authority, credentials, profiles or emergency
+ *   control. The role only lets an operator *reach* the approval commands;
+ *   whether a verdict counts is CORE-05's, from the operator's own
+ *   Kernel-Authority approver standing. No destination governance:
+ *   `approval.approve` decides one request, `destination.approve` changes a
+ *   wallet's standing governance state, and neither implies the other.
  * - `organization-administrator` — every permission, including organization
  *   bootstrap, emergency release and destination approval.
+ *
+ * CTRL-04 approval permissions: `approval.read` is held by `observer`,
+ * `responder`, `approver` and `organization-administrator` (not `provisioner`
+ * or `profile-steward`: neither needs to see approval subjects);
+ * `approval.restrict` by `responder`, `approver`, `organization-administrator`;
+ * `approval.approve` by `approver` and `organization-administrator` only.
  */
-export const OPERATOR_ROLES = ['observer', 'responder', 'provisioner', 'profile-steward', 'organization-administrator'] as const;
+export const OPERATOR_ROLES = ['observer', 'responder', 'provisioner', 'profile-steward', 'approver', 'organization-administrator'] as const;
 
 export type OperatorRole = (typeof OPERATOR_ROLES)[number];
 
@@ -88,10 +121,11 @@ export type OperatorRoleOrLegacy = OperatorRole | typeof LEGACY_ADMINISTRATOR_RO
 const READ: readonly OperatorPermission[] = ['organization.read', 'authority.inspect', 'inventory.read'];
 
 const POLICY: Readonly<Record<OperatorRoleOrLegacy, ReadonlySet<OperatorPermission>>> = Object.freeze({
-  observer: new Set<OperatorPermission>(READ),
-  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'destination.revoke']),
+  observer: new Set<OperatorPermission>([...READ, 'approval.read']),
+  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'approval.read', 'approval.restrict', 'destination.revoke']),
   provisioner: new Set<OperatorPermission>([...READ, 'authority.provision', 'authority.revoke', 'agent-credential.manage', 'agent-credential.revoke']),
   'profile-steward': new Set<OperatorPermission>([...READ, 'profile.promote', 'profile.retire']),
+  approver: new Set<OperatorPermission>([...READ, 'approval.read', 'approval.approve', 'approval.restrict']),
   'organization-administrator': new Set<OperatorPermission>(OPERATOR_PERMISSIONS),
   [LEGACY_ADMINISTRATOR_ROLE]: new Set<OperatorPermission>(['authority.inspect', 'authority.revoke', 'emergency.stop', 'emergency.release']),
 });

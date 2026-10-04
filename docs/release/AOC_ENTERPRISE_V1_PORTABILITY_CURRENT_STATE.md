@@ -1,5 +1,11 @@
 # AOC Enterprise v1 — Portability Current-State Discovery (Phase 0)
 
+> **Historical (v1.0.0, superseded for store coverage by PROD-02, 2026-10-02).**
+> This document records the v1.0.0 portability validation, when the Host had
+> three (later four) durable stores. The current store set — thirteen stores at PROD-02, fourteen since ASSURE-01,
+> one registry (`scripts/portability/store-registry.mjs`) — and its
+> qualification are in `docs/security/PROD-02-COMPLETE-BACKUP-RESTORE-COVERAGE.md`.
+
 Independent discovery pass performed before any portability/backup/restore
 tooling was written, at commit `a9ded65ad086f88d3596d2f58a376e7c4f676f5e`
 on branch `claude/aoc-v1-release-validation-5jl2ld`. This document records

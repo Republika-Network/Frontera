@@ -18,6 +18,14 @@ import { tmpdir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 
 import { REPO_ROOT, stableJsonStringify } from './lib-portability.mjs';
+import { STORE_DEFINITIONS, storeEnvironmentFor } from './store-registry.mjs';
+
+/** The PROD-02 Host drills: real Hosts, every composable store, a separate-process witness, software and external custody. */
+const PROD02_DRILLS = [
+  'dist/src/enterprise/__tests__/prod02-disaster-recovery-host.test.js',
+  'dist/src/enterprise/__tests__/prod02-stale-restore-host.test.js',
+  'dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js',
+];
 
 function parseArgs(argv) {
   const args = { keep: false, skipReleaseGate: false };
@@ -124,9 +132,8 @@ export async function runCleanRoomDrill({ keep = false, skipReleaseGate = false 
 
     const backupEnv = {
       AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
-      AOC_ENTERPRISE_SQLITE_PATH: join(preDir, 'enterprise-host.sqlite'),
-      AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(preDir, 'agent-passport.sqlite'),
-      AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(preDir, 'assurance.sqlite'),
+      AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
+      ...storeEnvironmentFor(preDir),
     };
     step(steps, 'full-backup', () => {
       const output = run(checkoutDir, 'node', ['scripts/portability/backup-enterprise-v1.mjs', '--output', backupDir], backupEnv);
@@ -144,13 +151,20 @@ export async function runCleanRoomDrill({ keep = false, skipReleaseGate = false 
     });
 
     step(steps, 'source-store-destruction', () => {
-      for (const file of ['enterprise-host.sqlite', 'agent-passport.sqlite', 'assurance.sqlite']) {
-        rmSync(join(preDir, file), { force: true });
+      for (const storeDef of STORE_DEFINITIONS) {
+        rmSync(join(preDir, storeDef.targetFilename), { force: true });
       }
       return { destroyed: preDir };
     });
 
-    step(steps, 'full-restore', () => run(checkoutDir, 'node', ['scripts/portability/restore-enterprise-v1.mjs', '--backup', backupDir, '--target', postDir]));
+    // Restored with the restoring deployment's environment, so coverage is checked against it.
+    step(steps, 'full-restore', () =>
+      run(checkoutDir, 'node', ['scripts/portability/restore-enterprise-v1.mjs', '--backup', backupDir, '--target', postDir], {
+        AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
+        AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
+        ...storeEnvironmentFor(postDir),
+      }),
+    );
 
     step(steps, 'logical-comparison', () => {
       const output = run(checkoutDir, 'node', [
@@ -163,6 +177,17 @@ export async function runCleanRoomDrill({ keep = false, skipReleaseGate = false 
       const parsed = JSON.parse(output.slice(output.indexOf('{')));
       if (!parsed.overallEquivalent) throw new Error(`Pre/post logical state is NOT equivalent: ${JSON.stringify(parsed)}`);
       return parsed;
+    });
+
+    // PROD-02: the authoritative disaster-recovery qualification, run inside
+    // the clean room against its own build -- the clean-room secure-Host drill
+    // (software and external custody), the stale-backup drill against a
+    // surviving witness, and the tamper/rollback matrix.
+    step(steps, 'prod02-host-drills', () => {
+      const output = run(checkoutDir, 'node', ['--test', ...PROD02_DRILLS]);
+      const summary = output.split('\n').filter((line) => /^# (tests|pass|fail)/.test(line));
+      if (!summary.includes('# fail 0')) throw new Error(`PROD-02 drills failed: ${summary.join(' | ')}`);
+      return { summary: summary.join(' | ') };
     });
 
     if (!skipReleaseGate) {

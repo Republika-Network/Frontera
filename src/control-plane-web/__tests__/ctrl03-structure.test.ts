@@ -158,8 +158,10 @@ describe('CTRL-03 structure — the console decides nothing', () => {
         '/api/admin/emergency-controls/activate',
         '/api/admin/emergency-controls/release',
         '/api/admin/governance-profiles/{}/versions/{}/{}',
+        // CTRL-04: one verdict path per approval request (the verb is a closed list the Host routes).
+        '/api/admin/approvals/{}/{}',
       ].sort(),
-      'the console writes only through the CTRL-01 / CTRL-02 operator routes',
+      'the console writes only through the CTRL-01 / CTRL-02 / CTRL-04 operator routes',
     );
     assert.equal(/'(PUT|PATCH|DELETE)'/.test(client), false);
     for (const path of [...posts, ...literalPosts]) assert.ok(path.startsWith('/api/admin/'), path);
@@ -180,8 +182,25 @@ describe('CTRL-03 structure — CTRL-04, PAY, domain and model boundaries', () =
     assert.equal(MODEL.test('new OpenAI()'), true);
   });
 
-  it('no approval inbox, approve, reject, request-changes, escalate or quorum wiring ships (CTRL-04)', () => {
-    for (const file of WEB) assert.equal(APPROVAL_WORKFLOW.test(codeOf(file)), false, file);
+  // CTRL-03 shipped no approval surface (D17). CTRL-04 now owns one: approval wiring is confined to the
+  // CTRL-04 modules below (ctrl04-structure.test.ts pins what they may do), and the legacy in-process
+  // approval components are still never used anywhere in the console.
+  const CTRL04_APPROVAL_MODULES = new Set([
+    'src/control-plane-web/views/pages-approvals.tsx',
+    'src/control-plane-web/approval-forms.ts',
+    'src/control-plane-web/app.tsx',
+    'src/control-plane-web/host-client.ts',
+    'src/control-plane-web/wire.ts',
+    'src/control-plane-web/server.ts',
+    'src/control-plane-web/views/layout.tsx',
+    'src/control-plane-web/styles.ts',
+  ]);
+
+  it('approval inbox and verdict wiring lives only in the CTRL-04 approval modules; no legacy approval component is used (CTRL-04)', () => {
+    for (const file of WEB) {
+      if (!CTRL04_APPROVAL_MODULES.has(file)) assert.equal(APPROVAL_WORKFLOW.test(codeOf(file)), false, file);
+      assert.equal(/ApprovalPanel|ApprovalActionBar|ApprovalRequestsTable|ApprovalQuorumIndicator|control-plane-command-service|components\/approvals\//.test(codeOf(file)), false, `${file} uses a legacy approval component`);
+    }
   });
 
   it('no payment rail, protocol, wallet, domain or model vocabulary in the generic control plane', () => {

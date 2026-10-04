@@ -20,9 +20,10 @@
 //     --pre <dir> --post <dir> --fixture <fixture-manifest.json> --output <comparison.json>
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve } from 'node:path';
 
 import { loadEnterpriseModule, stableJsonStringify } from './lib-portability.mjs';
+import { targetStorePaths } from './store-registry.mjs';
 
 const SYSTEM_CONTEXT = { system: true };
 
@@ -41,12 +42,14 @@ function parseArgs(argv) {
 }
 
 function storePaths(dir) {
-  return {
-    governance: join(dir, 'enterprise-host.sqlite'),
-    passport: join(dir, 'agent-passport.sqlite'),
-    assurance: join(dir, 'assurance.sqlite'),
-    kernelAuthority: join(dir, 'kernel-authority.sqlite'),
-  };
+  const paths = targetStorePaths(dir);
+  return { governance: paths.governance, passport: paths['agent-passport'], assurance: paths.assurance, kernelAuthority: paths['kernel-authority'], evidence: paths['evidence-bundles'] };
+}
+
+/** ASSURE-01: the durable Evidence Bundle Store, opened through its own (verifying) factory. */
+async function openEvidenceStore(path) {
+  const module = await import(new URL('../../dist/src/enterprise/evidence/sqlite-evidence-store.js', import.meta.url).href);
+  return module.createSqliteEvidenceStore(path, { now: () => '2026-01-01T00:00:00.000Z' });
 }
 
 async function openStores(enterprise, dir) {
@@ -56,11 +59,12 @@ async function openStores(enterprise, dir) {
     passport: await enterprise.createSqlitePassportStore(paths.passport),
     assurance: await enterprise.createSqliteAssuranceStore(paths.assurance),
     kernelAuthority: await enterprise.createSqliteKernelAuthorityStore(paths.kernelAuthority),
+    evidence: await openEvidenceStore(paths.evidence),
   };
 }
 
 async function closeStores(stores) {
-  await Promise.all([stores.governance.close(), stores.passport.close(), stores.assurance.close(), stores.kernelAuthority.close()]);
+  await Promise.all([stores.governance.close(), stores.passport.close(), stores.assurance.close(), stores.kernelAuthority.close(), stores.evidence.close()]);
 }
 
 async function compareGovernance(enterprise, preStores, postStores, fixture) {
@@ -111,16 +115,20 @@ async function compareEvidence(enterprise, preStores, postStores, fixture) {
     const preBundle = enterprise.buildEvidenceBundle(preRecord, policy, { now: deterministicNow, nextId: deterministicNextId });
     const postBundle = enterprise.buildEvidenceBundle(postRecord, policy, { now: deterministicNow, nextId: deterministicNextId });
 
+    // ASSURE-01: the issued bundle itself is durable — restored byte for byte, with its lifecycle.
+    const [preStored, postStored] = await Promise.all([preStores.evidence.getByBundleId(SYSTEM_CONTEXT, expected.bundleId), postStores.evidence.getByBundleId(SYSTEM_CONTEXT, expected.bundleId)]);
+
     results.push({
       level,
       disclosurePolicy: expected.disclosurePolicy,
       rebuiltDigestMatches: preBundle.integrity.bundleDigest === postBundle.integrity.bundleDigest,
       sourceRecordDigestUnchanged: preRecord?.integrity.aggregateDigest === postRecord?.integrity.aggregateDigest,
+      storedBundleRestored: preStored !== null && postStored !== null && JSON.stringify(preStored) === JSON.stringify(postStored) && postStored.bundle.integrity.bundleDigest === expected.bundleDigest,
     });
   }
   return {
     cases: results,
-    equivalent: results.every((r) => r.rebuiltDigestMatches && r.sourceRecordDigestUnchanged),
+    equivalent: results.every((r) => r.rebuiltDigestMatches && r.sourceRecordDigestUnchanged && r.storedBundleRestored),
     distinctBundleDigestsAcrossLevels: new Set(results.map((r) => r.disclosurePolicy)).size === results.length,
   };
 }
