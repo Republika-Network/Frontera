@@ -5,7 +5,7 @@
 | Task | ANDREW-P0-09 — a withheld governed action, explicitly reconsidered after governance state changed, without bypassing idempotency |
 | Branch | `feat/andrew-p0-09-linked-reconsideration` |
 | Baseline | `8ba7b82577700da294ed227fcffb8219a1edb946` (`feat/andrew-demo`: P0-00 … P0-08 + `origin/main` `e3383b7`) |
-| Status | Implemented and qualified offline (§6). **Live Testnet step BLOCKED on funding only** (§7): committed on its branch, **not** merged into `feat/andrew-demo` |
+| Status | **VERIFIED** — qualified offline (§6) and proven live on XRPL Testnet (§7): linked reconsideration executed one real 10 RLUSD payment, tx `7857B27CC2467B467C6EA5731AE919DBC43866A23C0B467C1AD03815FC76DCAC`, ledger 21304560, `tesSUCCESS`; merged into `feat/andrew-demo` with `--no-ff` |
 
 ## 1. The semantic
 
@@ -170,31 +170,78 @@ After a forced full rebuild (`tsc -b --force`) on this branch:
 | structural pins changed, with intent kept | ASSURE-01 builder imports (+ the pure lineage module, pinned pure); P0-04 intake key set (+ `reconsideration`, pinned to `of`/`reason`). The governed-action composition rules — only `decision-commit.ts` verifies, only `execution-ledger.ts` appends evidence — hold **unchanged**: the implementation was restructured to respect them |
 | `git diff --check`, conflict markers, secret scan | clean (see commit) |
 
-## 7. Live Testnet (Phase 5)
+## 7. Live Testnet (Phase 5) — VERIFIED (2026-10-05)
 
-**BLOCKED (external): Testnet funding only.** P0-08's live payment consumed the
-treasury's 10 RLUSD. Read-only preflight (2026-10-05, ledgers 21303592 and
-21304142): `network_id` 1; treasury `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` holds
-**0 RLUSD**, 10 required; both trust lines present. No live governed request was
-made, nothing was signed or submitted, and no evidence was fabricated.
+### 7.1 Fixture reset (setup provenance — NOT governed evidence)
 
-**To complete:** at least 10 Testnet RLUSD to the treasury (tryrlusd.com), then:
+P0-08's live payment had left the 10 RLUSD with the demo recipient. Before the
+P0-09 run, at the project owner's instruction, a one-time **external test-fixture
+reset** returned them to the treasury: a plain XRPL Testnet Payment signed with
+the recipient's own Testnet key by a standalone setup script (no product code,
+not routed through Frontera), after verifying `network_id` 1, both accounts, the
+RLUSD issuer and both trust lines. Reset tx
+`65D5629D34F9F51DD99DF3942600A3430BED34A2441E775E73B6E829BB3C21D6`, validated
+ledger 21304536, `tesSUCCESS`, delivered exactly 10 RLUSD; afterwards treasury 10,
+recipient 0. It is recorded only so the fixture's history is complete; it is not
+part of the governed story below.
 
-```bash
-set -a; . ~/.config/frontera-andrew/testnet.env; set +a
-node packages/xrpl-testnet-transport/scripts/preflight.mjs          # must print "ready": true
-FRONTERA_ANDREW_P009_LIVE=1 \
-FRONTERA_XRPL_TESTNET_ENDPOINT='wss://s.altnet.rippletest.net:51233/' \
-FRONTERA_ANDREW_ATTEMPT_STORE=$HOME/.config/frontera-andrew/xrpl-attempts-p009-live-1.sqlite \
-FRONTERA_ANDREW_EVIDENCE_FILE=$HOME/.config/frontera-andrew/p009-evidence.json \
-node --test dist/src/enterprise/__tests__/andrew-p009-live-testnet.test.js
+### 7.2 Preflight
+
+`network_id` 1; validated ledger 21304543 (21304557 at run start); treasury
+`rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` **10 RLUSD**; recipient
+`rhScSFhnm7kAZFZzkPj1aVXw6vWxSc424z` trust line present; `ready: true`. Fresh
+attempt store `xrpl-attempts-p009-live-1.sqlite`; flag `FRONTERA_ANDREW_P009_LIVE=1`;
+amount USD 10 → RLUSD 10 (unchanged).
+
+### 7.3 The governed story — every assertion passed (`1 / 1`)
+
+| step | result | grants / signatures / submissions |
+| --- | --- | --- |
+| original USD 10 (`andrew-p009-live-original`) while `never-approved` | **denied** — `aoc.gar:a26214e0b8e7c3df6604cee824a2820b`, decision `enforcement-decision-d8038572-da37-4fef-8e9e-5864e2fa3d4c` (`DOMAIN_POLICY_DENIED`, `POLICY_ACTION_PROHIBITED`); recipient RLUSD trust line present (ledger fact, not approval) | 0 / 0 / 0 |
+| exact replay of the original key | **the same decision** `enforcement-decision-d8038572-…`, same evaluation `gov-evaluation-muvkj401-2-0sw560uq` | 0 / 0 / 0 |
+| destination approval (P0-03) | `approved` by `operator:andrew-admin`, basis `operator-permission:destination.approve;role:organization-administrator;credential:operator`, org `org-core04`, sequence 1, 2026-10-05T18:13:35.674Z — **executed nothing** | 0 / 0 / 0 |
+| linked reconsideration (`andrew-p009-live-reconsideration`, `of` = the original, reason `destination-approved`) | **executed** — new request `aoc.gar:f085dcb612e7b4bc98a97e95ee6a20dc`, business intent `aoc.intent:f99865e849dfa75f54e5998584e41388`, **fresh** decision `enforcement-decision-ec787a4e-2ba7-4c46-b0b1-465f85b81f7a` (`allowed`, `ACTION_ALLOWED`), execution `aoc.exec:eb43335f0e029116fef3dc50b425f116` | **1 / 1 / 1** |
+| transport attempt (persisted before submit) | sequence 21285933, fee 12 drops, `LastLedgerSequence` 21304562 (= validated 21304558 + 4); `signed` → `submitted` (preliminary `tesSUCCESS`) → `validated-success` | — |
+| second reconsideration (`…-2`) | **withheld** `reconsideration` / `GOVERNED_ACTION_RECONSIDERATION_ALREADY_REALIZED` — request `aoc.gar:910a2fb3ba531a8e0568cbdff76667f2` | 1 / 1 / 1 (unchanged) |
+| final replay of the original | **still the historical denial**, decision `enforcement-decision-d8038572-…` | 1 / 1 / 1 (unchanged) |
+
+### 7.4 The XRPL payment
+
+| | |
+| --- | --- |
+| **transaction hash** | **`7857B27CC2467B467C6EA5731AE919DBC43866A23C0B467C1AD03815FC76DCAC`** |
+| **validated ledger index** | **21304560** (closed 2026-10-05T18:13:40Z, inside the grant horizon) |
+| **engine result** | **`tesSUCCESS`** |
+| **delivered amount** | **`{"currency":"524C555344000000000000000000000000000000","issuer":"rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV","value":"10"}`** — exactly the authorized amount, in the transport record and by an independent ledger re-read |
+| from → to | treasury `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` → recipient `rhScSFhnm7kAZFZzkPj1aVXw6vWxSc424z` |
+| Frontera outcome | `executed`, `providerRef` = the hash |
+
+### 7.5 ASSURE-01 lineage (verified)
+
+The reconsideration's trace (HTTP 200, carries the hash) has
+`stages.request.lineage`:
+`role: reconsideration`, `businessIntentId: aoc.intent:f99865e849dfa75f54e5998584e41388`,
+`intentDigest: sha256:312b2933de2c50fb76181a0eda831bce5005f67de91c08a48a631805d33336ff`,
+`reason: destination-approved`, `reconsiders: { requestId: aoc.gar:a26214e0b8e7c3df6604cee824a2820b,
+evaluationId: gov-evaluation-muvkj401-2-0sw560uq, decisionId: enforcement-decision-d8038572-…, status: denied }`,
+`realizedOriginal: true`. `/verify` → **`verified: true`**, all ten `lineage.*` checks
+`pass` (original-record, original-identity, original-decision,
+original-was-withheld, original-is-root, original-never-authorized,
+same-business-intent, business-intent-id, reason, realization-before-authority).
+The original's own trace carries **no** lineage — its denial is exactly what it was.
+
+### 7.6 The continuous story
+
+```
+aoc.intent:f99865e8…  (one business intent)
+  aoc.gar:a26214e0…  original      → denied (d8038572)  ── replayed twice: same denial
+  destination approval (sequence 1, organization-administrator)  → no payment
+  aoc.gar:f085dcb6…  reconsideration → linked → fresh decision ec787a4e (allowed)
+     → grant → aoc.exec:eb43335f… → XRPL 7857B27CC2467B46… (ledger 21304560, tesSUCCESS, 10 RLUSD)
+     → ASSURE-01 lineage verified
+  aoc.gar:910a2fb3…  second reconsideration → withheld: ALREADY_REALIZED
 ```
 
-The run performs exactly: one original denial (0/0/0); one exact replay (same
-decision, 0/0/0); one explicit destination approval (0/0/0); one linked
-reconsideration → one fresh grant, exactly one signature, one submission, one
-validated payment with exact delivery (transport record and independent ledger
-re-read); the reconsideration's ASSURE-01 trace verifying its lineage to the
-original; a second reconsideration withheld (already realized); a final replay of
-the original still returning the same denial. Then P0-09 is merged into
-`feat/andrew-demo`.
+Non-secret evidence JSON: `~/.config/frontera-andrew/p009-evidence.json`;
+attempt store: `~/.config/frontera-andrew/xrpl-attempts-p009-live-1.sqlite`
+(outside the repository; holds the replay-sensitive signed blob, never a seed).
