@@ -2,6 +2,7 @@ import { EXECUTION_FAILURE_REASONS, isRecordableProviderRef, type ExecutionAdapt
 import { XrplConfigurationError, type XrplExecutionAdapterOptions, type XrplPaymentSubmission, type XrplPaymentTransport } from './contracts.js';
 import { snapshotXrplOptions, type XrplPlan } from './configuration.js';
 import { translateXrplPayment, type XrplTranslationRefusal } from './payment-translation.js';
+import { xrplIssuedValuesEqual } from './xrpl-codec.js';
 
 /**
  * The XRPL Execution Adapter (ANDREW-P0-06) — a deterministic translator from
@@ -64,13 +65,27 @@ function transactionHashFrom(value: unknown): { readonly providerRef?: string } 
  * the four kinds is `unconfirmed`, because the transport was called and may
  * have submitted.
  */
-function classify(observation: unknown): ExecutionAdapterResult {
+/**
+ * ANDREW-P0-08 defence in depth: a transport that reports what the ledger
+ * delivered must report exactly the instruction's amount. A mismatch may
+ * already have moved value, so it is never a completion and never a
+ * retryable failure — it is `unconfirmed`, for reconciliation.
+ */
+function deliveredMatches(delivered: unknown, instructed: XrplPaymentSubmission['instruction']['Amount']): boolean {
+  if (delivered === undefined) return true;
+  if (typeof instructed === 'string') return typeof delivered === 'string' && delivered === instructed;
+  if (typeof delivered !== 'object' || delivered === null) return false;
+  const amount = delivered as Record<string, unknown>;
+  return amount['currency'] === instructed.currency && amount['issuer'] === instructed.issuer && xrplIssuedValuesEqual(amount['value'], instructed.value);
+}
+
+function classify(observation: unknown, instruction: XrplPaymentSubmission['instruction']): ExecutionAdapterResult {
   if (typeof observation !== 'object' || observation === null) return { outcome: 'unconfirmed', detail: DETAIL.unconfirmed };
   const source = observation as Record<string, unknown>;
   const kind = source['kind'];
   if (kind === 'not-submitted') return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.notSubmitted };
   const reference = transactionHashFrom(source['transactionHash']);
-  if (kind === 'validated') return { outcome: 'completed', ...reference };
+  if (kind === 'validated') return deliveredMatches(source['deliveredAmount'], instruction.Amount) ? { outcome: 'completed', ...reference } : { outcome: 'unconfirmed', ...reference, detail: DETAIL.unconfirmed };
   if (kind === 'rejected') return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED, ...reference, detail: DETAIL.rejected };
   return { outcome: 'unconfirmed', ...reference, detail: DETAIL.unconfirmed };
 }
@@ -92,7 +107,7 @@ function createXrplExecutionAdapterCore(plan: XrplPlan, transport: XrplPaymentTr
     //    function, and no loop around this one. A transport that throws may
     //    have submitted, so a throw is unconfirmed, never a failure.
     try {
-      return classify(await submitPayment.call(transport, submission));
+      return classify(await submitPayment.call(transport, submission), submission.instruction);
     } catch {
       return { outcome: 'unconfirmed', detail: DETAIL.unconfirmed };
     }

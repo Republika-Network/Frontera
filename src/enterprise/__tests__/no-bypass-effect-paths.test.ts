@@ -610,7 +610,7 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Eight of sixty-eight effect paths are under bounded-grant control.'),
+      DOC.includes('Nine of sixty-nine effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
@@ -622,7 +622,8 @@ describe('NB — the canonical document keeps its shape', () => {
         'CORE-06 re-enumerated from source and added EP-058 … EP-062 — obligation discharge recording, the durable approval commands, the reference signer and witness processes, and the CTRL-01 administration HTTP entry — none bounded-grant controlled, so only the denominator moved, by five. ' +
         'CTRL-02 added EP-063 … EP-066 — Kernel-Authority provisioning over the operator plane, operator-issued agent credential issuance and revocation, and Governance Profile lifecycle transitions — none bounded-grant controlled and none a way to reach a provider, so only the denominator moved, by four. ' +
         'CTRL-03 added EP-067 — the web control plane, a separate operator-run process whose one outbound call reaches the Host operator API, every write of it an existing operator-plane path authorized again by the Host — not bounded-grant controlled, so only the denominator moved, by one. ' +
-        'CTRL-04 added EP-068 — the approval verdicts over the operator plane, the HTTP entry onto the CORE-05 approval commands (EP-059), decided by CORE-05 and executing nothing — not bounded-grant controlled, so only the denominator moved, by one.',
+        'CTRL-04 added EP-068 — the approval verdicts over the operator plane, the HTTP entry onto the CORE-05 approval commands (EP-059), decided by CORE-05 and executing nothing — not bounded-grant controlled, so only the denominator moved, by one. ' +
+        'ANDREW-P0-08 added EP-069 — the real XRPL Testnet transport submission, reachable only below the bounded-grant path through the XRPL adapter, composition-gated — so both numbers moved by one, exactly as P6 moved them for EP-050.',
     );
   });
 
@@ -636,7 +637,7 @@ describe('NB — the canonical document keeps its shape', () => {
     const ids = new Set([...DOC.matchAll(/\*\*EP-(\d{3})\*\*/g)].map((match) => match[1]));
     assert.equal(total, ids.size, 'the total must equal the number of inventoried EP rows');
     const pathLocal = rows.find((line) => line.startsWith('| PROVEN — PATH LOCAL'));
-    assert.ok(pathLocal?.includes('**8**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053'));
+    assert.ok(pathLocal?.includes('**9**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069'));
   });
 
   it('inventories the Generic HTTP outbound call as its own effect path, path-local, and without an egress claim', () => {
@@ -702,5 +703,46 @@ describe('NB — the canonical document keeps its shape', () => {
     for (const id of ['D-A1', 'D-A3', 'D-A4', 'D-A8']) {
       assert.ok(DOC.includes(id), `${id} must stay recorded — §18's claims are conditional on it`);
     }
+  });
+});
+
+describe('NB — ANDREW-P0-08: the XRPL library is reached from one leaf package, and its one network client is inventoried (EP-069)', () => {
+  /** Assembled at runtime so this file is not itself an import site to any textual scanner. */
+  const XRPL_SPECIFIER = ['xr', 'pl'].join('');
+  const XRPL_LIBRARY = /(?:from|import|require)\s*\(?\s*['"](?:xrpl|ripple-[a-z-]+|@xrplf\/[a-z-]+|ws)['"]/;
+  const XRPL_CLIENT = /\bnew\s+Client\s*\(/;
+  const PACKAGE = 'packages/xrpl-testnet-transport/src/';
+  const EXPECTED_LIBRARY_SITES = [
+    `${PACKAGE}env-signer.ts`,
+    `${PACKAGE}testnet-configuration.ts`,
+    `${PACKAGE}xrpl-ledger-client.ts`,
+    `${PACKAGE}xrpl-preflight-reader.ts`,
+    `${PACKAGE}xrpl-testnet-transport.ts`,
+  ];
+  const EXPECTED_CLIENT_SITES = [`${PACKAGE}xrpl-ledger-client.ts`, `${PACKAGE}xrpl-preflight-reader.ts`];
+
+  it('the detection patterns match a real import or client construction and not a mention of one', () => {
+    assert.equal(XRPL_LIBRARY.test(`import { Client } from '${XRPL_SPECIFIER}';`), true);
+    assert.equal(XRPL_LIBRARY.test("import WebSocket from 'ws';"), true);
+    assert.equal(XRPL_LIBRARY.test('this module never imports the ledger library'), false);
+    assert.equal(XRPL_CLIENT.test('const client = new Client(endpoint);'), true);
+  });
+
+  it('only the transport package imports the XRPL library or a WebSocket client — nothing under src/, apps/ or any other package', () => {
+    const sites = PRODUCTION_SOURCES.filter((file) => XRPL_LIBRARY.test(codeOf(file)));
+    assert.deepEqual(sites.slice().sort(), EXPECTED_LIBRARY_SITES.slice().sort(), 'a new XRPL library import outside the transport package is a new route to a ledger');
+  });
+
+  it('exactly two sources open an XRPL connection, both inventoried; only the ledger client submits', () => {
+    const sites = PRODUCTION_SOURCES.filter((file) => XRPL_CLIENT.test(codeOf(file)));
+    assert.deepEqual(sites.slice().sort(), EXPECTED_CLIENT_SITES.slice().sort());
+    for (const site of EXPECTED_CLIENT_SITES) assert.ok(DOC.includes(site), `${site} must be inventoried in ${NO_BYPASS_DOC} §7.6`);
+    assert.ok(DOC.includes('| **EP-069** |'), 'EP-069 is inventoried');
+    const ledger = codeOf(`${PACKAGE}xrpl-ledger-client.ts`);
+    assert.equal([...ledger.matchAll(/command:\s*'submit'/g)].length, 1, 'one submit site');
+    assert.equal(/command:\s*'submit'/.test(codeOf(`${PACKAGE}xrpl-preflight-reader.ts`)), false, 'the preflight never submits');
+    const transport = codeOf(`${PACKAGE}xrpl-testnet-transport.ts`);
+    assert.equal([...transport.matchAll(/\.submit\s*\(/g)].length, 1, 'the transport submits from exactly one place');
+    assert.equal([...transport.matchAll(/signer\.sign\s*\(/g)].length, 1, 'the transport signs from exactly one place');
   });
 });
