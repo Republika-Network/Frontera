@@ -5,13 +5,13 @@
 | Task | ANDREW-P0-08 — the first task allowed to submit real transactions to XRPL **Testnet** (never Mainnet) |
 | Branch | `feat/andrew-p0-08-real-xrpl-testnet-transport` |
 | Baseline | `d76db3fc97898d14a5f1829d8cc29cb2a9959abd` (`feat/andrew-demo`, P0-00 … P0-07 + `origin/main` `e3383b7`) |
-| Status | Transport implemented and qualified offline (§12); Testnet accounts provisioned; **live USD 75,000 transfer BLOCKED on Testnet RLUSD funding** (§10) |
+| Status | Transport implemented and qualified offline (§12); Testnet accounts provisioned; live transfer: see §10 (live demo amount **USD 10 → RLUSD 10**, a configurable demo parameter) |
 
-> **No governed payment was submitted.** The only real Testnet transactions in
-> P0-08 are the two account-setup `TrustSet`s (§9). The live governed run was
-> executed up to its preflight, which refused — correctly — because the treasury
-> holds 0 of the 75,000 Testnet RLUSD required. Nothing was signed or submitted
-> for the governed action, and the amount was not reduced.
+> **Live demo amount.** The live Testnet payment amount is a demo parameter,
+> not a product invariant (§10.1): `FRONTERA_ANDREW_LIVE_AMOUNT_USD`, default
+> **10**. Governance, destination approval, authority evaluation, grant binding,
+> settlement validation, transport semantics and the USD 125,000 ceiling
+> scenario are identical for any amount. The offline Host proofs keep USD 75,000.
 
 ## 1. Objective
 
@@ -184,42 +184,68 @@ Preflight (read-only; `scripts/preflight.mjs`, latest run):
 | latest validated ledger | 21286040 |
 | treasury XRP | 99.999988 XRP — ready |
 | treasury RLUSD trust line | present |
-| **treasury RLUSD balance** | **0** — **75,000 required** |
+| **treasury RLUSD balance** | **0** — the live demo amount (default 10) required |
 | recipient XRP | 99.999988 XRP — ready |
-| recipient RLUSD trust line | present (limit 1,000,000 ≥ 75,000) |
+| recipient RLUSD trust line | present (limit 1,000,000) |
 | recipient Frontera registration / approval | registered as `xrpl.testnet:rhScSFhnm7kAZFZzkPj1aVXw6vWxSc424z` and `never-approved` at the start of every run (the live runner registers it in a fresh Host) |
-| verdict | **not ready** — "the treasury holds 0 RLUSD; 75000 is required — fund it from the Testnet RLUSD faucet" |
+| verdict (at 10) | **not ready** — "the treasury holds 0 RLUSD; 10 is required — fund it from the Testnet RLUSD faucet" |
 
-## 10. Phase 8 — Live Andrew Scenario: BLOCKED (external)
+## 10. Phase 8 — Live Andrew Scenario
 
-The live runner (`src/enterprise/__tests__/andrew-p008-live-testnet.test.ts`,
-gated by `FRONTERA_ANDREW_LIVE_TESTNET=1`) was executed against XRPL Testnet.
-It stopped at its preflight: *"preflight is not green — no governed request was
-made: the treasury holds 0 RLUSD; 75000 is required"*. No governed request, no
-signature, no submission; no attempt store was created.
+### 10.1 The live amount is a demo parameter
 
-**Exact funding remaining:** 75,000 Testnet RLUSD to
-`rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` (trust line already set), from Ripple's
-Testnet RLUSD faucet (tryrlusd.com — a browser faucet; per-claim amounts are not
-documented, so several claims may be needed). Then run:
+`FRONTERA_ANDREW_LIVE_AMOUNT_USD` (default **`10`**) sets the governed USD amount
+of the live run; the RLUSD value on XRPL Testnet is the same number (pinned
+representation, P0-07). It drives exactly four things: the preflight's required
+treasury balance, the two governed requests, the expected delivered amount and
+the evidence assertions. It must be a positive canonical decimal with at most
+two decimals and **strictly below the USD 100,000 ceiling** — so the approved
+payment stays an approved payment; values such as `0`, `abc`, `10.001`,
+`100000` or `125000` are refused before anything runs (verified). The USD
+125,000 ceiling scenario is a separate, fixed step of the run.
+
+Because a small amount no longer drains the treasury, the earlier implicit
+"second run fails at preflight" guard is replaced by an explicit one: **the live
+run refuses to start on an attempt store that already holds an attempt** — a
+second run needs a fresh store, so it can never pay twice.
+
+### 10.2 Commands
 
 ```bash
 set -a; . ~/.config/frontera-andrew/testnet.env; set +a
-node packages/xrpl-testnet-transport/scripts/preflight.mjs         # must print "ready": true
+node packages/xrpl-testnet-transport/scripts/preflight.mjs         # must print "ready": true (≥ 10 RLUSD)
 FRONTERA_ANDREW_LIVE_TESTNET=1 \
 FRONTERA_XRPL_TESTNET_ENDPOINT='wss://s.altnet.rippletest.net:51233/' \
-FRONTERA_ANDREW_ATTEMPT_STORE=$HOME/.config/frontera-andrew/xrpl-attempts.sqlite \
+FRONTERA_ANDREW_ATTEMPT_STORE=$HOME/.config/frontera-andrew/xrpl-attempts-<run>.sqlite \
 FRONTERA_ANDREW_EVIDENCE_FILE=$HOME/.config/frontera-andrew/p008-evidence.json \
 node --test dist/src/enterprise/__tests__/andrew-p008-live-testnet.test.js
 ```
 
-The run performs, in order: preflight; registration; USD 75,000 while
+The run performs, in order: preflight; registration; the live amount while
 `never-approved` → denied, 0 grants, 0 signatures, 0 submissions (with the
 recipient's trust line recorded); approval as `organization-administrator`;
-a fresh USD 75,000 → one grant, one signature, one submit, validated; an
-independent re-read of the transaction; the ASSURE-01 trace; USD 125,000 →
-withheld, no new signature or submission. It writes non-secret evidence JSON.
-A second run fails closed at preflight once the treasury has paid.
+a fresh request for the live amount → one grant, one signature, one submit,
+validated, delivered exactly the live amount (transport record **and** an
+independent ledger re-read); the ASSURE-01 trace; USD 125,000 → withheld, no new
+signature or submission. It writes non-secret evidence JSON.
+
+### 10.3 Result
+
+**BLOCKED (external): the treasury holds 0 Testnet RLUSD; 10 are required.**
+
+- First live attempt (required 75,000): stopped at preflight — *"no governed
+  request was made: the treasury holds 0 RLUSD; 75000 is required"*.
+- After the amount became configurable (default 10): the treasury balance was
+  polled read-only every ~80 s for ~27 minutes (2026-10-04 22:35–23:03 local);
+  it stayed **0** throughout. A live run at a valid amount (`99999.99`) reached
+  preflight and failed closed the same way.
+- In every attempt: no governed request, no grant, no signature, no submission;
+  no attempt store was created. The amount was not reduced below the configured
+  demo value, and no success was recorded.
+
+**Exact funding remaining:** at least **10 Testnet RLUSD** to
+`rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` (trust line already set) from Ripple's
+Testnet RLUSD faucet (tryrlusd.com). Then run §10.2.
 
 ## 11. Phase 10 — Durable Frontera Evidence (proven offline; live pending)
 
@@ -233,8 +259,9 @@ No parallel receipt system. The chain, joined on `executionId` and the hash:
 | `executionId`, adapter `xrpl-testnet.treasury`, outcome, **`providerRef` = XRPL hash** | P10/P11 outcome store, in the ASSURE-01 trace |
 | validated ledger index, engine result, delivered RLUSD | transport attempt store, terminal event `validated-success` |
 
-AUTHORITY UNIT: **USD 75000** (grant, ceiling, policy). RAIL REPRESENTATION:
-**RLUSD 75000 on XRPL Testnet** (transport record only). The grant is never
+AUTHORITY UNIT: **USD <amount>** (grant, ceiling, policy) — 75000 in the
+offline proof, the live demo amount live. RAIL REPRESENTATION: **RLUSD <same
+amount> on XRPL Testnet** (transport record only). The grant is never
 rewritten as RLUSD (test). Proven end to end offline
 (`andrew-p008-real-transport-host.test.ts`): the Host's `executed` result
 carries the hash as `providerRef`, the trace contains the hash, adapter id and
@@ -274,7 +301,9 @@ After a forced full rebuild (`tsc -b --force`) on this branch:
 | focused regression — 332 files (P0-01 … P0-08, CTRL-04, ASSURE-01, PROD-02, no-bypass, approvals, evidence, outcome, resolution, reconciliation, receipt, operator) | **4,640 / 4,641** |
 | the one failure | `structural-boundaries` R004.B — inherited CRLF artefact of this Windows checkout |
 | mutation testing | **16 / 16 killed by tests**: settlement gate ignored; network id unchecked; existing attempt re-signed; grant lifetime guard removed; horizon widened to +20; `tec` as success; delivered amount unchecked; post-validation horizon unchecked; hash mismatch ignored; signed blob unverified; expiry without full search; submit throw as not-submitted; Mainnet endpoint allowed; extra prepared fields allowed; decimals compared as raw strings; adapter ignores delivered amount |
-| live run | executed; **failed closed at preflight** (0 RLUSD) — no governed request, signature or submission |
+| live run | executed at 75,000, then at the configurable amount; **failed closed at preflight** each time (0 RLUSD) — no governed request, signature or submission |
+| live-amount validation | `0`, `abc`, `10.001`, `100000`, `125000` refused before anything runs; a valid amount reaches preflight |
+| re-qualification after the amount change | 207 / 207 P0-06…P0-08 + no-bypass; transport package 38 / 38; 332-file batch 4,639 / 4,642 — the CRLF artefact plus the inherited `destination-approval` first-open `SQLITE_BUSY` (one failure + its harness hang, under extra load from the concurrent funding poll); `destination-approval` alone: 54 / 54 twice, untouched by P0-08 |
 | secret scan | no seed, private key or signed blob in any tracked file touched by P0-06 … P0-08 (test); seeds only in the 0600 file outside the repository |
 | `git diff --check`, conflict markers | clean |
 
@@ -285,7 +314,7 @@ reconciliation; the transport's manual re-check method was renamed
 settling a Frontera outcome stays with P12 resolution).
 
 **Verdict.** The P0-08 transport is complete and qualified offline, and the
-live path is proven to fail closed. The live USD 75,000 Testnet transfer has
+live path is proven to fail closed. The live Testnet transfer (demo amount USD 10 → RLUSD 10) has
 **not** happened; it is blocked solely on Testnet RLUSD funding (§10). Per the
 task's stop condition, P0-08 is committed on its branch and **not** merged into
 `feat/andrew-demo` until the live transfer validates.
@@ -298,7 +327,7 @@ validated. The code P0-09 builds on is ready.
 
 ## 15. Remaining Before the Live Transfer
 
-1. 75,000 Testnet RLUSD on `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` (faucet).
+1. At least 10 Testnet RLUSD (the live demo amount) on `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` (faucet).
 2. Re-run the preflight (must be `"ready": true`), then the live runner (§10).
 3. Record here the transaction hash, validated ledger index, engine result,
    delivered amount and the trace excerpt from the evidence JSON.

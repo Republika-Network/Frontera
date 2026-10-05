@@ -2,7 +2,9 @@
 /**
  * ANDREW-P0-08 — read-only XRPL Testnet preflight for the Andrew demo.
  * Reads only the public *_ADDRESS entries of the secrets file (never a seed),
- * signs nothing, submits nothing, and prints non-secret facts as JSON.
+ * signs nothing, submits nothing, and prints non-secret facts as JSON. The
+ * required treasury RLUSD balance is the live demo amount
+ * (FRONTERA_ANDREW_LIVE_AMOUNT_USD, default 10).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -39,7 +41,7 @@ try {
     recipient: addresses.recipient,
     currency: RLUSD_CURRENCY,
     issuer: RLUSD_TESTNET_ISSUER,
-    requiredValue: process.env.FRONTERA_ANDREW_REQUIRED_RLUSD ?? '75000',
+    requiredValue: process.env.FRONTERA_ANDREW_LIVE_AMOUNT_USD ?? '10', // the live demo amount (a demo parameter), default 10
     minimumXrpDrops: 20_000_000n,
   });
   console.log(JSON.stringify(report, null, 2));
