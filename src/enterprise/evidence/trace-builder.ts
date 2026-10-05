@@ -14,9 +14,11 @@ import {
   executionAttemptReferenceId,
   executionOutcomeReferenceId,
   executionResolutionReferenceId,
+  issuanceWithheldReferenceId,
   reconsiderationLinkReferenceId,
   reconsiderationRealizationReferenceId,
 } from '../governed-action/identifiers.js';
+import { parseIssuanceWithheldRow } from '../governed-action/issuance-record.js';
 import { businessIntentDigest, isReconsiderationRecord, reconsiderationLinkUri, isReconsiderationReason } from '../governed-action/reconsideration-lineage.js';
 import type { StoredObligationDischarge, ObligationDischargeCorrelation } from '../obligation-discharge/contracts.js';
 import { EvidenceError } from './errors.js';
@@ -28,6 +30,7 @@ import {
   GOVERNED_REQUEST_ID_PATTERN,
   type AuthorityTrace,
   type AuthorityTraceApprovalStage,
+  type AuthorityTraceIssuance,
   type AuthorityTraceLineage,
   type AuthorityTraceAuthorityStage,
   type AuthorityTraceCheck,
@@ -391,10 +394,48 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   }
   // A write-ahead claim is only ever made under an issued grant: a claim with no grant is a missing grant.
   if (claimRef !== undefined && grants.length === 0) check('completeness.grant-for-claim', 'completeness', false, 'claim-without-authorization');
+  // -- ANDREW-P0-10: issuance evaluated and withheld --------------------------
+  // Rebuilt from the durable rows the orchestrator wrote from the issuance
+  // core's own result. The trace checks the rows' form, their linkage to this
+  // request, decision and committed amount, and their place in history — it
+  // never re-decides whether a ceiling was exceeded. Absent rows: no issuance
+  // field, no checks, the trace exactly as before.
+  let issuance: AuthorityTraceIssuance | undefined;
+  const issuanceRows = references.filter((entry) => entry.referenceType === 'issuance_record').sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+  if (issuanceRows.length > 0) {
+    const parsed = issuanceRows.map((row) => ({ row, evidence: parseIssuanceWithheldRow(row) }));
+    const action = (record.request.requestPayload['action'] ?? {}) as { readonly amount?: unknown; readonly currency?: unknown };
+    const committed = typeof action.amount === 'string' && typeof action.currency === 'string' ? { value: action.amount, unit: action.currency } : undefined;
+    const firstAuthority = Math.min(...[...authorizationRefs, ...executionRefs].map((entry) => entry.sequence ?? Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
+    check('issuance.record-well-formed', 'integrity', parsed.every(({ row, evidence }) => evidence !== undefined && row.referenceId === issuanceWithheldReferenceId({ evaluationId, version: row.externalVersion ?? '' })));
+    check('issuance.request-linkage', 'correlation', parsed.every(({ evidence }) => evidence?.requestId === requestId));
+    check('issuance.decision-linkage', 'correlation', parsed.every(({ evidence }) => evidence?.decisionId === decisionId));
+    check('issuance.requested-amount', 'correlation', parsed.every(({ evidence }) => evidence?.requested?.value === committed?.value && evidence?.requested?.unit === committed?.unit));
+    check('issuance.on-executable-decision', 'correlation', executable, path);
+    check('issuance.ceiling-stated-with-ceiling-reason', 'contract', parsed.every(({ evidence }) => evidence !== undefined && (evidence.ceiling !== undefined) === evidence.reasonCodes.includes('FINANCIAL_AUTHORITY_CEILING_EXCEEDED')));
+    check('issuance.withheld-before-any-authority', 'correlation', parsed.every(({ row }) => (row.sequence ?? Number.POSITIVE_INFINITY) < firstAuthority));
+    check('issuance.no-grant-while-withheld', 'correlation', authorizationRefs.length === 0 ? true : 'n/a', authorizationRefs.length === 0 ? undefined : 'a later attempt was granted');
+    check('issuance.no-execution-while-withheld', 'correlation', claimRef === undefined ? true : 'n/a');
+    const latest = parsed.at(-1);
+    if (latest?.evidence !== undefined) {
+      issuance = {
+        presence: 'recorded',
+        outcome: 'withheld',
+        withheldBy: latest.evidence.withheldBy,
+        reasonCodes: [...latest.evidence.reasonCodes],
+        ...(latest.evidence.requested !== undefined ? { requested: latest.evidence.requested } : {}),
+        ...(latest.evidence.ceiling !== undefined ? { ceiling: latest.evidence.ceiling } : {}),
+        recordedAt: latest.row.createdAt,
+        records: parsed.length,
+      };
+    }
+  }
+
   const authority: AuthorityTraceAuthorityStage = {
-    presence: !executable ? 'not-applicable' : grants.length === 0 ? (claimRef !== undefined ? 'missing' : 'not-reached') : grants.some((grant) => grant.presence === 'unreadable') ? 'unreadable' : grants.some((grant) => grant.presence === 'missing') ? 'missing' : grants.every((grant) => grant.presence === 'not-composed') ? 'not-composed' : 'recorded',
+    presence: !executable ? 'not-applicable' : grants.length === 0 ? (claimRef !== undefined ? 'missing' : issuance !== undefined ? 'recorded' : 'not-reached') : grants.some((grant) => grant.presence === 'unreadable') ? 'unreadable' : grants.some((grant) => grant.presence === 'missing') ? 'missing' : grants.every((grant) => grant.presence === 'not-composed') ? 'not-composed' : 'recorded',
     ...(sources.grants !== undefined ? { storeKind: sources.grants.kind } : {}),
     grants,
+    ...(issuance !== undefined ? { issuance } : {}),
   };
 
   // -- execution: write-ahead claim and the P11 attempt -----------------------

@@ -172,7 +172,9 @@ describe('Emergency control — checkpoint 2, the grant commit boundary', () => 
     assert.equal(w.issueOutcomes.length, 1);
     assert.equal(w.issueOutcomes[0]?.outcome, 'refused');
     const record = await recordFor(w, result.requestId ?? '');
-    assert.equal(record?.references.length, 0, 'no authorization artifact was recorded, because no grant was committed');
+    assert.equal(record?.references.filter((reference) => reference.referenceType !== 'issuance_record').length, 0, 'no authorization artifact was recorded, because no grant was committed');
+    // ANDREW-P0-10: the commit-boundary withholding itself is recorded, as evidence only.
+    assert.deepEqual(record?.references.map((reference) => [reference.referenceType, reference.externalVersion]), [['issuance_record', `withheld:emergency-control:${EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE}`]]);
   });
 
   it('a reader that becomes unreadable in that window also refuses the grant', async () => {
