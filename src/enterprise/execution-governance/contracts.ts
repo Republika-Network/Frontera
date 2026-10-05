@@ -1,5 +1,6 @@
 import type { EmergencyControlReasonCode, EmergencyControlScopeMatch } from '../../features/emergency-control-runtime/index.js';
 import type { BoundedGrant, GrantCorrelation, GrantReasonCode, GrantValidityCeiling, RequestedGrantBounds } from '../../features/grant-runtime/index.js';
+import type { MonetaryAmount } from '../../features/monetary-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import type { GrantAuthorityBinding } from './authority-binding.js';
 import type { FinancialAuthority, FinancialAuthorityReasonCode } from './financial-authority.js';
@@ -133,6 +134,8 @@ export type AuthorityControlledAuthorizationOutcome =
       readonly outcome: 'financial-authority-withheld';
       readonly decision: KernelEvaluationResult;
       readonly reasonCodes: readonly FinancialAuthorityReasonCode[];
+      /** ANDREW-P0-10: the authority ceiling the issuance core compared against, when the refusal is the ceiling. Evidence of the result — never re-decided. */
+      readonly ceiling?: MonetaryAmount;
     }
   | {
       /**

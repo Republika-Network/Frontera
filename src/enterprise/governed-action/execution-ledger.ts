@@ -10,10 +10,12 @@ import {
   executionAttemptReferenceId,
   executionOutcomeReferenceId,
   executionResolutionReferenceId,
+  issuanceWithheldReferenceId,
   reconsiderationLinkReferenceId,
   reconsiderationRealizationReferenceId,
 } from './identifiers.js';
 import { RECONSIDERATION_REALIZED_URI, reconsiderationLinkUri, type VerifiedReconsiderationTarget } from './reconsideration-lineage.js';
+import { isWellFormedIssuanceWithheldEvidence, issuanceWithheldDigest, issuanceWithheldUri, issuanceWithheldVersion, type IssuanceWithheldEvidence } from './issuance-record.js';
 
 /**
  * Evidence writing for a governed action: which authorization artifact a
@@ -262,6 +264,13 @@ export interface ExecutionLedger {
    * (`already-realized`); this evaluation already holding it is `claimed`.
    */
   claimReconsiderationRealization(evaluationId: string, target: VerifiedReconsiderationTarget): Promise<'claimed' | 'already-realized'>;
+  /**
+   * ANDREW-P0-10 — persist that authority issuance was evaluated and withheld
+   * for this committed decision, exactly as the issuance core returned it.
+   * Idempotent per (evaluation, outcome). `false` when it could not be proven
+   * written — the withheld answer stands either way; nothing here can grant.
+   */
+  recordIssuanceWithheld(evaluationId: string, evidence: IssuanceWithheldEvidence): Promise<boolean>;
 }
 
 export function createExecutionLedger(store: GovernanceStore, accessContext: GovernanceStoreAccessContext, now: () => string): ExecutionLedger {
@@ -431,6 +440,26 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
         // The id exists on another evaluation: the Store refused a second realization.
         if (isGovernanceStoreError(error) && error.code === 'GOVERNANCE_STORE_VALIDATION_ERROR') return 'already-realized';
         throw error;
+      }
+    },
+
+    async recordIssuanceWithheld(evaluationId, evidence) {
+      if (!isWellFormedIssuanceWithheldEvidence(evidence)) return false;
+      const version = issuanceWithheldVersion(evidence);
+      try {
+        await appendOnce({
+          referenceId: issuanceWithheldReferenceId({ evaluationId, version }),
+          evaluationId,
+          referenceType: 'issuance_record',
+          externalId: evidence.requestId,
+          externalVersion: version,
+          digest: issuanceWithheldDigest(evidence),
+          uri: issuanceWithheldUri(evidence),
+          createdAt: now(),
+        });
+        return true;
+      } catch {
+        return false;
       }
     },
   };
