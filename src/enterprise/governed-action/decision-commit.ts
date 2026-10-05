@@ -12,7 +12,7 @@ import type {
 } from '../governance-store/contracts.js';
 import { isGovernanceStoreError } from '../governance-store/errors.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
-import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
+import { computeGovernanceRequestPayloadDigest, projectRequestPayload } from '../governance-store/projection.js';
 import { deepFreeze, toKernelEvaluationResult } from '../governance-store/store-common.js';
 import { buildGovernanceEvaluationOutcomeEvent } from '../orchestration/governance-evaluation-events.js';
 import { GOVERNED_ACTION_REASON_CODES as R, type ClassifiedGovernedActionIntent, type GovernedActionReasonCode } from './contracts.js';
@@ -69,6 +69,21 @@ export interface DecisionCommitInput {
 
 export interface DecisionCommitter {
   commit(input: DecisionCommitInput): Promise<DecisionCommitOutcome>;
+  /**
+   * ANDREW-P0-09 — read, before any evaluation, the original a reconsideration
+   * names: its committed record under the caller's tenant scope (another
+   * organization's request is simply not found) and whether that record
+   * verifies, plus the new request projected exactly as the Store projects
+   * requests. Reads only; nothing is evaluated or written.
+   */
+  readReconsiderationOriginal(input: { readonly scope: BoundActorScope; readonly intent: ClassifiedGovernedActionIntent; readonly requestId: string; readonly accessContext: GovernanceStoreAccessContext; readonly originalRequestId: string }): Promise<ReconsiderationOriginalRead>;
+}
+
+/** What `readReconsiderationOriginal` found. */
+export interface ReconsiderationOriginalRead {
+  readonly original: GovernanceRecord | null;
+  readonly originalVerified: boolean;
+  readonly requestPayload: Readonly<Record<string, unknown>>;
 }
 
 /** Which committed aggregate to verify, and — only when this call ran the Kernel — the transient decision it must agree with. */
@@ -267,6 +282,14 @@ export function createDecisionCommitter(options: DecisionCommitterOptions): Deci
       const committed = await evaluateAndAppend(input);
       if ('kind' in committed) return committed;
       return verify(input, committed);
+    },
+    async readReconsiderationOriginal(input) {
+      const request = buildGovernedActionKernelRequest({ scope: input.scope, intent: input.intent, trustDomainId, requestId: input.requestId, requestedAt: now() });
+      const requestPayload = projectRequestPayload(request);
+      const original = await store.getByRequestId(input.accessContext, input.originalRequestId);
+      if (original === null) return { original: null, originalVerified: false, requestPayload };
+      const verification = await store.verify(input.accessContext, original.evaluation.evaluationId);
+      return { original, originalVerified: verification.valid, requestPayload };
     },
   };
 }
