@@ -120,9 +120,13 @@ describe('ANDREW-P0-07 structure — the default Host does not become XRPL-speci
     assert.equal(/andrew|rlusd/i.test(readFileSync('release/api-surface.v1.json', 'utf8')), false);
   });
 
-  it('adds no dependency: the manifests and lockfile name no xrpl, ripple or ws package', () => {
-    for (const manifest of ['package.json', 'package-lock.json']) {
-      assert.equal(/"(xrpl|ripple-[a-z-]+|@xrplf\/[a-z-]+|ws)"\s*:/.test(readFileSync(manifest, 'utf8')), false, manifest);
-    }
+  it('adds no runtime dependency: the root manifest names no xrpl, ripple or ws package, and only the P0-08 transport package declares one', () => {
+    assert.equal(/"(xrpl|ripple-[a-z-]+|@xrplf\/[a-z-]+|ws)"\s*:/.test(readFileSync('package.json', 'utf8')), false);
+    // ANDREW-P0-08: the XRPL library lives in one leaf workspace. The root manifest and the
+    // root lockfile entry declare none; the only workspace declaring one is the transport package.
+    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as { readonly packages: Record<string, { readonly dependencies?: Record<string, string> }> };
+    const declaring = Object.entries(lock.packages).filter(([path, entry]) => !path.includes('node_modules/') && Object.keys(entry.dependencies ?? {}).some((name) => /^(xrpl|ripple-[\w-]+|@xrplf\/[\w-]+|ws)$/.test(name)));
+    assert.deepEqual(declaring.map(([path]) => path), ['packages/xrpl-testnet-transport']);
+    assert.deepEqual(Object.keys(lock.packages['packages/xrpl-testnet-transport']?.dependencies ?? {}).filter((name) => /xrpl|ripple|^ws$/.test(name)), ['xrpl']);
   });
 });

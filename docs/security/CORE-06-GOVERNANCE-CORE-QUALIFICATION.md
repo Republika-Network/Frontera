@@ -262,6 +262,8 @@ Mutations M24 and M24b–e each fail the check: removing one row's evidence, dro
 
 **Appended by ASSURE-01 (2026-10-03).** The 28 BLOCKED rows ASSURE-01 added to THREAT_MODEL_V1 §7.29 (nineteen at first qualification, five from the first adversarial review, three from the second, and the bounded trace surface once the P8 store-level read closed its PARTIAL) (the Unified Authority-to-Outcome Trace and the durable Evidence Bundle Store) are rows `TM-7.29-1` … `TM-7.29-28` below, each with named executable evidence (`docs/security/ASSURE-01-UNIFIED-AUTHORITY-OUTCOME-TRACE.md`). ASSURE-01 adds no effect path (its two routes are reads; bundle builds were already EP-003): the current count stays **8 of 68**.
 
+**Appended by ANDREW-P0-08 (2026-10-04).** ANDREW-P0-08 adds one effect path, EP-069 — the real XRPL Testnet transport submission, reachable only below the bounded-grant path through the XRPL adapter, composition-gated (the Andrew demo composes it; the shipped Host does not) — and so moves the current effect-path count to **9 of 69** (NO_BYPASS §5.11; `docs/demo/andrew/ANDREW-P0-08-REAL-XRPL-TESTNET-TRANSPORT.md`).
+
 <!-- core06:blocked-matrix:start -->
 
 | ID | Src | Threat | Disposition | Status | Evidence |

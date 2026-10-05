@@ -101,6 +101,31 @@ export function isXrplNonStandardCurrencyCode(value: unknown): value is string {
   return typeof value === 'string' && NONSTANDARD_CURRENCY_CODE.test(value) && !value.startsWith('00');
 }
 
+const LEDGER_ISSUED_VALUE = /^(-?)(\d{1,40})(?:\.(\d{1,40}))?(?:[eE]([+-]?\d{1,4}))?$/;
+
+/** A ledger-reported issued value reduced to sign, significant digits and power of ten — text and BigInt only. */
+function ledgerIssuedValueParts(text: unknown): string | undefined {
+  if (typeof text !== 'string') return undefined;
+  const match = LEDGER_ISSUED_VALUE.exec(text);
+  if (match === null) return undefined;
+  const [, sign = '', integer = '', fraction = '', exponent = '0'] = match;
+  const digits = `${integer}${fraction}`.replace(/^0+/, '');
+  if (digits.length === 0) return '0';
+  const significant = digits.replace(/0+$/, '');
+  const power = BigInt(exponent) - BigInt(fraction.length) + BigInt(digits.length - significant.length);
+  return `${sign}${significant}e${power.toString()}`;
+}
+
+/**
+ * ANDREW-P0-08: whether two issued values — one the instruction's canonical
+ * decimal, the other as a ledger reported it (`"75000"`, `"75000.00"`,
+ * `"7.5e4"`) — denote exactly the same number. Never through a float.
+ */
+export function xrplIssuedValuesEqual(left: unknown, right: unknown): boolean {
+  const a = ledgerIssuedValueParts(left);
+  return a !== undefined && a === ledgerIssuedValueParts(right);
+}
+
 /** The integer and fractional digit strings of a canonical decimal. */
 function splitDecimal(canonical: string): { readonly integer: string; readonly fraction: string } {
   const point = canonical.indexOf('.');

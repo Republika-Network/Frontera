@@ -158,10 +158,15 @@ describe('ANDREW-P0-06 structure — nothing that decides authority reaches the 
     if (existsSync('release/api-surface.v1.json')) assert.equal(/xrpl/i.test(readFileSync('release/api-surface.v1.json', 'utf8')), false);
   });
 
-  it('adds no XRPL dependency: the root manifest and lockfile name no xrpl, ripple or ws package', () => {
+  it('adds no XRPL dependency to the runtime: the root manifest names none, and only the P0-08 transport package declares one', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as Record<string, Record<string, string> | undefined>;
     const names = Object.keys({ ...manifest['dependencies'], ...manifest['devDependencies'], ...manifest['optionalDependencies'] });
     assert.equal(names.some((name) => /xrpl|ripple|^ws$/.test(name)), false, names.join(', '));
-    assert.equal(/"node_modules\/(?:xrpl|ripple-[\w-]+|@xrplf\/[\w-]+)"/.test(readFileSync('package-lock.json', 'utf8')), false);
+    // ANDREW-P0-08: the XRPL library lives in one leaf workspace. The root manifest and the
+    // root lockfile entry declare none; the only workspace declaring one is the transport package.
+    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as { readonly packages: Record<string, { readonly dependencies?: Record<string, string> }> };
+    const declaring = Object.entries(lock.packages).filter(([path, entry]) => !path.includes('node_modules/') && Object.keys(entry.dependencies ?? {}).some((name) => /^(xrpl|ripple-[\w-]+|@xrplf\/[\w-]+|ws)$/.test(name)));
+    assert.deepEqual(declaring.map(([path]) => path), ['packages/xrpl-testnet-transport']);
+    assert.deepEqual(Object.keys(lock.packages['packages/xrpl-testnet-transport']?.dependencies ?? {}).filter((name) => /xrpl|ripple|^ws$/.test(name)), ['xrpl']);
   });
 });

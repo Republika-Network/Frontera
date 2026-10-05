@@ -44,5 +44,6 @@ export {
   isXrplStandardCurrencyCode,
   xrplDropsFromXrp,
   xrplIssuedCurrencyValue,
+  xrplIssuedValuesEqual,
 } from './xrpl-codec.js';
 export { createXrplExecutionAdapter } from './xrpl-execution-adapter.js';
