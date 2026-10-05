@@ -118,13 +118,16 @@ describe('ANDREW-P0-04 structure — destination truth stays out of policy, the 
     }
   });
 
-  it('the governed-action intake declares no governance-state field: the closed key set is unchanged', () => {
+  it('the governed-action intake declares no governance-state field: the closed key set is unchanged but for P0-09 reconsideration', () => {
     const intent = codeOf('src/enterprise/governed-action/intent.ts');
     const declared = /const DECLARED_KEYS[^=]*= new Set\(\[([^\]]*)\]\)/.exec(intent)?.[1] ?? '';
     assert.deepEqual(
       [...declared.matchAll(/'([^']+)'/g)].map((match) => match[1]),
-      ['action', 'resource', 'counterparty', 'amount', 'parameters', 'expectedGovernanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey'],
+      // ANDREW-P0-09 adds `reconsideration`: it names an earlier request and a reason, and asserts no governance state.
+      ['action', 'resource', 'counterparty', 'amount', 'parameters', 'expectedGovernanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey', 'reconsideration'],
     );
+    // Its own vocabulary is closed to exactly `of` and `reason`: no approval, destination or state can ride on it.
+    assert.match(intent, /key !== 'of' && key !== 'reason'/);
   });
 
   it('the resolution query gains the typed counterparty axis only — still no free-form bag', () => {
