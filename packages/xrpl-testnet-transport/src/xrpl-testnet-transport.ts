@@ -283,6 +283,10 @@ export function createXrplTestnetTransport(options: XrplTestnetTransportOptions)
         // 5. Prepare: the transport supplies Account, Fee, Sequence and LastLedgerSequence; nothing from the request.
         prepared = await client.autofill({ TransactionType: 'Payment', Account: configuration.sourceAccount, Destination: submission.instruction.Destination, Amount: { ...amount } });
         prepared['LastLedgerSequence'] = validatedLedger + configuration.ledgerHorizon;
+        // xrpl.js autofill writes `NetworkID: undefined` on networks ≤ 1024 (Testnet is 1):
+        // a present key with no value is an absent field. Only undefined values are dropped;
+        // a NetworkID that carries a value is still refused below, and the signed blob must decode without one.
+        for (const key of Object.keys(prepared)) if (prepared[key] === undefined) delete prepared[key];
       } catch {
         return refuse('prepare-failed');
       }

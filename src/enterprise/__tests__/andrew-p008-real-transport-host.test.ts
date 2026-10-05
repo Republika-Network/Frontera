@@ -68,7 +68,8 @@ function scriptedTestnet() {
       return 5000;
     },
     async autofill(tx) {
-      return { ...tx, Fee: '12', Sequence: 42, LastLedgerSequence: 5020, Flags: 0 };
+      // xrpl.js 4.7.0 autofill's exact Testnet shape, including the present-but-undefined NetworkID.
+      return { ...tx, Flags: 0, NetworkID: undefined, Sequence: 42, Fee: '12', LastLedgerSequence: 5020 };
     },
     async submit(blob) {
       calls.submit += 1;

@@ -110,7 +110,9 @@ function fakeLedger(options: FakeLedgerOptions = {}) {
     },
     async autofill(tx) {
       calls.autofill += 1;
-      const prepared = { ...tx, Fee: '12', Sequence: 7, LastLedgerSequence: 1020, Flags: 0 };
+      // Exactly what xrpl.js 4.7.0 `Client.autofill` returns on Testnet (network id 1 ≤ 1024):
+      // a `NetworkID` key whose value is undefined (client/index.js), plus Flags, Sequence, Fee, LastLedgerSequence (+20).
+      const prepared: Record<string, unknown> = { ...tx, Flags: 0, NetworkID: undefined, Sequence: 7, Fee: '12', LastLedgerSequence: 1020 };
       return options.autofill?.(prepared) ?? prepared;
     },
     async submit(blob) {
@@ -238,6 +240,9 @@ describe('ANDREW-P0-08 transport — refusals happen before any signature or sub
   it('a prepared transaction carrying any extra field, a flag, a changed amount or an excessive fee is refused before signing', async () => {
     for (const mutate of [
       (tx: Record<string, unknown>) => ({ ...tx, NetworkID: 1 }),
+      (tx: Record<string, unknown>) => ({ ...tx, NetworkID: 0 }),
+      (tx: Record<string, unknown>) => ({ ...tx, NetworkID: 1025 }),
+      (tx: Record<string, unknown>) => ({ ...tx, NetworkID: null }),
       (tx: Record<string, unknown>) => ({ ...tx, SendMax: tx['Amount'] }),
       (tx: Record<string, unknown>) => ({ ...tx, Paths: [] }),
       (tx: Record<string, unknown>) => ({ ...tx, Memos: [] }),
@@ -288,6 +293,29 @@ describe('ANDREW-P0-08 transport — refusals happen before any signature or sub
 });
 
 describe('ANDREW-P0-08 transport — prepare, sign, persist, submit once, validate', () => {
+  it('LIVE REGRESSION: xrpl.js autofill’s `NetworkID: undefined` is an absent field — signed without NetworkID; a NetworkID with any value is still refused', async () => {
+    // The first live P0-08 run refused here ("prepared:unexpected-field:NetworkID"), before signing: the
+    // allowlist read a present-but-undefined key as a field. Reproduce that exact autofill shape.
+    const xrplJsShape = fakeLedger({ autofill: (tx) => {
+      assert.equal('NetworkID' in tx && tx['NetworkID'] === undefined, true, 'the fake reproduces xrpl.js');
+      return tx;
+    } });
+    const { transport, counter } = build({ ledger: xrplJsShape });
+    const observation = await transport.submitPayment(submission());
+    assert.equal(observation.kind, 'validated');
+    assert.equal(counter.calls, 1);
+    assert.equal(xrplJsShape.calls.submit, 1);
+    const decoded = decode(xrplJsShape.calls.blobs[0] ?? '') as Record<string, unknown>;
+    assert.equal('NetworkID' in decoded, false, 'the signed transaction carries no NetworkID');
+    for (const value of [0, 1, 2, 1025]) {
+      const valued = fakeLedger({ autofill: (tx) => ({ ...tx, NetworkID: value }) });
+      const refused = build({ ledger: valued });
+      assert.deepEqual(await refused.transport.submitPayment(submission()), { kind: 'not-submitted' }, String(value));
+      assert.equal(refused.counter.calls, 0, `NetworkID ${value}: no signature`);
+      assert.equal(valued.calls.submit, 0);
+    }
+  });
+
   it('the happy path: one signature, durable attempt BEFORE submit, one submit, validated evidence', async () => {
     const store = createSqliteXrplAttemptStore(storePath(), { now: () => new Date(T0).toISOString() });
     let persistedBeforeSubmit: string | undefined;

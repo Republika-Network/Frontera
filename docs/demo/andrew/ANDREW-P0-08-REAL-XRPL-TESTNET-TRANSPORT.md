@@ -5,7 +5,7 @@
 | Task | ANDREW-P0-08 — the first task allowed to submit real transactions to XRPL **Testnet** (never Mainnet) |
 | Branch | `feat/andrew-p0-08-real-xrpl-testnet-transport` |
 | Baseline | `d76db3fc97898d14a5f1829d8cc29cb2a9959abd` (`feat/andrew-demo`, P0-00 … P0-07 + `origin/main` `e3383b7`) |
-| Status | Transport implemented and qualified offline (§12); Testnet accounts provisioned; live transfer: see §10 (live demo amount **USD 10 → RLUSD 10**, a configurable demo parameter) |
+| Status | **Live Testnet payment validated** — USD 10 authorized → RLUSD 10 delivered on XRPL Testnet, tx `2FD93956D51719FC23B1F5D6CEB9722E6C85A8626F1019BCA22378C5649B90EE`, ledger 21301562, `tesSUCCESS` (§10.3); qualified (§13); merged into `feat/andrew-demo` with `--no-ff` |
 
 > **Live demo amount.** The live Testnet payment amount is a demo parameter,
 > not a product invariant (§10.1): `FRONTERA_ANDREW_LIVE_AMOUNT_USD`, default
@@ -229,25 +229,51 @@ validated, delivered exactly the live amount (transport record **and** an
 independent ledger re-read); the ASSURE-01 trace; USD 125,000 → withheld, no new
 signature or submission. It writes non-secret evidence JSON.
 
-### 10.3 Result
+### 10.3 Result — VALIDATED (2026-10-05)
 
-**BLOCKED (external): the treasury holds 0 Testnet RLUSD; 10 are required.**
+**First live attempt at the configured amount (run 1): failed closed, before signing.**
+Preflight green (treasury 10 RLUSD). The unapproved request was denied (0
+grants, 0 signatures, 0 submissions) and the approval succeeded; the fresh
+authorized request was granted, and then the transport refused to sign:
+`prepared:unexpected-field:NetworkID`. Root cause (reproduced read-only against
+Testnet): xrpl.js 4.7.0 `Client.autofill` always writes
+`tx.NetworkID = txNeedsNetworkID(...) ? networkID : undefined`
+(`client/index.js:196`), so on Testnet (id 1 ≤ 1024) the key is **present with
+value `undefined`**; the prepared-field allowlist iterated `Object.keys` and read
+it as a field. The offline fakes never produced an undefined key, so no test
+caught it. Nothing moved: 0 attempt rows, 0 events, treasury still 10 RLUSD.
 
-- First live attempt (required 75,000): stopped at preflight — *"no governed
-  request was made: the treasury holds 0 RLUSD; 75000 is required"*.
-- After the amount became configurable (default 10): the treasury balance was
-  polled read-only every ~80 s for ~27 minutes (2026-10-04 22:35–23:03 local);
-  it stayed **0** throughout. A live run at a valid amount (`99999.99`) reached
-  preflight and failed closed the same way.
-- In every attempt: no governed request, no grant, no signature, no submission;
-  no attempt store was created. The amount was not reduced below the configured
-  demo value, and no success was recorded.
+**Fix (approved by the project owner):** before validation the transport drops
+only keys whose value is `undefined`. A `NetworkID` carrying any value (0, 1, 2,
+1025, null) is still refused before signing, and the signed blob must still
+decode without one. Both fake ledgers now autofill exactly like xrpl.js; a
+LIVE REGRESSION test pins it; two mutations (fix removed; `NetworkID` deleted
+unconditionally) are killed (22 and 2 failing tests).
 
-**Exact funding remaining:** at least **10 Testnet RLUSD** to
-`rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` (trust line already set) from Ripple's
-Testnet RLUSD faucet (tryrlusd.com). Then run §10.2.
+**Live run 2: every assertion passed** (fresh attempt store, fresh requests,
+amount 10, unchanged governance, approval path, ceiling scenario):
 
-## 11. Phase 10 — Durable Frontera Evidence (proven offline; live pending)
+| step | result |
+| --- | --- |
+| preflight | `network_id` 1; validated ledger 21301559; treasury `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` 10 RLUSD; recipient `rhScSFhnm7kAZFZzkPj1aVXw6vWxSc424z` trust line present; ready |
+| 1. USD 10 while `never-approved` | **denied** (`DOMAIN_POLICY_DENIED`, `POLICY_ACTION_PROHIBITED`); destination `xrpl.testnet:rhScSFhnm7kAZFZzkPj1aVXw6vWxSc424z`; recipient RLUSD trust line present (ledger fact, not approval); **0 grants, 0 signatures, 0 submissions** |
+| 2. approval | P0-03 destination governance: `approved` by `operator:andrew-admin`, basis `operator-permission:destination.approve;role:organization-administrator;credential:operator`, organization `org-core04`, sequence 1, 2026-10-05T15:28:15.008Z |
+| 3. fresh USD 10 | **executed**: 1 grant (`aoc.grant:f9902877b5eed549380668ca51d41eee`, expires 15:38:15.023Z), execution `aoc.exec:0a91e661294b9759a00b252e131a4fb8`, **exactly 1 signature, 1 submission** |
+| attempt (persisted before submit) | sequence 21285932, fee 12 drops, `LastLedgerSequence` 21301564 (= validated 21301560 + 4), events `signed` → `submitted` (preliminary `tesSUCCESS`) → `validated-success` |
+| **transaction hash** | **`2FD93956D51719FC23B1F5D6CEB9722E6C85A8626F1019BCA22378C5649B90EE`** |
+| **validated ledger index** | **21301562** (closed 2026-10-05T15:28:21Z — inside the grant horizon 15:38:15.023Z) |
+| **engine result** | **`tesSUCCESS`** |
+| **delivered amount** | **`{"currency":"524C555344000000000000000000000000000000","issuer":"rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV","value":"10"}`** — exactly the authorized amount, in the transport record **and** in an independent ledger re-read |
+| on-ledger effect | treasury RLUSD 10 → **0**, XRP −0.000012 (the fee); recipient RLUSD 0 → **10**; transaction carries **no `NetworkID`** |
+| ASSURE-01 trace | HTTP 200, carries the hash: request (actor `actor-andrew-agent`, `transfer-funds`, `treasury-operating-account`) → decision `allowed` → authority grant exercised → execution → outcome `confirmed-completed`, adapter `xrpl-testnet.treasury`, `providerRef` = the hash; final state `executed-confirmed-completed` |
+| 4. USD 125,000 (real, funded transport installed) | **withheld**, `FINANCIAL_AUTHORITY_CEILING_EXCEEDED`; grants still 1, signatures still 1, submissions still 1 |
+
+Non-secret evidence JSON: `~/.config/frontera-andrew/p008-evidence-run2.json`
+(run 1: `p008-evidence-run1-failclosed.json`); durable attempt store:
+`~/.config/frontera-andrew/xrpl-attempts-p008-live-2.sqlite` (outside the
+repository; it holds the replay-sensitive signed blob, never a seed).
+
+## 11. Phase 10 — Durable Frontera Evidence (proven offline and live)
 
 No parallel receipt system. The chain, joined on `executionId` and the hash:
 
@@ -283,10 +309,10 @@ submits from exactly one place each.
 
 | suite | tests | covers |
 | --- | --- | --- |
-| `packages/xrpl-testnet-transport/__tests__/xrpl-testnet-transport.test.ts` | 38 | Mainnet/non-wss/credentialed endpoints, wrong label/id, issuer as source, foreign signer; network id 0/2/absent refused before prepare; settlement drift with zero network calls; XRP/invalid/self destination; grant lifetime; 10 prepared-field mutations; signer failure; tampering signer; lying hash; persistence failure; happy path with persist-before-submit, horizon +4, no `NetworkID`; duplicate `executionId`; restart reconciliation; submit throw; unvalidated wait; expiry with/without full search; `tec`; 10 anomaly cases; exact decimals; secrets absent from events/errors/observations/DB; env signer fixed phrases; preflight verdicts and shortfall wording |
+| `packages/xrpl-testnet-transport/__tests__/xrpl-testnet-transport.test.ts` | 39 | Mainnet/non-wss/credentialed endpoints, wrong label/id, issuer as source, foreign signer; network id 0/2/absent refused before prepare; settlement drift with zero network calls; XRP/invalid/self destination; grant lifetime; 10 prepared-field mutations; signer failure; tampering signer; lying hash; persistence failure; happy path with persist-before-submit, horizon +4, no `NetworkID`; duplicate `executionId`; restart reconciliation; submit throw; unvalidated wait; expiry with/without full search; `tec`; 10 anomaly cases; exact decimals; secrets absent from events/errors/observations/DB; env signer fixed phrases; preflight verdicts and shortfall wording |
 | `andrew-p008-real-transport-host.test.ts` | 4 | the real transport in the composed Host (scripted ledger): unapproved → 0 connections/signatures; approved fresh → executed, 1 signature, 1 submit, hash = `providerRef`, trace carries it; **USD 125,000 → withheld, 0 connections, 0 signatures, 0 submits**; namespace-only change denied |
 | `andrew-p008-structure.test.ts` | 15 | package imports nothing from the runtime; adapter and demo network-free; no runtime importer of the package; no committed seed/key/blob; scripts print no seed; adapter delivered-amount defence (9 cases) and exact decimals |
-| `andrew-p008-live-testnet.test.ts` | live | gated; executed — failed closed at preflight (§10) |
+| `andrew-p008-live-testnet.test.ts` | live | gated; run 1 failed closed before signing (NetworkID, §10.3); run 2 **passed** — real RLUSD 10 payment validated |
 | changed | — | `no-bypass-effect-paths.test.ts` (EP-069, nine of sixty-nine, XRPL sites), dependency rules in `xrpl-execution-adapter-structure.test.ts` and `andrew-p007-structure.test.ts` |
 
 ## 13. Qualification Results
@@ -313,22 +339,37 @@ reconciliation; the transport's manual re-check method was renamed
 `reconcile` → `recheck` (it only re-reads a persisted attempt by hash;
 settling a Frontera outcome stays with P12 resolution).
 
-**Verdict.** The P0-08 transport is complete and qualified offline, and the
-live path is proven to fail closed. The live Testnet transfer (demo amount USD 10 → RLUSD 10) has
-**not** happened; it is blocked solely on Testnet RLUSD funding (§10). Per the
-task's stop condition, P0-08 is committed on its branch and **not** merged into
-`feat/andrew-demo` until the live transfer validates.
+Live-run regression (run 1 → fix): xrpl.js `NetworkID: undefined` handling — §10.3.
+
+**Final qualification (after the NetworkID fix, forced full rebuild):** build,
+typecheck, lint pass; transport package **39 / 39**; P0-06 … P0-08 + no-bypass +
+reconciliation boundaries **228 / 228**; 332-file focused batch **4,639 / 4,642**
+— the inherited CRLF artefact (R004.B) and the inherited `destination-approval`
+"parallel first openings" `SQLITE_BUSY` (one failure plus its harness hang,
+cancelled at 300 s); that suite alone: 54 / 54 twice, one isolated run hung the
+same known way; P0-08 touches neither. Mutation testing: **18 / 18 killed**
+(the 16 above plus the two NetworkID-fix mutations). Live run 2: **1 / 1**.
+
+**Verdict.** P0-08 is complete. Frontera authorization → signed grant → real
+XRPL Testnet transport → real RLUSD Payment → validated ledger → hash → durable
+Frontera outcome has been demonstrated end to end on XRPL Testnet (§10.3), with
+the authority unit **USD 10** and the rail representation **RLUSD 10 on XRPL
+Testnet** kept distinct, and the USD 125,000 ceiling unmoved by a real, funded
+treasury.
 
 ## 14. Readiness for P0-09
 
-Not yet: P0-09 (the complete governed flow, linked reconsideration) should
-start from a `feat/andrew-demo` that contains a P0-08 whose live transfer has
-validated. The code P0-09 builds on is ready.
+Ready once this branch is merged into `feat/andrew-demo`. P0-09 (the complete
+governed flow with linked reconsideration) builds on the composition, the real
+transport and this evidence chain. The live demo amount stays a parameter; the
+treasury needs Testnet RLUSD ≥ that amount for each further live run, and each
+live run needs a fresh attempt store.
 
-## 15. Remaining Before the Live Transfer
+## 15. Live Evidence Locations
 
-1. At least 10 Testnet RLUSD (the live demo amount) on `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF` (faucet).
-2. Re-run the preflight (must be `"ready": true`), then the live runner (§10).
-3. Record here the transaction hash, validated ledger index, engine result,
-   delivered amount and the trace excerpt from the evidence JSON.
-4. Commit that evidence, then merge P0-08 into `feat/andrew-demo` with `--no-ff`.
+| evidence | where |
+| --- | --- |
+| transaction | XRPL Testnet, hash `2FD93956D51719FC23B1F5D6CEB9722E6C85A8626F1019BCA22378C5649B90EE`, ledger 21301562 |
+| Frontera outcome + trace | the run's Host stores (temporary workspace) — reproduced in §10.3 |
+| transport attempt | `~/.config/frontera-andrew/xrpl-attempts-p008-live-2.sqlite` |
+| evidence JSON | `~/.config/frontera-andrew/p008-evidence-run2.json` (and `…-run1-failclosed.json`) |
