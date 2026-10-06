@@ -24,7 +24,35 @@ function trimField(val: unknown, maxLen: number): string | null {
 }
 
 function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  if (email.length === 0 || email.length > 254) return false;
+
+  const atIndex = email.indexOf('@');
+
+  if (atIndex <= 0) return false;
+  if (atIndex !== email.lastIndexOf('@')) return false;
+
+  const domain = email.slice(atIndex + 1);
+
+  if (domain.length === 0) return false;
+
+  const dotIndex = domain.lastIndexOf('.');
+
+  if (dotIndex <= 0 || dotIndex === domain.length - 1) return false;
+
+  for (let index = 0; index < email.length; index += 1) {
+    const code = email.charCodeAt(index);
+
+    if (
+      code === 0x20 || // space
+      code === 0x09 || // tab
+      code === 0x0a || // LF
+      code === 0x0d    // CR
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function normalizeEmail(email: string): string {
@@ -32,7 +60,8 @@ export function normalizeEmail(email: string): string {
 }
 
 export function sanitizeOrganizationProfile(input: Record<string, unknown>): SanitizedProfile {
-  const rawEmail = input.buyerContactEmail != null ? String(input.buyerContactEmail) : null;
+  // Not truncated: an oversized email must be rejected by isValidEmail, not shortened into a different address.
+  const rawEmail = trimField(input.buyerContactEmail, Number.MAX_SAFE_INTEGER);
   const buyerContactEmail = rawEmail ? normalizeEmail(rawEmail) : null;
 
   return {
