@@ -4,7 +4,7 @@
 | --- | --- |
 | Branch | `feat/andrew-p0-11-demo-harness`, from `feat/andrew-demo` @ `d167be3805066466b16a09c05fc84a96e2c9bf48` |
 | Command | `npm run demo:andrew` (live) · `npm run demo:andrew:preflight` (read-only) · `npm run test:andrew-demo` (offline harness tests) |
-| Status | **QUALIFIED OFFLINE — live demo BLOCKED only on Testnet fixture funding** (treasury holds 0 Test RLUSD; 10 required). Committed on the branch; **not merged** into `feat/andrew-demo` (the brief requires a live PASS first). |
+| Status | **VERIFIED — live one-command demo PASS** on XRPL Testnet, run `andrew-20261006T021642Z-a92769` (§11). Merged into `feat/andrew-demo`. |
 
 P0-11 adds no product capability and no governance semantics. It turns what
 P0-08 (real XRPL Testnet transport), P0-09 (linked reconsideration) and P0-10
@@ -271,6 +271,8 @@ FRONTERA-PROD-01 F1 `SQLITE_BUSY` cases.
 
 ## 11. Live qualification
 
+### 11.1 First preflight: NOT READY (historical)
+
 Command: `npm run demo:andrew:preflight` (read-only), run 2026-10-05.
 
 | Check | Observed |
@@ -284,7 +286,110 @@ Command: `npm run demo:andrew:preflight` (read-only), run 2026-10-05.
 | Secrets file | owner-only |
 | **Verdict** | **PREFLIGHT NOT READY**: `FUNDING REQUIRED — the demo never refills, resets or faucets the fixture.` Stopped before any governed action (exit 2); no run directory was created. |
 
-The one-command live demo has **not** run. The harness did not refill, reset
-or faucet the fixture, or lower the amount. After the treasury holds at least
-10 Test RLUSD, run `npm run demo:andrew` once. P0-11 merges into
-`feat/andrew-demo` only after that run reports `DEMO RESULT: PASS`.
+The harness did not refill, reset or faucet the fixture, or lower the amount.
+
+### 11.2 Fixture reset: setup provenance only, NOT demo evidence
+
+The fixture was then reset by an explicit operator action **outside the
+harness**: the recipient returned 10 Test RLUSD to the treasury.
+
+| | |
+| --- | --- |
+| Transaction | `6E1B714456DF55AA3D5EAE990116955839C43F081E20A9D8F7A3869A76943DE1` |
+| Ledger | 21313149, validated, `tesSUCCESS` |
+| Direction | `rhScSFhnm7kAZFZzkPj1aVXw6vWxSc424z` → `rNh9VpjEbgPVs2a9LxW7dZ6ePAP1sRWMpF`, 10 Test RLUSD |
+
+This transaction is **not governed**. No Frontera request, decision, grant or
+trace produced or authorized it. It is not in the run's attempt store, and
+nothing in `summary.json` refers to it. It only records how the treasury got
+back the 10 Test RLUSD the preflight requires, and must not be cited as
+evidence of the demo.
+
+### 11.3 Live run: DEMO RESULT: PASS
+
+Command: `npm run demo:andrew`, one invocation, 2026-10-06T02:16:42.913Z →
+02:16:53.683Z (≈ 11 s). Preflight **READY** (treasury 10 Test RLUSD,
+`network_id` 1, validated ledger 21313261 at preflight).
+
+| | |
+| --- | --- |
+| Run ID | `andrew-20261006T021642Z-a92769` |
+| Summary | `~/.config/frontera-andrew/runs/andrew-20261006T021642Z-a92769/summary.json` (`frontera.andrew-demo.summary.v1`, `finalVerdict: "PASS"`) |
+| Report | `~/.config/frontera-andrew/runs/andrew-20261006T021642Z-a92769/ANDREW-DEMO-andrew-20261006T021642Z-a92769.md` |
+| Governed XRPL transaction | `CCA98653E59CF91B5EDDE1E9390DED7B98885E998E0C5D1FA814A8211A78C657` |
+| Validated ledger | **21313264** |
+| Engine result | **`tesSUCCESS`** |
+| Delivered | **10 Test RLUSD** (currency `524C555344000000000000000000000000000000`, issuer `rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV`), treasury → recipient |
+| Governed amount | USD 10. The USD 75,000 production example and the USD 125,000 Scenario B request did not move. |
+| **Final** | **`DEMO RESULT: PASS`** (exit 0) |
+
+**Scenario A: PASS**
+
+| Step | Result | Evidence |
+| --- | --- | --- |
+| A1 | PASS | destination `never-approved` on fresh state |
+| A2 | EXPECTED GOVERNANCE DENIAL | `aoc.gar:75b211b810a218b90482bce387ef645e` → `denied`, `DOMAIN_POLICY_DENIED`, `POLICY_ACTION_PROHIBITED` |
+| A3 | PASS | replay returned the same committed decision `enforcement-decision-1b4680de-a235-4ded-b351-a3e1df4470e0` |
+| A4 | PASS | approval by `operator:andrew-admin` (organization-administrator, `destination.approve`); 0 grants, signatures, submissions |
+| A5 | PASS | `aoc.gar:15e28f3583f4d27b66bb5cbd140837e1` linked to the original, business intent `aoc.intent:1e2db7fae4a36f5db0c32cae4ac99486`, reason `destination-approved` |
+| A6 | PASS | `allowed` decision `enforcement-decision-5c67e29e-6098-41cb-ae2d-5dbdb4631814`; grant `aoc.grant:0ed1f52b28dd9fbfa75f7c17261790b2`, ceiling USD 100,000 |
+| A7 | PASS | execution `aoc.exec:4437c01ed630bf9ae96afe118c5438db`; the hash above at ledger 21313264; attempt `validated-success` |
+| A8 | PASS | ASSURE-01 trace `executed-confirmed-completed`, verified |
+| A9 | EXPECTED DUPLICATE REFUSAL | `aoc.gar:395146c6eb1fb2594c7c67e08db0cf60` → `withheld`, `GOVERNED_ACTION_RECONSIDERATION_ALREADY_REALIZED` |
+| A10 | PASS | historical replay still `denied`, unchanged |
+
+Counters: 1 grant, 1 connection, 1 signature, 1 submission, 1 attempt.
+
+**Scenario B: PASS (EXPECTED AUTHORITY WITHHOLDING)**
+
+| | |
+| --- | --- |
+| Request / decision | `aoc.gar:88cb12f5e1c49e9abf4769ce1e3ed0b1` / `enforcement-decision-f76888da-c1da-4d45-ae9d-8edf40f57077` (Kernel `allowed`) |
+| Requested / ceiling | USD 125,000 / USD 100,000 |
+| Outcome | `withheld` by `authority-binding`, **`FINANCIAL_AUTHORITY_CEILING_EXCEEDED`** |
+| Issuance record | `aoc.gar.ref:ae8512a76014868e497317a72795c82f` (`withheld:authority-binding:FINANCIAL_AUTHORITY_CEILING_EXCEEDED`) |
+| Deltas | grants 0, connections 0, signatures 0, submissions 0, attempt rows 0; no provider reference, no transaction hash |
+| ASSURE-01 | `not-executed`, verified |
+
+**ASSURE-01: VERIFIED for both scenarios, 4 / 4 trace verifications.**
+
+- Scenario A: 3 / 3. The original denial (A2), the realized reconsideration
+  `executed-confirmed-completed` (A8), and the original again after
+  realization (A10).
+- Scenario B: 1 / 1, `not-executed`.
+
+The harness fails the run on any trace that does not verify, so a PASS
+implies every verification above returned `verified: true`.
+
+### 11.4 Post-run verification of the evidence
+
+Done during finalization, read-only. The live demo was not rerun and the
+fixture was not reset again.
+
+- `summary.json` and the Markdown report agree field for field, and both
+  record `finalVerdict` PASS.
+- The run's `xrpl-attempts.sqlite` holds exactly 1 attempt, for execution
+  `aoc.exec:4437c01ed630bf9ae96afe118c5438db` and the governed hash, with
+  value 10. `host/bounded-grants.sqlite` holds exactly 1 grant.
+- An independent Testnet `tx` lookup of the governed hash returned:
+  validated; ledger 21313264; `tesSUCCESS`; `Payment` from the treasury to the
+  recipient; delivered 10 Test RLUSD from the issuer above.
+- `evidence/` holds only public verification material: the run's Ed25519
+  authority public key and the witness public key. The signed transaction blob
+  stays in the local attempt store. No seed, private key or signed blob was
+  copied into this repository.
+
+### 11.5 Final focused qualification
+
+Run after a forced clean harness rebuild: `tools/andrew-demo-harness/dist`
+and its `.tsbuildinfo` deleted, then `tsc -b --force`. No mutation output
+from §9 can survive this.
+
+| Gate | Result |
+| --- | --- |
+| `npm run test:andrew-demo` | **39 / 39** |
+| P0-11 structure (`andrew-p011-structure.test`) | **6 / 6** |
+| `npm run build` · `npm run typecheck` | pass · pass |
+| `npm run lint` | pass (Node16 imports, architecture, public surface) |
+| `git diff --check` · conflict markers | clean · 0 |
+| Secret scan | 0 matches across the P0-11 change (19 files) and all 3,058 tracked files: no local secret value, no copy of the run's signed blob, and no seed-, private-key- or signed-blob-shaped string |
