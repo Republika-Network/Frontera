@@ -416,6 +416,8 @@ describe('P10 §15 / §30 / §48 — financial actions without resolvable moneta
     ['no constraints at all', [], { value: '1' }, F.FINANCIAL_AUTHORITY_CEILING_MISSING],
     ['a ceiling but no aggregate spending limit — missing is not unlimited', [ceiling('100')], { value: '1' }, F.FINANCIAL_AUTHORITY_SPENDING_LIMIT_MISSING],
     ['authority 100 USD, request in EUR — incomparable, never converted', [ceiling('100'), lifetime('1000')], { value: '100', currency: 'EUR' }, F.FINANCIAL_AUTHORITY_ASSET_MISMATCH],
+    // ANDREW-P0-10: numerically above the ceiling in another asset is still a mismatch, never a ceiling comparison.
+    ['authority 100 USD, request 125 EUR — incomparable before it is ever "above"', [ceiling('100'), lifetime('1000')], { value: '125', currency: 'EUR' }, F.FINANCIAL_AUTHORITY_ASSET_MISMATCH],
     ['a spending limit only in another asset', [ceiling('100'), lifetime('1000', 'EUR')], { value: '1' }, F.FINANCIAL_AUTHORITY_SPENDING_LIMIT_MISSING],
   ] as const) {
     it(`${name} → withheld ${code}; no grant, no reservation, no adapter`, async () => {

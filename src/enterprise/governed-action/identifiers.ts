@@ -64,3 +64,36 @@ export function executionOutcomeReferenceId(executionId: string): string {
 export function executionResolutionReferenceId(executionId: string): string {
   return `aoc.gar.ref:${digest(['aoc.governed-action.execution-resolution-ref.v1', executionId])}`;
 }
+
+/**
+ * ANDREW-P0-09 — the identity of one business intent.
+ *
+ * Derived from the **original** governed request (the root of a reconsideration
+ * lineage), never from a caller value: an original request and every linked
+ * reconsideration of it share it, and nothing else can. The original request
+ * id already binds organization and principal; the organization is hashed
+ * again so the id is recomputable by anyone holding the records (the ASSURE-01
+ * trace does), never chosen by a caller.
+ */
+export function deriveBusinessIntentId(input: { readonly organizationId: string; readonly originalRequestId: string }): string {
+  return `aoc.intent:${digest(['aoc.governed-action.business-intent.v1', input.organizationId, input.originalRequestId])}`;
+}
+
+/** ANDREW-P0-09 — the link row a reconsideration's evaluation carries: one per reconsidering request, at most once. */
+export function reconsiderationLinkReferenceId(reconsiderationRequestId: string): string {
+  return `aoc.gar.ref:${digest(['aoc.governed-action.reconsideration-link.v1', reconsiderationRequestId])}`;
+}
+
+/**
+ * ANDREW-P0-09 — the at-most-once marker that an original action was realized
+ * by a reconsideration. Derived from the **original** request id, so the
+ * Governance Store's unique reference id refuses a second realization of the
+ * same business intent, whichever reconsideration attempts it.
+ */
+export function issuanceWithheldReferenceId(input: { readonly evaluationId: string; readonly version: string }): string {
+  return `aoc.gar.ref:${digest(['aoc.governed-action.issuance-withheld.v1', input.evaluationId, input.version])}`;
+}
+
+export function reconsiderationRealizationReferenceId(originalRequestId: string): string {
+  return `aoc.gar.ref:${digest(['aoc.governed-action.reconsideration-realization.v1', originalRequestId])}`;
+}

@@ -253,6 +253,17 @@ export interface GovernanceIntegrityMetadata {
  *   that records or embodies authorization resulting from a governed
  *   enforcement decision (`TokenizationMandate`, `CollateralizationMandate`,
  *   `LicenseMandate`, `TransferMandate`).
+ * - `reconsideration_link` — ANDREW-P0-09: this evaluation is an explicit,
+ *   linked reconsideration of an earlier withheld governed action (the
+ *   `externalId`), evaluated afresh after governance state changed. Also used
+ *   for the at-most-once marker that one original was realized. Evidence of
+ *   lineage only: it carries no authority and nothing inherits a decision
+ *   through it.
+ * - `issuance_record` — ANDREW-P0-10: authority issuance was evaluated for
+ *   this committed decision and **withheld** (layer, reason codes, the
+ *   requested amount and, for the financial layer, the ceiling compared
+ *   against). Evidence of a result the issuance core already reached; it is
+ *   never read to decide anything.
  *
  * **A reference type is evidence classification, never authority.** Nothing
  * in the runtime reads `referenceType` to decide anything; appending one
@@ -266,6 +277,8 @@ export const GOVERNANCE_REFERENCE_TYPES = [
   'execution_record',
   'external_artifact',
   'authorization_artifact',
+  'reconsideration_link',
+  'issuance_record',
 ] as const;
 
 export type GovernanceReferenceType = (typeof GOVERNANCE_REFERENCE_TYPES)[number];

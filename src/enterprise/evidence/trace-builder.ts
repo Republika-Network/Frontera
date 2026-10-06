@@ -7,7 +7,19 @@ import type { ExecutionOutcomeRecord } from '../execution-outcome-store/contract
 import type { ExecutionResolutionState } from '../execution-resolution-store/contracts.js';
 import type { GovernanceRecord, GovernanceRecordVerificationResult, GovernanceReferenceRecord, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import { computeDigest } from '../governance-store/digest.js';
-import { authorizationReferenceId, deriveGovernedActionExecutionId, executionAttemptReferenceId, executionOutcomeReferenceId, executionResolutionReferenceId } from '../governed-action/identifiers.js';
+import {
+  authorizationReferenceId,
+  deriveBusinessIntentId,
+  deriveGovernedActionExecutionId,
+  executionAttemptReferenceId,
+  executionOutcomeReferenceId,
+  executionResolutionReferenceId,
+  issuanceWithheldReferenceId,
+  reconsiderationLinkReferenceId,
+  reconsiderationRealizationReferenceId,
+} from '../governed-action/identifiers.js';
+import { parseIssuanceWithheldRow } from '../governed-action/issuance-record.js';
+import { businessIntentDigest, isReconsiderationRecord, reconsiderationLinkUri, isReconsiderationReason } from '../governed-action/reconsideration-lineage.js';
 import type { StoredObligationDischarge, ObligationDischargeCorrelation } from '../obligation-discharge/contracts.js';
 import { EvidenceError } from './errors.js';
 import {
@@ -18,6 +30,8 @@ import {
   GOVERNED_REQUEST_ID_PATTERN,
   type AuthorityTrace,
   type AuthorityTraceApprovalStage,
+  type AuthorityTraceIssuance,
+  type AuthorityTraceLineage,
   type AuthorityTraceAuthorityStage,
   type AuthorityTraceCheck,
   type AuthorityTraceCheckCategory,
@@ -183,6 +197,60 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     check('correlation.no-authority-on-non-executable-decision', 'correlation', authorizationRefs.length === 0 && executionRefs.length === 0, path);
   }
 
+  // -- ANDREW-P0-09: linked reconsideration -----------------------------------
+  // Only a record carrying link rows gets a lineage and `lineage.*` checks, so
+  // every other trace is byte-identical to before. Everything is re-derived
+  // from canonical records: this evaluation's own link row, and the original's
+  // own committed, integrity-verified record — never from a request field.
+  let lineage: AuthorityTraceLineage | undefined;
+  const linkRows = references.filter((entry) => entry.referenceType === 'reconsideration_link');
+  const linkRow = linkRows.find((entry) => entry.referenceId === reconsiderationLinkReferenceId(requestId));
+  if (linkRow !== undefined) {
+    const originalRequestId = linkRow.externalId;
+    const reasonMatch = /^urn:aoc:reconsideration:reason:([a-z-]+)$/.exec(linkRow.uri ?? '');
+    const reason = reasonMatch?.[1];
+    let original: GovernanceRecord | null = null;
+    let originalVerified = false;
+    try {
+      original = await sources.governance.getByRequestId(context, originalRequestId);
+      originalVerified = original !== null && (await sources.governance.verify(context, original.evaluation.evaluationId)).valid;
+    } catch {
+      original = null;
+    }
+    const businessIntentId = deriveBusinessIntentId({ organizationId, originalRequestId });
+    const realizationRow = linkRows.find((entry) => entry.referenceId === reconsiderationRealizationReferenceId(originalRequestId));
+    const realizedOriginal = realizationRow !== undefined && realizationRow.externalId === originalRequestId;
+    check('lineage.original-record', 'integrity', original !== null && originalVerified, original === null ? 'ORIGINAL_NOT_FOUND' : undefined);
+    if (original !== null) {
+      check('lineage.original-identity', 'correlation', original.request.requestId === originalRequestId && original.request.organizationId === organizationId && original.request.actorId === record.request.actorId);
+      check('lineage.original-decision', 'correlation', original.evaluation.decisionId === linkRow.externalVersion);
+      check('lineage.original-was-withheld', 'correlation', original.evaluation.status === 'denied' || original.evaluation.status === 'indeterminate', original.evaluation.status);
+      check('lineage.original-is-root', 'correlation', !isReconsiderationRecord(original));
+      check('lineage.original-never-authorized', 'correlation', !original.references.some((entry) => entry.referenceType === 'authorization_artifact' || entry.referenceType === 'execution_record'));
+      check('lineage.same-business-intent', 'correlation', businessIntentDigest(original.request.requestPayload) === linkRow.digest && businessIntentDigest(record.request.requestPayload) === linkRow.digest);
+    }
+    check('lineage.business-intent-id', 'correlation', record.request.correlationId === businessIntentId);
+    check('lineage.reason', 'contract', reason !== undefined && isReconsiderationReason(reason) && linkRow.uri === reconsiderationLinkUri(reason));
+    // New authority on a reconsideration exists only after it claimed the original's one realization.
+    check('lineage.realization-before-authority', 'correlation', authorizationRefs.length === 0 ? 'n/a' : realizedOriginal);
+    lineage = {
+      role: 'reconsideration',
+      businessIntentId,
+      intentDigest: linkRow.digest ?? '',
+      reason: reason ?? 'unreadable',
+      reconsiders: {
+        requestId: originalRequestId,
+        evaluationId: original?.evaluation.evaluationId ?? '',
+        decisionId: linkRow.externalVersion ?? '',
+        status: original?.evaluation.status ?? 'unreadable',
+        reasonCodes: original === null ? [] : [...original.evaluation.reasonCodes],
+      },
+      realizedOriginal,
+    };
+  } else if (linkRows.length > 0) {
+    check('lineage.no-orphan-link-rows', 'correlation', false, 'LINK_ROWS_WITHOUT_OWN_LINK');
+  }
+
   // -- approval ---------------------------------------------------------------
   let approval: AuthorityTraceApprovalStage;
   if (sources.approvals === undefined) {
@@ -326,10 +394,48 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   }
   // A write-ahead claim is only ever made under an issued grant: a claim with no grant is a missing grant.
   if (claimRef !== undefined && grants.length === 0) check('completeness.grant-for-claim', 'completeness', false, 'claim-without-authorization');
+  // -- ANDREW-P0-10: issuance evaluated and withheld --------------------------
+  // Rebuilt from the durable rows the orchestrator wrote from the issuance
+  // core's own result. The trace checks the rows' form, their linkage to this
+  // request, decision and committed amount, and their place in history — it
+  // never re-decides whether a ceiling was exceeded. Absent rows: no issuance
+  // field, no checks, the trace exactly as before.
+  let issuance: AuthorityTraceIssuance | undefined;
+  const issuanceRows = references.filter((entry) => entry.referenceType === 'issuance_record').sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+  if (issuanceRows.length > 0) {
+    const parsed = issuanceRows.map((row) => ({ row, evidence: parseIssuanceWithheldRow(row) }));
+    const action = (record.request.requestPayload['action'] ?? {}) as { readonly amount?: unknown; readonly currency?: unknown };
+    const committed = typeof action.amount === 'string' && typeof action.currency === 'string' ? { value: action.amount, unit: action.currency } : undefined;
+    const firstAuthority = Math.min(...[...authorizationRefs, ...executionRefs].map((entry) => entry.sequence ?? Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
+    check('issuance.record-well-formed', 'integrity', parsed.every(({ row, evidence }) => evidence !== undefined && row.referenceId === issuanceWithheldReferenceId({ evaluationId, version: row.externalVersion ?? '' })));
+    check('issuance.request-linkage', 'correlation', parsed.every(({ evidence }) => evidence?.requestId === requestId));
+    check('issuance.decision-linkage', 'correlation', parsed.every(({ evidence }) => evidence?.decisionId === decisionId));
+    check('issuance.requested-amount', 'correlation', parsed.every(({ evidence }) => evidence?.requested?.value === committed?.value && evidence?.requested?.unit === committed?.unit));
+    check('issuance.on-executable-decision', 'correlation', executable, path);
+    check('issuance.ceiling-stated-with-ceiling-reason', 'contract', parsed.every(({ evidence }) => evidence !== undefined && (evidence.ceiling !== undefined) === evidence.reasonCodes.includes('FINANCIAL_AUTHORITY_CEILING_EXCEEDED')));
+    check('issuance.withheld-before-any-authority', 'correlation', parsed.every(({ row }) => (row.sequence ?? Number.POSITIVE_INFINITY) < firstAuthority));
+    check('issuance.no-grant-while-withheld', 'correlation', authorizationRefs.length === 0 ? true : 'n/a', authorizationRefs.length === 0 ? undefined : 'a later attempt was granted');
+    check('issuance.no-execution-while-withheld', 'correlation', claimRef === undefined ? true : 'n/a');
+    const latest = parsed.at(-1);
+    if (latest?.evidence !== undefined) {
+      issuance = {
+        presence: 'recorded',
+        outcome: 'withheld',
+        withheldBy: latest.evidence.withheldBy,
+        reasonCodes: [...latest.evidence.reasonCodes],
+        ...(latest.evidence.requested !== undefined ? { requested: latest.evidence.requested } : {}),
+        ...(latest.evidence.ceiling !== undefined ? { ceiling: latest.evidence.ceiling } : {}),
+        recordedAt: latest.row.createdAt,
+        records: parsed.length,
+      };
+    }
+  }
+
   const authority: AuthorityTraceAuthorityStage = {
-    presence: !executable ? 'not-applicable' : grants.length === 0 ? (claimRef !== undefined ? 'missing' : 'not-reached') : grants.some((grant) => grant.presence === 'unreadable') ? 'unreadable' : grants.some((grant) => grant.presence === 'missing') ? 'missing' : grants.every((grant) => grant.presence === 'not-composed') ? 'not-composed' : 'recorded',
+    presence: !executable ? 'not-applicable' : grants.length === 0 ? (claimRef !== undefined ? 'missing' : issuance !== undefined ? 'recorded' : 'not-reached') : grants.some((grant) => grant.presence === 'unreadable') ? 'unreadable' : grants.some((grant) => grant.presence === 'missing') ? 'missing' : grants.every((grant) => grant.presence === 'not-composed') ? 'not-composed' : 'recorded',
     ...(sources.grants !== undefined ? { storeKind: sources.grants.kind } : {}),
     grants,
+    ...(issuance !== undefined ? { issuance } : {}),
   };
 
   // -- execution: write-ahead claim and the P11 attempt -----------------------
@@ -643,6 +749,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
         requestedAt: record.request.requestedAt,
         receivedAt: record.request.receivedAt,
         payloadDigest: record.request.payloadDigest,
+        ...(lineage !== undefined ? { lineage } : {}),
       },
       decision: {
         presence: 'recorded',

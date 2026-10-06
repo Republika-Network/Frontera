@@ -177,6 +177,10 @@ export async function resolveKernelContext(
     at,
     ...(request.organization?.id !== undefined ? { organizationId: request.organization.id } : {}),
     ...(request.target?.id !== undefined ? { targetId: request.target.id } : {}),
+    // ANDREW-P0-04: the counterparty the action names, so a resolver can be
+    // asked about *this* counterparty. Request intent, already a typed Kernel
+    // axis and the value the grant binds; never a fact about it.
+    ...(request.action.counterpartyId !== undefined ? { counterpartyId: request.action.counterpartyId } : {}),
   };
 
   // A derivation-only declaration still needs a resolution object built, so the

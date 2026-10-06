@@ -19,6 +19,7 @@
     { "path": "./packages/governed-authorization" },
     { "path": "./packages/governed-authority" },
     { "path": "./packages/license-mandate" },
-    { "path": "./packages/transfer-mandate" }
+    { "path": "./packages/transfer-mandate" },
+    { "path": "./packages/xrpl-testnet-transport" }
   ]
 }

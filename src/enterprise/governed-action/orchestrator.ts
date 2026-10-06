@@ -28,12 +28,14 @@ import type { AuthorityControlledIssuanceCore } from '../execution-governance/is
 import type { GovernanceEnterpriseContext, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { deepFreeze } from '../governance-store/store-common.js';
+import { assessReconsiderationTarget, type ReconsiderationRefusal, type VerifiedReconsiderationTarget } from './reconsideration-lineage.js';
 import {
   GOVERNED_ACTION_REASON_CODES as R,
   type GovernedActionDecisionRef,
   type GovernedActionGrantPolicy,
   type GovernedActionGrantTerms,
   type GovernedActionMonetaryTrust,
+  type GovernedActionReasonCode,
   type GovernedActionResult,
   type GovernedActionWithheldBy,
 } from './contracts.js';
@@ -44,6 +46,17 @@ import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId, governe
 import { validateGovernedActionIntent } from './intent.js';
 import { monetaryAmountOfKernelAction } from './monetary-naming.js';
 import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
+
+/** ANDREW-P0-09: each pre-evaluation reconsideration refusal, in the governed-action vocabulary. */
+const RECONSIDERATION_REFUSAL_CODES: Readonly<Record<ReconsiderationRefusal, GovernedActionReasonCode>> = Object.freeze({
+  RECONSIDERATION_TARGET_SELF: R.GOVERNED_ACTION_RECONSIDERATION_TARGET_SELF,
+  RECONSIDERATION_TARGET_NOT_FOUND: R.GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_FOUND,
+  RECONSIDERATION_TARGET_UNVERIFIABLE: R.GOVERNED_ACTION_RECONSIDERATION_TARGET_UNVERIFIABLE,
+  RECONSIDERATION_TARGET_OTHER_ACTOR: R.GOVERNED_ACTION_RECONSIDERATION_TARGET_OTHER_ACTOR,
+  RECONSIDERATION_TARGET_NOT_ORIGINAL: R.GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_ORIGINAL,
+  RECONSIDERATION_TARGET_NOT_WITHHELD: R.GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_WITHHELD,
+  RECONSIDERATION_INTENT_MISMATCH: R.GOVERNED_ACTION_RECONSIDERATION_INTENT_MISMATCH,
+});
 
 /**
  * The Governed Action Orchestrator — the first canonical internal path from a
@@ -682,7 +695,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       if (scope === undefined) return result({ status: 'rejected', reasonCodes: [R.GOVERNED_ACTION_IDENTITY_INVALID] });
       const validation = validateGovernedActionIntent(rawIntent, monetary, governance);
       if (!validation.valid) return result({ status: 'rejected', reasonCodes: [R.GOVERNED_ACTION_INTENT_INVALID] });
-      const intent = validation.intent;
+      let intent = validation.intent;
 
       // Server-derived request identity, and the tenant scope every Store call
       // runs under — the bound organization and its actor, never a system context.
@@ -690,6 +703,31 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const accessContext: GovernanceStoreAccessContext = { system: false, organizationId: scope.organizationId, actorId: scope.actorId };
       // The same tenant scope for the execution outcome store. It has no system escape at all.
       const outcomeScope: ExecutionOutcomeAccessContext = { organizationId: scope.organizationId };
+
+      // ANDREW-P0-09 — linked reconsideration. Proven before anything is
+      // evaluated: the original exists in this organization, is this actor's,
+      // is an original (not itself a reconsideration), was withheld, and carries
+      // exactly this business intent. A refusal evaluates and commits nothing.
+      // The committed request then carries the server-derived business-intent
+      // id as its correlation, so a reconsideration's request is never
+      // byte-identical to a plain one: reusing an original's idempotency key
+      // for a reconsideration is an idempotency conflict, never a replay.
+      let reconsideration: VerifiedReconsiderationTarget | undefined;
+      if (intent.reconsideration !== undefined) {
+        let read: Awaited<ReturnType<typeof committer.readReconsiderationOriginal>>;
+        try {
+          read = await committer.readReconsiderationOriginal({ scope, intent, requestId, accessContext, originalRequestId: intent.reconsideration.of });
+        } catch {
+          return result({ status: 'system_error', requestId, reasonCodes: [R.GOVERNED_ACTION_DECISION_PERSISTENCE_FAILED] });
+        }
+        const verdict = assessReconsiderationTarget({ ...read, scope, requestId, reconsideration: intent.reconsideration });
+        if (!verdict.ok) return result({ status: 'rejected', requestId, reasonCodes: [RECONSIDERATION_REFUSAL_CODES[verdict.refusal]] });
+        if (intent.correlationId !== undefined && intent.correlationId !== verdict.target.businessIntentId) {
+          return result({ status: 'rejected', requestId, reasonCodes: [R.GOVERNED_ACTION_RECONSIDERATION_INTENT_MISMATCH] });
+        }
+        reconsideration = verdict.target;
+        intent = Object.freeze({ ...intent, correlationId: verdict.target.businessIntentId });
+      }
       const base: ResultContext = { requestId, ...(intent.correlationId !== undefined ? { correlationId: intent.correlationId } : {}) };
 
       // Phase: commit + verify. Nothing below runs without a VerifiedDecision.
@@ -711,6 +749,21 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         decision: { decisionId: persisted.decisionId, evaluationId: record.evaluation.evaluationId, status: persisted.status, reasonCodes: persisted.reasonCodes },
       };
 
+      // ANDREW-P0-09: the durable link, on the reconsideration's own committed
+      // evaluation, whatever the fresh decision says — a reconsideration that is
+      // still denied is still a linked, attributable attempt. The original's
+      // record is only read, never written.
+      const ledger = createExecutionLedger(store, accessContext, now);
+      if (reconsideration !== undefined) {
+        let linked: 'appended' | 'existing' | 'conflict';
+        try {
+          linked = await ledger.recordReconsiderationLink(record.evaluation.evaluationId, requestId, reconsideration);
+        } catch {
+          return result({ status: 'system_error', ...decided, reasonCodes: [R.GOVERNED_ACTION_RECONSIDERATION_LINK_FAILED] });
+        }
+        if (linked === 'conflict') return result({ status: 'rejected', ...decided, reasonCodes: [R.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT] });
+      }
+
       // The Kernel's status, restated — never reinterpreted.
       if (persisted.status === 'denied') return result({ status: 'denied', ...decided, reasonCodes: persisted.reasonCodes });
       if (persisted.status === 'indeterminate') return result({ status: 'indeterminate', ...decided, reasonCodes: persisted.reasonCodes });
@@ -725,7 +778,6 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // happen *now*, and none of them may rewrite what already happened. A
       // caller recovering from a lost response learns the recorded outcome, and
       // no new grant is minted to tell them.
-      const ledger = createExecutionLedger(store, accessContext, now);
       const evaluationId = record.evaluation.evaluationId;
       const executionId = deriveGovernedActionExecutionId({ requestId, decisionId: persisted.decisionId });
       const executed: ResultContext = { ...decided, executionId };
@@ -807,6 +859,21 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         obligationsSatisfied = false;
       }
 
+      // ANDREW-P0-09: one business intent, at most one realization. The last
+      // step before new bounded authority is minted for a reconsideration: the
+      // marker derived from the original request id is claimed, and the
+      // Governance Store refuses it to every other evaluation. A retry of this
+      // same reconsideration finds its own claim and continues.
+      if (reconsideration !== undefined) {
+        let claim: 'claimed' | 'already-realized';
+        try {
+          claim = await ledger.claimReconsiderationRealization(evaluationId, reconsideration);
+        } catch {
+          return result({ status: 'system_error', ...decided, reasonCodes: [R.GOVERNED_ACTION_RECONSIDERATION_LINK_FAILED] });
+        }
+        if (claim === 'already-realized') return result({ status: 'withheld', withheldBy: 'reconsideration', ...decided, reasonCodes: [R.GOVERNED_ACTION_RECONSIDERATION_ALREADY_REALIZED] });
+      }
+
       // Phase: issuance — ACE's, unchanged, from the persisted decision only.
       let authorization;
       try {
@@ -822,15 +889,32 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       } catch (error) {
         return result({ status: 'system_error', ...decided, reasonCodes: [isExecutionGovernanceError(error) ? R.GOVERNED_ACTION_COMPOSITION_INVALID : R.GOVERNED_ACTION_GRANT_ISSUANCE_FAILED] });
       }
+      // ANDREW-P0-10: issuance was evaluated and withheld. Persist the result
+      // the issuance core already returned — layer, codes, the committed
+      // request's amount and (financial) the ceiling it compared against — on
+      // this decision's own evaluation, then answer exactly as before. Evidence
+      // only: nothing reads it to decide, and the answer does not depend on it.
+      const requestedAmount = monetaryAmountOfKernelAction(verified.request.action);
+      const withheldAtIssuance = async (withheldBy: GovernedActionWithheldBy, reasonCodes: readonly string[], ceiling?: { readonly value: string; readonly unit: string }): Promise<GovernedActionResult> => {
+        await ledger.recordIssuanceWithheld(evaluationId, {
+          requestId,
+          decisionId: persisted.decisionId,
+          withheldBy,
+          reasonCodes,
+          ...(requestedAmount !== undefined ? { requested: { value: requestedAmount.value, unit: requestedAmount.unit } } : {}),
+          ...(ceiling !== undefined ? { ceiling: { value: ceiling.value, unit: ceiling.unit } } : {}),
+        });
+        return result({ status: 'withheld', withheldBy, ...decided, reasonCodes });
+      };
       if (authorization.outcome === 'authority-binding-unresolved') {
-        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('authority-binding', authorization.reasonCodes);
       }
       // The commit-boundary interlock fired: a stop turned on, or became
       // unreadable, between admission above and the store's critical section.
       // No grant was committed, so there is nothing to revoke and nothing to
       // exercise.
       if (authorization.outcome === 'emergency-control-withheld') {
-        return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('emergency-control', authorization.reasonCodes);
       }
       // P10: a financial action whose durable monetary authority could not be
       // established — or whose requested amount exceeds it. The Kernel decision
@@ -839,18 +923,18 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // withholding (the wire union is unchanged), carrying the
       // FINANCIAL_AUTHORITY_* code that explains it.
       if (authorization.outcome === 'financial-authority-withheld') {
-        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('authority-binding', authorization.reasonCodes, authorization.ceiling);
       }
       // CTRL-02: the requested typed parameters are outside the standing
       // parameter authority on the decision's lineage. As P10: no grant, so no
       // reservation and no adapter call; publicly an authority-binding
       // withholding carrying the PARAMETER_AUTHORITY_* code.
       if (authorization.outcome === 'parameter-authority-withheld') {
-        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('authority-binding', authorization.reasonCodes);
       }
       if (authorization.outcome === 'grant-withheld') {
         const withheldBy: GovernedActionWithheldBy = authorization.reasonCodes.includes(GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED) ? 'obligations' : 'grant';
-        return result({ status: 'withheld', withheldBy, ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance(withheldBy, authorization.reasonCodes);
       }
       const { grant } = authorization;
       if (grant.subject !== scope.actorId || grant.correlation.requestId !== requestId || grant.correlation.decisionId !== persisted.decisionId) {

@@ -26,6 +26,8 @@ const ROUTER = 'src/enterprise/adapters/node-http-adapter.ts';
 const ROOT = 'src/enterprise/composition/composition-root.ts';
 const WEB_APPROVAL = ['src/control-plane-web/views/pages-approvals.tsx', 'src/control-plane-web/approval-forms.ts', 'src/control-plane-web/app.tsx', 'src/control-plane-web/host-client.ts', 'src/control-plane-web/wire.ts'];
 const CTRL04 = [SERVICE, ...WEB_APPROVAL];
+const DESTINATION_GOVERNANCE_ADMINISTRATION = 'src/enterprise/destination-approval/administration.ts';
+const DESTINATION_GOVERNANCE_DOMAIN = 'src/features/destination-runtime/approval/destination-approval.ts';
 const importsOf = (file: string): readonly string[] => [...codeOf(file).matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((match) => match[1] ?? '');
 
 describe('CTRL-04 structure — one approval engine: CORE-05', () => {
@@ -78,7 +80,19 @@ describe('CTRL-04 structure — the identity bridge: who acts comes only from th
         return /\.(ts|tsx)$/.test(name) && !/\.test\.tsx?$/.test(name) ? [full] : [];
       });
     const constructing = walk('src').filter((file) => !file.startsWith('src/enterprise/approval-authority/') && /authenticated:\s*true/.test(codeOf(file)));
-    assert.deepEqual(constructing, [SERVICE]);
+    // The two ANDREW-P0-03 sites construct `DestinationGovernanceAuthority` — a
+    // separate authority contract for persistent destination governance that
+    // never feeds CORE-05 decision approval. Reviewed and pinned; any other
+    // site, or the bridge moving, still fails here.
+    assert.deepEqual(constructing, [DESTINATION_GOVERNANCE_ADMINISTRATION, SERVICE, DESTINATION_GOVERNANCE_DOMAIN]);
+  });
+
+  it('the pinned destination-governance sites build no approval command context and never reach CORE-05', () => {
+    for (const file of [DESTINATION_GOVERNANCE_ADMINISTRATION, DESTINATION_GOVERNANCE_DOMAIN]) {
+      const code = codeOf(file);
+      assert.equal(/\bactorId\b|\bauthenticatedBy\b|ApprovalCommandContext|approvalCommandContextFor/.test(code), false, file);
+      assert.equal(importsOf(file).some((specifier) => /approval-authority|approval-workflow/.test(specifier)), false, file);
+    }
   });
 
   it('exactly one ApprovalCommandContext is built on the operator plane, from the principal alone', () => {

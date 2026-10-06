@@ -64,6 +64,10 @@ export const OPERATOR_PERMISSIONS = [
    * Kernel-Authority standing.
    */
   'approval.restrict',
+  /** ANDREW-P0-03: approve a registered destination for this organization's governed use. Widens, so it is never a restrict-only permission. */
+  'destination.approve',
+  /** ANDREW-P0-03: revoke this organization's active approval of a destination. Narrows only. */
+  'destination.revoke',
 ] as const;
 
 export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
@@ -73,8 +77,9 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  *
  * - `observer` — inspection only.
  * - `responder` — incident response that only narrows: revoke authority,
- *   revoke an agent credential, declare an emergency stop. It cannot release a
- *   stop, because releasing restores execution.
+ *   revoke an agent credential, declare an emergency stop, revoke a destination
+ *   approval. It cannot release a stop or approve a destination, because both
+ *   restore or widen what may execute.
  * - `provisioner` — onboards agents and assigns standing authority, under every
  *   existing Kernel-Authority rule; may also narrow what it assigned. No
  *   organization bootstrap, no profile promotion, no emergency release.
@@ -84,9 +89,11 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  *   approval verdict. No authority, credentials, profiles or emergency
  *   control. The role only lets an operator *reach* the approval commands;
  *   whether a verdict counts is CORE-05's, from the operator's own
- *   Kernel-Authority approver standing.
+ *   Kernel-Authority approver standing. No destination governance:
+ *   `approval.approve` decides one request, `destination.approve` changes a
+ *   wallet's standing governance state, and neither implies the other.
  * - `organization-administrator` — every permission, including organization
- *   bootstrap and emergency release.
+ *   bootstrap, emergency release and destination approval.
  *
  * CTRL-04 approval permissions: `approval.read` is held by `observer`,
  * `responder`, `approver` and `organization-administrator` (not `provisioner`
@@ -115,7 +122,7 @@ const READ: readonly OperatorPermission[] = ['organization.read', 'authority.ins
 
 const POLICY: Readonly<Record<OperatorRoleOrLegacy, ReadonlySet<OperatorPermission>>> = Object.freeze({
   observer: new Set<OperatorPermission>([...READ, 'approval.read']),
-  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'approval.read', 'approval.restrict']),
+  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'approval.read', 'approval.restrict', 'destination.revoke']),
   provisioner: new Set<OperatorPermission>([...READ, 'authority.provision', 'authority.revoke', 'agent-credential.manage', 'agent-credential.revoke']),
   'profile-steward': new Set<OperatorPermission>([...READ, 'profile.promote', 'profile.retire']),
   approver: new Set<OperatorPermission>([...READ, 'approval.read', 'approval.approve', 'approval.restrict']),

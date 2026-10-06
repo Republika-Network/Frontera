@@ -1,0 +1,25 @@
+{
+  "name": "@aoc-enterprise/xrpl-testnet-transport",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ANDREW-P0-08: the real XRPL Testnet transport behind the XRPL execution adapter's XrplPaymentTransport port — Testnet-only preflight, prepare, sign (through a replaceable signer boundary), durable attempt before submit, single submission and validated-ledger evidence. Contains the only import of the xrpl library in this repository.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test 'dist-test/__tests__/**/*.test.js'"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "xrpl": "^4.7.0"
+  }
+}

@@ -34,6 +34,7 @@
     { "path": "./packages/scoped-access" },
     { "path": "./packages/tenant-governance" },
     { "path": "./packages/tokenization-mandate" },
-    { "path": "./packages/usage-event" }
+    { "path": "./packages/usage-event" },
+    { "path": "./packages/xrpl-testnet-transport" }
   ]
 }
