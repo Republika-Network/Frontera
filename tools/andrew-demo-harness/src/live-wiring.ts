@@ -65,21 +65,30 @@ export function createLedgerPorts(ledger: LedgerConnector = LIVE_LEDGER): DemoLe
     verifySignerAccount(configuration, secrets) {
       signerFor(configuration, secrets);
     },
-    openTransport(configuration, secrets, attemptStorePath): DemoTransportBinding {
+    openTransport(configuration, secrets, attemptStorePath, observe): DemoTransportBinding {
       const counts = { connections: 0, signatures: 0, submissions: 0 };
+      // An observer is told what happened; it can never change it, and a throwing observer is ignored.
+      const tell = (event: { readonly event: string; readonly executionId?: string; readonly transactionHash?: string; readonly detail?: string }): void => {
+        try {
+          observe?.(event);
+        } catch {
+          // Observation only.
+        }
+      };
       const attempts = createSqliteXrplAttemptStore(attemptStorePath);
       const base = signerFor(configuration, secrets);
-      const signer: XrplTransactionSigner = { account: base.account, sign: async (prepared) => ((counts.signatures += 1), base.sign(prepared)) };
+      const signer: XrplTransactionSigner = { account: base.account, sign: async (prepared) => ((counts.signatures += 1), tell({ event: 'signing' }), base.sign(prepared)) };
       const profile = andrewSettlementProfile();
       const transport = createXrplTestnetTransport({
         configuration: { endpoint: configuration.endpoint, sourceAccount: configuration.treasury, forbiddenSourceAccounts: [RLUSD_XRPL_TESTNET_ISSUER, RLUSD_XRPL_MAINNET_ISSUER] },
         settlementGate: (submission) => checkXrplSettlement(profile, submission),
         signer,
         attempts,
+        onEvent: (event) => tell(event),
         connect: async (endpoint) => {
           counts.connections += 1;
           const client = await ledger.connect(endpoint);
-          return { ...client, submit: async (blob: string) => ((counts.submissions += 1), client.submit(blob)) };
+          return { ...client, submit: async (blob: string) => ((counts.submissions += 1), tell({ event: 'submitting' }), client.submit(blob)) };
         },
       });
       const count = (): number => {

@@ -3,8 +3,8 @@ import { join } from 'node:path';
 
 import { RLUSD_CURRENCY_CODE, RLUSD_XRPL_TESTNET_ISSUER, composeAndrewDemo, type AndrewDemo } from '../../../dist/src/enterprise/andrew-demo/index.js';
 import { loadDemoConfiguration } from './configuration.js';
-import { DemoFailure, type DemoConfiguration, type DemoFailureCategory, type DemoInterceptor, type DemoLedgerPorts, type DemoStepObserver, type DemoSummary, type DemoTransportBinding } from './contracts.js';
-import { runDemoPreflight } from './preflight.js';
+import { DemoFailure, type DemoConfiguration, type DemoFailureCategory, type DemoInterceptor, type DemoLedgerPorts, type DemoStepObserver, type DemoSummary, type DemoTransportBinding, type DemoTransportObserver } from './contracts.js';
+import { runDemoPreflight, type PreflightOutcome } from './preflight.js';
 import { createPresenter, grouped, type Presenter } from './presentation.js';
 import { renderMarkdownReport } from './report.js';
 import { createRun, demoIdentity, newRunId, startRunInfrastructure, type RunInfrastructure, type RunPaths } from './run-infrastructure.js';
@@ -103,83 +103,29 @@ export async function runAndrewDemo(options: RunAndrewDemoOptions): Promise<RunA
   const startedAt = now().toISOString();
   const runId = newRunId(now());
   const checkpoints: DemoSummary['checkpoints'][number][] = [];
-  let paths: RunPaths | undefined;
-  let infrastructure: RunInfrastructure | undefined;
-  let binding: DemoTransportBinding | undefined;
-  let demo: AndrewDemo | undefined;
+  const run = new DemoRunResources();
   let scenarioA: Readonly<Record<string, unknown>> | undefined;
   let scenarioB: Readonly<Record<string, unknown>> | undefined;
   let failure: DemoSummary['failure'] | undefined;
   try {
-    paths = createRun(configuration, runId, startedAt);
-    present.line(`Run ${runId} — state in ${paths.runDirectory}`);
-    infrastructure = await startRunInfrastructure(paths, guard);
-    binding = options.ports.openTransport(configuration, secrets, paths.attemptStorePath);
-    if (binding.attemptCount() !== 0) throw new DemoFailure('PRECONDITION FAILURE', 'the run\'s attempt store is not fresh');
-    demo = await composeAndrewDemo({ directory: paths.hostDirectory, environment: infrastructure.environment, identity: demoIdentity(), transport: binding.transport as Parameters<typeof composeAndrewDemo>[0]['transport'] });
-    const context: ScenarioContext = {
-      demo,
-      configuration,
-      paths,
-      credentials: infrastructure.credentials,
-      binding,
-      ports: options.ports,
-      present,
-      checkpoints,
-      ...(options.observer !== undefined ? { observer: options.observer } : {}),
-      ...(options.intercept !== undefined ? { intercept: options.intercept } : {}),
-      ...(options.isInterrupted !== undefined ? { isInterrupted: options.isInterrupted } : {}),
-    };
+    const context = await openDemoRun(run, { configuration, secrets, ports: options.ports, guard, present, runId, startedAt, checkpoints, ...(options.observer !== undefined ? { observer: options.observer } : {}), ...(options.intercept !== undefined ? { intercept: options.intercept } : {}), ...(options.isInterrupted !== undefined ? { isInterrupted: options.isInterrupted } : {}) });
     scenarioA = await runScenarioA(context);
     scenarioB = await runScenarioB(context);
   } catch (error) {
-    const category: DemoFailureCategory = error instanceof DemoFailure ? error.category : 'UNEXPECTED DEMO ASSERTION FAILURE';
-    let message = error instanceof DemoFailure || error instanceof SecretExposureError ? error.message : 'an unexpected error stopped the run';
-    try {
-      guard.check(message);
-    } catch {
-      message = 'an unexpected error stopped the run (details withheld: they matched secret material)';
-    }
-    failure = { category, message, ...(checkpoints.at(-1) !== undefined ? { step: `after ${checkpoints.at(-1)?.step ?? ''}` } : {}) };
+    failure = describeDemoFailure(error, guard, checkpoints);
   } finally {
-    await demo?.close().catch(() => {});
-    binding?.close();
-    await infrastructure?.close().catch(() => {});
+    await run.close();
   }
 
   const verdict: 'PASS' | 'FAIL' = failure === undefined && scenarioA !== undefined && scenarioB !== undefined ? 'PASS' : 'FAIL';
-  const summary: DemoSummary = {
-    schema: 'frontera.andrew-demo.summary.v1',
-    runId,
-    startedAt,
-    finishedAt: now().toISOString(),
-    network: { name: 'XRPL Testnet', ...(preflight.xrpl?.connectedNetworkId !== undefined ? { networkId: preflight.xrpl.connectedNetworkId } : {}), endpoint: configuration.endpoint, ...(preflight.xrpl?.validatedLedgerIndex !== undefined ? { validatedLedgerAtPreflight: preflight.xrpl.validatedLedgerIndex } : {}) },
-    amounts: {
-      governedAmount: { value: configuration.amountUsd, unit: 'USD' },
-      testnetTransfer: { value: configuration.amountUsd, asset: 'Test RLUSD (XRPL Testnet)', currencyCode: RLUSD_CURRENCY_CODE, issuer: RLUSD_XRPL_TESTNET_ISSUER },
-      productionMotivatingExample: { value: PRODUCTION_MOTIVATING_EXAMPLE_USD, unit: 'USD', note: 'Andrew/LUMX production example; the motivating scenario — nothing of this size moved on Testnet or anywhere else' },
-    },
-    accounts: { treasury: configuration.treasury, recipient: configuration.recipient },
-    ...(infrastructure !== undefined ? { verificationMaterial: infrastructure.verificationMaterial } : {}),
-    preflight: { verdict: preflight.verdict, reasons: preflight.reasons, ...(preflight.xrpl?.treasury.tokenBalance !== undefined ? { treasuryTestRlusd: preflight.xrpl.treasury.tokenBalance } : {}), ...(preflight.xrpl?.connectedNetworkId !== undefined ? { networkId: preflight.xrpl.connectedNetworkId } : {}) },
-    ...(scenarioA !== undefined ? { scenarioA } : {}),
-    ...(scenarioB !== undefined ? { scenarioB } : {}),
-    checkpoints: failure === undefined ? checkpoints : [...checkpoints, { step: failure.step ?? 'start', result: 'FAIL', detail: `${failure.category}: ${failure.message}` }],
-    ...(failure !== undefined ? { failure } : {}),
-    finalVerdict: verdict,
-  };
+  const summary = buildDemoSummary({ runId, startedAt, finishedAt: now().toISOString(), configuration, preflight, infrastructure: run.infrastructure, scenarioA, scenarioB, checkpoints, failure, verdict });
 
   let summaryPath: string | undefined;
   let reportPath: string | undefined;
   let finalVerdict = verdict;
-  if (paths !== undefined) {
+  if (run.paths !== undefined) {
     try {
-      const json = guard.check(`${JSON.stringify(summary, null, 2)}\n`);
-      const markdown = guard.check(renderMarkdownReport(summary));
-      summaryPath = join(paths.runDirectory, 'summary.json');
-      reportPath = join(paths.runDirectory, `ANDREW-DEMO-${runId}.md`);
-      writeFileSync(summaryPath, json, { mode: 0o600 });
-      writeFileSync(reportPath, markdown, { mode: 0o600 });
+      ({ summaryPath, reportPath } = writeDemoEvidence(run.paths, summary, guard));
     } catch (error) {
       finalVerdict = 'FAIL';
       present.line(`Evidence summary NOT written: ${error instanceof SecretExposureError ? error.message : 'it could not be written'}`);
@@ -202,4 +148,130 @@ export async function runAndrewDemo(options: RunAndrewDemoOptions): Promise<RunA
   if (reportPath !== undefined) present.fact('Report', reportPath);
   present.line('-'.repeat(60));
   return { verdict: finalVerdict, exitCode: finalVerdict === 'PASS' ? 0 : 1, runId, ...(summaryPath !== undefined ? { summaryPath } : {}), ...(reportPath !== undefined ? { reportPath } : {}), summary: { ...summary, finalVerdict } };
+}
+
+/**
+ * One run's resources, held so they can be closed in a `finally` whatever
+ * point opening reached. Shared by the one-command run and the visual demo.
+ */
+export class DemoRunResources {
+  paths: RunPaths | undefined;
+  infrastructure: RunInfrastructure | undefined;
+  binding: DemoTransportBinding | undefined;
+  demo: AndrewDemo | undefined;
+
+  async close(): Promise<void> {
+    await this.demo?.close().catch(() => {});
+    this.binding?.close();
+    await this.infrastructure?.close().catch(() => {});
+  }
+}
+
+export interface OpenDemoRunOptions {
+  readonly configuration: DemoConfiguration;
+  readonly secrets: Readonly<Record<string, string>>;
+  readonly ports: DemoLedgerPorts;
+  readonly guard: SecretGuard;
+  readonly present: Presenter;
+  readonly runId: string;
+  readonly startedAt: string;
+  readonly checkpoints: DemoSummary['checkpoints'][number][];
+  readonly observer?: DemoStepObserver;
+  readonly intercept?: DemoInterceptor;
+  readonly isInterrupted?: () => boolean;
+  /** Non-secret transport lifecycle events (see `DemoTransportObserver`). */
+  readonly transportObserver?: DemoTransportObserver;
+  /**
+   * Wraps the transport before the composition receives it. The visual demo
+   * uses it to hold an authorized execution at the transport boundary until
+   * the operator releases it; the one-command run never sets it.
+   */
+  readonly wrapTransport?: (transport: unknown) => unknown;
+}
+
+/** A fresh run directory, its infrastructure, its fresh attempt store and the Andrew composition over them. */
+export async function openDemoRun(run: DemoRunResources, options: OpenDemoRunOptions): Promise<ScenarioContext> {
+  const { configuration, secrets, present } = options;
+  run.paths = createRun(configuration, options.runId, options.startedAt);
+  present.line(`Run ${options.runId} — state in ${run.paths.runDirectory}`);
+  run.infrastructure = await startRunInfrastructure(run.paths, options.guard);
+  run.binding = options.ports.openTransport(configuration, secrets, run.paths.attemptStorePath, options.transportObserver);
+  if (run.binding.attemptCount() !== 0) throw new DemoFailure('PRECONDITION FAILURE', 'the run\'s attempt store is not fresh');
+  const transport = options.wrapTransport !== undefined ? options.wrapTransport(run.binding.transport) : run.binding.transport;
+  run.demo = await composeAndrewDemo({ directory: run.paths.hostDirectory, environment: run.infrastructure.environment, identity: demoIdentity(), transport: transport as Parameters<typeof composeAndrewDemo>[0]['transport'] });
+  return {
+    demo: run.demo,
+    configuration,
+    paths: run.paths,
+    credentials: run.infrastructure.credentials,
+    binding: run.binding,
+    ports: options.ports,
+    present,
+    checkpoints: options.checkpoints,
+    ...(options.observer !== undefined ? { observer: options.observer } : {}),
+    ...(options.intercept !== undefined ? { intercept: options.intercept } : {}),
+    ...(options.isInterrupted !== undefined ? { isInterrupted: options.isInterrupted } : {}),
+  };
+}
+
+/** A categorized, secret-checked failure; anything unclassified is an unexpected assertion failure with its details withheld. */
+export function describeDemoFailure(error: unknown, guard: SecretGuard, checkpoints: readonly DemoSummary['checkpoints'][number][]): NonNullable<DemoSummary['failure']> {
+  const category: DemoFailureCategory = error instanceof DemoFailure ? error.category : 'UNEXPECTED DEMO ASSERTION FAILURE';
+  let message = error instanceof DemoFailure || error instanceof SecretExposureError ? error.message : 'an unexpected error stopped the run';
+  try {
+    guard.check(message);
+  } catch {
+    message = 'an unexpected error stopped the run (details withheld: they matched secret material)';
+  }
+  return { category, message, ...(checkpoints.at(-1) !== undefined ? { step: `after ${checkpoints.at(-1)?.step ?? ''}` } : {}) };
+}
+
+export interface DemoSummaryInput {
+  readonly runId: string;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly configuration: DemoConfiguration;
+  readonly preflight: PreflightOutcome;
+  readonly infrastructure: RunInfrastructure | undefined;
+  readonly scenarioA: Readonly<Record<string, unknown>> | undefined;
+  readonly scenarioB: Readonly<Record<string, unknown>> | undefined;
+  readonly checkpoints: readonly DemoSummary['checkpoints'][number][];
+  readonly failure: DemoSummary['failure'] | undefined;
+  readonly verdict: 'PASS' | 'FAIL';
+}
+
+/** The machine-readable summary, from canonical records only. */
+export function buildDemoSummary(input: DemoSummaryInput): DemoSummary {
+  const { configuration, preflight, infrastructure, scenarioA, scenarioB, failure } = input;
+  return {
+    schema: 'frontera.andrew-demo.summary.v1',
+    runId: input.runId,
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    network: { name: 'XRPL Testnet', ...(preflight.xrpl?.connectedNetworkId !== undefined ? { networkId: preflight.xrpl.connectedNetworkId } : {}), endpoint: configuration.endpoint, ...(preflight.xrpl?.validatedLedgerIndex !== undefined ? { validatedLedgerAtPreflight: preflight.xrpl.validatedLedgerIndex } : {}) },
+    amounts: {
+      governedAmount: { value: configuration.amountUsd, unit: 'USD' },
+      testnetTransfer: { value: configuration.amountUsd, asset: 'Test RLUSD (XRPL Testnet)', currencyCode: RLUSD_CURRENCY_CODE, issuer: RLUSD_XRPL_TESTNET_ISSUER },
+      productionMotivatingExample: { value: PRODUCTION_MOTIVATING_EXAMPLE_USD, unit: 'USD', note: 'Andrew/LUMX production example; the motivating scenario — nothing of this size moved on Testnet or anywhere else' },
+    },
+    accounts: { treasury: configuration.treasury, recipient: configuration.recipient },
+    ...(infrastructure !== undefined ? { verificationMaterial: infrastructure.verificationMaterial } : {}),
+    preflight: { verdict: preflight.verdict, reasons: preflight.reasons, ...(preflight.xrpl?.treasury.tokenBalance !== undefined ? { treasuryTestRlusd: preflight.xrpl.treasury.tokenBalance } : {}), ...(preflight.xrpl?.connectedNetworkId !== undefined ? { networkId: preflight.xrpl.connectedNetworkId } : {}) },
+    ...(scenarioA !== undefined ? { scenarioA } : {}),
+    ...(scenarioB !== undefined ? { scenarioB } : {}),
+    checkpoints: failure === undefined ? input.checkpoints : [...input.checkpoints, { step: failure.step ?? 'start', result: 'FAIL', detail: `${failure.category}: ${failure.message}` }],
+    ...(failure !== undefined ? { failure } : {}),
+    finalVerdict: input.verdict,
+  };
+}
+
+/** `summary.json` and its Markdown rendering, owner-only, after the secret guard. Throws (writing nothing) if either would carry secret material. */
+export function writeDemoEvidence(paths: RunPaths, summary: DemoSummary, guard: SecretGuard): { readonly summaryPath: string; readonly reportPath: string } {
+  const json = guard.check(`${JSON.stringify(summary, null, 2)}\n`);
+  const markdown = guard.check(renderMarkdownReport(summary));
+  const summaryPath = join(paths.runDirectory, 'summary.json');
+  const reportPath = join(paths.runDirectory, `ANDREW-DEMO-${summary.runId}.md`);
+  writeFileSync(summaryPath, json, { mode: 0o600 });
+  writeFileSync(reportPath, markdown, { mode: 0o600 });
+  return { summaryPath, reportPath };
 }

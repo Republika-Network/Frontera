@@ -108,12 +108,28 @@ export interface DemoLedgerPorts {
    * Open the run's fresh attempt store and build the transport the Andrew
    * composition is given. Called once, after preflight is READY.
    */
-  openTransport(configuration: DemoConfiguration, secrets: Readonly<Record<string, string>>, attemptStorePath: string): DemoTransportBinding;
+  openTransport(configuration: DemoConfiguration, secrets: Readonly<Record<string, string>>, attemptStorePath: string, observe?: DemoTransportObserver): DemoTransportBinding;
   /** Independent re-read of a validated transaction (a fresh connection; not counted as transport activity). */
   lookupTransaction(configuration: DemoConfiguration, hash: string): Promise<DemoLedgerLookup>;
   /** Decimal equality of issued values, exactly (no floats). */
   issuedValuesEqual(left: unknown, right: string): boolean;
 }
+
+/**
+ * A non-secret transport lifecycle event, as it happens at the boundary:
+ * `signing` (the signer was called), `submitting` (the signed transaction is
+ * being sent), and the P0-08 transport's own structured events
+ * (`xrpl.attempt.persisted`, `xrpl.attempt.submitted`, `xrpl.attempt.validated`, …).
+ * Never carries a seed, a signed blob or a prepared transaction.
+ */
+export interface DemoTransportEvent {
+  readonly event: string;
+  readonly executionId?: string;
+  readonly transactionHash?: string;
+  readonly detail?: string;
+}
+
+export type DemoTransportObserver = (event: DemoTransportEvent) => void;
 
 export interface DemoTransportBinding {
   /** Handed to `composeAndrewDemo` as its `transport`. */
