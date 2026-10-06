@@ -60,7 +60,8 @@ export function normalizeEmail(email: string): string {
 }
 
 export function sanitizeOrganizationProfile(input: Record<string, unknown>): SanitizedProfile {
-  const rawEmail = trimField(input.buyerContactEmail, 254);
+  // Not truncated: an oversized email must be rejected by isValidEmail, not shortened into a different address.
+  const rawEmail = trimField(input.buyerContactEmail, Number.MAX_SAFE_INTEGER);
   const buyerContactEmail = rawEmail ? normalizeEmail(rawEmail) : null;
 
   return {
