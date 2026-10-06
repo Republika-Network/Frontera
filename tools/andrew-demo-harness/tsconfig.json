@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts", "../../types/**/*.d.ts"],
+  "references": [{ "path": "../../tsconfig.src.json" }, { "path": "../../packages/xrpl-testnet-transport" }]
+}
