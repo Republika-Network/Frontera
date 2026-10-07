@@ -61,11 +61,21 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
       '../authority-event-stream/identifiers.js',
       '../governance-store/digest.js',
       '../governed-action/identifiers.js',
+      // LAND-01: the pure lineage derivations (business-intent digest, link-row grammar), pinned pure below.
+      '../governed-action/reconsideration-lineage.js',
       './errors.js',
       './trace-contracts.js',
     ]);
     // From the exercise-control runtime it takes the reservation id derivation only.
     assert.match(codeOf(BUILDER), /import \{ exerciseReservationId, type ExerciseReservationView \} from '\.\.\/\.\.\/features\/exercise-control-runtime\/index\.js';/);
+  });
+
+  it('LAND-01: the lineage module the builder uses is pure — no store, no write, no clock', () => {
+    const lineage = 'src/enterprise/governed-action/reconsideration-lineage.ts';
+    assert.deepEqual([...importsOf(lineage)].sort(), ['../governance-store/contracts.js', './identifiers.js', 'node:crypto']);
+    assert.match(codeOf(lineage), /import type \{ GovernanceRecord \} from '\.\.\/governance-store\/contracts\.js';/);
+    assert.equal(WRITE_CALL.test(codeOf(lineage)), false);
+    assert.equal(/\.(getByRequestId|getByEvaluationId|verify|appendReference|appendEvaluation)\s*\(|Date\.now|new Date/.test(codeOf(lineage)), false);
   });
 
   it('every source the builder is handed is a read: its port type names read methods only', () => {
