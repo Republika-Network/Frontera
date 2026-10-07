@@ -219,7 +219,10 @@ describe('CTRL-03 — operator-plane decision activity and evidence reads', () =
     assert.equal(executed.body['coverage'], 'governance-store-decision-record');
     assert.equal(JSON.stringify(executed.body).includes('requestPayload'), false, 'no raw request payload is serialized');
     const withheld = expectStatus(await call(booted.baseUrl, 'GET', evidencePath(evaluationOf('withheld')), { authorization: AUTH.observer }), 200, 'evidence');
-    assert.deepEqual(withheld.body['references'], [], 'no grant or execution was recorded for the withheld request');
+    const withheldReferences = withheld.body['references'] as readonly Record<string, unknown>[];
+    assert.deepEqual(withheldReferences.filter((reference) => reference['referenceType'] !== 'issuance_record'), [], 'no grant or execution was recorded for the withheld request');
+    // LAND-02: what *was* recorded is the issuance withholding itself — evidence of the result, never authority.
+    assert.deepEqual(withheldReferences.map((reference) => [reference['referenceType'], reference['externalVersion']]), [['issuance_record', 'withheld:authority-binding:PARAMETER_AUTHORITY_EXCEEDED']]);
     const missing = await call(booted.baseUrl, 'GET', evidencePath('no-such-evaluation'), { authorization: AUTH.observer });
     assert.deepEqual([missing.status, errorCode(missing)], [404, 'AUTHORITY_ADMIN_TARGET_NOT_FOUND']);
   });

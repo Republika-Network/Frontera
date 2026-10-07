@@ -812,6 +812,27 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         approval = { digest: assessment.approvalDigest, notAfter: assessment.notAfter };
       }
 
+      // LAND-02: the Kernel allowed, and issuance was then withheld — at the
+      // emergency-control admission below or by the issuance core. Persist the
+      // result already reached — layer, codes, the committed request's amount
+      // and (financial) the ceiling compared against — on this decision's own
+      // evaluation, then answer exactly as before. Evidence only: nothing reads
+      // it to decide, and a failed write can never change the answer.
+      const requestedAmount = monetaryAmountOfKernelAction(verified.request.action);
+      const withheldAtIssuance = async (withheldBy: GovernedActionWithheldBy, reasonCodes: readonly string[], ceiling?: { readonly value: string; readonly unit: string }): Promise<GovernedActionResult> => {
+        await ledger
+          .recordIssuanceWithheld(evaluationId, {
+            requestId,
+            decisionId: persisted.decisionId,
+            withheldBy,
+            reasonCodes,
+            ...(requestedAmount !== undefined ? { requested: { value: requestedAmount.value, unit: requestedAmount.unit } } : {}),
+            ...(ceiling !== undefined ? { ceiling: { value: ceiling.value, unit: ceiling.unit } } : {}),
+          })
+          .catch(() => false);
+        return result({ status: 'withheld', withheldBy, ...decided, reasonCodes });
+      };
+
       // Phase: emergency-control admission. Deliberately **after** replay and
       // **before** grantPolicy.
       //
@@ -836,7 +857,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         resource: verified.request.action.resourceScope,
       });
       if (!emergencyControlPermits(admission)) {
-        return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: admission.reasonCodes });
+        return withheldAtIssuance('emergency-control', admission.reasonCodes);
       }
 
       const terms = termsFor(scope, verified, approval?.notAfter);
@@ -890,14 +911,14 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         return result({ status: 'system_error', ...decided, reasonCodes: [isExecutionGovernanceError(error) ? R.GOVERNED_ACTION_COMPOSITION_INVALID : R.GOVERNED_ACTION_GRANT_ISSUANCE_FAILED] });
       }
       if (authorization.outcome === 'authority-binding-unresolved') {
-        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('authority-binding', authorization.reasonCodes);
       }
       // The commit-boundary interlock fired: a stop turned on, or became
       // unreadable, between admission above and the store's critical section.
       // No grant was committed, so there is nothing to revoke and nothing to
       // exercise.
       if (authorization.outcome === 'emergency-control-withheld') {
-        return result({ status: 'withheld', withheldBy: 'emergency-control', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('emergency-control', authorization.reasonCodes);
       }
       // P10: a financial action whose durable monetary authority could not be
       // established — or whose requested amount exceeds it. The Kernel decision
@@ -906,18 +927,18 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // withholding (the wire union is unchanged), carrying the
       // FINANCIAL_AUTHORITY_* code that explains it.
       if (authorization.outcome === 'financial-authority-withheld') {
-        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('authority-binding', authorization.reasonCodes, authorization.ceiling);
       }
       // CTRL-02: the requested typed parameters are outside the standing
       // parameter authority on the decision's lineage. As P10: no grant, so no
       // reservation and no adapter call; publicly an authority-binding
       // withholding carrying the PARAMETER_AUTHORITY_* code.
       if (authorization.outcome === 'parameter-authority-withheld') {
-        return result({ status: 'withheld', withheldBy: 'authority-binding', ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance('authority-binding', authorization.reasonCodes);
       }
       if (authorization.outcome === 'grant-withheld') {
         const withheldBy: GovernedActionWithheldBy = authorization.reasonCodes.includes(GRANT_REASON_CODES.GRANT_OBLIGATIONS_UNSATISFIED) ? 'obligations' : 'grant';
-        return result({ status: 'withheld', withheldBy, ...decided, reasonCodes: authorization.reasonCodes });
+        return withheldAtIssuance(withheldBy, authorization.reasonCodes);
       }
       const { grant } = authorization;
       if (grant.subject !== scope.actorId || grant.correlation.requestId !== requestId || grant.correlation.decisionId !== persisted.decisionId) {

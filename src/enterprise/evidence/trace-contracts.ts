@@ -189,6 +189,36 @@ export interface AuthorityTraceAuthorityStage {
   /** `authenticated-durable` when grants and revocations verify under the deployment's trusted Ed25519 keys on every read (CORE-01) — a property of the grant store. */
   readonly storeKind?: string;
   readonly grants: readonly AuthorityTraceGrant[];
+  /**
+   * LAND-02 — present only when authority issuance was evaluated for this
+   * decision and **withheld**: rebuilt from the durable `issuance_record` row
+   * the orchestrator wrote from the issuance core's own result, checked under
+   * `issuance.*`. The stage is then `recorded` (issuance was reached), with no
+   * grant. Never re-decided here.
+   */
+  readonly issuance?: AuthorityTraceIssuance;
+}
+
+/** One durable issuance withholding, as the orchestrator recorded it. */
+export interface AuthorityTraceIssuanceRecord {
+  readonly withheldBy: string;
+  readonly reasonCodes: readonly string[];
+  /** The requested amount, as the committed request states it. */
+  readonly requested?: { readonly value: string; readonly unit: string };
+  /** The authority ceiling the issuance core compared against (financial layer). */
+  readonly ceiling?: { readonly value: string; readonly unit: string };
+  readonly recordedAt: string;
+}
+
+/**
+ * The first withholding states the stage; `records` lists every withholding in
+ * order (a replay re-runs the gates; an identical outcome is recorded once).
+ * Append-only, so a later withholding only ever extends an earlier trace.
+ */
+export interface AuthorityTraceIssuance extends AuthorityTraceIssuanceRecord {
+  readonly presence: 'recorded';
+  readonly outcome: 'withheld';
+  readonly records: readonly AuthorityTraceIssuanceRecord[];
 }
 
 export interface AuthorityTraceExecutionStage {

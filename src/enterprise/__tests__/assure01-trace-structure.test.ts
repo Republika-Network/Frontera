@@ -61,6 +61,8 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
       '../authority-event-stream/identifiers.js',
       '../governance-store/digest.js',
       '../governed-action/identifiers.js',
+      // LAND-02: the pure issuance-record grammar (parse + digest of the durable withholding row), pinned pure below.
+      '../governed-action/issuance-record.js',
       // LAND-01: the pure lineage derivations (business-intent digest, link-row grammar), pinned pure below.
       '../governed-action/reconsideration-lineage.js',
       './errors.js',
@@ -76,6 +78,16 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
     assert.match(codeOf(lineage), /import type \{ GovernanceRecord \} from '\.\.\/governance-store\/contracts\.js';/);
     assert.equal(WRITE_CALL.test(codeOf(lineage)), false);
     assert.equal(/\.(getByRequestId|getByEvaluationId|verify|appendReference|appendEvaluation)\s*\(|Date\.now|new Date/.test(codeOf(lineage)), false);
+  });
+
+  it('LAND-02: the issuance-record module the builder uses is pure — node:crypto and canonical contracts, no store, no write, no clock', () => {
+    const record = 'src/enterprise/governed-action/issuance-record.ts';
+    assert.deepEqual(
+      [...importsOf(record)].filter((specifier) => !/^\.\.\/(\.\.\/features\/(emergency-control|grant|monetary)-runtime\/index|execution-governance\/index)\.js$/.test(specifier)),
+      ['node:crypto'],
+    );
+    assert.equal(WRITE_CALL.test(codeOf(record)), false);
+    assert.equal(/\.(getByRequestId|getByEvaluationId|verify|appendReference|appendEvaluation)\s*\(|Date\.now|new Date/.test(codeOf(record)), false);
   });
 
   it('every source the builder is handed is a read: its port type names read methods only', () => {

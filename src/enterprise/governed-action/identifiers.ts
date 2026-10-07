@@ -93,3 +93,17 @@ export function reconsiderationLinkReferenceId(reconsiderationRequestId: string)
 export function reconsiderationRealizationReferenceId(originalRequestId: string): string {
   return `aoc.gar.ref:${digest(['aoc.governed-action.reconsideration-realization.v1', originalRequestId])}`;
 }
+
+/**
+ * LAND-02 — the issuance-withheld evidence row on a decision's own evaluation:
+ * one per (evaluation, withheld outcome), at most once. The outcome is every
+ * fact the row states that can differ on one evaluation — the layer and codes
+ * (`version`) and, for the financial layer, the ceiling compared against (the
+ * request, decision and requested amount are fixed by the evaluation) — so a
+ * replay that meets a changed ceiling records it instead of being taken for
+ * the earlier row. Without a ceiling the identity is exactly the original one.
+ */
+export function issuanceWithheldReferenceId(input: { readonly evaluationId: string; readonly version: string; readonly ceiling?: { readonly value: string; readonly unit: string } }): string {
+  const ceiling = input.ceiling !== undefined ? [input.ceiling.unit, input.ceiling.value] : [];
+  return `aoc.gar.ref:${digest(['aoc.governed-action.issuance-withheld.v1', input.evaluationId, input.version, ...ceiling])}`;
+}

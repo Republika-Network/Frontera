@@ -15,7 +15,7 @@ import {
   type GrantSourceAuthorization,
   type RequestedGrantBounds,
 } from '../../features/grant-runtime/index.js';
-import { compareMonetaryAmounts, type FinancialActionClassifier } from '../../features/monetary-runtime/index.js';
+import { compareMonetaryAmounts, type FinancialActionClassifier, type MonetaryAmount } from '../../features/monetary-runtime/index.js';
 import type { KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult } from '../../kernel/index.js';
 import { KernelGrantCapability, deriveGrantSourceAuthorization, withVerifiedHumanApproval } from '../../kernel/orchestration/grant-adapter.js';
 import { grantValidityCeilingsFor, isWellFormedGrantAuthorityBinding, type GrantAuthorityBinding } from './authority-binding.js';
@@ -241,7 +241,7 @@ type ParameterMeasurement =
 type FinancialMeasurement =
   | { readonly kind: 'non-financial' }
   | { readonly kind: 'financial'; readonly authority: FinancialAuthority; readonly asset: string }
-  | { readonly kind: 'withheld'; readonly reasonCodes: readonly FinancialAuthorityReasonCode[] };
+  | { readonly kind: 'withheld'; readonly reasonCodes: readonly FinancialAuthorityReasonCode[]; readonly ceiling?: MonetaryAmount };
 
 export function createAuthorityControlledIssuanceCore(options: AuthorityControlledIssuanceCoreOptions): AuthorityControlledIssuanceCore {
   const { kernel, grantCapability, grantStore, now, resolveAuthorityBinding } = options;
@@ -301,7 +301,8 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
     if (!resolution.resolved) return { kind: 'withheld', reasonCodes: [resolution.reasonCode] };
     const order = compareMonetaryAmounts({ value: amount, unit: asset }, resolution.authority.ceiling);
     if (order === 'incomparable') return { kind: 'withheld', reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_ASSET_MISMATCH] };
-    if (order > 0) return { kind: 'withheld', reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_CEILING_EXCEEDED] };
+    // LAND-02: the ceiling this comparison used travels with the result, as evidence only.
+    if (order > 0) return { kind: 'withheld', reasonCodes: [FINANCIAL_AUTHORITY_REASON_CODES.FINANCIAL_AUTHORITY_CEILING_EXCEEDED], ceiling: resolution.authority.ceiling };
     return { kind: 'financial', authority: resolution.authority, asset };
   }
 
@@ -511,7 +512,7 @@ export function createAuthorityControlledIssuanceCore(options: AuthorityControll
       // P10: financial actions carry an authority-sourced amount ceiling, or no
       // grant. The historical decision is untouched either way.
       const financial = measureFinancialAuthority(request, decision, measured);
-      if (financial.kind === 'withheld') return { outcome: 'financial-authority-withheld', decision, reasonCodes: financial.reasonCodes };
+      if (financial.kind === 'withheld') return { outcome: 'financial-authority-withheld', decision, reasonCodes: financial.reasonCodes, ...(financial.ceiling !== undefined ? { ceiling: financial.ceiling } : {}) };
       const financialAuthority = financial.kind === 'financial' ? financial.authority : undefined;
       const withAmount = withFinancialCeiling(measured, financialAuthority);
       if (withAmount === undefined) {

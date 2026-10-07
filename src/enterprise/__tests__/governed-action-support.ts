@@ -141,7 +141,7 @@ function createCallLog(): CallLog {
 
 export type StoreFault = Partial<Record<'appendEvaluation' | 'getByEvaluationId' | 'verify' | 'resolveIdempotency' | 'getByRequestId', true>> & {
   /** Throw on appendReference when the reference type matches. */
-  readonly appendReferenceFor?: readonly ('authorization_artifact' | 'execution_record')[];
+  readonly appendReferenceFor?: readonly ('authorization_artifact' | 'execution_record' | 'issuance_record')[];
   /** Throw only on the execution *outcome* append (the second `execution_record`). */
   readonly appendOutcomeReference?: true;
   /** Transform the record `getByEvaluationId` returns — the persisted-source mismatch double. */

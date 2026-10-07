@@ -36,6 +36,7 @@ export {
   grantAuthorityProvenanceDigest,
   serializeFinancialAuthority,
 } from './financial-authority.js';
+export { PARAMETER_AUTHORITY_REASON_CODES, PARAMETER_AUTHORITY_REASON_CODE_VALUES } from './parameter-authority.js';
 export type {
   AuthorityControlledFinancialAuthority,
   FinancialAuthority,
