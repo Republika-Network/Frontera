@@ -398,6 +398,106 @@ export interface ApprovalCommandResponse {
   readonly approval: ApprovalDetail;
 }
 
+// -- PROD-03-01 operational visibility (the Host's `/api/admin/operations/...` reads) --------------
+
+/** One governed request as the Host classified it through its ASSURE-01 trace. */
+export interface OperationalExecution {
+  readonly requestId: string;
+  readonly evaluationId: string;
+  readonly decisionId: string;
+  readonly executionId: string | null;
+  readonly actorId: string;
+  readonly actionType: string;
+  readonly classification: string;
+  readonly attentionRequired: boolean;
+  readonly attentionReasons: readonly string[];
+  readonly unresolved: boolean;
+  readonly decision: { readonly status: string; readonly reasonCodes: readonly string[]; readonly evaluatedAt: string; readonly persistedAt: string };
+  readonly approval: { readonly presence: string; readonly verdicts: readonly string[] } | null;
+  readonly issuance: { readonly status: string; readonly withheldBy: string | null; readonly reasonCodes: readonly string[]; readonly recordedAt: string | null };
+  readonly execution: { readonly claim: string; readonly claimedAt: string | null };
+  readonly outcome: { readonly status: string; readonly source: string | null; readonly failure: string | null; readonly withheldBy: string | null; readonly reasonCodes: readonly string[]; readonly recordedAt: string | null };
+  readonly trace: { readonly available: boolean; readonly finalState: string | null; readonly failure: string | null };
+}
+
+export interface ExecutionsPage {
+  readonly executions: readonly OperationalExecution[];
+  readonly nextCursor: string | null;
+  readonly coverage: string;
+}
+
+export interface AttentionPage {
+  readonly attention: readonly OperationalExecution[];
+  readonly nextCursor: string | null;
+  readonly resolvedOnRead: number;
+  readonly coverage: string;
+}
+
+export interface OperationalScan {
+  readonly candidates: number;
+  readonly examined: number;
+  readonly complete: boolean;
+  readonly limit: number;
+}
+
+export interface OperationalMetrics {
+  readonly decisions: { readonly total: number; readonly allowed: number; readonly denied: number; readonly approvalRequired: number; readonly indeterminate: number };
+  readonly issuanceWithheld: number;
+  readonly executionClaims: number;
+  readonly confirmedOutcomes: number | null;
+  readonly unresolvedExecutions: number;
+  readonly attentionRequired: number;
+  readonly scan: OperationalScan;
+  readonly computedAt: string;
+  readonly coverage: string;
+}
+
+export interface OperationsHealth {
+  /** The Host's own health report, exactly as `/health` states it. Rendered field by field; nothing is inferred from it. */
+  readonly health: {
+    readonly status: string;
+    readonly enterpriseVersion: string;
+    readonly kernelVersion: string;
+    readonly checkedAt: string;
+    readonly lifecycleState?: string;
+    readonly ready?: boolean;
+    readonly posture?: Readonly<Record<string, string | number>>;
+    readonly persistence: { readonly provider: string; readonly status: string };
+  };
+  readonly operations: { readonly unresolvedExecutions: number; readonly attentionRequired: number; readonly scan: OperationalScan; readonly checkedAt: string };
+}
+
+export interface TraceCheck {
+  readonly check: string;
+  readonly category: string;
+  readonly status: string;
+  readonly detail?: string;
+}
+
+export interface OperationalTrace {
+  readonly requestId: string;
+  readonly disclosure: { readonly level: string; readonly policyId: string; readonly hiddenFields: readonly string[] };
+  readonly trace: {
+    readonly requestId: string;
+    readonly evaluationId: string;
+    readonly decisionId: string;
+    readonly executionId?: string;
+    readonly summary?: { readonly path: string; readonly finalState: string; readonly presence: Readonly<Record<string, string>> } | string;
+    readonly stages: Readonly<Record<string, unknown>>;
+  };
+  readonly traceDigest: string;
+  readonly verification: { readonly verified: boolean; readonly categories: Readonly<Record<string, string>>; readonly checks: readonly TraceCheck[]; readonly finalState: string; readonly verifiedAt: string; readonly boundary: string };
+  readonly operational: OperationalExecution;
+  readonly generatedAt: string;
+}
+
+/** Trace levels an operator may ask the Host for. FULL is internal to the Host and never offered. */
+export const TRACE_LEVELS = ['AUDITOR', 'PARTNER', 'CUSTOMER', 'PUBLIC'] as const;
+
+export function isTraceLevel(value: string): value is (typeof TRACE_LEVELS)[number] {
+  return (TRACE_LEVELS as readonly string[]).includes(value);
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isArrayOf = (value: unknown, item: (entry: unknown) => boolean): boolean => Array.isArray(value) && value.every(item);
@@ -463,5 +563,56 @@ export const shapes = {
     isObject(body['subject']) &&
     isObject(body['requirement']) &&
     isArrayOf(body['verdicts'], (verdict) => isObject(verdict) && isString(verdict['kind']) && typeof verdict['counted'] === 'boolean' && Array.isArray(verdict['evidence'])),
+  operationalExecution: (entry: unknown): entry is OperationalExecution =>
+    isObject(entry) &&
+    isString(entry['requestId']) &&
+    isString(entry['evaluationId']) &&
+    isString(entry['classification']) &&
+    typeof entry['attentionRequired'] === 'boolean' &&
+    isArrayOf(entry['attentionReasons'], isString) &&
+    typeof entry['unresolved'] === 'boolean' &&
+    isObject(entry['decision']) &&
+    isString(entry['decision']['status']) &&
+    isObject(entry['issuance']) &&
+    isObject(entry['execution']) &&
+    isObject(entry['outcome']) &&
+    isObject(entry['trace']),
+  executions: (body: unknown): body is ExecutionsPage =>
+    isObject(body) && isArrayOf(body['executions'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])),
+  attention: (body: unknown): body is AttentionPage =>
+    isObject(body) && isArrayOf(body['attention'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])) && typeof body['resolvedOnRead'] === 'number',
+  operationalScan: (scan: unknown): scan is OperationalScan =>
+    isObject(scan) && typeof scan['candidates'] === 'number' && typeof scan['examined'] === 'number' && typeof scan['complete'] === 'boolean' && typeof scan['limit'] === 'number',
+  metrics: (body: unknown): body is OperationalMetrics =>
+    isObject(body) &&
+    isObject(body['decisions']) &&
+    typeof body['decisions']['total'] === 'number' &&
+    typeof body['issuanceWithheld'] === 'number' &&
+    typeof body['executionClaims'] === 'number' &&
+    (body['confirmedOutcomes'] === null || typeof body['confirmedOutcomes'] === 'number') &&
+    typeof body['unresolvedExecutions'] === 'number' &&
+    typeof body['attentionRequired'] === 'number' &&
+    shapes.operationalScan(body['scan']),
+  operationsHealth: (body: unknown): body is OperationsHealth =>
+    isObject(body) &&
+    isObject(body['health']) &&
+    isString(body['health']['status']) &&
+    isObject(body['health']['persistence']) &&
+    isObject(body['operations']) &&
+    typeof body['operations']['unresolvedExecutions'] === 'number' &&
+    typeof body['operations']['attentionRequired'] === 'number' &&
+    shapes.operationalScan(body['operations']['scan']),
+  trace: (body: unknown): body is OperationalTrace =>
+    isObject(body) &&
+    isString(body['requestId']) &&
+    isObject(body['disclosure']) &&
+    isString(body['disclosure']['level']) &&
+    isObject(body['trace']) &&
+    isObject(body['trace']['stages']) &&
+    isString(body['traceDigest']) &&
+    isObject(body['verification']) &&
+    typeof body['verification']['verified'] === 'boolean' &&
+    isArrayOf(body['verification']['checks'], (entry) => isObject(entry) && isString(entry['check']) && isString(entry['status'])) &&
+    shapes.operationalExecution(body['operational']),
   approvalCommand: (body: unknown): body is ApprovalCommandResponse => isObject(body) && body['outcome'] === 'recorded' && isString(body['verdict']) && shapes.approval(body['approval']),
 } as const;

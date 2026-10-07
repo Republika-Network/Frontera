@@ -10,7 +10,7 @@ import type { HostClient, HostResult } from './host-client.js';
 import { ConsoleRequestError, clearCookie, cookieNames, readCookie, readForm, sameOrigin, setCookie, type FormFields } from './security.js';
 import { newFormToken, newIdempotencyKey, takeFlash, tokensEqual, type ConsoleSession, type SessionStore } from './session.js';
 import { CONSOLE_CSS } from './styles.js';
-import { ENTITY_KIND_LABELS, GRANT_REVOCATION_REASONS, isApprovalVerb, isApprovalView, isEntityKind, type ApprovalVerb, type EntityKind, type EntityView, type OrganizationContext } from './wire.js';
+import { ENTITY_KIND_LABELS, GRANT_REVOCATION_REASONS, isApprovalVerb, isApprovalView, isEntityKind, isTraceLevel, type ApprovalVerb, type EntityKind, type EntityView, type OrganizationContext } from './wire.js';
 import { boundsOf, lineageOf } from './views/authority-terms.js';
 import { Id, Status } from './views/components.js';
 import type { FormValues } from './views/entity-form.js';
@@ -19,6 +19,7 @@ import { AuthorityPage, EntityPage, ExecutionPage, GrantPage, ProvisionPage } fr
 import { ConfirmPage, CredentialIssuedPage, ErrorPage, LoginPage, OverviewPage } from './views/pages-core.js';
 import { ActivityPage, EmergencyPage, EvidenceIndexPage, EvidencePage, ProfilesPage } from './views/pages-records.js';
 import { ApprovalCommandPage, ApprovalPage, ApprovalsPage } from './views/pages-approvals.js';
+import { AttentionListPage, ExecutionsListPage, HostHealthPage, TraceIndexPage, TracePage, tracePath } from './views/pages-operations.js';
 
 /**
  * CTRL-03 — the Frontera web control plane: request handling.
@@ -371,6 +372,38 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
     return html(200, <EvidenceIndexPage context={authed.context} csrfToken={authed.csrf} recent={settle(recent)} />);
   }
 
+  // -- PROD-03-01 operational visibility (reads only) -----------------------------------------
+
+  async function attentionPage(authed: Authed, query: URLSearchParams): Promise<ConsoleResponse> {
+    const cursor = query.get('cursor') ?? '';
+    const page = await host.attention(authed.session.bearer, { limit: 50, ...(cursor !== '' ? { cursor } : {}) });
+    if (!page.ok && page.failure.kind === 'unauthenticated') return failurePage(authed, 'Attention', page.failure);
+    return html(page.ok ? 200 : statusForFailure(page.failure), <AttentionListPage context={authed.context} csrfToken={authed.csrf} page={settle(page)} />);
+  }
+
+  async function executionsPage(authed: Authed, query: URLSearchParams): Promise<ConsoleResponse> {
+    const filter = { status: query.get('status') ?? '', requestId: (query.get('requestId') ?? '').trim() };
+    const cursor = query.get('cursor') ?? '';
+    const page = await host.executions(authed.session.bearer, { ...(filter.status !== '' ? { status: filter.status } : {}), ...(filter.requestId !== '' ? { requestId: filter.requestId } : {}), ...(cursor !== '' ? { cursor } : {}), limit: 50 });
+    if (!page.ok && page.failure.kind === 'unauthenticated') return failurePage(authed, 'Executions', page.failure);
+    return html(page.ok ? 200 : statusForFailure(page.failure), <ExecutionsListPage context={authed.context} csrfToken={authed.csrf} page={settle(page)} filter={filter} />);
+  }
+
+  async function tracePage(authed: Authed, requestId: string, query: URLSearchParams): Promise<ConsoleResponse> {
+    const level = query.get('level') ?? 'AUDITOR';
+    if (!isTraceLevel(level)) return html(400, <ErrorPage title="Unknown disclosure level" context={authed.context} csrfToken={authed.csrf} />);
+    const view = await host.trace(authed.session.bearer, requestId, level);
+    if (!view.ok) return view.failure.kind === 'unauthenticated' ? failurePage(authed, 'Trace', view.failure) : html(statusForFailure(view.failure), <TraceIndexPage context={authed.context} csrfToken={authed.csrf} failure={view.failure} />);
+    return html(200, <TracePage context={authed.context} csrfToken={authed.csrf} view={view.body} />);
+  }
+
+  async function hostHealthPage(authed: Authed): Promise<ConsoleResponse> {
+    const { bearer } = authed.session;
+    const [health, metrics] = await Promise.all([host.operationsHealth(bearer), host.operationsMetrics(bearer)]);
+    for (const result of [health, metrics]) if (!result.ok && result.failure.kind === 'unauthenticated') return failurePage(authed, 'Host Health', result.failure);
+    return html(health.ok ? 200 : statusForFailure(health.failure), <HostHealthPage context={authed.context} csrfToken={authed.csrf} health={settle(health)} metrics={settle(metrics)} />);
+  }
+
   // -- confirmations ------------------------------------------------------------------------
 
   async function credentialConfirm(authed: Authed, actorId: string, credentialId: string, operation: 'rotate' | 'revoke', failure?: HostFailure, idempotencyKey?: string): Promise<ConsoleResponse> {
@@ -674,6 +707,16 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
       }
       if (first === 'approvals' && second !== undefined && third !== undefined && isApprovalVerb(third) && parts.length === 3) return approvalCommandPage(authed, second, third);
 
+      if (first === 'attention' && parts.length === 1) return attentionPage(authed, query);
+      if (first === 'executions' && parts.length === 1) return executionsPage(authed, query);
+      if (first === 'traces' && parts.length === 1) {
+        const requestId = (query.get('requestId') ?? '').trim();
+        if (requestId === '') return html(200, <TraceIndexPage context={authed.context} csrfToken={authed.csrf} />);
+        const level = query.get('level') ?? 'AUDITOR';
+        return redirect(tracePath(requestId, isTraceLevel(level) ? level : 'AUDITOR'));
+      }
+      if (first === 'traces' && second !== undefined && parts.length === 2) return tracePage(authed, second, query);
+      if (first === 'host-health' && parts.length === 1) return hostHealthPage(authed);
       if (first === 'activity' && parts.length === 1) return activity(authed, query);
       if (first === 'evidence' && parts.length === 1) return evidenceIndex(authed, query);
       if (first === 'evidence' && second === 'decisions' && third !== undefined && parts.length === 3) {

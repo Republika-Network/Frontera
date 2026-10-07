@@ -528,6 +528,8 @@ export interface GovernanceStoreQuery {
   readonly actionType?: string;
   readonly status?: KernelDecisionStatus;
   readonly reasonCode?: string;
+  /** PROD-03-01 — narrows to records carrying one shape of governed-path evidence. See `GOVERNANCE_GOVERNED_PATH_FILTERS`. */
+  readonly governedPath?: GovernanceGovernedPathFilter;
 
   readonly from?: string;
   readonly to?: string;
@@ -535,6 +537,29 @@ export interface GovernanceStoreQuery {
   readonly limit?: number;
   readonly cursor?: string;
 }
+
+/**
+ * PROD-03-01 — read-only filters over the governed-path evidence rows a record
+ * already carries (`governed-action/execution-ledger.ts` writes them). They
+ * select records for an operator to look at; nothing reads them to decide
+ * anything, and the canonical answer for a selected record is still its
+ * ASSURE-01 trace.
+ *
+ * - `execution-claimed` — the record holds a write-ahead execution claim
+ *   (`execution_record`, `externalVersion: 'attempt'`).
+ * - `execution-open` — it holds a claim with no **definitive** outcome row for
+ *   the same execution id: no `executed`, `execution-failed:`, `withheld:` or
+ *   `resolved:` row (`isDefinitiveExecutionEvidence`). A superset of the
+ *   executions whose trace is unresolved: a definitive row is written only
+ *   after the canonical record it summarizes committed.
+ * - `issuance-withheld` — the record holds a LAND-02 `issuance_record` row.
+ */
+export const GOVERNANCE_GOVERNED_PATH_FILTERS = ['execution-claimed', 'execution-open', 'issuance-withheld'] as const;
+
+export type GovernanceGovernedPathFilter = (typeof GOVERNANCE_GOVERNED_PATH_FILTERS)[number];
+
+/** A count over the same filters as a query. No page: a count reads no record. */
+export type GovernanceStoreCountQuery = Omit<GovernanceStoreQuery, 'limit' | 'cursor'>;
 
 /** One query hit — a summary, not the full aggregate; use `getByEvaluationId` for reconstruction. */
 export interface GovernanceRecordSummary {

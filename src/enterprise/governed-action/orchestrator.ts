@@ -46,6 +46,7 @@ import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId, governe
 import { validateGovernedActionIntent } from './intent.js';
 import { monetaryAmountOfKernelAction } from './monetary-naming.js';
 import { boundScopeOf, type BoundActorScope } from './kernel-request.js';
+import type { GovernedPathExecutionRef, GovernedPathObserver, GovernedPathOutcome } from './path-observer.js';
 
 /** LAND-01: each pre-evaluation reconsideration refusal, in the governed-action vocabulary. */
 const RECONSIDERATION_REFUSAL_CODES: Readonly<Record<ReconsiderationRefusal, GovernedActionReasonCode>> = Object.freeze({
@@ -288,6 +289,13 @@ export interface GovernedActionOrchestratorOptions {
     readonly binder: ExecutionResolutionBinder;
     readonly reader: ExecutionResolutionReader;
   };
+  /**
+   * PROD-03-01 — the operational observer (structured governed-path logging),
+   * when the deployment composed one. Told each fact after it is established,
+   * exactly like the P8 recorder, and never read: every call is guarded, so an
+   * observer that throws changes no result. Omitting it changes nothing.
+   */
+  readonly pathObserver?: GovernedPathObserver;
 }
 
 /**
@@ -453,6 +461,29 @@ function observationOf(outcome: ExecutionOutcome, observedAt: string): Execution
   }
 }
 
+/** PROD-03-01 — the runtime's outcome in the observer's closed vocabulary: certainty, the layer's own codes, never a reference or an amount. */
+function observedOutcomeOf(outcome: ExecutionOutcome): { readonly outcome: GovernedPathOutcome; readonly reasonCodes: readonly string[]; readonly withheldBy?: string } {
+  switch (outcome.status) {
+    case 'executed':
+      return { outcome: 'confirmed-completed', reasonCodes: [] };
+    case 'execution-failed':
+      return { outcome: 'confirmed-not-completed', reasonCodes: [outcome.reason] };
+    case 'execution-unconfirmed':
+      return { outcome: 'unconfirmed', reasonCodes: [] };
+    case 'withheld':
+      return {
+        outcome: 'withheld',
+        withheldBy: outcome.withheldBy,
+        reasonCodes:
+          outcome.withheldBy === 'emergency-control' ? outcome.emergencyControl.reasonCodes : outcome.withheldBy === 'exercise-control' ? outcome.exerciseControl.reasonCodes : outcome.assessment.reasonCodes,
+      };
+    default: {
+      const unreachable: never = outcome;
+      return unreachable;
+    }
+  }
+}
+
 /** The exercise request, built from the verified request and the grant — never from the caller's object. */
 function exerciseFor(verified: VerifiedDecision, scope: BoundActorScope, grant: { readonly id: string; readonly correlation: GrantCorrelation }, executionId: string): GrantExerciseRequest {
   const { request } = verified;
@@ -536,6 +567,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
   const hostRevalidateSource = options.revalidateSource;
   const emergencyControl = options.emergencyControl;
   const evidence = options.evidence;
+  const pathObserver = options.pathObserver;
   const committer = createDecisionCommitter({
     store,
     issuance,
@@ -640,6 +672,24 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
     } catch {
       // Evidence never changes an outcome that was already reached.
     }
+  }
+
+  /** PROD-03-01 — the operational observer, guarded exactly as `report` is. */
+  function observe(fact: (observer: GovernedPathObserver) => void): void {
+    if (pathObserver === undefined) return;
+    try {
+      fact(pathObserver);
+    } catch {
+      // Observation never changes an outcome that was already reached.
+    }
+  }
+
+  /** A replayed execution that still has no confirmed outcome is reported each time it is answered. The answer passes through unchanged. */
+  function observeReplay(ref: GovernedPathExecutionRef): (replayed: GovernedActionResult) => GovernedActionResult {
+    return (replayed) => {
+      if (replayed.status === 'execution_unconfirmed') observe((observer) => observer.unconfirmedExecution({ ...ref, reasonCodes: replayed.reasonCodes }));
+      return replayed;
+    };
   }
 
   /**
@@ -748,6 +798,8 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         ...base,
         decision: { decisionId: persisted.decisionId, evaluationId: record.evaluation.evaluationId, status: persisted.status, reasonCodes: persisted.reasonCodes },
       };
+      const pathRef = { requestId, evaluationId: record.evaluation.evaluationId, decisionId: persisted.decisionId };
+      observe((observer) => observer.decision({ ...pathRef, status: persisted.status, reasonCodes: persisted.reasonCodes }));
 
       // LAND-01: the durable link, on the reconsideration's own committed
       // evaluation, whatever the fresh decision says — a reconsideration that is
@@ -782,7 +834,8 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       const executionId = deriveGovernedActionExecutionId({ requestId, decisionId: persisted.decisionId });
       const executed: ResultContext = { ...decided, executionId };
       const known = ledger.prior(record, executionId);
-      if (known.attempted) return replayExecution(outcomeScope, executed, executionId, known, persisted.reasonCodes);
+      const executionRef: GovernedPathExecutionRef = { ...pathRef, executionId };
+      if (known.attempted) return replayExecution(outcomeScope, executed, executionId, known, persisted.reasonCodes).then(observeReplay(executionRef));
 
       // Phase: approval (CORE-05). A decision that awaits a human approval is
       // resumed only by a durable, attributable approval of exactly this
@@ -820,6 +873,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // it to decide, and a failed write can never change the answer.
       const requestedAmount = monetaryAmountOfKernelAction(verified.request.action);
       const withheldAtIssuance = async (withheldBy: GovernedActionWithheldBy, reasonCodes: readonly string[], ceiling?: { readonly value: string; readonly unit: string }): Promise<GovernedActionResult> => {
+        observe((observer) => observer.issuanceWithheld({ ...pathRef, withheldBy, reasonCodes }));
         await ledger
           .recordIssuanceWithheld(evaluationId, {
             requestId,
@@ -1029,10 +1083,11 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       } catch {
         return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
       }
-      if (claim.kind === 'already-claimed') return replayExecution(outcomeScope, executed, executionId, claim.prior, persisted.reasonCodes);
+      if (claim.kind === 'already-claimed') return replayExecution(outcomeScope, executed, executionId, claim.prior, persisted.reasonCodes).then(observeReplay(executionRef));
       // Enqueued, not awaited: no evidence write may sit between the durable
       // claim and the adapter crossing.
       report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
+      observe((observer) => observer.executionClaimed(executionRef));
 
       // Exercise through ACE: the grant is re-read from the authoritative store
       // and the adapter receives a ValidatedExecutionAction only.
@@ -1041,6 +1096,7 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         outcome = await execution.exercise(exercise);
       } catch {
         // Whether the adapter ran is unknown. It is not retried.
+        observe((observer) => observer.unconfirmedExecution({ ...executionRef, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] }));
         return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
       }
 
@@ -1069,6 +1125,13 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
       // What the runtime returned, with its certainty intact. Reported after the
       // outcome exists; the result below is built from `outcome`, never from this.
       report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));
+      observe((observer) => {
+        const observed = observedOutcomeOf(outcome);
+        observer.executionOutcome({ ...executionRef, ...observed, outcomeRecorded });
+        if (observed.outcome === 'unconfirmed' || !outcomeRecorded) {
+          observer.unconfirmedExecution({ ...executionRef, reasonCodes: observed.outcome === 'unconfirmed' ? [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, ...unrecorded] : unrecorded });
+        }
+      });
       if (outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise' && observedExpiry(outcome.assessment)) {
         report((recorder) => recorder.grantExpiryObserved(grant));
       }

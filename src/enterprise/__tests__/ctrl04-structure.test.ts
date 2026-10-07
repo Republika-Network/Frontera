@@ -210,7 +210,7 @@ describe('CTRL-04 structure — the HTTP surface', () => {
       surface.routePatterns.filter((pattern) => pattern.includes('approvals')),
       ['^\\/api\\/admin\\/approvals$', '^\\/api\\/admin\\/approvals\\/([^/]+)$', '^\\/api\\/admin\\/approvals\\/([^/]+)\\/(approve|reject|request-changes|escalate|revoke)$'],
     );
-    // 49 (CTRL-03) + 2 reads + 5 verdict paths = 56; + 2 ASSURE-01 trace reads = 58.
-    assert.equal(surface.endpointCount, 58);
+    // 49 (CTRL-03) + 2 reads + 5 verdict paths = 56; + 2 ASSURE-01 trace reads = 58; + 5 PROD-03-01 operational reads = 63.
+    assert.equal(surface.endpointCount, 63);
   });
 });

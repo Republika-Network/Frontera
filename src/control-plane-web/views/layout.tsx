@@ -8,8 +8,12 @@ export const NAVIGATION = [
   { path: '/agents', label: 'Agents' },
   { path: '/authority', label: 'Authority' },
   { path: '/approvals', label: 'Approvals' },
+  { path: '/attention', label: 'Attention' },
+  { path: '/executions', label: 'Executions' },
   { path: '/activity', label: 'Activity' },
   { path: '/evidence', label: 'Evidence' },
+  { path: '/traces', label: 'Trace' },
+  { path: '/host-health', label: 'Host Health' },
   { path: '/profiles', label: 'Governance Profiles' },
 ] as const;
 
