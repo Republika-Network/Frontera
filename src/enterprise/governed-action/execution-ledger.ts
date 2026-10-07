@@ -4,7 +4,16 @@ import type { BoundedGrant } from '../../features/grant-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODE_VALUES, isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
-import { authorizationReferenceId, executionAttemptReferenceId, executionOutcomeReferenceId, executionResolutionReferenceId } from './identifiers.js';
+import { isGovernanceStoreError } from '../governance-store/errors.js';
+import {
+  authorizationReferenceId,
+  executionAttemptReferenceId,
+  executionOutcomeReferenceId,
+  executionResolutionReferenceId,
+  reconsiderationLinkReferenceId,
+  reconsiderationRealizationReferenceId,
+} from './identifiers.js';
+import { RECONSIDERATION_REALIZED_URI, reconsiderationLinkUri, type VerifiedReconsiderationTarget } from './reconsideration-lineage.js';
 
 /**
  * Evidence writing for a governed action: which authorization artifact a
@@ -238,6 +247,21 @@ export interface ExecutionLedger {
    * reads it back to decide anything.
    */
   recordResolution(evaluationId: string, executionId: string, resolution: ExecutionResolutionSummary): Promise<boolean>;
+  /**
+   * LAND-01 — the link a reconsideration's own evaluation carries to its
+   * original: original request id, original decision id, business-intent
+   * digest, reason. At most once per reconsidering request; a retry finds the
+   * same row; a row there naming something else is `conflict`. The original's
+   * record is never written to.
+   */
+  recordReconsiderationLink(evaluationId: string, requestId: string, target: VerifiedReconsiderationTarget): Promise<'appended' | 'existing' | 'conflict'>;
+  /**
+   * LAND-01 — claim the one realization of an original business intent.
+   * The marker id is derived from the original request id, so the Store's
+   * unique reference id refuses it to every other evaluation
+   * (`already-realized`); this evaluation already holding it is `claimed`.
+   */
+  claimReconsiderationRealization(evaluationId: string, target: VerifiedReconsiderationTarget): Promise<'claimed' | 'already-realized'>;
 }
 
 export function createExecutionLedger(store: GovernanceStore, accessContext: GovernanceStoreAccessContext, now: () => string): ExecutionLedger {
@@ -361,6 +385,52 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
         return true;
       } catch {
         return false;
+      }
+    },
+
+    async recordReconsiderationLink(evaluationId, requestId, target) {
+      const reference: GovernanceReferenceInput = {
+        referenceId: reconsiderationLinkReferenceId(requestId),
+        evaluationId,
+        referenceType: 'reconsideration_link',
+        externalId: target.originalRequestId,
+        externalVersion: target.originalDecisionId,
+        digest: target.intentDigest,
+        uri: reconsiderationLinkUri(target.reason),
+        createdAt: now(),
+      };
+      try {
+        await store.appendReference(accessContext, reference);
+        return 'appended';
+      } catch (error) {
+        const record = await store.getByEvaluationId(accessContext, evaluationId);
+        const existing = record?.references.find((entry) => entry.referenceId === reference.referenceId);
+        if (existing === undefined) throw error;
+        const same = existing.referenceType === reference.referenceType && existing.externalId === reference.externalId && existing.externalVersion === reference.externalVersion && existing.digest === reference.digest && existing.uri === reference.uri;
+        return same ? 'existing' : 'conflict';
+      }
+    },
+
+    async claimReconsiderationRealization(evaluationId, target) {
+      const reference: GovernanceReferenceInput = {
+        referenceId: reconsiderationRealizationReferenceId(target.originalRequestId),
+        evaluationId,
+        referenceType: 'reconsideration_link',
+        externalId: target.originalRequestId,
+        externalVersion: 'realized',
+        digest: target.intentDigest,
+        uri: RECONSIDERATION_REALIZED_URI,
+        createdAt: now(),
+      };
+      try {
+        await store.appendReference(accessContext, reference);
+        return 'claimed';
+      } catch (error) {
+        const own = await store.getByEvaluationId(accessContext, evaluationId);
+        if (own?.references.some((entry) => entry.referenceId === reference.referenceId)) return 'claimed';
+        // The id exists on another evaluation: the Store refused a second realization.
+        if (isGovernanceStoreError(error) && error.code === 'GOVERNANCE_STORE_VALIDATION_ERROR') return 'already-realized';
+        throw error;
       }
     },
   };

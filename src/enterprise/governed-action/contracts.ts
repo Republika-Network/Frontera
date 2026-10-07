@@ -4,6 +4,7 @@ import type { RequestedGrantBounds } from '../../features/grant-runtime/index.js
 import type { FinancialActionClassifier, MonetaryAmount, MonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import type { KernelDecisionStatus } from '../../kernel/index.js';
 import type { GovernanceProfileRegistry } from '../governance-profile/index.js';
+import type { ReconsiderationIntent } from './reconsideration-lineage.js';
 
 /**
  * The Governed Action contract: what a caller may *ask for*, and what it is
@@ -96,6 +97,14 @@ export interface GovernedActionIntent {
   readonly correlationId?: string;
   /** Required. Scoped by the orchestrator to `(organization, principal)`, so two tenants or two principals can never collide on one key. */
   readonly idempotencyKey: string;
+  /**
+   * LAND-01 — this request explicitly reconsiders an earlier withheld
+   * governed action (`of`, its request id) because governance state changed
+   * (`reason`). It is still a fresh request with its own `idempotencyKey`,
+   * evaluated afresh; the original is never re-evaluated or rewritten. See
+   * `governed-action/reconsideration-lineage.ts`.
+   */
+  readonly reconsideration?: ReconsiderationIntent;
 }
 
 /**
@@ -260,6 +269,24 @@ export const GOVERNED_ACTION_REASON_CODES = {
   GOVERNED_ACTION_APPROVAL_SUPERSEDED: 'GOVERNED_ACTION_APPROVAL_SUPERSEDED',
   /** CORE-05 — the durable approval store could not be read, verified or written. Never read optimistically: the decision stays withheld. */
   GOVERNED_ACTION_APPROVAL_UNAVAILABLE: 'GOVERNED_ACTION_APPROVAL_UNAVAILABLE',
+  /** LAND-01 — a reconsideration may not name itself. Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_TARGET_SELF: 'GOVERNED_ACTION_RECONSIDERATION_TARGET_SELF',
+  /** LAND-01 — the reconsidered request does not exist in this organization. Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_FOUND: 'GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_FOUND',
+  /** LAND-01 — the reconsidered request's committed record failed its integrity verification. Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_TARGET_UNVERIFIABLE: 'GOVERNED_ACTION_RECONSIDERATION_TARGET_UNVERIFIABLE',
+  /** LAND-01 — the reconsidered request belongs to another actor. Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_TARGET_OTHER_ACTOR: 'GOVERNED_ACTION_RECONSIDERATION_TARGET_OTHER_ACTOR',
+  /** LAND-01 — the named request is itself a reconsideration; only an original may be reconsidered (one root per lineage, so no chain or cycle). Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_ORIGINAL: 'GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_ORIGINAL',
+  /** LAND-01 — the original was not withheld (it was allowed or awaits approval); there is nothing to reconsider. Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_WITHHELD: 'GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_WITHHELD',
+  /** LAND-01 — the reconsideration does not carry the original's business intent (who, action, resource, counterparty, amount, semantics). Nothing was evaluated. */
+  GOVERNED_ACTION_RECONSIDERATION_INTENT_MISMATCH: 'GOVERNED_ACTION_RECONSIDERATION_INTENT_MISMATCH',
+  /** LAND-01 — the reconsideration's link to its original could not be durably recorded. No grant was issued. */
+  GOVERNED_ACTION_RECONSIDERATION_LINK_FAILED: 'GOVERNED_ACTION_RECONSIDERATION_LINK_FAILED',
+  /** LAND-01 — this original business intent was already realized by another reconsideration. Withheld before any grant: one intent, at most one realization. */
+  GOVERNED_ACTION_RECONSIDERATION_ALREADY_REALIZED: 'GOVERNED_ACTION_RECONSIDERATION_ALREADY_REALIZED',
 } as const;
 
 export type GovernedActionReasonCode = (typeof GOVERNED_ACTION_REASON_CODES)[keyof typeof GOVERNED_ACTION_REASON_CODES];
@@ -303,7 +330,7 @@ interface GovernedActionResultBase {
  * was never wrong. Its reason codes are `EMERGENCY_CONTROL_*`, owned by
  * `src/features/emergency-control-runtime`.
  */
-export type GovernedActionWithheldBy = 'approval' | 'obligations' | 'grant' | 'authority-binding' | 'grant-terms' | 'exercise' | 'emergency-control';
+export type GovernedActionWithheldBy = 'approval' | 'obligations' | 'grant' | 'authority-binding' | 'grant-terms' | 'exercise' | 'emergency-control' | 'reconsideration';
 
 /**
  * What a governed action produced.

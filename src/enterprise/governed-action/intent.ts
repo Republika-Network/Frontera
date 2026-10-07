@@ -11,6 +11,7 @@ import { isPositiveMonetaryAmount, parseMonetaryAmount, type MonetaryAmount } fr
 import { isCanonicalCustomerIdentifier } from '../customer-identity/index.js';
 import type { GovernanceProfileRegistry, ResolvedGovernanceProfile } from '../governance-profile/index.js';
 import type { ClassifiedGovernedActionIntent, GovernedActionMonetaryTrust } from './contracts.js';
+import { RECONSIDERATION_REASONS, isReconsiderationReason, type ReconsiderationIntent } from './reconsideration-lineage.js';
 import { monetaryIngressFromWire } from './monetary-naming.js';
 
 /**
@@ -49,7 +50,9 @@ export type GovernedActionIntentValidation =
   | { readonly valid: true; readonly intent: ClassifiedGovernedActionIntent }
   | { readonly valid: false; readonly violations: readonly string[] };
 
-const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'parameters', 'expectedGovernanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey']);
+const DECLARED_KEYS: ReadonlySet<string> = new Set(['action', 'resource', 'counterparty', 'amount', 'parameters', 'expectedGovernanceProfile', 'assertedContext', 'correlationId', 'idempotencyKey', 'reconsideration']);
+/** The shape of a governed request id (`identifiers.ts`). */
+const GOVERNED_REQUEST_ID = /^aoc\.gar:[0-9a-f]{32}$/;
 
 /**
  * Keys an asserted context may not carry at its top level.
@@ -302,7 +305,21 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
   const undeclared = Object.keys(raw).filter((key) => !DECLARED_KEYS.has(key));
   if (undeclared.length > 0) violations.push(`The intent carries undeclared properties: ${undeclared.join(', ')}.`);
 
-  const { action, resource, counterparty, amount, parameters, expectedGovernanceProfile, assertedContext, correlationId, idempotencyKey } = raw;
+  const { action, resource, counterparty, amount, parameters, expectedGovernanceProfile, assertedContext, correlationId, idempotencyKey, reconsideration } = raw;
+
+  // LAND-01: a closed `{ of, reason }` — the original's request id and why governance state changed.
+  let canonicalReconsideration: ReconsiderationIntent | undefined;
+  if (reconsideration !== undefined) {
+    if (!isPlainObject(reconsideration) || Object.keys(reconsideration).some((key) => key !== 'of' && key !== 'reason')) {
+      violations.push('reconsideration must be an object with exactly `of` and `reason`.');
+    } else if (typeof reconsideration['of'] !== 'string' || !GOVERNED_REQUEST_ID.test(reconsideration['of'])) {
+      violations.push('reconsideration.of must be a governed request id (aoc.gar:<32 lowercase hex>).');
+    } else if (!isReconsiderationReason(reconsideration['reason'])) {
+      violations.push(`reconsideration.reason must be one of: ${RECONSIDERATION_REASONS.join(', ')}.`);
+    } else {
+      canonicalReconsideration = Object.freeze({ of: reconsideration['of'], reason: reconsideration['reason'] });
+    }
+  }
 
   if (!isCanonicalCustomerIdentifier(action)) violations.push('action must be a canonical identifier.');
   if (!isCanonicalCustomerIdentifier(resource)) violations.push('resource must be a canonical identifier.');
@@ -365,6 +382,7 @@ export function validateGovernedActionIntent(raw: unknown, trust: GovernedAction
     ...(declaredParameters !== undefined ? { parameters: declaredParameters } : {}),
     ...(canonicalContext !== undefined ? { assertedContext: canonicalContext } : {}),
     ...(correlationId !== undefined ? { correlationId: correlationId as string } : {}),
+    ...(canonicalReconsideration !== undefined ? { reconsideration: canonicalReconsideration } : {}),
   };
   const intent: ClassifiedGovernedActionIntent =
     actionClass === 'financial' && canonicalAmount !== undefined ? { ...common, actionClass, amount: canonicalAmount } : { ...common, actionClass: 'non-financial' };

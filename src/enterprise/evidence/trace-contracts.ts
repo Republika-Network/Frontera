@@ -86,6 +86,33 @@ export interface AuthorityTraceRequestStage {
   readonly requestedAt: string;
   readonly receivedAt: string;
   readonly payloadDigest: string;
+  /** LAND-01 — present only when this request is a linked reconsideration. */
+  readonly lineage?: AuthorityTraceLineage;
+}
+
+/**
+ * LAND-01 — this request reconsiders an earlier withheld governed action.
+ * Rebuilt from canonical records on every trace (the link row on this
+ * evaluation, the original's own committed record), never copied from a
+ * request field, and checked under `lineage.*`.
+ */
+export interface AuthorityTraceLineage {
+  readonly role: 'reconsideration';
+  /** Server-derived from the original request id; shared by the original and every linked reconsideration. */
+  readonly businessIntentId: string;
+  /** Digest of the business intent (who, action, resource, counterparty, amount, semantics) — equal on both requests. */
+  readonly intentDigest: string;
+  readonly reason: string;
+  readonly reconsiders: {
+    readonly requestId: string;
+    readonly evaluationId: string;
+    readonly decisionId: string;
+    /** The original's committed status — historically true, never rewritten. */
+    readonly status: string;
+    readonly reasonCodes: readonly string[];
+  };
+  /** True when this reconsideration holds the original's one realization marker (it was allowed and proceeded to authority). */
+  readonly realizedOriginal: boolean;
 }
 
 export interface AuthorityTraceDecisionStage {
