@@ -23,6 +23,14 @@ const importsOf = (file: string): readonly string[] => [...codeOf(file).matchAll
 const RECORD = 'src/enterprise/governed-action/issuance-record.ts';
 const LEDGER = 'src/enterprise/governed-action/execution-ledger.ts';
 const ORCHESTRATOR = 'src/enterprise/governed-action/orchestrator.ts';
+/** What the issuance-record module may import: node:crypto and the canonical contracts its grammar defers to. */
+const RECORD_IMPORTS = [
+  'node:crypto',
+  '../../features/emergency-control-runtime/index.js',
+  '../../features/grant-runtime/index.js',
+  '../../features/monetary-runtime/index.js',
+  '../execution-governance/index.js',
+];
 
 /** Every production file LAND-02 touches. */
 const LAND02 = [
@@ -64,8 +72,9 @@ describe('LAND-02 structure — issuance-withheld evidence stays rail-neutral an
     for (const file of LAND02) assert.deepEqual(importsOf(file).filter((specifier) => FORBIDDEN_MODULE.test(specifier)), [], file);
   });
 
-  it('the issuance-record module is pure node:crypto and speaks no rail, wallet or payment vocabulary', () => {
-    assert.deepEqual([...importsOf(RECORD)], ['node:crypto']);
+  it('the issuance-record module is pure — node:crypto and canonical contracts only — and speaks no rail, wallet or payment vocabulary', () => {
+    // node:crypto, and the canonical contracts the grammar is subordinate to (P9 money, the issuance reason vocabularies) — pure data and logic.
+    assert.deepEqual([...importsOf(RECORD)], RECORD_IMPORTS);
     const code = codeOf(RECORD);
     assert.equal(RAIL_VOCABULARY.test(code), false);
     assert.equal(/payment|payee|settle/i.test(code), false, 'generic value / unit terms only');

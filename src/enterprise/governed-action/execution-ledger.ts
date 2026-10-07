@@ -267,7 +267,7 @@ export interface ExecutionLedger {
   /**
    * LAND-02 — persist that authority issuance was evaluated and withheld
    * for this committed decision, exactly as the issuance core returned it.
-   * Idempotent per (evaluation, outcome). `false` when it could not be proven
+   * Idempotent per (evaluation, outcome) — the ceiling is part of the outcome. `false` when it could not be proven
    * written — the withheld answer stands either way; nothing here can grant.
    */
   recordIssuanceWithheld(evaluationId: string, evidence: IssuanceWithheldEvidence): Promise<boolean>;
@@ -448,7 +448,7 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
       const version = issuanceWithheldVersion(evidence);
       try {
         await appendOnce({
-          referenceId: issuanceWithheldReferenceId({ evaluationId, version }),
+          referenceId: issuanceWithheldReferenceId({ evaluationId, version, ...(evidence.ceiling !== undefined ? { ceiling: evidence.ceiling } : {}) }),
           evaluationId,
           referenceType: 'issuance_record',
           externalId: evidence.requestId,

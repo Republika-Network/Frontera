@@ -80,9 +80,12 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
     assert.equal(/\.(getByRequestId|getByEvaluationId|verify|appendReference|appendEvaluation)\s*\(|Date\.now|new Date/.test(codeOf(lineage)), false);
   });
 
-  it('LAND-02: the issuance-record module the builder uses is pure — node:crypto only, no store, no write, no clock', () => {
+  it('LAND-02: the issuance-record module the builder uses is pure — node:crypto and canonical contracts, no store, no write, no clock', () => {
     const record = 'src/enterprise/governed-action/issuance-record.ts';
-    assert.deepEqual([...importsOf(record)], ['node:crypto']);
+    assert.deepEqual(
+      [...importsOf(record)].filter((specifier) => !/^\.\.\/(\.\.\/features\/(emergency-control|grant|monetary)-runtime\/index|execution-governance\/index)\.js$/.test(specifier)),
+      ['node:crypto'],
+    );
     assert.equal(WRITE_CALL.test(codeOf(record)), false);
     assert.equal(/\.(getByRequestId|getByEvaluationId|verify|appendReference|appendEvaluation)\s*\(|Date\.now|new Date/.test(codeOf(record)), false);
   });

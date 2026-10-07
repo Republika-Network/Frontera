@@ -245,6 +245,7 @@ export function discloseAuthorityTrace(trace: AuthorityTrace, policy: Disclosure
 /** Identifiers of people and mechanisms that a visible stage may carry, and the field whose visibility each depends on. */
 const PEOPLE_FIELDS = ['issuerRef'] as const;
 const MECHANISM_FIELDS = ['adapterId', 'routedBy', 'providerRef', 'authorityId', 'binding'] as const;
+const AMOUNT_FIELDS = ['requested', 'ceiling'] as const;
 
 function strip(value: unknown, keys: readonly string[]): unknown {
   if (Array.isArray(value)) return value.map((item) => strip(item, keys));
@@ -263,6 +264,8 @@ function withinPolicy(stage: AuthorityTraceStageName, value: unknown, hidden: Re
   if (hidden.has('trace.approval')) out = strip(out, PEOPLE_FIELDS);
   // The Governance chain position is a store-wide counter: below AUDITOR it would disclose other organizations' volume.
   if (hidden.has('trace.request') && stage === 'decision') out = strip(out, ['chainPosition']);
+  // LAND-02: the issuance evidence on the authority stage carries the requested amount and the ceiling — amounts, governed with the parameters.
+  if (hidden.has('trace.parameters') && stage === 'authority' && isRecord(out) && isRecord(out['issuance'])) out = { ...out, issuance: strip(out['issuance'], AMOUNT_FIELDS) };
   if (hidden.has('trace.authority') && (stage === 'outcome' || stage === 'resolution')) {
     out = strip(out, MECHANISM_FIELDS);
     // The Governance summary names the adapter after `@` (`executed@<adapter>`): keep the outcome, drop the mechanism.

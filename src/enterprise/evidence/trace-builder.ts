@@ -31,6 +31,7 @@ import {
   type AuthorityTrace,
   type AuthorityTraceApprovalStage,
   type AuthorityTraceIssuance,
+  type AuthorityTraceIssuanceRecord,
   type AuthorityTraceLineage,
   type AuthorityTraceAuthorityStage,
   type AuthorityTraceCheck,
@@ -407,7 +408,11 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     const action = (record.request.requestPayload['action'] ?? {}) as { readonly amount?: unknown; readonly currency?: unknown };
     const committed = typeof action.amount === 'string' && typeof action.currency === 'string' ? { value: action.amount, unit: action.currency } : undefined;
     const firstAuthority = Math.min(...[...authorizationRefs, ...executionRefs].map((entry) => entry.sequence ?? Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
-    check('issuance.record-well-formed', 'integrity', parsed.every(({ row, evidence }) => evidence !== undefined && row.referenceId === issuanceWithheldReferenceId({ evaluationId, version: row.externalVersion ?? '' })));
+    // The identity covers the ceiling; a row written before it did (identity over the layer and codes only) still verifies.
+    const identified = (row: (typeof issuanceRows)[number], ceiling: AuthorityTraceIssuanceRecord['ceiling']): boolean =>
+      row.referenceId === issuanceWithheldReferenceId({ evaluationId, version: row.externalVersion ?? '', ...(ceiling !== undefined ? { ceiling } : {}) }) ||
+      (ceiling !== undefined && row.referenceId === issuanceWithheldReferenceId({ evaluationId, version: row.externalVersion ?? '' }));
+    check('issuance.record-well-formed', 'integrity', parsed.every(({ row, evidence }) => evidence !== undefined && identified(row, evidence.ceiling)));
     check('issuance.request-linkage', 'correlation', parsed.every(({ evidence }) => evidence?.requestId === requestId));
     check('issuance.decision-linkage', 'correlation', parsed.every(({ evidence }) => evidence?.decisionId === decisionId));
     check('issuance.requested-amount', 'correlation', parsed.every(({ evidence }) => evidence?.requested?.value === committed?.value && evidence?.requested?.unit === committed?.unit));
@@ -416,19 +421,23 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     check('issuance.withheld-before-any-authority', 'correlation', parsed.every(({ row }) => (row.sequence ?? Number.POSITIVE_INFINITY) < firstAuthority));
     check('issuance.no-grant-while-withheld', 'correlation', authorizationRefs.length === 0 ? true : 'n/a', authorizationRefs.length === 0 ? undefined : 'a later attempt was granted');
     check('issuance.no-execution-while-withheld', 'correlation', claimRef === undefined ? true : 'n/a');
-    const latest = parsed.at(-1);
-    if (latest?.evidence !== undefined) {
-      issuance = {
-        presence: 'recorded',
-        outcome: 'withheld',
-        withheldBy: latest.evidence.withheldBy,
-        reasonCodes: [...latest.evidence.reasonCodes],
-        ...(latest.evidence.requested !== undefined ? { requested: latest.evidence.requested } : {}),
-        ...(latest.evidence.ceiling !== undefined ? { ceiling: latest.evidence.ceiling } : {}),
-        recordedAt: latest.row.createdAt,
-        records: parsed.length,
-      };
-    }
+    // Append-only: the first withholding states the stage, and every withholding is listed in order, so a
+    // later one (a replay that met a different gate or ceiling) only ever extends what an earlier trace said.
+    const records: AuthorityTraceIssuanceRecord[] = parsed.flatMap(({ row, evidence }) =>
+      evidence === undefined
+        ? []
+        : [
+            {
+              withheldBy: evidence.withheldBy,
+              reasonCodes: [...evidence.reasonCodes],
+              ...(evidence.requested !== undefined ? { requested: evidence.requested } : {}),
+              ...(evidence.ceiling !== undefined ? { ceiling: evidence.ceiling } : {}),
+              recordedAt: row.createdAt,
+            },
+          ],
+    );
+    const [first] = records;
+    if (first !== undefined) issuance = { presence: 'recorded', outcome: 'withheld', ...first, records };
   }
 
   const authority: AuthorityTraceAuthorityStage = {

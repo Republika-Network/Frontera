@@ -171,7 +171,7 @@ function assertWithheldAfterAllow(reply: Reply, withheldBy: string, code: string
 }
 
 /** The one durable issuance row on the decision's own evaluation, and nothing that carries authority or execution. */
-async function assertIssuanceRow(reply: Reply, expected: { readonly withheldBy: string; readonly code: string; readonly uriTail: string }): Promise<void> {
+async function assertIssuanceRow(reply: Reply, expected: { readonly withheldBy: string; readonly code: string; readonly uriTail: string; readonly ceiling?: { readonly value: string; readonly unit: string } }): Promise<void> {
   const record = await recordOf(reply);
   assert.deepEqual(record.references.filter((entry) => entry.referenceType === 'authorization_artifact' || entry.referenceType === 'execution_record'), [], 'no grant, no execution');
   const rows = record.references.filter((entry) => entry.referenceType === 'issuance_record');
@@ -179,7 +179,7 @@ async function assertIssuanceRow(reply: Reply, expected: { readonly withheldBy: 
   const version = `withheld:${expected.withheldBy}:${expected.code}`;
   assert.equal(rows[0]?.externalVersion, version);
   assert.equal(rows[0]?.externalId, requestIdOf(reply));
-  assert.equal(rows[0]?.referenceId, issuanceWithheldReferenceId({ evaluationId: decisionOf(reply).evaluationId, version }));
+  assert.equal(rows[0]?.referenceId, issuanceWithheldReferenceId({ evaluationId: decisionOf(reply).evaluationId, version, ...(expected.ceiling !== undefined ? { ceiling: expected.ceiling } : {}) }));
   assert.equal(rows[0]?.uri, `urn:aoc:issuance-record:v1;decision=${decisionOf(reply).decisionId}${expected.uriTail}`);
 }
 
@@ -198,7 +198,10 @@ async function assertIssuanceTrace(reply: Reply, expected: { readonly withheldBy
   assert.deepEqual(issuance['reasonCodes'], [expected.code]);
   assert.deepEqual(issuance['requested'], expected.requested);
   assert.deepEqual(issuance['ceiling'], expected.ceiling);
-  assert.equal(issuance['records'], 1);
+  const { presence: _presence, outcome: _outcome, records, ...first } = issuance;
+  void _presence;
+  void _outcome;
+  assert.deepEqual(records, [first], 'one withholding, listed once');
   assert.equal(trace.summary['finalState'], 'not-executed');
   assert.equal((trace.stages['execution']?.['claim'] as Record<string, unknown>)['presence'], 'not-reached');
   const checks = await assertVerified(requestIdOf(reply), label);
@@ -239,7 +242,7 @@ describe('LAND-02 — Kernel allowed, issuance withheld, durable evidence: on th
     const reply = await govern(transfer(OVER_CEILING));
     assertWithheldAfterAllow(reply, 'authority-binding', F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED, 'A');
     assert.equal(adapterCalls(), before);
-    await assertIssuanceRow(reply, { withheldBy: 'authority-binding', code: F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED, uriTail: `;requested=USD:${OVER_CEILING};ceiling=USD:${TREASURY_CEILING}` });
+    await assertIssuanceRow(reply, { withheldBy: 'authority-binding', code: F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED, uriTail: `;requested=USD:${OVER_CEILING};ceiling=USD:${TREASURY_CEILING}`, ceiling: { value: TREASURY_CEILING, unit: 'USD' } });
     await assertIssuanceTrace(reply, { withheldBy: 'authority-binding', code: F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED, requested: { value: OVER_CEILING, unit: 'USD' }, ceiling: { value: TREASURY_CEILING, unit: 'USD' } }, 'A');
     cases['ceiling'] = reply;
   });
@@ -318,7 +321,7 @@ describe('LAND-02 — Kernel allowed, issuance withheld, durable evidence: on th
     const evidence = { requestId: requestIdOf(ceiling), decisionId: decisionOf(ceiling).decisionId, withheldBy: 'authority-binding', reasonCodes: [F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED], requested: { value: OVER_CEILING, unit: 'USD' }, ceiling: { value: TREASURY_CEILING, unit: 'USD' } };
     const version = issuanceWithheldVersion(evidence);
     await store.appendReference({ system: true }, {
-      referenceId: issuanceWithheldReferenceId({ evaluationId: decisionOf(grafted).evaluationId, version }),
+      referenceId: issuanceWithheldReferenceId({ evaluationId: decisionOf(grafted).evaluationId, version, ceiling: evidence.ceiling }),
       evaluationId: decisionOf(grafted).evaluationId,
       referenceType: 'issuance_record',
       externalId: evidence.requestId,
@@ -349,7 +352,7 @@ describe('LAND-02 — Kernel allowed, issuance withheld, durable evidence: on th
     await booted.host.close();
     booted = await boot();
     assert.deepEqual(await snapshot(), before, 'a restart changes no canonical component of any trace');
-    await assertIssuanceRow(cases['ceiling'] as Reply, { withheldBy: 'authority-binding', code: F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED, uriTail: `;requested=USD:${OVER_CEILING};ceiling=USD:${TREASURY_CEILING}` });
+    await assertIssuanceRow(cases['ceiling'] as Reply, { withheldBy: 'authority-binding', code: F.FINANCIAL_AUTHORITY_CEILING_EXCEEDED, uriTail: `;requested=USD:${OVER_CEILING};ceiling=USD:${TREASURY_CEILING}`, ceiling: { value: TREASURY_CEILING, unit: 'USD' } });
     await assertIssuanceTrace(cases['emergency'] as Reply, { withheldBy: 'emergency-control', code: E.EMERGENCY_CONTROL_ACTIVE }, 'B after restart');
     assert.equal(adapterCalls(), 0, 'reading and verifying after restart reaches no adapter');
   });

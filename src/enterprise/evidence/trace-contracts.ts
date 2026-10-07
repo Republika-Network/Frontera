@@ -199,9 +199,8 @@ export interface AuthorityTraceAuthorityStage {
   readonly issuance?: AuthorityTraceIssuance;
 }
 
-export interface AuthorityTraceIssuance {
-  readonly presence: 'recorded';
-  readonly outcome: 'withheld';
+/** One durable issuance withholding, as the orchestrator recorded it. */
+export interface AuthorityTraceIssuanceRecord {
   readonly withheldBy: string;
   readonly reasonCodes: readonly string[];
   /** The requested amount, as the committed request states it. */
@@ -209,8 +208,17 @@ export interface AuthorityTraceIssuance {
   /** The authority ceiling the issuance core compared against (financial layer). */
   readonly ceiling?: { readonly value: string; readonly unit: string };
   readonly recordedAt: string;
-  /** How many withholdings this decision recorded (a replay re-runs the gates; an identical outcome is recorded once). */
-  readonly records: number;
+}
+
+/**
+ * The first withholding states the stage; `records` lists every withholding in
+ * order (a replay re-runs the gates; an identical outcome is recorded once).
+ * Append-only, so a later withholding only ever extends an earlier trace.
+ */
+export interface AuthorityTraceIssuance extends AuthorityTraceIssuanceRecord {
+  readonly presence: 'recorded';
+  readonly outcome: 'withheld';
+  readonly records: readonly AuthorityTraceIssuanceRecord[];
 }
 
 export interface AuthorityTraceExecutionStage {
