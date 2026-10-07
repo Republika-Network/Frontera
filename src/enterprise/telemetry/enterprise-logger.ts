@@ -38,6 +38,14 @@ export interface EnterpriseLogContext {
   readonly operatorId?: string;
   readonly operation?: string;
   readonly target?: string;
+  /** PROD-03-01 governed-path fields (`operations/governed-path-log.ts`). Still closed: identities, closed states and reason codes only — never an amount, a parameter, an adapter or provider reference, a payload or a credential. */
+  readonly executionId?: string;
+  readonly operationalState?: string;
+  readonly reasonCodes?: readonly string[];
+  readonly withheldBy?: string;
+  readonly outcome?: string;
+  readonly outcomeRecorded?: boolean;
+  readonly attentionRequired?: boolean;
 }
 
 export type EnterpriseLogLevel = 'debug' | 'info' | 'warn' | 'error';

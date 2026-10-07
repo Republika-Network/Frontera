@@ -11,6 +11,7 @@ import type {
   GovernanceReferenceInput,
   GovernanceRequestRecord,
   GovernanceStoreAccessContext,
+  GovernanceStoreCountQuery,
   GovernanceStoreHealth,
   GovernanceStoreQuery,
   GovernanceStoreQueryResult,
@@ -132,6 +133,13 @@ export interface GovernanceStore {
 
   /** Bounded, tenant-scoped query with opaque cursor pagination (order: chain position descending — newest committed first). */
   query(context: GovernanceStoreAccessContext, query: GovernanceStoreQuery): Promise<GovernanceStoreQueryResult>;
+
+  /**
+   * PROD-03-01 — how many records the same tenant-scoped filters match, without
+   * reading or returning one. Optional, so an embedder's own store stays a
+   * valid `GovernanceStore`; both shipped providers implement it.
+   */
+  count?(context: GovernanceStoreAccessContext, query: GovernanceStoreCountQuery): Promise<number>;
 
   /** Structured reconstruction: loads every linked record, reports `complete`/`incomplete`/`corrupted` explicitly instead of silently returning partial data. */
   reconstruct(context: GovernanceStoreAccessContext, evaluationId: string): Promise<GovernanceRecordLoadResult>;

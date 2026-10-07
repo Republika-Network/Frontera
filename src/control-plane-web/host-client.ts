@@ -8,6 +8,7 @@ import {
   type ApprovalInbox,
   type ApprovalVerb,
   type ApprovalView,
+  type AttentionPage,
   type CredentialIssueResult,
   type CredentialRevokeResult,
   type DecisionEvidence,
@@ -19,8 +20,12 @@ import {
   type EntityRevokeResult,
   type EntityView,
   type ExecutionGrantView,
+  type ExecutionsPage,
   type GrantRevokeResult,
   type GrantView,
+  type OperationalMetrics,
+  type OperationalTrace,
+  type OperationsHealth,
   type OrganizationContext,
   type ProfileCatalog,
   type ProfileTransitionResult,
@@ -58,6 +63,15 @@ export interface DecisionQuery {
   readonly cursor?: string;
 }
 
+/** PROD-03-01 — the operational execution list's closed filter. */
+export interface ExecutionQuery {
+  readonly status?: string;
+  readonly actorId?: string;
+  readonly requestId?: string;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
 export interface HostClient {
   organization(bearer: string): Promise<HostResult<OrganizationContext>>;
   listAgents(bearer: string): Promise<HostResult<{ readonly agents: readonly AgentView[] }>>;
@@ -85,6 +99,16 @@ export interface HostClient {
   approval(bearer: string, approvalRequestId: string): Promise<HostResult<ApprovalDetail>>;
   /** CTRL-04 — one verdict. The Host derives who acts; the body names only the reviewed subject, evidence and a note. */
   approvalCommand(bearer: string, approvalRequestId: string, verb: ApprovalVerb, body: ApprovalCommandBody): Promise<HostResult<ApprovalCommandResponse>>;
+  /** PROD-03-01 — governed requests, each classified by the Host through its trace. */
+  executions(bearer: string, query: ExecutionQuery): Promise<HostResult<ExecutionsPage>>;
+  /** PROD-03-01 — executions claimed without a definitive outcome. */
+  attention(bearer: string, query: { readonly limit?: number; readonly cursor?: string }): Promise<HostResult<AttentionPage>>;
+  /** PROD-03-01 — one request's ASSURE-01 trace at an operator disclosure level. */
+  trace(bearer: string, requestId: string, level: string): Promise<HostResult<OperationalTrace>>;
+  /** PROD-03-01 — closed operational counters. */
+  operationsMetrics(bearer: string): Promise<HostResult<OperationalMetrics>>;
+  /** PROD-03-01 — the Host's health with its operational counts. */
+  operationsHealth(bearer: string): Promise<HostResult<OperationsHealth>>;
 }
 
 /**
@@ -177,6 +201,12 @@ export function createHostClient(options: HostClientOptions): HostClient {
         ...(body.evidence !== undefined ? { evidence: body.evidence.map((entry) => ({ type: entry.type, hash: entry.hash, ...(entry.uri !== undefined ? { uri: entry.uri } : {}) })) } : {}),
         ...(body.reason !== undefined ? { reason: body.reason } : {}),
       }),
+    executions: (bearer, executionQuery) =>
+      send('GET', `/api/admin/operations/executions${query({ status: executionQuery.status, actorId: executionQuery.actorId, requestId: executionQuery.requestId, limit: executionQuery.limit, cursor: executionQuery.cursor })}`, bearer, shapes.executions),
+    attention: (bearer, page) => send('GET', `/api/admin/operations/attention${query({ limit: page.limit, cursor: page.cursor })}`, bearer, shapes.attention),
+    trace: (bearer, requestId, level) => send('GET', `/api/admin/operations/traces/${segment(requestId)}${query({ level })}`, bearer, shapes.trace),
+    operationsMetrics: (bearer) => send('GET', '/api/admin/operations/metrics', bearer, shapes.metrics),
+    operationsHealth: (bearer) => send('GET', '/api/admin/operations/health', bearer, shapes.operationsHealth),
   };
   // Every method builds its path before sending; a refused segment becomes a validation failure, never a request.
   const guarded = Object.fromEntries(

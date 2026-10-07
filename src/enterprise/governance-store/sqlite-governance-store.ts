@@ -25,6 +25,8 @@ import {
   type GovernanceRequestRecord,
   type GovernanceStoreAccessContext,
   type GovernanceStoreHealth,
+  type GovernanceGovernedPathFilter,
+  type GovernanceStoreCountQuery,
   type GovernanceStoreQuery,
   type GovernanceStoreQueryResult,
   type GovernanceTraceRecord,
@@ -453,6 +455,53 @@ function parseJson<T>(json: string, what: string, failures: string[]): T | undef
     return undefined;
   }
 }
+
+/**
+ * The query filters as SQL, shared by `query` and `count` so the two can never
+ * select different records. Mirrors `matchesQueryFilters` (`store-common.ts`).
+ */
+function filterClauses(context: GovernanceStoreAccessContext, query: GovernanceStoreCountQuery, organizationId: string | undefined): { clauses: string[]; params: (string | number)[] } {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (organizationId !== undefined) {
+    clauses.push('r.organization_id = ?');
+    params.push(organizationId);
+  } else if (!context.system) {
+    // requireReadScope already rejected this; defensive.
+    clauses.push('1 = 0');
+  }
+  if (query.requestId !== undefined) { clauses.push('e.request_id = ?'); params.push(query.requestId); }
+  if (query.evaluationId !== undefined) { clauses.push('e.evaluation_id = ?'); params.push(query.evaluationId); }
+  if (query.decisionId !== undefined) { clauses.push('e.decision_id = ?'); params.push(query.decisionId); }
+  if (query.correlationId !== undefined) { clauses.push('e.correlation_id = ?'); params.push(query.correlationId); }
+  if (query.actorId !== undefined) { clauses.push('r.actor_id = ?'); params.push(query.actorId); }
+  if (query.actionType !== undefined) { clauses.push('r.action_type = ?'); params.push(query.actionType); }
+  if (query.status !== undefined) { clauses.push('e.status = ?'); params.push(query.status); }
+  if (query.reasonCode !== undefined) {
+    clauses.push('EXISTS (SELECT 1 FROM governance_reason_codes rc WHERE rc.evaluation_id = e.evaluation_id AND rc.reason_code = ?)');
+    params.push(query.reasonCode);
+  }
+  if (query.governedPath !== undefined) clauses.push(GOVERNED_PATH_SQL[query.governedPath]);
+  if (query.from !== undefined) { clauses.push('e.evaluated_at >= ?'); params.push(query.from); }
+  if (query.to !== undefined) { clauses.push('e.evaluated_at <= ?'); params.push(query.to); }
+  return { clauses, params };
+}
+
+/** A claim row of this evaluation (`execution_record`, `attempt`). */
+const CLAIM_ROW = `SELECT 1 FROM governance_references c WHERE c.evaluation_id = e.evaluation_id AND c.reference_type = 'execution_record' AND c.external_version = 'attempt'`;
+
+/** `isDefinitiveExecutionEvidence` (`store-common.ts`) as exact prefixes — `substr`, never a case-insensitive `LIKE`. */
+const DEFINITIVE_ROW_FOR_CLAIM = `SELECT 1 FROM governance_references o
+  WHERE o.evaluation_id = c.evaluation_id AND o.reference_type = 'execution_record' AND o.external_id = c.external_id
+    AND (o.external_version = 'executed' OR substr(o.external_version, 1, 9) = 'executed@' OR substr(o.external_version, 1, 17) = 'execution-failed:'
+         OR substr(o.external_version, 1, 9) = 'withheld:' OR substr(o.external_version, 1, 9) = 'resolved:')`;
+
+/** PROD-03-01 — `GovernanceStoreQuery.governedPath` in SQL. Constant text: no value is interpolated. */
+const GOVERNED_PATH_SQL: Readonly<Record<GovernanceGovernedPathFilter, string>> = Object.freeze({
+  'execution-claimed': `EXISTS (${CLAIM_ROW})`,
+  'execution-open': `EXISTS (${CLAIM_ROW} AND NOT EXISTS (${DEFINITIVE_ROW_FOR_CLAIM}))`,
+  'issuance-withheld': `EXISTS (SELECT 1 FROM governance_references g WHERE g.evaluation_id = e.evaluation_id AND g.reference_type = 'issuance_record')`,
+});
 
 /**
  * Durable Governance Store v1 backed by SQLite (`better-sqlite3`, loaded
@@ -1167,32 +1216,11 @@ export async function createSqliteGovernanceStore(dbPath: string, options: Creat
       const organizationId = resolveQueryOrganization(context, query);
       const limit = normalizeQueryLimit(query.limit);
 
-      const clauses: string[] = [];
-      const params: (string | number)[] = [];
+      const { clauses, params } = filterClauses(context, query, organizationId);
       if (query.cursor !== undefined) {
-        clauses.push('i.chain_position < ?');
-        params.push(decodeQueryCursor(query.cursor));
+        clauses.unshift('i.chain_position < ?');
+        params.unshift(decodeQueryCursor(query.cursor));
       }
-      if (organizationId !== undefined) {
-        clauses.push('r.organization_id = ?');
-        params.push(organizationId);
-      } else if (!context.system) {
-        // requireReadScope already rejected this; defensive.
-        clauses.push('1 = 0');
-      }
-      if (query.requestId !== undefined) { clauses.push('e.request_id = ?'); params.push(query.requestId); }
-      if (query.evaluationId !== undefined) { clauses.push('e.evaluation_id = ?'); params.push(query.evaluationId); }
-      if (query.decisionId !== undefined) { clauses.push('e.decision_id = ?'); params.push(query.decisionId); }
-      if (query.correlationId !== undefined) { clauses.push('e.correlation_id = ?'); params.push(query.correlationId); }
-      if (query.actorId !== undefined) { clauses.push('r.actor_id = ?'); params.push(query.actorId); }
-      if (query.actionType !== undefined) { clauses.push('r.action_type = ?'); params.push(query.actionType); }
-      if (query.status !== undefined) { clauses.push('e.status = ?'); params.push(query.status); }
-      if (query.reasonCode !== undefined) {
-        clauses.push('EXISTS (SELECT 1 FROM governance_reason_codes rc WHERE rc.evaluation_id = e.evaluation_id AND rc.reason_code = ?)');
-        params.push(query.reasonCode);
-      }
-      if (query.from !== undefined) { clauses.push('e.evaluated_at >= ?'); params.push(query.from); }
-      if (query.to !== undefined) { clauses.push('e.evaluated_at <= ?'); params.push(query.to); }
 
       const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
       const sql = `
@@ -1241,6 +1269,23 @@ export async function createSqliteGovernanceStore(dbPath: string, options: Creat
         })),
         ...(rows.length > limit && lastRow !== undefined ? { nextCursor: encodeQueryCursor(lastRow.chain_position) } : {}),
       };
+    },
+
+    async count(context: GovernanceStoreAccessContext, query: GovernanceStoreCountQuery): Promise<number> {
+      assertOpen();
+      const organizationId = resolveQueryOrganization(context, query);
+      const { clauses, params } = filterClauses(context, query, organizationId);
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS total
+           FROM governance_evaluations e
+           JOIN governance_requests r ON r.request_id = e.request_id
+           JOIN governance_integrity i ON i.evaluation_id = e.evaluation_id
+           ${where}`,
+        )
+        .get(...params) as { readonly total: number };
+      return row.total;
     },
 
     async reconstruct(context, evaluationId) {

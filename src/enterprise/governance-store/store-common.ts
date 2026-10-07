@@ -5,7 +5,7 @@ import { GovernanceStoreError } from './errors.js';
 import { computeDigest } from './digest.js';
 import { redactSensitiveValues } from './redaction.js';
 import { eventRecordDigestInput } from './projection.js';
-import { GOVERNANCE_REFERENCE_TYPES, GOVERNANCE_STORE_CONTRACT_IDS, isCanonicalGovernanceReferenceType, type GovernanceEventRecord, type GovernanceRecord, type GovernanceRecordSummary, type GovernanceStoreAccessContext, type GovernanceStoreQuery } from './contracts.js';
+import { GOVERNANCE_REFERENCE_TYPES, GOVERNANCE_STORE_CONTRACT_IDS, isCanonicalGovernanceReferenceType, type GovernanceEventRecord, type GovernanceRecord, type GovernanceRecordSummary, type GovernanceGovernedPathFilter, type GovernanceStoreAccessContext, type GovernanceStoreQuery } from './contracts.js';
 
 /**
  * Provider-independent Governance Store semantics: access-scope
@@ -114,6 +114,7 @@ export function matchesQueryFilters(record: GovernanceRecord, query: GovernanceS
   if (query.actionType !== undefined && record.request.actionType !== query.actionType) return false;
   if (query.status !== undefined && record.evaluation.status !== query.status) return false;
   if (query.reasonCode !== undefined && !record.evaluation.reasonCodes.includes(query.reasonCode)) return false;
+  if (query.governedPath !== undefined && !matchesGovernedPath(record, query.governedPath)) return false;
   if (query.from !== undefined && record.evaluation.evaluatedAt < query.from) return false;
   if (query.to !== undefined && record.evaluation.evaluatedAt > query.to) return false;
   return true;
@@ -235,4 +236,34 @@ export function deepFreeze<T>(value: T): T {
     deepFreeze((value as Record<string, unknown>)[key]);
   }
   return Object.freeze(value);
+}
+
+/**
+ * PROD-03-01 — whether an `execution_record` row's recorded form states a
+ * definitive answer for its execution: the forms the execution ledger writes
+ * for an effect that completed (`executed`, `executed@<adapter>`), did not
+ * complete (`execution-failed:…`), was withheld at exercise (`withheld:…`), or
+ * was resolved by P12 (`resolved:…`). The write-ahead claim (`attempt`), the
+ * adapter's own unconfirmed answer (`execution-unconfirmed…`) and anything
+ * undecodable are not. Selection only — the SQLite provider applies the same
+ * prefixes in SQL — and never a reading of what happened: that is the trace's.
+ */
+export function isDefinitiveExecutionEvidence(externalVersion: string | undefined): boolean {
+  if (externalVersion === undefined) return false;
+  return (
+    externalVersion === 'executed' ||
+    externalVersion.startsWith('executed@') ||
+    externalVersion.startsWith('execution-failed:') ||
+    externalVersion.startsWith('withheld:') ||
+    externalVersion.startsWith('resolved:')
+  );
+}
+
+/** The in-memory form of `GovernanceStoreQuery.governedPath`; the SQLite provider mirrors it in SQL. */
+export function matchesGovernedPath(record: GovernanceRecord, filter: GovernanceGovernedPathFilter): boolean {
+  if (filter === 'issuance-withheld') return record.references.some((entry) => entry.referenceType === 'issuance_record');
+  const executionRows = record.references.filter((entry) => entry.referenceType === 'execution_record');
+  const claims = executionRows.filter((entry) => entry.externalVersion === 'attempt');
+  if (filter === 'execution-claimed') return claims.length > 0;
+  return claims.some((claim) => !executionRows.some((entry) => entry.externalId === claim.externalId && isDefinitiveExecutionEvidence(entry.externalVersion)));
 }

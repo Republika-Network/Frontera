@@ -19,7 +19,7 @@ import type { GovernanceEnterpriseContext } from '../governance-store/contracts.
 import { createGovernanceReadService, type GovernanceReadService } from '../orchestration/governance-read-service.js';
 import { createInMemoryEvidenceStore, type EvidenceStore } from '../evidence/evidence-store.js';
 import { createSqliteEvidenceStore } from '../evidence/sqlite-evidence-store.js';
-import type { AuthorityTraceSources } from '../evidence/trace-builder.js';
+import { buildAuthorityTrace, type AuthorityTraceSources } from '../evidence/trace-builder.js';
 import type { ObligationDischargeCorrelation } from '../obligation-discharge/contracts.js';
 import { createEvidenceStoreModule } from '../modules/evidence-store-module.js';
 import { createEvidenceService, type EvidenceService } from '../evidence/evidence-service.js';
@@ -44,6 +44,8 @@ import { createSqliteControlPlaneStore, replayProfileLifecycle, type ControlPlan
 import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
 import { createOperatorControlService, type OperatorControlService } from '../operator-control/service.js';
 import { createOperatorApprovalService, type OperatorApprovalService } from '../operator-control/approval-workflow.js';
+import { createGovernedPathLog } from '../operations/governed-path-log.js';
+import { createOperatorOperationsService, type OperatorOperationsService } from '../operations/service.js';
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 import { createEnterpriseModuleRegistry } from '../registry/enterprise-module-registry.js';
 import { createEnterpriseLifecycleController } from '../lifecycle/enterprise-lifecycle-controller.js';
@@ -813,6 +815,17 @@ export interface AocEnterprise {
    * `/api/admin/approvals...`.
    */
   readonly operatorApprovals?: OperatorApprovalService;
+  /**
+   * PROD-03-01 — operational visibility on the operator plane: governed
+   * executions classified through their ASSURE-01 trace, the attention list
+   * (claimed, no confirmed outcome), one request's trace at an operator
+   * disclosure level, closed metrics and the health read with operational
+   * counts. Present only when operators are configured **and** governed
+   * actions are composed. Reads only — the Governance Store's query and count,
+   * the trace builder over the read-only trace sources, the Host's health —
+   * behind `/api/admin/operations/...`.
+   */
+  readonly operatorOperations?: OperatorOperationsService;
   /**
    * CORE-04 — the trusted, **in-process** writer of obligation discharge
    * reports, present when obligations are composed. It records what a
@@ -2421,6 +2434,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       // P8: write-only. The orchestrator reports facts it has established; it
       // never reads the stream, and a failed report changes no result.
       ...(authorityEvents !== undefined ? { evidence: authorityEvents } : {}),
+      // PROD-03-01: structured governed-path logging, write-only and guarded like P8.
+      pathObserver: createGovernedPathLog(logger),
       // P11: the narrow prepare / record / read port — never `health` or `close`.
       executionOutcomes: {
         prepareAttempt: (context, input) => executionOutcomeStore.prepareAttempt(context, input),
@@ -2628,6 +2643,26 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           logger,
         });
 
+  // PROD-03-01: operational visibility, reads only — the Governance Store's
+  // query and count, the ASSURE-01 trace builder over the same read-only
+  // sources the evidence service uses, and this Host's own health report.
+  // Absent unless operators are configured and governed actions composed.
+  const countRecords = persistence.count?.bind(persistence);
+  const operatorOperations: OperatorOperationsService | undefined =
+    operatorAuthenticator === undefined || operators.length === 0 || governedActionOrchestrator === undefined || countRecords === undefined
+      ? undefined
+      : createOperatorOperationsService({
+          authenticator: operatorAuthenticator,
+          organizationId: configuration.kernelAuthority.organizationId,
+          governanceRecords: {
+            query: (context, query) => persistence.query(context, query),
+            count: (context, query) => countRecords(context, query),
+          },
+          traces: { build: (context, requestId) => buildAuthorityTrace(traceSources, context, requestId) },
+          health: () => enterprise.health(),
+          now: kernelProviders.clock.now,
+        });
+
   // CORE-02: the authenticity boundary this root built, if any — for the
   // posture and for the custody service's non-signing health probe.
   const authorityAuthenticity = authorityAuthenticityOnce === undefined ? undefined : await authorityAuthenticityOnce;
@@ -2723,6 +2758,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     ...(authorityAdministration !== undefined ? { authorityAdministration } : {}),
     ...(operatorControl !== undefined ? { operatorControl } : {}),
     ...(operatorApprovals !== undefined ? { operatorApprovals } : {}),
+    ...(operatorOperations !== undefined ? { operatorOperations } : {}),
     ...(obligationDischargeStore !== undefined && governedTrust?.obligations !== undefined && governedActionOrchestrator !== undefined
       ? {
           obligationDischarges: createObligationDischargeRecorder({

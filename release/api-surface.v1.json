@@ -1,7 +1,7 @@
 {
   "surface": "aoc-enterprise-host-http.v1",
   "documentation": "docs/enterprise/API_STABILITY_V1.md",
-  "endpointCount": 58,
+  "endpointCount": 63,
   "routeLiterals": [
     "/api/assurance/assessments",
     "/api/assurance/manual-reviews",
@@ -51,7 +51,12 @@
     "^\\/api\\/admin\\/evidence\\/decisions\\/([^/]+)$",
     "^\\/api\\/admin\\/approvals$",
     "^\\/api\\/admin\\/approvals\\/([^/]+)$",
-    "^\\/api\\/admin\\/approvals\\/([^/]+)\\/(approve|reject|request-changes|escalate|revoke)$"
+    "^\\/api\\/admin\\/approvals\\/([^/]+)\\/(approve|reject|request-changes|escalate|revoke)$",
+    "^\\/api\\/admin\\/operations\\/executions$",
+    "^\\/api\\/admin\\/operations\\/attention$",
+    "^\\/api\\/admin\\/operations\\/traces\\/([^/]+)$",
+    "^\\/api\\/admin\\/operations\\/metrics$",
+    "^\\/api\\/admin\\/operations\\/health$"
   ],
   "routePrefixGuards": [
     "/api/assurance/",

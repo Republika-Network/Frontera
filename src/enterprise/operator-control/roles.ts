@@ -64,6 +64,19 @@ export const OPERATOR_PERMISSIONS = [
    * Kernel-Authority standing.
    */
   'approval.restrict',
+  /**
+   * PROD-03-01 — operational visibility: the classified governed-execution
+   * list, the attention (claimed, no confirmed outcome) list, operational
+   * metrics and the Host health read with its operational counts. Inspection
+   * only.
+   */
+  'operations.read',
+  /**
+   * PROD-03-01 — read one governed request's ASSURE-01 trace through the
+   * operator plane, disclosed at most at AUDITOR (FULL stays internal).
+   * Inspection only.
+   */
+  'trace.read',
 ] as const;
 
 export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
@@ -93,6 +106,13 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  * or `profile-steward`: neither needs to see approval subjects);
  * `approval.restrict` by `responder`, `approver`, `organization-administrator`;
  * `approval.approve` by `approver` and `organization-administrator` only.
+ *
+ * PROD-03-01 operational visibility: `operations.read` and `trace.read` are
+ * held by `observer` (inspection), `responder` (it acts on what needs
+ * attention) and `organization-administrator`. Not by `provisioner`,
+ * `profile-steward` or `approver`: onboarding, promoting a profile or
+ * deciding an approval is no reason to read every execution, and neither
+ * permission is implied by any other.
  */
 export const OPERATOR_ROLES = ['observer', 'responder', 'provisioner', 'profile-steward', 'approver', 'organization-administrator'] as const;
 
@@ -112,10 +132,11 @@ export const LEGACY_ADMINISTRATOR_ROLE = 'legacy-administrator' as const;
 export type OperatorRoleOrLegacy = OperatorRole | typeof LEGACY_ADMINISTRATOR_ROLE;
 
 const READ: readonly OperatorPermission[] = ['organization.read', 'authority.inspect', 'inventory.read'];
+const OPERATIONS_READ: readonly OperatorPermission[] = ['operations.read', 'trace.read'];
 
 const POLICY: Readonly<Record<OperatorRoleOrLegacy, ReadonlySet<OperatorPermission>>> = Object.freeze({
-  observer: new Set<OperatorPermission>([...READ, 'approval.read']),
-  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'approval.read', 'approval.restrict']),
+  observer: new Set<OperatorPermission>([...READ, 'approval.read', ...OPERATIONS_READ]),
+  responder: new Set<OperatorPermission>([...READ, 'authority.revoke', 'agent-credential.revoke', 'emergency.stop', 'approval.read', 'approval.restrict', ...OPERATIONS_READ]),
   provisioner: new Set<OperatorPermission>([...READ, 'authority.provision', 'authority.revoke', 'agent-credential.manage', 'agent-credential.revoke']),
   'profile-steward': new Set<OperatorPermission>([...READ, 'profile.promote', 'profile.retire']),
   approver: new Set<OperatorPermission>([...READ, 'approval.read', 'approval.approve', 'approval.restrict']),

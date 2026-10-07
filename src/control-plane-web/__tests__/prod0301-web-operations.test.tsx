@@ -1,0 +1,179 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
+import { renderToStaticMarkup } from 'react-dom/server';
+
+import { createConsoleApp } from '../app.js';
+import { classifyHostFailure } from '../failures.js';
+import type { HostClient, HostResult } from '../host-client.js';
+import { SESSION_COOKIE } from '../security.js';
+import { createSessionStore } from '../session.js';
+import { shapes, type OperationalExecution, type OperationalTrace, type OrganizationContext } from '../wire.js';
+import { NAVIGATION } from '../views/layout.js';
+import { AttentionListPage, HostHealthPage, TracePage } from '../views/pages-operations.js';
+
+/**
+ * PROD-03-01 — the console's operational pages: closed wire guards, rendering
+ * that shows the Host's classification as stated, and a request handler that
+ * forwards every read and offers nothing that writes.
+ */
+
+const context: OrganizationContext = {
+  organization: { organizationId: 'org-pilot', trustDomainId: 'td', agentCredentials: 'enabled', profileLifecycle: 'operator-promoted' },
+  operator: { operatorId: 'ops-x', role: 'some-role', credentialClass: 'operator', permissions: ['operations.read', 'trace.read'] },
+};
+
+const execution = (overrides: Partial<OperationalExecution> = {}): OperationalExecution => ({
+  requestId: 'aoc.gar:0123456789abcdef0123456789abcdef',
+  evaluationId: 'evaluation-1',
+  decisionId: 'decision-1',
+  executionId: 'aoc.exec:1',
+  actorId: 'agent-1',
+  actionType: 'act',
+  classification: 'claimed-no-outcome',
+  attentionRequired: true,
+  attentionReasons: ['EXECUTION_CLAIMED_NO_OUTCOME'],
+  unresolved: true,
+  decision: { status: 'allowed', reasonCodes: ['ACTION_ALLOWED'], evaluatedAt: 't', persistedAt: 't' },
+  approval: null,
+  issuance: { status: 'issued', withheldBy: null, reasonCodes: [], recordedAt: 't' },
+  execution: { claim: 'recorded', claimedAt: 't' },
+  outcome: { status: 'none', source: null, failure: null, withheldBy: null, reasonCodes: [], recordedAt: null },
+  trace: { available: true, finalState: 'claimed-outcome-unrecorded', failure: null },
+  ...overrides,
+});
+
+const traceView = (level: string, stages: Record<string, unknown>): OperationalTrace => ({
+  requestId: 'aoc.gar:0123456789abcdef0123456789abcdef',
+  disclosure: { level, policyId: `evidence.disclosure.${level.toLowerCase()}.v2`, hiddenFields: level === 'PUBLIC' ? ['trace.authority'] : [] },
+  trace: { requestId: 'aoc.gar:0123456789abcdef0123456789abcdef', evaluationId: 'evaluation-1', decisionId: 'decision-1', summary: { path: 'allowed', finalState: 'claimed-outcome-unrecorded', presence: {} }, stages },
+  traceDigest: 'sha256:abc',
+  verification: { verified: false, categories: { contract: 'pass', completeness: 'fail' }, checks: [{ check: 'completeness.event:execution.attempt.claimed', category: 'completeness', status: 'fail' }], finalState: 'claimed-outcome-unrecorded', verifiedAt: 't', boundary: 'b' },
+  operational: execution(),
+  generatedAt: 't',
+});
+
+describe('PROD-03-01 web — closed wire guards', () => {
+  it('a well-formed operational body passes; a body missing what the pages rely on is a contract failure, never data', () => {
+    assert.equal(shapes.executions({ executions: [execution()], nextCursor: null, coverage: 'c' }), true);
+    assert.equal(shapes.attention({ attention: [execution()], nextCursor: null, resolvedOnRead: 0, coverage: 'c' }), true);
+    assert.equal(shapes.executions({ executions: [{ ...execution(), attentionRequired: 'yes' }], nextCursor: null }), false);
+    assert.equal(shapes.attention({ attention: [execution()], nextCursor: null }), false);
+    assert.equal(shapes.trace(traceView('AUDITOR', {})), true);
+    assert.equal(shapes.trace({ ...traceView('AUDITOR', {}), verification: { verified: 'true', checks: [] } }), false);
+    const scan = { candidates: 1, examined: 1, complete: true, limit: 500 };
+    assert.equal(shapes.metrics({ decisions: { total: 1 }, issuanceWithheld: 0, executionClaims: 1, confirmedOutcomes: null, unresolvedExecutions: 1, attentionRequired: 1, scan }), true);
+    assert.equal(shapes.metrics({ decisions: { total: 1 }, issuanceWithheld: 0, executionClaims: 1, confirmedOutcomes: 'n/a', unresolvedExecutions: 1, attentionRequired: 1, scan }), false);
+    assert.equal(shapes.operationsHealth({ health: { status: 'healthy', persistence: { provider: 'sqlite', status: 'connected' } }, operations: { unresolvedExecutions: 0, attentionRequired: 0, scan, checkedAt: 't' } }), true);
+  });
+});
+
+describe('PROD-03-01 web — the pages show the Host’s answer as stated', () => {
+  it('navigation offers Attention, Executions, Trace and Host Health beside the existing sections', () => {
+    const paths = NAVIGATION.map((item) => item.path);
+    for (const path of ['/attention', '/executions', '/traces', '/host-health', '/activity', '/evidence', '/approvals']) assert.ok(paths.includes(path as (typeof paths)[number]), path);
+  });
+
+  it('attention shows each entry’s classification and reasons, links the trace, and posts nothing', () => {
+    const html = renderToStaticMarkup(<AttentionListPage context={context} csrfToken="t" page={{ attention: [execution()], nextCursor: 'next-1', resolvedOnRead: 0, coverage: 'c' }} />);
+    assert.match(html, /data-classification="claimed-no-outcome"/);
+    assert.match(html, /EXECUTION_CLAIMED_NO_OUTCOME/);
+    assert.match(html, /href="\/traces\/aoc\.gar%3A0123456789abcdef0123456789abcdef"/);
+    assert.match(html, /href="\/attention\?cursor=next-1"/);
+    assert.equal([...html.matchAll(/<form method="post"/g)].length, 1, 'only sign-out posts');
+    assert.doesNotMatch(html, /<script|\b(Resolve|Retry|Reconcile|Resend)\b/);
+  });
+
+  it('a trace states a failed verification as failed and renders only the stages the disclosure level returned', () => {
+    const audited = renderToStaticMarkup(<TracePage context={context} csrfToken="t" view={traceView('AUDITOR', { decision: { presence: 'recorded' }, authority: { presence: 'recorded', grants: [] }, execution: { presence: 'recorded' } })} />);
+    assert.match(audited, /Verification FAILED/);
+    assert.doesNotMatch(audited, /title">Verified</);
+    assert.match(audited, /data-stage="authority"/);
+    assert.match(audited, /Attention required/);
+    const pub = renderToStaticMarkup(<TracePage context={context} csrfToken="t" view={traceView('PUBLIC', {})} />);
+    assert.doesNotMatch(pub, /data-stage=/);
+    assert.match(pub, /Hidden at this level/);
+    assert.doesNotMatch(pub, /href="[^"]*level=FULL/, 'FULL is never offered');
+  });
+
+  it('an incomplete scan is shown as lower bounds, and an unstated counter as not stated', () => {
+    const scan = { candidates: 900, examined: 500, complete: false, limit: 500 };
+    const html = renderToStaticMarkup(
+      <HostHealthPage
+        context={context}
+        csrfToken="t"
+        health={{ health: { status: 'healthy', enterpriseVersion: '1', kernelVersion: '1', checkedAt: 't', persistence: { provider: 'sqlite', status: 'connected' } }, operations: { unresolvedExecutions: 7, attentionRequired: 7, scan, checkedAt: 't' } }}
+        metrics={{ decisions: { total: 1, allowed: 1, denied: 0, approvalRequired: 0, indeterminate: 0 }, issuanceWithheld: 0, executionClaims: 900, confirmedOutcomes: null, unresolvedExecutions: 7, attentionRequired: 7, scan, computedAt: 't', coverage: 'c' }}
+      />,
+    );
+    assert.match(html, /Lower bounds: 500 of 900 open claims/);
+    assert.match(html, /not stated \(scan incomplete\)/);
+    assert.match(html, /data-testid="unresolved-count">7</);
+  });
+});
+
+const ORIGIN = 'http://127.0.0.1:9';
+const ok = <T,>(body: T): Promise<HostResult<T>> => Promise.resolve({ ok: true, status: 200, body });
+
+function scriptedHost(overrides: Partial<HostClient>, calls: string[]): HostClient {
+  const base: Partial<HostClient> = { organization: () => ok(context) };
+  return new Proxy({ ...base, ...overrides } as HostClient, {
+    get(target, name: string) {
+      const value = (target as unknown as Record<string, unknown>)[name];
+      if (typeof value !== 'function') return () => Promise.resolve({ ok: false, failure: classifyHostFailure(404, undefined) });
+      return (...args: unknown[]) => {
+        calls.push(`${name}:${JSON.stringify(args.slice(1))}`);
+        return (value as (...a: unknown[]) => unknown)(...args);
+      };
+    },
+  });
+}
+
+function get(url: string, cookie: string): IncomingMessage {
+  const stream = Readable.from([]) as unknown as IncomingMessage;
+  Object.assign(stream, { method: 'GET', url, headers: { cookie } });
+  return stream;
+}
+
+function signedIn(host: HostClient): { app: ReturnType<typeof createConsoleApp>; cookie: string } {
+  const sessions = createSessionStore();
+  const app = createConsoleApp({ host, sessions, publicOrigin: ORIGIN });
+  const session = sessions.create('operator-bearer-value', 'ops-x');
+  return { app, cookie: `${SESSION_COOKIE}=${session.id}` };
+}
+
+describe('PROD-03-01 web — the request handler forwards reads and decides nothing', () => {
+  it('a trace search redirects to the trace page; an unknown level is refused before the Host is asked; FULL is never forwarded', async () => {
+    const calls: string[] = [];
+    const { app, cookie } = signedIn(scriptedHost({ trace: () => ok(traceView('AUDITOR', {})) }, calls));
+    const search = await app.handle(get('/traces?requestId=aoc.gar%3A0123456789abcdef0123456789abcdef&level=PARTNER', cookie));
+    assert.equal(search.status, 303);
+    assert.equal(search.location, '/traces/aoc.gar%3A0123456789abcdef0123456789abcdef?level=PARTNER');
+    const full = await app.handle(get('/traces/aoc.gar%3A0123456789abcdef0123456789abcdef?level=FULL', cookie));
+    assert.equal(full.status, 400);
+    assert.equal(calls.some((call) => call.startsWith('trace:')), false, 'nothing was sent for FULL');
+    const page = await app.handle(get('/traces/aoc.gar%3A0123456789abcdef0123456789abcdef', cookie));
+    assert.equal(page.status, 200);
+    assert.ok(calls.includes('trace:["aoc.gar:0123456789abcdef0123456789abcdef","AUDITOR"]'));
+  });
+
+  it('a Host refusal on a read is rendered as the Host’s refusal', async () => {
+    const calls: string[] = [];
+    const denied = (): Promise<HostResult<never>> => Promise.resolve({ ok: false, failure: classifyHostFailure(403, { error: { code: 'OPERATOR_PERMISSION_DENIED', message: 'denied' } }) });
+    const { app, cookie } = signedIn(scriptedHost({ attention: denied, executions: denied, operationsHealth: denied, operationsMetrics: denied }, calls));
+    for (const path of ['/attention', '/executions', '/host-health']) {
+      const response = await app.handle(get(path, cookie));
+      assert.equal(response.status, 403, path);
+      assert.match(response.body ?? '', /OPERATOR_PERMISSION_DENIED/);
+    }
+  });
+
+  it('the executions filter is forwarded as the Host’s closed query', async () => {
+    const calls: string[] = [];
+    const { app, cookie } = signedIn(scriptedHost({ executions: () => ok({ executions: [], nextCursor: null, coverage: 'c' }) }, calls));
+    const response = await app.handle(get('/executions?status=denied&requestId=r-1', cookie));
+    assert.equal(response.status, 200);
+    assert.ok(calls.includes('executions:[{"status":"denied","requestId":"r-1","limit":50}]'), calls.join(' | '));
+  });
+});

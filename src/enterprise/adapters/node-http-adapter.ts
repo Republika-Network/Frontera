@@ -269,6 +269,36 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
               return;
           }
         }
+        // -- PROD-03-01 operational visibility (operator plane). Mounted only when
+        // the Host composed `operatorOperations` (operators configured and
+        // governed actions composed). Every route is a GET and a read; the
+        // service authenticates and authorizes the operator — this adapter only
+        // routes.
+        const operatorOperations = enterprise.operatorOperations;
+        const operationsRoute = operatorOperations === undefined ? undefined : matchOperationsRoute(method, url.pathname);
+        if (operatorOperations !== undefined && operationsRoute !== undefined) {
+          const query = Object.fromEntries(url.searchParams.entries());
+          const respond = (promise: Promise<unknown>): void => {
+            promise.then((body) => writeJson(res, 200, body)).catch(fail);
+          };
+          switch (operationsRoute.kind) {
+            case 'executions':
+              respond(operatorOperations.listExecutions(auth, query));
+              return;
+            case 'attention':
+              respond(operatorOperations.listAttention(auth, query));
+              return;
+            case 'trace':
+              respond(operatorOperations.readTrace(auth, operationsRoute.requestId, query));
+              return;
+            case 'metrics':
+              respond(operatorOperations.metrics(auth, query));
+              return;
+            case 'health':
+              respond(operatorOperations.health(auth, query));
+              return;
+          }
+        }
         // -- CTRL-04 approval workflow (operator plane). Mounted only when the Host
         // composed `operatorApprovals` (operators configured and CORE-05
         // approvals composed). The service authenticates and authorizes the
@@ -770,6 +800,24 @@ function matchApprovalRoute(method: string, pathname: string): ApprovalRoute | u
       return { kind: 'approval-command', approvalRequestId: decodeURIComponent(command[1]), verb: command[2] as 'approve' | 'reject' | 'request-changes' | 'escalate' | 'revoke' };
     }
   }
+  return undefined;
+}
+
+type OperationsRoute = { readonly kind: 'executions' | 'attention' | 'metrics' | 'health' } | { readonly kind: 'trace'; readonly requestId: string };
+
+/**
+ * PROD-03-01 operational visibility routes. `GET` only: there is deliberately
+ * no route that resolves, retries, resends, reconciles, claims or marks an
+ * execution — those are not reads, and none of them is this plane's.
+ */
+function matchOperationsRoute(method: string, pathname: string): OperationsRoute | undefined {
+  if (method !== 'GET') return undefined;
+  if (/^\/api\/admin\/operations\/executions$/.exec(pathname) !== null) return { kind: 'executions' };
+  if (/^\/api\/admin\/operations\/attention$/.exec(pathname) !== null) return { kind: 'attention' };
+  const trace = /^\/api\/admin\/operations\/traces\/([^/]+)$/.exec(pathname);
+  if (trace?.[1] !== undefined) return { kind: 'trace', requestId: decodeURIComponent(trace[1]) };
+  if (/^\/api\/admin\/operations\/metrics$/.exec(pathname) !== null) return { kind: 'metrics' };
+  if (/^\/api\/admin\/operations\/health$/.exec(pathname) !== null) return { kind: 'health' };
   return undefined;
 }
 
