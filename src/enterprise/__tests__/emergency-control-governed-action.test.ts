@@ -79,7 +79,9 @@ describe('Emergency control — checkpoint 1, admission', () => {
     const record = await recordFor(w, result.requestId ?? '');
     assert.ok(record !== null);
     assert.equal(record.evaluation.status, 'allowed');
-    assert.equal(record.references.length, 0, 'no authorization artifact and no execution attempt were recorded');
+    assert.equal(record.references.filter((reference) => reference.referenceType !== 'issuance_record').length, 0, 'no authorization artifact and no execution attempt were recorded');
+    // LAND-02: the admission withholding itself is recorded, as evidence only — on the Kernel's own allowed decision.
+    assert.deepEqual(record.references.map((reference) => [reference.referenceType, reference.externalVersion]), [['issuance_record', `withheld:emergency-control:${EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE}`]]);
   });
 
   it('an unreadable control withholds at admission — an outage is never permission', async () => {
@@ -172,7 +174,9 @@ describe('Emergency control — checkpoint 2, the grant commit boundary', () => 
     assert.equal(w.issueOutcomes.length, 1);
     assert.equal(w.issueOutcomes[0]?.outcome, 'refused');
     const record = await recordFor(w, result.requestId ?? '');
-    assert.equal(record?.references.length, 0, 'no authorization artifact was recorded, because no grant was committed');
+    assert.equal(record?.references.filter((reference) => reference.referenceType !== 'issuance_record').length, 0, 'no authorization artifact was recorded, because no grant was committed');
+    // LAND-02: the commit-boundary withholding itself is recorded, as evidence only.
+    assert.deepEqual(record?.references.map((reference) => [reference.referenceType, reference.externalVersion]), [['issuance_record', `withheld:emergency-control:${EMERGENCY_CONTROL_REASON_CODES.EMERGENCY_CONTROL_ACTIVE}`]]);
   });
 
   it('a reader that becomes unreadable in that window also refuses the grant', async () => {
@@ -635,7 +639,9 @@ describe('Emergency control — historical replay is never rewritten by current 
     const first = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
     assert.equal(withheldBy(first), 'emergency-control');
     const record = await recordFor(w, first.requestId ?? '');
-    assert.equal(record?.references.length, 0, 'an admission withholding claims no execution identity');
+    assert.equal(record?.references.filter((reference) => reference.referenceType !== 'issuance_record').length, 0, 'an admission withholding claims no execution identity');
+    // LAND-02: only the evidence of the withholding — which claims nothing and blocks nothing.
+    assert.deepEqual(record?.references.map((reference) => reference.referenceType), ['issuance_record']);
 
     emergencyControl.release({ scope: 'global', issuerRef: ISSUER, releasedAt: NOW });
     const retry = await w.orchestrator.govern(IDENTITY, ALLOWED_INTENT);

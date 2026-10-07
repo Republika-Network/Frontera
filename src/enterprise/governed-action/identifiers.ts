@@ -93,3 +93,8 @@ export function reconsiderationLinkReferenceId(reconsiderationRequestId: string)
 export function reconsiderationRealizationReferenceId(originalRequestId: string): string {
   return `aoc.gar.ref:${digest(['aoc.governed-action.reconsideration-realization.v1', originalRequestId])}`;
 }
+
+/** LAND-02 — the issuance-withheld evidence row on a decision's own evaluation: one per (evaluation, withheld outcome), at most once. */
+export function issuanceWithheldReferenceId(input: { readonly evaluationId: string; readonly version: string }): string {
+  return `aoc.gar.ref:${digest(['aoc.governed-action.issuance-withheld.v1', input.evaluationId, input.version])}`;
+}

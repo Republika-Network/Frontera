@@ -385,6 +385,12 @@ describe('ASSURE-01 — a third party fetches and verifies one request’s full 
     assert.equal(view.summary['finalState'], 'not-executed');
     assert.equal((view.stages['execution']?.['claim'] as Record<string, unknown>)['presence'], 'not-reached');
     assert.equal(view.stages['outcome']?.['presence'], 'not-reached');
+    // LAND-02: the Kernel allowed; the stop withheld issuance — and that is durable evidence on the trace
+    // (which the exit drill below carries across restart and a cold backup / restore by digest).
+    assert.equal(view.stages['decision']?.['status'], 'allowed');
+    const issuance = view.stages['authority']?.['issuance'] as Record<string, unknown> | undefined;
+    assert.equal(issuance?.['withheldBy'], 'emergency-control');
+    assert.deepEqual(issuance?.['reasonCodes'], ['EMERGENCY_CONTROL_ACTIVE']);
     assert.equal(adapter.calls.some((action) => action.resource === FROZEN), false);
     assertVerified(await verifyTrace(baseUrl, requestIdOf('emergency')), 'emergency');
   });
