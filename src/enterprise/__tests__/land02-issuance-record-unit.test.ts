@@ -135,18 +135,25 @@ describe('LAND-02 — issuance record grammar', () => {
 
   it('a malformed or non-canonical escape fails safely', () => {
     const row = rowOf({ ...EVIDENCE, decisionId: 'tenant/decision-1' });
-    for (const uri of [
-      row.uri.replace('%2F', '%2f'), // lower-case hex is not the canonical form
-      row.uri.replace('%2F', '%2'), // truncated escape
-      row.uri.replace('%2F', '%ZZ'), // not hex
-      row.uri.replace('%2F', '/'), // unescaped reserved character
-      row.uri.replace('tenant%2F', '%74enant%2F'), // an unreserved character escaped
-      row.uri.replace('%2F', '%C3'), // invalid UTF-8
-      row.uri.replace('%2F', '%3B'), // decodes to a different id
-      row.uri.replace('decision=tenant%2Fdecision-1', 'decision='), // empty
+    const [scheme, decision, ...amounts] = row.uri.split(';');
+    assert.equal(decision, 'decision=tenant%2Fdecision-1', 'the canonical segment each case below departs from');
+    // The row with its `decision=` segment set to exactly this encoded text, every other segment untouched.
+    const withDecision = (encoded: string): string => [scheme, `decision=${encoded}`, ...amounts].join(';');
+    for (const encoded of [
+      'tenant%2fdecision-1', // lower-case hex is not the canonical form
+      'tenant%2decision-1', // truncated escape
+      'tenant%ZZdecision-1', // not hex
+      'tenant/decision-1', // unescaped reserved character
+      '%74enant%2Fdecision-1', // an unreserved character escaped
+      'tenant%C3decision-1', // invalid UTF-8
+      'tenant%3Bdecision-1', // decodes to a different id
+      '', // empty
     ]) {
+      const uri = withDecision(encoded);
+      assert.notEqual(uri, row.uri, encoded);
       assert.equal(parseIssuanceWithheldRow({ ...row, uri }), undefined, uri);
     }
+    assert.deepEqual(parseIssuanceWithheldRow({ ...row, uri: withDecision('tenant%2Fdecision-1') }), { ...EVIDENCE, decisionId: 'tenant/decision-1' }, 'the helper itself builds a valid row');
   });
 
   it('rows written before the hardening — identity encoding on [A-Za-z0-9._:-], same digest — still parse exactly', () => {
