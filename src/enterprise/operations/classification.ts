@@ -1,5 +1,6 @@
 import type { AuthorityTrace } from '../evidence/trace-contracts.js';
-import type { AttentionReason, OperationalExecutionView, OperationalOutcomeSource, OperationalOutcomeStatus, OperationalState } from './contracts.js';
+import { TRACE_DISCLOSURE_REDACTED_VALUE, type DisclosedAuthorityTrace } from '../evidence/trace-disclosure.js';
+import type { AttentionReason, DisclosedOperationalView, OperationalExecutionView, OperationalOutcomeSource, OperationalOutcomeStatus, OperationalState, OperationalViewSection } from './contracts.js';
 
 /**
  * PROD-03-01 — the one classification of a governed request, a pure function
@@ -172,5 +173,49 @@ export function operationalViewOfEvaluation(summary: OperationalRecordSummary): 
     attentionReasons: [],
     issuance: { status: 'not-applicable', withheldBy: null, reasonCodes: [], recordedAt: null },
     execution: { claim: 'absent', claimedAt: null },
+  };
+}
+
+/** States that split the trace's `not-executed` by reading the authority stage (`classifyAuthorityTrace`): only a level that discloses that stage may state them. */
+const READ_FROM_AUTHORITY: ReadonlySet<OperationalState> = new Set<OperationalState>(['issuance-withheld', 'authorized-not-claimed', 'allowed-not-authorized', 'approval-not-resumed']);
+
+/**
+ * The operational view beside a disclosed trace, reduced to what that trace
+ * discloses. Pure. Each section is kept only when the disclosed trace carries
+ * the stage it was read from (present and not redacted); everything else the
+ * view states — the final state, the attention it implies, the identities — is
+ * already in the disclosed summary and identities. Throws when the disclosed
+ * trace has no summary: every operator level discloses it.
+ */
+export function discloseOperationalView(view: OperationalExecutionView, disclosed: DisclosedAuthorityTrace): DisclosedOperationalView {
+  if (typeof disclosed.summary !== 'object') throw new Error('discloseOperationalView: the disclosure level hides the trace summary.');
+  const shows = (stage: string): boolean => disclosed.stages[stage as keyof typeof disclosed.stages] !== undefined && disclosed.stages[stage as keyof typeof disclosed.stages] !== TRACE_DISCLOSURE_REDACTED_VALUE;
+  const visible: Readonly<Record<OperationalViewSection, boolean>> = {
+    request: shows('request'),
+    decision: shows('decision'),
+    approval: shows('approval'),
+    issuance: shows('authority'),
+    execution: shows('execution'),
+    outcome: shows('outcome') && shows('resolution'),
+  };
+  const hidden = (Object.keys(visible) as OperationalViewSection[]).filter((section) => !visible[section]);
+  if (hidden.length === 0) return { ...view, hidden: [] };
+  return {
+    requestId: view.requestId,
+    evaluationId: view.evaluationId,
+    decisionId: view.decisionId,
+    executionId: view.executionId,
+    classification: !visible.issuance && READ_FROM_AUTHORITY.has(view.classification) ? null : view.classification,
+    attentionRequired: view.attentionRequired,
+    attentionReasons: view.attentionReasons,
+    unresolved: visible.execution ? view.unresolved : null,
+    trace: view.trace,
+    ...(visible.request ? { actorId: view.actorId, actionType: view.actionType } : {}),
+    ...(visible.decision ? { decision: { status: view.decision.status, reasonCodes: view.decision.reasonCodes, evaluatedAt: view.decision.evaluatedAt } } : {}),
+    ...(visible.approval ? { approval: view.approval } : {}),
+    ...(visible.issuance ? { issuance: view.issuance } : {}),
+    ...(visible.execution ? { execution: view.execution } : {}),
+    ...(visible.outcome ? { outcome: view.outcome } : {}),
+    hidden,
   };
 }

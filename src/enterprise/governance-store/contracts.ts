@@ -548,13 +548,18 @@ export interface GovernanceStoreQuery {
  * - `execution-claimed` — the record holds a write-ahead execution claim
  *   (`execution_record`, `externalVersion: 'attempt'`).
  * - `execution-open` — it holds a claim with no **definitive** outcome row for
- *   the same execution id: no `executed`, `execution-failed:`, `withheld:` or
- *   `resolved:` row (`isDefinitiveExecutionEvidence`). A superset of the
+ *   the same execution id: no row that decodes, in the execution ledger's own grammar, as
+ *   executed, failed, withheld at exercise or resolved
+ *   (`isDefinitiveExecutionEvidence`); a malformed row is not definitive. A superset of the
  *   executions whose trace is unresolved: a definitive row is written only
  *   after the canonical record it summarizes committed.
  * - `issuance-withheld` — the record holds a LAND-02 `issuance_record` row.
+ * - `governed-action` — the record came through the governed-action path: it
+ *   holds that path's own idempotency claim, whose scope and key derive its
+ *   request id (`isGovernedActionIdempotencyClaim`). A record of the evaluate
+ *   route never does, whatever request id its caller chose.
  */
-export const GOVERNANCE_GOVERNED_PATH_FILTERS = ['execution-claimed', 'execution-open', 'issuance-withheld'] as const;
+export const GOVERNANCE_GOVERNED_PATH_FILTERS = ['execution-claimed', 'execution-open', 'issuance-withheld', 'governed-action'] as const;
 
 export type GovernanceGovernedPathFilter = (typeof GOVERNANCE_GOVERNED_PATH_FILTERS)[number];
 

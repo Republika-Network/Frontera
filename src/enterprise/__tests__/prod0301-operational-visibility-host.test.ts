@@ -10,12 +10,14 @@ import { Browser, formsOf, freePort, textOf } from '../../control-plane-web/__te
 import { FINANCIAL_AUTHORITY_REASON_CODES as F } from '../execution-governance/index.js';
 import { GOVERNED_PATH_LOG_EVENTS } from '../operations/governed-path-log.js';
 import { call, expectStatus, logLines, type RecordingAdapter, type Reply } from './ctrl02-host-fixture.js';
+import { buildDeniedRequestBody } from './support.js';
 import {
   ACCOUNT,
   ADAPTER_ID,
   CEILING,
   DEPLOY,
   LIFETIME_LIMIT,
+  ORG,
   PAYABLES,
   PROD,
   RELEASE,
@@ -609,6 +611,72 @@ describe('PROD-03-01 — authorization, disclosure and the trace model', () => {
     for (const text of [bodies[0], bodies[1], ...logs]) {
       assert.doesNotMatch(text ?? '', /"(amount|requested|ceiling|providerRef|adapterId|routedBy|parameters|payload|authorization)"\s*:/, 'the list views and logs carry no amount, provider or payload field');
       assert.doesNotMatch(text ?? '', /provider-ref-|provider-unknown-/);
+    }
+  });
+});
+
+describe('PROD-03-01 review fixes — evaluation-only identity and the disclosed classification', () => {
+  it('an evaluate-route decision whose caller chose a governed-shaped request id stays evaluation-only', async () => {
+    const spoofed = `aoc.gar:${'ab'.repeat(16)}`;
+    const evaluated = await call(booted.baseUrl, 'POST', '/api/governance/evaluate', { authorization: `Bearer ${deployment.secrets.legacyKey}`, body: buildDeniedRequestBody({ requestId: spoofed, organization: { id: ORG } }) });
+    // A denial is answered 422 by the evaluate route; either way the decision is committed to the Governance Store.
+    assert.ok(evaluated.status === 200 || evaluated.status === 422, evaluated.text);
+    assert.equal(evaluated.body['requestId'], spoofed);
+    assert.equal(typeof (evaluated.body['governanceRecord'] as Record<string, unknown> | undefined)?.['evaluationId'], 'string', 'the decision was recorded');
+    const view = await viewOf(spoofed);
+    assert.equal(view.classification, 'evaluation-only', 'the request id’s shape does not make it governed');
+    assert.equal(view.attentionRequired, false);
+    assert.ok(!(await attentionIds()).includes(spoofed));
+    // The governed requests beside it are still classified from their traces.
+    assert.equal((await viewOf(requestIdOf('denied'))).classification, 'decision-denied');
+    assert.equal((await viewOf(requestIdOf('executed'))).classification, 'executed-succeeded');
+    const traced = await call(booted.baseUrl, 'GET', ops.trace(spoofed), { authorization: auth.observer });
+    if (traced.status === 200) assert.equal((traced.body['operational'] as View).classification, 'evaluation-only', 'the trace read classifies it exactly as the list does');
+    else assert.equal(traced.status, 404, traced.text);
+    assertAgree(await counts(), 'after an evaluation-only decision');
+  });
+
+  it('the operational sidecar is disclosed at the trace’s own level: below AUDITOR it states nothing the policy hides', async () => {
+    const ALL = ['request', 'decision', 'approval', 'issuance', 'execution', 'outcome'];
+    for (const name of ['executed', 'denied', 'withheld', 'pending', 'unconfirmed']) {
+      const requestId = requestIdOf(name);
+      const listed = await viewOf(requestId);
+      const at = async (level: string): Promise<{ readonly operational: Record<string, unknown>; readonly text: string }> => {
+        const reply = expectStatus(await call(booted.baseUrl, 'GET', ops.trace(requestId, level), { authorization: auth.observer }), 200, `${name} ${level}`);
+        return { operational: reply.body['operational'] as Record<string, unknown>, text: reply.text };
+      };
+
+      // AUDITOR: the whole view, exactly as the execution list states it.
+      const auditor = await at('AUDITOR');
+      assert.deepEqual(auditor.operational, { ...listed, hidden: [] }, `${name}: AUDITOR is the full view`);
+
+      // PARTNER hides who asked and the approvals; the classification and everything else stand.
+      const partner = (await at('PARTNER')).operational;
+      assert.deepEqual(partner['hidden'], ['request', 'approval'], name);
+      for (const field of ['actorId', 'actionType', 'approval']) assert.equal(field in partner, false, `${name}: PARTNER omits ${field}`);
+      assert.equal(partner['classification'], listed.classification, `${name}: PARTNER sees the authority stage, so the classification`);
+      assert.deepEqual(partner['issuance'], listed['issuance']);
+      assert.deepEqual(partner['outcome'], listed['outcome']);
+      assert.equal(partner['unresolved'], listed.unresolved);
+      assert.equal((partner['decision'] as Record<string, unknown>)['persistedAt'], undefined, 'not a trace field');
+
+      // CUSTOMER sees the decision and the outcome, nothing about how authority was held or exercised.
+      const customer = (await at('CUSTOMER')).operational;
+      assert.deepEqual(customer['hidden'], ['request', 'approval', 'issuance', 'execution'], name);
+      for (const field of ['actorId', 'actionType', 'approval', 'issuance', 'execution']) assert.equal(field in customer, false, `${name}: CUSTOMER omits ${field}`);
+      assert.equal(customer['unresolved'], null);
+      assert.deepEqual(customer['outcome'], listed['outcome']);
+      // Only the authority stage says why nothing was executed: below it, that is not stated.
+      assert.equal(customer['classification'], name === 'withheld' ? null : listed.classification, `${name}: CUSTOMER classification`);
+
+      // PUBLIC: the final state and what it implies, and nothing else.
+      const pub = await at('PUBLIC');
+      assert.deepEqual(pub.operational['hidden'], ALL, name);
+      assert.deepEqual(Object.keys(pub.operational).sort(), ['attentionReasons', 'attentionRequired', 'classification', 'decisionId', 'evaluationId', 'executionId', 'hidden', 'requestId', 'trace', 'unresolved'], `${name}: PUBLIC keys`);
+      assert.equal(pub.operational['classification'], name === 'withheld' ? null : listed.classification);
+      assert.equal(pub.operational['attentionRequired'], listed.attentionRequired, 'attention follows from the disclosed final state');
+      assert.doesNotMatch(pub.text, /"(actorId|actionType|reasonCodes|verdicts|withheldBy|claimedAt|recordedAt|persistedAt|evaluatedAt)"\s*:/, `${name}: the PUBLIC response carries no hidden field`);
+      for (const value of [listed['actorId'], listed['actionType']] as string[]) assert.equal(pub.text.includes(`"${value}"`), false, `${name}: PUBLIC never names ${value}`);
     }
   });
 });

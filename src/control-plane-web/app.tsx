@@ -713,7 +713,9 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
         const requestId = (query.get('requestId') ?? '').trim();
         if (requestId === '') return html(200, <TraceIndexPage context={authed.context} csrfToken={authed.csrf} />);
         const level = query.get('level') ?? 'AUDITOR';
-        return redirect(tracePath(requestId, isTraceLevel(level) ? level : 'AUDITOR'));
+        // The same refusal as the trace page itself: FULL and unknown levels are never turned into another level.
+        if (!isTraceLevel(level)) return html(400, <ErrorPage title="Unknown disclosure level" context={authed.context} csrfToken={authed.csrf} />);
+        return redirect(tracePath(requestId, level));
       }
       if (first === 'traces' && second !== undefined && parts.length === 2) return tracePage(authed, second, query);
       if (first === 'host-health' && parts.length === 1) return hostHealthPage(authed);

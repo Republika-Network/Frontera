@@ -8,7 +8,7 @@ import { isGovernanceStoreError } from '../governance-store/errors.js';
 import type { EnterpriseHealthReport } from '../health/health-check.js';
 import { DECISION_ACTIVITY_STATUSES, closedQuery, isOperatorEntityId } from '../operator-control/contracts.js';
 import type { OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
-import { operationalViewOf, operationalViewOfEvaluation, operationalViewWithoutTrace } from './classification.js';
+import { discloseOperationalView, operationalViewOf, operationalViewOfEvaluation, operationalViewWithoutTrace } from './classification.js';
 import {
   OPERATIONS_PAGE_DEFAULT_LIMIT,
   OPERATIONS_PAGE_MAX_LIMIT,
@@ -76,6 +76,23 @@ const CURSOR = /^[A-Za-z0-9._:=-]{1,512}$/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 /** One candidate page while scanning; well inside the store's own maximum. */
 const SCAN_PAGE = 100;
+/** How many times metrics re-read the counters around the scan before stating that the store kept moving. */
+const METRICS_SNAPSHOT_ATTEMPTS = 3;
+
+/** The counters `metrics` states. Every set counted here only grows (the Governance Store is append-only). */
+interface MetricCounters {
+  readonly allowed: number;
+  readonly denied: number;
+  readonly approvalRequired: number;
+  readonly indeterminate: number;
+  readonly total: number;
+  readonly issuanceWithheld: number;
+  readonly executionClaims: number;
+}
+
+function sameCounters(a: MetricCounters, b: MetricCounters): boolean {
+  return (Object.keys(a) as (keyof MetricCounters)[]).every((key) => a[key] === b[key]);
+}
 
 function pageLimit(raw: string | undefined): number {
   if (raw === undefined) return OPERATIONS_PAGE_DEFAULT_LIMIT;
@@ -130,9 +147,19 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
     }
   }
 
+  /**
+   * Whether a record came through the governed-action path, from the durable
+   * evidence that path writes in the decision's own commit (its idempotency
+   * claim, which derives the request id) — never from the request id's shape,
+   * which an evaluate-route caller may choose.
+   */
+  async function isGovernedAction(evaluationId: string): Promise<boolean> {
+    return (await count({ evaluationId, governedPath: 'governed-action' })) > 0;
+  }
+
   /** One record, classified. A store that cannot be read fails the whole read; a trace that cannot be built is that record's own state. */
   async function viewOf(summary: GovernanceRecordSummary): Promise<OperationalExecutionView> {
-    if (!GOVERNED_REQUEST_ID_PATTERN.test(summary.requestId)) return operationalViewOfEvaluation(summary);
+    if (!GOVERNED_REQUEST_ID_PATTERN.test(summary.requestId) || !(await isGovernedAction(summary.evaluationId))) return operationalViewOfEvaluation(summary);
     let build: AuthorityTraceBuild | null;
     try {
       build = await traces.build(context, summary.requestId);
@@ -181,6 +208,17 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
       },
       definitiveOnRead,
     };
+  }
+
+  async function counters(): Promise<MetricCounters> {
+    const allowed = await count({ status: 'allowed' });
+    const denied = await count({ status: 'denied' });
+    const approvalRequired = await count({ status: 'approval_required' });
+    const indeterminate = await count({ status: 'indeterminate' });
+    const total = await count({});
+    const issuanceWithheld = await count({ governedPath: 'issuance-withheld' });
+    const executionClaims = await count({ governedPath: 'execution-claimed' });
+    return { allowed, denied, approvalRequired, indeterminate, total, issuanceWithheld, executionClaims };
   }
 
   return Object.freeze({
@@ -239,23 +277,26 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
       const disclosed = discloseAuthorityTrace(build.trace, policy);
       const at = now();
       const { record } = build;
+      const summary = {
+        requestId,
+        evaluationId: record.evaluation.evaluationId,
+        decisionId: record.evaluation.decisionId,
+        actorId: record.request.actorId,
+        actionType: record.request.actionType,
+        status: record.evaluation.status,
+        reasonCodes: record.evaluation.reasonCodes,
+        evaluatedAt: record.evaluation.evaluatedAt,
+        persistedAt: record.evaluation.persistedAt,
+      };
+      // Classified exactly as the execution list classifies it, then disclosed at the trace's own level.
+      const view = (await isGovernedAction(summary.evaluationId)) ? operationalViewOf(build.trace, summary) : operationalViewOfEvaluation(summary);
       return {
         requestId,
         disclosure: { level: policy.level, policyId: policy.policyId, policyVersion: policy.version, visibleFields: policy.visibleFields, hiddenFields: policy.hiddenFields, redactedFields: policy.redactedFields },
         trace: disclosed,
         traceDigest: disclosedTraceDigest(disclosed),
         verification: discloseTraceVerification(authorityTraceVerificationOf(build, at), policy),
-        operational: operationalViewOf(build.trace, {
-          requestId,
-          evaluationId: record.evaluation.evaluationId,
-          decisionId: record.evaluation.decisionId,
-          actorId: record.request.actorId,
-          actionType: record.request.actionType,
-          status: record.evaluation.status,
-          reasonCodes: record.evaluation.reasonCodes,
-          evaluatedAt: record.evaluation.evaluatedAt,
-          persistedAt: record.evaluation.persistedAt,
-        }),
+        operational: discloseOperationalView(view, disclosed),
         generatedAt: at,
       };
     },
@@ -263,30 +304,37 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
     async metrics(authorizationHeader: string | undefined, rawQuery: OperationsQuery): Promise<OperationalMetrics> {
       authenticator.authorize(authorizationHeader, 'operations.read');
       closedQuery(rawQuery, []);
-      const [total, allowed, denied, approvalRequired, indeterminate, issuanceWithheld, executionClaims] = [
-        await count({}),
-        await count({ status: 'allowed' }),
-        await count({ status: 'denied' }),
-        await count({ status: 'approval_required' }),
-        await count({ status: 'indeterminate' }),
-        await count({ governedPath: 'issuance-withheld' }),
-        await count({ governedPath: 'execution-claimed' }),
-      ];
-      const { operations, definitiveOnRead } = await scanOpenClaims();
-      // Claims outside the candidate set carry a definitive outcome row, written only after the canonical record it summarizes.
-      // Within it, only what the traces just showed counts. Stated only when every candidate was read.
-      const confirmedOutcomes = operations.scan.complete ? executionClaims - operations.scan.examined + definitiveOnRead : null;
-      return {
-        decisions: { total, allowed, denied, approvalRequired, indeterminate },
-        issuanceWithheld,
-        executionClaims,
-        confirmedOutcomes,
-        unresolvedExecutions: operations.unresolvedExecutions,
-        attentionRequired: operations.attentionRequired,
-        scan: operations.scan,
-        computedAt: now(),
-        coverage: 'governance-store-counts-and-claim-scan',
-      };
+      // Separate reads, so a concurrent append can land between any two. Every counted set only grows, so
+      // counters read before the scan and found unchanged after it all held at one instant, with the scan
+      // inside it; otherwise read again, a bounded number of times. The read order makes the counters
+      // coherent even then: each status before the total, and the claims after the scan that examined them.
+      let before = await counters();
+      for (let attempt = 1; ; attempt += 1) {
+        const { operations, definitiveOnRead } = await scanOpenClaims();
+        const after = await counters();
+        const consistent = sameCounters(before, after);
+        if (!consistent && attempt < METRICS_SNAPSHOT_ATTEMPTS) {
+          before = after;
+          continue;
+        }
+        // Claims outside the candidate set carry a definitive outcome row, written only after the canonical record it summarizes.
+        // Within it, only what the traces just showed counts. Stated only from one consistent read of every candidate.
+        const derived = consistent && operations.scan.complete ? after.executionClaims - operations.scan.examined + definitiveOnRead : null;
+        const { total, allowed, denied, approvalRequired, indeterminate, issuanceWithheld, executionClaims } = after;
+        return {
+          decisions: { total, allowed, denied, approvalRequired, indeterminate },
+          issuanceWithheld,
+          executionClaims,
+          // Never an impossible value: a derivation outside [0, claims] is not stated.
+          confirmedOutcomes: derived !== null && derived >= 0 && derived <= executionClaims ? derived : null,
+          unresolvedExecutions: operations.unresolvedExecutions,
+          attentionRequired: operations.attentionRequired,
+          scan: operations.scan,
+          consistent,
+          computedAt: now(),
+          coverage: 'governance-store-counts-and-claim-scan',
+        };
+      }
     },
 
     async health(authorizationHeader: string | undefined, rawQuery: OperationsQuery): Promise<OperationalHealthView> {

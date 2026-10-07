@@ -176,8 +176,54 @@ export interface OperationalMetrics {
   readonly unresolvedExecutions: number;
   readonly attentionRequired: number;
   readonly scan: OperationalScan;
+  /**
+   * `true` when every counter above was re-read after the scan and found
+   * unchanged — every counted set only grows, so they all held at one instant
+   * and the scan ran within it. `false` when the store kept moving through
+   * every attempt: each counter is as read, and `confirmedOutcomes` is `null`.
+   */
+  readonly consistent: boolean;
   readonly computedAt: string;
   readonly coverage: 'governance-store-counts-and-claim-scan';
+}
+
+/** The parts of an operational view, each read from one trace stage; a part is omitted when the disclosure level hides its stage. */
+export const OPERATIONAL_VIEW_SECTIONS = ['request', 'decision', 'approval', 'issuance', 'execution', 'outcome'] as const;
+
+export type OperationalViewSection = (typeof OPERATIONAL_VIEW_SECTIONS)[number];
+
+/**
+ * The classification beside a disclosed trace: an `OperationalExecutionView`
+ * reduced to what the disclosure level shows. A section whose trace stage is
+ * hidden is absent and named in `hidden`; `classification` is `null` where
+ * only a hidden stage could state it (why nothing was executed, below the
+ * authority stage); `unresolved` is `null` when the execution stage is hidden.
+ * At AUDITOR nothing is hidden and it is the full view.
+ */
+export interface DisclosedOperationalView {
+  readonly requestId: string;
+  readonly evaluationId: string;
+  readonly decisionId: string;
+  readonly executionId: string | null;
+  readonly classification: OperationalState | null;
+  readonly attentionRequired: boolean;
+  readonly attentionReasons: readonly AttentionReason[];
+  readonly unresolved: boolean | null;
+  readonly trace: OperationalExecutionView['trace'];
+  /** `trace.request`. */
+  readonly actorId?: string;
+  readonly actionType?: string;
+  /** `trace.decision`. `persistedAt` (a Governance Store fact, not a trace field) only at AUDITOR. */
+  readonly decision?: { readonly status: string; readonly reasonCodes: readonly string[]; readonly evaluatedAt: string; readonly persistedAt?: string };
+  /** `trace.approval`. */
+  readonly approval?: OperationalExecutionView['approval'];
+  /** `trace.authority`. */
+  readonly issuance?: OperationalExecutionView['issuance'];
+  /** `trace.execution`. */
+  readonly execution?: OperationalExecutionView['execution'];
+  /** `trace.outcome` and `trace.resolution`. */
+  readonly outcome?: OperationalExecutionView['outcome'];
+  readonly hidden: readonly OperationalViewSection[];
 }
 
 /** `GET /api/admin/operations/traces/{requestId}` — the ASSURE-01 trace, disclosed at an operator level, with its verification and classification. */
@@ -188,7 +234,8 @@ export interface OperationalTraceView {
   /** Digest of exactly the disclosed trace above — the value the customer-plane trace read returns for the same level. */
   readonly traceDigest: string;
   readonly verification: AuthorityTraceVerification;
-  readonly operational: OperationalExecutionView;
+  /** Disclosed at the same level as `trace`: nothing here states what `trace` hides. */
+  readonly operational: DisclosedOperationalView;
   readonly generatedAt: string;
 }
 

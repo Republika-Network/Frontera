@@ -1,7 +1,5 @@
-import { EMERGENCY_CONTROL_REASON_CODE_VALUES } from '../../features/emergency-control-runtime/index.js';
-import { EXERCISE_CONTROL_REASON_CODE_VALUES } from '../../features/exercise-control-runtime/index.js';
 import type { BoundedGrant } from '../../features/grant-runtime/index.js';
-import { GRANT_EXERCISE_REASON_CODE_VALUES, isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
+import { isRecordableExecutionAdapterId, type ExecutionOutcome } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecord, GovernanceReferenceInput, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { isGovernanceStoreError } from '../governance-store/errors.js';
@@ -15,7 +13,19 @@ import {
   reconsiderationRealizationReferenceId,
 } from './identifiers.js';
 import { RECONSIDERATION_REALIZED_URI, reconsiderationLinkUri, type VerifiedReconsiderationTarget } from './reconsideration-lineage.js';
+import {
+  ADAPTER_DELIMITER,
+  EXECUTION_UNCONFIRMED_OUTCOME,
+  WITHHELD_PREFIX,
+  decodeWithheldOutcome,
+  encodeResolutionSummary,
+  isCanonicalWithheldCodes,
+  splitAdapter,
+  type WithholdingLayer,
+} from './execution-summary.js';
 import { isWellFormedIssuanceWithheldEvidence, issuanceWithheldDigest, issuanceWithheldUri, issuanceWithheldVersion, type IssuanceWithheldEvidence } from './issuance-record.js';
+
+export { EXECUTION_UNCONFIRMED_OUTCOME, type WithholdingLayer } from './execution-summary.js';
 
 /**
  * Evidence writing for a governed action: which authorization artifact a
@@ -45,17 +55,6 @@ import { isWellFormedIssuanceWithheldEvidence, issuanceWithheldDigest, issuanceW
  * what makes the `attempt` row a durable at-most-once marker — and no more
  * than that: it is not exactly-once.
  */
-/**
- * Which layer withheld an effect. Three layers can, they own different
- * vocabularies, and a replay must report the one that actually did.
- *
- * `exercise-control` (P7) is the aggregate / velocity and exercise-time
- * authority-binding layer. Its row is **evidence** that an effect was withheld
- * and why — never the consumption state the admission was decided from, which
- * lives in the separate exercise-control ledger and is never reconstructed
- * from here.
- */
-export type WithholdingLayer = 'grant-exercise' | 'emergency-control' | 'exercise-control';
 
 export interface PriorExecution {
   readonly attempted: boolean;
@@ -89,113 +88,12 @@ export interface PriorExecution {
   readonly adapterId?: string;
 }
 
-/**
- * A withheld effect is recorded as `withheld:<layer>:<CODE>,<CODE>…` — the
- * layer that withheld it, then that layer's reason codes in their own stable
- * order.
- *
- * The format is deterministic and bounded: a layer drawn from a closed
- * three-member set, at least one code, every code drawn from **that layer's own**
- * closed vocabulary, none repeated, so at most one entry per vocabulary member.
- * Anything else is not encoded and never decoded: a replay reports only reasons
- * that were recorded, and the ledger records nothing it could not later read
- * back exactly.
- *
- * The layer is part of the record rather than inferred from the codes, because
- * inferring it would make the two vocabularies' disjointness a *correctness*
- * requirement of the replay path rather than a hygiene property — and a code
- * added to the wrong constant would then silently re-label history.
- *
- * ## The Prompt 3 form still reads
- *
- * Rows written before this phase carry `withheld:<CODE>,<CODE>…` with no layer,
- * and only the grant-exercise layer could write one. They decode as
- * `grant-exercise`, unchanged. The two forms cannot be confused: a layer token
- * is lowercase and hyphenated, a reason code is upper-snake, and neither
- * vocabulary contains the other's spellings.
- *
- * The codes explain a refusal. They are evidence of why nothing ran, and they
- * cannot permit anything. **The ledger is never read to decide whether a new
- * action is allowed** — its only behavioural use stays negative: this execution
- * identity was already attempted, so do not attempt it again.
- */
-const WITHHELD_PREFIX = 'withheld:';
-
-/**
- * The performing adapter is appended to an effect-bearing outcome as
- * `…@<adapterId>`.
- *
- * Deterministic and bounded on both sides: the id is recorded only when
- * `isRecordableExecutionAdapterId` accepts it — bounded length, and no `@` to
- * collide with the delimiter — so the recorded string decodes back to exactly
- * the id that was written. The registry refuses a non-recordable child at
- * composition, so the routed path always carries attribution; a host that
- * composed one adapter directly with an exotic identity records the outcome
- * without it rather than failing to record the outcome at all, because losing
- * the *fact* of execution is far worse than losing its label.
- *
- * `@` is split from the right, so an id containing `:` — as the reason-code and
- * layer delimiters do — is still unambiguous.
- */
-const ADAPTER_DELIMITER = '@';
-
-/**
- * The canonical recorded form of an adapter-reported unconfirmed effect,
- * before its `@<adapterId>` suffix.
- *
- * A separate token rather than a flavour of `execution-failed:` on purpose: a
- * replay that decoded it as a failure would tell a caller the effect did not
- * happen, which nobody knows. Only this exact body decodes as unconfirmed;
- * anything longer, shorter or decorated is an undecodable row, which replays
- * as "attempted, outcome not on record" — still unconfirmed, never executed,
- * never failed, and never a second invocation.
- */
-export const EXECUTION_UNCONFIRMED_OUTCOME = 'execution-unconfirmed';
-
 function withAdapter(recorded: string, adapterId: string | undefined): string {
   return adapterId !== undefined && isRecordableExecutionAdapterId(adapterId) ? `${recorded}${ADAPTER_DELIMITER}${adapterId}` : recorded;
 }
 
-function splitAdapter(recorded: string): { readonly body: string; readonly adapterId?: string } {
-  const at = recorded.lastIndexOf(ADAPTER_DELIMITER);
-  if (at === -1) return { body: recorded };
-  const adapterId = recorded.slice(at + 1);
-  // A suffix that is not a recordable identity is not one this ledger wrote,
-  // and is never decoded into an attribution.
-  return isRecordableExecutionAdapterId(adapterId) ? { body: recorded.slice(0, at), adapterId } : { body: recorded };
-}
-
-const WITHHOLDING_VOCABULARIES: Readonly<Record<WithholdingLayer, ReadonlySet<string>>> = Object.freeze({
-  'grant-exercise': new Set(GRANT_EXERCISE_REASON_CODE_VALUES),
-  'emergency-control': new Set(EMERGENCY_CONTROL_REASON_CODE_VALUES),
-  'exercise-control': new Set(EXERCISE_CONTROL_REASON_CODE_VALUES),
-});
-
-function isWithholdingLayer(value: string): value is WithholdingLayer {
-  return value === 'grant-exercise' || value === 'emergency-control' || value === 'exercise-control';
-}
-
-/** Deterministic, bounded, and closed against the layer's own vocabulary. A code from another layer is not canonical here, which is what keeps the two from bleeding together. */
-function isCanonicalWithheldCodes(layer: WithholdingLayer, codes: readonly string[]): boolean {
-  const vocabulary = WITHHOLDING_VOCABULARIES[layer];
-  return codes.length > 0 && codes.length <= vocabulary.size && new Set(codes).size === codes.length && codes.every((code) => vocabulary.has(code));
-}
-
 function encodeWithheldOutcome(layer: WithholdingLayer, reasonCodes: readonly string[]): string | undefined {
   return isCanonicalWithheldCodes(layer, reasonCodes) ? `${WITHHELD_PREFIX}${layer}:${reasonCodes.join(',')}` : undefined;
-}
-
-function decodeWithheldOutcome(recorded: string): { readonly layer: WithholdingLayer; readonly reasonCodes: readonly string[] } | undefined {
-  if (!recorded.startsWith(WITHHELD_PREFIX)) return undefined;
-  const body = recorded.slice(WITHHELD_PREFIX.length);
-  const separator = body.indexOf(':');
-  const head = separator === -1 ? '' : body.slice(0, separator);
-  // Layered form when the head names a layer; otherwise the Prompt 3 form,
-  // which only the grant-exercise layer could have written. A head that looks
-  // like neither decodes as nothing at all.
-  const layer: WithholdingLayer = isWithholdingLayer(head) ? head : 'grant-exercise';
-  const codes = (isWithholdingLayer(head) ? body.slice(separator + 1) : body).split(',');
-  return isCanonicalWithheldCodes(layer, codes) ? { layer, reasonCodes: Object.freeze([...codes]) } : undefined;
 }
 
 /**
@@ -380,7 +278,7 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
     },
 
     async recordResolution(evaluationId, executionId, resolution) {
-      const recordedAs = resolution.certainty === 'confirmed-completed' ? 'resolved:confirmed-completed' : `resolved:confirmed-not-completed:${resolution.failure ?? ''}`;
+      const recordedAs = encodeResolutionSummary(resolution.certainty, resolution.failure);
       try {
         await appendOnce({
           referenceId: executionResolutionReferenceId(executionId),

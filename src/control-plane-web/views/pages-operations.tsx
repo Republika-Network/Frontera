@@ -34,9 +34,8 @@ function Attention({ execution }: { readonly execution: OperationalExecution }):
   );
 }
 
-function Outcome({ execution }: { readonly execution: OperationalExecution }): React.ReactElement {
-  const { outcome } = execution;
-  if (outcome.status === 'none') return <span className="muted">{execution.execution.claim === 'recorded' ? 'none recorded' : '—'}</span>;
+function Outcome({ outcome, claim }: { readonly outcome: OperationalExecution['outcome']; readonly claim: string | undefined }): React.ReactElement {
+  if (outcome.status === 'none') return <span className="muted">{claim === 'recorded' ? 'none recorded' : '—'}</span>;
   return (
     <>
       <Status value={outcome.status} />
@@ -51,8 +50,7 @@ function Outcome({ execution }: { readonly execution: OperationalExecution }): R
   );
 }
 
-function Issuance({ execution }: { readonly execution: OperationalExecution }): React.ReactElement {
-  const { issuance } = execution;
+function Issuance({ issuance }: { readonly issuance: OperationalExecution['issuance'] }): React.ReactElement {
   return (
     <>
       <Status value={issuance.status} />
@@ -110,11 +108,11 @@ export function ExecutionTable({ executions, testId }: { readonly executions: re
               {execution.decision.reasonCodes.length > 0 ? <List values={execution.decision.reasonCodes} /> : null}
             </td>
             <td>
-              <Issuance execution={execution} />
+              <Issuance issuance={execution.issuance} />
             </td>
             <td>{execution.execution.claim === 'recorded' ? <Time value={execution.execution.claimedAt} /> : <span className="muted">{execution.execution.claim}</span>}</td>
             <td>
-              <Outcome execution={execution} />
+              <Outcome outcome={execution.outcome} claim={execution.execution.claim} />
             </td>
             <td>
               <code>{execution.classification}</code>
@@ -249,6 +247,9 @@ const STAGE_TITLES: Readonly<Record<(typeof STAGE_ORDER)[number], string>> = {
   events: 'Event stream',
 };
 
+/** A section the disclosure level left out of the operational classification. */
+const HIDDEN_HERE = <span className="muted">hidden at this level</span>;
+
 export function TracePage({ context, csrfToken, view }: { readonly context: OrganizationContext; readonly csrfToken: string; readonly view: OperationalTrace }): React.ReactElement {
   const { trace, verification, operational, disclosure } = view;
   const summary = typeof trace.summary === 'object' ? trace.summary : undefined;
@@ -286,11 +287,25 @@ export function TracePage({ context, csrfToken, view }: { readonly context: Orga
         ) : null}
         <KeyValues
           rows={[
-            ['Classification', <code key="c" data-testid="trace-classification">{operational.classification}</code>],
-            ['Kernel decision', <Status key="d" value={operational.decision.status} />],
-            ['Issuance', <Issuance key="i" execution={operational} />],
-            ['Execution claim', operational.execution.claim === 'recorded' ? <Time key="e" value={operational.execution.claimedAt} /> : <span key="e" className="muted">{operational.execution.claim}</span>],
-            ['Outcome', <Outcome key="o" execution={operational} />],
+            [
+              'Classification',
+              operational.classification !== null ? (
+                <code key="c" data-testid="trace-classification">
+                  {operational.classification}
+                </code>
+              ) : (
+                <span key="c" className="muted" data-testid="trace-classification-hidden">
+                  not stated at this level
+                </span>
+              ),
+            ],
+            ['Kernel decision', operational.decision !== undefined ? <Status key="d" value={operational.decision.status} /> : HIDDEN_HERE],
+            ['Issuance', operational.issuance !== undefined ? <Issuance key="i" issuance={operational.issuance} /> : HIDDEN_HERE],
+            [
+              'Execution claim',
+              operational.execution === undefined ? HIDDEN_HERE : operational.execution.claim === 'recorded' ? <Time key="e" value={operational.execution.claimedAt} /> : <span key="e" className="muted">{operational.execution.claim}</span>,
+            ],
+            ['Outcome', operational.outcome !== undefined ? <Outcome key="o" outcome={operational.outcome} claim={operational.execution?.claim} /> : HIDDEN_HERE],
             ['Final state (trace)', <code key="f">{summary?.finalState ?? verification.finalState}</code>],
           ]}
         />
@@ -408,6 +423,11 @@ export function HostHealthPage({
               ]}
             />
             <ScanNote scan={metrics.scan} />
+            {!metrics.consistent ? (
+              <p className="emphasis" data-testid="metrics-moving">
+                The Host’s records kept changing while these were counted: each counter is as read, and confirmed outcomes are not stated.
+              </p>
+            ) : null}
           </>
         )}
       </Section>

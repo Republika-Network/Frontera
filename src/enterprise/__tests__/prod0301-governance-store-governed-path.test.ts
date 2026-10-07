@@ -7,6 +7,7 @@ import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { GovernanceStoreError } from '../governance-store/errors.js';
 import { createInMemoryGovernanceStore, type CreateGovernanceStoreOptions } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
+import { deriveGovernedActionRequestId, governedActionIdempotencyScope } from '../governed-action/identifiers.js';
 
 /**
  * PROD-03-01 — the Governance Store's additive governed-path filter and count,
@@ -25,7 +26,7 @@ function options(): CreateGovernanceStoreOptions {
   return { now: () => new Date(Date.UTC(2026, 9, 7, 0, 0, 0, (tick += 1))).toISOString(), nextId: (prefix) => `${prefix}-${(id += 1)}` };
 }
 
-function input(requestId: string, organizationId: string, status: KernelDecisionStatus): AppendGovernanceEvaluationInput {
+function input(requestId: string, organizationId: string, status: KernelDecisionStatus, idempotency?: { readonly scope: string; readonly idempotencyKey: string }): AppendGovernanceEvaluationInput {
   const decisionId = `dec-${requestId}`;
   return {
     request: { requestId, actor: { id: 'actor-1', trustDomainId: 'td', type: 'agent' }, action: { type: 'act', resourceScope: 'res', domain: 'general' }, organization: { id: organizationId }, requestedAt: T },
@@ -47,12 +48,23 @@ function input(requestId: string, organizationId: string, status: KernelDecision
     receivedAt: T,
     enterpriseContext: { enterpriseVersion: '1.0.0', lifecycleState: 'ready', modules: [], providers: [], environment: 'test' },
     events: [],
+    ...(idempotency !== undefined ? { idempotency } : {}),
     accessContext: SYSTEM,
   };
 }
 
+/** Request ids of the governed-action path's own derivation, for principal `p-1` of organization A. */
+const governedId = (idempotencyKey: string): string => deriveGovernedActionRequestId({ organizationId: 'org-a', principalId: 'p-1', idempotencyKey });
+const GOVERNED_SCOPE = governedActionIdempotencyScope({ organizationId: 'org-a', principalId: 'p-1' });
+
 /** One record per governed-path shape, in organization A, plus one claimed-open record in organization B. */
-const WORLD: readonly { readonly requestId: string; readonly organizationId: string; readonly status: KernelDecisionStatus; readonly rows: readonly (readonly [string, string, string?])[] }[] = [
+const WORLD: readonly {
+  readonly requestId: string;
+  readonly organizationId: string;
+  readonly status: KernelDecisionStatus;
+  readonly rows: readonly (readonly [string, string, string?])[];
+  readonly idempotency?: { readonly scope: string; readonly idempotencyKey: string };
+}[] = [
   { requestId: 'r1-executed', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x1', 'attempt'], ['execution_record', 'x1', 'executed@a']] },
   { requestId: 'r2-denied', organizationId: 'org-a', status: 'denied', rows: [] },
   { requestId: 'r3-withheld', organizationId: 'org-a', status: 'allowed', rows: [['issuance_record', 'r3-withheld', 'withheld:authority-binding:FINANCIAL_AUTHORITY_CEILING_EXCEEDED']] },
@@ -62,12 +74,22 @@ const WORLD: readonly { readonly requestId: string; readonly organizationId: str
   { requestId: 'r7-resolved', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x7', 'attempt'], ['execution_record', 'x7', 'execution-unconfirmed'], ['execution_record', 'x7', 'resolved:confirmed-completed']] },
   { requestId: 'r8-exercise-withheld', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x8', 'attempt'], ['execution_record', 'x8', 'withheld:exercise-control:EXERCISE_CONTROL_LIMIT_EXCEEDED']] },
   { requestId: 'r9-other-org-claimed', organizationId: 'org-b', status: 'allowed', rows: [['execution_record', 'x9', 'attempt']] },
+  // Review fix (A): rows shaped like a definitive outcome that the ledger's grammar does not decode keep the claim open.
+  { requestId: 'r10-malformed-withheld', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x10', 'attempt'], ['execution_record', 'x10', 'withheld:not a reason']] },
+  { requestId: 'r11-malformed-resolved', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x11', 'attempt'], ['execution_record', 'x11', 'execution-unconfirmed'], ['execution_record', 'x11', 'resolved:garbage']] },
+  { requestId: 'r12-malformed-failed', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x12', 'attempt'], ['execution_record', 'x12', 'execution-failed:not-a-reason@a']] },
+  { requestId: 'r13-failed', organizationId: 'org-a', status: 'allowed', rows: [['execution_record', 'x13', 'attempt'], ['execution_record', 'x13', 'execution-failed:PROVIDER_REJECTED@a']] },
+  // Review fix (D): only the governed path's own idempotency claim, deriving the request id, makes a record governed.
+  { requestId: governedId('k-g1'), organizationId: 'org-a', status: 'allowed', rows: [], idempotency: { scope: GOVERNED_SCOPE, idempotencyKey: 'k-g1' } },
+  { requestId: governedId('k-g2'), organizationId: 'org-a', status: 'allowed', rows: [], idempotency: { scope: 'org:org-a', idempotencyKey: 'k-g2' } },
+  { requestId: governedId('k-g3'), organizationId: 'org-a', status: 'allowed', rows: [] },
+  { requestId: governedId('k-g4'), organizationId: 'org-a', status: 'allowed', rows: [], idempotency: { scope: GOVERNED_SCOPE, idempotencyKey: 'k-other' } },
 ];
 
 async function populated(build: () => Promise<GovernanceStore>): Promise<GovernanceStore> {
   const store = await build();
   for (const entry of WORLD) {
-    const appended = await store.appendEvaluation(input(entry.requestId, entry.organizationId, entry.status));
+    const appended = await store.appendEvaluation(input(entry.requestId, entry.organizationId, entry.status, entry.idempotency));
     let index = 0;
     for (const [referenceType, externalId, externalVersion] of entry.rows) {
       index += 1;
@@ -91,9 +113,11 @@ const VARIANTS: readonly { readonly name: string; readonly build: () => Promise<
 
 const EXPECTED: Readonly<Record<GovernanceGovernedPathFilter, readonly string[]>> = {
   // Newest first (chain order), organization A only.
-  'execution-claimed': ['r8-exercise-withheld', 'r7-resolved', 'r6-claimed', 'r5-unconfirmed', 'r1-executed'],
-  'execution-open': ['r6-claimed', 'r5-unconfirmed'],
+  'execution-claimed': ['r13-failed', 'r12-malformed-failed', 'r11-malformed-resolved', 'r10-malformed-withheld', 'r8-exercise-withheld', 'r7-resolved', 'r6-claimed', 'r5-unconfirmed', 'r1-executed'],
+  'execution-open': ['r12-malformed-failed', 'r11-malformed-resolved', 'r10-malformed-withheld', 'r6-claimed', 'r5-unconfirmed'],
   'issuance-withheld': ['r3-withheld'],
+  // Not the evaluate-route scope, not a missing claim, not a claim whose key derives another request id.
+  'governed-action': [governedId('k-g1')],
 };
 
 async function requestIds(store: GovernanceStore, context: GovernanceStoreAccessContext, filter: GovernanceGovernedPathFilter, limit = 50): Promise<string[]> {
@@ -123,14 +147,16 @@ for (const variant of VARIANTS) {
       const store = await populated(variant.build);
       const count = store.count?.bind(store);
       assert.ok(count !== undefined, 'both shipped providers implement count');
-      assert.equal(await count(ORG_A, {}), 8);
+      assert.equal(await count(ORG_A, {}), 16);
       assert.equal(await count(ORG_B, {}), 1);
-      assert.equal(await count(SYSTEM, {}), 9);
-      assert.equal(await count(ORG_A, { status: 'allowed' }), 6);
+      assert.equal(await count(SYSTEM, {}), 17);
+      assert.equal(await count(ORG_A, { status: 'allowed' }), 14);
       assert.equal(await count(ORG_A, { status: 'denied' }), 1);
       assert.equal(await count(ORG_A, { status: 'approval_required' }), 1);
       for (const [filter, expected] of Object.entries(EXPECTED) as [GovernanceGovernedPathFilter, readonly string[]][]) assert.equal(await count(ORG_A, { governedPath: filter }), expected.length, filter);
       assert.equal(await count(ORG_A, { governedPath: 'execution-open', status: 'denied' }), 0);
+      assert.equal(await count(ORG_A, { governedPath: 'governed-action', requestId: governedId('k-g2') }), 0, 'a governed-shaped id with an evaluate-route claim is not governed');
+      assert.equal(await count(ORG_B, { governedPath: 'governed-action' }), 0);
       await assert.rejects(count(ORG_A, { organizationId: 'org-b' }), (error: unknown) => error instanceof GovernanceStoreError && error.code === 'GOVERNANCE_ACCESS_SCOPE_VIOLATION');
       await store.close();
     });
