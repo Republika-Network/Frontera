@@ -683,7 +683,7 @@ describe('PROD-03-02 — CTRL-03: the console workflow', () => {
     const callsBefore = adapter.calls.length;
 
     const attention = await admin.get('/attention');
-    assert.match(attention.html, new RegExp(target.requestId.replace(/[.]/g, '\\.')));
+    assert.ok(attention.html.includes(target.requestId), 'the crashed claim is listed under Attention');
     const trace = await admin.get(`/traces/${encodeURIComponent(target.requestId)}`);
     assert.match(trace.html, /data-testid="record-resolution"/);
     for (const word of [/\bRetry\b/, /\bReplay\b/, /\bResend\b/, /Re-execute/, /Mark successful/]) assert.doesNotMatch(trace.html, word);
@@ -712,7 +712,7 @@ describe('PROD-03-02 — CTRL-03: the console workflow', () => {
     assert.match(textOf(done.html), /Operator resolution \(recorded attestation — not a provider confirmation\)/);
     assert.equal(resolutionRows(target.executionId).length, 1);
     assert.equal(adapter.calls.length, callsBefore, 'the console performed nothing');
-    assert.doesNotMatch((await admin.get('/attention')).html, new RegExp(target.requestId.replace(/[.]/g, '\\.')));
+    assert.equal((await admin.get('/attention')).html.includes(target.requestId), false, 'resolved: no longer under Attention');
     assert.doesNotMatch((await admin.get(`/traces/${encodeURIComponent(target.requestId)}`)).html, /data-testid="record-resolution"/, 'nothing left to resolve');
 
     // An observer sees no control, and a forged post is refused by the Host.
