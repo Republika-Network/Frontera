@@ -31,7 +31,7 @@ import { closeSync, existsSync, linkSync, openSync, rmSync, writeFileSync } from
 // variable that controls the Host, the runtime or Compose itself (PATH,
 // NODE_OPTIONS, COMPOSE_PROFILES, FRONTERA_IMAGE, FRONTERA_PUBLISH_PORT, …).
 const ENV_NAME = /^FRONTERA_[A-Z0-9_]+$/;
-const RESERVED = /^FRONTERA_(REFERENCE_|IMAGE$|PUBLISH_|BUILD_)/;
+const RESERVED = /^FRONTERA_(REFERENCE_|PROVIDER_|IMAGE$|PUBLISH_|BUILD_)/;
 
 function refuse(message) {
   console.error(`generate-pilot-secrets refused: ${message}`);
