@@ -123,6 +123,24 @@ describe('PROD-03-03 Host preflight', () => {
     assert.deepEqual(failures(await runHostPreflight(loop)), ['STORAGE_UNAVAILABLE']);
   });
 
+  it('refuses a store beneath a symlinked directory whose target is missing, which the Host could not create', async () => {
+    const { symlinkSync } = await import('node:fs');
+    const data = scratch();
+    symlinkSync(join(data, 'gone'), join(data, 'link'));
+    const env = durableEnv(join(data, 'link', 'nested'));
+    const result = await runHostPreflight(env);
+    assert.ok(failures(result).length > 0 && failures(result).every((code) => code === 'STORAGE_UNAVAILABLE'), outputOf(result));
+    await assert.rejects(enterprise.bootEnterpriseHost({ env: { ...env, AOC_ENTERPRISE_LOG_LEVEL: 'error' } }), 'the Host itself cannot start there either');
+  });
+
+  it('reports an unreadable governed-action file by variable, never by its path', async () => {
+    const missing = join(scratch(), 'customer-acme', 'governed-actions.json');
+    const result = await runHostPreflight(durableEnv(scratch(), { AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: missing, AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true' }));
+    assert.deepEqual(failures(result), ['HOST_GOVERNED_ACTIONS_FILE_UNREADABLE']);
+    assert.equal(outputOf(result).includes('customer-acme'), false);
+    assert.match(outputOf(result), /<AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE>/);
+  });
+
   it('passes a store directory that does not exist yet — and the Host then creates it, as the preflight assumes', async () => {
     const nested = join(scratch(), 'not', 'yet', 'created');
     const env = durableEnv(nested, { AOC_ENTERPRISE_LOG_LEVEL: 'error' });

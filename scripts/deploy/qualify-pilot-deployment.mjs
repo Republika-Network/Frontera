@@ -434,8 +434,8 @@ async function main() {
   };
   compose(['stop', 'frontera']);
   for (const [id, name, volumes, code] of [
-    ['D8', 'no state volume (container layer)', ['./governed-actions.json:/etc/frontera/governed-actions.json:ro'], 'STORAGE_NOT_PERSISTENT'],
-    ['D9', 'read-only state volume', ['frontera-state:/var/lib/frontera:ro', './governed-actions.json:/etc/frontera/governed-actions.json:ro'], 'STORAGE_NOT_WRITABLE'],
+    ['D8', 'no state volume (container layer)', ['./governed-actions.json:/etc/frontera/governed-actions.json:ro,z'], 'STORAGE_NOT_PERSISTENT'],
+    ['D9', 'read-only state volume', ['frontera-state:/var/lib/frontera:ro', './governed-actions.json:/etc/frontera/governed-actions.json:ro,z'], 'STORAGE_NOT_WRITABLE'],
   ]) {
     try {
       const files = fault(id.toLowerCase(), volumes);

@@ -65,7 +65,8 @@ x-frontera-host: &frontera-host
     AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: /var/lib/frontera/evidence-bundles.sqlite
   volumes:
     - frontera-state:/var/lib/frontera
-    - ./governed-actions.json:/etc/frontera/governed-actions.json:ro
+    # `z`: SELinux relabel (shared by the Host and config-check); no effect elsewhere.
+    - ./governed-actions.json:/etc/frontera/governed-actions.json:ro,z
 
 services:
   network:

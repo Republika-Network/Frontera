@@ -22,10 +22,10 @@
 // never a value, a path or a secret.
 
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readStoreVersion, realResolve, sqliteIntegrityCheck } from '../portability/lib-portability.mjs';
+import { readStoreVersion, sqliteIntegrityCheck } from '../portability/lib-portability.mjs';
 import { deriveDeploymentRequirements, loadRegistryModules, requiredStoreDefinitions } from '../portability/store-registry.mjs';
 
 export const PREFLIGHT_FORMAT = 'frontera.host-preflight.v1';
@@ -61,23 +61,38 @@ function inContainer() {
 }
 
 /**
- * Where a store file will really be: its own symlink chain followed even when
- * the final target does not exist yet (SQLite would create it there), then
- * every directory symlink resolved. A loop or an over-long chain is refused.
+ * Where a store file will really be, walking every path component and
+ * following every symlink, the way the kernel will when the store opens it.
+ * Components that do not exist yet are kept as written (the store creates its
+ * directories). `{ refused }` when the walk cannot succeed for the Host
+ * either: a symlink loop, or a symlinked directory whose target is missing
+ * (the store's recursive mkdir fails there). Only the file itself may be a
+ * link to a target that does not exist yet — SQLite creates the target.
  */
 function storeLocation(path) {
-  let current = resolve(path);
-  for (let hops = 0; hops < 40; hops += 1) {
-    let link;
+  const pending = resolve(path).split(sep).filter(Boolean);
+  let current = sep;
+  let hops = 0;
+  while (pending.length > 0) {
+    const next = join(current, pending.shift());
+    let stats;
     try {
-      link = lstatSync(current).isSymbolicLink();
+      stats = lstatSync(next);
     } catch {
-      return realResolve(current);
+      return { location: join(next, ...pending) };
     }
-    if (!link) return realResolve(current);
-    current = resolve(dirname(current), readlinkSync(current));
+    if (!stats.isSymbolicLink()) {
+      current = next;
+      continue;
+    }
+    hops += 1;
+    if (hops > 40) return { refused: 'its path contains a symlink loop' };
+    const target = resolve(current, readlinkSync(next));
+    if (pending.length > 0 && !existsSync(target)) return { refused: 'a directory in its path is a symlink to a missing target' };
+    pending.unshift(...target.split(sep).filter(Boolean));
+    current = sep;
   }
-  return undefined;
+  return { location: current };
 }
 
 /** The nearest existing ancestor of `path` (the directory itself when it exists). */
@@ -112,11 +127,12 @@ async function checkStore(storeDef, path, modules, secure, rootDevice) {
   // Every check below is about where the bytes will actually live: the path
   // with every symlink resolved — the file's own and its directories' — so a
   // link from the mounted volume to the container layer cannot pass.
-  const absolute = storeLocation(path);
-  if (absolute === undefined) {
-    problems.push(['STORAGE_UNAVAILABLE', `${label}: its path is a symlink loop`]);
+  const resolved = storeLocation(path);
+  if (resolved.refused !== undefined) {
+    problems.push(['STORAGE_UNAVAILABLE', `${label}: ${resolved.refused}`]);
     return { problems, warnings };
   }
+  const absolute = resolved.location;
   // A missing directory chain is fine: every store creates its own parent
   // directories (recursive mkdir) when it opens. What must hold is that the
   // nearest existing ancestor is writable and, in a container, on a volume.
@@ -219,7 +235,11 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
     );
   } catch (error) {
     const code = typeof error?.code === 'string' ? error.code : 'CONFIG_INVALID';
-    checks.push(fail('configuration', code, messageOf(error)));
+    // The Host's messages name variables, not values — except the governed-action
+    // file's own path when it cannot be read. The report stays path-free.
+    const file = env.AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE;
+    const detail = typeof file === 'string' && file.length > 0 ? messageOf(error).split(file).join('<AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE>') : messageOf(error);
+    checks.push(fail('configuration', code, detail));
   }
 
   // 4. Storage — every store this deployment composes.
@@ -254,7 +274,7 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
         // Where the file actually is: symlinks in the path resolved, and an
         // existing file identified by device and inode, so no alias (symlink,
         // hard link, another spelling) can put two stores in one database.
-        const keys = [`path:${storeLocation(path) ?? resolve(path)}`];
+        const keys = [`path:${storeLocation(path).location ?? resolve(path)}`];
         if (existsSync(path)) {
           const { dev, ino } = statSync(path);
           keys.push(`inode:${dev}:${ino}`);
