@@ -263,7 +263,7 @@ async function main() {
   // No egress from a qualification run: `.invalid` never resolves, so an
   // authorized action reaches the adapter and fails before a byte is sent.
   governed.genericHttpAdapters[0].origin = 'https://provider.frontera-qualification.invalid';
-  writeFileSync(join(pilotDir, 'governed-actions.json'), `${JSON.stringify(governed, null, 2)}\n`);
+  writeFileSync(join(pilotDir, 'governed-actions.json'), `${JSON.stringify(governed, null, 2)}\n`, { mode: 0o644 });
   const generated = compose(['run', '--rm', '-T', 'witness-init', '--secret', 'FRONTERA_OPERATOR_KEY_ADMIN', '--secret', 'FRONTERA_OPERATOR_KEY_OBSERVER']);
   appendFileSync(join(pilotDir, '.env'), generated.stdout);
   const again = compose(['run', '--rm', '-T', 'witness-init'], { allowFailure: true });
@@ -292,8 +292,9 @@ async function main() {
 
   // ---- D3 valid configuration --------------------------------------------------------------
   const envPath = join(pilotDir, '.env');
-  setEnvValue(envPath, 'AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID', ORG);
-  setEnvValue(envPath, 'FRONTERA_PROVIDER_TOKEN', `${CANARY}PROVIDER`);
+  // As the guide says: hand-entered values stay single-quoted.
+  setEnvValue(envPath, 'AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID', `'${ORG}'`);
+  setEnvValue(envPath, 'FRONTERA_PROVIDER_TOKEN', `'${CANARY}PROVIDER'`);
   const env = parseEnvFile(envPath);
   operator.admin = `Bearer ${env.FRONTERA_OPERATOR_KEY_ADMIN}`;
   operator.observer = `Bearer ${env.FRONTERA_OPERATOR_KEY_OBSERVER}`;
@@ -304,6 +305,9 @@ async function main() {
     compose(['up', '-d']);
     await waitReady();
     check((await http('GET', '/live')).status === 200, '/live is not 200');
+    // The single-quoted credential reached the Host byte for byte (compared here, never printed).
+    const received = compose(['exec', '-T', 'frontera', 'printenv', 'FRONTERA_PROVIDER_TOKEN']).stdout.replace(/\n$/, '');
+    check(received === env.FRONTERA_PROVIDER_TOKEN, 'Compose altered the single-quoted provider credential');
     record('D3', 'valid configuration: config-check exits 0, the Host starts and becomes ready', true);
   } catch (error) {
     record('D3', 'valid configuration', false, error.message);

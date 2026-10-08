@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { AOC_KERNEL_VERSION } from '../../kernel/index.js';
 import { loadEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { bootEnterpriseHost } from '../host/enterprise-host.js';
+import { connect } from 'node:net';
+
 import { createEnterpriseServer } from '../host/enterprise-server.js';
 import type { EnterpriseLogContext, EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { RELEASE_IDENTITY_SCHEMA, ReleaseIdentityError, developmentReleaseIdentity, parseReleaseIdentity, readReleaseIdentity } from '../host/release-identity.js';
@@ -106,6 +108,24 @@ describe('PROD-03-03 release identity', () => {
     await assert.rejects(bootEnterpriseHost({ env: { AOC_ENTERPRISE_ENV: 'prod0303-not-an-environment' }, logger }), { code: 'HOST_ENVIRONMENT_INVALID' });
     assert.deepEqual(events, [{ level: 'error', message: 'enterprise.host.refused', fields: { phase: 'configuration', errorCode: 'HOST_ENVIRONMENT_INVALID' } }]);
     assert.equal(JSON.stringify(events).includes('prod0303-not-an-environment'), false);
+  });
+
+  it('shutdown drains HTTP within the configured shutdown timeout: a request that never finishes cannot hold the stores open', async () => {
+    const server = await createEnterpriseServer({
+      configuration: loadEnterpriseConfiguration({ AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1', AOC_ENTERPRISE_LOG_LEVEL: 'error', AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: '300' }),
+    });
+    const { port } = await server.listen();
+    // A client that starts a request body and then stalls: an active, never-ending request.
+    const socket = connect(port, '127.0.0.1');
+    await new Promise<void>((resolvePromise) => socket.once('connect', () => resolvePromise()));
+    socket.write('POST /api/governance/evaluate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{');
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    const started = Date.now();
+    await server.close();
+    const elapsed = Date.now() - started;
+    socket.destroy();
+    assert.ok(elapsed < 5_000, `close waited ${elapsed} ms on a stalled request`);
+    assert.equal(server.server.listening, false);
   });
 
   it('GET /version serves the identity of this build: public metadata only, no configuration', async () => {

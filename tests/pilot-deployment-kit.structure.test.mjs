@@ -102,7 +102,7 @@ describe('PROD-03-03 pilot deployment kit', () => {
     assert.ok(assignments.length > 0);
     for (const line of assignments) {
       const value = line.slice(line.indexOf('=') + 1);
-      assert.match(value, /^<required[^>]*>$/, `${line.split('=')[0]} is a placeholder`);
+      assert.match(value, /^'<required[^>']*>'$/, `${line.split('=')[0]} is a single-quoted placeholder (no Compose interpolation)`);
     }
     assert.equal(/BEGIN [A-Z ]*PRIVATE KEY/.test(example), false, 'no key material');
     const governed = read('deploy/pilot/governed-actions.example.json');

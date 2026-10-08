@@ -167,6 +167,10 @@ Frontera reads environment variables and nothing else; it has no secret store
 of its own, and mounted secret files (`*_FILE`) are not supported.
 
 - `.env` is gitignored; keep it `chmod 600`, owned by the deploying user.
+  `governed-actions.json` holds no secret and must be readable by the
+  container's user (uid 1000): `chmod 644` (the quickstart does this).
+- Single-quote secrets you enter by hand (`NAME='value'`): Compose interpolates
+  `$…` in unquoted and double-quoted `.env` values.
 - Placeholders have the form `<required…>`. The preflight refuses any variable
   still holding one, by name, without printing a value.
 - `scripts/deploy/generate-pilot-secrets.mjs` generates the authority key pair,
@@ -251,6 +255,7 @@ cd deploy/pilot
 cp .env.example .env
 chmod 600 .env
 cp governed-actions.example.json governed-actions.json
+chmod 644 governed-actions.json
 ```
 
 Now edit `governed-actions.json` for your provider, actions and operators
@@ -264,7 +269,9 @@ docker compose run --rm -T witness-init --secret FRONTERA_OPERATOR_KEY_ADMIN --s
 ```
 
 Edit `.env` and replace every `<required…>` value: your organization id and
-your provider credential. (An operator added later gets its credential with
+your provider credential. Keep values you enter by hand inside the single
+quotes: Compose substitutes `$NAME` in unquoted and double-quoted values, and a
+credential containing `$` would otherwise reach the Host altered. (An operator added later gets its credential with
 `docker compose run --rm -T witness-init --secrets-only --secret NAME >> .env`, without
 touching any key.) Then:
 

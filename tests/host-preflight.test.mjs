@@ -55,11 +55,11 @@ describe('PROD-03-03 Host preflight', () => {
 
   it('refuses the example placeholders, naming the variables and never a value', async () => {
     const secret = 'PREFLIGHTCANARY0123456789abcdef0123456789';
-    const result = await runHostPreflight(durableEnv(scratch(), { AOC_ENTERPRISE_API_KEYS: secret, FRONTERA_PROVIDER_TOKEN: '<required-secret>', SOME_OPERATOR_KEY: 'REPLACE_ME' }));
+    const result = await runHostPreflight(durableEnv(scratch(), { AOC_ENTERPRISE_API_KEYS: secret, FRONTERA_PROVIDER_TOKEN: '<required-secret>', FRONTERA_SOME_OPERATOR_KEY: 'REPLACE_ME', DOCUMENTATION_STATUS: 'CHANGE_ME' }));
     assert.equal(result.ok, false);
     assert.deepEqual(failures(result), ['CONFIG_PLACEHOLDER_VALUE']);
     const output = outputOf(result);
-    assert.match(output, /FRONTERA_PROVIDER_TOKEN, SOME_OPERATOR_KEY/);
+    assert.match(output, /FRONTERA_PROVIDER_TOKEN, FRONTERA_SOME_OPERATOR_KEY$/m, 'only variables the Host reads; DOCUMENTATION_STATUS is not one');
     assert.equal(output.includes(secret), false);
     assert.equal(output.includes('<required-secret>'), false);
   });
@@ -75,6 +75,8 @@ describe('PROD-03-03 Host preflight', () => {
     const data = scratch();
     const env = durableEnv(data, { AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(data, 'enterprise-host.sqlite') });
     assert.deepEqual(failures(await runHostPreflight(env)), ['STORAGE_PATHS_COLLIDE']);
+    const onSidecar = durableEnv(data, { AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(data, 'enterprise-host.sqlite-wal') });
+    assert.deepEqual(failures(await runHostPreflight(onSidecar)), ['STORAGE_PATHS_COLLIDE'], "a store on another database's WAL file");
   });
 
   it('refuses stores that alias one file through a symlinked directory or a hard link', async () => {

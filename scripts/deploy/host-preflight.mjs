@@ -247,9 +247,18 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
     checks.push(fail('release-identity', 'RELEASE_IDENTITY_INVALID', messageOf(error)));
   }
 
-  // 2. Placeholders — before anything resolves a secret. Names only.
+  // 2. Placeholders — before anything resolves a secret. Names only. Only what
+  // the Host reads: its own variables (AOC_ENTERPRISE_*, FRONTERA_*) and every
+  // secret the governed-action file names; an unrelated variable is not ours.
+  let referenced = [];
+  try {
+    referenced = deriveDeploymentRequirements(env, { persistence: { provider: 'memory' } }).secretReferenceEnvVars;
+  } catch {
+    // An unreadable file is reported by the configuration check below.
+  }
+  const hostReads = (name) => /^(AOC_ENTERPRISE|FRONTERA)_/.test(name) || referenced.includes(name);
   const placeholders = Object.entries(env)
-    .filter(([, value]) => typeof value === 'string' && PLACEHOLDER.test(value))
+    .filter(([name, value]) => hostReads(name) && typeof value === 'string' && PLACEHOLDER.test(value))
     .map(([name]) => name)
     .sort();
   checks.push(
@@ -319,6 +328,8 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
         const collision = keys.find((key) => paths.has(key));
         if (collision !== undefined) problems.push(['STORAGE_PATHS_COLLIDE', `${storeDef.envVar} and ${paths.get(collision)} name the same file`]);
         for (const key of keys) paths.set(key, storeDef.envVar);
+        // SQLite's companions belong to their database: no store may be configured onto them.
+        for (const suffix of ['-wal', '-shm', '-journal']) paths.set(`${keys[0]}${suffix}`, `${storeDef.envVar} (${suffix.slice(1)})`);
         const result = await checkStore(storeDef, path, modules, host.secureProfile, rootDevice);
         // Every composed store, optional modules' included: the Host opens them
         // all at composition and refuses to start when one cannot be opened.
