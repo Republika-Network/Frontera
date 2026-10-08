@@ -349,6 +349,15 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
           const companion = `${keys[0]}${suffix}`;
           if (collision === undefined && paths.has(companion)) problems.push(['STORAGE_PATHS_COLLIDE', `${paths.get(companion)} is configured onto the ${suffix.slice(1)} file of ${storeDef.envVar}`]);
           paths.set(companion, `${storeDef.envVar} (${suffix.slice(1)})`);
+          // An existing companion is also known by device and inode: a hard
+          // link between it and another store's database is the same file.
+          const companionPath = `${storeLocation(path).location ?? resolve(path)}${suffix}`;
+          if (existsSync(companionPath)) {
+            const { dev, ino } = statSync(companionPath);
+            const inode = `inode:${dev}:${ino}`;
+            if (paths.has(inode)) problems.push(['STORAGE_PATHS_COLLIDE', `the ${suffix.slice(1)} file of ${storeDef.envVar} is the same file as ${paths.get(inode)}`]);
+            paths.set(inode, `${storeDef.envVar} (${suffix.slice(1)})`);
+          }
         }
         const result = await checkStore(storeDef, path, modules, host.secureProfile, rootDevice);
         // Every composed store, optional modules' included: the Host opens them

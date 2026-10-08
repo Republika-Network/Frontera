@@ -40,6 +40,9 @@ x-frontera-host: &frontera-host
     AOC_ENTERPRISE_REQUIRE_AUTH: "true"
     AOC_ENTERPRISE_HTTP_HOST: 0.0.0.0
     AOC_ENTERPRISE_HTTP_PORT: "8787"
+    # Bounds the HTTP drain and every module's shutdown; fixed below the
+    # frontera service's 45 s stop_grace_period so a stop is never a SIGKILL.
+    AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: "30000"
     AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: "true"
     AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED: "true"
     AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: /etc/frontera/governed-actions.json
@@ -120,7 +123,7 @@ services:
         condition: service_healthy
         # Waited for when the reference-witness profile is enabled; absent otherwise.
         required: false
-    # Longer than AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS (30 s default), so a stop
+    # Longer than AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS (fixed at 30 s above), so a stop
     # is never a SIGKILL inside the Host's own shutdown bound.
     stop_grace_period: 45s
     init: true

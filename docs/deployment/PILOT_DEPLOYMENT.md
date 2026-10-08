@@ -115,6 +115,7 @@ change these.
 | `AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED` / `_REQUIRED` | `true` / `true` | Governed actions decide against the durable Kernel Authority world |
 | `AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE` | `/etc/frontera/governed-actions.json` | Mounted read-only from `deploy/pilot/governed-actions.json` |
 | `AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE` | `external` | CORE-07, required by the secure profile |
+| `AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS` | `30000` | Bounds the HTTP drain and module shutdown below the 45 s `stop_grace_period`, so a stop is never a SIGKILL |
 | every `AOC_ENTERPRISE_*_SQLITE_PATH` | `/var/lib/frontera/<registry filename>` | §6 |
 
 ### 4.2 Site settings and secrets (`deploy/pilot/.env`)
@@ -133,7 +134,7 @@ change these.
 | `AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT` | OPTIONAL | https URL, or http to loopback | `http://127.0.0.1:8444` (bundled witness) | Your own witness | `HOST_ENVIRONMENT_INVALID` |
 | `FRONTERA_PUBLISH_ADDRESS` / `FRONTERA_PUBLISH_PORT` | OPTIONAL (Compose only) | address / port | `127.0.0.1` / `8787` | Where the Host is published on the machine | Compose error |
 | `AOC_ENTERPRISE_LOG_LEVEL` | OPTIONAL | `debug`, `info`, `warn`, `error` | `info` | | `HOST_ENVIRONMENT_INVALID` |
-| `AOC_ENTERPRISE_STARTUP_TIMEOUT_MS`, `_SHUTDOWN_TIMEOUT_MS`, `_HEALTH_CHECK_TIMEOUT_MS` | OPTIONAL | ms | `30000`, `30000`, `5000` | Lifecycle bounds; keep shutdown below the 45 s `stop_grace_period` | |
+| `AOC_ENTERPRISE_STARTUP_TIMEOUT_MS`, `_HEALTH_CHECK_TIMEOUT_MS` | OPTIONAL | whole ms | `30000`, `5000` | Lifecycle bounds | `HOST_ENVIRONMENT_INVALID` |
 | `AOC_ENTERPRISE_PASSPORT_REQUIRED`, `_ASSURANCE_REQUIRED` | OPTIONAL | `true`/`false` | `false` | Make an optional module's outage fail readiness | `HOST_ENVIRONMENT_INVALID` |
 | `AOC_ENTERPRISE_STORE_*`, `_TRACE_LEVEL`, `_EVENTS_ENABLED`, `_TELEMETRY_ENABLED`, `_AUTHORITY_FRESHNESS_TIMEOUT_MS` / `_MAX_ATTEMPTS` / `_PROBE_INTERVAL_MS` | OPTIONAL | see root `.env.example` | safe defaults | Tuning | `HOST_ENVIRONMENT_INVALID` |
 | `AOC_ENTERPRISE_API_KEYS` | OPTIONAL, SECRET, legacy | `key[:organizationId],…` | none | Legacy v1 route keys; the pilot uses operator credentials instead | |

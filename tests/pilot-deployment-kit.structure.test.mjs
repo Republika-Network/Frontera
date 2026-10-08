@@ -83,6 +83,7 @@ describe('PROD-03-03 pilot deployment kit', () => {
       AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED: 'true',
       AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE: 'external',
       AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: '/etc/frontera/governed-actions.json',
+      AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: '30000',
     })) {
       assert.equal(environment[name], value, name);
     }
@@ -91,6 +92,8 @@ describe('PROD-03-03 pilot deployment kit', () => {
       assert.equal(new RegExp(`^${name}=`, 'm').test(example), false, `.env.example must not set the fixed ${name}`);
     }
     assert.match(COMPOSE, /"\$\{FRONTERA_PUBLISH_ADDRESS:-127\.0\.0\.1\}:/, 'the port is published on loopback unless the operator decides otherwise');
+    const grace = Number(/stop_grace_period: (\d+)s/.exec(COMPOSE)?.[1]) * 1000;
+    assert.ok(Number(environment.AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS) < grace, 'the shutdown bound is below the stop grace period');
     assert.match(COMPOSE, /FRONTERA_REFERENCE_WITNESS_HOST: 127\.0\.0\.1/, 'the witness binds loopback only');
   });
 

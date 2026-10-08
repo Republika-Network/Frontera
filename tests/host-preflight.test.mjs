@@ -99,6 +99,12 @@ describe('PROD-03-03 Host preflight', () => {
     const store = await enterprise.createSqliteGovernanceStore(join(linked, 'enterprise-host.sqlite'));
     await store.close();
     linkSync(join(linked, 'enterprise-host.sqlite'), join(linked, 'other-name.sqlite'));
+    // A companion hard-linked to another store's database is that database.
+    const walLinked = scratch();
+    const other = await enterprise.createSqliteGovernanceStore(join(walLinked, 'assurance.sqlite'));
+    await other.close();
+    linkSync(join(walLinked, 'assurance.sqlite'), join(walLinked, 'enterprise-host.sqlite-wal'));
+    assert.ok(failures(await runHostPreflight(durableEnv(walLinked))).includes('STORAGE_PATHS_COLLIDE'), 'a WAL hard-linked to another store');
     const viaHardLink = durableEnv(linked, { AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(linked, 'other-name.sqlite') });
     assert.ok(failures(await runHostPreflight(viaHardLink)).includes('STORAGE_PATHS_COLLIDE'), 'an existing file reached by another name');
   });
