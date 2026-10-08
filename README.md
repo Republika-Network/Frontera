@@ -46,6 +46,8 @@ Storage / Identity / Blockchain / AI Systems
 | Threat model | `docs/security/THREAT_MODEL_V1.md` |
 | Agent Passport Web threat model | `docs/security/AGENT_PASSPORT_WEB_THREAT_MODEL.md` |
 | Security hardening report | `docs/security/SECURITY_HARDENING_V1.md` |
+| Pilot deployment kit (Docker Compose, PROD-03-03) | `docs/deployment/PILOT_DEPLOYMENT.md` |
+| Pilot operations: readiness, runbooks, shared responsibility, incident triage, acceptance (PROD-03-04) | `docs/pilot/README.md` |
 | Deployment guide | `docs/operations/DEPLOYMENT_GUIDE_V1.md` |
 | Operational runbooks | `docs/operations/RUNBOOKS_V1.md` |
 | Backup & recovery (RPO/RTO) | `docs/operations/BACKUP_RECOVERY_V1.md` |

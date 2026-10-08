@@ -10,8 +10,9 @@ order, from a clean export of the commit being released, by
 `scripts/deploy/qualify-pilot-deployment.mjs` (CI job `pilot-deployment`).
 
 It covers the technical deployment boundary only. Who operates the Host, who
-takes backups and when, incident response and the shared-responsibility model
-are not part of this document.
+takes backups and when, incident response, the shared-responsibility model and
+pilot acceptance are the pilot operations documents (PROD-03-04), entry point
+`docs/pilot/README.md`.
 
 - Host internals and every refusal: `docs/enterprise/AOC_ENTERPRISE_HOST.md`
 - Every environment variable: the repository root `.env.example`
@@ -399,7 +400,8 @@ What must be preserved, not who preserves it or when:
   the Host stopped, or use `npm run backup:v1` semantics
   (`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`), which verifies schema
   versions and signed heads and records which secrets must come from your
-  secret manager.
+  secret manager. The operator procedure — the exact commands, run through
+  this kit — is `docs/pilot/OPERATIONS_RUNBOOK.md` §5 (backup) and §6 (restore).
 - **Set B — `frontera-witness`:** a different backup set, schedule and storage.
 - **Not data:** `.env` (secrets: your secret manager) and
   `governed-actions.json` (configuration: your configuration management). A

@@ -175,9 +175,9 @@ describe('PROD-03-03 pilot deployment kit', () => {
   it('the kit names no personal path, WSL or Windows path, cloud provider or payment rail', () => {
     const personalOrPlatform = /C:\\Users|\/mnt\/c\/|vicvalch|onchainfest|\bWSL\b|digitalocean|amazonaws|\bAWS\b|\bAzure\b|\bGCP\b|vercel|\bandrew\b|\blumx\b/i;
     const rail = /xrpl|rlusd|lightning|wallet/i;
-    // The guide states the kit's rail neutrality, and the qualification's D14
-    // detector names the rails it looks for: the only two files that may.
-    const declaresNeutrality = new Set(['docs/deployment/PILOT_DEPLOYMENT.md', 'scripts/deploy/qualify-pilot-deployment.mjs']);
+    // The guide states the kit's rail neutrality, and the qualifications' D14 /
+    // O15 detectors name the rails they look for: the only files that may.
+    const declaresNeutrality = new Set(['docs/deployment/PILOT_DEPLOYMENT.md', 'scripts/deploy/qualify-pilot-deployment.mjs', 'scripts/deploy/qualify-pilot-acceptance.mjs']);
     for (const file of kitFiles()) {
       const text = read(file);
       const hit = personalOrPlatform.exec(text) ?? (declaresNeutrality.has(file) ? null : rail.exec(text));
