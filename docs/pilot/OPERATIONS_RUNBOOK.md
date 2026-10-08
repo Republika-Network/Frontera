@@ -23,6 +23,10 @@ only the published port, the Compose project name and the image tag.
   `frontera-pilot_frontera-state` and `frontera-pilot_frontera-witness`.
 - `curl` and `sha256sum` are assumed on the machine; nothing else (no Node.js,
   no `jq`, no `sqlite3`).
+- Blocks are written for an ordinary interactive shell: a step that depends on
+  the previous one is chained with `&&`, so a failure stops the block there
+  instead of running the next step on a wrong state. The qualification runs
+  them the same way, without `set -e`.
 
 ### 1.1 Operator session
 
@@ -83,9 +87,9 @@ generation, `.env`) is PILOT_DEPLOYMENT.md §8.
 
    <!-- exec: startup-start -->
    ```bash
-   docker compose up -d
-   timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/live; do sleep 2; done'
-   timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
+   docker compose up -d &&
+     timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/live; do sleep 2; done' &&
+     timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
    ```
 
    If `/ready` does not answer 200 within the timeout, the Host refused to
@@ -152,9 +156,9 @@ volumes.
 
 <!-- exec: restart -->
 ```bash
-docker compose restart frontera
-timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
-curl -fsS -w '\n' http://127.0.0.1:8787/version
+docker compose restart frontera &&
+  timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done' &&
+  curl -fsS -w '\n' http://127.0.0.1:8787/version
 ```
 
 After a full shutdown (§3), start again with §2 steps 6–10.
@@ -203,23 +207,28 @@ export BACKUP_DIR=/path/to/protected/backup/staging
 
 <!-- exec: backup-take -->
 ```bash
-docker compose stop frontera
 BACKUP_FILE="$BACKUP_DIR/frontera-state-$(date -u +%Y%m%dT%H%M%SZ).tar"
-docker compose run --rm -T config-check sh -c 'node scripts/portability/backup-enterprise-v1.mjs --cold --output /tmp/frontera-backup >&2 && tar -C /tmp -cf - frontera-backup' > "$BACKUP_FILE"
+docker compose stop frontera &&
+  [ -z "$(docker compose ps -q --status running frontera)" ] &&
+  ( umask 077 && docker compose run --rm -T config-check sh -c 'node scripts/portability/backup-enterprise-v1.mjs --cold --output /tmp/frontera-backup >&2 && tar -C /tmp -cf - frontera-backup' > "$BACKUP_FILE" ) ||
+  { echo 'BACKUP FAILED: no usable archive was produced' >&2; rm -f "$BACKUP_FILE"; }
 docker compose up -d
 timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
 ```
 
-The command runs `backup:v1` in a throw-away container with the Host's
+The backup runs only once the Host is confirmed stopped: if
+`docker compose stop` fails or `frontera` is still running, nothing is
+backed up. The archive is created with mode `600`. The command runs `backup:v1` in a throw-away container with the Host's
 configuration and the state volume, writes the backup set inside that
 container and streams it out as one tar file; nothing is written to the state
 volume. Its report goes to the terminal (stderr): the `backupId`, the commit of
 the release that took it, `coverageComplete: true`, `consistency:
 cold-attested`, and each store with its schema version, checksum and record
-count. A non-zero exit means no usable backup: keep the Host running, read
-the message (a missing required store, a store in use, an integrity failure)
-and escalate if you cannot explain it. You may run the backup again after
-fixing the cause.
+count. `BACKUP FAILED` means there is no usable backup (the partial file is
+removed) and the Host is started again: read the message above it (the Host
+could not be stopped, a missing required store, a store in use, an integrity
+failure) and escalate if you cannot explain it. You may run the backup again
+after fixing the cause.
 
 ### 5.3 Verify the backup
 
@@ -230,13 +239,15 @@ tar -C "$VERIFY_DIR" -xf "$BACKUP_FILE"
 (cd "$VERIFY_DIR/frontera-backup" && sha256sum -c --quiet checksums.sha256)
 grep -E '"(backupId|commit|complete|operatorAttestedStopped)":' "$VERIFY_DIR/frontera-backup/backup-manifest.json"
 rm -rf "$VERIFY_DIR"
-sha256sum "$BACKUP_FILE" > "$BACKUP_FILE.sha256"
+(cd "$(dirname "$BACKUP_FILE")" && sha256sum "$(basename "$BACKUP_FILE")" > "$(basename "$BACKUP_FILE").sha256" && sha256sum -c "$(basename "$BACKUP_FILE").sha256")
 ```
 
-`sha256sum -c` prints nothing when every file matches. The manifest shows the
-backup id, the source commit (the release that took it), `"complete": true`
-and `"operatorAttestedStopped": true`. Keep the `.sha256` file with the
-archive; record the `backupId` in your backup log.
+The first `sha256sum -c` prints nothing when every file in the set matches.
+The manifest shows the backup id, the source commit (the release that took
+it), `"complete": true` and `"operatorAttestedStopped": true`. The archive's
+own checksum file names the archive by its base name, so it stays valid
+beside the archive wherever both are copied (`sha256sum -c <archive>.tar.sha256`
+from that directory). Record the `backupId` in your backup log.
 
 What the backup **includes**: every Host store the deployment composes
 (fourteen at most; the example configuration composes twelve), each copied
@@ -263,16 +274,25 @@ with the witness stopped:
 
 <!-- exec: witness-backup -->
 ```bash
-docker compose stop authority-witness
-docker compose run --rm -T --entrypoint sh witness-init -c 'tar -C /var/lib/frontera-witness -cf - .' > "$BACKUP_DIR/frontera-witness-$(date -u +%Y%m%dT%H%M%SZ).tar"
+docker compose stop authority-witness &&
+  ( umask 077 && docker compose run --rm -T --entrypoint sh witness-init -c 'tar -C /var/lib/frontera-witness -cf - .' > "$BACKUP_DIR/frontera-witness-$(date -u +%Y%m%dT%H%M%SZ).tar" ) ||
+  echo 'WITNESS BACKUP FAILED' >&2
 docker compose start authority-witness
 ```
 
 While the witness is stopped the Host is `degraded` (§9): revocations,
 obligation discharges and approval verdicts are refused with nothing written.
-Treat the archive as key material. Its only use is replacing a **lost**
-witness volume with its last copy — never rolling the witness back to match
-an older Host backup.
+The archive is created with mode `600`; treat it as key material.
+
+**Restoring the witness is not a self-service procedure.** A witness copy is
+consistent with the Host only if the witness recorded no authority transition
+after the copy was taken. If the Host's stores are ahead of a restored
+witness, the Host refuses to start (`AUTHORITY_FRESHNESS_FORK_DETECTED`), and
+that refusal must never be worked around: not by rolling the Host's stores
+back to match, and not by resetting or re-enrolling the witness. If the
+witness volume is lost or damaged, stop changes, preserve evidence and
+escalate as SEV-1 ([`INCIDENT_TRIAGE.md`](INCIDENT_TRIAGE.md)); any use of
+this archive is decided under that escalation, never as a routine restore.
 
 ## 6. Restore
 
@@ -302,8 +322,12 @@ state, never to "undo" a governed decision.
 
    <!-- exec: restore-run -->
    ```bash
-   docker compose run --rm -T config-check sh -c 'mkdir -p /tmp/restore && tar -C /tmp/restore -xf - && node scripts/portability/restore-enterprise-v1.mjs --backup /tmp/restore/frontera-backup --target /var/lib/frontera --force' < "$BACKUP_FILE"
+   [ -z "$(docker compose ps -q --status running frontera)" ] &&
+     docker compose run --rm -T config-check sh -c 'mkdir -p /tmp/restore && tar -C /tmp/restore -xf - && node scripts/portability/restore-enterprise-v1.mjs --backup /tmp/restore/frontera-backup --target /var/lib/frontera --force' < "$BACKUP_FILE" ||
+     echo 'RESTORE NOT COMPLETED: the Host is still running, or restore:v1 refused (the volume is unchanged)' >&2
    ```
+
+   The restore runs only while `frontera` is not running.
 
    `restore:v1` validates the whole backup before it touches the volume —
    manifest, organization, coverage, checksums, SQLite integrity, schema
@@ -319,12 +343,12 @@ state, never to "undo" a governed decision.
 
    <!-- exec: restore-start -->
    ```bash
-   docker compose run --rm config-check
-   docker compose up -d
-   timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/live; do sleep 2; done'
-   timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
-   curl -fsS -w '\n' http://127.0.0.1:8787/version
-   curl -sS -w '\n' http://127.0.0.1:8787/health
+   docker compose run --rm config-check &&
+     docker compose up -d &&
+     timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/live; do sleep 2; done' &&
+     timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done' &&
+     curl -fsS -w '\n' http://127.0.0.1:8787/version &&
+     curl -sS -w '\n' http://127.0.0.1:8787/health
    ```
 
 11. **Confirm the expected durable records**: the operations metrics,
@@ -393,13 +417,16 @@ migration command and no backward migration.
 
    <!-- exec: upgrade-apply -->
    ```bash
-   docker compose stop frontera
-   docker compose build
-   docker compose run --rm config-check
-   docker compose up -d
-   timeout 300 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
-   curl -fsS -w '\n' http://127.0.0.1:8787/version
+   docker compose stop frontera &&
+     docker compose build &&
+     docker compose run --rm config-check &&
+     docker compose up -d &&
+     timeout 300 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done' &&
+     curl -fsS -w '\n' http://127.0.0.1:8787/version
    ```
+
+   A failing step stops the chain: a configuration check that refuses never
+   reaches `docker compose up`.
 
 11. **Verify operational state**: metrics, Attention and emergency stops as
     in §4.
@@ -432,12 +459,12 @@ the decision: `RESULT: PASS` means it opens them.
 
 <!-- exec: rollback-image -->
 ```bash
-docker compose stop frontera
-export FRONTERA_IMAGE=frontera-host:previous
-docker compose run --rm config-check
-docker compose up -d
-timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done'
-curl -fsS -w '\n' http://127.0.0.1:8787/version
+docker compose stop frontera &&
+  export FRONTERA_IMAGE=frontera-host:previous &&
+  docker compose run --rm config-check &&
+  docker compose up -d &&
+  timeout 180 sh -c 'until curl -fsS -w "\n" http://127.0.0.1:8787/ready; do sleep 2; done' &&
+  curl -fsS -w '\n' http://127.0.0.1:8787/version
 ```
 
 Keep `FRONTERA_IMAGE` set for every later command in that shell (or tag the
@@ -582,9 +609,9 @@ and no action is performed on any refusal):
 | `409 EXECUTION_IN_FLIGHT` | the governed path still holds the execution | wait, read the view again |
 | `409 EXECUTION_RESOLUTION_BASIS_CHANGED` | the outcome is no longer the state you reviewed | review again from step 1 |
 | `409 EXECUTION_ALREADY_RESOLVED` | a different resolution (or the same answer from another operator) stands | nothing; it cannot be changed. Escalate if you believe it is wrong |
-| `409 EXECUTION_NOT_RESOLVABLE` | not a claimed execution (denied, withheld, approval pending, never claimed) | nothing to resolve |
+| `409 EXECUTION_NOT_RESOLVABLE` | claimed but never able to reach a provider (withheld at exercise), or never claimed | nothing to resolve |
 | `409 EXECUTION_RESOLUTION_AUTHORITY_MISMATCH` / `EXECUTION_RESOLUTION_NOT_AVAILABLE` | bound to another resolution authority / this Host composes none | escalate |
-| `404 EXECUTION_NOT_FOUND` | no such execution for this organization | check the id |
+| `404 EXECUTION_NOT_FOUND` | no execution with that id is recorded for this organization — also the answer for a decision that never became an execution (denied, issuance withheld, approval pending, withheld before preparation) | check the id; nothing to resolve |
 | `403 OPERATOR_PERMISSION_DENIED` | the credential's role lacks `operations.resolve` | use an administrator |
 | `503 EXECUTION_RESOLUTION_UNAVAILABLE` | the resolution could not be recorded now | submit the same resolution again later; it is idempotent |
 | `500 AUTHORITY_STATE_INTEGRITY_FAILED` | the basis is corrupt or inconsistent | **SEV-1**; preserve evidence, escalate |
@@ -755,8 +782,8 @@ but is not part of the qualified pilot kit.
 - **Persistence:** `witness.sqlite` and the receipt key pair live on the
   `frontera-witness` volume — a separate restore domain from the Host's
   state.
-- **Backup:** a separate set and schedule (§5.4); never restored together
-  with, or to match, a Host backup.
+- **Backup:** a separate set and schedule (§5.4). Restoring it is
+  escalation-only: never together with, or to match, a Host backup.
 - **Identity:** the Host pins the witness id and its public receipt key from
   `.env`; trust is never learned from the witness. A different witness, or a
   witness with a new key, is refused.

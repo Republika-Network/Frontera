@@ -142,6 +142,18 @@ describe('PROD-03-04 pilot operations documentation', () => {
     }
   });
 
+  it('backup and restore run only on a stopped Host, and archives are created private', () => {
+    for (const block of BLOCKS) {
+      for (const line of block.body.split('\n').filter((candidate) => /(backup|restore)-enterprise-v1\.mjs/.test(candidate))) {
+        const guarded = block.body.slice(0, block.body.indexOf(line) + line.length);
+        assert.match(guarded, /docker compose ps -q --status running frontera\)" \] &&/, `${block.name}: ${line.slice(0, 80)} runs without checking the Host is stopped`);
+      }
+      for (const line of block.body.split('\n').filter((candidate) => /> "\$BACKUP_(?:FILE|DIR)/.test(candidate) && /\.tar|BACKUP_FILE"/.test(candidate))) {
+        assert.match(line, /umask 077/, `${block.name}: archive written without umask 077: ${line.slice(0, 80)}`);
+      }
+    }
+  });
+
   it('no sentence teaches retrying, replaying or resending a governed action', () => {
     const word = /\b(retr(?:y|ies|ied|ying)|replay(?:s|ed|ing)?|resen(?:d|ds|t|ding)|re-?run(?:s|ning)?|re-?execut\w*)\b/i;
     const allowed = /\b(?:no|not|never|nothing|none|without|forbidden|cannot|do not|isn't)\b|outcome: replayed|`replayed`|POSTs/i;

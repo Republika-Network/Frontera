@@ -106,29 +106,32 @@ release.
 ## 4. Acceptance qualification
 
 ```text
-node scripts/deploy/qualify-pilot-acceptance.mjs [--commit <40-hex>] [--from-commit <ref>] [--host-build] [--evidence <file>] [--keep]
+node scripts/deploy/qualify-pilot-acceptance.mjs (--commit <40-hex> | --from-commit <ref>) [--host-build] [--evidence <file>] [--keep]
 ```
 
-(CI job `pilot-acceptance`.) Like the PROD-03-03 deployment qualification it
-exports the repository, builds the image and starts the kit in its own
-Compose project — and then **executes the command blocks of
+(CI job `pilot-acceptance`.) It exports exactly the named commit
+(`git archive`, never the working tree, so the identity it records is the
+code it ran), builds the image and starts the kit in its own Compose project
+— and then **executes the command blocks of
 [`OPERATIONS_RUNBOOK.md`](OPERATIONS_RUNBOOK.md) and
 [`INCIDENT_TRIAGE.md`](INCIDENT_TRIAGE.md) as written** (only the published
 port, the project name and the image tag are substituted), checking each
-result. A documented command that does not work fails the qualification.
+result. Blocks run as an operator's interactive shell runs them, without
+`set -e`: their own `&&` chains and failure messages are what is qualified.
+A documented command that does not work fails the qualification.
 
 | Case | Proven |
 | --- | --- |
 | O1 | documented startup: identity, configuration check, volumes, start, `/live`, `/ready`, health, version — the Host is ready |
 | O2 | documented shutdown: every service exits 0, `shutdown_complete` logged, both volumes kept |
 | O3 | documented restart (service restart and full stop/start): operational state identical |
-| O4 | documented backup: a cold backup streamed out, checksums verified, manifest complete, source commit = the release |
-| O5 | documented restore, after state changed and into a replaced state volume: the Host is ready, the backed-up records are present, the later ones are not |
+| O4 | documented backup: a cold backup streamed out, checksums verified, manifest complete, source commit = the release; the archive and the witness archive are mode 600; the archive's checksum file is portable |
+| O5 | the restore block refuses while the Host runs and changes nothing; documented restore, after state changed and into a replaced state volume: the Host is ready, the backed-up records are present, the later ones are not |
 | O6 | `/version` matches the approved commit and the image label |
 | O7 | `/live`, `/ready` and `/health` are distinguishable as documented, and the operator health view adds operations |
 | O8 | the witness stopped after startup (documented witness backup): `degraded`, still live and ready; recovers |
 | O9 | a required dependency down at boot: refused, never ready (`refused to start`) |
-| O10 | documented resolution commands: Attention and inspection answer; a resolution of an executed action is refused (`EXECUTION_OUTCOME_ALREADY_DEFINITIVE`), of a withheld one refused, of an unknown one `404`, by an observer `403` — nothing recorded; with `--host-build`, the PROD-03-02 in-process suite (R1–R8, capacity) passes |
+| O10 | documented resolution commands: Attention and inspection answer; a resolution of an executed action is refused (`EXECUTION_OUTCOME_ALREADY_DEFINITIVE`); the withheld one is not resolvable (shown `resolvable: false`, outside Attention, and refused — `409 EXECUTION_NOT_RESOLVABLE` or, withheld before preparation, `404 EXECUTION_NOT_FOUND`, as PROD-03-02's R8); an unknown one `404`; an observer `403` — nothing recorded; with `--host-build`, the PROD-03-02 in-process suite (R1–R8, capacity) passes |
 | O11 | capacity reconciliation and Attention are surfaced as documented (operations health `unresolvedExecutions`, `scan`); with `--host-build`, the pending → adjusted path passes in-process |
 | O12 | documented emergency control: activate → the resource is withheld → release → no longer withheld; an unauthorized action is denied |
 | O13 | the evidence bundle and every output contain no secret, and the bundle identifies the release |

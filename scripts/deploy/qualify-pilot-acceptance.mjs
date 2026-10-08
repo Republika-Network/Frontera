@@ -22,13 +22,18 @@
 //
 //   node scripts/deploy/qualify-pilot-acceptance.mjs (--commit <40-hex> | --from-commit <ref>) [--host-build] [--evidence <file>] [--keep]
 //
+// The qualified source is always `git archive` of that one commit, never the
+// working tree, so the identity it records is the code it ran. Blocks run as
+// an operator's interactive shell runs them: no `set -e`, no `pipefail`; a
+// block's own `&&` chains and failure messages are what is qualified.
+//
 // Needs Docker with Compose v2, bash, curl, sha256sum and Node >= 22. Exit 0
 // only when every case passes. Each run uses its own Compose project, image
 // tags, volumes, port and scratch directory, and removes them (unless --keep).
 
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -44,6 +49,9 @@ const option = (name) => {
 
 /** The documents whose `exec` blocks this qualification runs. */
 export const EXECUTED_DOCUMENTS = ['docs/pilot/OPERATIONS_RUNBOOK.md', 'docs/pilot/INCIDENT_TRIAGE.md'];
+
+/** Markers the documented blocks print when they stop short; any of them fails the block. */
+const BLOCK_FAILURE_MARKERS = /BACKUP FAILED|WITNESS BACKUP FAILED|RESTORE NOT COMPLETED/;
 
 /** Every block id this qualification executes; the structure test requires the documents to carry exactly these. */
 export const EXECUTED_BLOCKS = [
@@ -124,30 +132,19 @@ async function qualify() {
   mkdirSync(exportDir);
   mkdirSync(backupDir);
 
-  const fromCommit = option('--from-commit');
-  if (fromCommit !== undefined) {
-    // No shell: the ref and the paths are arguments, never interpolated into a command line.
-    const archive = spawnSync('git', ['-C', REPO, 'archive', '--format=tar', fromCommit], { maxBuffer: 1024 * 1024 * 1024 });
-    check(archive.status === 0, `git archive ${fromCommit} failed: ${archive.stderr}`);
-    const tar = spawnSync('tar', ['-x', '-C', exportDir], { input: archive.stdout, encoding: 'utf8' });
-    check(tar.status === 0, `extracting ${fromCommit} failed: ${tar.stderr}`);
-  } else {
-    const files = run('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard']).stdout.split('\0').filter(Boolean);
-    for (const file of files) {
-      mkdirSync(dirname(join(exportDir, file)), { recursive: true });
-      try {
-        copyFileSync(join(REPO, file), join(exportDir, file));
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-    }
-  }
-  const commit = option('--commit') ?? (fromCommit !== undefined ? run('git', ['rev-parse', `${fromCommit}^{commit}`]).stdout.trim() : '');
-  if (!/^[0-9a-f]{40}$/.test(commit)) {
+  const requested = option('--from-commit') ?? option('--commit');
+  const resolved = requested === undefined ? null : spawnSync('git', ['-C', REPO, 'rev-parse', '--verify', `${requested}^{commit}`], { encoding: 'utf8' });
+  const commit = resolved?.status === 0 ? resolved.stdout.trim() : '';
+  if (!/^[0-9a-f]{40}$/.test(commit) || (option('--commit') !== undefined && option('--commit') !== commit)) {
     rmSync(work, { recursive: true, force: true });
-    log('Pilot acceptance qualifies an identified release: pass --commit <40-hex> or --from-commit <ref>.');
+    log('Pilot acceptance qualifies one identified commit: pass --commit <40-hex> (a full hash present in this repository) or --from-commit <ref>.');
     process.exit(2);
   }
+  // No shell: the commit and the paths are arguments, never interpolated into a command line.
+  const archive = spawnSync('git', ['-C', REPO, 'archive', '--format=tar', commit], { maxBuffer: 1024 * 1024 * 1024 });
+  check(archive.status === 0, `git archive ${commit} failed: ${archive.stderr}`);
+  const extracted = spawnSync('tar', ['-x', '-C', exportDir], { input: archive.stdout, encoding: 'utf8' });
+  check(extracted.status === 0, `extracting ${commit} failed: ${extracted.stderr}`);
 
   const port = await freePort();
   const composeEnv = { ...process.env, FRONTERA_IMAGE: IMAGE, FRONTERA_BUILD_COMMIT: commit, FRONTERA_PUBLISH_PORT: String(port), COMPOSE_PROJECT_NAME: PROJECT };
@@ -163,19 +160,19 @@ async function qualify() {
   const substitute = (script) => script.replaceAll('127.0.0.1:8787', `127.0.0.1:${port}`).replaceAll('frontera-pilot_', `${PROJECT}_`).replaceAll('frontera-host:previous', `${IMAGE}-previous`);
   const operatorVariables = {};
 
-  /** Runs one documented block, as written, with `set -e -o pipefail`; `exports` names variables the block sets that the caller needs back. */
+  /** Runs one documented block, as written, the way an interactive shell runs it; `exports` names variables the block sets that the caller needs back. */
   function doc(id, variables = {}, { exports = [], allowFailure = false } = {}) {
     const script = blocks.get(id);
     check(script !== undefined, `the documentation has no exec block '${id}'`);
     executed.add(id);
     const epilogue = exports.map((name) => `\nprintf '\\n@@%s=%s\\n' '${name}' "$${name}"`).join('');
-    const out = run('bash', ['-e', '-o', 'pipefail', '-c', `${substitute(script)}${epilogue}`], {
+    const out = run('bash', ['-c', `${substitute(script)}${epilogue}`], {
       cwd: pilotDir,
       env: { ...composeEnv, ...operatorVariables, ...variables },
       allowFailure: true,
     });
     captured.push(out.stdout, out.stderr);
-    if (!allowFailure && out.status !== 0) throw new Error(`documented block '${id}' exited ${out.status}: ${(out.stderr || out.stdout).slice(-1500)}`);
+    if (!allowFailure && (out.status !== 0 || BLOCK_FAILURE_MARKERS.test(out.stderr))) throw new Error(`documented block '${id}' exited ${out.status}: ${(out.stderr || out.stdout).slice(-1500)}`);
     const values = {};
     for (const [, name, value] of out.stdout.matchAll(/^@@([A-Z_]+)=(.*)$/gm)) values[name] = value;
     return { ...out, values };
@@ -412,6 +409,18 @@ async function qualify() {
         check(['EXECUTION_OUTCOME_ALREADY_DEFINITIVE', 'EXECUTION_NOT_RESOLVABLE'].includes(code), `resolving the executed action answered ${code}`);
         refusals.push(`executed: ${code}`);
       }
+      // The execution withheld by the emergency stop: never resolvable.
+      const withheldView = JSON.parse(doc('resolution-inspect', { REQUEST_ID: state.withheldRequestId }).stdout.trim().split('\n')[0]).executions?.[0];
+      check(withheldView?.requestId === state.withheldRequestId, 'the withheld execution view was not returned');
+      check(withheldView.resolvable === false && withheldView.unresolved === false && !attention.attention.some((entry) => entry.requestId === state.withheldRequestId), 'the withheld execution is presented as resolvable');
+      if (withheldView.executionId) {
+        // As PROD-03-02's R8: withheld at exercise is not resolvable (409); withheld before preparation has no execution record (404).
+        const code = json(doc('resolution-submit', { EXECUTION_ID: withheldView.executionId }).stdout).error?.code;
+        check(code === 'EXECUTION_NOT_RESOLVABLE' || code === 'EXECUTION_NOT_FOUND', `resolving the withheld action answered ${code}`);
+        refusals.push(`withheld: ${code}`);
+      } else {
+        refusals.push(`withheld: ${withheldView.classification}, no execution id, resolvable false`);
+      }
       const unknown = doc('resolution-submit', { EXECUTION_ID: `aoc.exec:${'0'.repeat(32)}` });
       check(json(unknown.stdout).error?.code === 'EXECUTION_NOT_FOUND', 'an unknown execution was not 404');
       refusals.push('unknown: EXECUTION_NOT_FOUND');
@@ -500,11 +509,14 @@ async function qualify() {
       const verified = doc('backup-verify', { BACKUP_FILE: state.backupFile });
       for (const needle of ['"complete": true', '"operatorAttestedStopped": true', `"commit": "${commit}"`, `"backupId": "${report.backupId}"`]) check(verified.stdout.includes(needle), `the verification does not show ${needle}`);
       check(existsSync(`${state.backupFile}.sha256`), 'no .sha256 beside the backup');
+      check(!readFileSync(`${state.backupFile}.sha256`, 'utf8').includes('/'), 'the archive checksum names a path, not the archive beside it');
+      check((statSync(state.backupFile).mode & 0o777) === 0o600, 'the backup archive is not mode 600');
       check(same(await snapshot(), state.beforeBackup), 'the backup changed operational state');
       const witness = doc('witness-backup');
       const witnessFile = readdirSync(backupDir).find((name) => name.startsWith('frontera-witness-'));
       const listing = run('tar', ['-tf', join(backupDir, witnessFile)]).stdout;
       check(['./witness.sqlite', './receipt-key.pem', './receipt-key.pem.pub'].every((name) => listing.split('\n').includes(name)), 'the witness archive is incomplete');
+      check((statSync(join(backupDir, witnessFile)).mode & 0o777) === 0o600, 'the witness archive (key material) is not mode 600');
       captured.push(witness.stdout);
       await waitHealthy();
       evidence.backup = { backupId: report.backupId, verified: true, stores: report.stores.length };
@@ -519,6 +531,10 @@ async function qualify() {
       const later = await govern('ledger-unauthorized', 'accept-after-backup-1');
       check(later.body.status === 'denied', 'the post-backup action was not recorded');
       check(!same(await snapshot(), state.beforeBackup), 'state did not move after the backup');
+      // The restore block refuses while the Host runs, and changes nothing.
+      const guarded = doc('restore-run', { BACKUP_FILE: state.backupFile }, { allowFailure: true });
+      check(guarded.stderr.includes('RESTORE NOT COMPLETED') && !/"status": "restored"/.test(guarded.stdout), 'the restore block ran against a running Host');
+      check(!same(await snapshot(), state.beforeBackup), 'a refused restore changed the state');
       doc('backup-take'); // §6 step 3: preserve the current state first.
       const compatibility = doc('restore-compatibility', { BACKUP_FILE: state.backupFile });
       check(compatibility.stdout.split(commit).length - 1 >= 2, 'the backup and the image are not the same release');
@@ -597,13 +613,17 @@ async function qualify() {
         check(!/down\s+-v\b|\bsqlite3\b|\bUPDATE\s|\bDELETE\s+FROM\b/i.test(script), `block ${id} carries a forbidden command`);
       }
       record('O14', 'no schema downgrade promised; no documented command deletes volumes or edits a store', true);
+    } catch (error) {
+      record('O14', 'documentation boundaries', false, error.message);
+    }
+    try {
       const configured = [...Object.keys(state.env), ...compose(['config']).stdout.split('\n').filter((line) => /^\s+[A-Z_]+:/.test(line))].join('\n');
       const commands = [...blocks.values()].join('\n');
       const hits = `${configured}\n${commands}`.match(/xrpl|rlusd|lightning|wallet|PAY_/gi) ?? [];
       check(hits.length === 0, `rail configuration present: ${hits.join(', ')}`);
       record('O15', 'no payment rail in the deployment or any documented command', true);
     } catch (error) {
-      record('O14', 'documentation boundaries', false, error.message);
+      record('O15', 'rail neutrality', false, error.message);
     }
 
     // ---- every exec block ran ------------------------------------------------------------------
