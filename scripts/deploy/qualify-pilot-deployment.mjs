@@ -268,6 +268,10 @@ async function main() {
   appendFileSync(join(pilotDir, '.env'), generated.stdout);
   const again = compose(['run', '--rm', '-T', 'authority-witness', 'node', 'scripts/deploy/generate-pilot-secrets.mjs'], { allowFailure: true });
   check(again.status !== 0 && again.stdout === '', 'the secret generator must refuse a second run and print nothing');
+  // An operator added later: a credential only, no key touched.
+  const extra = compose(['run', '--rm', '-T', 'authority-witness', 'node', 'scripts/deploy/generate-pilot-secrets.mjs', '--secrets-only', '--secret', 'FRONTERA_OPERATOR_KEY_LATER']);
+  const extraNames = extra.stdout.split('\n').filter((line) => /^[A-Z_]+=/.test(line)).map((line) => line.split('=')[0]);
+  check(JSON.stringify(extraNames) === '["FRONTERA_OPERATOR_KEY_LATER"]', `--secrets-only printed ${extraNames.join(', ')}`);
 
   // ---- D2 missing required configuration ----------------------------------------------------
   try {

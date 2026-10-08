@@ -11,10 +11,11 @@
 // artifact is recorded as a `development` build — `commit: "unknown"`,
 // `release: "<version>+development"` — never as a release.
 //
-// Every other field comes from the same construction as
+// The API surface and runtime versions come from the same construction as
 // release/RELEASE_MANIFEST.json (scripts/lib-release-manifest.mjs), so the
-// identity a deployed Host reports and the committed manifest cannot disagree
-// about the API surface, the runtime versions or the store schema versions.
+// identity a deployed Host reports and the committed manifest cannot disagree;
+// the store schema versions come from the PROD-02 store registry, for every
+// store the Host can compose.
 // The result is re-read through the Host's own validator before this exits 0.
 
 import { writeFileSync } from 'node:fs';
@@ -22,6 +23,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildReleaseManifest } from '../lib-release-manifest.mjs';
+import { STORE_DEFINITIONS, loadRegistryModules } from '../portability/store-registry.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -37,6 +39,10 @@ if (commitInput !== '' && !COMMIT.test(commitInput)) {
 }
 
 const manifest = await buildReleaseManifest();
+// Every store the Host can compose, from the same registry the preflight,
+// backup and restore use — not the manifest's historical subset.
+const modules = await loadRegistryModules(root);
+const storeSchemaVersions = Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.name, [...storeDef.supportedSchemaVersionsOf(modules)]]));
 const build = commitInput === '' ? 'development' : 'release';
 const identity = {
   schema: 'frontera.release-identity.v1',
@@ -48,7 +54,7 @@ const identity = {
   build,
   api: { surface: manifest.api.surface, endpointCount: manifest.api.endpointCount },
   runtimeVersions: { enterpriseHost: manifest.runtimeVersions.enterpriseHost, kernel: manifest.runtimeVersions.kernel },
-  storeSchemaVersions: manifest.storeSchemaVersions,
+  storeSchemaVersions,
   canonicalizationVersion: manifest.canonicalizationVersion,
   node: { supported: manifest.compatibilityMatrix.node },
 };

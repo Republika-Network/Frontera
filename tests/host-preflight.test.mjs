@@ -77,6 +77,21 @@ describe('PROD-03-03 Host preflight', () => {
     assert.deepEqual(failures(await runHostPreflight(env)), ['STORAGE_PATHS_COLLIDE']);
   });
 
+  it('refuses stores that alias one file through a symlinked directory or a hard link', async () => {
+    const { linkSync, symlinkSync } = await import('node:fs');
+    const data = scratch();
+    symlinkSync(data, join(data, 'alias'));
+    const viaSymlink = durableEnv(data, { AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(data, 'alias', 'enterprise-host.sqlite') });
+    assert.deepEqual(failures(await runHostPreflight(viaSymlink)), ['STORAGE_PATHS_COLLIDE'], 'not yet created, reached through a symlink');
+
+    const linked = scratch();
+    const store = await enterprise.createSqliteGovernanceStore(join(linked, 'enterprise-host.sqlite'));
+    await store.close();
+    linkSync(join(linked, 'enterprise-host.sqlite'), join(linked, 'other-name.sqlite'));
+    const viaHardLink = durableEnv(linked, { AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(linked, 'other-name.sqlite') });
+    assert.ok(failures(await runHostPreflight(viaHardLink)).includes('STORAGE_PATHS_COLLIDE'), 'an existing file reached by another name');
+  });
+
   it('refuses a state directory this process cannot write', { skip: process.getuid?.() === 0 ? 'root can write anywhere' : false }, async () => {
     const data = scratch();
     const locked = join(data, 'locked');
@@ -127,6 +142,8 @@ describe('PROD-03-03 Host preflight', () => {
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /refused to start \[CONFIG_PLACEHOLDER_VALUE\]/);
+    const refused = result.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line)).find((entry) => entry.message === 'enterprise.host.refused');
+    assert.deepEqual({ phase: refused?.phase, errorCode: refused?.errorCode, level: refused?.level }, { phase: 'preflight', errorCode: 'CONFIG_PLACEHOLDER_VALUE', level: 'error' });
     assert.equal(result.stdout.includes('listening'), false);
     assert.equal(`${result.stdout}${result.stderr}`.includes(secret), false);
   });

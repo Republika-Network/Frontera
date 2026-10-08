@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "typecheck": "tsc -b --pretty false",
-    "build": "tsc -b --pretty false",
+    "build": "node scripts/release/clear-release-identity.mjs && tsc -b --pretty false",
     "lint": "node scripts/check-node16-imports.mjs && node scripts/lint-architecture.mjs && node scripts/lint-public-surface.mjs",
     "test": "npm run build && node --test \"dist/src/**/*.test.js\" \"tests/**/*.test.mjs\" && npm test --workspaces --if-present",
     "test:root": "node --test \"dist/src/**/*.test.js\" \"tests/**/*.test.mjs\"",

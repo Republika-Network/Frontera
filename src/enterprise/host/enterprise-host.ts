@@ -229,19 +229,35 @@ function assertProcessHoldsNoAuthorityKey(host: EnterpriseHostConfiguration): vo
  * no socket was bound. On success the caller calls `listen()`.
  */
 export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}): Promise<EnterpriseHost> {
-  const host = loadEnterpriseHostConfiguration(options.env ?? process.env);
-  // PROD-03-03: one logger for the startup phases and the composed Enterprise
+  // PROD-03-03: every refusal is one structured `enterprise.host.refused` event
+  // with a closed code, including those before the configured log level is
+  // known (an error is emitted at every level).
+  let host: EnterpriseHostConfiguration;
+  try {
+    host = loadEnterpriseHostConfiguration(options.env ?? process.env);
+  } catch (error) {
+    (options.logger ?? createEnterpriseLogger('error')).error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
+    throw error;
+  }
+  // One logger for the startup phases and the composed Enterprise
   // (composition would otherwise create the same default itself).
   const logger = options.logger ?? createEnterpriseLogger(host.configuration.logLevel);
   let release: FronteraReleaseIdentity;
   try {
     release = currentReleaseIdentity();
   } catch (error) {
-    throw new EnterpriseHostConfigurationError('HOST_RELEASE_IDENTITY_INVALID', error instanceof Error ? error.message : 'The recorded release identity is invalid.');
+    const refusal = new EnterpriseHostConfigurationError('HOST_RELEASE_IDENTITY_INVALID', error instanceof Error ? error.message : 'The recorded release identity is invalid.');
+    logger.error('enterprise.host.refused', { phase: 'release_identity', errorCode: refusal.code });
+    throw refusal;
   }
   logger.info('enterprise.host.starting', { phase: 'host_starting', release: release.release, build: release.build });
   // Before composition: nothing is opened and the signer is not contacted.
-  assertProcessHoldsNoAuthorityKey(host);
+  try {
+    assertProcessHoldsNoAuthorityKey(host);
+  } catch (error) {
+    logger.error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
+    throw error;
+  }
   logger.info('enterprise.host.configuration_validated', { phase: 'config_validated', status: host.configuration.environment });
   let server: EnterpriseServer;
   try {

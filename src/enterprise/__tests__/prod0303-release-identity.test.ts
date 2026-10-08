@@ -6,7 +6,9 @@ import { join } from 'node:path';
 
 import { AOC_KERNEL_VERSION } from '../../kernel/index.js';
 import { loadEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import { bootEnterpriseHost } from '../host/enterprise-host.js';
 import { createEnterpriseServer } from '../host/enterprise-server.js';
+import type { EnterpriseLogContext, EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { RELEASE_IDENTITY_SCHEMA, ReleaseIdentityError, developmentReleaseIdentity, parseReleaseIdentity, readReleaseIdentity } from '../host/release-identity.js';
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 
@@ -31,7 +33,7 @@ function recorded(overrides: Record<string, unknown> = {}): Record<string, unkno
     build: 'release',
     api: { surface: 'aoc-enterprise-host-http.v1', endpointCount: 65 },
     runtimeVersions: { enterpriseHost: AOC_ENTERPRISE_HOST_VERSION, kernel: AOC_KERNEL_VERSION },
-    storeSchemaVersions: { governance: 'aoc.governance-store.schema.v1' },
+    storeSchemaVersions: { governance: ['aoc.governance-store.schema.v1'], 'execution-outcomes': ['aoc.execution-outcome-store.schema.v2', 'aoc.execution-outcome-store.schema.v1'], approvals: [1] },
     canonicalizationVersion: 'aoc.canonical-json.v1',
     node: { supported: '>=22' },
     ...overrides,
@@ -62,6 +64,7 @@ describe('PROD-03-03 release identity', () => {
     assert.equal(identity.release, '9.8.7+aaaaaaaaaaaa');
     assert.equal(identity.api.endpointCount, 65);
     assert.equal(identity.node.running, process.version);
+    assert.deepEqual(identity.storeSchemaVersions?.['approvals'], [1], 'integer versions are kept as recorded');
   });
 
   it('a build that recorded nothing says so: development, commit unknown, never a guess', () => {
@@ -83,12 +86,26 @@ describe('PROD-03-03 release identity', () => {
       'another API surface': recorded({ api: { surface: 'something-else', endpointCount: 65 } }),
       'an unknown build kind': recorded({ build: 'nightly' }),
       'another schema': recorded({ schema: 'frontera.release-identity.v0' }),
-      'a store schema with prose in it': recorded({ storeSchemaVersions: { governance: 'see the release notes' } }),
+      'a store schema with prose in it': recorded({ storeSchemaVersions: { governance: ['see the release notes'] } }),
+      'a store schema that is not a list': recorded({ storeSchemaVersions: { governance: 'aoc.governance-store.schema.v1' } }),
+      'no store schemas': recorded({ storeSchemaVersions: {} }),
+      'a non-positive integer schema': recorded({ storeSchemaVersions: { approvals: [0] } }),
     };
     for (const [label, value] of Object.entries(cases)) {
       assert.throws(() => parseReleaseIdentity(value, PKG), ReleaseIdentityError, label);
     }
     assert.throws(() => readReleaseIdentity(artifactRoot('{ not json')), ReleaseIdentityError);
+  });
+
+  it('a configuration refusal is one structured enterprise.host.refused event with the closed code — never the value', async () => {
+    const events: { level: string; message: string; fields: EnterpriseLogContext | undefined }[] = [];
+    const record = (level: string) => (message: string, fields?: EnterpriseLogContext): void => {
+      events.push({ level, message, fields });
+    };
+    const logger: EnterpriseLogger = { debug: record('debug'), info: record('info'), warn: record('warn'), error: record('error') };
+    await assert.rejects(bootEnterpriseHost({ env: { AOC_ENTERPRISE_ENV: 'prod0303-not-an-environment' }, logger }), { code: 'HOST_ENVIRONMENT_INVALID' });
+    assert.deepEqual(events, [{ level: 'error', message: 'enterprise.host.refused', fields: { phase: 'configuration', errorCode: 'HOST_ENVIRONMENT_INVALID' } }]);
+    assert.equal(JSON.stringify(events).includes('prod0303-not-an-environment'), false);
   });
 
   it('GET /version serves the identity of this build: public metadata only, no configuration', async () => {

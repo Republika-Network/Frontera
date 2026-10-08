@@ -51,9 +51,13 @@ The three Compose services:
 
 The Host reaches the witness at `http://127.0.0.1:8444`; the Host accepts plain
 HTTP to a witness only on loopback (https anywhere else), which is why the two
-share a namespace. To use your own https witness instead, set
+share a namespace. The bundled witness runs under the Compose profile
+`reference-witness`, enabled by `COMPOSE_PROFILES` in `.env`. To use your own
+https witness instead, delete that line and set
 `AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT`, `…_WITNESS_ID`, `…_TOKEN` and
-`…_WITNESS_PUBLIC_KEY` in `.env` (the bundled witness then runs unused).
+`…_WITNESS_PUBLIC_KEY` in `.env` (in place of the generator's witness lines);
+the bundled witness is then neither started nor waited for. That variant is
+not part of the qualification.
 
 The authority signing key is held in **software custody** (in the Host process
 — finding AA-001, `docs/enterprise/AOC_ENTERPRISE_HOST.md` §"Authority-key
@@ -245,14 +249,22 @@ cd deploy/pilot
 cp .env.example .env
 chmod 600 .env
 cp governed-actions.example.json governed-actions.json
+```
+
+Now edit `governed-actions.json` for your provider, actions and operators
+(§4.3) **before** generating secrets: the generator runs once, and it needs one
+`--secret` per `apiKeyEnv` your file declares for an operator or administrator
+(the example declares the two below). Then:
+
+```bash
 docker compose build
 docker compose run --rm -T authority-witness node scripts/deploy/generate-pilot-secrets.mjs --secret FRONTERA_OPERATOR_KEY_ADMIN --secret FRONTERA_OPERATOR_KEY_OBSERVER >> .env
 ```
 
-Edit `governed-actions.json` for your provider and actions (§4.3), then edit
-`.env` and replace every `<required…>` value: your organization id and your
-provider credential. Name one `--secret` per operator or administrator
-credential your governed-action file declares. Then:
+Edit `.env` and replace every `<required…>` value: your organization id and
+your provider credential. (An operator added later gets its credential with
+`… generate-pilot-secrets.mjs --secrets-only --secret NAME >> .env`, without
+touching any key.) Then:
 
 ```bash
 docker compose run --rm -T frontera node scripts/check-host-configuration.mjs
@@ -303,7 +315,8 @@ returns the identity recorded when the image was built
   "version": "1.6.0", "commit": "<40-hex>", "release": "1.6.0+<12-hex>", "build": "release",
   "api": { "surface": "aoc-enterprise-host-http.v1", "endpointCount": 65 },
   "runtimeVersions": { "enterpriseHost": "1.0.0", "kernel": "1.0.0" },
-  "storeSchemaVersions": { "…": "…" }, "canonicalizationVersion": "aoc.canonical-json.v1",
+  "storeSchemaVersions": { "governance": ["aoc.governance-store.schema.v1"], "execution-outcomes": ["…v2", "…v1"], "…": ["…"] },
+  "canonicalizationVersion": "aoc.canonical-json.v1",
   "node": { "supported": ">=22", "running": "v22.23.1" } }
 ```
 

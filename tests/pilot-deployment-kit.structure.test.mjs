@@ -90,7 +90,9 @@ describe('PROD-03-03 pilot deployment kit', () => {
 
   it('.env.example and the example governed-action file hold placeholders, never a credential', () => {
     const example = read('deploy/pilot/.env.example');
-    const assignments = example.split('\n').filter((line) => /^[A-Z_][A-Z0-9_]*=/.test(line));
+    // The one non-placeholder setting: which Compose profile runs the bundled witness.
+    assert.match(example, /^COMPOSE_PROFILES=reference-witness$/m);
+    const assignments = example.split('\n').filter((line) => /^[A-Z_][A-Z0-9_]*=/.test(line) && !line.startsWith('COMPOSE_PROFILES='));
     assert.ok(assignments.length > 0);
     for (const line of assignments) {
       const value = line.slice(line.indexOf('=') + 1);
@@ -205,6 +207,25 @@ describe('PROD-03-03 release coherence', () => {
     assert.match(read('docs/enterprise/API_STABILITY_V1.md'), new RegExp(`→ \\*\\*${freeze.endpointCount}\\*\\*`));
     assert.ok(freeze.routeLiterals.includes('/version'));
     assert.ok(freeze.probes.some((probe) => probe.method === 'GET' && probe.path === '/version'));
+  });
+
+  it('the release identity writer records every registry store and validates through the Host’s own reader', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const { rmSync } = await import('node:fs');
+    const out = join(ROOT, 'dist', 'release-identity.json');
+    const commit = 'b'.repeat(40);
+    try {
+      const run = spawnSync(process.execPath, [join(ROOT, 'scripts/release/write-release-identity.mjs')], { cwd: ROOT, env: { PATH: process.env.PATH, FRONTERA_BUILD_COMMIT: commit }, encoding: 'utf8' });
+      assert.equal(run.status, 0, run.stderr);
+      const identity = JSON.parse(readFileSync(out, 'utf8'));
+      assert.equal(identity.release, `${PKG.version}+${commit.slice(0, 12)}`);
+      assert.deepEqual(Object.keys(identity.storeSchemaVersions).sort(), STORE_DEFINITIONS.map((storeDef) => storeDef.name).sort());
+      assert.equal(identity.api.endpointCount, freeze.endpointCount);
+      const refused = spawnSync(process.execPath, [join(ROOT, 'scripts/release/write-release-identity.mjs')], { cwd: ROOT, env: { PATH: process.env.PATH, FRONTERA_BUILD_COMMIT: 'abc' }, encoding: 'utf8' });
+      assert.equal(refused.status, 1, 'a malformed commit is refused');
+    } finally {
+      rmSync(out, { force: true });
+    }
   });
 
   it('CI runs the release coherence checks and the pilot deployment qualification', () => {

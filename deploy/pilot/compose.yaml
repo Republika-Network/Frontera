@@ -40,10 +40,13 @@ services:
 
   authority-witness:
     # The REFERENCE witness: a separate process with its own key and its own
-    # volume. NOT a ledger, an HSM or a timestamping authority. To use your own
-    # https witness instead, set AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT
-    # and the witness id, token and public key in .env (see the guide).
+    # volume. NOT a ledger, an HSM or a timestamping authority. Enabled by
+    # COMPOSE_PROFILES=reference-witness in .env. To use your own https witness
+    # instead, remove that line and set AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT
+    # and the witness id, token and public key in .env (see the guide): this
+    # service is then neither started nor waited for.
     <<: *frontera-image
+    profiles: ["reference-witness"]
     command: ["node", "scripts/run-reference-authority-state-witness.mjs"]
     network_mode: service:network
     depends_on:
@@ -72,6 +75,8 @@ services:
     depends_on:
       authority-witness:
         condition: service_healthy
+        # Waited for when the reference-witness profile is enabled; absent otherwise.
+        required: false
     # Site settings and secrets: deploy/pilot/.env (from .env.example).
     env_file:
       - .env

@@ -42,8 +42,13 @@ export interface FronteraReleaseIdentity {
   readonly build: 'release' | 'development';
   readonly api: { readonly surface: string; readonly endpointCount: number | null };
   readonly runtimeVersions: { readonly enterpriseHost: string; readonly kernel: string };
-  /** The store schema versions this build opens; a store written under any other is refused at startup. */
-  readonly storeSchemaVersions: Readonly<Record<string, string>> | null;
+  /**
+   * Every store this build can compose (the PROD-02 store registry) → the
+   * schema versions it opens, newest first, as each store records them: a
+   * version name, or an integer for the stores that keep a single-row `meta`
+   * table. A store recorded under any other version is refused at startup.
+   */
+  readonly storeSchemaVersions: Readonly<Record<string, readonly (string | number)[]>> | null;
   readonly canonicalizationVersion: string | null;
   readonly node: { readonly supported: string | null; readonly running: string };
 }
@@ -112,8 +117,16 @@ export function parseReleaseIdentity(value: unknown, pkg: { readonly name: strin
     invalid(`'runtimeVersions' does not match the shipped Enterprise Host (${AOC_ENTERPRISE_HOST_VERSION}) and Kernel (${AOC_KERNEL_VERSION}).`);
   }
   const schemas = value['storeSchemaVersions'];
-  if (!isRecord(schemas)) invalid(`'storeSchemaVersions' must be an object.`);
-  const storeSchemaVersions = Object.fromEntries(Object.entries(schemas).map(([store, version]) => [token(store, 'storeSchemaVersions'), token(version, `storeSchemaVersions.${store}`)]));
+  if (!isRecord(schemas) || Object.keys(schemas).length === 0) invalid(`'storeSchemaVersions' must be a non-empty object.`);
+  const storeSchemaVersions = Object.fromEntries(
+    Object.entries(schemas).map(([store, versions]) => {
+      if (!Array.isArray(versions) || versions.length === 0) invalid(`'storeSchemaVersions.${store}' must be a non-empty array.`);
+      return [
+        token(store, 'storeSchemaVersions'),
+        versions.map((version: unknown) => (Number.isSafeInteger(version) && (version as number) > 0 ? (version as number) : token(version, `storeSchemaVersions.${store}`))),
+      ];
+    }),
+  );
   const node = value['node'];
   if (!isRecord(node)) invalid(`'node' must be an object.`);
 

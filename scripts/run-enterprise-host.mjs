@@ -9,7 +9,7 @@
 // (scripts/deploy/host-preflight.mjs, also `npm run check:host-configuration`),
 // so a Host never starts on a configuration, release identity or storage the
 // check refuses. See docs/deployment/PILOT_DEPLOYMENT.md.
-import { bootEnterpriseHost, isEnterpriseHostConfigurationError } from '../dist/src/enterprise/index.js';
+import { bootEnterpriseHost, createEnterpriseLogger, isEnterpriseHostConfigurationError } from '../dist/src/enterprise/index.js';
 import { firstFailure, formatPreflight, runHostPreflight } from './deploy/host-preflight.mjs';
 
 /** One line, code first. Messages are secret-free by construction; no stack, no environment. */
@@ -48,6 +48,8 @@ try {
   if (!preflight.ok) {
     for (const line of formatPreflight(preflight)) console.error(line);
     const failure = firstFailure(preflight);
+    // The same structured refusal event bootEnterpriseHost() emits, so one alert covers both.
+    createEnterpriseLogger('error').error('enterprise.host.refused', { phase: 'preflight', errorCode: failure.code });
     console.error(`Frontera Enterprise Host refused to start [${failure.code}] ${failure.detail}`);
     process.exit(1);
   }

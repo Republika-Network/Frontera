@@ -25,7 +25,7 @@ import { accessSync, closeSync, constants, existsSync, openSync, statSync, unlin
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readStoreVersion, sqliteIntegrityCheck } from '../portability/lib-portability.mjs';
+import { readStoreVersion, realResolve, sqliteIntegrityCheck } from '../portability/lib-portability.mjs';
 import { deriveDeploymentRequirements, loadRegistryModules, requiredStoreDefinitions } from '../portability/store-registry.mjs';
 
 export const PREFLIGHT_FORMAT = 'frontera.host-preflight.v1';
@@ -221,9 +221,17 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
           problems.push(['STORAGE_UNAVAILABLE', `${storeDef.name} (${storeDef.envVar}): no path configured`]);
           continue;
         }
-        const key = resolve(path);
-        if (paths.has(key)) problems.push(['STORAGE_PATHS_COLLIDE', `${storeDef.envVar} and ${paths.get(key)} name the same file`]);
-        paths.set(key, storeDef.envVar);
+        // Where the file actually is: symlinks in the path resolved, and an
+        // existing file identified by device and inode, so no alias (symlink,
+        // hard link, another spelling) can put two stores in one database.
+        const keys = [`path:${realResolve(path)}`];
+        if (existsSync(path)) {
+          const { dev, ino } = statSync(path);
+          keys.push(`inode:${dev}:${ino}`);
+        }
+        const collision = keys.find((key) => paths.has(key));
+        if (collision !== undefined) problems.push(['STORAGE_PATHS_COLLIDE', `${storeDef.envVar} and ${paths.get(collision)} name the same file`]);
+        for (const key of keys) paths.set(key, storeDef.envVar);
         const result = await checkStore(storeDef, path, modules, host.secureProfile, rootDevice);
         // Every composed store, optional modules' included: the Host opens them
         // all at composition and refuses to start when one cannot be opened.
