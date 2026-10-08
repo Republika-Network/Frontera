@@ -476,6 +476,29 @@ export function isResolutionFailureReason(value: string): value is (typeof RESOL
   return (RESOLUTION_FAILURE_REASONS as readonly string[]).includes(value);
 }
 
+/** PROD-03-02 — the operator-safe refusals of a contradictory or incomplete resolution form. Nothing is sent to the Host when one applies. */
+export const RESOLUTION_FORM_ERRORS = {
+  completedWithFailure: 'Failure reason must be empty when recording a completed resolution.',
+  notCompletedWithoutFailure: 'A failure reason is required when recording a not-completed resolution.',
+  unknownFailure: 'The failure reason must be one of the listed reasons.',
+} as const;
+
+/**
+ * PROD-03-02 — the console's closed resolution form, the same contract as the
+ * Host API's closed body: a completion carries **no** failure reason, a
+ * non-completion carries exactly one of the listed reasons. A contradictory
+ * form (a reason left selected after switching to "completed") is refused,
+ * never silently normalized — a resolution is permanent. `undefined`: valid.
+ */
+export function resolutionFormError(resolution: ResolutionChoice, failure: string): string | undefined {
+  if (resolution === 'confirmed-completed') return failure === '' ? undefined : RESOLUTION_FORM_ERRORS.completedWithFailure;
+  if (failure === '') return RESOLUTION_FORM_ERRORS.notCompletedWithoutFailure;
+  return isResolutionFailureReason(failure) ? undefined : RESOLUTION_FORM_ERRORS.unknownFailure;
+}
+
+/** PROD-03-02 — P12's closed capacity results (`ExecutionReconciliationCapacity`), as the Host states them. Pinned to the runtime's list by test. */
+export const RESOLUTION_CAPACITY_RESULTS = ['adjusted', 'no-reservation', 'not-composed', 'pending', 'conflict', 'inconsistent'] as const;
+
 /** PROD-03-02 — the closed resolution command. The Host derives the operator, the organization and the time. */
 export interface OperatorResolutionBody {
   readonly resolution: ResolutionChoice;

@@ -298,8 +298,11 @@ createEnterprise({
   fallback when SQLite was requested). A host-supplied store is never closed by the Host.
 - `AocEnterprise.executionReconciliation` (reconcile, adopt) and `AocEnterprise.executionResolutions`
   (read-only), trusted in-process only.
-- Health: module `aoc.enterprise.execution-resolutions`, `optional`; it reports store health and
-  `authoritiesComposed` — never provider connectivity (P16).
+- Health: module `aoc.enterprise.execution-resolutions`; it reports store health and
+  `authoritiesComposed` — never provider connectivity (P16). Once composed, every new governed
+  execution is bound here before its claim, so the module takes the governed spine's criticality:
+  `required` where the host marks the spine required (the Enterprise Host — an unhealthy store makes
+  the Host unhealthy and `/ready` 503), `optional` otherwise.
 - Portability v1 backup does not include the file, as for P7, P8 and P11 (P17).
 
 ## 12. Public contract
@@ -378,3 +381,24 @@ capacity. No route reaches `reconcile` or `adoptResolutionAuthority`; no route, 
 string offers a retry, replay or resend. ASSURE-01 shows the resolution stage with its
 `attestedBy` (a person: disclosed only where approvals are) and the operations view names it an
 operator resolution, never a provider confirmation.
+
+**Post-merge review hardening (after PR #171).**
+
+- *Readiness.* On the Enterprise Host the resolution store is `required` (§11): the Host is not
+  ready while it cannot bind new governed executions.
+- *Capability truth.* Operator attestation is available only where the snapshotted authority set
+  contains `frontera.operator-attestation` (`composesOperatorAttestation`). A host-chosen authority
+  set without it is a valid P12 deployment, but it composes no resolution command: nothing is
+  `resolvable`, and the route answers `EXECUTION_RESOLUTION_NOT_AVAILABLE` (never a false
+  `authority-mismatch`).
+- *Closed console form.* The console refuses — never normalizes — a completion carrying a failure
+  reason, a non-completion without one, and an unknown reason, before the Host is asked.
+- *Capacity is a separate fact.* A recorded resolution's response carries P12's capacity result
+  (`adjusted`, `no-reservation`, `not-composed`, `pending`, `conflict`, `inconsistent`) verbatim,
+  and the resolution log states it. The resolution stands whatever it says. The console shows a
+  plain success only for `adjusted` / `no-reservation`; for `pending` it offers running the capacity
+  reconciliation again, which re-submits the identical resolution — its `replayed` path re-runs
+  only the P7 / evidence completion (§6), records nothing new and performs nothing. `conflict` and
+  `inconsistent` are reported for investigation, never repaired; the trace keeps a warning while
+  the execution's reservation holds no reconciliation matching its resolution. Attention and its
+  counts are unchanged: the execution is resolved; capacity follow-up is not yet an Attention reason.

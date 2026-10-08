@@ -1,4 +1,4 @@
-import type { ExecutionResolutionAuthority, ExecutionResolutionAuthoritySelector } from './authority.js';
+import type { ExecutionResolutionAuthority, ExecutionResolutionAuthoritySelector, ResolutionAuthorityComposition } from './authority.js';
 
 /**
  * PROD-03-02 — operator attestation: an authorized human operator as the
@@ -42,3 +42,16 @@ export function createOperatorAttestationAuthority(): ExecutionResolutionAuthori
 
 /** The Host's selector: every governed execution is bound to operator attestation. */
 export const selectOperatorAttestation: ExecutionResolutionAuthoritySelector = () => OPERATOR_ATTESTATION_AUTHORITY_ID;
+
+/**
+ * Whether this deployment can record an operator attestation at all: the
+ * snapshotted P12 authorities include the built-in operator-attestation
+ * authority. The one predicate behind every statement of that capability —
+ * the reconciliation service's own refusal and the composition of the
+ * operator-plane resolution command (and so the operations view's
+ * `resolvable`). A host that composes only its own authorities is a valid P12
+ * deployment; it simply offers no operator attestation.
+ */
+export function composesOperatorAttestation(composition: ResolutionAuthorityComposition): boolean {
+  return composition.authorities.has(OPERATOR_ATTESTATION_AUTHORITY_ID);
+}

@@ -39,7 +39,8 @@ export interface ExecutionResolutionAdoptionRequest {
  *   resolution (for example, capacity was released for an effect now resolved
  *   completed). Reported, never repaired.
  */
-export type ExecutionReconciliationCapacity = 'adjusted' | 'no-reservation' | 'not-composed' | 'pending' | 'conflict' | 'inconsistent';
+export const EXECUTION_RECONCILIATION_CAPACITY_VALUES = ['adjusted', 'no-reservation', 'not-composed', 'pending', 'conflict', 'inconsistent'] as const;
+export type ExecutionReconciliationCapacity = (typeof EXECUTION_RECONCILIATION_CAPACITY_VALUES)[number];
 
 export type ExecutionReconciliationResult =
   /** A definitive resolution stands. `established: 'previously'` means it was already on record and the authority was **not** asked again. */

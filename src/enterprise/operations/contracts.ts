@@ -316,7 +316,14 @@ export interface OperatorResolutionView {
     readonly recordedAt: string;
     readonly resolutionDigest: string;
   };
-  /** What became of the execution's P7 reservation once the resolution stood (P12's closed vocabulary). */
+  /**
+   * What became of the execution's P7 reservation once the resolution stood —
+   * P12's closed `ExecutionReconciliationCapacity`, verbatim. A separate fact
+   * from the resolution, which is durable whatever this says: `pending`,
+   * `conflict`, `inconsistent` and `not-composed` mean capacity was **not**
+   * reconciled. `pending` alone is completed by submitting the identical
+   * resolution again (its replay re-runs only the capacity step).
+   */
   readonly capacity: string;
   /** Stated on every success, because it is the point: evidence was recorded and no action was performed. */
   readonly effect: 'resolution-recorded-no-action-performed';

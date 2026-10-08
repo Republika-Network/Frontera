@@ -110,7 +110,8 @@ export interface OperatorResolutionLogRef {
 
 export interface OperatorResolutionLog {
   requested(ref: OperatorResolutionLogRef): void;
-  recorded(ref: OperatorResolutionLogRef & { readonly requestId: string; readonly evaluationId: string; readonly result: 'recorded' | 'replayed'; readonly resolutionDigest: string }): void;
+  /** `capacity`: P12's closed capacity result — the resolution stands whatever it says. */
+  recorded(ref: OperatorResolutionLogRef & { readonly requestId: string; readonly evaluationId: string; readonly result: 'recorded' | 'replayed'; readonly resolutionDigest: string; readonly capacity: string }): void;
   rejected(ref: OperatorResolutionLogRef & { readonly result: string; readonly reason?: string }): void;
 }
 
@@ -138,6 +139,7 @@ export function createOperatorResolutionLog(logger: EnterpriseLogger): OperatorR
         evaluationId: ref.evaluationId,
         outcome: ref.result,
         resolutionDigest: ref.resolutionDigest,
+        capacity: ref.capacity,
         operationalState: ref.certainty === 'confirmed-completed' ? 'executed-succeeded' : 'executed-failed',
         attentionRequired: false,
       });

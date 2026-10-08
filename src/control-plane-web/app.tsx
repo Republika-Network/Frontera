@@ -17,8 +17,8 @@ import {
   isApprovalView,
   isEntityKind,
   isResolutionChoice,
-  isResolutionFailureReason,
   isTraceLevel,
+  resolutionFormError,
   type ApprovalVerb,
   type EntityKind,
   type EntityView,
@@ -32,7 +32,7 @@ import { AuthorityPage, EntityPage, ExecutionPage, GrantPage, ProvisionPage } fr
 import { ConfirmPage, CredentialIssuedPage, ErrorPage, LoginPage, OverviewPage } from './views/pages-core.js';
 import { ActivityPage, EmergencyPage, EvidenceIndexPage, EvidencePage, ProfilesPage } from './views/pages-records.js';
 import { ApprovalCommandPage, ApprovalPage, ApprovalsPage } from './views/pages-approvals.js';
-import { AttentionListPage, ExecutionsListPage, HostHealthPage, ResolutionPage, TraceIndexPage, TracePage, tracePath } from './views/pages-operations.js';
+import { AttentionListPage, CAPACITY_RECONCILED, CAPACITY_RESULT_NOTICES, ExecutionsListPage, HostHealthPage, ResolutionPage, ResolutionRecordedPage, TraceIndexPage, TracePage, tracePath } from './views/pages-operations.js';
 
 /**
  * CTRL-03 — the Frontera web control plane: request handling.
@@ -418,10 +418,11 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
    * the state it shows. After a refusal it re-reads too, so a stale page is
    * replaced by the current state and the earlier choice is never re-applied.
    */
-  async function resolutionPage(authed: Authed, requestId: string, failure?: HostFailure): Promise<ConsoleResponse> {
+  async function resolutionPage(authed: Authed, requestId: string, failure?: HostFailure, formError?: string): Promise<ConsoleResponse> {
     const view = await host.trace(authed.session.bearer, requestId, 'AUDITOR');
     if (!view.ok) return failurePage(authed, 'Record resolution', failure ?? view.failure);
-    return html(failure === undefined ? 200 : statusForFailure(failure), <ResolutionPage context={authed.context} csrfToken={authed.csrf} view={view.body} {...(failure !== undefined ? { failure } : {})} />);
+    const status = failure !== undefined ? statusForFailure(failure) : formError !== undefined ? 400 : 200;
+    return html(status, <ResolutionPage context={authed.context} csrfToken={authed.csrf} view={view.body} {...(failure !== undefined ? { failure } : {})} {...(formError !== undefined ? { formError } : {})} />);
   }
 
   async function resolveExecution(authed: Authed, requestId: string, form: FormFields): Promise<ConsoleResponse> {
@@ -430,9 +431,9 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
     const failure = form.text('failure');
     const observedOutcome = form.text('observedOutcome');
     if (!isResolutionChoice(resolution) || (observedOutcome !== 'none' && observedOutcome !== 'unconfirmed')) return html(400, <ErrorPage title="Choose a resolution" context={authed.context} csrfToken={authed.csrf} />);
-    if (resolution === 'confirmed-not-completed' && !isResolutionFailureReason(failure)) {
-      return html(400, <ErrorPage title="Confirming that an execution was not completed requires one of the listed reasons" context={authed.context} csrfToken={authed.csrf} />);
-    }
+    // The closed form, before anything reaches the Host: a contradictory or incomplete choice is refused — never normalized — and the page is re-read with the form empty.
+    const formError = resolutionFormError(resolution, failure);
+    if (formError !== undefined) return resolutionPage(authed, requestId, undefined, formError);
     // The execution is the one the Host states for this request now — never a value from the form.
     const view = await host.trace(authed.session.bearer, requestId, 'AUDITOR');
     if (!view.ok) return failurePage(authed, 'Record resolution', view.failure);
@@ -445,9 +446,22 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
     });
     if (!result.ok) return result.failure.kind === 'unauthenticated' ? failurePage(authed, 'Record resolution', result.failure) : resolutionPage(authed, requestId, result.failure);
     const recorded = result.body;
+    // The resolution is durable either way; an incomplete capacity reconciliation is stated beside it, never folded into a plain success.
+    if (!CAPACITY_RECONCILED.has(recorded.capacity)) {
+      return html(
+        200,
+        <ResolutionRecordedPage
+          context={authed.context}
+          csrfToken={authed.csrf}
+          requestId={requestId}
+          recorded={recorded}
+          submitted={{ resolution, observedOutcome, ...(resolution === 'confirmed-not-completed' ? { failure } : {}) }}
+        />,
+      );
+    }
     authed.session.flash =
       `Resolution ${recorded.outcome === 'replayed' ? 'already recorded (same resolution, unchanged)' : 'recorded'} by the Host: ${recorded.resolution.certainty}` +
-      `${recorded.resolution.failure !== null ? ` (${recorded.resolution.failure})` : ''}, attested by ${recorded.resolution.attestedBy}. Evidence only — no action was performed. The trace below was re-read from the Host.`;
+      `${recorded.resolution.failure !== null ? ` (${recorded.resolution.failure})` : ''}, attested by ${recorded.resolution.attestedBy}. Evidence only — no action was performed. ${CAPACITY_RESULT_NOTICES[recorded.capacity]?.body ?? ''} The trace below was re-read from the Host.`;
     return redirect(tracePath(requestId));
   }
 

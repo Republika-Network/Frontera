@@ -19,22 +19,29 @@ export const EXECUTION_RESOLUTION_MODULE_ID = 'aoc.enterprise.execution-resoluti
  * this module never calls an authority, and a healthy SQLite file is never
  * reported as provider connectivity. (Richer operability is P16.)
  *
- * ## Why `optional`, and why that is still fail-closed
+ * ## Why `optional` by default, and why that is still fail-closed
  *
  * The frozen evaluate surface never passes through this store. Governed
  * execution fails closed on its own: a binding that cannot be written stops an
  * execution before its claim, and a resolution that cannot be read is never
  * replayed optimistically. It owns nothing: the composition root closes a
  * store it opened, and a host closes one it supplied.
+ *
+ * Once composed, every new governed execution is bound here before its claim,
+ * so this store is part of the governed spine exactly as the P11 outcome store
+ * is. It therefore takes the spine's criticality: a Host whose purpose **is**
+ * governed execution (the Enterprise Host bootstrap) composes it as `required`,
+ * and there an unhealthy resolution store means `/health` and `/ready` say the
+ * Host cannot take governed work.
  */
-export function createExecutionResolutionModule(store: ExecutionResolutionStore, authoritiesComposed: number, now: () => string): EnterpriseModule {
+export function createExecutionResolutionModule(store: ExecutionResolutionStore, authoritiesComposed: number, now: () => string, criticality: 'required' | 'optional' = 'optional'): EnterpriseModule {
   return {
     descriptor: {
       id: EXECUTION_RESOLUTION_MODULE_ID,
       version: AOC_ENTERPRISE_HOST_VERSION,
       displayName: 'Execution Resolutions',
       description: 'Immutable, integrity-verified record of which trusted resolution authority may resolve each governed execution, and of what it later established. No route.',
-      criticality: 'optional',
+      criticality,
       dependencies: [{ moduleId: GOVERNED_ACTION_ORCHESTRATOR_MODULE_ID }],
       capabilities: ['execution.resolution-authority-binding', 'execution.definitive-resolution'],
     },

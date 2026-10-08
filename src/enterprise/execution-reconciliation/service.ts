@@ -13,7 +13,7 @@ import type { ExecutionResolutionPort } from '../execution-resolution-store/reso
 import { isAttestingOperatorRef, isExecutionFailureReason, isOpaqueResolutionIdentifier } from '../execution-resolution-store/validation.js';
 import type { ExecutionActivityGuard } from './activity-guard.js';
 import { normalizeResolutionAnswer, type ExecutionResolutionQuery, type ResolutionAuthorityComposition } from './authority.js';
-import { OPERATOR_ATTESTATION_AUTHORITY_ID } from './operator-attestation.js';
+import { OPERATOR_ATTESTATION_AUTHORITY_ID, composesOperatorAttestation } from './operator-attestation.js';
 import type {
   OperatorResolutionRequest,
   OperatorResolutionResult,
@@ -347,7 +347,7 @@ export function createExecutionReconciliationService(options: ExecutionReconcili
         return { outcome: 'resolution-unrecorded' };
       }
       // Attestation exists only where this deployment composed it; it never stands in for another authority.
-      if (!composition.authorities.has(OPERATOR_ATTESTATION_AUTHORITY_ID)) return { outcome: 'authority-mismatch' };
+      if (!composesOperatorAttestation(composition)) return { outcome: 'authority-mismatch' };
       const release = activity?.tryExclusive(executionId);
       if (release === undefined) return { outcome: 'in-flight' };
       try {
