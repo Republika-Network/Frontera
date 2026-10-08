@@ -126,8 +126,11 @@ async function qualify() {
 
   const fromCommit = option('--from-commit');
   if (fromCommit !== undefined) {
-    const tar = spawnSync('sh', ['-c', `git -C "${REPO}" archive --format=tar "${fromCommit}" | tar -x -C "${exportDir}"`], { encoding: 'utf8' });
-    check(tar.status === 0, `git archive ${fromCommit} failed: ${tar.stderr}`);
+    // No shell: the ref and the paths are arguments, never interpolated into a command line.
+    const archive = spawnSync('git', ['-C', REPO, 'archive', '--format=tar', fromCommit], { maxBuffer: 1024 * 1024 * 1024 });
+    check(archive.status === 0, `git archive ${fromCommit} failed: ${archive.stderr}`);
+    const tar = spawnSync('tar', ['-x', '-C', exportDir], { input: archive.stdout, encoding: 'utf8' });
+    check(tar.status === 0, `extracting ${fromCommit} failed: ${tar.stderr}`);
   } else {
     const files = run('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard']).stdout.split('\0').filter(Boolean);
     for (const file of files) {
