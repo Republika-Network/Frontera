@@ -214,7 +214,8 @@ with the Host's stores (CORE-07: restoring both to the same moment would make a
 stale authority state look current).
 
 The preflight refuses to start a Host whose stores would live on the
-container's writable layer (`STORAGE_NOT_PERSISTENT`) or in a directory it
+container's writable layer or an in-memory filesystem such as a `tmpfs` mount
+(`STORAGE_NOT_PERSISTENT`) or in a directory it
 cannot write (`STORAGE_NOT_WRITABLE`).
 
 ## 7. The configuration check
@@ -472,7 +473,7 @@ fresh Compose project, and requires every case:
 | D5 | `/version` matches the image's recorded identity, its label and the release manifest |
 | D6 | a required dependency (the witness) down at boot: refused, never ready; P12 is a required module |
 | D7 | the witness lost after startup: degraded, still live and ready; recovers |
-| D8 | no state volume: refused (`STORAGE_NOT_PERSISTENT`) |
+| D8 | no state volume, or state on a `tmpfs` mount: refused (`STORAGE_NOT_PERSISTENT`) |
 | D9 | read-only state volume: refused (`STORAGE_NOT_WRITABLE`) |
 | D10 | a store at an unknown schema version: refused by the preflight and by the Host itself |
 | D11 | SIGTERM: exit 0 after `shutdown_complete`; the same stores reopen |

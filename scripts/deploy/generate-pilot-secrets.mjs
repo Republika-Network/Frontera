@@ -26,7 +26,7 @@
 //
 //   docker compose run --rm -T witness-init --secrets-only --secret FRONTERA_OPERATOR_KEY_NEW >> .env
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, rmSync, writeFileSync } from 'node:fs';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED = /^AOC_ENTERPRISE_|^FRONTERA_REFERENCE_/;
 
@@ -58,6 +58,16 @@ if (secretsOnly) {
 
 const keyFile = process.env.FRONTERA_REFERENCE_WITNESS_KEY_FILE;
 if (keyFile === undefined || keyFile.length === 0) refuse('FRONTERA_REFERENCE_WITNESS_KEY_FILE is not set; run this as the witness-init tool.');
+// One initialization at a time: two concurrent runs would print two different
+// key sets, and only one can be persisted. Taken before anything is checked,
+// generated or printed; released however this process exits.
+const lock = `${keyFile}.init.lock`;
+try {
+  closeSync(openSync(lock, 'wx', 0o600));
+} catch {
+  refuse(`another initialization holds ${lock.split('/').pop()} in the witness volume. If none is running, a previous one was killed: delete that file and run again.`);
+}
+process.on('exit', () => rmSync(lock, { force: true }));
 if (existsSync(keyFile)) {
   refuse('this deployment is already initialized (the witness receipt key exists). Generating new authority or witness keys would break trust in every artifact the current ones signed.');
 }

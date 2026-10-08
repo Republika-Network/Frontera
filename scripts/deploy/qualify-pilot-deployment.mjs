@@ -426,19 +426,20 @@ async function main() {
   }
 
   // ---- D8 / D9 storage faults (override files: the kit's volume removed or read-only) -------
-  const fault = (name, volumes) => {
+  const fault = (name, volumes, extra = '') => {
     const file = join(pilotDir, `qualification-${name}.yaml`);
     const list = volumes.map((volume) => `      - ${volume}\n`).join('');
-    writeFileSync(file, `services:\n  frontera:\n    volumes: !override\n${list}  config-check:\n    volumes: !override\n${list}`);
+    writeFileSync(file, `services:\n  frontera:\n    volumes: !override\n${list}${extra}  config-check:\n    volumes: !override\n${list}${extra}`);
     return ['compose.yaml', file];
   };
   compose(['stop', 'frontera']);
-  for (const [id, name, volumes, code] of [
+  for (const [id, name, volumes, code, extra] of [
     ['D8', 'no state volume (container layer)', ['./governed-actions.json:/etc/frontera/governed-actions.json:ro,z'], 'STORAGE_NOT_PERSISTENT'],
+    ['D8', 'state on a tmpfs mount', ['./governed-actions.json:/etc/frontera/governed-actions.json:ro,z'], 'STORAGE_NOT_PERSISTENT', '    tmpfs:\n      - /var/lib/frontera:uid=1000,gid=1000,mode=0700\n'],
     ['D9', 'read-only state volume', ['frontera-state:/var/lib/frontera:ro', './governed-actions.json:/etc/frontera/governed-actions.json:ro,z'], 'STORAGE_NOT_WRITABLE'],
   ]) {
     try {
-      const files = fault(id.toLowerCase(), volumes);
+      const files = fault(`${id.toLowerCase()}-${name.replace(/[^a-z]+/gi, '-')}`, volumes, extra);
       const checked = configCheck(files);
       captured.push(checked.stdout, checked.stderr);
       check(checked.status === 1 && checked.stdout.includes(`[${code}]`), `config-check: ${checked.status} ${checked.stdout.slice(-400)}`);

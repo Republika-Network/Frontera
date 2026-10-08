@@ -21,7 +21,8 @@
 // signer or the witness. Output names variables, stores and closed codes —
 // never a value, a path or a secret.
 
-import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -89,6 +90,10 @@ function storeLocation(path) {
     if (hops > 40) return { refused: 'its path contains a symlink loop' };
     const target = resolve(current, readlinkSync(next));
     if (pending.length > 0 && !existsSync(target)) return { refused: 'a directory in its path is a symlink to a missing target' };
+    // The file itself may be a link to a database not created yet, but only
+    // into an existing directory: a store creates its configured directory,
+    // never the directories of a link's target.
+    if (pending.length === 0 && !existsSync(target) && !existsSync(dirname(target))) return { refused: 'it is a symlink into a directory that does not exist' };
     pending.unshift(...target.split(sep).filter(Boolean));
     current = sep;
   }
@@ -108,15 +113,44 @@ function nearestExisting(path) {
 
 /** A real write probe: `access()` answers "yes" for root whatever the mount says. */
 function directoryWritable(dir) {
-  const probe = join(dir, `.frontera-preflight-${process.pid}`);
+  // Unique per call: one-off containers all run as PID 1 on a shared volume.
+  const probe = join(dir, `.frontera-preflight-${process.pid}-${randomBytes(8).toString('hex')}`);
   try {
     accessSync(dir, constants.W_OK | constants.X_OK);
     closeSync(openSync(probe, 'wx', 0o600));
-    unlinkSync(probe);
     return true;
   } catch {
     return false;
+  } finally {
+    rmSync(probe, { force: true });
   }
+}
+
+/** Filesystems that live and die with the container (or the machine's RAM). */
+const EPHEMERAL_FILESYSTEMS = new Set(['tmpfs', 'ramfs']);
+
+/**
+ * The filesystem type of the mount that holds `dir` (Linux, from
+ * /proc/self/mountinfo: the longest mount point containing it), or undefined
+ * where that cannot be read.
+ */
+function filesystemOf(dir) {
+  let mountinfo;
+  try {
+    mountinfo = readFileSync('/proc/self/mountinfo', 'utf8');
+  } catch {
+    return undefined;
+  }
+  const unescape = (field) => field.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+  let best;
+  for (const line of mountinfo.split('\n')) {
+    const [left, right] = line.split(' - ');
+    if (right === undefined) continue;
+    const mountPoint = unescape(left.split(' ')[4] ?? '');
+    const contains = mountPoint === '/' || dir === mountPoint || dir.startsWith(`${mountPoint}/`);
+    if (contains && (best === undefined || mountPoint.length >= best.mountPoint.length)) best = { mountPoint, type: right.split(' ')[0] };
+  }
+  return best?.type;
 }
 
 async function checkStore(storeDef, path, modules, secure, rootDevice) {
@@ -151,6 +185,9 @@ async function checkStore(storeDef, path, modules, secure, rootDevice) {
   // container's writable layer: it disappears with the container.
   if (secure && rootDevice !== undefined && statSync(existingDir).dev === rootDevice) {
     problems.push(['STORAGE_NOT_PERSISTENT', `${label}: its directory is on the container's writable layer, not on a mounted volume`]);
+  } else if (secure && EPHEMERAL_FILESYSTEMS.has(filesystemOf(existingDir) ?? '')) {
+    // A mount, but one that does not outlive the container (e.g. a Docker tmpfs mount).
+    problems.push(['STORAGE_NOT_PERSISTENT', `${label}: its directory is on an in-memory filesystem (${filesystemOf(existingDir)})`]);
   }
 
   if (!existsSync(absolute)) return { problems, warnings, state: 'absent' };

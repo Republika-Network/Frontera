@@ -133,6 +133,18 @@ describe('PROD-03-03 Host preflight', () => {
     await assert.rejects(enterprise.bootEnterpriseHost({ env: { ...env, AOC_ENTERPRISE_LOG_LEVEL: 'error' } }), 'the Host itself cannot start there either');
   });
 
+  it('refuses a store-file link into a directory that does not exist, and ignores stale write probes', async () => {
+    const { symlinkSync, writeFileSync } = await import('node:fs');
+    const data = scratch();
+    symlinkSync(join(scratch(), 'missing', 'nested', 'enterprise-host.sqlite'), join(data, 'enterprise-host.sqlite'));
+    assert.deepEqual(failures(await runHostPreflight(durableEnv(data))), ['STORAGE_UNAVAILABLE']);
+    // A probe left by a killed check (one-off containers all run as PID 1) changes nothing.
+    const clean = scratch();
+    writeFileSync(join(clean, '.frontera-preflight-1'), '');
+    writeFileSync(join(clean, `.frontera-preflight-${process.pid}`), '');
+    assert.equal((await runHostPreflight(durableEnv(clean))).ok, true);
+  });
+
   it('reports an unreadable governed-action file by variable, never by its path', async () => {
     const missing = join(scratch(), 'customer-acme', 'governed-actions.json');
     const result = await runHostPreflight(durableEnv(scratch(), { AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: missing, AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true' }));
