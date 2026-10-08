@@ -48,6 +48,7 @@ The three Compose services:
 | `network` | an idle process | Owns the network namespace and the published port, so the Host and the witness share loopback and restarting either never takes the other's network away |
 | `authority-witness` | `scripts/run-reference-authority-state-witness.mjs` | The CORE-07 authority-state freshness witness the secure profile requires. The **reference** witness: not a ledger, an HSM or a timestamping authority. Loopback only |
 | `frontera` | the Host | The governed-action boundary |
+| `config-check`, `witness-init` | the preflight; the one-time secret generator | Tools (profile `tools`): never started by `up`, run explicitly with `docker compose run`; no network, nothing else started |
 
 The Host reaches the witness at `http://127.0.0.1:8444`; the Host accepts plain
 HTTP to a witness only on loopback (https anywhere else), which is why the two
@@ -66,9 +67,9 @@ works with this image but is not part of the qualified kit.
 
 ## 2. Prerequisites
 
-- Linux x86_64 or arm64 with Docker Engine and the Compose v2 plugin
-  (`docker compose version`). Any Linux container runtime with Compose v2
-  semantics should work; Docker is what is qualified.
+- Linux x86_64 or arm64 with Docker Engine and the Compose plugin **2.20 or
+  later** (`docker compose version`; the kit uses optional dependencies,
+  `depends_on.required`, introduced in 2.20). Docker is what is qualified.
 - `git`, to obtain the source. Nothing else on the machine: Node.js, npm and
   the build toolchain run inside the image build.
 - Outbound access to the npm registry during `docker compose build` (and to
@@ -219,7 +220,7 @@ cannot write (`STORAGE_NOT_WRITABLE`).
 ## 7. The configuration check
 
 ```bash
-docker compose run --rm -T frontera node scripts/check-host-configuration.mjs
+docker compose run --rm config-check
 ```
 
 (`npm run check:host-configuration` outside a container.) It runs the same
@@ -258,16 +259,16 @@ Now edit `governed-actions.json` for your provider, actions and operators
 
 ```bash
 docker compose build
-docker compose run --rm -T authority-witness node scripts/deploy/generate-pilot-secrets.mjs --secret FRONTERA_OPERATOR_KEY_ADMIN --secret FRONTERA_OPERATOR_KEY_OBSERVER >> .env
+docker compose run --rm -T witness-init --secret FRONTERA_OPERATOR_KEY_ADMIN --secret FRONTERA_OPERATOR_KEY_OBSERVER >> .env
 ```
 
 Edit `.env` and replace every `<required…>` value: your organization id and
 your provider credential. (An operator added later gets its credential with
-`… generate-pilot-secrets.mjs --secrets-only --secret NAME >> .env`, without
+`docker compose run --rm -T witness-init --secrets-only --secret NAME >> .env`, without
 touching any key.) Then:
 
 ```bash
-docker compose run --rm -T frontera node scripts/check-host-configuration.mjs
+docker compose run --rm config-check
 docker compose up -d
 docker compose ps
 curl -fsS http://127.0.0.1:8787/ready
@@ -360,7 +361,7 @@ The technical sequence:
 2. `docker compose stop`.
 3. Check out the new release; `export FRONTERA_BUILD_COMMIT="$(git rev-parse HEAD)"`;
    `docker compose build`.
-4. `docker compose run --rm -T frontera node scripts/check-host-configuration.mjs`
+4. `docker compose run --rm config-check`
    — refuses (`SCHEMA_INCOMPATIBLE`) if the new build does not open the existing
    stores.
 5. `docker compose up -d`; wait for `/ready`.

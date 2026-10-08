@@ -188,7 +188,7 @@ function setEnvValue(path, name, value) {
   writeFileSync(path, text.replace(pattern, `${name}=${value}`));
 }
 
-const configCheck = (files) => compose(['run', '--rm', '-T', 'frontera', 'node', 'scripts/check-host-configuration.mjs'], { allowFailure: true, files });
+const configCheck = (files) => compose(['run', '--rm', '-T', 'config-check'], { allowFailure: true, files });
 const logs = () => compose(['logs', '--no-color'], { allowFailure: true }).stdout;
 function exitCodeOf(service) {
   const id = compose(['ps', '-a', '-q', service], { allowFailure: true }).stdout.trim().split('\n')[0];
@@ -264,12 +264,12 @@ async function main() {
   // authorized action reaches the adapter and fails before a byte is sent.
   governed.genericHttpAdapters[0].origin = 'https://provider.frontera-qualification.invalid';
   writeFileSync(join(pilotDir, 'governed-actions.json'), `${JSON.stringify(governed, null, 2)}\n`);
-  const generated = compose(['run', '--rm', '-T', 'authority-witness', 'node', 'scripts/deploy/generate-pilot-secrets.mjs', '--secret', 'FRONTERA_OPERATOR_KEY_ADMIN', '--secret', 'FRONTERA_OPERATOR_KEY_OBSERVER']);
+  const generated = compose(['run', '--rm', '-T', 'witness-init', '--secret', 'FRONTERA_OPERATOR_KEY_ADMIN', '--secret', 'FRONTERA_OPERATOR_KEY_OBSERVER']);
   appendFileSync(join(pilotDir, '.env'), generated.stdout);
-  const again = compose(['run', '--rm', '-T', 'authority-witness', 'node', 'scripts/deploy/generate-pilot-secrets.mjs'], { allowFailure: true });
+  const again = compose(['run', '--rm', '-T', 'witness-init'], { allowFailure: true });
   check(again.status !== 0 && again.stdout === '', 'the secret generator must refuse a second run and print nothing');
   // An operator added later: a credential only, no key touched.
-  const extra = compose(['run', '--rm', '-T', 'authority-witness', 'node', 'scripts/deploy/generate-pilot-secrets.mjs', '--secrets-only', '--secret', 'FRONTERA_OPERATOR_KEY_LATER']);
+  const extra = compose(['run', '--rm', '-T', 'witness-init', '--secrets-only', '--secret', 'FRONTERA_OPERATOR_KEY_LATER']);
   const extraNames = extra.stdout.split('\n').filter((line) => /^[A-Z_]+=/.test(line)).map((line) => line.split('=')[0]);
   check(JSON.stringify(extraNames) === '["FRONTERA_OPERATOR_KEY_LATER"]', `--secrets-only printed ${extraNames.join(', ')}`);
 
@@ -280,6 +280,7 @@ async function main() {
     check(missing.status === 1, `config-check exited ${missing.status}`);
     check(/\[CONFIG_PLACEHOLDER_VALUE\]/.test(missing.stdout), 'no placeholder refusal');
     check(missing.stdout.includes('AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID') && missing.stdout.includes('FRONTERA_PROVIDER_TOKEN'), 'the refusal does not name both variables');
+    check(compose(['ps', '-q']).stdout.trim() === '', 'the configuration check or the generator left services running');
     compose(['up', '-d']);
     check(await neverReady(20_000), '/ready answered 200 on a refused configuration');
     check(/refused to start \[CONFIG_PLACEHOLDER_VALUE\]/.test(logs()), 'the launcher did not refuse with the placeholder code');
@@ -427,7 +428,8 @@ async function main() {
   // ---- D8 / D9 storage faults (override files: the kit's volume removed or read-only) -------
   const fault = (name, volumes) => {
     const file = join(pilotDir, `qualification-${name}.yaml`);
-    writeFileSync(file, `services:\n  frontera:\n    volumes: !override\n${volumes.map((volume) => `      - ${volume}\n`).join('')}`);
+    const list = volumes.map((volume) => `      - ${volume}\n`).join('');
+    writeFileSync(file, `services:\n  frontera:\n    volumes: !override\n${list}  config-check:\n    volumes: !override\n${list}`);
     return ['compose.yaml', file];
   };
   compose(['stop', 'frontera']);

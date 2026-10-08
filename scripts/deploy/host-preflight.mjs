@@ -89,7 +89,10 @@ async function checkStore(storeDef, path, modules, secure, rootDevice) {
   const warnings = [];
   const label = `${storeDef.name} (${storeDef.envVar})`;
   if (!isAbsolute(path)) warnings.push(`${label} is a relative path, resolved against the working directory`);
-  const absolute = resolve(path);
+  // Every check below is about where the bytes will actually live: the path
+  // with every symlink resolved — the file's own and its directories' — so a
+  // link from the mounted volume to the container layer cannot pass.
+  const absolute = realResolve(resolve(path));
   const dir = dirname(absolute);
   const existingDir = nearestExisting(dir);
 

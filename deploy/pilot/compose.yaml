@@ -25,6 +25,48 @@ x-frontera-image: &frontera-image
     args:
       FRONTERA_BUILD_COMMIT: ${FRONTERA_BUILD_COMMIT:-}
 
+# The Host's configuration, shared by the Host and the configuration check, so
+# the check validates exactly what the Host will run with.
+x-frontera-host: &frontera-host
+  <<: *frontera-image
+  # Site settings and secrets: deploy/pilot/.env (from .env.example).
+  env_file:
+    - .env
+  # Fixed by the kit. `environment` wins over `env_file`, so .env cannot
+  # weaken the profile, move the listener or relocate a store.
+  environment:
+    AOC_ENTERPRISE_ENV: production
+    AOC_ENTERPRISE_PERSISTENCE_PROVIDER: sqlite
+    AOC_ENTERPRISE_REQUIRE_AUTH: "true"
+    AOC_ENTERPRISE_HTTP_HOST: 0.0.0.0
+    AOC_ENTERPRISE_HTTP_PORT: "8787"
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: "true"
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED: "true"
+    AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: /etc/frontera/governed-actions.json
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE: external
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT:-http://127.0.0.1:8444}
+    # Every store the Host can compose, under one state root on one volume,
+    # at the PROD-02 registry's filenames (scripts/portability/store-registry.mjs),
+    # so backup:v1 / restore:v1 see the same layout. Stores a deployment does
+    # not compose are simply never created.
+    AOC_ENTERPRISE_SQLITE_PATH: /var/lib/frontera/enterprise-host.sqlite
+    AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: /var/lib/frontera/agent-passport.sqlite
+    AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: /var/lib/frontera/assurance.sqlite
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: /var/lib/frontera/kernel-authority.sqlite
+    AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: /var/lib/frontera/bounded-grants.sqlite
+    AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH: /var/lib/frontera/emergency-controls.sqlite
+    AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH: /var/lib/frontera/exercise-ledger.sqlite
+    AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH: /var/lib/frontera/authority-event-stream.sqlite
+    AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: /var/lib/frontera/execution-outcomes.sqlite
+    AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH: /var/lib/frontera/execution-resolutions.sqlite
+    AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH: /var/lib/frontera/obligation-discharges.sqlite
+    AOC_ENTERPRISE_APPROVAL_SQLITE_PATH: /var/lib/frontera/approvals.sqlite
+    AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH: /var/lib/frontera/control-plane.sqlite
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: /var/lib/frontera/evidence-bundles.sqlite
+  volumes:
+    - frontera-state:/var/lib/frontera
+    - ./governed-actions.json:/etc/frontera/governed-actions.json:ro
+
 services:
   network:
     <<: *frontera-image
@@ -70,55 +112,47 @@ services:
     restart: unless-stopped
 
   frontera:
-    <<: *frontera-image
+    <<: *frontera-host
     network_mode: service:network
     depends_on:
       authority-witness:
         condition: service_healthy
         # Waited for when the reference-witness profile is enabled; absent otherwise.
         required: false
-    # Site settings and secrets: deploy/pilot/.env (from .env.example).
-    env_file:
-      - .env
-    # Fixed by the kit. `environment` wins over `env_file`, so .env cannot
-    # weaken the profile, move the listener or relocate a store.
-    environment:
-      AOC_ENTERPRISE_ENV: production
-      AOC_ENTERPRISE_PERSISTENCE_PROVIDER: sqlite
-      AOC_ENTERPRISE_REQUIRE_AUTH: "true"
-      AOC_ENTERPRISE_HTTP_HOST: 0.0.0.0
-      AOC_ENTERPRISE_HTTP_PORT: "8787"
-      AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: "true"
-      AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED: "true"
-      AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: /etc/frontera/governed-actions.json
-      AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE: external
-      AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT:-http://127.0.0.1:8444}
-      # Every store the Host can compose, under one state root on one volume,
-      # at the PROD-02 registry's filenames (scripts/portability/store-registry.mjs),
-      # so backup:v1 / restore:v1 see the same layout. Stores a deployment does
-      # not compose are simply never created.
-      AOC_ENTERPRISE_SQLITE_PATH: /var/lib/frontera/enterprise-host.sqlite
-      AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: /var/lib/frontera/agent-passport.sqlite
-      AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: /var/lib/frontera/assurance.sqlite
-      AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: /var/lib/frontera/kernel-authority.sqlite
-      AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: /var/lib/frontera/bounded-grants.sqlite
-      AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH: /var/lib/frontera/emergency-controls.sqlite
-      AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH: /var/lib/frontera/exercise-ledger.sqlite
-      AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH: /var/lib/frontera/authority-event-stream.sqlite
-      AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: /var/lib/frontera/execution-outcomes.sqlite
-      AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH: /var/lib/frontera/execution-resolutions.sqlite
-      AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH: /var/lib/frontera/obligation-discharges.sqlite
-      AOC_ENTERPRISE_APPROVAL_SQLITE_PATH: /var/lib/frontera/approvals.sqlite
-      AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH: /var/lib/frontera/control-plane.sqlite
-      AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: /var/lib/frontera/evidence-bundles.sqlite
-    volumes:
-      - frontera-state:/var/lib/frontera
-      - ./governed-actions.json:/etc/frontera/governed-actions.json:ro
     # Longer than AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS (30 s default), so a stop
     # is never a SIGKILL inside the Host's own shutdown bound.
     stop_grace_period: 45s
     init: true
     restart: unless-stopped
+
+  # ---- tools: never started by `docker compose up`; run explicitly ----
+
+  config-check:
+    # docker compose run --rm config-check
+    # The preflight the Host's launcher runs, on the Host's own configuration
+    # and volume, with no network and nothing else started.
+    <<: *frontera-host
+    profiles: ["tools"]
+    network_mode: none
+    command: ["node", "scripts/check-host-configuration.mjs"]
+    healthcheck:
+      disable: true
+
+  witness-init:
+    # docker compose run --rm -T witness-init --secret NAME ... >> .env
+    # One-time key and secret generation (scripts/deploy/generate-pilot-secrets.mjs).
+    # Writes only the witness receipt key, into the witness's volume; no network.
+    <<: *frontera-image
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/generate-pilot-secrets.mjs"]
+    command: []
+    environment:
+      FRONTERA_REFERENCE_WITNESS_KEY_FILE: /var/lib/frontera-witness/receipt-key.pem
+    volumes:
+      - frontera-witness:/var/lib/frontera-witness
+    healthcheck:
+      disable: true
 
 volumes:
   # The Host's durable state: every store above. Back these files up together.

@@ -1,9 +1,10 @@
 // PROD-03-03 — one-time key and secret generation for the pilot Compose kit.
 //
-// Runs once, inside the bundled reference witness's container, so the witness
-// receipt key is created where only the witness reads it (its own volume):
+// Runs once, as the pilot kit's `witness-init` tool (no network, only the
+// witness's volume mounted), so the witness receipt key is created where only
+// the witness reads it:
 //
-//   docker compose run --rm -T authority-witness node scripts/deploy/generate-pilot-secrets.mjs \
+//   docker compose run --rm -T witness-init \
 //     --secret FRONTERA_OPERATOR_KEY_ADMIN --secret FRONTERA_OPERATOR_KEY_OBSERVER >> .env
 //
 // It prints, as .env lines, on stdout only:
@@ -23,14 +24,9 @@
 // An operator or administrator added to the governed-action file later gets
 // its credential without touching any key:
 //
-//   docker compose run --rm -T authority-witness node scripts/deploy/generate-pilot-secrets.mjs \
-//     --secrets-only --secret FRONTERA_OPERATOR_KEY_NEW >> .env
+//   docker compose run --rm -T witness-init --secrets-only --secret FRONTERA_OPERATOR_KEY_NEW >> .env
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const root = fileURLToPath(new URL('../..', import.meta.url));
+import { existsSync, writeFileSync } from 'node:fs';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED = /^AOC_ENTERPRISE_|^FRONTERA_REFERENCE_/;
 
@@ -61,13 +57,21 @@ if (secretsOnly) {
 }
 
 const keyFile = process.env.FRONTERA_REFERENCE_WITNESS_KEY_FILE;
-if (keyFile === undefined || keyFile.length === 0) refuse('FRONTERA_REFERENCE_WITNESS_KEY_FILE is not set; run this in the authority-witness service.');
+if (keyFile === undefined || keyFile.length === 0) refuse('FRONTERA_REFERENCE_WITNESS_KEY_FILE is not set; run this as the witness-init tool.');
 if (existsSync(keyFile)) {
   refuse('this deployment is already initialized (the witness receipt key exists). Generating new authority or witness keys would break trust in every artifact the current ones signed.');
 }
 
-const { loadOrCreateReferenceWitnessKey } = await import(resolve(root, 'dist/src/enterprise/authority-state-freshness/reference/reference-witness-service.js'));
-const witness = loadOrCreateReferenceWitnessKey(keyFile);
+// The witness receipt key is generated here, in memory, and persisted only
+// after the whole block below has been written out (see the end): an
+// interrupted run, or a failed `>> .env`, leaves nothing behind and can simply
+// be run again. Same files, formats and modes as the witness's own
+// loadOrCreateReferenceWitnessKey.
+const witnessKeys = generateKeyPairSync('ed25519');
+const witness = {
+  privateKeyPem: witnessKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  publicKeyPem: witnessKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+};
 
 const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '');
 const suffix = randomBytes(4).toString('hex');
@@ -92,4 +96,13 @@ const lines = [
   ...secretNames.map((name) => `${name}=${secret()}`),
   '# ---- end generated ----',
 ];
-process.stdout.write(`${lines.join('\n')}\n`);
+process.stdout.write(`${lines.join('\n')}\n`, (error) => {
+  // Only once stdout has accepted every byte is the deployment initialized.
+  if (error) refuse('the generated block could not be written out; nothing was persisted, run it again.');
+  try {
+    writeFileSync(keyFile, witness.privateKeyPem, { mode: 0o600, flag: 'wx' });
+    writeFileSync(`${keyFile}.pub`, witness.publicKeyPem, { mode: 0o644, flag: 'w' });
+  } catch {
+    refuse('the witness receipt key could not be stored; discard the block just printed and run it again.');
+  }
+});

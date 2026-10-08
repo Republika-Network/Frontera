@@ -10,7 +10,7 @@
 // Exit 0: every check passed (warnings allowed). Exit 1: at least one failure.
 // Output names checks, variables and closed codes — never a value or a path.
 // Run after `npm run build`. In the pilot container:
-//   docker compose run --rm frontera node scripts/check-host-configuration.mjs
+//   docker compose run --rm config-check   (deploy/pilot: no network, nothing else started)
 import { formatPreflight, runHostPreflight } from './deploy/host-preflight.mjs';
 
 let result;
@@ -18,7 +18,8 @@ try {
   result = await runHostPreflight(process.env);
 } catch (error) {
   console.error(`Frontera Host preflight could not run: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
-  process.exit(1);
 }
-for (const line of formatPreflight(result)) console.log(line);
-process.exit(result.ok ? 0 : 1);
+if (result !== undefined) for (const line of formatPreflight(result)) console.log(line);
+// Set, not process.exit(): the process ends once the report has been written
+// out, even when stdout is a pipe.
+process.exitCode = result?.ok === true ? 0 : 1;

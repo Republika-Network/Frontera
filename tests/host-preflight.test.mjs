@@ -92,6 +92,23 @@ describe('PROD-03-03 Host preflight', () => {
     assert.ok(failures(await runHostPreflight(viaHardLink)).includes('STORAGE_PATHS_COLLIDE'), 'an existing file reached by another name');
   });
 
+  it('judges a symlinked store file by where its target lives', { skip: process.getuid?.() === 0 ? 'root can write anywhere' : false }, async () => {
+    const { symlinkSync } = await import('node:fs');
+    const data = scratch();
+    const elsewhere = join(scratch(), 'locked');
+    mkdirSync(elsewhere);
+    const store = await enterprise.createSqliteGovernanceStore(join(elsewhere, 'enterprise-host.sqlite'));
+    await store.close();
+    chmodSync(elsewhere, 0o500);
+    // The state directory itself is writable; the file is a link out of it.
+    symlinkSync(join(elsewhere, 'enterprise-host.sqlite'), join(data, 'enterprise-host.sqlite'));
+    try {
+      assert.deepEqual(failures(await runHostPreflight(durableEnv(data))), ['STORAGE_NOT_WRITABLE']);
+    } finally {
+      chmodSync(elsewhere, 0o700);
+    }
+  });
+
   it('refuses a state directory this process cannot write', { skip: process.getuid?.() === 0 ? 'root can write anywhere' : false }, async () => {
     const data = scratch();
     const locked = join(data, 'locked');

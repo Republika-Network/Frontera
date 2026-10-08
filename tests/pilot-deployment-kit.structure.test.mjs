@@ -24,21 +24,26 @@ const DOCKERIGNORE = read('.dockerignore');
 const GUIDE = read('docs/deployment/PILOT_DEPLOYMENT.md');
 const PKG = json('package.json');
 
-/** `KEY: value` lines of one service's `environment:` block. */
-function serviceEnvironment(service) {
+/**
+ * `KEY: value` lines of one block's `environment:` — a service (`authority-witness`)
+ * or the top-level `x-frontera-host` anchor the Host and its config check share.
+ */
+function serviceEnvironment(block) {
   const lines = COMPOSE.split('\n');
-  const start = lines.findIndex((line) => line === `  ${service}:`);
-  assert.ok(start >= 0, `service ${service}`);
+  const topLevel = block.startsWith('x-');
+  const start = lines.findIndex((line) => (topLevel ? line.startsWith(`${block}:`) : line === `  ${block}:`));
+  assert.ok(start >= 0, `block ${block}`);
+  const indent = topLevel ? 2 : 4;
   const out = {};
   let inEnvironment = false;
   for (const line of lines.slice(start + 1)) {
-    if (/^ {2}\S/.test(line) || /^\S/.test(line)) break;
-    if (/^ {4}environment:\s*$/.test(line)) {
+    if (/^\S/.test(line) || (!topLevel && /^ {2}\S/.test(line))) break;
+    if (new RegExp(`^ {${indent}}environment:\\s*$`).test(line)) {
       inEnvironment = true;
       continue;
     }
-    if (inEnvironment && /^ {4}\S/.test(line)) inEnvironment = false;
-    const match = inEnvironment ? /^ {6}([A-Z_][A-Z0-9_]*): (.*)$/.exec(line) : null;
+    if (inEnvironment && new RegExp(`^ {${indent}}\\S`).test(line)) inEnvironment = false;
+    const match = inEnvironment ? new RegExp(`^ {${indent + 2}}([A-Z_][A-Z0-9_]*): (.*)$`).exec(line) : null;
     if (match) out[match[1]] = match[2].replace(/^"(.*)"$/, '$1');
   }
   return out;
@@ -57,18 +62,19 @@ function kitFiles() {
 
 describe('PROD-03-03 pilot deployment kit', () => {
   it('the Compose kit mounts every store the Host can compose, under one state root, at the PROD-02 registry filenames', () => {
-    const environment = serviceEnvironment('frontera');
+    const environment = serviceEnvironment('x-frontera-host');
     const expected = storeEnvironmentFor('/var/lib/frontera');
     const configured = Object.fromEntries(Object.entries(environment).filter(([name]) => name.endsWith('_SQLITE_PATH')));
     assert.deepEqual(configured, expected);
     assert.equal(Object.keys(expected).length, STORE_DEFINITIONS.length);
-    assert.match(COMPOSE, /^ {6}- frontera-state:\/var\/lib\/frontera$/m, 'the state root is a named volume');
+    assert.match(COMPOSE, /^ {4}- frontera-state:\/var\/lib\/frontera$/m, 'the state root is a named volume');
+    for (const service of ['frontera', 'config-check']) assert.match(COMPOSE, new RegExp(`^  ${service}:\\n(?:    #.*\\n)*    <<: \\*frontera-host$`, 'm'), `${service} uses the shared Host configuration`);
     assert.match(COMPOSE, /^ {6}- frontera-witness:\/var\/lib\/frontera-witness$/m, "the witness's state is a different volume");
     assert.equal(serviceEnvironment('authority-witness').FRONTERA_REFERENCE_WITNESS_DB.startsWith('/var/lib/frontera-witness/'), true, 'the witness database is never in the Host state root');
   });
 
   it('the kit fixes the secure profile; .env cannot weaken it', () => {
-    const environment = serviceEnvironment('frontera');
+    const environment = serviceEnvironment('x-frontera-host');
     for (const [name, value] of Object.entries({
       AOC_ENTERPRISE_ENV: 'production',
       AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
@@ -181,8 +187,15 @@ describe('PROD-03-03 pilot deployment kit', () => {
     assert.ok(blocks.length > 0);
     for (const [, script] of blocks.matchAll(/node (scripts\/[A-Za-z0-9/_.-]+\.mjs)/g)) assert.ok(existsSync(join(ROOT, script)), script);
     for (const [, name] of blocks.matchAll(/npm run ([a-z0-9:-]+)/g)) assert.ok(PKG.scripts[name] !== undefined, `npm run ${name}`);
-    for (const [, service] of blocks.matchAll(/docker compose (?:run --rm(?: -T)?|logs|stop|start|restart)(?: [a-z-]+)* (frontera|authority-witness|network)\b/g)) {
-      assert.match(COMPOSE, new RegExp(`^  ${service}:$`, 'm'), service);
+    const services = [...blocks.matchAll(/docker compose (?:run --rm(?: -T)?|logs|stop|start|restart) ([a-z][a-z-]*)/g)].map((match) => match[1]);
+    assert.ok(services.includes('config-check') && services.includes('witness-init'));
+    for (const service of services) assert.match(COMPOSE, new RegExp(`^  ${service}:$`, 'm'), service);
+    // The tools run with no network and start nothing else.
+    for (const tool of ['config-check', 'witness-init']) {
+      const block = COMPOSE.slice(COMPOSE.indexOf(`  ${tool}:`)).split(/\n(?=  [a-z])/)[0];
+      assert.match(block, /network_mode: none/, tool);
+      assert.match(block, /profiles: \["tools"\]/, tool);
+      assert.equal(/depends_on/.test(block), false, tool);
     }
     for (const [, path] of blocks.matchAll(/http:\/\/127\.0\.0\.1:8787(\/[a-z]+)/g)) {
       assert.ok(['/live', '/ready', '/health', '/version'].includes(path), path);
