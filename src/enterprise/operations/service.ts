@@ -87,6 +87,8 @@ export interface OperatorOperationsDependencies {
   readonly inFlight?: (executionId: string) => boolean;
   /** PROD-03-02 — the operator resolution command (`resolution.ts`), when this Host composes operator attestation. Absent: resolution is refused, and nothing is resolvable. */
   readonly resolution?: OperatorResolutionCommand;
+  /** PROD-03-02 hardening — whether P12 holds P7's reconciliation capability here. Absent or false: no incomplete capacity reconciliation is offered for completion (`not-composed` never changes). */
+  readonly capacityReconciliation?: boolean;
 }
 
 const CURSOR = /^[A-Za-z0-9._:=-]{1,512}$/;
@@ -139,12 +141,12 @@ function failureCodeOf(error: unknown): string {
 }
 
 export function createOperatorOperationsService(dependencies: OperatorOperationsDependencies): OperatorOperationsService {
-  const { authenticator, organizationId, governanceRecords, traces, now, resolution, inFlight } = dependencies;
-  const viewOptions = Object.freeze({ attestation: resolution !== undefined });
+  const { authenticator, organizationId, governanceRecords, traces, now, resolution, inFlight, capacityReconciliation } = dependencies;
+  const viewOptions = Object.freeze({ attestation: resolution !== undefined, capacityReconciliation: capacityReconciliation === true });
 
   /** PROD-03-02: a claim whose provider call is live in this process is not offered for resolution (the command refuses it too). */
   function withLiveness(view: OperationalExecutionView): OperationalExecutionView {
-    return view.resolvable && view.executionId !== null && inFlight?.(view.executionId) === true ? { ...view, resolvable: false } : view;
+    return (view.resolvable || view.capacityReconcilable) && view.executionId !== null && inFlight?.(view.executionId) === true ? { ...view, resolvable: false, capacityReconcilable: false } : view;
   }
 
   if (authenticator.organizationId !== organizationId) throw new Error('createOperatorOperationsService: the authenticator serves another organization.');

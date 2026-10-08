@@ -143,6 +143,15 @@ export interface OperationalExecutionView {
    * the resolution command re-reads and decides for itself.
    */
   readonly resolvable: boolean;
+  /**
+   * PROD-03-02 hardening — an operator-attested resolution stands, its trace
+   * verifies, the execution's P7 reservation holds no reconciliation yet, and
+   * this Host composes capacity reconciliation: submitting the identical
+   * resolution again re-runs only P12's capacity step (`pending` → `adjusted`).
+   * `false` for `not-composed` (nothing can change) and for a contradiction
+   * (investigated, never re-run). A hint; the command decides for itself.
+   */
+  readonly capacityReconcilable: boolean;
 }
 
 export interface OperationalExecutionPage {
@@ -256,6 +265,8 @@ export interface DisclosedOperationalView {
   readonly resolution?: OperationalExecutionView['resolution'];
   /** PROD-03-02 — only where both the execution and the authority stages are disclosed (it reads the claim and the binding). */
   readonly resolvable?: boolean;
+  /** PROD-03-02 hardening — disclosed exactly where `resolvable` is. */
+  readonly capacityReconcilable?: boolean;
   readonly hidden: readonly OperationalViewSection[];
 }
 

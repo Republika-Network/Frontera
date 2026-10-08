@@ -422,6 +422,8 @@ export interface OperationalExecution {
   readonly resolution?: OperationalResolution | null;
   /** PROD-03-02 — whether the Host would accept an operator resolution of this execution now, as far as this read shows. */
   readonly resolvable?: boolean;
+  /** PROD-03-02 hardening — whether re-submitting the identical attested resolution would complete its capacity reconciliation (P12 `pending`). */
+  readonly capacityReconcilable?: boolean;
 }
 
 /** PROD-03-02 — how an uncertain execution was closed. `operator-attestation` is an operator's recorded attestation, never a provider confirmation. */
@@ -458,6 +460,7 @@ export interface DisclosedOperational {
   readonly outcome?: OperationalExecution['outcome'];
   readonly resolution?: OperationalResolution | null;
   readonly resolvable?: boolean;
+  readonly capacityReconcilable?: boolean;
   readonly hidden: readonly string[];
 }
 
@@ -709,7 +712,8 @@ export const shapes = {
     operational.outcome(entry['outcome']) &&
     operational.trace(entry['trace']) &&
     absentOr(entry['resolution'], operational.resolution) &&
-    absentOr(entry['resolvable'], isBoolean),
+    absentOr(entry['resolvable'], isBoolean) &&
+    absentOr(entry['capacityReconcilable'], isBoolean),
   disclosedOperational: (entry: unknown): entry is DisclosedOperational =>
     isObject(entry) &&
     operational.identity(entry) &&
@@ -725,7 +729,8 @@ export const shapes = {
     absentOr(entry['execution'], operational.execution) &&
     absentOr(entry['outcome'], operational.outcome) &&
     absentOr(entry['resolution'], operational.resolution) &&
-    absentOr(entry['resolvable'], isBoolean),
+    absentOr(entry['resolvable'], isBoolean) &&
+    absentOr(entry['capacityReconcilable'], isBoolean),
   executions: (body: unknown): body is ExecutionsPage =>
     isObject(body) && isArrayOf(body['executions'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])),
   attention: (body: unknown): body is AttentionPage =>

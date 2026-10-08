@@ -623,19 +623,24 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     };
   }
 
-  // -- P7 ↔ P12: a reservation reconciliation must be for this execution's resolution ----
-  // The same answer for the same resolution digest, and a terminal history the
-  // ledger's own rule agrees with. A contradiction leaves capacity consumed and is
-  // never repaired; the trace states it rather than verifying over it.
+  // -- P7 ↔ P12: the capacity ledger must agree with this execution's resolution ----
+  // A reconciliation row carries the same answer for the same resolution digest;
+  // and, row or not, the ledger's own terminal history must agree with the
+  // resolution (P7's rule). A contradiction leaves capacity consumed and is never
+  // repaired; the trace states it rather than verifying over it.
   const reconciled = reservationView?.resolution;
-  if (reconciled !== undefined && executionId !== undefined) {
-    const resolved = resolutionState?.resolution;
+  const resolvedForCapacity = resolutionState?.resolution;
+  if (executionId !== undefined && reservationView !== undefined && (reconciled !== undefined || resolvedForCapacity !== undefined)) {
     const known = sources.resolutions !== undefined && resolution.presence !== 'unreadable';
     const basis = terminal !== undefined ? 'initial-observation-unconfirmed' : 'no-initial-observation';
     check(
       'correlation.reservation-reconciliation',
       'correlation',
-      !known ? 'n/a' : resolved !== undefined && reconciled.resolutionDigest === resolved.resolutionDigest && reconciled.resolution === resolved.certainty && exerciseReservationResolutionConsistent(reservationView?.terminal, reconciled.resolution, basis),
+      !known
+        ? 'n/a'
+        : resolvedForCapacity !== undefined &&
+            (reconciled === undefined || (reconciled.resolutionDigest === resolvedForCapacity.resolutionDigest && reconciled.resolution === resolvedForCapacity.certainty)) &&
+            exerciseReservationResolutionConsistent(reservationView.terminal, resolvedForCapacity.certainty, basis),
     );
   }
 

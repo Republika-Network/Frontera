@@ -330,7 +330,7 @@ describe('PROD-03-02 hardening D — the identical resolution is recoverable fro
     resolution: { presence: 'recorded', resolution: { certainty: 'confirmed-not-completed', failure: 'PROVIDER_UNAVAILABLE', attestedBy, resolutionDigest: 'sha256:p12' } },
     reservation: { presence: 'recorded', state: 'settled' },
   });
-  const verified = (stages: Record<string, unknown>): OperationalTrace => traceView(stages, { resolvable: false });
+  const verified = (stages: Record<string, unknown>, capacityReconcilable = true): OperationalTrace => traceView(stages, { resolvable: false, capacityReconcilable });
   const other: OrganizationContext = { ...context, operator: { ...context.operator, operatorId: 'ops-other' } };
   const observer: OrganizationContext = { ...context, operator: { ...context.operator, permissions: ['operations.read', 'trace.read'] } };
 
@@ -341,6 +341,7 @@ describe('PROD-03-02 hardening D — the identical resolution is recoverable fro
     assert.equal(identicalResolutionOf(verified(unreconciled('operator:ops-admin')), observer), undefined, 'operations.resolve only');
     assert.equal(identicalResolutionOf({ ...verified(unreconciled('operator:ops-admin')), verification: { ...verified({}).verification, verified: false } }, context), undefined, 'a contradiction is investigated, never re-run');
     assert.equal(identicalResolutionOf(verified(unreconciled('operator:ops-admin', { presence: 'recorded', certainty: 'confirmed-completed' })), context), undefined, 'no basis an operator could have reviewed');
+    assert.equal(identicalResolutionOf(verified(unreconciled('operator:ops-admin'), false), context), undefined, 'the Host says it cannot complete it (not-composed, or a contradiction)');
   });
 
   it('the trace page offers it inside the capacity warning — and explains, without a form, to anyone else', () => {
@@ -356,6 +357,13 @@ describe('PROD-03-02 hardening D — the identical resolution is recoverable fro
     assert.match(theirs, /data-testid="trace-capacity-unreconciled"/);
     assert.doesNotMatch(theirs, /capacity-reconcile-again-form|action="\/traces\/[^"]*\/resolution"/);
     assert.match(theirs, /Only the operator who recorded this resolution/);
+  });
+
+  it('where the Host says submitting again cannot complete it (`not-composed`), the warning stays and no form is offered', () => {
+    const html = renderToStaticMarkup(<TracePage context={context} csrfToken="t" view={verified(unreconciled('operator:ops-admin'), false)} />);
+    assert.match(html, /data-testid="trace-capacity-unreconciled"/);
+    assert.doesNotMatch(html, /capacity-reconcile-again-form/);
+    assert.match(html, /this Host has no capacity reconciliation, or the capacity ledger must be investigated/);
   });
 
   it('after navigating away, the trace’s form re-submits the identical resolution to the Host', async () => {

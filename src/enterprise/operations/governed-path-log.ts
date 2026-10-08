@@ -133,15 +133,19 @@ export function createOperatorResolutionLog(logger: EnterpriseLogger): OperatorR
       logger.info(OPERATOR_RESOLUTION_LOG_EVENTS.requested, base(ref));
     },
     recorded(ref) {
-      logger.info(OPERATOR_RESOLUTION_LOG_EVENTS.recorded, {
+      // The resolution stands either way. A capacity ledger that conflicts with it, or contradicts it, is an integrity
+      // incident (the trace fails its P7 ↔ P12 check and the execution is under attention); `pending` and
+      // `not-composed` leave capacity conservatively consumed and are not.
+      const contradicted = ref.capacity === 'conflict' || ref.capacity === 'inconsistent';
+      (contradicted ? logger.warn : logger.info).call(logger, OPERATOR_RESOLUTION_LOG_EVENTS.recorded, {
         ...base(ref),
         requestId: ref.requestId,
         evaluationId: ref.evaluationId,
         outcome: ref.result,
         resolutionDigest: ref.resolutionDigest,
         capacity: ref.capacity,
-        operationalState: ref.certainty === 'confirmed-completed' ? 'executed-succeeded' : 'executed-failed',
-        attentionRequired: false,
+        operationalState: contradicted ? 'trace-inconsistent' : ref.certainty === 'confirmed-completed' ? 'executed-succeeded' : 'executed-failed',
+        attentionRequired: contradicted,
       });
     },
     rejected(ref) {

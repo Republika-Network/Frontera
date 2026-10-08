@@ -29,6 +29,7 @@ import type { KernelAuthorityProvisioningService } from '../kernel-authority/pro
 import { createSqliteKernelAuthorityStore } from '../kernel-authority/sqlite-kernel-authority-store.js';
 import { EXECUTION_RESOLUTION_MODULE_ID } from '../modules/execution-resolution-module.js';
 import { createOperatorResolutionLog, OPERATOR_RESOLUTION_LOG_EVENTS } from '../operations/governed-path-log.js';
+import { operationalViewOf } from '../operations/classification.js';
 import { createOperatorResolutionCommand } from '../operations/resolution.js';
 import type { EnterpriseOperatorPrincipal, OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
 import { createEnterpriseLogger } from '../telemetry/enterprise-logger.js';
@@ -600,5 +601,74 @@ describe('PROD-03-02 hardening D — the ASSURE-01 reservation stage states the 
     assert.equal(compareDisclosedTraces(at(before), at(now)).stages.reservation, 'progressed', 'the digest is a later fact, stated with the resolution');
     assert.equal(compareDisclosedTraces(at(now), at({ ...before, resolutionDigest: 'sha256:b' })).stages.reservation, 'contradicted');
     assert.equal(compareDisclosedTraces(at(now), at(before)).stages.reservation, 'contradicted', 'a stated digest never disappears');
+  });
+});
+
+// -- Second fresh review of #172: Host-stated recoverability and attention-aware logging ---------------------
+
+describe('PROD-03-02 hardening D — the Host states when re-submitting completes capacity, and logs contradictions as attention', () => {
+  it('capacityReconcilable: only for an attested, verified resolution whose reservation holds no reconciliation, on a Host that can reconcile', async () => {
+    const host = await compose({ spineRequired: true, authorities: [createOperatorAttestationAuthority()], select: selectOperatorAttestation, operators: true });
+    const provisioning = host.enterprise.kernelAuthorityProvisioning;
+    assert.ok(provisioning !== undefined);
+    await provision(provisioning);
+    const paid = await pay(host, 'reconcilable-unconfirmed');
+    const operations = host.enterprise.operatorOperations;
+    assert.ok(operations !== undefined);
+    const before = (await operations.listExecutions(bearer(OBSERVER_KEY), { requestId: paid.requestId ?? '' })).executions[0];
+    assert.equal(before?.capacityReconcilable, false, 'nothing resolved yet');
+    await operations.resolveExecution(bearer(ADMIN_KEY), paid.executionId ?? '', async () => ({ resolution: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED', observedOutcome: 'unconfirmed' }));
+    const after = (await operations.listExecutions(bearer(OBSERVER_KEY), { requestId: paid.requestId ?? '' })).executions[0];
+    assert.equal(after?.classification, 'executed-failed');
+    assert.equal(after?.capacityReconcilable, false, 'adjusted: the reservation holds the reconciliation, nothing to complete');
+  });
+
+  it('the pure rule: offered for a missing reconciliation where capacity reconciliation is composed; never for not-composed or a contradiction', () => {
+    const view = (reservation: Record<string, unknown>, verified: boolean) =>
+      ({
+        traceVersion: 'aoc.authority-trace.v1',
+        requestId: 'aoc.gar:1',
+        evaluationId: 'e',
+        decisionId: 'd',
+        executionId: EXECUTION,
+        organizationId: ORG,
+        path: 'allowed',
+        finalState: 'resolved-confirmed-not-completed',
+        stages: {
+          request: { presence: 'recorded' },
+          decision: { presence: 'recorded', status: 'allowed', reasonCodes: [] },
+          approval: { presence: 'not-applicable', records: [] },
+          authority: { presence: 'recorded', grants: [{ grantId: 'g', issuedAt: T0 }] },
+          execution: { presence: 'recorded', claim: { presence: 'recorded', claimedAt: T0 } },
+          outcome: { presence: 'unresolved' },
+          reservation,
+          resolution: { presence: 'recorded', resolution: { authorityId: 'frontera.operator-attestation', certainty: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED', attestedBy: OPERATOR, resolvedAt: T0, resolutionDigest: 'sha256:r' } },
+        },
+        verification: { verified },
+      }) as never;
+    const summary = { requestId: 'aoc.gar:1', evaluationId: 'e', decisionId: 'd', status: 'allowed', reasonCodes: [], evaluatedAt: T0, persistedAt: T0 } as never;
+    const missing = { presence: 'recorded', state: 'settled', terminalReason: 'execution-unconfirmed' };
+    const classify = (reservation: Record<string, unknown>, options: { attestation?: boolean; capacityReconciliation?: boolean }) => operationalViewOf(view(reservation, true), summary, options).capacityReconcilable;
+    assert.equal(classify(missing, { attestation: true, capacityReconciliation: true }), true);
+    assert.equal(classify(missing, { attestation: true, capacityReconciliation: false }), false, 'not-composed never changes');
+    assert.equal(classify({ ...missing, resolution: 'confirmed-not-completed', resolutionDigest: 'sha256:r' }, { attestation: true, capacityReconciliation: true }), false, 'already reconciled');
+    assert.equal(classify(missing, { attestation: false, capacityReconciliation: true }), false, 'no attestation, no replay');
+  });
+
+  it('the resolution log marks `conflict` / `inconsistent` as attention (warn); `pending` / `not-composed` stay informational', () => {
+    for (const [capacity, level, attention] of [
+      ['adjusted', 'info', false],
+      ['pending', 'info', false],
+      ['not-composed', 'info', false],
+      ['conflict', 'warn', true],
+      ['inconsistent', 'warn', true],
+    ] as const) {
+      const lines: Record<string, unknown>[] = [];
+      const log = createOperatorResolutionLog(createEnterpriseLogger('debug', { write: (line) => lines.push(JSON.parse(line) as Record<string, unknown>) }));
+      log.recorded({ executionId: EXECUTION, operatorRef: OPERATOR, certainty: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED', requestId: 'aoc.gar:1', evaluationId: 'e', result: 'recorded', resolutionDigest: 'sha256:r', capacity });
+      assert.equal(lines[0]?.['level'], level, capacity);
+      assert.equal(lines[0]?.['attentionRequired'], attention, capacity);
+      assert.equal(lines[0]?.['operationalState'], attention ? 'trace-inconsistent' : 'executed-failed', capacity);
+    }
   });
 });

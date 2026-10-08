@@ -2685,6 +2685,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
                   record: (request) => executionReconciliation.recordOperatorResolution(request),
                   log: createOperatorResolutionLog(logger),
                 }),
+                capacityReconciliation: exerciseReconciliation !== undefined,
               }
             : {}),
         });

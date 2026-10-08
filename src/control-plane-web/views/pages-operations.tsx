@@ -801,13 +801,14 @@ function ReconcileAgainForm({ csrfToken, requestId, submitted }: { readonly csrf
 /**
  * PROD-03-02 — the identical resolution recoverable from the durable trace, so
  * an incomplete capacity reconciliation is not lost with the page that first
- * reported it. Only for a trace that verifies (a contradiction is
- * investigated, never re-run), for the operator who attested it (an identical
- * replay is the same operator's), and only for the basis the trace states.
- * The Host checks all of it again.
+ * reported it. Only where the Host states it can complete it
+ * (`capacityReconcilable`: never for `not-composed`, never for a
+ * contradiction), for a trace that verifies, for the operator who attested it
+ * (an identical replay is the same operator's), and only for the basis the
+ * trace states. The Host checks all of it again.
  */
 export function identicalResolutionOf(view: OperationalTrace, context: OrganizationContext): IdenticalResolution | undefined {
-  if (!view.verification.verified || !context.operator.permissions.includes('operations.resolve')) return undefined;
+  if (view.operational.capacityReconcilable !== true || !view.verification.verified || !context.operator.permissions.includes('operations.resolve')) return undefined;
   const resolved = asRecord(asRecord(view.trace.stages['resolution'])?.['resolution']);
   const outcome = asRecord(view.trace.stages['outcome']);
   if (resolved === undefined || outcome === undefined || resolved['attestedBy'] !== `operator:${context.operator.operatorId}`) return undefined;
@@ -823,5 +824,6 @@ export function identicalResolutionOf(view: OperationalTrace, context: Organizat
 function CapacityReconcileAgain({ context, csrfToken, view }: { readonly context: OrganizationContext; readonly csrfToken: string; readonly view: OperationalTrace }): React.ReactElement | null {
   const submitted = identicalResolutionOf(view, context);
   if (submitted !== undefined) return <ReconcileAgainForm csrfToken={csrfToken} requestId={view.requestId} submitted={submitted} />;
-  return <p className="help">Only the operator who recorded this resolution can submit it again to complete the capacity reconciliation, and only while its trace verifies.</p>;
+  if (view.operational.capacityReconcilable !== true) return <p className="help">Submitting the resolution again cannot complete it here: this Host has no capacity reconciliation, or the capacity ledger must be investigated.</p>;
+  return <p className="help">Only the operator who recorded this resolution can submit it again to complete the capacity reconciliation.</p>;
 }

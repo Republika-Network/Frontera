@@ -123,6 +123,8 @@ function executedWorld(): World {
 function resolvedWorld(): World {
   const world = executedWorld();
   world.terminal = { ...world.terminal, observation: { kind: 'provider', certainty: 'unconfirmed', adapterId: 'adapter-unit', observedAt: T } };
+  // An unconfirmed observation is only ever settled `execution-unconfirmed` by P7 (PROD-03-02 hardening checks it).
+  world.reservation = { reservation: { executionId: EXECUTION, boundedGrantId: GRANT }, state: 'settled', terminal: { kind: 'settled', reason: 'execution-unconfirmed' } };
   world.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'execution-unconfirmed@adapter-unit', digest: OBSERVATION_DIGEST });
   world.references.push(ref(executionResolutionReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'resolved:confirmed-completed', digest: RESOLUTION_DIGEST }));
   (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-unconfirmed', reasonCodes: [], adapterId: 'adapter-unit', outcomeRecorded: true };
@@ -780,6 +782,18 @@ describe('ASSURE-01 trace builder — PROD-03-02 hardening: a reservation reconc
 
   it('a terminal history P7’s own rule contradicts (released beside an unconfirmed observation resolved completed) fails verification', async () => {
     assert.deepEqual(failed((await build(reconciledWorld({}, { kind: 'released', reason: 'execution-failed' }))).verification), [RECONCILED]);
+  });
+
+  it('with no reconciliation row, a terminal history that contradicts the resolution still fails verification (P7 `inconsistent`)', async () => {
+    const world = resolvedWorld();
+    world.reservation = { reservation: { executionId: EXECUTION, boundedGrantId: GRANT }, state: 'released', terminal: { kind: 'released', reason: 'execution-failed' } };
+    assert.deepEqual(failed((await build(world)).verification), [RECONCILED]);
+  });
+
+  it('with no reconciliation row and an agreeing history (P7 `pending` / `not-composed`) it passes: missing is not contradicted', async () => {
+    const built = await build(resolvedWorld());
+    assert.deepEqual(failed(built.verification), []);
+    assert.equal(built.verification.checks.find((entry) => entry.check === 'correlation.reservation-reconciliation')?.status, 'pass');
   });
 
   it('without a composed resolution source it is not applicable, never a pass', async () => {
