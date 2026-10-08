@@ -54,12 +54,23 @@ export async function createEnterpriseServer(options: CreateEnterpriseOptions = 
       // owns a composed Enterprise whose stores must be closed.
       closing ??= (async () => {
         if (server.listening) {
-          await new Promise<void>((resolvePromise, rejectPromise) => {
-            server.close((error) => (error ? rejectPromise(error) : resolvePromise()));
-            // Stop accepting first, then drop idle keep-alive sockets so close
-            // does not wait on a client that will never send again.
-            server.closeIdleConnections();
-          });
+          // PROD-03-03: the drain is bounded by the configured shutdown timeout
+          // (30 s by default, below the pilot kit's 45 s stop grace period).
+          // A request still active then — a slow upload, a stalled client — is
+          // cut, so the stores below are always closed by this process rather
+          // than by a SIGKILL.
+          const drainDeadline = setTimeout(() => server.closeAllConnections(), enterprise.configuration.lifecycle.shutdownTimeoutMs);
+          drainDeadline.unref();
+          try {
+            await new Promise<void>((resolvePromise, rejectPromise) => {
+              server.close((error) => (error ? rejectPromise(error) : resolvePromise()));
+              // Stop accepting first, then drop idle keep-alive sockets so close
+              // does not wait on a client that will never send again.
+              server.closeIdleConnections();
+            });
+          } finally {
+            clearTimeout(drainDeadline);
+          }
         }
         await enterprise.close();
       })();

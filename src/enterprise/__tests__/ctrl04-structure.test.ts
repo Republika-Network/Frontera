@@ -211,7 +211,7 @@ describe('CTRL-04 structure — the HTTP surface', () => {
       ['^\\/api\\/admin\\/approvals$', '^\\/api\\/admin\\/approvals\\/([^/]+)$', '^\\/api\\/admin\\/approvals\\/([^/]+)\\/(approve|reject|request-changes|escalate|revoke)$'],
     );
     // 49 (CTRL-03) + 2 reads + 5 verdict paths = 56; + 2 ASSURE-01 trace reads = 58; + 5 PROD-03-01 operational reads = 63;
-    // + 1 PROD-03-02 operator resolution = 64.
-    assert.equal(surface.endpointCount, 64);
+    // + 1 PROD-03-02 operator resolution = 64; + 1 PROD-03-03 release identity (GET /version) = 65.
+    assert.equal(surface.endpointCount, 65);
   });
 });

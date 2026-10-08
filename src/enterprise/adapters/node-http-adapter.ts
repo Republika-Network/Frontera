@@ -29,6 +29,7 @@ import {
 } from '../api/assurance-contract.js';
 import { GOVERNANCE_EVALUATE_AMOUNT_LOCATION, GOVERNED_ACTION_AMOUNT_LOCATION, parseJsonWithExactMonetaryNumber } from '../api/exact-monetary-json.js';
 import { ADMIN_MAX_BODY_BYTES } from '../authority-administration/contracts.js';
+import { currentReleaseIdentity } from '../host/release-identity.js';
 
 /** P9: v1 monetary JSON numbers are read from their exact source text, never through IEEE-754. */
 const parseGovernedActionBody = (text: string): unknown => parseJsonWithExactMonetaryNumber(text, GOVERNED_ACTION_AMOUNT_LOCATION);
@@ -173,6 +174,14 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
             writeJson(res, ready ? 200 : 503, { ready, lifecycleState: enterprise.lifecycleState(), status: report.status });
           })
           .catch(() => writeJson(res, 503, { ready: false, lifecycleState: enterprise.lifecycleState() }));
+        return;
+      }
+
+      // PROD-03-03: the release identity recorded when this artifact was built
+      // (`host/release-identity.ts`). Public build metadata only, like the
+      // probes above: no configuration, path, credential or posture.
+      if (method === 'GET' && url.pathname === '/version') {
+        writeJson(res, 200, currentReleaseIdentity());
         return;
       }
 

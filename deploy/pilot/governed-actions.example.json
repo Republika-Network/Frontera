@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "trustDomainId": "trust-domain-pilot",
+  "grantLifetimeSeconds": 300,
+  "customerPrincipals": [],
+  "operators": [
+    { "operatorId": "ops-admin", "role": "organization-administrator", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_ADMIN" },
+    { "operatorId": "ops-observer", "role": "observer", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_OBSERVER" }
+  ],
+  "monetary": {
+    "assets": [{ "assetId": "USD", "scale": 2 }],
+    "financialActions": []
+  },
+  "genericHttpAdapters": [
+    {
+      "adapterId": "provider.primary",
+      "origin": "https://provider.example.com",
+      "method": "POST",
+      "path": [{ "kind": "literal", "value": "actions" }],
+      "body": {
+        "kind": "json-object",
+        "fields": {
+          "action": { "kind": "source", "source": "action" },
+          "resource": { "kind": "source", "source": "resource" },
+          "executionId": { "kind": "source", "source": "correlation.executionId" }
+        }
+      },
+      "credential": { "kind": "bearer", "tokenEnv": "FRONTERA_PROVIDER_TOKEN" },
+      "timeoutMs": 10000
+    }
+  ],
+  "routes": [{ "action": "record.update", "adapterId": "provider.primary" }]
+}

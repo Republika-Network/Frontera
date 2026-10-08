@@ -16,7 +16,16 @@ export async function buildReleaseManifest() {
 
   const sha256 = (buffer) => `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
   const fileChecksum = (path) => sha256(readFileSync(resolve(root, path)));
-  const git = (args) => execSync(`git ${args}`, { cwd: root, encoding: 'utf8' }).trim();
+  // Point-of-generation metadata only (verify-release-manifest.mjs ignores the
+  // `generated` block). A tree without git -- the container build context
+  // excludes `.git` -- records `unknown` rather than failing or guessing.
+  const git = (args) => {
+    try {
+      return execSync(`git ${args}`, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return 'unknown';
+    }
+  };
 
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 

@@ -76,9 +76,19 @@ Conventions used below:
 | `GET /health` | Full health report (version, persistence, providers, configuration checksum). | `200` with `EnterpriseHealthReport` when `healthy`/`degraded` | `503` with the same report body when `unhealthy` |
 | `GET /live` | Liveness probe. | `200` `{ "live": true, "lifecycleState": "..." }` | `503` `{ "live": false, "lifecycleState": "..." }` |
 | `GET /ready` | Readiness probe. | `200` `{ "ready": true, "lifecycleState": "..." }` | `503` `{ "ready": false, "lifecycleState": "..." }` |
+| `GET /version` | Release identity of the running artifact (PROD-03-03). | `200` with the `frontera.release-identity.v1` object: `product`, `package`, `version`, `commit`, `release`, `build`, `api`, `runtimeVersions`, `storeSchemaVersions`, `canonicalizationVersion`, `node` | — |
 
 No request body, no authentication, no idempotency semantics. Note that
 `/health`'s 503 carries the health report itself, not an error envelope.
+
+`GET /version` (added by PROD-03-03, 64 → **65** endpoints) is always
+mounted. Its body is fixed when the artifact is built
+(`dist/release-identity.json`, written by
+`scripts/release/write-release-identity.mjs`); no environment variable sets
+it. A build that recorded no identity answers `build: "development"`,
+`commit: "unknown"` and `release: "<version>+development"` rather than
+inventing one. It carries public build metadata only — no configuration,
+posture, path or credential. See `docs/deployment/PILOT_DEPLOYMENT.md`.
 
 ### 2.2 Governance
 
@@ -556,7 +566,11 @@ CTRL-02 added eleven endpoints (36 → **47**); CTRL-03 added two **read-only**
 endpoints for the web control plane (47 → **49**); CTRL-04 added seven
 approval endpoints (49 → **56**), mounted only when CORE-05 approvals are
 composed as well. No existing route, field, status or code changed.
-(ASSURE-01 then added the two always-mounted trace reads of §2.3: 56 → **58**.)
+(ASSURE-01 then added the two always-mounted trace reads of §2.3: 56 → **58**.
+PROD-03-01 added five operational reads, mounted when operators and governed
+actions are both composed: 58 → **63**. PROD-03-02 added the operator
+resolution command: 63 → **64**. PROD-03-03 added `GET /version`, §2.1:
+64 → **65**.)
 
 | Method | Path | Added by |
 | --- | --- | --- |
@@ -580,6 +594,12 @@ composed as well. No existing route, field, status or code changed.
 | `POST` | `/api/admin/approvals/{approvalRequestId}/request-changes` | CTRL-04 |
 | `POST` | `/api/admin/approvals/{approvalRequestId}/escalate` | CTRL-04 |
 | `POST` | `/api/admin/approvals/{approvalRequestId}/revoke` | CTRL-04 |
+| `GET` | `/api/admin/operations/executions` | PROD-03-01 |
+| `GET` | `/api/admin/operations/attention` | PROD-03-01 |
+| `GET` | `/api/admin/operations/traces/{requestId}` | PROD-03-01 |
+| `GET` | `/api/admin/operations/metrics` | PROD-03-01 |
+| `GET` | `/api/admin/operations/health` | PROD-03-01 |
+| `POST` | `/api/admin/operations/executions/{executionId}/resolution` | PROD-03-02 |
 
 An **operator** Bearer credential is always required (a CTRL-01
 administrator credential reaches only the CTRL-01 routes of §2.7; ordinary and

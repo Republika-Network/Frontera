@@ -50,6 +50,10 @@ export interface EnterpriseLogContext {
   readonly certainty?: string;
   readonly resolutionDigest?: string;
   readonly capacity?: string;
+  /** PROD-03-03 startup lifecycle fields: the artifact's public release identity (`host/release-identity.ts`) and the closed startup phase. Never a path, a configuration value or a credential. */
+  readonly release?: string;
+  readonly build?: string;
+  readonly phase?: string;
 }
 
 export type EnterpriseLogLevel = 'debug' | 'info' | 'warn' | 'error';

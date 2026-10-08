@@ -2,8 +2,8 @@
   "name": "@aoc-enterprise/runtime",
   "version": "1.6.0",
   "generated": {
-    "commit": "f471f68dc2804dccc9b2cd60106b04a4abc9056c",
-    "branch": "feat/p8-canonical-event-stream",
+    "commit": "48bebb0a2f6b7cb17485bb04fd1fe395948611c3",
+    "branch": "feat/prod-03-03-pilot-deployment-kit",
     "node": "v22.23.1"
   },
   "runtimeVersions": {
@@ -34,7 +34,7 @@
   "api": {
     "surface": "aoc-enterprise-host-http.v1",
     "documentation": "docs/enterprise/API_STABILITY_V1.md",
-    "endpointCount": 28
+    "endpointCount": 65
   },
   "compatibilityMatrix": {
     "node": ">=22",
@@ -45,7 +45,7 @@
   "artifacts": [
     {
       "path": "./dist/src/enterprise/index.js",
-      "checksum": "sha256:47801a7a95e18e4375a8147483b299b21bd75f76e20d6b20a4e831ff3aba4ee7"
+      "checksum": "sha256:89076b54e8156c124d458bbc7361b25f0921d99c296671df6c8e58d12ff7daca"
     },
     {
       "path": "./dist/src/index.js",
@@ -90,23 +90,23 @@
     "files": [
       {
         "path": "docs/operations/AOC_ENTERPRISE_BACKUP_V1.md",
-        "checksum": "sha256:facdee21807732308de99b1c2bec0b77433cdb3692e6766795a751421c855a3d"
+        "checksum": "sha256:cad8dc88aed0998cdc6cf9a31f3370481dcbbaddaa6dde9b39c778267810d5ec"
       },
       {
         "path": "docs/operations/AOC_ENTERPRISE_CLEAN_ROOM_DRILL.md",
-        "checksum": "sha256:9dbc34165fa9be66de82e143a021cc7b1b087d858a11e884db9a35aee6586f4b"
+        "checksum": "sha256:dbdf68130454eb6b8a8fa9b3757913d4a88966744f5efb01eae0a410f9d6de67"
       },
       {
         "path": "docs/operations/AOC_ENTERPRISE_RESTORE_V1.md",
-        "checksum": "sha256:5576e6792a167ae7c2a6ca6c7dc5f06872dcbc2845d5b24f71f744d9d31ceb65"
+        "checksum": "sha256:3744e16c15f1fbc98af76a477afb5230e7f6d4103fb357bdcf1c54c29efd6219"
       },
       {
         "path": "docs/release/AOC_ENTERPRISE_V1_PORTABILITY_CURRENT_STATE.md",
-        "checksum": "sha256:9d4cb850ec90b1297f8dab431995cae4f317117436a2c1e5221ca0d3ca88fafe"
+        "checksum": "sha256:8e21b0641cb58b77cbe376644791731496354e0b51c4d53ef8cfda2b7b4b0a8a"
       },
       {
         "path": "docs/release/AOC_ENTERPRISE_V1_PORTABILITY_REPORT.md",
-        "checksum": "sha256:40d2483475fc6275d3746be1c68efba8be2a2710869a193dfd94b0b01ffc76d4"
+        "checksum": "sha256:6e9bc5c1605b5fdd4e56a6ca9ce9cd5f16e7ea839ab10e481f6198404d0afb43"
       },
       {
         "path": "docs/release/AOC_ENTERPRISE_V1_TAGGING_RUNBOOK.md",
@@ -114,31 +114,31 @@
       },
       {
         "path": "scripts/portability/backup-enterprise-v1.mjs",
-        "checksum": "sha256:ad52126b46e452a225ef7a5bb6a86a7347a88b512671f7dbac557a1b24084ba2"
+        "checksum": "sha256:9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8"
       },
       {
         "path": "scripts/portability/check-portability-smoke.mjs",
-        "checksum": "sha256:9b57b253d68678e769f6b479e2573e5dfa1544d4c88c4ebaa3352e737563f50c"
+        "checksum": "sha256:71b03b2f992aadec03ffb6fe64904a04a876e7aa717bbbc1412b6904506557de"
       },
       {
         "path": "scripts/portability/compare-portability-state.mjs",
-        "checksum": "sha256:e7a5a9bd677d02388fe8ff602df89bccccaf00b961c0cb00397e2065f626fd67"
+        "checksum": "sha256:59b6d1d7bf05a2a8b3594f94635560592c34250200601f9ec71fe6c0dddf7acf"
       },
       {
         "path": "scripts/portability/generate-portability-fixture.mjs",
-        "checksum": "sha256:55cd4de47783da677a8a38808ce6cfe08f561c39c7ca945f028238954a654dcf"
+        "checksum": "sha256:db9803e53df0495629cde41ccccf82badf602d8a9527b1b7a773afe1c9eeee18"
       },
       {
         "path": "scripts/portability/lib-portability.mjs",
-        "checksum": "sha256:25e8bc467e37cd1628df91d29eb0d693b913853770d41fb057846e4f4ae7bf28"
+        "checksum": "sha256:05d5f3ea1d46b608066913207e5d1d530a5dd7d018db075585fbeef1c0c17521"
       },
       {
         "path": "scripts/portability/restore-enterprise-v1.mjs",
-        "checksum": "sha256:88345b1290230fd6f8059158cb9cbac3d022ae207a64a395578514a5d486990a"
+        "checksum": "sha256:0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb"
       },
       {
         "path": "scripts/portability/validate-portability-v1.mjs",
-        "checksum": "sha256:afc1200fc03a3a27035a28c02e2e40e344ca3425079fb46fcf5a5aadde28b3c3"
+        "checksum": "sha256:a2ec3d783ecde9cc9872f3d30505dfa9efe342ce5da85d4921ef359d0743bd13"
       }
     ]
   }

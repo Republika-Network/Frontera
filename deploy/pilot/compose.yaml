@@ -1,0 +1,166 @@
+# Frontera pilot deployment kit (PROD-03-03).
+#
+# The one supported pilot topology: a Linux container runtime with Docker
+# Compose, one Frontera Enterprise Host in the secure `production` profile, its
+# durable state on one named volume, and the repository's reference
+# authority-state freshness witness (CORE-07) on a second, separate volume.
+# TLS, the reverse proxy, DNS and backups are the operator's infrastructure.
+#
+# Guide (every command there is exercised by scripts/deploy/qualify-pilot-deployment.mjs):
+#   docs/deployment/PILOT_DEPLOYMENT.md
+#
+# Why three services: the Host reaches the witness over loopback HTTP (it
+# accepts plain HTTP to a witness only on loopback, https elsewhere), so both
+# join one network namespace. `network` owns that namespace and the published
+# port and does nothing else, so restarting the Host or the witness never
+# takes the other's network away.
+
+name: frontera-pilot
+
+x-frontera-image: &frontera-image
+  image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+    args:
+      FRONTERA_BUILD_COMMIT: ${FRONTERA_BUILD_COMMIT:-}
+
+# The Host's configuration, shared by the Host and the configuration check, so
+# the check validates exactly what the Host will run with.
+x-frontera-host: &frontera-host
+  <<: *frontera-image
+  # Site settings and secrets: deploy/pilot/.env (from .env.example).
+  env_file:
+    - .env
+  # Fixed by the kit. `environment` wins over `env_file`, so .env cannot
+  # weaken the profile, move the listener or relocate a store.
+  environment:
+    AOC_ENTERPRISE_ENV: production
+    AOC_ENTERPRISE_PERSISTENCE_PROVIDER: sqlite
+    AOC_ENTERPRISE_REQUIRE_AUTH: "true"
+    AOC_ENTERPRISE_HTTP_HOST: 0.0.0.0
+    AOC_ENTERPRISE_HTTP_PORT: "8787"
+    # Bounds the HTTP drain and every module's shutdown; fixed below the
+    # frontera service's 45 s stop_grace_period so a stop is never a SIGKILL.
+    AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: "30000"
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: "true"
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED: "true"
+    AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: /etc/frontera/governed-actions.json
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE: external
+    AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT:-http://127.0.0.1:8444}
+    # Every store the Host can compose, under one state root on one volume,
+    # at the PROD-02 registry's filenames (scripts/portability/store-registry.mjs),
+    # so backup:v1 / restore:v1 see the same layout. Stores a deployment does
+    # not compose are simply never created.
+    AOC_ENTERPRISE_SQLITE_PATH: /var/lib/frontera/enterprise-host.sqlite
+    AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: /var/lib/frontera/agent-passport.sqlite
+    AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: /var/lib/frontera/assurance.sqlite
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: /var/lib/frontera/kernel-authority.sqlite
+    AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: /var/lib/frontera/bounded-grants.sqlite
+    AOC_ENTERPRISE_EMERGENCY_CONTROL_SQLITE_PATH: /var/lib/frontera/emergency-controls.sqlite
+    AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH: /var/lib/frontera/exercise-ledger.sqlite
+    AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH: /var/lib/frontera/authority-event-stream.sqlite
+    AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH: /var/lib/frontera/execution-outcomes.sqlite
+    AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH: /var/lib/frontera/execution-resolutions.sqlite
+    AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH: /var/lib/frontera/obligation-discharges.sqlite
+    AOC_ENTERPRISE_APPROVAL_SQLITE_PATH: /var/lib/frontera/approvals.sqlite
+    AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH: /var/lib/frontera/control-plane.sqlite
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: /var/lib/frontera/evidence-bundles.sqlite
+  volumes:
+    - frontera-state:/var/lib/frontera
+    # `z`: SELinux relabel (shared by the Host and config-check); no effect elsewhere.
+    - ./governed-actions.json:/etc/frontera/governed-actions.json:ro,z
+
+services:
+  network:
+    <<: *frontera-image
+    command: ["node", "-e", "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1 << 30);"]
+    ports:
+      # The Host's listener. Loopback by default: put your TLS reverse proxy on
+      # this machine, or set FRONTERA_PUBLISH_ADDRESS to a private interface.
+      - "${FRONTERA_PUBLISH_ADDRESS:-127.0.0.1}:${FRONTERA_PUBLISH_PORT:-8787}:8787"
+    healthcheck:
+      disable: true
+    init: true
+    restart: unless-stopped
+
+  authority-witness:
+    # The REFERENCE witness: a separate process with its own key and its own
+    # volume. NOT a ledger, an HSM or a timestamping authority. Enabled by
+    # COMPOSE_PROFILES=reference-witness in .env. To use your own https witness
+    # instead, remove that line and set AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT
+    # and the witness id, token and public key in .env (see the guide): this
+    # service is then neither started nor waited for.
+    <<: *frontera-image
+    profiles: ["reference-witness"]
+    command: ["node", "scripts/run-reference-authority-state-witness.mjs"]
+    network_mode: service:network
+    depends_on:
+      - network
+    environment:
+      FRONTERA_REFERENCE_WITNESS_DB: /var/lib/frontera-witness/witness.sqlite
+      FRONTERA_REFERENCE_WITNESS_KEY_FILE: /var/lib/frontera-witness/receipt-key.pem
+      FRONTERA_REFERENCE_WITNESS_HOST: 127.0.0.1
+      FRONTERA_REFERENCE_WITNESS_PORT: "8444"
+      # Only these two values reach the witness; it never sees the Host's .env.
+      FRONTERA_REFERENCE_WITNESS_ID: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID:-}
+      FRONTERA_REFERENCE_WITNESS_TOKEN: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN:-}
+    volumes:
+      - frontera-witness:/var/lib/frontera-witness
+    healthcheck:
+      test: ["CMD", "node", "scripts/deploy/probe.mjs", "tcp", "8444"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    init: true
+    restart: unless-stopped
+
+  frontera:
+    <<: *frontera-host
+    network_mode: service:network
+    depends_on:
+      authority-witness:
+        condition: service_healthy
+        # Waited for when the reference-witness profile is enabled; absent otherwise.
+        required: false
+    # Longer than AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS (fixed at 30 s above), so a stop
+    # is never a SIGKILL inside the Host's own shutdown bound.
+    stop_grace_period: 45s
+    init: true
+    restart: unless-stopped
+
+  # ---- tools: never started by `docker compose up`; run explicitly ----
+
+  config-check:
+    # docker compose run --rm config-check
+    # The preflight the Host's launcher runs, on the Host's own configuration
+    # and volume, with no network and nothing else started.
+    <<: *frontera-host
+    profiles: ["tools"]
+    network_mode: none
+    command: ["node", "scripts/check-host-configuration.mjs"]
+    healthcheck:
+      disable: true
+
+  witness-init:
+    # docker compose run --rm -T witness-init --secret NAME ... >> .env
+    # One-time key and secret generation (scripts/deploy/generate-pilot-secrets.mjs).
+    # Writes only the witness receipt key, into the witness's volume; no network.
+    <<: *frontera-image
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/generate-pilot-secrets.mjs"]
+    command: []
+    environment:
+      FRONTERA_REFERENCE_WITNESS_KEY_FILE: /var/lib/frontera-witness/receipt-key.pem
+    volumes:
+      - frontera-witness:/var/lib/frontera-witness
+    healthcheck:
+      disable: true
+
+volumes:
+  # The Host's durable state: every store above. Back these files up together.
+  frontera-state:
+  # The witness's state. A DIFFERENT backup set and snapshot schedule from
+  # frontera-state, never restored together with it (CORE-07).
+  frontera-witness:

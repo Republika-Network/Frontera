@@ -1,0 +1,49 @@
+# Frontera container build context (PROD-03-03).
+#
+# Allow-list: everything is excluded unless named below, so a developer's
+# .env, databases, backups, keys, node_modules, build output, worktrees and IDE
+# files can never reach an image layer. tests/pilot-deployment-kit.structure.test.mjs
+# and the deployment qualification inspect the built image to prove it.
+*
+
+# Sources the build compiles.
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.base.json
+!tsconfig.src.json
+!types/
+!src/
+!packages/
+# npm ci needs every workspace's package.json (the lockfile lists them); the
+# apps themselves are not built or shipped.
+!apps/*/package.json
+# The vendored @aoc/protocol tarball the lockfile pins (build-time dependency).
+!vendor/*.tgz
+!scripts/
+# The frozen API surface the release identity records.
+!release/api-surface.v1.json
+!LICENSE
+!NOTICE.md
+!COPYRIGHT.md
+!TRADEMARKS.md
+
+# Never, even inside an allowed directory.
+**/node_modules
+**/dist
+**/dist-test
+**/.next
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+**/.data
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.pem
+**/*.key
+**/coverage
+**/*.log
+**/backups
+**/*.aoc-enterprise-backup
+**/.DS_Store

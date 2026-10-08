@@ -1,0 +1,7 @@
+# PROD-03-03: files read inside Linux containers keep LF on every checkout,
+# including Windows clones with core.autocrlf=true (a CRLF Dockerfile breaks
+# RUN continuations; a CRLF .env carries '\r' into every value).
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+deploy/** text eol=lf
+scripts/deploy/*.mjs text eol=lf

@@ -5,7 +5,7 @@ import type { AocEnterprise, CreateEnterpriseOptions } from '../composition/comp
 import type { GrantAuthorityBinding } from '../execution-governance/index.js';
 import { createOperatorAttestationAuthority, selectOperatorAttestation } from '../execution-reconciliation/operator-attestation.js';
 import type { EnterpriseHealthPosture } from '../health/health-check.js';
-import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
+import { createEnterpriseLogger, type EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { createEnterpriseServer, type EnterpriseServer } from './enterprise-server.js';
 import {
   EnterpriseHostConfigurationError,
@@ -13,6 +13,7 @@ import {
   loadEnterpriseHostConfiguration,
   type EnterpriseHostConfiguration,
 } from './host-configuration.js';
+import { currentReleaseIdentity, type FronteraReleaseIdentity } from './release-identity.js';
 
 /**
  * The Enterprise Host bootstrap: the one supported way to start Frontera as a
@@ -97,6 +98,8 @@ export interface EnterpriseHost {
   readonly server: EnterpriseServer;
   /** What this Host composed. The same object `/health` reports. */
   readonly posture: EnterpriseHealthPosture;
+  /** PROD-03-03: the artifact's release identity. The same object `GET /version` serves. */
+  readonly release: FronteraReleaseIdentity;
   listen(): Promise<{ readonly port: number; readonly host: string }>;
   /** Stops accepting, closes the listener, then every store the composition opened. Idempotent. */
   close(): Promise<void>;
@@ -226,11 +229,47 @@ function assertProcessHoldsNoAuthorityKey(host: EnterpriseHostConfiguration): vo
  * no socket was bound. On success the caller calls `listen()`.
  */
 export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}): Promise<EnterpriseHost> {
-  const host = loadEnterpriseHostConfiguration(options.env ?? process.env);
+  // PROD-03-03: every refusal is one structured `enterprise.host.refused` event
+  // with a closed code, including those before the configured log level is
+  // known (an error is emitted at every level).
+  let host: EnterpriseHostConfiguration;
+  try {
+    host = loadEnterpriseHostConfiguration(options.env ?? process.env);
+  } catch (error) {
+    (options.logger ?? createEnterpriseLogger('error')).error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
+    throw error;
+  }
+  // One logger for the startup phases and the composed Enterprise
+  // (composition would otherwise create the same default itself).
+  const logger = options.logger ?? createEnterpriseLogger(host.configuration.logLevel);
+  let release: FronteraReleaseIdentity;
+  try {
+    release = currentReleaseIdentity();
+  } catch (error) {
+    const refusal = new EnterpriseHostConfigurationError('HOST_RELEASE_IDENTITY_INVALID', error instanceof Error ? error.message : 'The recorded release identity is invalid.');
+    logger.error('enterprise.host.refused', { phase: 'release_identity', errorCode: refusal.code });
+    throw refusal;
+  }
+  logger.info('enterprise.host.starting', { phase: 'host_starting', release: release.release, build: release.build });
   // Before composition: nothing is opened and the signer is not contacted.
-  assertProcessHoldsNoAuthorityKey(host);
-  const server = await createEnterpriseServer(toCreateEnterpriseOptions(host, options));
+  try {
+    assertProcessHoldsNoAuthorityKey(host);
+  } catch (error) {
+    logger.error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
+    throw error;
+  }
+  logger.info('enterprise.host.configuration_validated', { phase: 'config_validated', status: host.configuration.environment });
+  let server: EnterpriseServer;
+  try {
+    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }));
+  } catch (error) {
+    logger.error('enterprise.host.refused', { phase: 'composition', errorCode: refusalCode(error) });
+    throw error;
+  }
   const { enterprise } = server;
+  // Composition is atomic: every store opened, its schema verified (or
+  // created) and every module initialized — or nothing is left open.
+  logger.info('enterprise.host.composed', { phase: 'modules_initialized' });
 
   try {
     const report = await enterprise.health();
@@ -271,22 +310,44 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
       );
     }
 
+    logger.info('enterprise.host.health_gate_passed', { phase: 'health_gate', status: report.status });
+
+    let closing: Promise<void> | undefined;
     return {
       enterprise,
       server,
       posture,
+      release,
       async listen() {
         try {
-          return await server.listen();
+          const address = await server.listen();
+          logger.info('enterprise.host.ready', { phase: 'host_ready', release: release.release });
+          return address;
         } catch (error) {
+          logger.error('enterprise.host.refused', { phase: 'listen', errorCode: refusalCode(error) });
           await server.close().catch(() => {});
           throw error;
         }
       },
-      close: () => server.close(),
+      close() {
+        closing ??= (async () => {
+          logger.info('enterprise.host.shutdown_started', { phase: 'shutdown_started' });
+          await server.close();
+          logger.info('enterprise.host.shutdown_complete', { phase: 'shutdown_complete' });
+        })();
+        return closing;
+      },
     };
   } catch (error) {
+    logger.error('enterprise.host.refused', { phase: 'health_gate', errorCode: refusalCode(error) });
     await server.close().catch(() => {});
     throw error;
   }
+}
+
+/** A closed code for the refusal log line — never the message, which can name a module detail. */
+function refusalCode(error: unknown): string {
+  if (error instanceof EnterpriseHostConfigurationError) return error.code;
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : 'HOST_STARTUP_FAILED';
 }

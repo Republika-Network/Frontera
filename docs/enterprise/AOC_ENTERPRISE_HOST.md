@@ -682,6 +682,17 @@ and fields, never values; no stack trace is printed.
 | `HOST_EXECUTION_ROUTE_INVALID` | No route, or a route to an unconfigured adapter |
 | `HOST_COMPOSITION_INCOMPLETE` | The composed Enterprise does not have the posture the profile requires |
 | `HOST_NOT_HEALTHY` | Composed, but a required module is unhealthy — e.g. the signed revocation state of the grant store does not verify |
+| `HOST_RELEASE_IDENTITY_INVALID` (PROD-03-03) | `dist/release-identity.json` exists but does not describe this build (another package version, Host or Kernel version, or a malformed record) |
+
+Since PROD-03-03 the launcher runs the deployment preflight
+(`scripts/deploy/host-preflight.mjs`, also `npm run check:host-configuration`)
+before `bootEnterpriseHost()`. Its configuration verdict is this parser's, with
+these codes; around it, it refuses with `RELEASE_IDENTITY_INVALID`,
+`CONFIG_PLACEHOLDER_VALUE` (a variable still holding an example
+`<required…>` placeholder), `STORAGE_NOT_WRITABLE`, `STORAGE_NOT_PERSISTENT`
+(secure profile, store on a container's writable layer), `STORAGE_UNAVAILABLE`,
+`STORAGE_PATHS_COLLIDE` and `SCHEMA_INCOMPATIBLE`, before any store is opened
+for writing. See `docs/deployment/PILOT_DEPLOYMENT.md` §7.
 
 Composition's own refusals pass through unchanged: a signing key absent from
 the trusted set or not matching it (`AuthorityAuthenticityConfigurationError`),

@@ -257,6 +257,11 @@ its own bound.
 
 ### Containers
 
+The supported container deployment is the PROD-03-03 pilot kit — the
+repository `Dockerfile` and `deploy/pilot/compose.yaml` — documented and
+qualified in `docs/deployment/PILOT_DEPLOYMENT.md`. The rules below are what
+that kit implements.
+
 - Run as a **non-root user**; the image needs only `node`, `dist/`,
   `node_modules/`, `scripts/`, and `package.json`.
 - Mount a **named volume** (or host path) at the data directory and point

@@ -54,7 +54,9 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_AUTHORITY_FRESHNESS_REQUIRED'
   | 'HOST_EXECUTION_ROUTE_INVALID'
   | 'HOST_COMPOSITION_INCOMPLETE'
-  | 'HOST_NOT_HEALTHY';
+  | 'HOST_NOT_HEALTHY'
+  /** PROD-03-03: `dist/release-identity.json` exists but does not describe this build. */
+  | 'HOST_RELEASE_IDENTITY_INVALID';
 
 /** A deployment defect the Host refuses to start with. Messages name variables, fields and codes — never a value. */
 export class EnterpriseHostConfigurationError extends Error {
