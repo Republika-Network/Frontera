@@ -1,5 +1,5 @@
 import type { ReadBoundedGrantResult } from '../../features/grant-runtime/index.js';
-import { exerciseReservationId, type ExerciseReservationView } from '../../features/exercise-control-runtime/index.js';
+import { exerciseReservationId, exerciseReservationResolutionConsistent, type ExerciseReservationView } from '../../features/exercise-control-runtime/index.js';
 import type { StoredApprovalRecord } from '../approval-authority/contracts.js';
 import type { AuthorityEvent, AuthorityEventStreamBoundedRead, AuthorityEventStreamVerification } from '../authority-event-stream/contracts.js';
 import { deriveAuthorityEventStreamId } from '../authority-event-stream/identifiers.js';
@@ -621,6 +621,22 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
         : {}),
       ...resolutionSummary,
     };
+  }
+
+  // -- P7 ↔ P12: a reservation reconciliation must be for this execution's resolution ----
+  // The same answer for the same resolution digest, and a terminal history the
+  // ledger's own rule agrees with. A contradiction leaves capacity consumed and is
+  // never repaired; the trace states it rather than verifying over it.
+  const reconciled = reservationView?.resolution;
+  if (reconciled !== undefined && executionId !== undefined) {
+    const resolved = resolutionState?.resolution;
+    const known = sources.resolutions !== undefined && resolution.presence !== 'unreadable';
+    const basis = terminal !== undefined ? 'initial-observation-unconfirmed' : 'no-initial-observation';
+    check(
+      'correlation.reservation-reconciliation',
+      'correlation',
+      !known ? 'n/a' : resolved !== undefined && reconciled.resolutionDigest === resolved.resolutionDigest && reconciled.resolution === resolved.certainty && exerciseReservationResolutionConsistent(reservationView?.terminal, reconciled.resolution, basis),
+    );
   }
 
   // -- P8 authority events -----------------------------------------------------

@@ -747,3 +747,43 @@ describe('ASSURE-01 second review — read order, degraded stores, summaries and
     assert.ok(failed((await build(reserved)).verification).includes('correlation:correlation.event-reservation-reserved-payload'));
   });
 });
+
+describe('ASSURE-01 trace builder — PROD-03-02 hardening: a reservation reconciliation must be for this execution’s resolution', () => {
+  const RECONCILED = 'correlation:correlation.reservation-reconciliation';
+  const reconciledWorld = (reconciliation: Record<string, unknown>, terminal: Record<string, unknown> = { kind: 'settled', reason: 'execution-unconfirmed' }): World => {
+    const world = resolvedWorld();
+    world.reservation = {
+      reservation: { executionId: EXECUTION, boundedGrantId: GRANT },
+      state: 'settled',
+      terminal,
+      resolution: { reservationId: RESERVATION, executionId: EXECUTION, resolution: 'confirmed-completed', resolutionDigest: RESOLUTION_DIGEST, recordedAt: T, ...reconciliation },
+    } as World['reservation'];
+    return world;
+  };
+
+  it('the same answer for the same resolution digest, with an agreeing terminal history, verifies — and the stage states the digest', async () => {
+    const built = await build(reconciledWorld({}));
+    assert.deepEqual(failed(built.verification), []);
+    assert.equal(built.verification.checks.find((entry) => entry.check === 'correlation.reservation-reconciliation')?.status, 'pass');
+    assert.equal(built.trace.stages.reservation.resolutionDigest, RESOLUTION_DIGEST);
+  });
+
+  it('a reconciliation for another resolution digest (P7 `conflict`) fails verification, even with no P8 event to compare', async () => {
+    const built = await build(reconciledWorld({ resolutionDigest: 'sha256:another-resolution' }));
+    assert.deepEqual(failed(built.verification), [RECONCILED]);
+    assert.equal(built.verification.verified, false);
+  });
+
+  it('a reconciliation with another answer fails verification', async () => {
+    assert.deepEqual(failed((await build(reconciledWorld({ resolution: 'confirmed-not-completed' }))).verification), [RECONCILED]);
+  });
+
+  it('a terminal history P7’s own rule contradicts (released beside an unconfirmed observation resolved completed) fails verification', async () => {
+    assert.deepEqual(failed((await build(reconciledWorld({}, { kind: 'released', reason: 'execution-failed' }))).verification), [RECONCILED]);
+  });
+
+  it('without a composed resolution source it is not applicable, never a pass', async () => {
+    const built = await build(reconciledWorld({}), { composed: { resolutions: false } });
+    assert.equal(built.verification.checks.find((entry) => entry.check === 'correlation.reservation-reconciliation')?.status, 'not-applicable');
+  });
+});

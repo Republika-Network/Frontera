@@ -402,5 +402,13 @@ operator resolution, never a provider confirmation.
   `inconsistent` are reported for investigation, never repaired; the trace keeps a warning while
   the execution's reservation holds no reconciliation matching its resolution — the same answer for
   the same resolution digest (the ASSURE-01 reservation stage states `resolutionDigest`, a later
-  fact beside `resolution`, so a bundle issued before it still progresses). Attention and its
-  counts are unchanged: the execution is resolved; capacity follow-up is not yet an Attention reason.
+  fact beside `resolution`, so a bundle issued before it still progresses). The attesting operator
+  can submit the identical resolution again from that trace, so a `pending` reconciliation stays
+  recoverable after the first result page is gone.
+- *Verification.* ASSURE-01 checks `correlation.reservation-reconciliation`: a P7 reconciliation
+  row must carry the P12 resolution's answer and digest, and a terminal history P7's own
+  `exerciseReservationResolutionConsistent` agrees with. A contradiction (P7 `conflict`, or a later
+  terminal event contradicting the resolution) fails verification, so the execution surfaces under
+  the existing `TRACE_INCONSISTENT` Attention reason. A merely missing reconciliation (`pending`,
+  `not-composed`) is not a contradiction: the execution stays resolved and out of Attention, with
+  the trace warning above.

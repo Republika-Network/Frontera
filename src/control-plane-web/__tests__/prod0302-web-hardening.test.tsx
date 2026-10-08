@@ -20,7 +20,7 @@ import {
   type OperatorResolutionResponse,
   type OrganizationContext,
 } from '../wire.js';
-import { CAPACITY_RESULT_NOTICES, TracePage, capacityReconciliationMissing } from '../views/pages-operations.js';
+import { CAPACITY_RESULT_NOTICES, TracePage, capacityReconciliationMissing, identicalResolutionOf } from '../views/pages-operations.js';
 
 /**
  * PROD-03-02 — post-merge review hardening, the console half:
@@ -319,5 +319,64 @@ describe('PROD-03-02 hardening D — the console states the capacity result besi
       const html = renderToStaticMarkup(<TracePage context={context} csrfToken="t" view={traceView(stages, { resolvable: false })} />);
       assert.equal(html.includes('data-testid="trace-capacity-unreconciled"'), expected, JSON.stringify(stages));
     }
+  });
+});
+
+// -- Fresh review of #172: an incomplete capacity reconciliation stays recoverable from the durable trace --------
+
+describe('PROD-03-02 hardening D — the identical resolution is recoverable from the trace, by the attesting operator', () => {
+  const unreconciled = (attestedBy: string, outcome: Record<string, unknown> = { presence: 'unresolved' }): Record<string, unknown> => ({
+    outcome,
+    resolution: { presence: 'recorded', resolution: { certainty: 'confirmed-not-completed', failure: 'PROVIDER_UNAVAILABLE', attestedBy, resolutionDigest: 'sha256:p12' } },
+    reservation: { presence: 'recorded', state: 'settled' },
+  });
+  const verified = (stages: Record<string, unknown>): OperationalTrace => traceView(stages, { resolvable: false });
+  const other: OrganizationContext = { ...context, operator: { ...context.operator, operatorId: 'ops-other' } };
+  const observer: OrganizationContext = { ...context, operator: { ...context.operator, permissions: ['operations.read', 'trace.read'] } };
+
+  it('the attesting operator gets exactly the recorded resolution and the reviewed basis; nobody else gets one', () => {
+    assert.deepEqual(identicalResolutionOf(verified(unreconciled('operator:ops-admin')), context), { resolution: 'confirmed-not-completed', failure: 'PROVIDER_UNAVAILABLE', observedOutcome: 'none' });
+    assert.deepEqual(identicalResolutionOf(verified(unreconciled('operator:ops-admin', { presence: 'recorded', certainty: 'unconfirmed' })), context)?.observedOutcome, 'unconfirmed');
+    assert.equal(identicalResolutionOf(verified(unreconciled('operator:ops-admin')), other), undefined, 'another operator’s submission would be a different attestation');
+    assert.equal(identicalResolutionOf(verified(unreconciled('operator:ops-admin')), observer), undefined, 'operations.resolve only');
+    assert.equal(identicalResolutionOf({ ...verified(unreconciled('operator:ops-admin')), verification: { ...verified({}).verification, verified: false } }, context), undefined, 'a contradiction is investigated, never re-run');
+    assert.equal(identicalResolutionOf(verified(unreconciled('operator:ops-admin', { presence: 'recorded', certainty: 'confirmed-completed' })), context), undefined, 'no basis an operator could have reviewed');
+  });
+
+  it('the trace page offers it inside the capacity warning — and explains, without a form, to anyone else', () => {
+    const own = renderToStaticMarkup(<TracePage context={context} csrfToken="t" view={verified(unreconciled('operator:ops-admin'))} />);
+    assert.match(own, /data-testid="trace-capacity-unreconciled"/);
+    const form = /<form[^>]*data-testid="capacity-reconcile-again-form"[\s\S]*?<\/form>/.exec(own)?.[0] ?? '';
+    assert.ok(form.length > 0);
+    assert.match(form, /name="resolution" value="confirmed-not-completed"/);
+    assert.match(form, /name="failure" value="PROVIDER_UNAVAILABLE"/);
+    assert.match(form, /name="observedOutcome" value="none"/);
+    assert.doesNotMatch(form, /<select|type="radio"|type="text"|type="checkbox"/);
+    const theirs = renderToStaticMarkup(<TracePage context={other} csrfToken="t" view={verified(unreconciled('operator:ops-admin'))} />);
+    assert.match(theirs, /data-testid="trace-capacity-unreconciled"/);
+    assert.doesNotMatch(theirs, /capacity-reconcile-again-form|action="\/traces\/[^"]*\/resolution"/);
+    assert.match(theirs, /Only the operator who recorded this resolution/);
+  });
+
+  it('after navigating away, the trace’s form re-submits the identical resolution to the Host', async () => {
+    const bodies: OperatorResolutionBody[] = [];
+    const calls: string[] = [];
+    const host = scriptedHost(
+      {
+        trace: () => ok(verified(unreconciled('operator:ops-admin'))),
+        resolveExecution: (_bearer, _executionId, body) => {
+          bodies.push(body);
+          return ok({ ...recordedBody('adjusted', 'PROVIDER_UNAVAILABLE'), outcome: 'replayed' });
+        },
+      },
+      calls,
+    );
+    const { app, cookie, csrf } = signedIn(host);
+    const page = await app.handle(request('GET', `/traces/${encodeURIComponent(REQUEST)}`, { cookie }));
+    const form = /<form[^>]*data-testid="capacity-reconcile-again-form"[\s\S]*?<\/form>/.exec(page.body ?? '')?.[0] ?? '';
+    const fields = Object.fromEntries([...form.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+    const response = await app.handle(submit(cookie, { ...(fields as Record<string, string>), csrf }));
+    assert.equal(response.status, 303);
+    assert.deepEqual(bodies, [{ resolution: 'confirmed-not-completed', failure: 'PROVIDER_UNAVAILABLE', observedOutcome: 'none' }]);
   });
 });

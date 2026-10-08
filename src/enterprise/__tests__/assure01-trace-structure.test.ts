@@ -68,8 +68,12 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
       './errors.js',
       './trace-contracts.js',
     ]);
-    // From the exercise-control runtime it takes the reservation id derivation only.
-    assert.match(codeOf(BUILDER), /import \{ exerciseReservationId, type ExerciseReservationView \} from '\.\.\/\.\.\/features\/exercise-control-runtime\/index\.js';/);
+    // From the exercise-control runtime it takes the reservation id derivation and — PROD-03-02 hardening — P7's own
+    // pure terminal-history consistency rule, so a reconciliation the ledger contradicts is never verified over.
+    assert.match(
+      codeOf(BUILDER),
+      /import \{ exerciseReservationId, exerciseReservationResolutionConsistent, type ExerciseReservationView \} from '\.\.\/\.\.\/features\/exercise-control-runtime\/index\.js';/,
+    );
   });
 
   it('LAND-01: the lineage module the builder uses is pure — no store, no write, no clock', () => {

@@ -337,6 +337,7 @@ export function TracePage({ context, csrfToken, view, flash }: { readonly contex
         {capacityReconciliationMissing(trace.stages) ? (
           <Notice tone="warning" title="Capacity reconciliation is not on record for this resolution">
             <p data-testid="trace-capacity-unreconciled">{CAPACITY_UNRECONCILED_NOTICE}</p>
+            <CapacityReconcileAgain context={context} csrfToken={csrfToken} view={view} />
           </Notice>
         ) : null}
         {operational.attentionRequired ? (
@@ -758,24 +759,69 @@ export function ResolutionRecordedPage({
           ['Resolution digest', <Id key="d" value={recorded.resolution.resolutionDigest} />],
         ]}
       />
-      {recorded.capacity === 'pending' ? (
-        <form method="post" action={resolutionPath(requestId)} className="form" data-testid="capacity-reconcile-again-form">
-          <CsrfField token={csrfToken} />
-          <input type="hidden" name="resolution" value={submitted.resolution} />
-          {submitted.failure !== undefined ? <input type="hidden" name="failure" value={submitted.failure} /> : null}
-          <input type="hidden" name="observedOutcome" value={submitted.observedOutcome} />
-          <input type="hidden" name="confirm" value="yes" />
-          <div className="form__actions">
-            <button type="submit" className="button">
-              Run capacity reconciliation again
-            </button>
-          </div>
-          <p className="help">Submits the identical resolution again. Nothing new is recorded and no action is performed.</p>
-        </form>
-      ) : null}
+      {recorded.capacity === 'pending' ? <ReconcileAgainForm csrfToken={csrfToken} requestId={requestId} submitted={submitted} /> : null}
       <p>
         <a href={tracePath(requestId)}>Back to the trace</a>
       </p>
     </Page>
   );
+}
+
+/** The identical resolution, as hidden fields only: what an operator re-submits to run P12's capacity step again. */
+interface IdenticalResolution {
+  readonly resolution: ResolutionChoice;
+  readonly failure?: string;
+  readonly observedOutcome: 'none' | 'unconfirmed';
+}
+
+/**
+ * PROD-03-02 — the one form that re-submits a resolution: the identical one,
+ * hidden fields only, to the same resolution route. P12's `replayed` path
+ * records nothing new and performs nothing; it re-runs only the capacity
+ * reconciliation.
+ */
+function ReconcileAgainForm({ csrfToken, requestId, submitted }: { readonly csrfToken: string; readonly requestId: string; readonly submitted: IdenticalResolution }): React.ReactElement {
+  return (
+    <form method="post" action={resolutionPath(requestId)} className="form" data-testid="capacity-reconcile-again-form">
+      <CsrfField token={csrfToken} />
+      <input type="hidden" name="resolution" value={submitted.resolution} />
+      {submitted.failure !== undefined ? <input type="hidden" name="failure" value={submitted.failure} /> : null}
+      <input type="hidden" name="observedOutcome" value={submitted.observedOutcome} />
+      <input type="hidden" name="confirm" value="yes" />
+      <div className="form__actions">
+        <button type="submit" className="button">
+          Run capacity reconciliation again
+        </button>
+      </div>
+      <p className="help">Submits the identical resolution again. Nothing new is recorded and no action is performed.</p>
+    </form>
+  );
+}
+
+/**
+ * PROD-03-02 — the identical resolution recoverable from the durable trace, so
+ * an incomplete capacity reconciliation is not lost with the page that first
+ * reported it. Only for a trace that verifies (a contradiction is
+ * investigated, never re-run), for the operator who attested it (an identical
+ * replay is the same operator's), and only for the basis the trace states.
+ * The Host checks all of it again.
+ */
+export function identicalResolutionOf(view: OperationalTrace, context: OrganizationContext): IdenticalResolution | undefined {
+  if (!view.verification.verified || !context.operator.permissions.includes('operations.resolve')) return undefined;
+  const resolved = asRecord(asRecord(view.trace.stages['resolution'])?.['resolution']);
+  const outcome = asRecord(view.trace.stages['outcome']);
+  if (resolved === undefined || outcome === undefined || resolved['attestedBy'] !== `operator:${context.operator.operatorId}`) return undefined;
+  const observedOutcome = outcome['presence'] === 'recorded' && outcome['certainty'] === 'unconfirmed' ? 'unconfirmed' : outcome['presence'] === 'unresolved' ? 'none' : undefined;
+  if (observedOutcome === undefined) return undefined;
+  const certainty = resolved['certainty'];
+  const failure = resolved['failure'];
+  if (certainty === 'confirmed-completed') return { resolution: certainty, observedOutcome };
+  if (certainty === 'confirmed-not-completed' && typeof failure === 'string') return { resolution: certainty, failure, observedOutcome };
+  return undefined;
+}
+
+function CapacityReconcileAgain({ context, csrfToken, view }: { readonly context: OrganizationContext; readonly csrfToken: string; readonly view: OperationalTrace }): React.ReactElement | null {
+  const submitted = identicalResolutionOf(view, context);
+  if (submitted !== undefined) return <ReconcileAgainForm csrfToken={csrfToken} requestId={view.requestId} submitted={submitted} />;
+  return <p className="help">Only the operator who recorded this resolution can submit it again to complete the capacity reconciliation, and only while its trace verifies.</p>;
 }
