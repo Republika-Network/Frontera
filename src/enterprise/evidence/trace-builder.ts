@@ -1,5 +1,5 @@
 import type { ReadBoundedGrantResult } from '../../features/grant-runtime/index.js';
-import { exerciseReservationId, type ExerciseReservationView } from '../../features/exercise-control-runtime/index.js';
+import { exerciseReservationId, exerciseReservationResolutionConsistent, type ExerciseReservationView } from '../../features/exercise-control-runtime/index.js';
 import type { StoredApprovalRecord } from '../approval-authority/contracts.js';
 import type { AuthorityEvent, AuthorityEventStreamBoundedRead, AuthorityEventStreamVerification } from '../authority-event-stream/contracts.js';
 import { deriveAuthorityEventStreamId } from '../authority-event-stream/identifiers.js';
@@ -506,7 +506,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
           reservationId: expectedReservationId,
           state: view.state,
           ...(view.terminal !== undefined ? { terminalReason: view.terminal.reason } : {}),
-          ...(view.resolution !== undefined ? { resolution: view.resolution.resolution } : {}),
+          ...(view.resolution !== undefined ? { resolution: view.resolution.resolution, resolutionDigest: view.resolution.resolutionDigest } : {}),
         };
       }
     } catch (error) {
@@ -621,6 +621,27 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
         : {}),
       ...resolutionSummary,
     };
+  }
+
+  // -- P7 ↔ P12: the capacity ledger must agree with this execution's resolution ----
+  // A reconciliation row carries the same answer for the same resolution digest;
+  // and, row or not, the ledger's own terminal history must agree with the
+  // resolution (P7's rule). A contradiction leaves capacity consumed and is never
+  // repaired; the trace states it rather than verifying over it.
+  const reconciled = reservationView?.resolution;
+  const resolvedForCapacity = resolutionState?.resolution;
+  if (executionId !== undefined && reservationView !== undefined && (reconciled !== undefined || resolvedForCapacity !== undefined)) {
+    const known = sources.resolutions !== undefined && resolution.presence !== 'unreadable';
+    const basis = terminal !== undefined ? 'initial-observation-unconfirmed' : 'no-initial-observation';
+    check(
+      'correlation.reservation-reconciliation',
+      'correlation',
+      !known
+        ? 'n/a'
+        : resolvedForCapacity !== undefined &&
+            (reconciled === undefined || (reconciled.resolutionDigest === resolvedForCapacity.resolutionDigest && reconciled.resolution === resolvedForCapacity.certainty)) &&
+            exerciseReservationResolutionConsistent(reservationView.terminal, resolvedForCapacity.certainty, basis),
+    );
   }
 
   // -- P8 authority events -----------------------------------------------------

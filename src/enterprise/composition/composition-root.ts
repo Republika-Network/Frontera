@@ -122,6 +122,7 @@ import { createExecutionActivityGuard } from '../execution-reconciliation/activi
 import type { ExecutionReconciliationService } from '../execution-reconciliation/contracts.js';
 import { ExecutionReconciliationConfigurationError } from '../execution-reconciliation/errors.js';
 import { createExecutionReconciliationService } from '../execution-reconciliation/service.js';
+import { composesOperatorAttestation } from '../execution-reconciliation/operator-attestation.js';
 import { createExecutionLedger, executionClaimRecorded } from '../governed-action/execution-ledger.js';
 import type { ExerciseControlReconciliationPort } from '../../features/exercise-control-runtime/index.js';
 import {
@@ -2344,7 +2345,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     registry.register(createGovernedActionOrchestratorModule(kernelProviders.clock.now, spineCriticality));
     if (executionOutcomeStore !== undefined) registry.register(createExecutionOutcomeModule(executionOutcomeStore, kernelProviders.clock.now, spineCriticality));
     if (executionResolutionStore !== undefined && resolutionAuthorities !== undefined) {
-      registry.register(createExecutionResolutionModule(executionResolutionStore, resolutionAuthorities.authorities.size, kernelProviders.clock.now));
+      // Bound before every claim once composed: part of the governed spine, so it shares the spine's criticality.
+      registry.register(createExecutionResolutionModule(executionResolutionStore, resolutionAuthorities.authorities.size, kernelProviders.clock.now, spineCriticality));
     }
     if (authorityEvents !== undefined) {
       registry.register(
@@ -2672,8 +2674,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           health: () => enterprise.health(),
           now: kernelProviders.clock.now,
           ...(executionActivity !== undefined ? { inFlight: (executionId: string) => executionActivity.isActive(executionId) } : {}),
-          // PROD-03-02: the one write — operator attestation through P12, one method of it — present only where reconciliation is composed.
-          ...(executionReconciliation !== undefined
+          // PROD-03-02: the one write — operator attestation through P12, one method of it — present only where this
+          // Host composes the attestation authority. A host-chosen P12 authority set without it is valid P12, but it
+          // offers no operator attestation: no command, nothing `resolvable`, and the route answers NOT_AVAILABLE.
+          ...(executionReconciliation !== undefined && resolutionAuthorities !== undefined && composesOperatorAttestation(resolutionAuthorities)
             ? {
                 resolution: createOperatorResolutionCommand({
                   authenticator: operatorAuthenticator,
@@ -2681,6 +2685,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
                   record: (request) => executionReconciliation.recordOperatorResolution(request),
                   log: createOperatorResolutionLog(logger),
                 }),
+                capacityReconciliation: exerciseReconciliation !== undefined,
               }
             : {}),
         });

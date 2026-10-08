@@ -366,7 +366,8 @@ describe('PROD-03-02 — R1: claimed, no outcome → confirmed completed', () =>
     );
     assert.equal(lines[1]?.['outcome'], 'in-flight');
     const recordedLine = lines[3] ?? {};
-    assert.deepEqual(Object.keys(recordedLine).sort(), ['attentionRequired', 'certainty', 'evaluationId', 'executionId', 'message', 'operationalState', 'operatorId', 'outcome', 'requestId', 'resolutionDigest'].sort());
+    assert.deepEqual(Object.keys(recordedLine).sort(), ['attentionRequired', 'capacity', 'certainty', 'evaluationId', 'executionId', 'message', 'operationalState', 'operatorId', 'outcome', 'requestId', 'resolutionDigest'].sort());
+    assert.equal(recordedLine['capacity'], reply.body['capacity'], 'the closed capacity result is logged as the response states it');
     assert.equal(recordedLine['operatorId'], 'ops-admin');
     assert.equal(recordedLine['outcome'], 'recorded');
     assert.equal(recordedLine['resolutionDigest'], resolution['resolutionDigest']);

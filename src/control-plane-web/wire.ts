@@ -422,6 +422,8 @@ export interface OperationalExecution {
   readonly resolution?: OperationalResolution | null;
   /** PROD-03-02 — whether the Host would accept an operator resolution of this execution now, as far as this read shows. */
   readonly resolvable?: boolean;
+  /** PROD-03-02 hardening — whether re-submitting the identical attested resolution would complete its capacity reconciliation (P12 `pending`). */
+  readonly capacityReconcilable?: boolean;
 }
 
 /** PROD-03-02 — how an uncertain execution was closed. `operator-attestation` is an operator's recorded attestation, never a provider confirmation. */
@@ -458,6 +460,7 @@ export interface DisclosedOperational {
   readonly outcome?: OperationalExecution['outcome'];
   readonly resolution?: OperationalResolution | null;
   readonly resolvable?: boolean;
+  readonly capacityReconcilable?: boolean;
   readonly hidden: readonly string[];
 }
 
@@ -475,6 +478,29 @@ export const RESOLUTION_FAILURE_REASONS = ['PROVIDER_REJECTED', 'PROVIDER_UNAVAI
 export function isResolutionFailureReason(value: string): value is (typeof RESOLUTION_FAILURE_REASONS)[number] {
   return (RESOLUTION_FAILURE_REASONS as readonly string[]).includes(value);
 }
+
+/** PROD-03-02 — the operator-safe refusals of a contradictory or incomplete resolution form. Nothing is sent to the Host when one applies. */
+export const RESOLUTION_FORM_ERRORS = {
+  completedWithFailure: 'Failure reason must be empty when recording a completed resolution.',
+  notCompletedWithoutFailure: 'A failure reason is required when recording a not-completed resolution.',
+  unknownFailure: 'The failure reason must be one of the listed reasons.',
+} as const;
+
+/**
+ * PROD-03-02 — the console's closed resolution form, the same contract as the
+ * Host API's closed body: a completion carries **no** failure reason, a
+ * non-completion carries exactly one of the listed reasons. A contradictory
+ * form (a reason left selected after switching to "completed") is refused,
+ * never silently normalized — a resolution is permanent. `undefined`: valid.
+ */
+export function resolutionFormError(resolution: ResolutionChoice, failure: string): string | undefined {
+  if (resolution === 'confirmed-completed') return failure === '' ? undefined : RESOLUTION_FORM_ERRORS.completedWithFailure;
+  if (failure === '') return RESOLUTION_FORM_ERRORS.notCompletedWithoutFailure;
+  return isResolutionFailureReason(failure) ? undefined : RESOLUTION_FORM_ERRORS.unknownFailure;
+}
+
+/** PROD-03-02 — P12's closed capacity results (`ExecutionReconciliationCapacity`), as the Host states them. Pinned to the runtime's list by test. */
+export const RESOLUTION_CAPACITY_RESULTS = ['adjusted', 'no-reservation', 'not-composed', 'pending', 'conflict', 'inconsistent'] as const;
 
 /** PROD-03-02 — the closed resolution command. The Host derives the operator, the organization and the time. */
 export interface OperatorResolutionBody {
@@ -686,7 +712,8 @@ export const shapes = {
     operational.outcome(entry['outcome']) &&
     operational.trace(entry['trace']) &&
     absentOr(entry['resolution'], operational.resolution) &&
-    absentOr(entry['resolvable'], isBoolean),
+    absentOr(entry['resolvable'], isBoolean) &&
+    absentOr(entry['capacityReconcilable'], isBoolean),
   disclosedOperational: (entry: unknown): entry is DisclosedOperational =>
     isObject(entry) &&
     operational.identity(entry) &&
@@ -702,7 +729,8 @@ export const shapes = {
     absentOr(entry['execution'], operational.execution) &&
     absentOr(entry['outcome'], operational.outcome) &&
     absentOr(entry['resolution'], operational.resolution) &&
-    absentOr(entry['resolvable'], isBoolean),
+    absentOr(entry['resolvable'], isBoolean) &&
+    absentOr(entry['capacityReconcilable'], isBoolean),
   executions: (body: unknown): body is ExecutionsPage =>
     isObject(body) && isArrayOf(body['executions'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])),
   attention: (body: unknown): body is AttentionPage =>

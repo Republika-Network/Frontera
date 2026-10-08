@@ -143,6 +143,15 @@ export interface OperationalExecutionView {
    * the resolution command re-reads and decides for itself.
    */
   readonly resolvable: boolean;
+  /**
+   * PROD-03-02 hardening — an operator-attested resolution stands, its trace
+   * verifies, the execution's P7 reservation holds no reconciliation yet, and
+   * this Host composes capacity reconciliation: submitting the identical
+   * resolution again re-runs only P12's capacity step (`pending` → `adjusted`).
+   * `false` for `not-composed` (nothing can change) and for a contradiction
+   * (investigated, never re-run). A hint; the command decides for itself.
+   */
+  readonly capacityReconcilable: boolean;
 }
 
 export interface OperationalExecutionPage {
@@ -256,6 +265,8 @@ export interface DisclosedOperationalView {
   readonly resolution?: OperationalExecutionView['resolution'];
   /** PROD-03-02 — only where both the execution and the authority stages are disclosed (it reads the claim and the binding). */
   readonly resolvable?: boolean;
+  /** PROD-03-02 hardening — disclosed exactly where `resolvable` is. */
+  readonly capacityReconcilable?: boolean;
   readonly hidden: readonly OperationalViewSection[];
 }
 
@@ -316,7 +327,14 @@ export interface OperatorResolutionView {
     readonly recordedAt: string;
     readonly resolutionDigest: string;
   };
-  /** What became of the execution's P7 reservation once the resolution stood (P12's closed vocabulary). */
+  /**
+   * What became of the execution's P7 reservation once the resolution stood —
+   * P12's closed `ExecutionReconciliationCapacity`, verbatim. A separate fact
+   * from the resolution, which is durable whatever this says: `pending`,
+   * `conflict`, `inconsistent` and `not-composed` mean capacity was **not**
+   * reconciled. `pending` alone is completed by submitting the identical
+   * resolution again (its replay re-runs only the capacity step).
+   */
   readonly capacity: string;
   /** Stated on every success, because it is the point: evidence was recorded and no action was performed. */
   readonly effect: 'resolution-recorded-no-action-performed';

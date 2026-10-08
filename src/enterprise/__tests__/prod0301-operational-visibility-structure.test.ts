@@ -180,9 +180,24 @@ describe('PROD-03-01 structure — read only', () => {
   it('the console pages post nothing — but PROD-03-02’s one resolution form — and offer no resolve, retry, reconcile or resend control; the client reads them with GET', () => {
     const pages = codeOf(CONSOLE_PAGES);
     // PROD-03-02: one form, in ResolutionPage, posting to the resolution path; every other operations page posts nothing.
+    // Review hardening: one more form, ReconcileAgainForm, re-submits the identical recorded resolution — hidden fields
+    // only, to the same path (P12's replay re-runs the capacity step and nothing else). It is rendered only for a
+    // `pending` capacity result, or from the trace while capacity is unreconciled, to the attesting operator.
     const resolutionPage = /export function ResolutionPage[\s\S]*$/.exec(pages)?.[0] ?? '';
-    assert.equal([...resolutionPage.matchAll(/method="post"/g)].length, 1);
+    assert.equal([...resolutionPage.matchAll(/method="post"/g)].length, 2);
     assert.match(resolutionPage, /<form method="post" action=\{resolutionPath\(view\.requestId\)\}/);
+    const again = /function ReconcileAgainForm[\s\S]*?<form method="post" action=\{resolutionPath\(requestId\)\}[\s\S]*?<\/form>/.exec(resolutionPage)?.[0] ?? '';
+    assert.ok(again.length > 0, 'the second form is the identical-resolution form');
+    assert.deepEqual(
+      [...pages.matchAll(/<ReconcileAgainForm /g)].length,
+      2,
+      'rendered from exactly two places',
+    );
+    assert.match(pages, /\{recorded\.capacity === 'pending' \? <ReconcileAgainForm /);
+    assert.match(pages, /const submitted = identicalResolutionOf\(view, context\);\s*if \(submitted !== undefined\) return <ReconcileAgainForm /);
+    assert.match(pages, /\{capacityReconciliationMissing\(trace\.stages\) \? \([\s\S]*?<CapacityReconcileAgain /);
+    assert.deepEqual([...again.matchAll(/<input ([^>]*)\/>/g)].map((match) => /type="hidden"/.test(match[1] ?? '')), [true, true, true, true], 'it carries only hidden, identical fields (resolution, failure when stated, observedOutcome, confirm)');
+    assert.equal(/<select|<textarea|type="(?:radio|text|checkbox)"/.test(again), false, 'nothing in it can be chosen');
     const reads = pages.replace(resolutionPage, '');
     assert.equal(/method="post"|method=\{|<button[^>]*name=|\b(Resolve|Retry|Reconcile|Resend)\b/.test(reads), false);
     assert.equal(/<button[^>]*name=|\b(Resolve|Retry|Reconcile|Resend|Replay|Re-execute)\b/.test(resolutionPage), false);

@@ -121,7 +121,7 @@ export function createOperatorResolutionCommand(dependencies: OperatorResolution
         case 'recorded':
         case 'replayed': {
           const { resolution } = result;
-          logResolution((log) => log.recorded({ ...ref, requestId: result.requestId, evaluationId: result.evaluationId, result: result.outcome, resolutionDigest: resolution.resolutionDigest }));
+          logResolution((log) => log.recorded({ ...ref, requestId: result.requestId, evaluationId: result.evaluationId, result: result.outcome, resolutionDigest: resolution.resolutionDigest, capacity: result.capacity }));
           return {
             outcome: result.outcome,
             requestId: result.requestId,

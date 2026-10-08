@@ -101,9 +101,14 @@ export interface OperationalRecordSummary {
 /** States an operator may resolve: a claim with no definitive outcome, and nothing else (PROD-03-02). */
 const RESOLVABLE: ReadonlySet<OperationalState> = new Set<OperationalState>(['claimed-no-outcome', 'claimed-outcome-unconfirmed']);
 
-/** PROD-03-02 — what the view states about operator resolution. `attestation`: this Host composes operator attestation. */
+/**
+ * PROD-03-02 — what the view states about operator resolution. `attestation`:
+ * this Host composes operator attestation. `capacityReconciliation`: its P7
+ * ledger offers P12 a reconciliation capability.
+ */
 export interface OperationalViewOptions {
   readonly attestation?: boolean;
+  readonly capacityReconciliation?: boolean;
 }
 
 /**
@@ -150,6 +155,17 @@ export function operationalViewOf(trace: AuthorityTrace, summary: OperationalRec
     resolved === undefined &&
     resolution.presence === 'unresolved' &&
     (boundAuthority === undefined || boundAuthority === OPERATOR_ATTESTATION_AUTHORITY_ID);
+  // PROD-03-02 hardening: an attested resolution whose reservation holds no reconciliation yet, on a Host that can
+  // reconcile capacity — re-submitting the identical attestation re-runs only that step. A contradiction never
+  // classifies as resolved (the trace fails its P7 ↔ P12 check), so it is never offered.
+  const capacityReconcilable =
+    options.attestation === true &&
+    options.capacityReconciliation === true &&
+    resolved !== undefined &&
+    resolved.authorityId === OPERATOR_ATTESTATION_AUTHORITY_ID &&
+    (classification === 'executed-succeeded' || classification === 'executed-failed') &&
+    trace.stages.reservation.presence === 'recorded' &&
+    trace.stages.reservation.resolution === undefined;
 
   return {
     requestId: trace.requestId,
@@ -180,6 +196,7 @@ export function operationalViewOf(trace: AuthorityTrace, summary: OperationalRec
     trace: { available: true, finalState: trace.finalState, failure: null },
     resolution: resolutionView,
     resolvable,
+    capacityReconcilable,
   };
 }
 
@@ -208,6 +225,7 @@ export function operationalViewWithoutTrace(summary: OperationalRecordSummary, f
     trace: { available: false, finalState: null, failure },
     resolution: null,
     resolvable: false,
+    capacityReconcilable: false,
   };
 }
 
@@ -272,7 +290,7 @@ export function discloseOperationalView(view: OperationalExecutionView, disclose
               : { ...view.resolution, resolvedBy: shows('authority') ? view.resolution.resolvedBy : null, attestedBy: shows('approval') ? view.resolution.attestedBy : null },
         }
       : {}),
-    ...(visible.execution && visible.issuance ? { resolvable: view.resolvable } : {}),
+    ...(visible.execution && visible.issuance ? { resolvable: view.resolvable, capacityReconcilable: view.capacityReconcilable } : {}),
     hidden,
   };
 }

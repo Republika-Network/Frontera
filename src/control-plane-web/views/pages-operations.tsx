@@ -12,7 +12,9 @@ import {
   type OperationalScan,
   type OperationalTrace,
   type OperationsHealth,
+  type OperatorResolutionResponse,
   type OrganizationContext,
+  type ResolutionChoice,
 } from '../wire.js';
 import { CsrfField, Empty, FailureNotice, Id, KeyValues, List, Notice, Section, Status, Text, Time } from './components.js';
 import { Page } from './layout.js';
@@ -30,6 +32,12 @@ import { Page } from './layout.js';
  * only where the Host says the execution is resolvable and decided by the Host
  * when submitted. It records evidence; nothing here performs, or performs
  * again, the governed action.
+ *
+ * After a resolution is recorded, the capacity it corrects under the
+ * authority's limits is a separate fact (P12's capacity result). The console
+ * states it as the Host returned it and never presents an incomplete capacity
+ * reconciliation as a plain success (`ResolutionRecordedPage`,
+ * `capacityReconciliationMissing`).
  */
 
 export const tracePath = (requestId: string, level?: string): string => `/traces/${encodeURIComponent(requestId)}${level !== undefined && level !== 'AUDITOR' ? `?level=${encodeURIComponent(level)}` : ''}`;
@@ -326,6 +334,12 @@ export function TracePage({ context, csrfToken, view, flash }: { readonly contex
         />
       </Section>
       <Section title="Operational classification">
+        {capacityReconciliationMissing(trace.stages) ? (
+          <Notice tone="warning" title="Capacity reconciliation is not on record for this resolution">
+            <p data-testid="trace-capacity-unreconciled">{CAPACITY_UNRECONCILED_NOTICE}</p>
+            <CapacityReconcileAgain context={context} csrfToken={csrfToken} view={view} />
+          </Notice>
+        ) : null}
         {operational.attentionRequired ? (
           <Notice tone="warning" title="Attention required">
             <p>
@@ -503,7 +517,7 @@ export const RESOLUTION_NOTICE = [
   'You are recording what you established outside Frontera about this execution. The Host records it as this execution’s definitive resolution, attributed to you.',
   'Nothing is performed: the governed action is not run, not run again and not undone, no provider is contacted, and the Kernel decision, the issued authority and any approval stay exactly as recorded.',
   'A resolution is permanent and cannot be changed by anyone. If a provider outcome is recorded before you submit, it stands and nothing is recorded.',
-  'Recording that the execution did not complete returns the capacity it held under its authority’s limits.',
+  'Recording that the execution did not complete returns the capacity it held under its authority’s limits once the Host reconciles it. The Host tells you, after recording, if that reconciliation is incomplete.',
 ] as const;
 
 export const RESOLUTION_CHOICE_LABELS = {
@@ -524,11 +538,14 @@ export function ResolutionPage({
   csrfToken,
   view,
   failure,
+  formError,
 }: {
   readonly context: OrganizationContext;
   readonly csrfToken: string;
   readonly view: OperationalTrace;
   readonly failure?: HostFailure;
+  /** A refused, contradictory or incomplete form: nothing was sent to the Host, and the form below starts empty again. */
+  readonly formError?: string;
 }): React.ReactElement {
   const { operational, verification } = view;
   const outcomeStatus = operational.outcome?.status;
@@ -537,6 +554,11 @@ export function ResolutionPage({
   return (
     <Page title="Record resolution" context={context} csrfToken={csrfToken} active="/attention">
       {failure !== undefined ? <FailureNotice failure={failure} /> : null}
+      {formError !== undefined ? (
+        <Notice tone="danger" title="Nothing was recorded">
+          <p data-testid="resolution-form-error">{formError}</p>
+        </Notice>
+      ) : null}
       <Notice tone="warning" title="This records evidence. It performs no action.">
         <ul>
           {RESOLUTION_NOTICE.map((line) => (
@@ -597,7 +619,7 @@ export function ResolutionPage({
             ))}
           </fieldset>
           <div className="field">
-            <label htmlFor="failure">Reason it did not complete (required only when confirming it was not completed)</label>
+            <label htmlFor="failure">Reason it did not complete — required when confirming it was not completed; must be left empty (—) when confirming it was completed</label>
             <select id="failure" name="failure" className="input" defaultValue="">
               <option value="">—</option>
               {RESOLUTION_FAILURE_REASONS.map((reason) => (
@@ -627,4 +649,181 @@ export function ResolutionPage({
       )}
     </Page>
   );
+}
+
+/**
+ * PROD-03-02 — what the console says about P12's capacity result once a
+ * resolution is recorded, keyed by the Host's closed vocabulary. The
+ * resolution stands in every case; only `adjusted` and `no-reservation` mean
+ * nothing about capacity is left to do.
+ */
+export const CAPACITY_RESULT_NOTICES: Readonly<Record<string, { readonly tone: 'success' | 'warning' | 'danger'; readonly title: string; readonly body: string }>> = {
+  adjusted: { tone: 'success', title: 'Capacity reconciled', body: 'The capacity this execution held under its authority’s limits was reconciled with the resolution.' },
+  'no-reservation': { tone: 'success', title: 'No capacity to reconcile', body: 'This execution held no reservation under its authority’s limits.' },
+  pending: {
+    tone: 'warning',
+    title: 'Resolution recorded. Capacity reconciliation is still pending.',
+    body: 'The capacity ledger could not be reached. The resolution stands; the capacity this execution held stays conservatively consumed until its reconciliation completes. Running it again submits the identical resolution: nothing new is recorded, no action is performed, and only the capacity reconciliation runs again.',
+  },
+  conflict: {
+    tone: 'danger',
+    title: 'Resolution recorded. Capacity reconciliation is in conflict and requires investigation.',
+    body: 'The capacity ledger already holds a different resolution for this execution’s reservation. The recorded resolution stands and capacity was not changed. Investigate the reservation before relying on the remaining limits.',
+  },
+  inconsistent: {
+    tone: 'danger',
+    title: 'Resolution recorded. The capacity ledger contradicts it.',
+    body: 'The capacity ledger’s own history contradicts this resolution (for example, capacity was already released for an effect now recorded as completed). Nothing was repaired. Treat this as an integrity incident and investigate before relying on the remaining limits.',
+  },
+  'not-composed': {
+    tone: 'warning',
+    title: 'Resolution recorded. Capacity reconciliation is unavailable in this Host.',
+    body: 'This Host composes no capacity reconciliation, so the capacity this execution held stays conservatively consumed.',
+  },
+};
+
+/** The capacity results that leave nothing to do: a plain success is truthful only for these. */
+export const CAPACITY_RECONCILED: ReadonlySet<string> = new Set(['adjusted', 'no-reservation']);
+
+const UNRECOGNIZED_CAPACITY = {
+  tone: 'danger' as const,
+  title: 'Resolution recorded. Its capacity result is not one this console recognizes.',
+  body: 'The resolution stands. Treat the capacity this execution held as not reconciled and investigate the reservation.',
+};
+
+export const CAPACITY_UNRECONCILED_NOTICE =
+  'A resolution is recorded for this execution, but its reservation under the authority’s limits holds no matching reconciliation: the capacity it held may still be consumed, or the ledger contradicts the resolution. The resolution stands. Investigate the reservation below.';
+
+const asRecord = (value: unknown): Readonly<Record<string, unknown>> | undefined => (value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Readonly<Record<string, unknown>>) : undefined);
+
+/**
+ * PROD-03-02 — from the disclosed trace alone: a definitive resolution is
+ * recorded, the execution holds a P7 reservation, and that reservation carries
+ * no reconciliation matching the resolution — the same answer recorded for
+ * the same resolution digest. Display only — the Host's
+ * classification, attention and counts are unchanged — and silent at a
+ * disclosure level that hides either stage.
+ */
+export function capacityReconciliationMissing(stages: Readonly<Record<string, unknown>>): boolean {
+  const reservation = asRecord(stages['reservation']);
+  const resolved = asRecord(asRecord(stages['resolution'])?.['resolution']);
+  if (reservation === undefined || resolved === undefined || reservation['presence'] !== 'recorded') return false;
+  const certainty = resolved['certainty'];
+  if (certainty !== 'confirmed-completed' && certainty !== 'confirmed-not-completed') return false;
+  if (reservation['resolution'] !== certainty) return true;
+  // P7's identity is the answer **and** the digest it was recorded for: a row with the same answer for another resolution is a conflict, not a reconciliation.
+  const recordedFor = reservation['resolutionDigest'];
+  const digest = resolved['resolutionDigest'];
+  return typeof recordedFor === 'string' && typeof digest === 'string' ? recordedFor !== digest : recordedFor === undefined && digest !== undefined;
+}
+
+/**
+ * PROD-03-02 — the answer to a recorded resolution whose capacity
+ * reconciliation is not complete. Both truths are stated: the resolution is
+ * durable, and capacity is not reconciled. Only for `pending` — which P12
+ * completes when the identical resolution is submitted again — is a second
+ * submission offered: the same resolution, so nothing new is recorded and
+ * nothing is performed.
+ */
+export function ResolutionRecordedPage({
+  context,
+  csrfToken,
+  requestId,
+  recorded,
+  submitted,
+}: {
+  readonly context: OrganizationContext;
+  readonly csrfToken: string;
+  readonly requestId: string;
+  readonly recorded: OperatorResolutionResponse;
+  readonly submitted: { readonly resolution: ResolutionChoice; readonly failure?: string; readonly observedOutcome: 'none' | 'unconfirmed' };
+}): React.ReactElement {
+  const notice = CAPACITY_RESULT_NOTICES[recorded.capacity] ?? UNRECOGNIZED_CAPACITY;
+  return (
+    <Page title="Resolution recorded" context={context} csrfToken={csrfToken} active="/attention">
+      <Notice tone="info" title={recorded.outcome === 'replayed' ? 'Resolution already recorded (same resolution, unchanged)' : 'Resolution recorded'}>
+        <p data-testid="resolution-recorded">
+          {recorded.resolution.certainty}
+          {recorded.resolution.failure !== null ? ` (${recorded.resolution.failure})` : ''}, attested by {recorded.resolution.attestedBy}. Evidence only — no action was performed.
+        </p>
+      </Notice>
+      <Notice tone={notice.tone} title={notice.title}>
+        <p data-testid="resolution-capacity" data-capacity={recorded.capacity}>
+          {notice.body}
+        </p>
+      </Notice>
+      <KeyValues
+        rows={[
+          ['Execution', <Id key="e" value={recorded.executionId} />],
+          ['Capacity result (as the Host stated it)', <code key="c">{recorded.capacity}</code>],
+          ['Resolution digest', <Id key="d" value={recorded.resolution.resolutionDigest} />],
+        ]}
+      />
+      {recorded.capacity === 'pending' ? <ReconcileAgainForm csrfToken={csrfToken} requestId={requestId} submitted={submitted} /> : null}
+      <p>
+        <a href={tracePath(requestId)}>Back to the trace</a>
+      </p>
+    </Page>
+  );
+}
+
+/** The identical resolution, as hidden fields only: what an operator re-submits to run P12's capacity step again. */
+interface IdenticalResolution {
+  readonly resolution: ResolutionChoice;
+  readonly failure?: string;
+  readonly observedOutcome: 'none' | 'unconfirmed';
+}
+
+/**
+ * PROD-03-02 — the one form that re-submits a resolution: the identical one,
+ * hidden fields only, to the same resolution route. P12's `replayed` path
+ * records nothing new and performs nothing; it re-runs only the capacity
+ * reconciliation.
+ */
+function ReconcileAgainForm({ csrfToken, requestId, submitted }: { readonly csrfToken: string; readonly requestId: string; readonly submitted: IdenticalResolution }): React.ReactElement {
+  return (
+    <form method="post" action={resolutionPath(requestId)} className="form" data-testid="capacity-reconcile-again-form">
+      <CsrfField token={csrfToken} />
+      <input type="hidden" name="resolution" value={submitted.resolution} />
+      {submitted.failure !== undefined ? <input type="hidden" name="failure" value={submitted.failure} /> : null}
+      <input type="hidden" name="observedOutcome" value={submitted.observedOutcome} />
+      <input type="hidden" name="confirm" value="yes" />
+      <div className="form__actions">
+        <button type="submit" className="button">
+          Run capacity reconciliation again
+        </button>
+      </div>
+      <p className="help">Submits the identical resolution again. Nothing new is recorded and no action is performed.</p>
+    </form>
+  );
+}
+
+/**
+ * PROD-03-02 — the identical resolution recoverable from the durable trace, so
+ * an incomplete capacity reconciliation is not lost with the page that first
+ * reported it. Only where the Host states it can complete it
+ * (`capacityReconcilable`: never for `not-composed`, never for a
+ * contradiction), for a trace that verifies, for the operator who attested it
+ * (an identical replay is the same operator's), and only for the basis the
+ * trace states. The Host checks all of it again.
+ */
+export function identicalResolutionOf(view: OperationalTrace, context: OrganizationContext): IdenticalResolution | undefined {
+  if (view.operational.capacityReconcilable !== true || !view.verification.verified || !context.operator.permissions.includes('operations.resolve')) return undefined;
+  const resolved = asRecord(asRecord(view.trace.stages['resolution'])?.['resolution']);
+  const outcome = asRecord(view.trace.stages['outcome']);
+  if (resolved === undefined || outcome === undefined || resolved['attestedBy'] !== `operator:${context.operator.operatorId}`) return undefined;
+  const observedOutcome = outcome['presence'] === 'recorded' && outcome['certainty'] === 'unconfirmed' ? 'unconfirmed' : outcome['presence'] === 'unresolved' ? 'none' : undefined;
+  if (observedOutcome === undefined) return undefined;
+  const certainty = resolved['certainty'];
+  const failure = resolved['failure'];
+  if (certainty === 'confirmed-completed') return { resolution: certainty, observedOutcome };
+  if (certainty === 'confirmed-not-completed' && typeof failure === 'string') return { resolution: certainty, failure, observedOutcome };
+  return undefined;
+}
+
+function CapacityReconcileAgain({ context, csrfToken, view }: { readonly context: OrganizationContext; readonly csrfToken: string; readonly view: OperationalTrace }): React.ReactElement | null {
+  const submitted = identicalResolutionOf(view, context);
+  if (submitted !== undefined) return <ReconcileAgainForm csrfToken={csrfToken} requestId={view.requestId} submitted={submitted} />;
+  if (view.operational.capacityReconcilable !== true) return <p className="help">Submitting the resolution again cannot complete it here: this Host has no capacity reconciliation, or the capacity ledger must be investigated.</p>;
+  return <p className="help">Only the operator who recorded this resolution can submit it again to complete the capacity reconciliation.</p>;
 }

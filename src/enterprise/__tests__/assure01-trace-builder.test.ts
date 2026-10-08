@@ -123,6 +123,8 @@ function executedWorld(): World {
 function resolvedWorld(): World {
   const world = executedWorld();
   world.terminal = { ...world.terminal, observation: { kind: 'provider', certainty: 'unconfirmed', adapterId: 'adapter-unit', observedAt: T } };
+  // An unconfirmed observation is only ever settled `execution-unconfirmed` by P7 (PROD-03-02 hardening checks it).
+  world.reservation = { reservation: { executionId: EXECUTION, boundedGrantId: GRANT }, state: 'settled', terminal: { kind: 'settled', reason: 'execution-unconfirmed' } };
   world.references[2] = ref(executionOutcomeReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'execution-unconfirmed@adapter-unit', digest: OBSERVATION_DIGEST });
   world.references.push(ref(executionResolutionReferenceId(EXECUTION), 'execution_record', EXECUTION, { externalVersion: 'resolved:confirmed-completed', digest: RESOLUTION_DIGEST }));
   (world.events[3] as { payload: Record<string, unknown> }).payload = { status: 'execution-unconfirmed', reasonCodes: [], adapterId: 'adapter-unit', outcomeRecorded: true };
@@ -745,5 +747,57 @@ describe('ASSURE-01 second review — read order, degraded stores, summaries and
     reserved.reservation = { reservation: { executionId: EXECUTION, boundedGrantId: GRANT, policyDigest: 'sha256:p', authorityBindingDigest: 'sha256:b' }, state: 'settled', terminal: { reason: 'executed' } };
     reserved.events.push(event(5, 'exercise.reservation.reserved', { decisionId: DECISION, boundedGrantId: GRANT, executionId: EXECUTION, reservationId: RESERVATION }, { policyDigest: 'sha256:other', authorityBindingDigest: 'sha256:b' }));
     assert.ok(failed((await build(reserved)).verification).includes('correlation:correlation.event-reservation-reserved-payload'));
+  });
+});
+
+describe('ASSURE-01 trace builder — PROD-03-02 hardening: a reservation reconciliation must be for this execution’s resolution', () => {
+  const RECONCILED = 'correlation:correlation.reservation-reconciliation';
+  const reconciledWorld = (reconciliation: Record<string, unknown>, terminal: Record<string, unknown> = { kind: 'settled', reason: 'execution-unconfirmed' }): World => {
+    const world = resolvedWorld();
+    world.reservation = {
+      reservation: { executionId: EXECUTION, boundedGrantId: GRANT },
+      state: 'settled',
+      terminal,
+      resolution: { reservationId: RESERVATION, executionId: EXECUTION, resolution: 'confirmed-completed', resolutionDigest: RESOLUTION_DIGEST, recordedAt: T, ...reconciliation },
+    } as World['reservation'];
+    return world;
+  };
+
+  it('the same answer for the same resolution digest, with an agreeing terminal history, verifies — and the stage states the digest', async () => {
+    const built = await build(reconciledWorld({}));
+    assert.deepEqual(failed(built.verification), []);
+    assert.equal(built.verification.checks.find((entry) => entry.check === 'correlation.reservation-reconciliation')?.status, 'pass');
+    assert.equal(built.trace.stages.reservation.resolutionDigest, RESOLUTION_DIGEST);
+  });
+
+  it('a reconciliation for another resolution digest (P7 `conflict`) fails verification, even with no P8 event to compare', async () => {
+    const built = await build(reconciledWorld({ resolutionDigest: 'sha256:another-resolution' }));
+    assert.deepEqual(failed(built.verification), [RECONCILED]);
+    assert.equal(built.verification.verified, false);
+  });
+
+  it('a reconciliation with another answer fails verification', async () => {
+    assert.deepEqual(failed((await build(reconciledWorld({ resolution: 'confirmed-not-completed' }))).verification), [RECONCILED]);
+  });
+
+  it('a terminal history P7’s own rule contradicts (released beside an unconfirmed observation resolved completed) fails verification', async () => {
+    assert.deepEqual(failed((await build(reconciledWorld({}, { kind: 'released', reason: 'execution-failed' }))).verification), [RECONCILED]);
+  });
+
+  it('with no reconciliation row, a terminal history that contradicts the resolution still fails verification (P7 `inconsistent`)', async () => {
+    const world = resolvedWorld();
+    world.reservation = { reservation: { executionId: EXECUTION, boundedGrantId: GRANT }, state: 'released', terminal: { kind: 'released', reason: 'execution-failed' } };
+    assert.deepEqual(failed((await build(world)).verification), [RECONCILED]);
+  });
+
+  it('with no reconciliation row and an agreeing history (P7 `pending` / `not-composed`) it passes: missing is not contradicted', async () => {
+    const built = await build(resolvedWorld());
+    assert.deepEqual(failed(built.verification), []);
+    assert.equal(built.verification.checks.find((entry) => entry.check === 'correlation.reservation-reconciliation')?.status, 'pass');
+  });
+
+  it('without a composed resolution source it is not applicable, never a pass', async () => {
+    const built = await build(reconciledWorld({}), { composed: { resolutions: false } });
+    assert.equal(built.verification.checks.find((entry) => entry.check === 'correlation.reservation-reconciliation')?.status, 'not-applicable');
   });
 });
