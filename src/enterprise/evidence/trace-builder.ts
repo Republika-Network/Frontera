@@ -612,6 +612,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
               certainty: resolved.certainty,
               ...(resolved.failure !== undefined ? { failure: resolved.failure } : {}),
               ...(resolved.providerRef !== undefined ? { providerRef: resolved.providerRef } : {}),
+              ...(resolved.attestedBy !== undefined ? { attestedBy: resolved.attestedBy } : {}),
               resolvedAt: resolved.resolvedAt,
               resolutionDigest: resolved.resolutionDigest,
               ...(resolved.basisObservationDigest !== undefined ? { basisObservationDigest: resolved.basisObservationDigest } : {}),

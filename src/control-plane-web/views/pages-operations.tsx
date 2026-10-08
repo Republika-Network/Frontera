@@ -1,8 +1,20 @@
 import * as React from 'react';
 
 import type { HostFailure } from '../failures.js';
-import { TRACE_LEVELS, type AttentionPage, type ExecutionsPage, type OperationalExecution, type OperationalMetrics, type OperationalScan, type OperationalTrace, type OperationsHealth, type OrganizationContext } from '../wire.js';
-import { Empty, FailureNotice, Id, KeyValues, List, Notice, Section, Status, Text, Time } from './components.js';
+import {
+  RESOLUTION_FAILURE_REASONS,
+  TRACE_LEVELS,
+  type AttentionPage,
+  type ExecutionsPage,
+  type OperationalExecution,
+  type OperationalMetrics,
+  type OperationalResolution,
+  type OperationalScan,
+  type OperationalTrace,
+  type OperationsHealth,
+  type OrganizationContext,
+} from '../wire.js';
+import { CsrfField, Empty, FailureNotice, Id, KeyValues, List, Notice, Section, Status, Text, Time } from './components.js';
 import { Page } from './layout.js';
 
 /**
@@ -10,12 +22,20 @@ import { Page } from './layout.js';
  * Host Health.
  *
  * Read only. Every value is what the Host's operator plane returned for this
- * render (`/api/admin/operations/...`); the console classifies nothing, counts
- * nothing and offers no control that changes an execution — there is no form
- * here that posts anything.
+ * render (`/api/admin/operations/...`); the console classifies nothing and
+ * counts nothing.
+ *
+ * PROD-03-02 adds exactly one form: recording an operator resolution of one
+ * claimed execution with no definitive outcome (`ResolutionPage`), offered
+ * only where the Host says the execution is resolvable and decided by the Host
+ * when submitted. It records evidence; nothing here performs, or performs
+ * again, the governed action.
  */
 
 export const tracePath = (requestId: string, level?: string): string => `/traces/${encodeURIComponent(requestId)}${level !== undefined && level !== 'AUDITOR' ? `?level=${encodeURIComponent(level)}` : ''}`;
+
+/** PROD-03-02 — the one resolution workflow page of a request. */
+export const resolutionPath = (requestId: string): string => `/traces/${encodeURIComponent(requestId)}/resolution`;
 
 const isFailure = <T extends object>(value: T | HostFailure): value is HostFailure => 'kind' in value && 'message' in value;
 
@@ -250,12 +270,40 @@ const STAGE_TITLES: Readonly<Record<(typeof STAGE_ORDER)[number], string>> = {
 /** A section the disclosure level left out of the operational classification. */
 const HIDDEN_HERE = <span className="muted">hidden at this level</span>;
 
-export function TracePage({ context, csrfToken, view }: { readonly context: OrganizationContext; readonly csrfToken: string; readonly view: OperationalTrace }): React.ReactElement {
+/** PROD-03-02 — how the definitive answer was reached when it is a resolution: an operator's recorded attestation is never shown as a provider confirmation. */
+export const RESOLVED_BY_LABELS: Readonly<Record<string, string>> = {
+  'operator-attestation': 'Operator resolution (recorded attestation — not a provider confirmation)',
+  'resolution-authority': 'Resolution authority',
+};
+
+function Resolution({ resolution }: { readonly resolution: OperationalResolution | null | undefined }): React.ReactElement {
+  if (resolution === undefined || resolution === null) return <span className="muted">none recorded</span>;
+  return (
+    <span data-testid="trace-resolution" data-resolved-by={resolution.resolvedBy ?? 'not-stated'}>
+      <Status value={resolution.certainty} />
+      {resolution.failure !== null ? (
+        <>
+          {' '}
+          <Id value={resolution.failure} />
+        </>
+      ) : null}{' '}
+      — {resolution.resolvedBy !== null ? (RESOLVED_BY_LABELS[resolution.resolvedBy] ?? resolution.resolvedBy) : 'mechanism not stated at this level'}
+      {resolution.attestedBy !== null ? (
+        <>
+          , attested by <Id value={resolution.attestedBy} />
+        </>
+      ) : null}
+      , <Time value={resolution.resolvedAt} />
+    </span>
+  );
+}
+
+export function TracePage({ context, csrfToken, view, flash }: { readonly context: OrganizationContext; readonly csrfToken: string; readonly view: OperationalTrace; readonly flash?: string }): React.ReactElement {
   const { trace, verification, operational, disclosure } = view;
   const summary = typeof trace.summary === 'object' ? trace.summary : undefined;
   const failing = verification.checks.filter((entry) => entry.status === 'fail');
   return (
-    <Page title={`Trace ${view.requestId}`} context={context} csrfToken={csrfToken} active="/traces">
+    <Page title={`Trace ${view.requestId}`} context={context} csrfToken={csrfToken} active="/traces" {...(flash !== undefined ? { flash } : {})}>
       <Section title="Disclosure">
         <p>
           Disclosed at <strong data-testid="trace-level">{disclosure.level}</strong> (<Id value={disclosure.policyId} />). Other levels:{' '}
@@ -306,9 +354,18 @@ export function TracePage({ context, csrfToken, view }: { readonly context: Orga
               operational.execution === undefined ? HIDDEN_HERE : operational.execution.claim === 'recorded' ? <Time key="e" value={operational.execution.claimedAt} /> : <span key="e" className="muted">{operational.execution.claim}</span>,
             ],
             ['Outcome', operational.outcome !== undefined ? <Outcome key="o" outcome={operational.outcome} claim={operational.execution?.claim} /> : HIDDEN_HERE],
+            ['Resolution', operational.outcome !== undefined ? <Resolution key="r" resolution={operational.resolution} /> : HIDDEN_HERE],
             ['Final state (trace)', <code key="f">{summary?.finalState ?? verification.finalState}</code>],
           ]}
         />
+        {operational.resolvable === true && context.operator.permissions.includes('operations.resolve') ? (
+          <p>
+            <a className="button" href={resolutionPath(view.requestId)} data-testid="record-resolution">
+              Record resolution
+            </a>{' '}
+            <span className="help">For a claimed execution with no confirmed outcome, after you have established outside Frontera whether it completed.</span>
+          </p>
+        ) : null}
       </Section>
       <Section title="Verification">
         {verification.verified ? (
@@ -437,6 +494,137 @@ export function HostHealthPage({
           </>
         )}
       </Section>
+    </Page>
+  );
+}
+
+/** PROD-03-02 — what the resolution page says the action is and is not. Shown on every render, above the form. */
+export const RESOLUTION_NOTICE = [
+  'You are recording what you established outside Frontera about this execution. The Host records it as this execution’s definitive resolution, attributed to you.',
+  'Nothing is performed: the governed action is not run, not run again and not undone, no provider is contacted, and the Kernel decision, the issued authority and any approval stay exactly as recorded.',
+  'A resolution is permanent and cannot be changed by anyone. If a provider outcome is recorded before you submit, it stands and nothing is recorded.',
+  'Recording that the execution did not complete returns the capacity it held under its authority’s limits.',
+] as const;
+
+export const RESOLUTION_CHOICE_LABELS = {
+  'confirmed-completed': 'Confirm this execution was completed',
+  'confirmed-not-completed': 'Confirm this execution was not completed',
+} as const;
+
+/**
+ * PROD-03-02 — the resolution workflow of one request, always from a fresh
+ * Host read at AUDITOR: the immutable context the operator decides on, why the
+ * Host allows a resolution, and the closed choice with an explicit
+ * confirmation. The hidden `observedOutcome` is the state this page shows; if
+ * the Host's state is different when the form is submitted, nothing is
+ * recorded.
+ */
+export function ResolutionPage({
+  context,
+  csrfToken,
+  view,
+  failure,
+}: {
+  readonly context: OrganizationContext;
+  readonly csrfToken: string;
+  readonly view: OperationalTrace;
+  readonly failure?: HostFailure;
+}): React.ReactElement {
+  const { operational, verification } = view;
+  const outcomeStatus = operational.outcome?.status;
+  const observed = outcomeStatus === 'unconfirmed' ? 'unconfirmed' : outcomeStatus === 'none' ? 'none' : undefined;
+  const resolvable = operational.resolvable === true && operational.executionId !== null && observed !== undefined;
+  return (
+    <Page title="Record resolution" context={context} csrfToken={csrfToken} active="/attention">
+      {failure !== undefined ? <FailureNotice failure={failure} /> : null}
+      <Notice tone="warning" title="This records evidence. It performs no action.">
+        <ul>
+          {RESOLUTION_NOTICE.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      </Notice>
+      <Section title="Execution (re-read from the Host for this page)">
+        <KeyValues
+          rows={[
+            ['Request', <Id key="r" value={view.requestId} />],
+            ['Execution', operational.executionId !== null ? <Id key="e" value={operational.executionId} /> : <span key="e" className="muted">none</span>],
+            ['Actor', operational.actorId !== undefined ? <Id key="a" value={operational.actorId} /> : HIDDEN_HERE],
+            ['Action', operational.actionType !== undefined ? <Id key="t" value={operational.actionType} /> : HIDDEN_HERE],
+            [
+              'Kernel decision (unchanged by a resolution)',
+              operational.decision !== undefined ? (
+                <span key="d">
+                  <Status value={operational.decision.status} /> {operational.decision.reasonCodes.length > 0 ? <List values={operational.decision.reasonCodes} /> : null}
+                </span>
+              ) : (
+                HIDDEN_HERE
+              ),
+            ],
+            ['Issuance', operational.issuance !== undefined ? <Issuance key="i" issuance={operational.issuance} /> : HIDDEN_HERE],
+            [
+              'Execution claim',
+              operational.execution === undefined ? HIDDEN_HERE : operational.execution.claim === 'recorded' ? <Time key="c" value={operational.execution.claimedAt} /> : <span key="c" className="muted">{operational.execution.claim}</span>,
+            ],
+            ['Known outcome', operational.outcome !== undefined ? <Outcome key="o" outcome={operational.outcome} claim={operational.execution?.claim} /> : HIDDEN_HERE],
+            ['Resolution', <Resolution key="res" resolution={operational.resolution} />],
+            [
+              'Trace',
+              <span key="v">
+                {verification.verified ? <Status value="verified" /> : <Status value="verification-failed" />} <code>{verification.finalState}</code>
+              </span>,
+            ],
+            ['Classification', operational.classification !== null ? <code key="k">{operational.classification}</code> : HIDDEN_HERE],
+          ]}
+        />
+        <p className="help" data-testid="resolution-why">
+          {resolvable
+            ? 'Why a resolution is allowed: this execution was claimed — the write-ahead record was made before the provider was called, so the provider may have been reached — and no definitive outcome and no resolution is recorded for it. Its trace verifies, and no governed call for it is in progress on this Host. The Host checks all of this again when you submit.'
+            : 'The Host does not allow a resolution of this execution now: it has a definitive outcome or resolution already, it was never claimed, its records do not verify, or this Host records no operator resolutions.'}
+        </p>
+      </Section>
+      {resolvable ? (
+        <form method="post" action={resolutionPath(view.requestId)} className="form" data-testid="resolution-form">
+          <CsrfField token={csrfToken} />
+          <input type="hidden" name="observedOutcome" value={observed} />
+          <fieldset className="field">
+            <legend>Resolution (required)</legend>
+            {(['confirmed-completed', 'confirmed-not-completed'] as const).map((choice) => (
+              <div key={choice} className="field field--check">
+                <input id={`resolution-${choice}`} name="resolution" type="radio" value={choice} required />
+                <label htmlFor={`resolution-${choice}`}>{RESOLUTION_CHOICE_LABELS[choice]}</label>
+              </div>
+            ))}
+          </fieldset>
+          <div className="field">
+            <label htmlFor="failure">Reason it did not complete (required only when confirming it was not completed)</label>
+            <select id="failure" name="failure" className="input" defaultValue="">
+              <option value="">—</option>
+              {RESOLUTION_FAILURE_REASONS.map((reason) => (
+                <option key={reason} value={reason}>
+                  {reason}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field field--check">
+            <input id="confirm" name="confirm" type="checkbox" value="yes" required />
+            <label htmlFor="confirm">I established this outside Frontera, and I intend to record it as this execution’s permanent resolution. I understand that no action is performed.</label>
+          </div>
+          <div className="form__actions">
+            <button type="submit" className="button button--danger">
+              Record resolution
+            </button>
+            <a className="button button--quiet" href={tracePath(view.requestId)}>
+              Cancel
+            </a>
+          </div>
+        </form>
+      ) : (
+        <p>
+          <a href={tracePath(view.requestId)}>Back to the trace</a>
+        </p>
+      )}
     </Page>
   );
 }

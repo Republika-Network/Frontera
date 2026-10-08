@@ -1,6 +1,16 @@
 import type { AuthorityTrace } from '../evidence/trace-contracts.js';
 import { TRACE_DISCLOSURE_REDACTED_VALUE, type DisclosedAuthorityTrace } from '../evidence/trace-disclosure.js';
-import type { AttentionReason, DisclosedOperationalView, OperationalExecutionView, OperationalOutcomeSource, OperationalOutcomeStatus, OperationalState, OperationalViewSection } from './contracts.js';
+import { OPERATOR_ATTESTATION_AUTHORITY_ID } from '../execution-reconciliation/operator-attestation.js';
+import type {
+  AttentionReason,
+  DisclosedOperationalView,
+  OperationalExecutionView,
+  OperationalOutcomeSource,
+  OperationalOutcomeStatus,
+  OperationalResolutionView,
+  OperationalState,
+  OperationalViewSection,
+} from './contracts.js';
 
 /**
  * PROD-03-01 — the one classification of a governed request, a pure function
@@ -88,8 +98,20 @@ export interface OperationalRecordSummary {
   readonly persistedAt: string;
 }
 
-/** The operator view of one governed request, from its canonical trace and the record summary. Pure. */
-export function operationalViewOf(trace: AuthorityTrace, summary: OperationalRecordSummary): OperationalExecutionView {
+/** States an operator may resolve: a claim with no definitive outcome, and nothing else (PROD-03-02). */
+const RESOLVABLE: ReadonlySet<OperationalState> = new Set<OperationalState>(['claimed-no-outcome', 'claimed-outcome-unconfirmed']);
+
+/** PROD-03-02 — what the view states about operator resolution. `attestation`: this Host composes operator attestation. */
+export interface OperationalViewOptions {
+  readonly attestation?: boolean;
+}
+
+/**
+ * The operator view of one governed request, from its canonical trace and the
+ * record summary. Pure. `resolvable` is `false` unless `options.attestation`
+ * says this Host can record an operator resolution at all.
+ */
+export function operationalViewOf(trace: AuthorityTrace, summary: OperationalRecordSummary, options: OperationalViewOptions = {}): OperationalExecutionView {
   const classification = classifyAuthorityTrace(trace);
   const attentionReasons = attentionReasonsOf(classification);
   const { approval, authority, execution, outcome, resolution, decision } = trace.stages;
@@ -107,6 +129,27 @@ export function operationalViewOf(trace: AuthorityTrace, summary: OperationalRec
 
   const source: OperationalOutcomeSource | null =
     resolved !== undefined ? 'resolution' : outcome.legacy === true ? 'legacy-summary' : outcome.presence === 'recorded' ? 'initial-observation' : null;
+
+  // PROD-03-02: an operator attestation is named as one, never as the provider's confirmation.
+  const resolutionView: OperationalResolutionView | null =
+    resolved === undefined || (resolved.certainty !== 'confirmed-completed' && resolved.certainty !== 'confirmed-not-completed')
+      ? null
+      : {
+          resolvedBy: resolved.authorityId === OPERATOR_ATTESTATION_AUTHORITY_ID ? 'operator-attestation' : 'resolution-authority',
+          attestedBy: resolved.attestedBy ?? null,
+          certainty: resolved.certainty,
+          failure: resolved.failure ?? null,
+          resolvedAt: resolved.resolvedAt,
+        };
+  // The binding decides who may resolve: unbound (adopted on resolution) or bound to attestation, never another authority's.
+  const boundAuthority = resolution.binding?.authorityId;
+  const resolvable =
+    options.attestation === true &&
+    RESOLVABLE.has(classification) &&
+    trace.executionId !== undefined &&
+    resolved === undefined &&
+    resolution.presence === 'unresolved' &&
+    (boundAuthority === undefined || boundAuthority === OPERATOR_ATTESTATION_AUTHORITY_ID);
 
   return {
     requestId: trace.requestId,
@@ -135,6 +178,8 @@ export function operationalViewOf(trace: AuthorityTrace, summary: OperationalRec
       recordedAt: resolved?.resolvedAt ?? outcome.recordedAt ?? null,
     },
     trace: { available: true, finalState: trace.finalState, failure: null },
+    resolution: resolutionView,
+    resolvable,
   };
 }
 
@@ -161,6 +206,8 @@ export function operationalViewWithoutTrace(summary: OperationalRecordSummary, f
     execution: { claim: 'unknown', claimedAt: null },
     outcome: { status: 'none', source: null, failure: null, withheldBy: null, reasonCodes: [], recordedAt: null },
     trace: { available: false, finalState: null, failure },
+    resolution: null,
+    resolvable: false,
   };
 }
 
@@ -216,6 +263,16 @@ export function discloseOperationalView(view: OperationalExecutionView, disclose
     ...(visible.issuance ? { issuance: view.issuance } : {}),
     ...(visible.execution ? { execution: view.execution } : {}),
     ...(visible.outcome ? { outcome: view.outcome } : {}),
+    // PROD-03-02: who closed it is mechanism (the authority stage) and people (the approval stage, where human identities are governed).
+    ...(visible.outcome
+      ? {
+          resolution:
+            view.resolution === null
+              ? null
+              : { ...view.resolution, resolvedBy: shows('authority') ? view.resolution.resolvedBy : null, attestedBy: shows('approval') ? view.resolution.attestedBy : null },
+        }
+      : {}),
+    ...(visible.execution && visible.issuance ? { resolvable: view.resolvable } : {}),
     hidden,
   };
 }

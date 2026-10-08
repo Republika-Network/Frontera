@@ -44,7 +44,14 @@ export function executionResolutionBindingViolation(input: unknown): string | un
   return undefined;
 }
 
-const RESOLUTION_KEYS = ['organizationId', 'executionId', 'attemptDigest', 'bindingDigest', 'basisObservationDigest', 'authorityId', 'certainty', 'failure', 'providerRef', 'resolvedAt'] as const;
+const RESOLUTION_KEYS = ['organizationId', 'executionId', 'attemptDigest', 'bindingDigest', 'basisObservationDigest', 'authorityId', 'certainty', 'failure', 'providerRef', 'attestedBy', 'resolvedAt'] as const;
+
+/** PROD-03-02 — the operator an attested resolution names, in the operator plane's own `operator:<operatorId>` spelling. */
+const ATTESTING_OPERATOR = /^operator:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export function isAttestingOperatorRef(value: unknown): value is string {
+  return typeof value === 'string' && ATTESTING_OPERATOR.test(value);
+}
 
 /**
  * Why a resolution is outside the contract, or `undefined` when it is inside
@@ -74,6 +81,7 @@ export function executionResolutionViolation(input: unknown): string | undefined
     return 'certainty is neither confirmed-completed nor confirmed-not-completed';
   }
   if (input['providerRef'] !== undefined && !isRecordableProviderRef(input['providerRef'])) return 'providerRef is not a recordable provider reference';
+  if (input['attestedBy'] !== undefined && !isAttestingOperatorRef(input['attestedBy'])) return 'attestedBy is not an operator reference';
   if (!isCanonicalOutcomeInstant(input['resolvedAt'])) return 'resolvedAt is not a canonical instant';
   return undefined;
 }

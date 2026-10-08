@@ -26,6 +26,8 @@ import {
   type OperationalMetrics,
   type OperationalTrace,
   type OperationsHealth,
+  type OperatorResolutionBody,
+  type OperatorResolutionResponse,
   type OrganizationContext,
   type ProfileCatalog,
   type ProfileTransitionResult,
@@ -109,6 +111,8 @@ export interface HostClient {
   operationsMetrics(bearer: string): Promise<HostResult<OperationalMetrics>>;
   /** PROD-03-01 — the Host's health with its operational counts. */
   operationsHealth(bearer: string): Promise<HostResult<OperationsHealth>>;
+  /** PROD-03-02 — record an operator resolution of one execution. Evidence only; the Host derives who resolved it. */
+  resolveExecution(bearer: string, executionId: string, body: OperatorResolutionBody): Promise<HostResult<OperatorResolutionResponse>>;
 }
 
 /**
@@ -207,6 +211,13 @@ export function createHostClient(options: HostClientOptions): HostClient {
     trace: (bearer, requestId, level) => send('GET', `/api/admin/operations/traces/${segment(requestId)}${query({ level })}`, bearer, shapes.trace),
     operationsMetrics: (bearer) => send('GET', '/api/admin/operations/metrics', bearer, shapes.metrics),
     operationsHealth: (bearer) => send('GET', '/api/admin/operations/health', bearer, shapes.operationsHealth),
+    // Field by field: the closed command only — never an operator, organization or time.
+    resolveExecution: (bearer, executionId, body) =>
+      send('POST', `/api/admin/operations/executions/${segment(executionId)}/resolution`, bearer, shapes.operatorResolution, {
+        resolution: body.resolution,
+        ...(body.resolution === 'confirmed-not-completed' && body.failure !== undefined ? { failure: body.failure } : {}),
+        observedOutcome: body.observedOutcome,
+      }),
   };
   // Every method builds its path before sending; a refused segment becomes a validation failure, never a request.
   const guarded = Object.fromEntries(

@@ -34,7 +34,7 @@ Evidence Bundle Store):
 | exercise-ledger | `AOC_ENTERPRISE_EXERCISE_LEDGER_SQLITE_PATH` | `stores/exercise-ledger.sqlite` | governed actions configured | per-record digests (unsigned) |
 | authority-event-stream | `AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH` | `stores/authority-event-stream.sqlite` | governed actions configured | digest-chained events (unsigned) |
 | execution-outcomes | `AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH` | `stores/execution-outcomes.sqlite` | governed actions configured | per-attempt digests (unsigned) |
-| execution-resolutions | `AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH` | `stores/execution-resolutions.sqlite` | never from configuration (P12 is embedder-composed); backed up when its variable is set and the file exists | binding/resolution digests |
+| execution-resolutions | `AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH` | `stores/execution-resolutions.sqlite` | the governed-action file declares `operators` (PROD-03-02 operator resolution); otherwise backed up when its variable is set and the file exists (an embedder's P12 store) | binding/resolution digests |
 | obligation-discharges | `AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH` | `stores/obligation-discharges.sqlite` | the governed-action file declares `obligations` | **Ed25519-signed** chain head, CORE-07 anchored |
 | approvals | `AOC_ENTERPRISE_APPROVAL_SQLITE_PATH` | `stores/approvals.sqlite` | some Governance Profile declares `approval` | **Ed25519-signed** chain head, CORE-07 anchored |
 | control-plane | `AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH` | `stores/control-plane.sqlite` | the governed-action file declares `operators` | append-only triggers (unsigned, **not** anchored) |

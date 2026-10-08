@@ -10,9 +10,13 @@ import type { ExecutionOutcomeReader } from '../execution-outcome-store/outcome-
 import type { ExecutionResolutionRecord, ExecutionResolutionState, RecordExecutionResolutionInput } from '../execution-resolution-store/contracts.js';
 import { isExecutionResolutionStoreError } from '../execution-resolution-store/errors.js';
 import type { ExecutionResolutionPort } from '../execution-resolution-store/resolution-store.js';
-import { isOpaqueResolutionIdentifier } from '../execution-resolution-store/validation.js';
+import { isAttestingOperatorRef, isExecutionFailureReason, isOpaqueResolutionIdentifier } from '../execution-resolution-store/validation.js';
+import type { ExecutionActivityGuard } from './activity-guard.js';
 import { normalizeResolutionAnswer, type ExecutionResolutionQuery, type ResolutionAuthorityComposition } from './authority.js';
+import { OPERATOR_ATTESTATION_AUTHORITY_ID } from './operator-attestation.js';
 import type {
+  OperatorResolutionRequest,
+  OperatorResolutionResult,
   ExecutionReconciliationCapacity,
   ExecutionReconciliationRequest,
   ExecutionReconciliationResult,
@@ -60,6 +64,16 @@ import type {
  * read-only lookups may race; the resolution store's `BEGIN IMMEDIATE` admits
  * at most one resolution, identical answers converge, and a different one is
  * `conflict`. No transaction is ever held open across a network call.
+ *
+ * ## Operator attestation (PROD-03-02)
+ *
+ * `recordOperatorResolution` is `reconcile` with the authority's answer
+ * replaced by an authenticated operator's attestation, for an execution bound
+ * (or adopted) to the operator-attestation authority. It holds the execution
+ * exclusively through `activity` from before its re-read of P11 and the claim
+ * until after its resolution and completion, so a provider observation either
+ * is durable before it looks — and wins — or cannot be recorded until it is
+ * done.
  */
 export interface ExecutionReconciliationServiceOptions {
   readonly outcomes: ExecutionOutcomeReader;
@@ -73,6 +87,8 @@ export interface ExecutionReconciliationServiceOptions {
   readonly governanceEvidence?: (scope: ExecutionOutcomeAccessContext, evaluationId: string, executionId: string, resolution: ExecutionResolutionRecord) => Promise<unknown>;
   /** P8, write-only. */
   readonly evidence?: ExecutionResolutionEvidenceRecorder;
+  /** PROD-03-02 — the guard the governed path holds from before its claim to after its observation. Without it, operator attestation is refused as `in-flight`: ordering against a live provider call cannot be shown. */
+  readonly activity?: ExecutionActivityGuard;
   readonly now: () => string;
 }
 
@@ -83,7 +99,7 @@ type EligibleBasis =
   | { readonly kind: 'stop'; readonly result: Extract<ExecutionReconciliationResult, { readonly outcome: 'not-eligible' | 'basis-unavailable' }> };
 
 export function createExecutionReconciliationService(options: ExecutionReconciliationServiceOptions): ExecutionReconciliationService {
-  const { outcomes, resolutions, composition, claimed, capacity, governanceEvidence, evidence, now } = options;
+  const { outcomes, resolutions, composition, claimed, capacity, governanceEvidence, evidence, activity, now } = options;
   const inFlight = new Map<string, Promise<ExecutionReconciliationResult>>();
 
   function report(fact: (recorder: ExecutionResolutionEvidenceRecorder) => void): void {
@@ -100,11 +116,13 @@ export function createExecutionReconciliationService(options: ExecutionReconcili
    * attempt, the existing write-ahead claim, and an initial observation that is
    * absent or `unconfirmed`. Everything else stops here, before any authority.
    */
-  async function eligibility(scope: ExecutionOutcomeAccessContext, executionId: string): Promise<EligibleBasis> {
+  async function eligibility(scope: ExecutionOutcomeAccessContext, executionId: string, concealForeign = false): Promise<EligibleBasis> {
     let outcome: ExecutionOutcomeRecord | undefined;
     try {
       outcome = await outcomes.read(scope, executionId);
     } catch (error) {
+      // Operator plane: another organization's execution is indistinguishable from none.
+      if (concealForeign && isExecutionOutcomeStoreError(error) && error.code === 'EXECUTION_OUTCOME_TENANT_VIOLATION') return { kind: 'stop', result: { outcome: 'not-eligible', reason: 'no-attempt' } };
       // A corrupt P11 basis cannot be trusted for amount, asset, correlation or
       // reference: it is never reconciled automatically, and never repaired.
       const reason = isExecutionOutcomeStoreError(error) && error.code === 'EXECUTION_OUTCOME_CORRUPT' ? 'outcome-corrupt' : 'outcome-unreadable';
@@ -311,6 +329,107 @@ export function createExecutionReconciliationService(options: ExecutionReconcili
       });
       inFlight.set(key, next);
       return next;
+    },
+
+    async recordOperatorResolution(request: OperatorResolutionRequest): Promise<OperatorResolutionResult> {
+      const scoped = scopeOf(request);
+      if (scoped === undefined) return { outcome: 'not-found' };
+      const { scope, executionId } = scoped;
+      // The closed attestation, checked before anything is read: the operator plane validated it, and this is not the place to start trusting it.
+      const certainty = request.certainty;
+      const failure = certainty === 'confirmed-not-completed' ? request.failure : undefined;
+      if (
+        !isAttestingOperatorRef(request.attestedBy) ||
+        (request.observedOutcome !== 'none' && request.observedOutcome !== 'unconfirmed') ||
+        (certainty !== 'confirmed-completed' && certainty !== 'confirmed-not-completed') ||
+        (certainty === 'confirmed-not-completed' && !isExecutionFailureReason(failure))
+      ) {
+        return { outcome: 'resolution-unrecorded' };
+      }
+      // Attestation exists only where this deployment composed it; it never stands in for another authority.
+      if (!composition.authorities.has(OPERATOR_ATTESTATION_AUTHORITY_ID)) return { outcome: 'authority-mismatch' };
+      const release = activity?.tryExclusive(executionId);
+      if (release === undefined) return { outcome: 'in-flight' };
+      try {
+        // Everything below is re-read now, under the exclusive hold — never what the operator's page showed.
+        const basis = await eligibility(scope, executionId, true);
+        if (basis.kind === 'stop') {
+          const stopped = basis.result;
+          if (stopped.outcome === 'basis-unavailable') return stopped;
+          return stopped.reason === 'no-attempt' ? { outcome: 'not-found' } : { outcome: 'not-eligible', reason: stopped.reason };
+        }
+        const attempt = basis.outcome.attempt;
+        const current = basis.basis === 'no-initial-observation' ? 'none' : 'unconfirmed';
+        if (current !== request.observedOutcome) return { outcome: 'basis-changed', current };
+
+        const loaded = await readResolutionState(scope, executionId);
+        if ('failure' in loaded) return { outcome: 'basis-unavailable', reason: loaded.failure };
+        let binding = loaded.state?.binding;
+        if (binding !== undefined && binding.attemptDigest !== attempt.attemptDigest) return { outcome: 'basis-unavailable', reason: 'binding-inconsistent' };
+        const existing = loaded.state?.resolution;
+        if (existing !== undefined) {
+          if (existing.basisObservationDigest !== basis.basisObservationDigest) return { outcome: 'basis-unavailable', reason: 'resolution-inconsistent' };
+          const identical = existing.authorityId === OPERATOR_ATTESTATION_AUTHORITY_ID && existing.attestedBy === request.attestedBy && existing.certainty === certainty && existing.failure === failure;
+          if (!identical) return { outcome: 'already-resolved', resolution: existing };
+          const finished = await finish(attempt, basis.basis, existing, 'previously');
+          return { outcome: 'replayed', resolution: existing, requestId: attempt.requestId, evaluationId: attempt.evaluationId, capacity: finished.outcome === 'resolved' ? finished.capacity : 'pending' };
+        }
+        if (binding === undefined) {
+          // Claimed before attestation was composed: adopt — bind, never declare. The same rule as adoptResolutionAuthority.
+          try {
+            binding = (
+              await resolutions.bind(scope, {
+                organizationId: attempt.organizationId,
+                executionId,
+                attemptDigest: attempt.attemptDigest,
+                authorityId: OPERATOR_ATTESTATION_AUTHORITY_ID,
+                origin: 'adopted',
+                boundAt: now(),
+              })
+            ).binding;
+          } catch (error) {
+            if (isExecutionResolutionStoreError(error) && error.code === 'EXECUTION_RESOLUTION_CONFLICT') return { outcome: 'authority-mismatch' };
+            return { outcome: 'basis-unavailable', reason: 'resolution-unreadable' };
+          }
+        }
+        // The binding decides: an execution another authority may resolve is that authority's.
+        if (binding.authorityId !== OPERATOR_ATTESTATION_AUTHORITY_ID) return { outcome: 'authority-mismatch' };
+
+        const input: RecordExecutionResolutionInput = {
+          organizationId: attempt.organizationId,
+          executionId,
+          attemptDigest: attempt.attemptDigest,
+          bindingDigest: binding.bindingDigest,
+          ...(basis.basisObservationDigest !== undefined ? { basisObservationDigest: basis.basisObservationDigest } : {}),
+          authorityId: OPERATOR_ATTESTATION_AUTHORITY_ID,
+          certainty,
+          ...(failure !== undefined ? { failure } : {}),
+          attestedBy: request.attestedBy,
+          resolvedAt: now(),
+        } as RecordExecutionResolutionInput;
+        let recorded;
+        try {
+          recorded = await resolutions.recordResolution(scope, input);
+        } catch (error) {
+          if (isExecutionResolutionStoreError(error) && error.code === 'EXECUTION_RESOLUTION_CONFLICT') {
+            const after = await readResolutionState(scope, executionId);
+            const standing = 'state' in after ? after.state?.resolution : undefined;
+            return standing !== undefined ? { outcome: 'already-resolved', resolution: standing } : { outcome: 'resolution-unrecorded' };
+          }
+          // No durable attestation exists, so no capacity moves and nothing is reported.
+          return { outcome: 'resolution-unrecorded' };
+        }
+        const finished = await finish(attempt, basis.basis, recorded.resolution, recorded.outcome === 'recorded' ? 'now' : 'previously');
+        return {
+          outcome: recorded.outcome === 'recorded' ? 'recorded' : 'replayed',
+          resolution: recorded.resolution,
+          requestId: attempt.requestId,
+          evaluationId: attempt.evaluationId,
+          capacity: finished.outcome === 'resolved' ? finished.capacity : 'pending',
+        };
+      } finally {
+        release();
+      }
     },
 
     async adoptResolutionAuthority(request: ExecutionResolutionAdoptionRequest): Promise<ExecutionResolutionAdoptionResult> {

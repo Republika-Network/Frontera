@@ -102,7 +102,8 @@ describe('P12 boundaries — §147 / §77 resolution authority is not Kernel aut
     const contracts = code('src/enterprise/execution-resolution-store/contracts.ts');
     const record = contracts.slice(contracts.indexOf('export interface RecordExecutionResolutionInput'), contracts.indexOf('export interface ExecutionResolutionRecord'));
     const fields = [...record.matchAll(/^ {2}readonly (\w+)\??:/gm)].map((match) => match[1]);
-    assert.deepEqual(fields.sort(), ['attemptDigest', 'authorityId', 'basisObservationDigest', 'bindingDigest', 'certainty', 'executionId', 'failure', 'organizationId', 'providerRef', 'resolvedAt'].sort());
+    // PROD-03-02 adds `attestedBy`: who attested an operator-attestation resolution — a person, never money.
+    assert.deepEqual(fields.sort(), ['attemptDigest', 'attestedBy', 'authorityId', 'basisObservationDigest', 'bindingDigest', 'certainty', 'executionId', 'failure', 'organizationId', 'providerRef', 'resolvedAt'].sort());
   });
 });
 
@@ -271,8 +272,17 @@ describe('P12 boundaries — §12 / §42 / §81 / §101 / §160 / §161 scope', 
   });
 
   it('no public route, SDK method or wire status is added for reconciliation', () => {
+    // PROD-03-02: the shipped Host composes P12 with exactly one authority — operator attestation — and its
+    // selector, and nothing else. No route reaches `reconcile` or `adoptResolutionAuthority` (the operator plane's one
+    // resolution route reaches `recordOperatorResolution` only: prod0302-operator-resolution-structure.test.ts).
+    const HOST = join('src', 'enterprise', 'host', 'enterprise-host.ts');
+    const SANCTIONED = /executionReconciliation: \{ enabled: true, authorities: \[createOperatorAttestationAuthority\(\)\], selectAuthority: selectOperatorAttestation \}/;
+    const SANCTIONED_IMPORT = "import { createOperatorAttestationAuthority, selectOperatorAttestation } from '../execution-reconciliation/operator-attestation.js';";
+    assert.match(code(HOST), SANCTIONED);
+    assert.ok(code(HOST).includes(SANCTIONED_IMPORT));
     for (const file of [...walk('src/enterprise/api'), ...walk('src/enterprise/host'), ...walk('packages').filter((file) => !file.includes('node_modules'))]) {
-      assert.equal(/reconcil|executionResolution|resolutionAuthorit/i.test(code(file)), false, file);
+      const measured = file === HOST ? code(file).replace(SANCTIONED, '').replace(SANCTIONED_IMPORT, '') : code(file);
+      assert.equal(/reconcil|executionResolution|resolutionAuthorit/i.test(measured), false, file);
     }
   });
 });

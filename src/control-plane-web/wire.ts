@@ -418,6 +418,19 @@ export interface OperationalExecution {
   readonly execution: { readonly claim: string; readonly claimedAt: string | null };
   readonly outcome: { readonly status: string; readonly source: string | null; readonly failure: string | null; readonly withheldBy: string | null; readonly reasonCodes: readonly string[]; readonly recordedAt: string | null };
   readonly trace: { readonly available: boolean; readonly finalState: string | null; readonly failure: string | null };
+  /** PROD-03-02 — the P12 resolution that closed it, if any. Optional: a Host from before PROD-03-02 states neither field. */
+  readonly resolution?: OperationalResolution | null;
+  /** PROD-03-02 — whether the Host would accept an operator resolution of this execution now, as far as this read shows. */
+  readonly resolvable?: boolean;
+}
+
+/** PROD-03-02 — how an uncertain execution was closed. `operator-attestation` is an operator's recorded attestation, never a provider confirmation. */
+export interface OperationalResolution {
+  readonly resolvedBy: string | null;
+  readonly attestedBy: string | null;
+  readonly certainty: string;
+  readonly failure: string | null;
+  readonly resolvedAt: string;
 }
 
 /**
@@ -443,7 +456,42 @@ export interface DisclosedOperational {
   readonly issuance?: OperationalExecution['issuance'];
   readonly execution?: OperationalExecution['execution'];
   readonly outcome?: OperationalExecution['outcome'];
+  readonly resolution?: OperationalResolution | null;
+  readonly resolvable?: boolean;
   readonly hidden: readonly string[];
+}
+
+/** PROD-03-02 — the two attestations an operator can record, in P12's own vocabulary. */
+export const RESOLUTION_CHOICES = ['confirmed-completed', 'confirmed-not-completed'] as const;
+export type ResolutionChoice = (typeof RESOLUTION_CHOICES)[number];
+
+export function isResolutionChoice(value: string): value is ResolutionChoice {
+  return (RESOLUTION_CHOICES as readonly string[]).includes(value);
+}
+
+/** PROD-03-02 — the existing provider-neutral failure reasons (`ExecutionFailureReason`), the only ones a non-completion may carry. Pinned to the runtime's list by test. */
+export const RESOLUTION_FAILURE_REASONS = ['PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE', 'PROVIDER_RESPONSE_INVALID', 'ADAPTER_ERROR'] as const;
+
+export function isResolutionFailureReason(value: string): value is (typeof RESOLUTION_FAILURE_REASONS)[number] {
+  return (RESOLUTION_FAILURE_REASONS as readonly string[]).includes(value);
+}
+
+/** PROD-03-02 — the closed resolution command. The Host derives the operator, the organization and the time. */
+export interface OperatorResolutionBody {
+  readonly resolution: ResolutionChoice;
+  readonly failure?: string;
+  /** The outcome state the operator reviewed, as the Host stated it (`none` or `unconfirmed`). */
+  readonly observedOutcome: 'none' | 'unconfirmed';
+}
+
+export interface OperatorResolutionResponse {
+  readonly outcome: 'recorded' | 'replayed';
+  readonly requestId: string;
+  readonly evaluationId: string;
+  readonly executionId: string;
+  readonly resolution: { readonly resolvedBy: string; readonly attestedBy: string; readonly certainty: string; readonly failure: string | null; readonly resolvedAt: string; readonly recordedAt: string; readonly resolutionDigest: string };
+  readonly capacity: string;
+  readonly effect: string;
 }
 
 export interface ExecutionsPage {
@@ -556,6 +604,8 @@ const operational = {
     isStrings(value['reasonCodes']) &&
     isNullableString(value['recordedAt']),
   trace: (value: unknown): boolean => isObject(value) && isBoolean(value['available']) && isNullableString(value['finalState']) && isNullableString(value['failure']),
+  resolution: (value: unknown): boolean =>
+    value === null || (isObject(value) && isNullableString(value['resolvedBy']) && isNullableString(value['attestedBy']) && isString(value['certainty']) && isNullableString(value['failure']) && isString(value['resolvedAt'])),
   identity: (value: Record<string, unknown>): boolean =>
     isString(value['requestId']) && isString(value['evaluationId']) && isString(value['decisionId']) && isNullableString(value['executionId']) && isBoolean(value['attentionRequired']) && isStrings(value['attentionReasons']),
 } as const;
@@ -634,7 +684,9 @@ export const shapes = {
     operational.issuance(entry['issuance']) &&
     operational.execution(entry['execution']) &&
     operational.outcome(entry['outcome']) &&
-    operational.trace(entry['trace']),
+    operational.trace(entry['trace']) &&
+    absentOr(entry['resolution'], operational.resolution) &&
+    absentOr(entry['resolvable'], isBoolean),
   disclosedOperational: (entry: unknown): entry is DisclosedOperational =>
     isObject(entry) &&
     operational.identity(entry) &&
@@ -648,7 +700,9 @@ export const shapes = {
     absentOr(entry['approval'], operational.approval) &&
     absentOr(entry['issuance'], operational.issuance) &&
     absentOr(entry['execution'], operational.execution) &&
-    absentOr(entry['outcome'], operational.outcome),
+    absentOr(entry['outcome'], operational.outcome) &&
+    absentOr(entry['resolution'], operational.resolution) &&
+    absentOr(entry['resolvable'], isBoolean),
   executions: (body: unknown): body is ExecutionsPage =>
     isObject(body) && isArrayOf(body['executions'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])),
   attention: (body: unknown): body is AttentionPage =>
@@ -707,4 +761,19 @@ export const shapes = {
     isString(body['verification']['boundary']) &&
     shapes.disclosedOperational(body['operational']),
   approvalCommand: (body: unknown): body is ApprovalCommandResponse => isObject(body) && body['outcome'] === 'recorded' && isString(body['verdict']) && shapes.approval(body['approval']),
+  operatorResolution: (body: unknown): body is OperatorResolutionResponse =>
+    isObject(body) &&
+    (body['outcome'] === 'recorded' || body['outcome'] === 'replayed') &&
+    isString(body['requestId']) &&
+    isString(body['evaluationId']) &&
+    isString(body['executionId']) &&
+    isObject(body['resolution']) &&
+    isString(body['resolution']['resolvedBy']) &&
+    isString(body['resolution']['attestedBy']) &&
+    isString(body['resolution']['certainty']) &&
+    isNullableString(body['resolution']['failure']) &&
+    isString(body['resolution']['resolvedAt']) &&
+    isString(body['resolution']['resolutionDigest']) &&
+    isString(body['capacity']) &&
+    isString(body['effect']),
 } as const;

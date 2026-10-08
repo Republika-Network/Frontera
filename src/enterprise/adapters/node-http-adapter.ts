@@ -271,9 +271,10 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         }
         // -- PROD-03-01 operational visibility (operator plane). Mounted only when
         // the Host composed `operatorOperations` (operators configured and
-        // governed actions composed). Every route is a GET and a read; the
-        // service authenticates and authorizes the operator — this adapter only
-        // routes.
+        // governed actions composed). Every route is a GET and a read but one:
+        // PROD-03-02's operator resolution POST, which records evidence and
+        // performs nothing. The service authenticates and authorizes the
+        // operator before any body is read — this adapter only routes.
         const operatorOperations = enterprise.operatorOperations;
         const operationsRoute = operatorOperations === undefined ? undefined : matchOperationsRoute(method, url.pathname);
         if (operatorOperations !== undefined && operationsRoute !== undefined) {
@@ -296,6 +297,9 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
               return;
             case 'health':
               respond(operatorOperations.health(auth, query));
+              return;
+            case 'resolution':
+              respond(operatorOperations.resolveExecution(auth, operationsRoute.executionId, administrationBodyReader(req)));
               return;
           }
         }
@@ -803,14 +807,23 @@ function matchApprovalRoute(method: string, pathname: string): ApprovalRoute | u
   return undefined;
 }
 
-type OperationsRoute = { readonly kind: 'executions' | 'attention' | 'metrics' | 'health' } | { readonly kind: 'trace'; readonly requestId: string };
+type OperationsRoute =
+  | { readonly kind: 'executions' | 'attention' | 'metrics' | 'health' }
+  | { readonly kind: 'trace'; readonly requestId: string }
+  | { readonly kind: 'resolution'; readonly executionId: string };
 
 /**
- * PROD-03-01 operational visibility routes. `GET` only: there is deliberately
- * no route that resolves, retries, resends, reconciles, claims or marks an
- * execution — those are not reads, and none of them is this plane's.
+ * PROD-03-01 operational visibility routes, all `GET`, and PROD-03-02's one
+ * `POST`: record an operator resolution of one execution. There is
+ * deliberately no route that retries, resends, replays, reconciles, claims or
+ * executes anything — recording what an operator established is evidence,
+ * and nothing on this plane makes an action happen.
  */
 function matchOperationsRoute(method: string, pathname: string): OperationsRoute | undefined {
+  if (method === 'POST') {
+    const resolution = /^\/api\/admin\/operations\/executions\/([^/]+)\/resolution$/.exec(pathname);
+    return resolution?.[1] !== undefined ? { kind: 'resolution', executionId: decodeURIComponent(resolution[1]) } : undefined;
+  }
   if (method !== 'GET') return undefined;
   if (/^\/api\/admin\/operations\/executions$/.exec(pathname) !== null) return { kind: 'executions' };
   if (/^\/api\/admin\/operations\/attention$/.exec(pathname) !== null) return { kind: 'attention' };

@@ -21,10 +21,15 @@ import {
   type OperationalHealthView,
   type OperationalMetrics,
   type OperationalTraceView,
+  type OperatorResolutionView,
 } from './contracts.js';
+import type { OperatorResolutionCommand } from './resolution.js';
 
 /**
  * PROD-03-01 — the operator plane's operational visibility: read only.
+ * PROD-03-02 adds exactly one write, `resolveExecution`, which this service
+ * only forwards to the operator resolution command (`resolution.ts`): every
+ * read below is unchanged and still handed reads only.
  *
  * ```
  * Authorization header
@@ -39,6 +44,7 @@ import {
  * What it cannot do, by the objects it is handed: append, claim, resolve,
  * reconcile, retry, approve, revoke, issue or execute anything. Every port
  * below is a read, and every answer is a fresh projection of durable state.
+ * The PROD-03-02 resolution command is a separate object (`resolution.ts`).
  */
 
 export type OperationsQuery = Readonly<Record<string, string>>;
@@ -54,6 +60,13 @@ export interface OperatorOperationsService {
   metrics(authorizationHeader: string | undefined, query: OperationsQuery): Promise<OperationalMetrics>;
   /** The Host's health report with the operational counts. */
   health(authorizationHeader: string | undefined, query: OperationsQuery): Promise<OperationalHealthView>;
+  /**
+   * PROD-03-02 — record an operator resolution of one claimed execution with no
+   * definitive outcome. Authorized (`operations.resolve`) before the body is
+   * read; the operator and organization come from the authenticated principal.
+   * Records evidence only: nothing is executed, retried, resent or replayed.
+   */
+  resolveExecution(authorizationHeader: string | undefined, executionId: string, readBody: () => Promise<unknown>): Promise<OperatorResolutionView>;
 }
 
 export interface OperatorOperationsDependencies {
@@ -70,6 +83,10 @@ export interface OperatorOperationsDependencies {
   /** The same report `GET /health` serves. */
   readonly health: () => Promise<EnterpriseHealthReport>;
   readonly now: () => string;
+  /** PROD-03-02 — whether a governed path in this process holds an execution now (its provider call may still answer): such an execution is never shown as resolvable. A read. */
+  readonly inFlight?: (executionId: string) => boolean;
+  /** PROD-03-02 — the operator resolution command (`resolution.ts`), when this Host composes operator attestation. Absent: resolution is refused, and nothing is resolvable. */
+  readonly resolution?: OperatorResolutionCommand;
 }
 
 const CURSOR = /^[A-Za-z0-9._:=-]{1,512}$/;
@@ -122,7 +139,14 @@ function failureCodeOf(error: unknown): string {
 }
 
 export function createOperatorOperationsService(dependencies: OperatorOperationsDependencies): OperatorOperationsService {
-  const { authenticator, organizationId, governanceRecords, traces, now } = dependencies;
+  const { authenticator, organizationId, governanceRecords, traces, now, resolution, inFlight } = dependencies;
+  const viewOptions = Object.freeze({ attestation: resolution !== undefined });
+
+  /** PROD-03-02: a claim whose provider call is live in this process is not offered for resolution (the command refuses it too). */
+  function withLiveness(view: OperationalExecutionView): OperationalExecutionView {
+    return view.resolvable && view.executionId !== null && inFlight?.(view.executionId) === true ? { ...view, resolvable: false } : view;
+  }
+
   if (authenticator.organizationId !== organizationId) throw new Error('createOperatorOperationsService: the authenticator serves another organization.');
   /** Organization-scoped, never system: an operator reads this Host's organization and nothing else. */
   const context: GovernanceStoreAccessContext = Object.freeze({ system: false, organizationId });
@@ -168,7 +192,7 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
       return operationalViewWithoutTrace(summary, failureCodeOf(error));
     }
     if (build === null || build.trace.evaluationId !== summary.evaluationId) return operationalViewWithoutTrace(summary, build === null ? 'TRACE_NOT_FOUND' : 'TRACE_RECORD_MISMATCH');
-    return operationalViewOf(build.trace, summary);
+    return withLiveness(operationalViewOf(build.trace, summary, viewOptions));
   }
 
   async function viewsOf(records: readonly GovernanceRecordSummary[]): Promise<OperationalExecutionView[]> {
@@ -291,7 +315,7 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
       // Classified exactly as the execution list classifies it, then disclosed at the trace's own level.
       // An evaluation-only record keeps that classification; its trace was just built, so the sidecar says so.
       const view = (await isGovernedAction(summary.evaluationId))
-        ? operationalViewOf(build.trace, summary)
+        ? withLiveness(operationalViewOf(build.trace, summary, viewOptions))
         : { ...operationalViewOfEvaluation(summary), trace: { available: true, finalState: build.trace.finalState, failure: null } };
       return {
         requestId,
@@ -346,6 +370,13 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
       const report = await dependencies.health();
       const { operations } = await scanOpenClaims();
       return { health: report, operations: { ...operations, checkedAt: now() } };
+    },
+
+    async resolveExecution(authorizationHeader: string | undefined, executionId: string, readBody: () => Promise<unknown>): Promise<OperatorResolutionView> {
+      if (resolution !== undefined) return resolution.resolveExecution(authorizationHeader, executionId, readBody);
+      // Authorized first, as everywhere: only then is the caller told this Host records no operator resolutions.
+      authenticator.authorize(authorizationHeader, 'operations.resolve');
+      throw new EnterpriseHttpError(409, 'EXECUTION_RESOLUTION_NOT_AVAILABLE', 'This Host composes no operator resolution. Nothing was recorded, and no action was performed.');
     },
   });
 }

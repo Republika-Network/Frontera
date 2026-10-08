@@ -13,7 +13,11 @@ export {
   type ResolutionAuthorityComposition,
 } from './authority.js';
 export { createExecutionResolutionBinder, selectionContextOf, type ExecutionResolutionBinder, type ExecutionResolutionBinderOptions } from './binder.js';
+export { createExecutionActivityGuard, type ExecutionActivityGuard } from './activity-guard.js';
+export { OPERATOR_ATTESTATION_AUTHORITY_ID, createOperatorAttestationAuthority, selectOperatorAttestation } from './operator-attestation.js';
 export type {
+  OperatorResolutionRequest,
+  OperatorResolutionResult,
   ExecutionReconciliationCapacity,
   ExecutionReconciliationRequest,
   ExecutionReconciliationResult,

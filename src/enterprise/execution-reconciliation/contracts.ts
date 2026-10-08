@@ -1,3 +1,4 @@
+import type { ExecutionFailureReason } from '../../features/execution-runtime/index.js';
 import type { ExecutionResolutionBinding, ExecutionResolutionRecord } from '../execution-resolution-store/contracts.js';
 
 /**
@@ -89,11 +90,67 @@ export type ExecutionResolutionAdoptionResult =
   | { readonly outcome: 'conflict' };
 
 /**
+ * PROD-03-02 — what an operator attests about one uncertain execution.
+ *
+ * Every field but the answer is server-derived: the organization is the one
+ * the operator plane serves and `attestedBy` is the authenticated principal's
+ * `operator:<operatorId>`. `observedOutcome` is the state the operator
+ * reviewed (`none`: claimed, no outcome recorded; `unconfirmed`: the provider's
+ * recorded "unknown") — when the durable basis is no longer that, the
+ * attestation was made about something else and is refused.
+ */
+export type OperatorResolutionRequest = {
+  readonly organizationId: string;
+  readonly executionId: string;
+  readonly attestedBy: string;
+  readonly observedOutcome: 'none' | 'unconfirmed';
+} & (
+  | { readonly certainty: 'confirmed-completed' }
+  | { readonly certainty: 'confirmed-not-completed'; readonly failure: ExecutionFailureReason }
+);
+
+/**
+ * Closed, and every domain condition a result — never a throw.
+ *
+ * - `recorded` — this attestation is now the execution's definitive resolution.
+ * - `replayed` — the identical attestation (same operator, same answer, same
+ *   basis) was already the resolution: nothing new was written; the P7 / evidence
+ *   completion ran again, idempotently.
+ * - `not-found` — no governed execution attempt with this id exists for the
+ *   organization (another organization's is indistinguishable from none).
+ * - `not-eligible` — nothing to resolve: never claimed, the provider outcome is
+ *   already definitive (including one that became durable after the operator
+ *   looked), or withheld before any provider.
+ * - `in-flight` — a governed path in this process holds the execution (its
+ *   adapter call may still answer); nothing was written.
+ * - `basis-changed` — the durable basis is no longer what the operator reviewed.
+ * - `authority-mismatch` — the execution is bound to another resolution
+ *   authority, which alone may resolve it.
+ * - `already-resolved` — a different definitive resolution stands (another
+ *   operator's, another answer, or an authority's); it is returned unchanged.
+ * - `basis-unavailable` — the durable basis failed its own checks or could not
+ *   be read; nothing is attested over a record that cannot be believed.
+ * - `resolution-unrecorded` — the attestation could not be made durable.
+ */
+export type OperatorResolutionResult =
+  | { readonly outcome: 'recorded' | 'replayed'; readonly resolution: ExecutionResolutionRecord; readonly requestId: string; readonly evaluationId: string; readonly capacity: ExecutionReconciliationCapacity }
+  | { readonly outcome: 'not-found' }
+  | { readonly outcome: 'not-eligible'; readonly reason: 'not-claimed' | 'initial-observation-definitive' | 'withheld' }
+  | { readonly outcome: 'in-flight' }
+  | { readonly outcome: 'basis-changed'; readonly current: 'none' | 'unconfirmed' }
+  | { readonly outcome: 'authority-mismatch' }
+  | { readonly outcome: 'already-resolved'; readonly resolution: ExecutionResolutionRecord }
+  | { readonly outcome: 'basis-unavailable'; readonly reason: Extract<ExecutionReconciliationResult, { readonly outcome: 'basis-unavailable' }>['reason'] }
+  | { readonly outcome: 'resolution-unrecorded' };
+
+/**
  * The trusted in-process reconciliation service — `AocEnterprise.executionReconciliation`.
  *
- * Not a customer surface: no HTTP route, no SDK method and no governed-action
- * path reaches it. Ordinary customer replay reads durable state only and never
- * calls it.
+ * Not a customer surface: no customer route, no SDK method and no
+ * governed-action path reaches it. Ordinary customer replay reads durable
+ * state only and never calls it. Since PROD-03-02 one operator-plane route
+ * reaches `recordOperatorResolution`, after `operations.resolve` is
+ * authorized; nothing reaches `reconcile` or `adoptResolutionAuthority`.
  */
 export interface ExecutionReconciliationService {
   /**
@@ -109,4 +166,13 @@ export interface ExecutionReconciliationService {
    * still answer through `reconcile`.
    */
   adoptResolutionAuthority(request: ExecutionResolutionAdoptionRequest): Promise<ExecutionResolutionAdoptionResult>;
+  /**
+   * PROD-03-02 — record an authorized operator's attestation as the definitive
+   * resolution of one uncertain execution bound to (or, when unbound, adopted
+   * to) the operator-attestation authority. The same eligibility, append-only
+   * store decision and P7 / evidence completion as `reconcile`; no authority
+   * is asked and no adapter exists here to call. Never an execution, a
+   * resubmission or a retry of the original effect.
+   */
+  recordOperatorResolution(request: OperatorResolutionRequest): Promise<OperatorResolutionResult>;
 }

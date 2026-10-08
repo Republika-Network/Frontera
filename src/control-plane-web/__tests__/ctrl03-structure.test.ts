@@ -160,8 +160,10 @@ describe('CTRL-03 structure — the console decides nothing', () => {
         '/api/admin/governance-profiles/{}/versions/{}/{}',
         // CTRL-04: one verdict path per approval request (the verb is a closed list the Host routes).
         '/api/admin/approvals/{}/{}',
+        // PROD-03-02: recording an operator resolution of one execution — evidence only; it creates, widens or restores no authority.
+        '/api/admin/operations/executions/{}/resolution',
       ].sort(),
-      'the console writes only through the CTRL-01 / CTRL-02 / CTRL-04 operator routes',
+      'the console writes only through the CTRL-01 / CTRL-02 / CTRL-04 operator routes and the PROD-03-02 operator resolution',
     );
     assert.equal(/'(PUT|PATCH|DELETE)'/.test(client), false);
     for (const path of [...posts, ...literalPosts]) assert.ok(path.startsWith('/api/admin/'), path);

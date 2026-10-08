@@ -56,6 +56,9 @@ export function resolutionFact(input: RecordExecutionResolutionInput): RecordExe
     certainty: input.certainty,
     ...(input.certainty === 'confirmed-not-completed' && input.failure !== undefined ? { failure: input.failure } : {}),
     ...(input.providerRef !== undefined ? { providerRef: input.providerRef } : {}),
+    // PROD-03-02: only on an operator-attested resolution, so every other
+    // resolution's fact — and therefore its digest — is exactly as before.
+    ...(input.attestedBy !== undefined ? { attestedBy: input.attestedBy } : {}),
     resolvedAt: input.resolvedAt,
   };
 }
@@ -105,7 +108,8 @@ export function sameExecutionResolutionBinding(recorded: ExecutionResolutionBind
 
 /**
  * Whether a repeated resolution is the same definitive fact — every field but
- * the instant. Two explicit reconciliations racing through two read-only
+ * the instant, the attesting operator included: another operator recording
+ * the same answer is not the first operator's attestation. Two explicit reconciliations racing through two read-only
  * lookups sample two different `resolvedAt`s; when they learned the same
  * answer that is one fact, and the first stands. Any other difference — the
  * certainty, the failure, the reference, the basis — is a conflict.

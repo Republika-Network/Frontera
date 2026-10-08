@@ -887,7 +887,8 @@ describe('P12 §110 — composition and health', () => {
     const reader = host.enterprise.executionResolutions;
     assert.ok(reader !== undefined);
     assert.deepEqual(Object.keys(reader), ['read']);
-    assert.deepEqual(Object.keys(host.enterprise.executionReconciliation ?? {}).sort(), ['adoptResolutionAuthority', 'reconcile']);
+    // PROD-03-02: operator attestation is the service's third method — still no read, update or delete.
+    assert.deepEqual(Object.keys(host.enterprise.executionReconciliation ?? {}).sort(), ['adoptResolutionAuthority', 'reconcile', 'recordOperatorResolution']);
     await host.close();
     const db = new Database(paths(dir).resolutions, { readonly: true });
     try {

@@ -99,7 +99,16 @@ describe('PROD-03-01 structure — rail-neutral', () => {
 
   it('operations imports only generic governed-action, evidence, governance-store, health, telemetry and operator-plane abstractions', () => {
     const allowed = /^\.\.\/(api\/enterprise-http-errors|evidence\/(errors|trace-builder|trace-contracts|trace-disclosure|contracts)|governance-store\/(contracts|errors)|health\/health-check|telemetry\/enterprise-logger|governed-action\/path-observer|operator-control\/(contracts|operator-authenticator))\.js$|^\.\/[a-z-]+\.js$/;
-    for (const file of OPERATIONS) for (const specifier of importsOf(file)) assert.match(specifier, allowed, `${file} imports '${specifier}'`);
+    // PROD-03-02: the resolution command (and the view's naming of an attestation) also reach P12's contracts, the
+    // attestation authority's id and the closed execution failure vocabulary — no store, no service, no adapter.
+    const prod0302 = /^\.\.\/execution-reconciliation\/(contracts|operator-attestation)\.js$|^\.\.\/\.\.\/features\/execution-runtime\/index\.js$/;
+    const prod0302Files = new Set(['src/enterprise/operations/resolution.ts', 'src/enterprise/operations/classification.ts']);
+    for (const file of OPERATIONS) {
+      for (const specifier of importsOf(file)) {
+        if (prod0302Files.has(file) && prod0302.test(specifier)) continue;
+        assert.match(specifier, allowed, `${file} imports '${specifier}'`);
+      }
+    }
     assert.deepEqual(importsOf(OBSERVER_PORT), [], 'the observer port imports nothing');
   });
 });
@@ -141,26 +150,48 @@ describe('PROD-03-01 structure — read only', () => {
     assert.match(contracts, /export const OPERATOR_TRACE_LEVELS = \['AUDITOR', 'PARTNER', 'CUSTOMER', 'PUBLIC'\] as const;/);
   });
 
-  it('the HTTP surface is GET only, through `enterprise.operatorOperations`, and names no write', () => {
+  it('the HTTP surface is GET only, through `enterprise.operatorOperations`, and names no write — but PROD-03-02’s one resolution POST', () => {
     const router = codeOf(ROUTER);
     const matcher = /function matchOperationsRoute[\s\S]*?\n\}/.exec(router)?.[0] ?? '';
     assert.ok(matcher.length > 0);
-    assert.match(matcher, /if \(method !== 'GET'\) return undefined;/);
-    assert.equal(/resolve|retry|resend|reconcile|claim|mark|complete|POST|PUT|PATCH|DELETE/i.test(matcher.replace(/return undefined/g, '')), false);
-    assert.deepEqual([...new Set([...router.matchAll(/operatorOperations\.(\w+)\(/g)].map((match) => match[1]))].sort(), ['health', 'listAttention', 'listExecutions', 'metrics', 'readTrace']);
+    // PROD-03-02: exactly one POST, to `…/executions/{id}/resolution`, matched before the GET-only rule; everything else is unchanged.
+    const post = /if \(method === 'POST'\) \{[\s\S]*?\n  \}\n/.exec(matcher)?.[0] ?? '';
+    assert.match(post, /\/\^\\\/api\\\/admin\\\/operations\\\/executions\\\/\(\[\^\/\]\+\)\\\/resolution\$\/\.exec\(pathname\)/);
+    assert.match(post, /\{ kind: 'resolution', executionId: decodeURIComponent\(resolution\[1\]\) \} : undefined;/);
+    const reads = matcher.replace(post, '');
+    assert.match(reads, /if \(method !== 'GET'\) return undefined;/);
+    assert.equal(/resolve|retry|resend|reconcile|claim|mark|complete|POST|PUT|PATCH|DELETE/i.test(reads.replace(/return undefined/g, '')), false);
+    assert.equal(/retry|resend|replay|reconcile|execute|claim|PUT|PATCH|DELETE/i.test(post), false, 'the one write names no execution');
+    assert.deepEqual([...new Set([...router.matchAll(/operatorOperations\.(\w+)\(/g)].map((match) => match[1]))].sort(), ['health', 'listAttention', 'listExecutions', 'metrics', 'readTrace', 'resolveExecution']);
     const surface = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { routePatterns: string[] };
     assert.deepEqual(
       surface.routePatterns.filter((pattern) => pattern.includes('operations')),
-      ['^\\/api\\/admin\\/operations\\/executions$', '^\\/api\\/admin\\/operations\\/attention$', '^\\/api\\/admin\\/operations\\/traces\\/([^/]+)$', '^\\/api\\/admin\\/operations\\/metrics$', '^\\/api\\/admin\\/operations\\/health$'],
+      [
+        '^\\/api\\/admin\\/operations\\/executions$',
+        '^\\/api\\/admin\\/operations\\/attention$',
+        '^\\/api\\/admin\\/operations\\/traces\\/([^/]+)$',
+        '^\\/api\\/admin\\/operations\\/metrics$',
+        '^\\/api\\/admin\\/operations\\/health$',
+        '^\\/api\\/admin\\/operations\\/executions\\/([^/]+)\\/resolution$',
+      ],
     );
   });
 
-  it('the console pages post nothing and offer no resolve, retry, reconcile or resend control; the client reads them with GET', () => {
+  it('the console pages post nothing — but PROD-03-02’s one resolution form — and offer no resolve, retry, reconcile or resend control; the client reads them with GET', () => {
     const pages = codeOf(CONSOLE_PAGES);
-    assert.equal(/method="post"|method=\{|<button[^>]*name=|\b(Resolve|Retry|Reconcile|Resend)\b/.test(pages), false);
+    // PROD-03-02: one form, in ResolutionPage, posting to the resolution path; every other operations page posts nothing.
+    const resolutionPage = /export function ResolutionPage[\s\S]*$/.exec(pages)?.[0] ?? '';
+    assert.equal([...resolutionPage.matchAll(/method="post"/g)].length, 1);
+    assert.match(resolutionPage, /<form method="post" action=\{resolutionPath\(view\.requestId\)\}/);
+    const reads = pages.replace(resolutionPage, '');
+    assert.equal(/method="post"|method=\{|<button[^>]*name=|\b(Resolve|Retry|Reconcile|Resend)\b/.test(reads), false);
+    assert.equal(/<button[^>]*name=|\b(Resolve|Retry|Reconcile|Resend|Replay|Re-execute)\b/.test(resolutionPage), false);
     const client = codeOf('src/control-plane-web/host-client.ts');
     const operations = [...client.matchAll(/send\('(GET|POST)', [`'](\/api\/admin\/operations\/[^`'$]*)/g)].map((match) => `${match[1]} ${match[2]}`);
-    assert.deepEqual(operations.sort(), ['GET /api/admin/operations/attention', 'GET /api/admin/operations/executions', 'GET /api/admin/operations/health', 'GET /api/admin/operations/metrics', 'GET /api/admin/operations/traces/'].sort());
+    assert.deepEqual(
+      operations.sort(),
+      ['GET /api/admin/operations/attention', 'GET /api/admin/operations/executions', 'GET /api/admin/operations/health', 'GET /api/admin/operations/metrics', 'GET /api/admin/operations/traces/', 'POST /api/admin/operations/executions/'].sort(),
+    );
   });
 });
 

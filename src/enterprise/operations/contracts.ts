@@ -77,6 +77,25 @@ export type OperationalOutcomeStatus = 'confirmed-completed' | 'confirmed-not-co
 export type OperationalOutcomeSource = 'initial-observation' | 'resolution' | 'legacy-summary';
 
 /**
+ * PROD-03-02 — how a P12 resolution was reached, kept apart from the
+ * provider's own outcome: `operator-attestation` is an authorized operator's
+ * recorded attestation (never a provider confirmation); `resolution-authority`
+ * is a host-composed authority's answer.
+ */
+export type OperationalResolutionKind = 'operator-attestation' | 'resolution-authority';
+
+/** PROD-03-02 — the resolution that closed an uncertain execution, when one exists. */
+export interface OperationalResolutionView {
+  /** `null` only in a disclosed view whose level hides the authority stage (the mechanism). */
+  readonly resolvedBy: OperationalResolutionKind | null;
+  /** The attesting operator (`operator:<operatorId>`) of an operator attestation; `null` otherwise, and in a disclosed view whose level hides the people who acted. */
+  readonly attestedBy: string | null;
+  readonly certainty: 'confirmed-completed' | 'confirmed-not-completed';
+  readonly failure: string | null;
+  readonly resolvedAt: string;
+}
+
+/**
  * One governed request, projected for an operator. Identities, closed states
  * and codes, and timestamps only: never an amount, a governed parameter, an
  * adapter or provider reference, a credential or a payload. The ASSURE-01
@@ -114,6 +133,16 @@ export interface OperationalExecutionView {
     readonly recordedAt: string | null;
   };
   readonly trace: { readonly available: boolean; readonly finalState: AuthorityTraceFinalState | null; readonly failure: string | null };
+  /** PROD-03-02 — the P12 resolution, when the definitive answer is one; `null` otherwise. */
+  readonly resolution: OperationalResolutionView | null;
+  /**
+   * PROD-03-02 — whether an operator may record a resolution of this execution
+   * now, as far as this read shows: claimed, no definitive outcome and no
+   * resolution, a verifiable trace, and the execution unbound or bound to
+   * operator attestation, on a Host that composes it. A hint for the console;
+   * the resolution command re-reads and decides for itself.
+   */
+  readonly resolvable: boolean;
 }
 
 export interface OperationalExecutionPage {
@@ -223,6 +252,10 @@ export interface DisclosedOperationalView {
   readonly execution?: OperationalExecutionView['execution'];
   /** `trace.outcome` and `trace.resolution`. */
   readonly outcome?: OperationalExecutionView['outcome'];
+  /** PROD-03-02 — with `outcome`; `resolvedBy` is `null` where the authority stage is hidden and `attestedBy` where the approval stage (the people who acted) is. */
+  readonly resolution?: OperationalExecutionView['resolution'];
+  /** PROD-03-02 — only where both the execution and the authority stages are disclosed (it reads the claim and the binding). */
+  readonly resolvable?: boolean;
   readonly hidden: readonly OperationalViewSection[];
 }
 
@@ -247,3 +280,44 @@ export const OPERATIONS_PAGE_DEFAULT_LIMIT = 25;
 export const OPERATIONS_PAGE_MAX_LIMIT = 50;
 /** How many candidates one count may classify. Beyond it, counts are reported as lower bounds (`scan.complete: false`). */
 export const OPERATIONS_SCAN_LIMIT = 500;
+
+/**
+ * PROD-03-02 — `POST /api/admin/operations/executions/{executionId}/resolution`:
+ * the closed request body. Nothing else is accepted — not an operator, an
+ * organization, a timestamp, a final state, a provider reference, a payload
+ * or a note: the server owns every one of them.
+ *
+ * - `resolution` — the attested answer, in P12's own vocabulary.
+ * - `failure` — exactly when `resolution` is `confirmed-not-completed`: one of
+ *   the existing provider-neutral `ExecutionFailureReason`s, never a new one.
+ * - `observedOutcome` — the outcome state the operator reviewed (`none` or
+ *   `unconfirmed`, as the execution view states it). If the durable state is
+ *   no longer that, nothing is recorded.
+ */
+export const OPERATOR_RESOLUTION_BODY_FIELDS = ['resolution', 'failure', 'observedOutcome'] as const;
+
+export const OPERATOR_RESOLUTIONS = ['confirmed-completed', 'confirmed-not-completed'] as const;
+
+export const OPERATOR_RESOLUTION_OBSERVED_OUTCOMES = ['none', 'unconfirmed'] as const;
+
+/** The closed answer to a successful resolution command. It records evidence; nothing was executed, retried or replayed. */
+export interface OperatorResolutionView {
+  /** `recorded`: this attestation is now the resolution. `replayed`: the identical attestation already was; nothing new was written. */
+  readonly outcome: 'recorded' | 'replayed';
+  readonly requestId: string;
+  readonly evaluationId: string;
+  readonly executionId: string;
+  readonly resolution: {
+    readonly resolvedBy: 'operator-attestation';
+    readonly attestedBy: string;
+    readonly certainty: 'confirmed-completed' | 'confirmed-not-completed';
+    readonly failure: string | null;
+    readonly resolvedAt: string;
+    readonly recordedAt: string;
+    readonly resolutionDigest: string;
+  };
+  /** What became of the execution's P7 reservation once the resolution stood (P12's closed vocabulary). */
+  readonly capacity: string;
+  /** Stated on every success, because it is the point: evidence was recorded and no action was performed. */
+  readonly effect: 'resolution-recorded-no-action-performed';
+}

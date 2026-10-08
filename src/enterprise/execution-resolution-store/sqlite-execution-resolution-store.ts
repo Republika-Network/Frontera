@@ -58,6 +58,15 @@ import { isCanonicalResolutionInstant } from './validation.js';
  * `WAL` + `synchronous = FULL`; an unknown schema version refuses to open the
  * file; every row read is re-validated and its digest recomputed. Anything else
  * is `EXECUTION_RESOLUTION_CORRUPT`, never repaired.
+ *
+ * ## PROD-03-02: `attested_by`
+ *
+ * One nullable column, the operator who attested an operator-attestation
+ * resolution. A file created before it gains the column on open (`ALTER TABLE
+ * … ADD COLUMN`, no row touched); every existing row reads it as `NULL`, which
+ * is exactly the absence its digest committed to. A runtime from before the
+ * column reads an attested row without it, recomputes a different digest and
+ * refuses the row as corrupt — it never reads it as an unattested resolution.
  */
 
 export interface CreateSqliteExecutionResolutionStoreOptions {
@@ -103,6 +112,7 @@ const SCHEMA_V1 = `
     certainty TEXT NOT NULL,
     failure TEXT,
     provider_ref TEXT,
+    attested_by TEXT,
     resolved_at TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     schema_version TEXT NOT NULL,
@@ -145,6 +155,7 @@ interface ResolutionRow {
   readonly certainty: unknown;
   readonly failure: unknown;
   readonly provider_ref: unknown;
+  readonly attested_by: unknown;
   readonly resolved_at: unknown;
   readonly recorded_at: unknown;
   readonly schema_version: unknown;
@@ -216,6 +227,7 @@ function resolutionOf(executionId: string, row: ResolutionRow): ExecutionResolut
     certainty: text(executionId, row.certainty, 'certainty') as ExecutionResolutionRecord['certainty'],
     ...optional(executionId, row.failure, 'failure', 'failure'),
     ...optional(executionId, row.provider_ref, 'provider_ref', 'providerRef'),
+    ...optional(executionId, row.attested_by, 'attested_by', 'attestedBy'),
     resolvedAt: text(executionId, row.resolved_at, 'resolved_at'),
     recordedAt: text(executionId, row.recorded_at, 'recorded_at'),
     resolutionDigest: text(executionId, row.resolution_digest, 'resolution_digest'),
@@ -248,6 +260,9 @@ export async function createSqliteExecutionResolutionStore(dbPath: string, optio
   }
 
   db.exec(SCHEMA_V1);
+  // PROD-03-02: a file created before `attested_by` existed gains it; no row is touched.
+  const resolutionColumns = db.prepare(`PRAGMA table_info(execution_resolutions)`).all() as readonly { readonly name: string }[];
+  if (!resolutionColumns.some((column) => column.name === 'attested_by')) db.exec(`ALTER TABLE execution_resolutions ADD COLUMN attested_by TEXT`);
   const latest = db.prepare(`SELECT schema_version FROM execution_resolution_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
   if (latest === undefined) {
     const openedAt = now();
@@ -262,7 +277,7 @@ export async function createSqliteExecutionResolutionStore(dbPath: string, optio
     `SELECT execution_id, organization_id, attempt_digest, authority_id, origin, bound_at, recorded_at, schema_version, binding_digest FROM execution_resolution_bindings WHERE execution_id = ?`,
   );
   const selectResolution = db.prepare(
-    `SELECT execution_id, organization_id, attempt_digest, binding_digest, basis_observation_digest, authority_id, certainty, failure, provider_ref, resolved_at, recorded_at, schema_version, resolution_digest
+    `SELECT execution_id, organization_id, attempt_digest, binding_digest, basis_observation_digest, authority_id, certainty, failure, provider_ref, attested_by, resolved_at, recorded_at, schema_version, resolution_digest
        FROM execution_resolutions WHERE execution_id = ?`,
   );
   const insertBinding = db.prepare(
@@ -271,8 +286,8 @@ export async function createSqliteExecutionResolutionStore(dbPath: string, optio
   );
   const insertResolution = db.prepare(
     `INSERT INTO execution_resolutions
-       (execution_id, organization_id, attempt_digest, binding_digest, basis_observation_digest, authority_id, certainty, failure, provider_ref, resolved_at, recorded_at, schema_version, resolution_digest)
-     VALUES (@executionId, @organizationId, @attemptDigest, @bindingDigest, @basisObservationDigest, @authorityId, @certainty, @failure, @providerRef, @resolvedAt, @recordedAt, @schemaVersion, @resolutionDigest)`,
+       (execution_id, organization_id, attempt_digest, binding_digest, basis_observation_digest, authority_id, certainty, failure, provider_ref, attested_by, resolved_at, recorded_at, schema_version, resolution_digest)
+     VALUES (@executionId, @organizationId, @attemptDigest, @bindingDigest, @basisObservationDigest, @authorityId, @certainty, @failure, @providerRef, @attestedBy, @resolvedAt, @recordedAt, @schemaVersion, @resolutionDigest)`,
   );
 
   let closed = false;
@@ -330,6 +345,7 @@ export async function createSqliteExecutionResolutionStore(dbPath: string, optio
       certainty: resolution.certainty,
       failure: resolution.failure ?? null,
       providerRef: resolution.providerRef ?? null,
+      attestedBy: resolution.attestedBy ?? null,
       resolvedAt: resolution.resolvedAt,
       recordedAt: resolution.recordedAt,
       schemaVersion: resolution.schemaVersion,

@@ -375,7 +375,11 @@ describe('ASSURE-01 — a third party fetches and verifies one request’s full 
     const unknown = await fetchTrace(baseUrl, requestIdOf('unconfirmed'));
     assert.equal(unknown.summary['finalState'], 'executed-unconfirmed');
     assert.equal(unknown.stages['outcome']?.['certainty'], 'unconfirmed');
-    assert.equal(unknown.stages['resolution']?.['presence'], 'not-composed', 'the shipped Host composes no P12 resolver: unresolved, and said so');
+    // PROD-03-02: with operators configured the shipped Host composes P12 with operator attestation only — bound before
+    // the claim, never answering on its own: the execution stays unresolved until an operator records a resolution.
+    assert.equal(unknown.stages['resolution']?.['presence'], 'unresolved', 'no resolution: unresolved, and said so');
+    assert.equal((unknown.stages['resolution']?.['binding'] as Record<string, unknown> | undefined)?.['authorityId'], 'frontera.operator-attestation');
+    assert.equal(unknown.stages['resolution']?.['resolution'], undefined);
     assertVerified(await verifyTrace(baseUrl, requestIdOf('unconfirmed')), 'unconfirmed');
   });
 

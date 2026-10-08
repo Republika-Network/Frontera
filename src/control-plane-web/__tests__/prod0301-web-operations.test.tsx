@@ -208,7 +208,8 @@ describe('PROD-03-01 web — the pages show the Host’s answer as stated', () =
     };
     const html = renderToStaticMarkup(<TracePage context={context} csrfToken="t" view={view} />);
     assert.match(html, /data-testid="trace-classification-hidden"/);
-    assert.equal([...html.matchAll(/hidden at this level/g)].length, 4, 'decision, issuance, claim and outcome');
+    // PROD-03-02 adds the resolution row, read from the same hidden outcome stage.
+    assert.equal([...html.matchAll(/hidden at this level/g)].length, 5, 'decision, issuance, claim, outcome and resolution');
     assert.doesNotMatch(html, /agent-1|ACTION_ALLOWED/);
   });
 });

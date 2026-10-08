@@ -285,7 +285,7 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       assert.equal(manifest.coverage.complete, true);
       assert.equal(manifest.consistency.mode, 'cold-attested');
       assert.equal(manifest.consistency.toolVerifiedHostStopped, false, 'the tool never claims to have proven the Host stopped');
-      // Every store the shipped Host composes, plus the embedder's P12 store because its file exists.
+      // Every store the shipped Host composes — since PROD-03-02 including P12, composed with the operator plane.
       assert.deepEqual(
         manifest.stores.map((store) => store.name),
         registry.STORE_DEFINITIONS.map((storeDef) => storeDef.name),
@@ -293,8 +293,8 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       );
       assert.deepEqual(
         manifest.coverage.stores.filter((store) => store.required).map((store) => store.name).sort(),
-        registry.STORE_DEFINITIONS.filter((storeDef) => storeDef.name !== 'execution-resolutions').map((storeDef) => storeDef.name).sort(),
-        'every store but P12 is required by this deployment (twelve at PROD-02, thirteen since ASSURE-01); P12 is present but never required from configuration',
+        registry.STORE_DEFINITIONS.map((storeDef) => storeDef.name).sort(),
+        'every store is required by this deployment (twelve at PROD-02, thirteen since ASSURE-01, fourteen since PROD-03-02 composes P12 with the operator plane)',
       );
 
       // ── no secret value, no private key, no witness state in any byte of the backup ──
