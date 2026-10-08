@@ -400,5 +400,7 @@ operator resolution, never a provider confirmation.
   reconciliation again, which re-submits the identical resolution — its `replayed` path re-runs
   only the P7 / evidence completion (§6), records nothing new and performs nothing. `conflict` and
   `inconsistent` are reported for investigation, never repaired; the trace keeps a warning while
-  the execution's reservation holds no reconciliation matching its resolution. Attention and its
+  the execution's reservation holds no reconciliation matching its resolution — the same answer for
+  the same resolution digest (the ASSURE-01 reservation stage states `resolutionDigest`, a later
+  fact beside `resolution`, so a bundle issued before it still progresses). Attention and its
   counts are unchanged: the execution is resolved; capacity follow-up is not yet an Attention reason.

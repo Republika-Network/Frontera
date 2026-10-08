@@ -506,7 +506,7 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
           reservationId: expectedReservationId,
           state: view.state,
           ...(view.terminal !== undefined ? { terminalReason: view.terminal.reason } : {}),
-          ...(view.resolution !== undefined ? { resolution: view.resolution.resolution } : {}),
+          ...(view.resolution !== undefined ? { resolution: view.resolution.resolution, resolutionDigest: view.resolution.resolutionDigest } : {}),
         };
       }
     } catch (error) {

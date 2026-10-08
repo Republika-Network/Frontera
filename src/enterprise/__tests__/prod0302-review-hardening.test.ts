@@ -21,6 +21,7 @@ import { createExecutionReconciliationService } from '../execution-reconciliatio
 import { createInMemoryExecutionOutcomeStore } from '../execution-outcome-store/in-memory-execution-outcome-store.js';
 import { createSqliteExecutionResolutionStore, type ExecutionResolutionStore } from '../execution-resolution-store/index.js';
 import { createInMemoryExecutionResolutionStore } from '../execution-resolution-store/in-memory-execution-resolution-store.js';
+import { compareDisclosedTraces, type DisclosedAuthorityTrace } from '../evidence/trace-disclosure.js';
 import { createEnterpriseServer } from '../host/enterprise-server.js';
 import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
 import type { KernelAuthorityMonetaryConstraint as AuthorityConstraint } from '../kernel-authority/contracts.js';
@@ -558,5 +559,46 @@ describe('PROD-03-02 hardening C — the Host API stays closed under a crafted r
       );
     }
     assert.equal(recorded, 0, 'nothing reached P12');
+  });
+});
+
+// -- Fresh review of #172: the reservation states which resolution it was reconciled for ---------
+
+describe('PROD-03-02 hardening D — the ASSURE-01 reservation stage states the reconciled resolution digest', () => {
+  it('a real Host’s trace carries the P7 reconciliation’s resolution digest, equal to the P12 resolution’s', async () => {
+    const host = await compose({ spineRequired: true, authorities: [createOperatorAttestationAuthority()], select: selectOperatorAttestation, operators: true });
+    const provisioning = host.enterprise.kernelAuthorityProvisioning;
+    assert.ok(provisioning !== undefined);
+    await provision(provisioning);
+    const paid = await pay(host, 'digest-unconfirmed');
+    const operations = host.enterprise.operatorOperations;
+    assert.ok(operations !== undefined);
+    const resolved = await operations.resolveExecution(bearer(ADMIN_KEY), paid.executionId ?? '', async () => ({ resolution: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED', observedOutcome: 'unconfirmed' }));
+    assert.equal(resolved.capacity, 'adjusted');
+    const trace = await operations.readTrace(bearer(OBSERVER_KEY), paid.requestId ?? '', { level: 'AUDITOR' });
+    const stages = trace.trace.stages as unknown as Record<string, Record<string, unknown>>;
+    assert.equal(stages['reservation']?.['resolution'], 'confirmed-not-completed');
+    assert.equal(stages['reservation']?.['resolutionDigest'], resolved.resolution.resolutionDigest, 'reconciled for exactly this resolution');
+    assert.equal((stages['resolution']?.['resolution'] as Record<string, unknown>)['resolutionDigest'], resolved.resolution.resolutionDigest);
+    assert.equal(trace.verification.verified, true);
+  });
+
+  it('a bundle issued before the digest was stated still progresses to today’s trace; a changed digest is a contradiction', () => {
+    const at = (reservation: Record<string, unknown>): DisclosedAuthorityTrace =>
+      ({
+        traceVersion: 'aoc.authority-trace.v1',
+        requestId: 'aoc.gar:1',
+        evaluationId: 'e',
+        decisionId: 'd',
+        executionId: EXECUTION,
+        organizationId: ORG,
+        summary: { path: 'allowed', finalState: 'resolved-confirmed-not-completed', presence: { reservation: 'recorded' } },
+        stages: { reservation },
+      }) as unknown as DisclosedAuthorityTrace;
+    const before = { presence: 'recorded', reservationId: 'r-1', state: 'settled', terminalReason: 'execution-unconfirmed', resolution: 'confirmed-not-completed' };
+    const now = { ...before, resolutionDigest: 'sha256:a' };
+    assert.equal(compareDisclosedTraces(at(before), at(now)).stages.reservation, 'progressed', 'the digest is a later fact, stated with the resolution');
+    assert.equal(compareDisclosedTraces(at(now), at({ ...before, resolutionDigest: 'sha256:b' })).stages.reservation, 'contradicted');
+    assert.equal(compareDisclosedTraces(at(now), at(before)).stages.reservation, 'contradicted', 'a stated digest never disappears');
   });
 });

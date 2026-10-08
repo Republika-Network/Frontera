@@ -252,6 +252,8 @@ export interface AuthorityTraceReservationStage {
   readonly state?: string;
   readonly terminalReason?: string;
   readonly resolution?: string;
+  /** The P12 resolution digest the P7 reconciliation row was recorded for. A later fact, stated with `resolution`. */
+  readonly resolutionDigest?: string;
   readonly failure?: string;
 }
 

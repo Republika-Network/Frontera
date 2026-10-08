@@ -165,6 +165,26 @@ describe('PROD-03-02 hardening C — the console enforces the Host’s closed re
     }
   });
 
+  it('fresh review of #172 — padded values are refused as submitted, never trimmed into a valid permanent resolution', async () => {
+    for (const fields of [
+      { resolution: 'confirmed-completed', failure: '  ' },
+      { resolution: 'confirmed-not-completed', failure: ' PROVIDER_REJECTED' },
+      { resolution: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED ' },
+      { resolution: ' confirmed-completed', failure: '' },
+    ]) {
+      const calls: string[] = [];
+      const { app, cookie, csrf } = signedIn(scriptedHost({ resolveExecution: () => ok(recordedBody('adjusted')) }, calls));
+      const response = await app.handle(submit(cookie, { csrf, ...fields, observedOutcome: 'none', confirm: 'yes' }));
+      assert.equal(response.status, 400, JSON.stringify(fields));
+      assert.equal(calls.includes('resolveExecution'), false, `${JSON.stringify(fields)}: no Host mutation`);
+    }
+    const calls: string[] = [];
+    const { app, cookie, csrf } = signedIn(scriptedHost({ resolveExecution: () => ok(recordedBody('adjusted')) }, calls));
+    const padded = await app.handle(submit(cookie, { csrf, resolution: 'confirmed-completed', failure: '', observedOutcome: ' none', confirm: 'yes' }));
+    assert.equal(padded.status, 400);
+    assert.equal(calls.includes('resolveExecution'), false);
+  });
+
   it('C1 / C4: valid forms reach the Host with exactly the closed body', async () => {
     const bodies: OperatorResolutionBody[] = [];
     for (const [fields, expected] of [
@@ -289,6 +309,10 @@ describe('PROD-03-02 hardening D — the console states the capacity result besi
       [{ resolution: resolved('confirmed-completed'), reservation: { presence: 'none-recorded' } }, false],
       [{ resolution: { presence: 'unresolved' }, reservation: { presence: 'recorded', state: 'reserved' } }, false],
       [{ resolution: resolved('confirmed-not-completed') }, false],
+      // Fresh review of #172: P7's identity is the answer AND the resolution digest it was recorded for.
+      [{ resolution: { presence: 'resolved', resolution: { certainty: 'confirmed-not-completed', resolutionDigest: 'sha256:p12' } }, reservation: { presence: 'recorded', resolution: 'confirmed-not-completed', resolutionDigest: 'sha256:p12' } }, false],
+      [{ resolution: { presence: 'resolved', resolution: { certainty: 'confirmed-not-completed', resolutionDigest: 'sha256:p12' } }, reservation: { presence: 'recorded', resolution: 'confirmed-not-completed', resolutionDigest: 'sha256:other' } }, true],
+      [{ resolution: { presence: 'resolved', resolution: { certainty: 'confirmed-not-completed', resolutionDigest: 'sha256:p12' } }, reservation: { presence: 'recorded', resolution: 'confirmed-not-completed' } }, true],
     ];
     for (const [stages, expected] of cases) {
       assert.equal(capacityReconciliationMissing(stages), expected, JSON.stringify(stages));

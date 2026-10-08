@@ -427,9 +427,10 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
 
   async function resolveExecution(authed: Authed, requestId: string, form: FormFields): Promise<ConsoleResponse> {
     if (!confirmed(form)) return resolutionPage(authed, requestId);
-    const resolution = form.text('resolution');
-    const failure = form.text('failure');
-    const observedOutcome = form.text('observedOutcome');
+    // Raw, untrimmed: the closed form is checked exactly as submitted — a padded value is refused, never normalized.
+    const resolution = form.raw('resolution');
+    const failure = form.raw('failure');
+    const observedOutcome = form.raw('observedOutcome');
     if (!isResolutionChoice(resolution) || (observedOutcome !== 'none' && observedOutcome !== 'unconfirmed')) return html(400, <ErrorPage title="Choose a resolution" context={authed.context} csrfToken={authed.csrf} />);
     // The closed form, before anything reaches the Host: a contradictory or incomplete choice is refused — never normalized — and the page is re-read with the form empty.
     const formError = resolutionFormError(resolution, failure);

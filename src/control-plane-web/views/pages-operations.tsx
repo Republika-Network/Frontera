@@ -698,7 +698,8 @@ const asRecord = (value: unknown): Readonly<Record<string, unknown>> | undefined
 /**
  * PROD-03-02 — from the disclosed trace alone: a definitive resolution is
  * recorded, the execution holds a P7 reservation, and that reservation carries
- * no reconciliation matching the resolution. Display only — the Host's
+ * no reconciliation matching the resolution — the same answer recorded for
+ * the same resolution digest. Display only — the Host's
  * classification, attention and counts are unchanged — and silent at a
  * disclosure level that hides either stage.
  */
@@ -708,7 +709,11 @@ export function capacityReconciliationMissing(stages: Readonly<Record<string, un
   if (reservation === undefined || resolved === undefined || reservation['presence'] !== 'recorded') return false;
   const certainty = resolved['certainty'];
   if (certainty !== 'confirmed-completed' && certainty !== 'confirmed-not-completed') return false;
-  return reservation['resolution'] !== certainty;
+  if (reservation['resolution'] !== certainty) return true;
+  // P7's identity is the answer **and** the digest it was recorded for: a row with the same answer for another resolution is a conflict, not a reconciliation.
+  const recordedFor = reservation['resolutionDigest'];
+  const digest = resolved['resolutionDigest'];
+  return typeof recordedFor === 'string' && typeof digest === 'string' ? recordedFor !== digest : recordedFor === undefined && digest !== undefined;
 }
 
 /**

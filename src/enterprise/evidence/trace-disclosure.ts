@@ -336,7 +336,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Lists that only ever grow by appending (append-only logs and streams). */
 const APPEND_ONLY_LISTS: ReadonlySet<string> = new Set(['records', 'discharges', 'events']);
 /** Keys a recorded object may gain later without any earlier fact changing. */
-const LATER_KEYS: ReadonlySet<string> = new Set(['revocation', 'resolution', 'terminalReason', 'governanceSummary', 'head']);
+const LATER_KEYS: ReadonlySet<string> = new Set(['revocation', 'resolution', 'resolutionDigest', 'terminalReason', 'governanceSummary', 'head']);
 
 /**
  * True when every fact `before` states is still exactly stated by `after`.
@@ -351,7 +351,8 @@ const LATER_KEYS: ReadonlySet<string> = new Set(['revocation', 'resolution', 'te
  *   grants, each earlier grant still matching.
  * - New keys may appear on an open object; on a recorded one only the few that
  *   are later facts by nature (a revocation, a resolution, a terminal reason, a
- *   summary, a newer stream head).
+ *   summary, a newer stream head). A reservation's `resolutionDigest` arrives
+ *   with its `resolution`; a trace built before it was stated lacks it.
  */
 function preserved(before: unknown, after: unknown, key: string, stage: AuthorityTraceStageName): boolean {
   if (canonical(before) === canonical(after)) return true;
