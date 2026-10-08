@@ -20,3 +20,20 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run legal:check
+      # PROD-03-03: the committed release manifest and the frozen API surface
+      # must match this build (verify-release-manifest.mjs, check-api-freeze.mjs).
+      - run: npm run check:release-coherence
+
+  pilot-deployment:
+    # PROD-03-03: the supported pilot deployment (Dockerfile + deploy/pilot),
+    # qualified end to end from a clean export of this commit: build, config
+    # check, start, readiness, release identity, durable state across restarts,
+    # storage/schema/witness faults, secret leakage and image hygiene (D1-D15).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/deploy/qualify-pilot-deployment.mjs --commit "$(git rev-parse HEAD)"

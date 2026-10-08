@@ -1,7 +1,7 @@
 {
   "surface": "aoc-enterprise-host-http.v1",
   "documentation": "docs/enterprise/API_STABILITY_V1.md",
-  "endpointCount": 64,
+  "endpointCount": 65,
   "routeLiterals": [
     "/api/assurance/assessments",
     "/api/assurance/manual-reviews",
@@ -13,7 +13,8 @@
     "/api/passports",
     "/health",
     "/live",
-    "/ready"
+    "/ready",
+    "/version"
   ],
   "routePatterns": [
     "^\\/api\\/assurance\\/assessments\\/([^/]+)$",
@@ -78,6 +79,7 @@
     { "method": "GET", "path": "/health" },
     { "method": "GET", "path": "/live" },
     { "method": "GET", "path": "/ready" },
+    { "method": "GET", "path": "/version" },
     { "method": "POST", "path": "/api/governance/evaluate" },
     { "method": "GET", "path": "/api/governance/evaluations/freeze-probe" },
     { "method": "GET", "path": "/api/governance/evaluations/freeze-probe/verify" },
