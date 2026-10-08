@@ -279,6 +279,8 @@ export function createExecutionLedger(store: GovernanceStore, accessContext: Gov
 
     async recordResolution(evaluationId, executionId, resolution) {
       const recordedAs = encodeResolutionSummary(resolution.certainty, resolution.failure);
+      // A resolution with no canonical form is not recorded at all, rather than recorded as a row no reader decodes.
+      if (recordedAs === undefined) return false;
       try {
         await appendOnce({
           referenceId: executionResolutionReferenceId(executionId),

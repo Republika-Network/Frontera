@@ -140,9 +140,17 @@ function isExecutionFailureReason(value: string): boolean {
   return (EXECUTION_FAILURE_REASON_VALUES as readonly string[]).includes(value);
 }
 
-/** The P12 resolution row, as the ledger records it. */
-export function encodeResolutionSummary(certainty: 'confirmed-completed' | 'confirmed-not-completed', failure: string | undefined): string {
-  return certainty === 'confirmed-completed' ? RESOLVED_COMPLETED : `${RESOLVED_NOT_COMPLETED_PREFIX}${failure ?? ''}`;
+/**
+ * The P12 resolution row, as the ledger records it — or `undefined` when the
+ * input has no canonical form: a completion carrying a failure, or a
+ * non-completion without a failure from the closed vocabulary. The writer
+ * emits only what `decodeDefinitiveExecutionSummary` accepts, so a recorded
+ * resolution can never be read back as still open.
+ */
+export function encodeResolutionSummary(certainty: 'confirmed-completed' | 'confirmed-not-completed', failure: string | undefined): string | undefined {
+  if (certainty === 'confirmed-completed') return failure === undefined ? RESOLVED_COMPLETED : undefined;
+  if (certainty === 'confirmed-not-completed') return failure !== undefined && isExecutionFailureReason(failure) ? `${RESOLVED_NOT_COMPLETED_PREFIX}${failure}` : undefined;
+  return undefined;
 }
 
 /**

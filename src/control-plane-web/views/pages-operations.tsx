@@ -354,6 +354,12 @@ function ScanNote({ scan }: { readonly scan: OperationalScan }): React.ReactElem
   );
 }
 
+/** Why the Host did not state confirmed outcomes, from the two facts it reports — never one reason when the other holds. */
+function unstatedReason(metrics: OperationalMetrics): string {
+  const reasons = [...(!metrics.consistent ? ['the records changed while they were counted'] : []), ...(!metrics.scan.complete ? ['scan incomplete'] : [])];
+  return `not stated (${reasons.length > 0 ? reasons.join('; ') : 'not derivable from this read'})`;
+}
+
 export function HostHealthPage({
   context,
   csrfToken,
@@ -416,7 +422,7 @@ export function HostHealthPage({
                 ['Indeterminate', String(metrics.decisions.indeterminate)],
                 ['Issuance withheld', String(metrics.issuanceWithheld)],
                 ['Execution claims', String(metrics.executionClaims)],
-                ['Confirmed outcomes', metrics.confirmedOutcomes === null ? <span key="n" className="missing">not stated (scan incomplete)</span> : String(metrics.confirmedOutcomes)],
+                ['Confirmed outcomes', metrics.confirmedOutcomes === null ? <span key="n" className="missing" data-testid="confirmed-unstated">{unstatedReason(metrics)}</span> : String(metrics.confirmedOutcomes)],
                 ['Unresolved executions', String(metrics.unresolvedExecutions)],
                 ['Attention required', String(metrics.attentionRequired)],
                 ['Computed at', <Time key="t" value={metrics.computedAt} />],

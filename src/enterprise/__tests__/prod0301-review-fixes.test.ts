@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import { EMERGENCY_CONTROL_REASON_CODE_VALUES } from '../../features/emergency-control-runtime/index.js';
 import { GRANT_EXERCISE_REASON_CODE_VALUES } from '../../features/execution-runtime/index.js';
 import type { GovernanceRecordSummary, GovernanceStoreCountQuery, GovernanceStoreQuery, GovernanceStoreQueryResult } from '../governance-store/contracts.js';
-import { decodeDefinitiveExecutionSummary, isDefinitiveExecutionSummary } from '../governed-action/execution-summary.js';
+import { EXECUTION_FAILURE_REASON_VALUES } from '../../features/execution-runtime/index.js';
+import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
+import { createExecutionLedger } from '../governed-action/execution-ledger.js';
+import { decodeDefinitiveExecutionSummary, encodeResolutionSummary, isDefinitiveExecutionSummary } from '../governed-action/execution-summary.js';
 import { deriveGovernedActionRequestId, governedActionIdempotencyScope, isGovernedActionIdempotencyClaim } from '../governed-action/identifiers.js';
 import type { OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
 import { createOperatorOperationsService, type OperatorOperationsDependencies } from '../operations/service.js';
@@ -66,6 +69,66 @@ describe('PROD-03-01 review fix A — a definitive outcome is only a form the ex
     ]) {
       assert.equal(isDefinitiveExecutionSummary(recorded), false, String(recorded));
     }
+  });
+});
+
+describe('PROD-03-01 review fix (#170) — the resolution writer emits only what the decoder accepts', () => {
+  it('every valid resolution the writer encodes round-trips through the canonical decoder, unchanged in form', () => {
+    assert.equal(encodeResolutionSummary('confirmed-completed', undefined), 'resolved:confirmed-completed');
+    assert.deepEqual(decodeDefinitiveExecutionSummary('resolved:confirmed-completed'), { kind: 'resolved', certainty: 'confirmed-completed' });
+    for (const failure of EXECUTION_FAILURE_REASON_VALUES) {
+      const recorded = encodeResolutionSummary('confirmed-not-completed', failure);
+      assert.equal(recorded, `resolved:confirmed-not-completed:${failure}`, failure);
+      assert.deepEqual(decodeDefinitiveExecutionSummary(recorded ?? ''), { kind: 'resolved', certainty: 'confirmed-not-completed', failure }, failure);
+    }
+  });
+
+  it('an input with no canonical form is refused by the writer, never encoded as a row the decoder rejects', () => {
+    for (const failure of [undefined, '', 'NOT_A_REASON', 'provider_rejected', 'PROVIDER_REJECTED@a']) assert.equal(encodeResolutionSummary('confirmed-not-completed', failure), undefined, String(failure));
+    assert.equal(encodeResolutionSummary('confirmed-completed', 'PROVIDER_REJECTED'), undefined, 'a completion carries no failure');
+    assert.equal(encodeResolutionSummary('other' as 'confirmed-completed', undefined), undefined, 'an unknown certainty');
+  });
+
+  it('recordResolution appends nothing for an invalid resolution, and the canonical form for a valid one', async () => {
+    const SYSTEM = { system: true } as const;
+    const store = createInMemoryGovernanceStore();
+    const requestId = 'r-resolution';
+    const decisionId = 'dec-resolution';
+    const appended = await store.appendEvaluation({
+      request: { requestId, actor: { id: 'actor-1', trustDomainId: 'td', type: 'agent' }, action: { type: 'act', resourceScope: 'res', domain: 'general' }, organization: { id: ORG }, requestedAt: T },
+      result: {
+        requestId,
+        decisionId,
+        status: 'allowed',
+        reasonCodes: ['CODE'],
+        summary: 'allowed',
+        recognition: { performed: true, recognized: true },
+        authority: { performed: false },
+        policies: [],
+        approval: { performed: false, status: 'not_applicable' },
+        evidence: [],
+        trace: { steps: [{ sequence: 1, operator: 'recognition', status: 'passed', reasonCodes: ['CODE'] }], decisionId, kernelVersion: '1.0.0' },
+        evaluatedAt: T,
+        kernelVersion: '1.0.0',
+      },
+      receivedAt: T,
+      enterpriseContext: { enterpriseVersion: '1.0.0', lifecycleState: 'ready', modules: [], providers: [], environment: 'test' },
+      events: [],
+      accessContext: SYSTEM,
+    });
+    const ledger = createExecutionLedger(store, { system: false, organizationId: ORG }, () => T);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const rows = async (): Promise<readonly (string | undefined)[]> => ((await store.getByEvaluationId(SYSTEM, appended.evaluationId))?.references ?? []).map((entry) => entry.externalVersion);
+
+    for (const invalid of [{ certainty: 'confirmed-not-completed' as const }, { certainty: 'confirmed-not-completed' as const, failure: 'NOT_A_REASON' }, { certainty: 'confirmed-completed' as const, failure: 'PROVIDER_REJECTED' }]) {
+      assert.equal(await ledger.recordResolution(appended.evaluationId, 'aoc.exec:1', { ...invalid, resolutionDigest: digest }), false, JSON.stringify(invalid));
+    }
+    assert.deepEqual(await rows(), [], 'nothing was durably appended');
+
+    assert.equal(await ledger.recordResolution(appended.evaluationId, 'aoc.exec:1', { certainty: 'confirmed-not-completed', failure: 'PROVIDER_UNAVAILABLE', resolutionDigest: digest }), true);
+    assert.deepEqual(await rows(), ['resolved:confirmed-not-completed:PROVIDER_UNAVAILABLE']);
+    for (const row of await rows()) assert.equal(isDefinitiveExecutionSummary(row), true, 'what was written decodes as definitive');
+    await store.close();
   });
 });
 

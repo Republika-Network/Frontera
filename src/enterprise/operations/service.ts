@@ -289,7 +289,10 @@ export function createOperatorOperationsService(dependencies: OperatorOperations
         persistedAt: record.evaluation.persistedAt,
       };
       // Classified exactly as the execution list classifies it, then disclosed at the trace's own level.
-      const view = (await isGovernedAction(summary.evaluationId)) ? operationalViewOf(build.trace, summary) : operationalViewOfEvaluation(summary);
+      // An evaluation-only record keeps that classification; its trace was just built, so the sidecar says so.
+      const view = (await isGovernedAction(summary.evaluationId))
+        ? operationalViewOf(build.trace, summary)
+        : { ...operationalViewOfEvaluation(summary), trace: { available: true, finalState: build.trace.finalState, failure: null } };
       return {
         requestId,
         disclosure: { level: policy.level, policyId: policy.policyId, policyVersion: policy.version, visibleFields: policy.visibleFields, hiddenFields: policy.hiddenFields, redactedFields: policy.redactedFields },

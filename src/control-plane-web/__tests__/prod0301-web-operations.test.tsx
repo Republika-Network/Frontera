@@ -182,9 +182,22 @@ describe('PROD-03-01 web — the pages show the Host’s answer as stated', () =
       />,
     );
     assert.match(html, /Lower bounds: 500 of 900 open claims/);
-    assert.match(html, /not stated \(scan incomplete\)/);
+    assert.match(html, /not stated \(the records changed while they were counted; scan incomplete\)/, 'both reasons hold, both are stated');
     assert.match(html, /data-testid="unresolved-count">7</);
     assert.match(html, /data-testid="metrics-moving"/, 'a read the store moved under says so');
+  });
+
+  it('review fix (#170) — an unstated confirmed-outcome count names the reason that actually holds', () => {
+    const page = (consistent: boolean, complete: boolean): string => {
+      const scan = { candidates: 3, examined: complete ? 3 : 2, complete, limit: complete ? 500 : 2 };
+      const metrics = { decisions: { total: 3, allowed: 3, denied: 0, approvalRequired: 0, indeterminate: 0 }, issuanceWithheld: 0, executionClaims: 3, confirmedOutcomes: null, unresolvedExecutions: 1, attentionRequired: 1, scan, consistent, computedAt: 't', coverage: 'c' };
+      const html = renderToStaticMarkup(<HostHealthPage context={context} csrfToken="t" health={{ health: HEALTH, operations: { unresolvedExecutions: 1, attentionRequired: 1, scan, checkedAt: 't' } }} metrics={metrics} />);
+      return /data-testid="confirmed-unstated">([^<]*)</.exec(html)?.[1] ?? '';
+    };
+    // The store moved, but every candidate was read: never "scan incomplete".
+    assert.equal(page(false, true), 'not stated (the records changed while they were counted)');
+    // The scan stopped at its limit on a stable read: never "the records changed".
+    assert.equal(page(true, false), 'not stated (scan incomplete)');
   });
 
   it('review fix — a trace below AUDITOR renders the disclosed classification and marks every hidden section, never a hidden value', () => {
