@@ -190,6 +190,21 @@ async function checkStore(storeDef, path, modules, secure, rootDevice) {
     problems.push(['STORAGE_NOT_PERSISTENT', `${label}: its directory is on an in-memory filesystem (${filesystemOf(existingDir)})`]);
   }
 
+  // SQLite creates and owns the companions itself. One that is a link (even a
+  // dangling one, which existsSync cannot see) or not a regular file is not
+  // storage SQLite will accept, so it is refused before the Host meets it.
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    let companion;
+    try {
+      companion = lstatSync(`${absolute}${suffix}`);
+    } catch {
+      continue;
+    }
+    if (!companion.isFile()) {
+      problems.push(['STORAGE_UNAVAILABLE', `${label}: its ${suffix.slice(1)} file is ${companion.isSymbolicLink() ? 'a symlink' : 'not a regular file'}`]);
+      return { problems, warnings };
+    }
+  }
   if (!existsSync(absolute)) return { problems, warnings, state: 'absent' };
   if (!statSync(absolute).isFile()) {
     problems.push(['STORAGE_UNAVAILABLE', `${label}: exists but is not a regular file`]);

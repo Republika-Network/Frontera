@@ -156,6 +156,15 @@ describe('PROD-03-03 Host preflight', () => {
     assert.equal((await runHostPreflight(durableEnv(clean))).ok, true);
   });
 
+  it('refuses a SQLite companion file that is a symlink, dangling or not', async () => {
+    const { symlinkSync } = await import('node:fs');
+    const data = scratch();
+    symlinkSync(join(scratch(), 'missing', 'wal'), join(data, 'enterprise-host.sqlite-wal'));
+    const result = await runHostPreflight(durableEnv(data));
+    assert.deepEqual(failures(result), ['STORAGE_UNAVAILABLE']);
+    assert.match(outputOf(result), /its wal file is a symlink/);
+  });
+
   it('reports an unreadable governed-action file by variable, never by its path', async () => {
     const missing = join(scratch(), 'customer-acme', 'governed-actions.json');
     const result = await runHostPreflight(durableEnv(scratch(), { AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: missing, AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true' }));
