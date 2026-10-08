@@ -420,6 +420,32 @@ export interface OperationalExecution {
   readonly trace: { readonly available: boolean; readonly finalState: string | null; readonly failure: string | null };
 }
 
+/**
+ * The classification beside a disclosed trace, reduced by the Host to what the
+ * disclosure level shows: a section whose trace stage is hidden is absent and
+ * named in `hidden`; `classification` and `unresolved` are `null` where only a
+ * hidden stage could state them.
+ */
+export interface DisclosedOperational {
+  readonly requestId: string;
+  readonly evaluationId: string;
+  readonly decisionId: string;
+  readonly executionId: string | null;
+  readonly classification: string | null;
+  readonly attentionRequired: boolean;
+  readonly attentionReasons: readonly string[];
+  readonly unresolved: boolean | null;
+  readonly trace: OperationalExecution['trace'];
+  readonly actorId?: string;
+  readonly actionType?: string;
+  readonly decision?: { readonly status: string; readonly reasonCodes: readonly string[]; readonly evaluatedAt: string; readonly persistedAt?: string };
+  readonly approval?: OperationalExecution['approval'];
+  readonly issuance?: OperationalExecution['issuance'];
+  readonly execution?: OperationalExecution['execution'];
+  readonly outcome?: OperationalExecution['outcome'];
+  readonly hidden: readonly string[];
+}
+
 export interface ExecutionsPage {
   readonly executions: readonly OperationalExecution[];
   readonly nextCursor: string | null;
@@ -448,6 +474,8 @@ export interface OperationalMetrics {
   readonly unresolvedExecutions: number;
   readonly attentionRequired: number;
   readonly scan: OperationalScan;
+  /** `false`: the Host's store kept moving while it counted; each counter is as read and `confirmedOutcomes` is not stated. */
+  readonly consistent: boolean;
   readonly computedAt: string;
   readonly coverage: string;
 }
@@ -487,7 +515,7 @@ export interface OperationalTrace {
   };
   readonly traceDigest: string;
   readonly verification: { readonly verified: boolean; readonly categories: Readonly<Record<string, string>>; readonly checks: readonly TraceCheck[]; readonly finalState: string; readonly verifiedAt: string; readonly boundary: string };
-  readonly operational: OperationalExecution;
+  readonly operational: DisclosedOperational;
   readonly generatedAt: string;
 }
 
@@ -501,6 +529,36 @@ export function isTraceLevel(value: string): value is (typeof TRACE_LEVELS)[numb
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isArrayOf = (value: unknown, item: (entry: unknown) => boolean): boolean => Array.isArray(value) && value.every(item);
+const isNullableString = (value: unknown): value is string | null => value === null || isString(value);
+const isStrings = (value: unknown): boolean => isArrayOf(value, isString);
+const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
+/** Absent, or present and well formed — for the sections a disclosure level may leave out. */
+const absentOr = (value: unknown, guard: (inner: unknown) => boolean): boolean => value === undefined || guard(value);
+
+/**
+ * PROD-03-01 — every nested field the operational pages read, so a partial or
+ * version-skewed Host answer is a contract failure here and never a crash in a
+ * page that dereferences it.
+ */
+const operational = {
+  decision: (value: unknown, persistedAt: 'required' | 'optional'): boolean =>
+    isObject(value) && isString(value['status']) && isStrings(value['reasonCodes']) && isString(value['evaluatedAt']) && (persistedAt === 'required' ? isString(value['persistedAt']) : absentOr(value['persistedAt'], isString)),
+  approval: (value: unknown): boolean => value === null || (isObject(value) && isString(value['presence']) && isStrings(value['verdicts'])),
+  issuance: (value: unknown): boolean => isObject(value) && isString(value['status']) && isNullableString(value['withheldBy']) && isStrings(value['reasonCodes']) && isNullableString(value['recordedAt']),
+  execution: (value: unknown): boolean => isObject(value) && isString(value['claim']) && isNullableString(value['claimedAt']),
+  outcome: (value: unknown): boolean =>
+    isObject(value) &&
+    isString(value['status']) &&
+    isNullableString(value['source']) &&
+    isNullableString(value['failure']) &&
+    isNullableString(value['withheldBy']) &&
+    isStrings(value['reasonCodes']) &&
+    isNullableString(value['recordedAt']),
+  trace: (value: unknown): boolean => isObject(value) && isBoolean(value['available']) && isNullableString(value['finalState']) && isNullableString(value['failure']),
+  identity: (value: Record<string, unknown>): boolean =>
+    isString(value['requestId']) && isString(value['evaluationId']) && isString(value['decisionId']) && isNullableString(value['executionId']) && isBoolean(value['attentionRequired']) && isStrings(value['attentionReasons']),
+} as const;
 
 export const shapes = {
   organization: (body: unknown): body is OrganizationContext =>
@@ -565,54 +623,88 @@ export const shapes = {
     isArrayOf(body['verdicts'], (verdict) => isObject(verdict) && isString(verdict['kind']) && typeof verdict['counted'] === 'boolean' && Array.isArray(verdict['evidence'])),
   operationalExecution: (entry: unknown): entry is OperationalExecution =>
     isObject(entry) &&
-    isString(entry['requestId']) &&
-    isString(entry['evaluationId']) &&
+    operational.identity(entry) &&
+    isString(entry['actorId']) &&
+    isString(entry['actionType']) &&
     isString(entry['classification']) &&
-    typeof entry['attentionRequired'] === 'boolean' &&
-    isArrayOf(entry['attentionReasons'], isString) &&
-    typeof entry['unresolved'] === 'boolean' &&
-    isObject(entry['decision']) &&
-    isString(entry['decision']['status']) &&
-    isObject(entry['issuance']) &&
-    isObject(entry['execution']) &&
-    isObject(entry['outcome']) &&
-    isObject(entry['trace']),
+    isBoolean(entry['unresolved']) &&
+    operational.decision(entry['decision'], 'required') &&
+    entry['approval'] !== undefined &&
+    operational.approval(entry['approval']) &&
+    operational.issuance(entry['issuance']) &&
+    operational.execution(entry['execution']) &&
+    operational.outcome(entry['outcome']) &&
+    operational.trace(entry['trace']),
+  disclosedOperational: (entry: unknown): entry is DisclosedOperational =>
+    isObject(entry) &&
+    operational.identity(entry) &&
+    isNullableString(entry['classification']) &&
+    (entry['unresolved'] === null || isBoolean(entry['unresolved'])) &&
+    operational.trace(entry['trace']) &&
+    isStrings(entry['hidden']) &&
+    absentOr(entry['actorId'], isString) &&
+    absentOr(entry['actionType'], isString) &&
+    absentOr(entry['decision'], (value) => operational.decision(value, 'optional')) &&
+    absentOr(entry['approval'], operational.approval) &&
+    absentOr(entry['issuance'], operational.issuance) &&
+    absentOr(entry['execution'], operational.execution) &&
+    absentOr(entry['outcome'], operational.outcome),
   executions: (body: unknown): body is ExecutionsPage =>
     isObject(body) && isArrayOf(body['executions'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])),
   attention: (body: unknown): body is AttentionPage =>
     isObject(body) && isArrayOf(body['attention'], (entry) => shapes.operationalExecution(entry)) && (body['nextCursor'] === null || isString(body['nextCursor'])) && typeof body['resolvedOnRead'] === 'number',
   operationalScan: (scan: unknown): scan is OperationalScan =>
-    isObject(scan) && typeof scan['candidates'] === 'number' && typeof scan['examined'] === 'number' && typeof scan['complete'] === 'boolean' && typeof scan['limit'] === 'number',
+    isObject(scan) && isNumber(scan['candidates']) && isNumber(scan['examined']) && isBoolean(scan['complete']) && isNumber(scan['limit']),
   metrics: (body: unknown): body is OperationalMetrics =>
     isObject(body) &&
     isObject(body['decisions']) &&
-    typeof body['decisions']['total'] === 'number' &&
-    typeof body['issuanceWithheld'] === 'number' &&
-    typeof body['executionClaims'] === 'number' &&
-    (body['confirmedOutcomes'] === null || typeof body['confirmedOutcomes'] === 'number') &&
-    typeof body['unresolvedExecutions'] === 'number' &&
-    typeof body['attentionRequired'] === 'number' &&
-    shapes.operationalScan(body['scan']),
+    ['total', 'allowed', 'denied', 'approvalRequired', 'indeterminate'].every((key) => isNumber((body['decisions'] as Record<string, unknown>)[key])) &&
+    isNumber(body['issuanceWithheld']) &&
+    isNumber(body['executionClaims']) &&
+    (body['confirmedOutcomes'] === null || isNumber(body['confirmedOutcomes'])) &&
+    isNumber(body['unresolvedExecutions']) &&
+    isNumber(body['attentionRequired']) &&
+    shapes.operationalScan(body['scan']) &&
+    isBoolean(body['consistent']) &&
+    isString(body['computedAt']),
   operationsHealth: (body: unknown): body is OperationsHealth =>
     isObject(body) &&
     isObject(body['health']) &&
     isString(body['health']['status']) &&
+    isString(body['health']['enterpriseVersion']) &&
+    isString(body['health']['kernelVersion']) &&
+    isString(body['health']['checkedAt']) &&
+    absentOr(body['health']['lifecycleState'], isString) &&
+    // Rendered entry by entry as text, so any additive posture field reads safely.
+    absentOr(body['health']['posture'], isObject) &&
     isObject(body['health']['persistence']) &&
+    isString(body['health']['persistence']['provider']) &&
+    isString(body['health']['persistence']['status']) &&
     isObject(body['operations']) &&
-    typeof body['operations']['unresolvedExecutions'] === 'number' &&
-    typeof body['operations']['attentionRequired'] === 'number' &&
+    isNumber(body['operations']['unresolvedExecutions']) &&
+    isNumber(body['operations']['attentionRequired']) &&
+    isString(body['operations']['checkedAt']) &&
     shapes.operationalScan(body['operations']['scan']),
   trace: (body: unknown): body is OperationalTrace =>
     isObject(body) &&
     isString(body['requestId']) &&
     isObject(body['disclosure']) &&
     isString(body['disclosure']['level']) &&
+    isString(body['disclosure']['policyId']) &&
+    isStrings(body['disclosure']['hiddenFields']) &&
     isObject(body['trace']) &&
     isObject(body['trace']['stages']) &&
+    absentOr(body['trace']['summary'], (summary) => isString(summary) || (isObject(summary) && isString(summary['path']) && isString(summary['finalState']) && isObject(summary['presence']))) &&
     isString(body['traceDigest']) &&
+    isString(body['generatedAt']) &&
     isObject(body['verification']) &&
-    typeof body['verification']['verified'] === 'boolean' &&
-    isArrayOf(body['verification']['checks'], (entry) => isObject(entry) && isString(entry['check']) && isString(entry['status'])) &&
-    shapes.operationalExecution(body['operational']),
+    isBoolean(body['verification']['verified']) &&
+    isObject(body['verification']['categories']) &&
+    Object.values(body['verification']['categories']).every(isString) &&
+    isArrayOf(body['verification']['checks'], (entry) => isObject(entry) && isString(entry['check']) && isString(entry['category']) && isString(entry['status']) && absentOr(entry['detail'], isString)) &&
+    isString(body['verification']['finalState']) &&
+    isString(body['verification']['verifiedAt']) &&
+    isString(body['verification']['boundary']) &&
+    shapes.disclosedOperational(body['operational']),
   approvalCommand: (body: unknown): body is ApprovalCommandResponse => isObject(body) && body['outcome'] === 'recorded' && isString(body['verdict']) && shapes.approval(body['approval']),
 } as const;

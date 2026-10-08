@@ -32,6 +32,32 @@ export function governedActionIdempotencyScope(input: { readonly organizationId:
 }
 
 /**
+ * PROD-03-01 — whether a durable idempotency claim is the governed-action
+ * path's own claim for `requestId`: its scope is exactly the governed-action
+ * scope of a principal of `organizationId`, and the request id derived from
+ * that principal and the claimed key is exactly `requestId`. Both are written
+ * by the server in the commit that records the decision, so this is evidence
+ * of the path a record came through — never the request id's shape, which an
+ * evaluate-route caller chooses.
+ */
+export function isGovernedActionIdempotencyClaim(input: { readonly organizationId: string | undefined; readonly requestId: string; readonly scope: string; readonly idempotencyKey: string }): boolean {
+  const prefix = 'governed-action:';
+  if (input.organizationId === undefined || !input.scope.startsWith(prefix)) return false;
+  let parts: unknown;
+  try {
+    parts = JSON.parse(input.scope.slice(prefix.length));
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(parts) || parts.length !== 2 || parts[0] !== input.organizationId || typeof parts[1] !== 'string') return false;
+  const principalId: string = parts[1];
+  return (
+    governedActionIdempotencyScope({ organizationId: input.organizationId, principalId }) === input.scope &&
+    deriveGovernedActionRequestId({ organizationId: input.organizationId, principalId, idempotencyKey: input.idempotencyKey }) === input.requestId
+  );
+}
+
+/**
  * One committed decision → one execution identity.
  *
  * Derived from the request and the committed decision only — never from the

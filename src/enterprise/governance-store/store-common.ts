@@ -5,7 +5,9 @@ import { GovernanceStoreError } from './errors.js';
 import { computeDigest } from './digest.js';
 import { redactSensitiveValues } from './redaction.js';
 import { eventRecordDigestInput } from './projection.js';
-import { GOVERNANCE_REFERENCE_TYPES, GOVERNANCE_STORE_CONTRACT_IDS, isCanonicalGovernanceReferenceType, type GovernanceEventRecord, type GovernanceRecord, type GovernanceRecordSummary, type GovernanceGovernedPathFilter, type GovernanceStoreAccessContext, type GovernanceStoreQuery } from './contracts.js';
+import { isDefinitiveExecutionSummary } from '../governed-action/execution-summary.js';
+import { isGovernedActionIdempotencyClaim } from '../governed-action/identifiers.js';
+import { GOVERNANCE_REFERENCE_TYPES, GOVERNANCE_STORE_CONTRACT_IDS, isCanonicalGovernanceReferenceType, type GovernanceEventRecord, type GovernanceRecord, type GovernanceRecordSummary, type GovernanceGovernedPathFilter, type GovernanceIdempotencyRecord, type GovernanceStoreAccessContext, type GovernanceStoreQuery } from './contracts.js';
 
 /**
  * Provider-independent Governance Store semantics: access-scope
@@ -104,7 +106,7 @@ export function toGovernanceRecordSummary(record: GovernanceRecord): GovernanceR
 }
 
 /** In-memory query predicate; the SQLite implementation mirrors these exact semantics in SQL (time bounds are inclusive against `evaluatedAt`). */
-export function matchesQueryFilters(record: GovernanceRecord, query: GovernanceStoreQuery, organizationId: string | undefined): boolean {
+export function matchesQueryFilters(record: GovernanceRecord, query: GovernanceStoreQuery, organizationId: string | undefined, idempotencyClaim?: GovernanceIdempotencyRecord): boolean {
   if (organizationId !== undefined && record.request.organizationId !== organizationId) return false;
   if (query.requestId !== undefined && record.evaluation.requestId !== query.requestId) return false;
   if (query.evaluationId !== undefined && record.evaluation.evaluationId !== query.evaluationId) return false;
@@ -114,7 +116,7 @@ export function matchesQueryFilters(record: GovernanceRecord, query: GovernanceS
   if (query.actionType !== undefined && record.request.actionType !== query.actionType) return false;
   if (query.status !== undefined && record.evaluation.status !== query.status) return false;
   if (query.reasonCode !== undefined && !record.evaluation.reasonCodes.includes(query.reasonCode)) return false;
-  if (query.governedPath !== undefined && !matchesGovernedPath(record, query.governedPath)) return false;
+  if (query.governedPath !== undefined && !matchesGovernedPath(record, query.governedPath, idempotencyClaim)) return false;
   if (query.from !== undefined && record.evaluation.evaluatedAt < query.from) return false;
   if (query.to !== undefined && record.evaluation.evaluatedAt > query.to) return false;
   return true;
@@ -240,27 +242,33 @@ export function deepFreeze<T>(value: T): T {
 
 /**
  * PROD-03-01 — whether an `execution_record` row's recorded form states a
- * definitive answer for its execution: the forms the execution ledger writes
- * for an effect that completed (`executed`, `executed@<adapter>`), did not
- * complete (`execution-failed:…`), was withheld at exercise (`withheld:…`), or
- * was resolved by P12 (`resolved:…`). The write-ahead claim (`attempt`), the
- * adapter's own unconfirmed answer (`execution-unconfirmed…`) and anything
- * undecodable are not. Selection only — the SQLite provider applies the same
- * prefixes in SQL — and never a reading of what happened: that is the trace's.
+ * definitive answer for its execution, decoded by the execution ledger's own
+ * grammar (`governed-action/execution-summary.ts`): an effect that completed,
+ * did not complete, was withheld at exercise, or was resolved by P12 — each
+ * only in a form the ledger writes. The write-ahead claim (`attempt`), the
+ * adapter's own unconfirmed answer and every malformed row (`withheld:` with
+ * no decodable reason, `resolved:` with no known certainty, …) are not, so a
+ * corrupt row keeps its claim open for the trace to classify. Selection only —
+ * the SQLite provider calls this same function from SQL — and never a reading
+ * of what happened: that is the trace's.
  */
 export function isDefinitiveExecutionEvidence(externalVersion: string | undefined): boolean {
-  if (externalVersion === undefined) return false;
-  return (
-    externalVersion === 'executed' ||
-    externalVersion.startsWith('executed@') ||
-    externalVersion.startsWith('execution-failed:') ||
-    externalVersion.startsWith('withheld:') ||
-    externalVersion.startsWith('resolved:')
-  );
+  return isDefinitiveExecutionSummary(externalVersion);
 }
 
-/** The in-memory form of `GovernanceStoreQuery.governedPath`; the SQLite provider mirrors it in SQL. */
-export function matchesGovernedPath(record: GovernanceRecord, filter: GovernanceGovernedPathFilter): boolean {
+/**
+ * PROD-03-01 — whether a record came through the governed-action path: it
+ * holds that path's own idempotency claim for its request id
+ * (`isGovernedActionIdempotencyClaim`). The SQLite provider calls this same
+ * function from SQL.
+ */
+export function isGovernedActionClaimFor(organizationId: string | undefined, requestId: string, scope: string, idempotencyKey: string): boolean {
+  return isGovernedActionIdempotencyClaim({ organizationId, requestId, scope, idempotencyKey });
+}
+
+/** The in-memory form of `GovernanceStoreQuery.governedPath`; the SQLite provider mirrors it in SQL. `idempotencyClaim`: the record's own idempotency claim, if it holds one. */
+export function matchesGovernedPath(record: GovernanceRecord, filter: GovernanceGovernedPathFilter, idempotencyClaim?: GovernanceIdempotencyRecord): boolean {
+  if (filter === 'governed-action') return idempotencyClaim !== undefined && isGovernedActionClaimFor(record.request.organizationId, record.evaluation.requestId, idempotencyClaim.scope, idempotencyClaim.idempotencyKey);
   if (filter === 'issuance-withheld') return record.references.some((entry) => entry.referenceType === 'issuance_record');
   const executionRows = record.references.filter((entry) => entry.referenceType === 'execution_record');
   const claims = executionRows.filter((entry) => entry.externalVersion === 'attempt');

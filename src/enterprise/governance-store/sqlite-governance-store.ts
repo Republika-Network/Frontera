@@ -44,6 +44,8 @@ import {
   canSeeRecord,
   decodeQueryCursor,
   encodeQueryCursor,
+  isDefinitiveExecutionEvidence,
+  isGovernedActionClaimFor,
   legacyEventToRecord,
   normalizeQueryLimit,
   recordToLegacyEvent,
@@ -217,6 +219,8 @@ const SCHEMA_V1 = `
     created_at TEXT NOT NULL,
     PRIMARY KEY(scope, idempotency_key)
   );
+  -- PROD-03-01: the governed-action filter reads a record's own claim. Additive; no table or version change.
+  CREATE INDEX IF NOT EXISTS idx_gov_idempotency_evaluation ON governance_idempotency(evaluation_id);
 
   CREATE TABLE IF NOT EXISTS governance_references (
     reference_id TEXT PRIMARY KEY,
@@ -490,17 +494,32 @@ function filterClauses(context: GovernanceStoreAccessContext, query: GovernanceS
 /** A claim row of this evaluation (`execution_record`, `attempt`). */
 const CLAIM_ROW = `SELECT 1 FROM governance_references c WHERE c.evaluation_id = e.evaluation_id AND c.reference_type = 'execution_record' AND c.external_version = 'attempt'`;
 
-/** `isDefinitiveExecutionEvidence` (`store-common.ts`) as exact prefixes — `substr`, never a case-insensitive `LIKE`. */
+/**
+ * The canonical predicates, registered on this connection (`registerGovernedPathFunctions`)
+ * so the SQL below calls exactly the functions the in-memory provider calls —
+ * one grammar, never a second one restated as SQL prefixes.
+ */
+const DEFINITIVE_FN = 'aoc_definitive_execution_evidence';
+const GOVERNED_ACTION_FN = 'aoc_governed_action_claim';
+
+function registerGovernedPathFunctions(db: BetterSqlite3.Database): void {
+  db.function(DEFINITIVE_FN, { deterministic: true }, (externalVersion: unknown) => (isDefinitiveExecutionEvidence(typeof externalVersion === 'string' ? externalVersion : undefined) ? 1 : 0));
+  db.function(GOVERNED_ACTION_FN, { deterministic: true }, (organizationId: unknown, requestId: unknown, scope: unknown, idempotencyKey: unknown) =>
+    typeof requestId === 'string' && typeof scope === 'string' && typeof idempotencyKey === 'string' && isGovernedActionClaimFor(typeof organizationId === 'string' ? organizationId : undefined, requestId, scope, idempotencyKey) ? 1 : 0,
+  );
+}
+
+/** `isDefinitiveExecutionEvidence` (`store-common.ts`), called from SQL. */
 const DEFINITIVE_ROW_FOR_CLAIM = `SELECT 1 FROM governance_references o
   WHERE o.evaluation_id = c.evaluation_id AND o.reference_type = 'execution_record' AND o.external_id = c.external_id
-    AND (o.external_version = 'executed' OR substr(o.external_version, 1, 9) = 'executed@' OR substr(o.external_version, 1, 17) = 'execution-failed:'
-         OR substr(o.external_version, 1, 9) = 'withheld:' OR substr(o.external_version, 1, 9) = 'resolved:')`;
+    AND ${DEFINITIVE_FN}(o.external_version) = 1`;
 
 /** PROD-03-01 — `GovernanceStoreQuery.governedPath` in SQL. Constant text: no value is interpolated. */
 const GOVERNED_PATH_SQL: Readonly<Record<GovernanceGovernedPathFilter, string>> = Object.freeze({
   'execution-claimed': `EXISTS (${CLAIM_ROW})`,
   'execution-open': `EXISTS (${CLAIM_ROW} AND NOT EXISTS (${DEFINITIVE_ROW_FOR_CLAIM}))`,
   'issuance-withheld': `EXISTS (SELECT 1 FROM governance_references g WHERE g.evaluation_id = e.evaluation_id AND g.reference_type = 'issuance_record')`,
+  'governed-action': `EXISTS (SELECT 1 FROM governance_idempotency ic WHERE ic.evaluation_id = e.evaluation_id AND ${GOVERNED_ACTION_FN}(r.organization_id, e.request_id, ic.scope, ic.idempotency_key) = 1)`,
 });
 
 /**
@@ -534,6 +553,7 @@ export async function createSqliteGovernanceStore(dbPath: string, options: Creat
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = FULL');
   db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(options.busyTimeoutMs)}`);
+  registerGovernedPathFunctions(db);
 
   initSchemaAndMigrate(db, resolved.now);
 
