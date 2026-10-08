@@ -318,3 +318,63 @@ happened. Not a retry: a proven non-completion returns capacity and nothing else
 stays, the execution id is never re-run, no grant is re-issued (business-level retry is P13). No
 reservation TTL, no timeout-as-evidence, no polling, no receipts, settlement, Stripe, MPP, XRPL,
 KMS or HSM.
+
+## 14. PROD-03-02 — operator attestation
+
+An authorized human operator can be the trusted resolution authority of an uncertain execution.
+This productizes P12; it adds no second resolution model, no new state and no new store.
+
+**What it means.** An operator who has established outside Frontera whether a claimed execution
+completed records that answer as the execution's definitive P12 resolution. It is evidence about
+the execution, never the execution: nothing is executed, executed again, resubmitted or undone, no
+provider is contacted, and the Kernel decision, the issued grant and any approval are untouched.
+
+**Composition.** The Enterprise Host, whenever its governed-action file declares `operators`,
+composes P12 with exactly one authority, `frontera.operator-attestation`
+(`execution-reconciliation/operator-attestation.ts`), and a selector that always names it. Every
+new governed execution is therefore bound to it before its claim (§4). Its `resolve()` is always
+`unresolved`: an explicit `reconcile()` writes and releases nothing. An execution claimed before
+it was composed has no binding and is **adopted** to it on the first attestation (`origin:
+'adopted'`; adoption binds, it never declares). An execution bound to another authority is that
+authority's; attestation never substitutes for it (`authority-mismatch`).
+
+**Eligibility** is P12's own (§6), re-read under an exclusive hold at the moment of recording: a
+verified P11 attempt, the existing write-ahead claim, an initial observation that is absent or
+`unconfirmed`, no resolution on record, and no governed path holding the execution in this
+process. Never resolvable: a Kernel denial, an issuance withholding, a pending approval, an
+authorized-but-unclaimed execution, a definitive provider outcome, a withholding at exercise, an
+evaluation-only record (none has a claimed P11 attempt), a record whose basis fails verification.
+The state the operator reviewed (`observedOutcome`: `none` | `unconfirmed`) must still be the
+durable one (`basis-changed` otherwise).
+
+**Answers.** P12's closed vocabulary only: `confirmed-completed`, or `confirmed-not-completed`
+with one of the existing provider-neutral `ExecutionFailureReason`s. The same append-only store
+decision, P7 correction and evidence (P8 `execution.outcome.resolved`, the Governance
+`resolved:…` summary) as §6 and §8–10 follow. A `confirmed-not-completed` attestation releases the
+execution's P7 reservation: it restores capacity.
+
+**Who.** The resolution record gains one optional field, `attestedBy` — the authenticated
+operator's `operator:<operatorId>`, never a request value — committed by the resolution digest in
+the same write (a nullable `attested_by` column, added in place to existing files; unattested
+records and their digests are unchanged; a runtime from before it refuses an attested row as
+corrupt rather than misreading it). Identity is part of the fact: the identical attestation
+replays (`replayed`); the same answer from another operator, or any other answer, is a conflict —
+one resolution per execution, the first stands.
+
+**Provider outcome wins.** P11 and P12 are separate files, so the ordering is established in the
+(single-writer) Host process: the governed path holds a per-execution activity guard
+(`execution-reconciliation/activity-guard.ts`) from before its P11 preparation and claim until
+after its observation; an attestation takes the guard exclusively, never waiting, and is refused
+(`in-flight`) while any governed path holds it. A provider outcome is therefore either durable
+before the attestation re-reads — and wins (`not-eligible / initial-observation-definitive`) — or
+cannot be recorded until the attestation is done. A claim left with no outcome by a crash holds
+no guard after restart and is resolvable.
+
+**Surface.** One operator-plane route, `POST /api/admin/operations/executions/{executionId}/resolution`
+(body: `resolution`, `failure` when not completed, `observedOutcome`; nothing else), authorized
+by the new `operations.resolve` permission before the body is read. Only
+`organization-administrator` holds it: `responder` only narrows, and a non-completion restores
+capacity. No route reaches `reconcile` or `adoptResolutionAuthority`; no route, control or
+string offers a retry, replay or resend. ASSURE-01 shows the resolution stage with its
+`attestedBy` (a person: disclosed only where approvals are) and the operations view names it an
+operator resolution, never a provider confirmation.

@@ -283,6 +283,8 @@ export interface AuthorityTraceResolutionStage {
     readonly certainty: string;
     readonly failure?: string;
     readonly providerRef?: string;
+    /** PROD-03-02 — the operator who attested an operator-attestation resolution. A person: disclosed only where approvals are. */
+    readonly attestedBy?: string;
     readonly resolvedAt: string;
     readonly resolutionDigest: string;
     readonly basisObservationDigest?: string;

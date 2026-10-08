@@ -77,6 +77,17 @@ export const OPERATOR_PERMISSIONS = [
    * Inspection only.
    */
   'trace.read',
+  /**
+   * PROD-03-02 — record an operator resolution of an unconfirmed execution:
+   * attest, after investigating outside Frontera, that a claimed execution
+   * with no definitive outcome completed or did not complete. **Not
+   * restrict-only**: a `confirmed-not-completed` resolution releases the P7
+   * capacity the execution held, so it restores spending capacity. It records
+   * evidence; it never executes, retries or replays anything, and it confers
+   * no authority. Implied by no other permission — not `operations.read`,
+   * `trace.read`, any approval permission or provisioning.
+   */
+  'operations.resolve',
 ] as const;
 
 export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
@@ -113,6 +124,12 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  * `profile-steward` or `approver`: onboarding, promoting a profile or
  * deciding an approval is no reason to read every execution, and neither
  * permission is implied by any other.
+ *
+ * PROD-03-02 operator resolution: `operations.resolve` is held by
+ * `organization-administrator` only. Not by `responder`, although it reads
+ * the attention list: a responder only narrows, and a resolution that an
+ * execution did not complete gives its consumed capacity back — that is a
+ * widening, the same reason a responder cannot release an emergency stop.
  */
 export const OPERATOR_ROLES = ['observer', 'responder', 'provisioner', 'profile-steward', 'approver', 'organization-administrator'] as const;
 

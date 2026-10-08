@@ -640,14 +640,14 @@ variable, never a value). A secret used by two credentials refuses
 | Approval workflow (CTRL-04): approval inbox, canonical subject, approve / reject / request-changes / escalate / revoke | mounted only when `operators[]` is configured **and** a profile declares `approval`; no store of its own — every verdict is a CORE-05 command by the authenticated operator |
 | P8 authority event stream | optional by design (evidence never blocks) |
 | Generic HTTP adapter(s) behind the trusted registry, routed by the file | composed as configured |
-| P12 reconciliation | not wired: no resolution authority implementation ships |
+| P12 reconciliation | composed only when `operators[]` is configured (PROD-03-02), with one authority — operator attestation — that never answers on its own: every governed execution is bound to it before its claim, and an `organization-administrator` may record the resolution of a claimed execution with no definitive outcome (`POST /api/admin/operations/executions/{executionId}/resolution`; records evidence, performs nothing). Store: `AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH`, default `.data/execution-resolutions.sqlite`. See the P12 ADR §14 |
 | Policy packs | in-process only (`bootEnterpriseHost({ policyPackProvider })`, NB-008 writer); no durable policy store or file format; required when a profile declares facts |
 | Trusted context (CORE-04) | composed when the file declares `trustedContext`; the Trusted Context Boundary admits facts per effective profile (`posture.trustedContext`) |
 | Obligations (CORE-04) | composed when the file declares `obligations`; durable discharge store, required durable on the secure profile (`posture.obligations`) |
 | Exercise-time lineage revalidation (CORE-04) | composed with P7/P10: every action class, not only financial |
 | Durable approvals (CORE-05) | composed when a profile declares `approval`; authenticated durable approval store, required durable on the secure profile (`posture.approvals`); a profile without `approval` leaves `approval_required` withheld |
 | Evidence bundle store (ASSURE-01) | **durable**: SQLite at `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH` (default `.data/evidence-bundles.sqlite`) whenever persistence is `sqlite`; required durable on the secure profile (`posture.evidenceStore`); in-memory only on an ephemeral Host |
-| Unified Authority-to-Outcome Trace (ASSURE-01) | always mounted: `GET /api/evidence/traces/{requestId}?level=…` and `…/verify`, pure reads over the composed canonical stores, authorized exactly like the other evidence routes (API keys; an organization-scoped key sees its organization only). Stages whose store this Host does not compose (P12 on the shipped Host) are reported `not-composed` |
+| Unified Authority-to-Outcome Trace (ASSURE-01) | always mounted: `GET /api/evidence/traces/{requestId}?level=…` and `…/verify`, pure reads over the composed canonical stores, authorized exactly like the other evidence routes (API keys; an organization-scoped key sees its organization only). Stages whose store this Host does not compose (P12 on a Host without operators) are reported `not-composed` |
 
 The authority binding every grant states is
 `HOST_ORGANIZATIONAL_AUTHORITY_BINDING` (`organizational-authority`): the Host

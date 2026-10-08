@@ -40,12 +40,16 @@ export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
  * - `obligations-declared` — governed actions, and the file declares `obligations`.
  * - `approvals-declared` — governed actions, and some profile declares `approval`.
  * - `operators-configured` — the file declares at least one CTRL-02 operator.
- * - `embedder-reconciliation` — P12 reconciliation, composed only by an
- *   embedder (`executionReconciliation`); the shipped Host has no
- *   configuration that composes it, so it is never *required* from
- *   configuration. Backed up when its variable is set explicitly and its file
- *   exists; a file at its default path with the variable unset is reported
- *   (`present-not-configured`), never silently skipped.
+ * - `embedder-reconciliation` — P12 reconciliation. Since PROD-03-02 the
+ *   shipped Host composes it whenever the file declares operators (operator
+ *   attestation: every governed execution is bound before its claim, and
+ *   operator resolutions are recorded there), so it is *required* exactly
+ *   then. An embedder may also compose it (`executionReconciliation`); that is
+ *   not visible from configuration, so such a store is backed up when its
+ *   variable is set explicitly and its file exists; a file at its default path
+ *   with the variable unset is reported (`present-not-configured`), never
+ *   silently skipped. (The condition keeps its PROD-02 name, which manifests
+ *   already record.)
  */
 export const STORE_CONDITIONS = Object.freeze([
   'always',
@@ -444,7 +448,8 @@ export function deriveDeploymentRequirements(env, configuration) {
     obligationsDeclared: governedActions && file.obligations !== undefined,
     approvalsDeclared: governedActions && profiles.some((profile) => profile !== null && typeof profile === 'object' && profile.approval !== undefined),
     operatorsConfigured: governedActions && Array.isArray(file.operators) && file.operators.length > 0,
-    executionReconciliation: false,
+    // PROD-03-02: the Host composes P12 (operator attestation) exactly when it serves an operator plane.
+    executionReconciliation: governedActions && Array.isArray(file.operators) && file.operators.length > 0,
     governedActionsFileDigest: fileDigest,
     secretReferenceEnvVars: [...secretReferences].sort(),
   };

@@ -3,6 +3,7 @@ import type { ContextProvider, PolicyPackProvider } from '../../kernel/index.js'
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import type { AocEnterprise, CreateEnterpriseOptions } from '../composition/composition-root.js';
 import type { GrantAuthorityBinding } from '../execution-governance/index.js';
+import { createOperatorAttestationAuthority, selectOperatorAttestation } from '../execution-reconciliation/operator-attestation.js';
 import type { EnterpriseHealthPosture } from '../health/health-check.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { createEnterpriseServer, type EnterpriseServer } from './enterprise-server.js';
@@ -158,6 +159,15 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
       : {}),
     ...(governed.obligations !== undefined ? { obligations: governed.obligations } : {}),
     emergencyControl: { enabled: true },
+    // PROD-03-02: with an operator plane, P12 with one authority — operator
+    // attestation. Every new governed execution is bound to it before its
+    // claim, durably (`executionResolution.sqlitePath`), so a claim left with
+    // no definitive outcome can later be closed by an authorized operator's
+    // recorded attestation, and by nothing else: the authority never answers
+    // on its own, and nothing here can execute.
+    ...((host.configuration.administration?.operators?.length ?? 0) > 0
+      ? { executionReconciliation: { enabled: true, authorities: [createOperatorAttestationAuthority()], selectAuthority: selectOperatorAttestation } }
+      : {}),
   };
 }
 

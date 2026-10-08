@@ -10,7 +10,20 @@ import type { HostClient, HostResult } from './host-client.js';
 import { ConsoleRequestError, clearCookie, cookieNames, readCookie, readForm, sameOrigin, setCookie, type FormFields } from './security.js';
 import { newFormToken, newIdempotencyKey, takeFlash, tokensEqual, type ConsoleSession, type SessionStore } from './session.js';
 import { CONSOLE_CSS } from './styles.js';
-import { ENTITY_KIND_LABELS, GRANT_REVOCATION_REASONS, isApprovalVerb, isApprovalView, isEntityKind, isTraceLevel, type ApprovalVerb, type EntityKind, type EntityView, type OrganizationContext } from './wire.js';
+import {
+  ENTITY_KIND_LABELS,
+  GRANT_REVOCATION_REASONS,
+  isApprovalVerb,
+  isApprovalView,
+  isEntityKind,
+  isResolutionChoice,
+  isResolutionFailureReason,
+  isTraceLevel,
+  type ApprovalVerb,
+  type EntityKind,
+  type EntityView,
+  type OrganizationContext,
+} from './wire.js';
 import { boundsOf, lineageOf } from './views/authority-terms.js';
 import { Id, Status } from './views/components.js';
 import type { FormValues } from './views/entity-form.js';
@@ -19,7 +32,7 @@ import { AuthorityPage, EntityPage, ExecutionPage, GrantPage, ProvisionPage } fr
 import { ConfirmPage, CredentialIssuedPage, ErrorPage, LoginPage, OverviewPage } from './views/pages-core.js';
 import { ActivityPage, EmergencyPage, EvidenceIndexPage, EvidencePage, ProfilesPage } from './views/pages-records.js';
 import { ApprovalCommandPage, ApprovalPage, ApprovalsPage } from './views/pages-approvals.js';
-import { AttentionListPage, ExecutionsListPage, HostHealthPage, TraceIndexPage, TracePage, tracePath } from './views/pages-operations.js';
+import { AttentionListPage, ExecutionsListPage, HostHealthPage, ResolutionPage, TraceIndexPage, TracePage, tracePath } from './views/pages-operations.js';
 
 /**
  * CTRL-03 — the Frontera web control plane: request handling.
@@ -394,7 +407,48 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
     if (!isTraceLevel(level)) return html(400, <ErrorPage title="Unknown disclosure level" context={authed.context} csrfToken={authed.csrf} />);
     const view = await host.trace(authed.session.bearer, requestId, level);
     if (!view.ok) return view.failure.kind === 'unauthenticated' ? failurePage(authed, 'Trace', view.failure) : html(statusForFailure(view.failure), <TraceIndexPage context={authed.context} csrfToken={authed.csrf} failure={view.failure} />);
-    return html(200, <TracePage context={authed.context} csrfToken={authed.csrf} view={view.body} />);
+    return html(200, <TracePage context={authed.context} csrfToken={authed.csrf} view={view.body} {...flashOf(authed.session)} />);
+  }
+
+  // -- PROD-03-02 operator resolution (the one write on the operations pages) ------------------
+
+  /**
+   * The resolution page, always from a fresh Host read at AUDITOR: what it
+   * renders is what the operator reviews, and its hidden `observedOutcome` is
+   * the state it shows. After a refusal it re-reads too, so a stale page is
+   * replaced by the current state and the earlier choice is never re-applied.
+   */
+  async function resolutionPage(authed: Authed, requestId: string, failure?: HostFailure): Promise<ConsoleResponse> {
+    const view = await host.trace(authed.session.bearer, requestId, 'AUDITOR');
+    if (!view.ok) return failurePage(authed, 'Record resolution', failure ?? view.failure);
+    return html(failure === undefined ? 200 : statusForFailure(failure), <ResolutionPage context={authed.context} csrfToken={authed.csrf} view={view.body} {...(failure !== undefined ? { failure } : {})} />);
+  }
+
+  async function resolveExecution(authed: Authed, requestId: string, form: FormFields): Promise<ConsoleResponse> {
+    if (!confirmed(form)) return resolutionPage(authed, requestId);
+    const resolution = form.text('resolution');
+    const failure = form.text('failure');
+    const observedOutcome = form.text('observedOutcome');
+    if (!isResolutionChoice(resolution) || (observedOutcome !== 'none' && observedOutcome !== 'unconfirmed')) return html(400, <ErrorPage title="Choose a resolution" context={authed.context} csrfToken={authed.csrf} />);
+    if (resolution === 'confirmed-not-completed' && !isResolutionFailureReason(failure)) {
+      return html(400, <ErrorPage title="Confirming that an execution was not completed requires one of the listed reasons" context={authed.context} csrfToken={authed.csrf} />);
+    }
+    // The execution is the one the Host states for this request now — never a value from the form.
+    const view = await host.trace(authed.session.bearer, requestId, 'AUDITOR');
+    if (!view.ok) return failurePage(authed, 'Record resolution', view.failure);
+    const executionId = view.body.operational.executionId;
+    if (executionId === null) return resolutionPage(authed, requestId);
+    const result = await host.resolveExecution(authed.session.bearer, executionId, {
+      resolution,
+      ...(resolution === 'confirmed-not-completed' ? { failure } : {}),
+      observedOutcome,
+    });
+    if (!result.ok) return result.failure.kind === 'unauthenticated' ? failurePage(authed, 'Record resolution', result.failure) : resolutionPage(authed, requestId, result.failure);
+    const recorded = result.body;
+    authed.session.flash =
+      `Resolution ${recorded.outcome === 'replayed' ? 'already recorded (same resolution, unchanged)' : 'recorded'} by the Host: ${recorded.resolution.certainty}` +
+      `${recorded.resolution.failure !== null ? ` (${recorded.resolution.failure})` : ''}, attested by ${recorded.resolution.attestedBy}. Evidence only — no action was performed. The trace below was re-read from the Host.`;
+    return redirect(tracePath(requestId));
   }
 
   async function hostHealthPage(authed: Authed): Promise<ConsoleResponse> {
@@ -718,6 +772,7 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
         return redirect(tracePath(requestId, level));
       }
       if (first === 'traces' && second !== undefined && parts.length === 2) return tracePage(authed, second, query);
+      if (first === 'traces' && second !== undefined && third === 'resolution' && parts.length === 3) return resolutionPage(authed, second);
       if (first === 'host-health' && parts.length === 1) return hostHealthPage(authed);
       if (first === 'activity' && parts.length === 1) return activity(authed, query);
       if (first === 'evidence' && parts.length === 1) return evidenceIndex(authed, query);
@@ -781,6 +836,7 @@ export function createConsoleApp(options: ConsoleAppOptions): { handle(req: Inco
         return redirect('/emergency');
       }
       if (first === 'approvals' && second !== undefined && third !== undefined && isApprovalVerb(third) && parts.length === 3) return approvalCommand(authed, second, third, form);
+      if (first === 'traces' && second !== undefined && third === 'resolution' && parts.length === 3) return resolveExecution(authed, second, form);
       if (first === 'profiles' && second !== undefined && third !== undefined && (fourth === 'activate' || fourth === 'retire') && parts.length === 4) {
         if (!confirmed(form)) return profileConfirm(authed, second, third, fourth);
         const version = Number(third);

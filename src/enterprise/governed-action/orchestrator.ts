@@ -23,6 +23,7 @@ import type { ExecutionOutcomeAccessContext, ExecutionTerminalObservation, Execu
 import type { ExecutionOutcomePort } from '../execution-outcome-store/outcome-store.js';
 import type { ExecutionResolutionRecord } from '../execution-resolution-store/contracts.js';
 import type { ExecutionResolutionReader } from '../execution-resolution-store/resolution-store.js';
+import type { ExecutionActivityGuard } from '../execution-reconciliation/activity-guard.js';
 import type { ExecutionResolutionBinder } from '../execution-reconciliation/binder.js';
 import type { AuthorityControlledIssuanceCore } from '../execution-governance/issuance-core.js';
 import type { GovernanceEnterpriseContext, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
@@ -288,6 +289,8 @@ export interface GovernedActionOrchestratorOptions {
   readonly executionResolution?: {
     readonly binder: ExecutionResolutionBinder;
     readonly reader: ExecutionResolutionReader;
+    /** PROD-03-02 — held from before the P11 preparation to after the observation, so an operator attestation is never recorded while a live provider call may still answer (`ExecutionActivityGuard`). */
+    readonly activity?: ExecutionActivityGuard;
   };
   /**
    * PROD-03-01 — the operational observer (structured governed-path logging),
@@ -1030,147 +1033,157 @@ export function createGovernedActionOrchestrator(options: GovernedActionOrchestr
         }
       }
 
-      // P11 preparation, BEFORE the claim and therefore before any adapter: the
-      // exact context this execution will run under, from trusted values only —
-      // the committed decision's identifiers, the issued grant's id, and the
-      // exercise request's action, amount and typed governed parameters, which
-      // `GrantExecutionService` hands to the adapter verbatim as
-      // `ValidatedExecutionAction.amount` and `.parameters` (CORE-08: the
-      // parameters come from the committed, verified request — never the
-      // caller's intent — and the v2 attempt digest binds them).
-      // Idempotent: a request that crashed after preparing and before claiming
-      // finds its own attempt on retry. A preparation that cannot be proven
-      // written stops here — no claim, no adapter, nothing stranded — and is
-      // reported in the narrowest existing vocabulary: the write-ahead
-      // execution record could not be established.
-      let prepared;
+      // PROD-03-02: this governed path holds its execution from before the P11
+      // preparation and the claim until after the observation (or any exit), so
+      // an operator attestation can never be recorded while a live adapter call
+      // may still answer — and waits for nothing but an attestation already in
+      // progress, after which the claim it finds makes this a replay.
+      const leave = executionResolution?.activity === undefined ? undefined : await executionResolution.activity.enter(executionId);
       try {
-        prepared = await executionOutcomes.prepareAttempt(outcomeScope, {
-          organizationId: scope.organizationId,
-          executionId,
-          evaluationId,
-          requestId,
-          decisionId: persisted.decisionId,
-          boundedGrantId: grant.id,
-          action: exercise.action,
-          ...(exercise.amount !== undefined ? { amount: { value: exercise.amount.value, unit: exercise.amount.unit } } : {}),
-          ...(exercise.parameters !== undefined ? { parameters: exercise.parameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) } : {}),
-          preparedAt: now(),
-        });
-      } catch {
-        return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
-      }
-
-      // P12, when enabled: the trusted resolution authority that may later
-      // resolve this exact attempt, bound durably BEFORE the claim — so no
-      // effect runs that reconciliation already knows it could not resolve,
-      // and a crash after the claim never has to guess who may. Same posture
-      // as a failed preparation: nothing claimed, no adapter, safe to retry.
-      if (executionResolution !== undefined) {
-        let bound = false;
+        // P11 preparation, BEFORE the claim and therefore before any adapter: the
+        // exact context this execution will run under, from trusted values only —
+        // the committed decision's identifiers, the issued grant's id, and the
+        // exercise request's action, amount and typed governed parameters, which
+        // `GrantExecutionService` hands to the adapter verbatim as
+        // `ValidatedExecutionAction.amount` and `.parameters` (CORE-08: the
+        // parameters come from the committed, verified request — never the
+        // caller's intent — and the v2 attempt digest binds them).
+        // Idempotent: a request that crashed after preparing and before claiming
+        // finds its own attempt on retry. A preparation that cannot be proven
+        // written stops here — no claim, no adapter, nothing stranded — and is
+        // reported in the narrowest existing vocabulary: the write-ahead
+        // execution record could not be established.
+        let prepared;
         try {
-          bound = await executionResolution.binder.bindBeforeClaim(prepared.attempt);
+          prepared = await executionOutcomes.prepareAttempt(outcomeScope, {
+            organizationId: scope.organizationId,
+            executionId,
+            evaluationId,
+            requestId,
+            decisionId: persisted.decisionId,
+            boundedGrantId: grant.id,
+            action: exercise.action,
+            ...(exercise.amount !== undefined ? { amount: { value: exercise.amount.value, unit: exercise.amount.unit } } : {}),
+            ...(exercise.parameters !== undefined ? { parameters: exercise.parameters.map(({ dimension, type, value }) => ({ dimension, type, value }) as GovernedParameter) } : {}),
+            preparedAt: now(),
+          });
         } catch {
-          bound = false;
+          return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
         }
-        if (!bound) return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
-      }
 
-      // Write-ahead claim, BEFORE the adapter. It can only prevent an invocation.
-      let claim;
-      try {
-        claim = await ledger.claim(evaluationId, executionId);
-      } catch {
-        return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
-      }
-      if (claim.kind === 'already-claimed') return replayExecution(outcomeScope, executed, executionId, claim.prior, persisted.reasonCodes).then(observeReplay(executionRef));
-      // Enqueued, not awaited: no evidence write may sit between the durable
-      // claim and the adapter crossing.
-      report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
-      observe((observer) => observer.executionClaimed(executionRef));
+        // P12, when enabled: the trusted resolution authority that may later
+        // resolve this exact attempt, bound durably BEFORE the claim — so no
+        // effect runs that reconciliation already knows it could not resolve,
+        // and a crash after the claim never has to guess who may. Same posture
+        // as a failed preparation: nothing claimed, no adapter, safe to retry.
+        if (executionResolution !== undefined) {
+          let bound = false;
+          try {
+            bound = await executionResolution.binder.bindBeforeClaim(prepared.attempt);
+          } catch {
+            bound = false;
+          }
+          if (!bound) return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
+        }
 
-      // Exercise through ACE: the grant is re-read from the authoritative store
-      // and the adapter receives a ValidatedExecutionAction only.
-      let outcome: ExecutionOutcome;
-      try {
-        outcome = await execution.exercise(exercise);
-      } catch {
-        // Whether the adapter ran is unknown. It is not retried.
-        observe((observer) => observer.unconfirmedExecution({ ...executionRef, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] }));
-        return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
-      }
-
-      // P11: the initial observation, sampled from the injected clock after the
-      // runtime returned — after the adapter's result was normalized and P7
-      // finalized — and recorded once, immutably. A failure to record it never
-      // rewrites what happened: the result below is still built from `outcome`,
-      // P7's settle or release already stands, and nothing is retried. It only
-      // means a later replay cannot reconstruct this answer, and says so.
-      let terminal: ExecutionTerminalRecord | undefined;
-      const observation = observationOf(outcome, now());
-      if (observation !== undefined) {
+        // Write-ahead claim, BEFORE the adapter. It can only prevent an invocation.
+        let claim;
         try {
-          terminal = (await executionOutcomes.recordTerminal(outcomeScope, { organizationId: scope.organizationId, executionId, observation })).terminal;
+          claim = await ledger.claim(evaluationId, executionId);
         } catch {
-          terminal = undefined;
+          return result({ status: 'system_error', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_CLAIM_FAILED] });
         }
-      }
-      // `outcomeRecorded` is the canonical fact: the initial observation is durable.
-      const outcomeRecorded = terminal !== undefined;
-      const unrecorded = outcomeRecorded ? [] : [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED];
-      // The compact Governance summary, only after the canonical observation
-      // exists, pointing at it by digest. Evidence: its failure leaves the
-      // canonical record, the result and the replay exactly as they are.
-      if (terminal !== undefined) await ledger.recordOutcome(evaluationId, executionId, outcome, terminal.observationDigest);
-      // What the runtime returned, with its certainty intact. Reported after the
-      // outcome exists; the result below is built from `outcome`, never from this.
-      report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));
-      observe((observer) => {
-        const observed = observedOutcomeOf(outcome);
-        observer.executionOutcome({ ...executionRef, ...observed, outcomeRecorded });
-        if (observed.outcome === 'unconfirmed' || !outcomeRecorded) {
-          observer.unconfirmedExecution({ ...executionRef, reasonCodes: observed.outcome === 'unconfirmed' ? [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, ...unrecorded] : unrecorded });
+        if (claim.kind === 'already-claimed') return replayExecution(outcomeScope, executed, executionId, claim.prior, persisted.reasonCodes).then(observeReplay(executionRef));
+        // Enqueued, not awaited: no evidence write may sit between the durable
+        // claim and the adapter crossing.
+        report((recorder) => recorder.executionClaimed({ evaluationId, executionId, grant, claimedAt: claim.claimedAt }));
+        observe((observer) => observer.executionClaimed(executionRef));
+
+        // Exercise through ACE: the grant is re-read from the authoritative store
+        // and the adapter receives a ValidatedExecutionAction only.
+        let outcome: ExecutionOutcome;
+        try {
+          outcome = await execution.exercise(exercise);
+        } catch {
+          // Whether the adapter ran is unknown. It is not retried.
+          observe((observer) => observer.unconfirmedExecution({ ...executionRef, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] }));
+          return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_ALREADY_ATTEMPTED] });
         }
-      });
-      if (outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise' && observedExpiry(outcome.assessment)) {
-        report((recorder) => recorder.grantExpiryObserved(grant));
-      }
-      if (outcome.status === 'executed') {
-        return result({
-          status: 'executed',
-          ...executed,
-          reasonCodes: [...persisted.reasonCodes, ...unrecorded],
-          ...(outcome.providerRef !== undefined ? { providerRef: outcome.providerRef } : {}),
-          replayed: false,
-          outcomeRecorded,
+
+        // P11: the initial observation, sampled from the injected clock after the
+        // runtime returned — after the adapter's result was normalized and P7
+        // finalized — and recorded once, immutably. A failure to record it never
+        // rewrites what happened: the result below is still built from `outcome`,
+        // P7's settle or release already stands, and nothing is retried. It only
+        // means a later replay cannot reconstruct this answer, and says so.
+        let terminal: ExecutionTerminalRecord | undefined;
+        const observation = observationOf(outcome, now());
+        if (observation !== undefined) {
+          try {
+            terminal = (await executionOutcomes.recordTerminal(outcomeScope, { organizationId: scope.organizationId, executionId, observation })).terminal;
+          } catch {
+            terminal = undefined;
+          }
+        }
+        // `outcomeRecorded` is the canonical fact: the initial observation is durable.
+        const outcomeRecorded = terminal !== undefined;
+        const unrecorded = outcomeRecorded ? [] : [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNRECORDED];
+        // The compact Governance summary, only after the canonical observation
+        // exists, pointing at it by digest. Evidence: its failure leaves the
+        // canonical record, the result and the replay exactly as they are.
+        if (terminal !== undefined) await ledger.recordOutcome(evaluationId, executionId, outcome, terminal.observationDigest);
+        // What the runtime returned, with its certainty intact. Reported after the
+        // outcome exists; the result below is built from `outcome`, never from this.
+        report((recorder) => recorder.executionOutcomeObserved({ evaluationId, executionId, grant, outcome, outcomeRecorded }));
+        observe((observer) => {
+          const observed = observedOutcomeOf(outcome);
+          observer.executionOutcome({ ...executionRef, ...observed, outcomeRecorded });
+          if (observed.outcome === 'unconfirmed' || !outcomeRecorded) {
+            observer.unconfirmedExecution({ ...executionRef, reasonCodes: observed.outcome === 'unconfirmed' ? [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, ...unrecorded] : unrecorded });
+          }
         });
-      }
-      if (outcome.status === 'withheld') {
-        // Two layers can withhold at effect time, and they are reported in
-        // their own vocabularies. The emergency case carries no exercise reason
-        // codes because there are none: the assessment was *usable*, and what
-        // stopped the effect was the interlock.
-        if (outcome.withheldBy === 'emergency-control') {
-          return result({ status: 'withheld', withheldBy: 'emergency-control', ...executed, reasonCodes: [...outcome.emergencyControl.reasonCodes, ...unrecorded] });
+        if (outcome.status === 'withheld' && outcome.withheldBy === 'grant-exercise' && observedExpiry(outcome.assessment)) {
+          report((recorder) => recorder.grantExpiryObserved(grant));
         }
-        // P7: an aggregate / velocity limit or exercise-time binding
-        // revalidation withheld it. Internally its own layer; publicly the
-        // existing `exercise` value — the wire union is unchanged — carrying the
-        // EXERCISE_CONTROL_* codes that explain it. No limit, bucket,
-        // reservation or remaining capacity is ever part of the result.
-        if (outcome.withheldBy === 'exercise-control') {
-          return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.exerciseControl.reasonCodes, ...unrecorded] });
+        if (outcome.status === 'executed') {
+          return result({
+            status: 'executed',
+            ...executed,
+            reasonCodes: [...persisted.reasonCodes, ...unrecorded],
+            ...(outcome.providerRef !== undefined ? { providerRef: outcome.providerRef } : {}),
+            replayed: false,
+            outcomeRecorded,
+          });
         }
-        return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.assessment.reasonCodes, ...unrecorded] });
+        if (outcome.status === 'withheld') {
+          // Two layers can withhold at effect time, and they are reported in
+          // their own vocabularies. The emergency case carries no exercise reason
+          // codes because there are none: the assessment was *usable*, and what
+          // stopped the effect was the interlock.
+          if (outcome.withheldBy === 'emergency-control') {
+            return result({ status: 'withheld', withheldBy: 'emergency-control', ...executed, reasonCodes: [...outcome.emergencyControl.reasonCodes, ...unrecorded] });
+          }
+          // P7: an aggregate / velocity limit or exercise-time binding
+          // revalidation withheld it. Internally its own layer; publicly the
+          // existing `exercise` value — the wire union is unchanged — carrying the
+          // EXERCISE_CONTROL_* codes that explain it. No limit, bucket,
+          // reservation or remaining capacity is ever part of the result.
+          if (outcome.withheldBy === 'exercise-control') {
+            return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.exerciseControl.reasonCodes, ...unrecorded] });
+          }
+          return result({ status: 'withheld', withheldBy: 'exercise', ...executed, reasonCodes: [...outcome.assessment.reasonCodes, ...unrecorded] });
+        }
+        if (outcome.status === 'execution-unconfirmed') {
+          // The adapter ran and says it cannot know whether the provider acted.
+          // Same public status as a lost outcome, its own reason code, and no
+          // retry: the write-ahead claim already forbids a second invocation of
+          // this execution identity.
+          return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, ...unrecorded] });
+        }
+        return result({ status: 'execution_failed', ...executed, failure: outcome.reason, reasonCodes: [outcome.reason, ...unrecorded], replayed: false, outcomeRecorded });
+      } finally {
+        leave?.();
       }
-      if (outcome.status === 'execution-unconfirmed') {
-        // The adapter ran and says it cannot know whether the provider acted.
-        // Same public status as a lost outcome, its own reason code, and no
-        // retry: the write-ahead claim already forbids a second invocation of
-        // this execution identity.
-        return result({ status: 'execution_unconfirmed', ...executed, reasonCodes: [R.GOVERNED_ACTION_EXECUTION_OUTCOME_UNCONFIRMED, ...unrecorded] });
-      }
-      return result({ status: 'execution_failed', ...executed, failure: outcome.reason, reasonCodes: [outcome.reason, ...unrecorded], replayed: false, outcomeRecorded });
     },
   });
 }

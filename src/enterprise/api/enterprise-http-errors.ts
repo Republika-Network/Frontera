@@ -102,7 +102,17 @@ export type EnterpriseHttpErrorCode =
   /** CTRL-02: the authoritative store or lifecycle refused the operation (conflict, terminal state, unresolvable reference). Nothing was written. */
   | 'OPERATOR_OPERATION_REFUSED'
   /** CTRL-02: the authority write was durably recorded, and refreshing the in-memory projection failed (which fails closed). Retry the same request; it replays. */
-  | 'AUTHORITY_STATE_REFRESH_FAILED';
+  | 'AUTHORITY_STATE_REFRESH_FAILED'
+  /** PROD-03-02 operator resolution. Every one of them: nothing was recorded and no action was performed. */
+  | 'EXECUTION_NOT_FOUND'
+  | 'EXECUTION_NOT_RESOLVABLE'
+  | 'EXECUTION_OUTCOME_ALREADY_DEFINITIVE'
+  | 'EXECUTION_IN_FLIGHT'
+  | 'EXECUTION_RESOLUTION_BASIS_CHANGED'
+  | 'EXECUTION_RESOLUTION_AUTHORITY_MISMATCH'
+  | 'EXECUTION_ALREADY_RESOLVED'
+  | 'EXECUTION_RESOLUTION_NOT_AVAILABLE'
+  | 'EXECUTION_RESOLUTION_UNAVAILABLE';
 
 export class EnterpriseHttpError extends Error {
   constructor(

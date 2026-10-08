@@ -282,6 +282,9 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       '../execution-resolution-store/contracts.js',
       '../execution-resolution-store/resolution-store.js',
       '../execution-reconciliation/binder.js',
+      // PROD-03-02: the per-execution activity guard, type-only — the orchestrator enters it around its claim and
+      // observation and leaves it; it orders, decides nothing and records nothing.
+      '../execution-reconciliation/activity-guard.js',
       '../governance-store/contracts.js',
       '../governance-store/errors.js',
       '../governance-store/governance-store.js',

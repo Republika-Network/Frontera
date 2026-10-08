@@ -495,7 +495,7 @@ describe('PROD-02 restore refuses a damaged or incomplete backup before touching
     for (const store of m.stores) if (!historical.has(store.name)) unlinkSync(join(legacy, 'stores', store.filename));
     m.stores = m.stores.filter((store) => historical.has(store.name));
     writeManifest(legacy, m);
-    await restoreRejects(legacy, /restoring deployment requires bounded-grants, emergency-controls, exercise-ledger, authority-event-stream, execution-outcomes, obligation-discharges, approvals, control-plane/, { allowLegacyBackup: true });
+    await restoreRejects(legacy, /restoring deployment requires bounded-grants, emergency-controls, exercise-ledger, authority-event-stream, execution-outcomes, execution-resolutions, obligation-discharges, approvals, control-plane/, { allowLegacyBackup: true });
   });
 
   it('an incomplete backup (missing stores explicitly allowed) is refused; with --allow-incomplete it restores without inventing the missing store, and the secure Host still refuses it', async () => {
@@ -514,7 +514,8 @@ describe('PROD-02 restore refuses a damaged or incomplete backup before touching
     const target = join(tempDir('incomplete-target'), 'data');
     const restored = (await runRestore({ backup, target, env: deployment.envFor(target), allowIncomplete: true }));
     assert.equal(restored.coverage.complete, false);
-    assert.deepEqual(restored.notRestored, ['execution-resolutions', 'approvals'], 'P12 was never configured; approvals was missing');
+    // PROD-03-02: a Host with operators composes P12, so its store is backed up and restored like every other; only approvals was missing.
+    assert.deepEqual(restored.notRestored, ['approvals'], 'approvals was missing');
     assert.equal(existsSync(join(target, 'approvals.sqlite')), false, 'restore never creates an empty authority store');
     // The Host would create a fresh approval store — and the surviving witness refuses that empty genesis.
     const adapter = recordingAdapter();

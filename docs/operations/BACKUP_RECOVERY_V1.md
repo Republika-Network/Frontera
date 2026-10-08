@@ -38,7 +38,7 @@ places. Mixing them is the most dangerous mistake an operator can make.
 | Exercise ledger | `.data/exercise-ledger.sqlite` | governed actions |
 | Authority event stream | `.data/authority-event-stream.sqlite` | governed actions |
 | Execution outcomes | `.data/execution-outcomes.sqlite` | governed actions |
-| Execution resolutions | `.data/execution-resolutions.sqlite` | an embedder composes P12 reconciliation |
+| Execution resolutions | `.data/execution-resolutions.sqlite` | the governed-action file declares operators (PROD-03-02), or an embedder composes P12 reconciliation |
 | Obligation discharges (signed) | `.data/obligation-discharges.sqlite` | the governed-action file declares obligations |
 | Approvals (signed) | `.data/approvals.sqlite` | a Governance Profile declares an approval |
 | Control plane | `.data/control-plane.sqlite` | the governed-action file declares operators |

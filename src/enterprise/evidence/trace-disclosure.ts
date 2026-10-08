@@ -243,7 +243,8 @@ export function discloseAuthorityTrace(trace: AuthorityTrace, policy: Disclosure
 }
 
 /** Identifiers of people and mechanisms that a visible stage may carry, and the field whose visibility each depends on. */
-const PEOPLE_FIELDS = ['issuerRef'] as const;
+/** Who acted: a revocation's issuer and (PROD-03-02) the operator who attested a resolution. */
+const PEOPLE_FIELDS = ['issuerRef', 'attestedBy'] as const;
 const MECHANISM_FIELDS = ['adapterId', 'routedBy', 'providerRef', 'authorityId', 'binding'] as const;
 const AMOUNT_FIELDS = ['requested', 'ceiling'] as const;
 

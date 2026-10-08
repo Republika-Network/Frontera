@@ -44,8 +44,9 @@ import { createSqliteControlPlaneStore, replayProfileLifecycle, type ControlPlan
 import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
 import { createOperatorControlService, type OperatorControlService } from '../operator-control/service.js';
 import { createOperatorApprovalService, type OperatorApprovalService } from '../operator-control/approval-workflow.js';
-import { createGovernedPathLog } from '../operations/governed-path-log.js';
+import { createGovernedPathLog, createOperatorResolutionLog } from '../operations/governed-path-log.js';
 import { createOperatorOperationsService, type OperatorOperationsService } from '../operations/service.js';
+import { createOperatorResolutionCommand } from '../operations/resolution.js';
 import { AOC_ENTERPRISE_HOST_VERSION } from '../version.js';
 import { createEnterpriseModuleRegistry } from '../registry/enterprise-module-registry.js';
 import { createEnterpriseLifecycleController } from '../lifecycle/enterprise-lifecycle-controller.js';
@@ -117,6 +118,7 @@ import {
   type ResolutionAuthorityComposition,
 } from '../execution-reconciliation/authority.js';
 import { createExecutionResolutionBinder } from '../execution-reconciliation/binder.js';
+import { createExecutionActivityGuard } from '../execution-reconciliation/activity-guard.js';
 import type { ExecutionReconciliationService } from '../execution-reconciliation/contracts.js';
 import { ExecutionReconciliationConfigurationError } from '../execution-reconciliation/errors.js';
 import { createExecutionReconciliationService } from '../execution-reconciliation/service.js';
@@ -439,7 +441,9 @@ export interface CreateEnterpriseOptions {
    * - the trusted in-process surfaces `AocEnterprise.executionReconciliation`
    *   (reconcile, adopt) and `AocEnterprise.executionResolutions` (read-only).
    *
-   * No HTTP route, SDK method, status or wire field is added. See
+   * No customer route, SDK method, status or wire field is added. Since
+   * PROD-03-02 one operator-plane route records an operator attestation
+   * (`recordOperatorResolution`) when the operator plane is composed. See
    * `docs/architecture/ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md`.
    */
   readonly executionReconciliation?: EnterpriseExecutionReconciliationOptions;
@@ -882,8 +886,10 @@ export interface AocEnterprise {
    * execution reconciliation is enabled. It may ask an execution's bound
    * resolution authority what happened, record the definitive answer, and
    * apply it to P7 capacity; it never executes, resubmits or retries anything.
-   * Not part of any caller path: no HTTP route, no SDK method, and nothing the
-   * governed-action path holds reaches it. An application handed an
+   * Not part of any customer path: no customer route, no SDK method, and
+   * nothing the governed-action path holds reaches it. PROD-03-02: the operator
+   * plane's one resolution route reaches `recordOperatorResolution` only, after
+   * `operations.resolve` is authorized. An application handed an
    * `AocEnterprise` should be handed the evaluation surface rather than this.
    */
   readonly executionReconciliation?: ExecutionReconciliationService;
@@ -1929,6 +1935,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   const executionResolutionStore: ExecutionResolutionStore | undefined =
     resolutionAuthorities === undefined ? undefined : (options.executionReconciliation?.store ?? (await buildExecutionResolutionStore(configuration, kernelProviders.clock.now)));
   const executionResolutionStoreOpenedHere = executionResolutionStore !== undefined && options.executionReconciliation?.store === undefined;
+  // PROD-03-02: one per composition — the governed path and operator attestation order themselves through it (single-writer Host).
+  const executionActivity = executionResolutionStore === undefined ? undefined : createExecutionActivityGuard();
   if (executionResolutionStoreOpenedHere) opened.push(() => closeIfClosable(executionResolutionStore));
   // CORE-04: the obligation discharge store, only when obligations are
   // composed — the durable SQLite file under `sqlite` persistence (an
@@ -2450,6 +2458,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             executionResolution: {
               binder: createExecutionResolutionBinder({ store: executionResolutionStore, composition: resolutionAuthorities, now: kernelProviders.clock.now }),
               reader: createExecutionResolutionReader(executionResolutionStore),
+              ...(executionActivity !== undefined ? { activity: executionActivity } : {}),
             },
           }
         : {}),
@@ -2481,6 +2490,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
               resolutionDigest: resolution.resolutionDigest,
             }),
           ...(authorityEvents !== undefined ? { evidence: authorityEvents } : {}),
+          ...(executionActivity !== undefined ? { activity: executionActivity } : {}),
           now: kernelProviders.clock.now,
         });
 
@@ -2661,6 +2671,18 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           traces: { build: (context, requestId) => buildAuthorityTrace(traceSources, context, requestId) },
           health: () => enterprise.health(),
           now: kernelProviders.clock.now,
+          ...(executionActivity !== undefined ? { inFlight: (executionId: string) => executionActivity.isActive(executionId) } : {}),
+          // PROD-03-02: the one write — operator attestation through P12, one method of it — present only where reconciliation is composed.
+          ...(executionReconciliation !== undefined
+            ? {
+                resolution: createOperatorResolutionCommand({
+                  authenticator: operatorAuthenticator,
+                  organizationId: configuration.kernelAuthority.organizationId,
+                  record: (request) => executionReconciliation.recordOperatorResolution(request),
+                  log: createOperatorResolutionLog(logger),
+                }),
+              }
+            : {}),
         });
 
   // CORE-02: the authenticity boundary this root built, if any — for the

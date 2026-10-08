@@ -46,6 +46,9 @@ export interface EnterpriseLogContext {
   readonly outcome?: string;
   readonly outcomeRecorded?: boolean;
   readonly attentionRequired?: boolean;
+  /** PROD-03-02 operator-resolution fields: the closed attested certainty and the resolution's digest. Never a note, a provider reference or a payload. */
+  readonly certainty?: string;
+  readonly resolutionDigest?: string;
 }
 
 export type EnterpriseLogLevel = 'debug' | 'info' | 'warn' | 'error';

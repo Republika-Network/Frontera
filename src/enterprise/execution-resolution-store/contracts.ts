@@ -94,6 +94,17 @@ export interface RecordExecutionResolutionInput {
   readonly failure?: ExecutionFailureReason;
   /** A handle the authority learned. Never proof, and never able to change certainty. */
   readonly providerRef?: string;
+  /**
+   * PROD-03-02 — the authenticated operator (`operator:<operatorId>`) who
+   * attested this resolution, present exactly when the bound authority is the
+   * operator-attestation authority (`execution-reconciliation/operator-attestation.ts`).
+   * Taken from the operator plane's authenticated principal, never from a
+   * request field, and committed by the resolution digest in the same write as
+   * every other field: a resolution and who attested it never diverge. Absent
+   * on every resolution a host-composed authority records, whose digests are
+   * therefore unchanged.
+   */
+  readonly attestedBy?: string;
   /** The host-injected clock after the authority answered. */
   readonly resolvedAt: string;
 }
