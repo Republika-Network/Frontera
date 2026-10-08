@@ -109,6 +109,30 @@ describe('PROD-03-03 Host preflight', () => {
     }
   });
 
+  it('follows a store-file symlink to a target that does not exist yet', { skip: process.getuid?.() === 0 ? 'root can write anywhere' : false }, async () => {
+    const { symlinkSync } = await import('node:fs');
+    const data = scratch();
+    const elsewhere = join(scratch(), 'locked');
+    mkdirSync(elsewhere, { mode: 0o500 });
+    // Dangling: SQLite would create the database at the target, outside the state directory.
+    symlinkSync(join(elsewhere, 'enterprise-host.sqlite'), join(data, 'enterprise-host.sqlite'));
+    assert.deepEqual(failures(await runHostPreflight(durableEnv(data))), ['STORAGE_NOT_WRITABLE']);
+    symlinkSync(join(data, 'loop-b'), join(data, 'loop-a'));
+    symlinkSync(join(data, 'loop-a'), join(data, 'loop-b'));
+    const loop = durableEnv(scratch(), { AOC_ENTERPRISE_SQLITE_PATH: join(data, 'loop-a') });
+    assert.deepEqual(failures(await runHostPreflight(loop)), ['STORAGE_UNAVAILABLE']);
+  });
+
+  it('passes a store directory that does not exist yet — and the Host then creates it, as the preflight assumes', async () => {
+    const nested = join(scratch(), 'not', 'yet', 'created');
+    const env = durableEnv(nested, { AOC_ENTERPRISE_LOG_LEVEL: 'error' });
+    assert.equal((await runHostPreflight(env)).ok, true);
+    const host = await enterprise.bootEnterpriseHost({ env });
+    await host.close();
+    const { existsSync } = await import('node:fs');
+    assert.ok(existsSync(join(nested, 'enterprise-host.sqlite')), 'every store creates its own parent directories');
+  });
+
   it('refuses a state directory this process cannot write', { skip: process.getuid?.() === 0 ? 'root can write anywhere' : false }, async () => {
     const data = scratch();
     const locked = join(data, 'locked');

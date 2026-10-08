@@ -99,9 +99,11 @@ const lines = [
 process.stdout.write(`${lines.join('\n')}\n`, (error) => {
   // Only once stdout has accepted every byte is the deployment initialized.
   if (error) refuse('the generated block could not be written out; nothing was persisted, run it again.');
+  // The public half first: the private key file is what marks the deployment
+  // initialized, so it is written last, and only a complete pair ever marks it.
   try {
-    writeFileSync(keyFile, witness.privateKeyPem, { mode: 0o600, flag: 'wx' });
     writeFileSync(`${keyFile}.pub`, witness.publicKeyPem, { mode: 0o644, flag: 'w' });
+    writeFileSync(keyFile, witness.privateKeyPem, { mode: 0o600, flag: 'wx' });
   } catch {
     refuse('the witness receipt key could not be stored; discard the block just printed and run it again.');
   }

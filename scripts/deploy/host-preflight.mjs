@@ -21,7 +21,7 @@
 // signer or the witness. Output names variables, stores and closed codes —
 // never a value, a path or a secret.
 
-import { accessSync, closeSync, constants, existsSync, openSync, statSync, unlinkSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,6 +60,26 @@ function inContainer() {
   return existsSync('/.dockerenv') || existsSync('/run/.containerenv');
 }
 
+/**
+ * Where a store file will really be: its own symlink chain followed even when
+ * the final target does not exist yet (SQLite would create it there), then
+ * every directory symlink resolved. A loop or an over-long chain is refused.
+ */
+function storeLocation(path) {
+  let current = resolve(path);
+  for (let hops = 0; hops < 40; hops += 1) {
+    let link;
+    try {
+      link = lstatSync(current).isSymbolicLink();
+    } catch {
+      return realResolve(current);
+    }
+    if (!link) return realResolve(current);
+    current = resolve(dirname(current), readlinkSync(current));
+  }
+  return undefined;
+}
+
 /** The nearest existing ancestor of `path` (the directory itself when it exists). */
 function nearestExisting(path) {
   let current = path;
@@ -92,7 +112,14 @@ async function checkStore(storeDef, path, modules, secure, rootDevice) {
   // Every check below is about where the bytes will actually live: the path
   // with every symlink resolved — the file's own and its directories' — so a
   // link from the mounted volume to the container layer cannot pass.
-  const absolute = realResolve(resolve(path));
+  const absolute = storeLocation(path);
+  if (absolute === undefined) {
+    problems.push(['STORAGE_UNAVAILABLE', `${label}: its path is a symlink loop`]);
+    return { problems, warnings };
+  }
+  // A missing directory chain is fine: every store creates its own parent
+  // directories (recursive mkdir) when it opens. What must hold is that the
+  // nearest existing ancestor is writable and, in a container, on a volume.
   const dir = dirname(absolute);
   const existingDir = nearestExisting(dir);
 
@@ -227,7 +254,7 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
         // Where the file actually is: symlinks in the path resolved, and an
         // existing file identified by device and inode, so no alias (symlink,
         // hard link, another spelling) can put two stores in one database.
-        const keys = [`path:${realResolve(path)}`];
+        const keys = [`path:${storeLocation(path) ?? resolve(path)}`];
         if (existsSync(path)) {
           const { dev, ino } = statSync(path);
           keys.push(`inode:${dev}:${ino}`);
