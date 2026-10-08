@@ -328,8 +328,13 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
         const collision = keys.find((key) => paths.has(key));
         if (collision !== undefined) problems.push(['STORAGE_PATHS_COLLIDE', `${storeDef.envVar} and ${paths.get(collision)} name the same file`]);
         for (const key of keys) paths.set(key, storeDef.envVar);
-        // SQLite's companions belong to their database: no store may be configured onto them.
-        for (const suffix of ['-wal', '-shm', '-journal']) paths.set(`${keys[0]}${suffix}`, `${storeDef.envVar} (${suffix.slice(1)})`);
+        // SQLite's companions belong to their database: no store may be
+        // configured onto them, whichever of the two is checked first.
+        for (const suffix of ['-wal', '-shm', '-journal']) {
+          const companion = `${keys[0]}${suffix}`;
+          if (collision === undefined && paths.has(companion)) problems.push(['STORAGE_PATHS_COLLIDE', `${paths.get(companion)} is configured onto the ${suffix.slice(1)} file of ${storeDef.envVar}`]);
+          paths.set(companion, `${storeDef.envVar} (${suffix.slice(1)})`);
+        }
         const result = await checkStore(storeDef, path, modules, host.secureProfile, rootDevice);
         // Every composed store, optional modules' included: the Host opens them
         // all at composition and refuses to start when one cannot be opened.

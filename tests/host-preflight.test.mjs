@@ -64,6 +64,12 @@ describe('PROD-03-03 Host preflight', () => {
     assert.equal(output.includes('<required-secret>'), false);
   });
 
+  it('refuses a lifecycle bound that is not a whole number instead of reading its prefix', async () => {
+    const result = await runHostPreflight(durableEnv(scratch(), { AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: '30s' }));
+    assert.deepEqual(failures(result), ['HOST_ENVIRONMENT_INVALID']);
+    assert.match(outputOf(result), /AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS must be a positive whole number/);
+  });
+
   it('reports the Host configuration refusal with the Host’s own code', async () => {
     const result = await runHostPreflight({ AOC_ENTERPRISE_ENV: 'production', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite' });
     assert.equal(result.ok, false);
@@ -77,6 +83,9 @@ describe('PROD-03-03 Host preflight', () => {
     assert.deepEqual(failures(await runHostPreflight(env)), ['STORAGE_PATHS_COLLIDE']);
     const onSidecar = durableEnv(data, { AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(data, 'enterprise-host.sqlite-wal') });
     assert.deepEqual(failures(await runHostPreflight(onSidecar)), ['STORAGE_PATHS_COLLIDE'], "a store on another database's WAL file");
+    // The other order: the store checked first sits on the WAL of one checked later.
+    const reversed = durableEnv(data, { AOC_ENTERPRISE_SQLITE_PATH: join(data, 'assurance.sqlite-wal') });
+    assert.deepEqual(failures(await runHostPreflight(reversed)), ['STORAGE_PATHS_COLLIDE'], 'governance on the assurance WAL');
   });
 
   it('refuses stores that alias one file through a symlinked directory or a hard link', async () => {

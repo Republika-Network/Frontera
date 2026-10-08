@@ -509,6 +509,16 @@ function parseApiKeys(value: string | undefined): readonly EnterpriseApiKey[] {
 const ENVIRONMENT_VALUES: readonly EnterpriseEnvironment[] = ['development', 'test', 'staging', 'production'];
 const PERSISTENCE_PROVIDER_VALUES: readonly EnterprisePersistenceProviderKind[] = ['memory', 'sqlite'];
 const LOG_LEVEL_VALUES: readonly EnterpriseConfiguration['logLevel'][] = ['debug', 'info', 'warn', 'error'];
+const POSITIVE_INTEGER_VARIABLES = [
+  'AOC_ENTERPRISE_STARTUP_TIMEOUT_MS',
+  'AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS',
+  'AOC_ENTERPRISE_HEALTH_CHECK_TIMEOUT_MS',
+  'AOC_ENTERPRISE_STORE_BUSY_TIMEOUT_MS',
+  'AOC_ENTERPRISE_STORE_MAX_REQUEST_PAYLOAD_BYTES',
+  'AOC_ENTERPRISE_STORE_MAX_RESULT_PAYLOAD_BYTES',
+  'AOC_ENTERPRISE_STORE_MAX_EVENT_PAYLOAD_BYTES',
+  'AOC_ENTERPRISE_STORE_MAX_TRACE_STEPS',
+] as const;
 const BOOLEAN_VARIABLES = [
   'AOC_ENTERPRISE_REQUIRE_AUTH',
   'AOC_ENTERPRISE_EVENTS_ENABLED',
@@ -548,6 +558,12 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
   for (const name of BOOLEAN_VARIABLES) {
     const value = env[name];
     if (value !== undefined && !['true', 'false', '1', '0'].includes(value.toLowerCase())) problems.push(`${name} must be true or false.`);
+  }
+  // PROD-03-03: the lifecycle bounds and store limits are whole positive
+  // numbers, never a prefix — `30s` is refused rather than read as 30 ms.
+  for (const name of POSITIVE_INTEGER_VARIABLES) {
+    const value = env[name];
+    if (value !== undefined && !/^[1-9][0-9]{0,8}$/.test(value)) problems.push(`${name} must be a positive whole number.`);
   }
   const port = env.AOC_ENTERPRISE_HTTP_PORT;
   if (port !== undefined && (!/^\d{1,5}$/.test(port) || Number.parseInt(port, 10) > 65_535)) problems.push('AOC_ENTERPRISE_HTTP_PORT must be an integer from 0 to 65535.');

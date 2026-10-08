@@ -27,8 +27,11 @@
 //   docker compose run --rm -T witness-init --secrets-only --secret FRONTERA_OPERATOR_KEY_NEW >> .env
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { closeSync, existsSync, linkSync, openSync, rmSync, writeFileSync } from 'node:fs';
-const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
-const RESERVED = /^AOC_ENTERPRISE_|^FRONTERA_REFERENCE_/;
+// Generated credentials live in their own namespace, so a name can never be a
+// variable that controls the Host, the runtime or Compose itself (PATH,
+// NODE_OPTIONS, COMPOSE_PROFILES, FRONTERA_IMAGE, FRONTERA_PUBLISH_PORT, …).
+const ENV_NAME = /^FRONTERA_[A-Z0-9_]+$/;
+const RESERVED = /^FRONTERA_(REFERENCE_|IMAGE$|PUBLISH_|BUILD_)/;
 
 function refuse(message) {
   console.error(`generate-pilot-secrets refused: ${message}`);
@@ -42,7 +45,7 @@ for (let index = 0; index < args.length; index += 1) {
   if (args[index] === '--secrets-only') continue;
   if (args[index] !== '--secret' || args[index + 1] === undefined) refuse('usage: generate-pilot-secrets.mjs [--secrets-only] [--secret NAME]...');
   const name = args[index + 1];
-  if (!ENV_NAME.test(name) || RESERVED.test(name)) refuse(`'${name}' is not an allowed variable name (uppercase, digits, underscores; not AOC_ENTERPRISE_* or FRONTERA_REFERENCE_*).`);
+  if (!ENV_NAME.test(name) || RESERVED.test(name)) refuse(`'${name}' is not an allowed credential name: use FRONTERA_<NAME> (uppercase, digits, underscores), not one of the kit's own FRONTERA_IMAGE, FRONTERA_PUBLISH_*, FRONTERA_BUILD_*, FRONTERA_REFERENCE_* variables.`);
   if (secretNames.includes(name)) refuse(`'${name}' is named twice.`);
   secretNames.push(name);
   index += 1;
