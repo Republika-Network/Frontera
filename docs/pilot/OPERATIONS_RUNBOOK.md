@@ -200,10 +200,14 @@ with the Host's own configuration and volume.
 
 ### 5.2 Take the backup
 
-<!-- ref: sets the operator's destination; the qualification uses a scratch directory -->
+<!-- ref: sets the operator's destinations; the qualification uses two scratch directories -->
 ```bash
 export BACKUP_DIR=/path/to/protected/backup/staging
+export WITNESS_BACKUP_DIR=/path/to/separate/protected/witness/staging
 ```
+
+`WITNESS_BACKUP_DIR` (used only in §5.4) is a different location, on
+different storage, from `BACKUP_DIR`.
 
 <!-- exec: backup-take -->
 ```bash
@@ -235,14 +239,20 @@ after fixing the cause.
 <!-- exec: backup-verify -->
 ```bash
 VERIFY_DIR="$(mktemp -d)"
-tar -C "$VERIFY_DIR" -xf "$BACKUP_FILE"
-(cd "$VERIFY_DIR/frontera-backup" && sha256sum -c --quiet checksums.sha256)
-grep -E '"(backupId|commit|complete|operatorAttestedStopped)":' "$VERIFY_DIR/frontera-backup/backup-manifest.json"
+tar -C "$VERIFY_DIR" -xf "$BACKUP_FILE" &&
+  (cd "$VERIFY_DIR/frontera-backup" && sha256sum -c --quiet checksums.sha256) &&
+  grep -E '"(backupId|commit|complete|operatorAttestedStopped)":' "$VERIFY_DIR/frontera-backup/backup-manifest.json" &&
+  grep -q '"complete": true' "$VERIFY_DIR/frontera-backup/backup-manifest.json" &&
+  (cd "$(dirname "$BACKUP_FILE")" && sha256sum "$(basename "$BACKUP_FILE")" > "$(basename "$BACKUP_FILE").sha256" && sha256sum -c "$(basename "$BACKUP_FILE").sha256") ||
+  echo 'BACKUP VERIFICATION FAILED: do not use this archive' >&2
 rm -rf "$VERIFY_DIR"
-(cd "$(dirname "$BACKUP_FILE")" && sha256sum "$(basename "$BACKUP_FILE")" > "$(basename "$BACKUP_FILE").sha256" && sha256sum -c "$(basename "$BACKUP_FILE").sha256")
 ```
 
-The first `sha256sum -c` prints nothing when every file in the set matches.
+Each step runs only if the previous one succeeded, and the archive's own
+checksum file is written last, so it exists only for an archive that
+extracted, matched every internal checksum and has a complete manifest;
+anything else prints `BACKUP VERIFICATION FAILED`. The first `sha256sum -c`
+prints nothing when every file in the set matches.
 The manifest shows the backup id, the source commit (the release that took
 it), `"complete": true` and `"operatorAttestedStopped": true`. The archive's
 own checksum file names the archive by its base name, so it stays valid
@@ -274,9 +284,11 @@ with the witness stopped:
 
 <!-- exec: witness-backup -->
 ```bash
-docker compose stop authority-witness &&
-  ( umask 077 && docker compose run --rm -T --entrypoint sh witness-init -c 'tar -C /var/lib/frontera-witness -cf - .' > "$BACKUP_DIR/frontera-witness-$(date -u +%Y%m%dT%H%M%SZ).tar" ) ||
-  echo 'WITNESS BACKUP FAILED' >&2
+WITNESS_FILE="$WITNESS_BACKUP_DIR/frontera-witness-$(date -u +%Y%m%dT%H%M%SZ).tar"
+[ -n "$WITNESS_BACKUP_DIR" ] && [ "$WITNESS_BACKUP_DIR" != "$BACKUP_DIR" ] &&
+  docker compose stop authority-witness &&
+  ( umask 077 && docker compose run --rm -T --entrypoint sh witness-init -c 'tar -C /var/lib/frontera-witness -cf - .' > "$WITNESS_FILE" ) ||
+  { echo 'WITNESS BACKUP FAILED: no usable witness archive (a separate WITNESS_BACKUP_DIR is required)' >&2; rm -f "$WITNESS_FILE"; }
 docker compose start authority-witness
 ```
 
@@ -299,10 +311,14 @@ this archive is decided under that escalation, never as a routine restore.
 Replaces the Host's state with a backup. Use it to recover lost or damaged
 state, never to "undo" a governed decision.
 
-1. **Stop the Host:** `docker compose stop frontera`.
-2. **Check release compatibility.** Restore with the release that took the
-   backup whenever possible. Compare the backup's source commit with the
-   image you will run:
+1. **Preserve the current state** before replacing it: if the state volume
+   is readable, take a backup of it first (§5.2; it leaves the Host running).
+   The restore tool also moves every existing store aside into a
+   `.pre-restore-safety-…` directory on the volume before promoting the
+   backup.
+2. **Stop the Host and check release compatibility.** Restore with the
+   release that took the backup whenever possible. Compare the backup's
+   source commit with the image you will run:
 
    <!-- exec: restore-compatibility -->
    ```bash
@@ -314,11 +330,7 @@ state, never to "undo" a governed decision.
    If they differ, the restore tool and the configuration check still refuse
    any store at a schema version the image does not open, but no cross-release
    restore is qualified: prefer the backup's own release (§8).
-3. **Preserve the current state** before replacing it: if the state volume
-   is readable, take a backup of it first (§5.2). The restore tool also moves
-   every existing store aside into a `.pre-restore-safety-…` directory on the
-   volume before promoting the backup.
-4. **Restore** with the supported tool, in the Host's configuration:
+3. **Restore** with the supported tool, in the Host's configuration:
 
    <!-- exec: restore-run -->
    ```bash
@@ -334,12 +346,12 @@ state, never to "undo" a governed decision.
    versions, the signed heads under your trusted verification keys — and
    rolls the volume back on any failure. Its report ends with
    `"status": "restored"`. Any refusal leaves the volume as it was.
-5. **Ownership and permissions** need no step: the restore runs as the same
+4. **Ownership and permissions** need no step: the restore runs as the same
    non-root user as the Host, inside the Host's own volume. If the state
    volume was lost, the command above restores into the new, empty volume
    Docker creates.
-6. **Start and verify** — 7. `/live`, 8. `/ready`, 9. `/version`,
-   10. health:
+5. **Start and verify** — `/live`, `/ready`, `/version`,
+   health:
 
    <!-- exec: restore-start -->
    ```bash
@@ -351,7 +363,7 @@ state, never to "undo" a governed decision.
      curl -sS -w '\n' http://127.0.0.1:8787/health
    ```
 
-11. **Confirm the expected durable records**: the operations metrics,
+6. **Confirm the expected durable records**: the operations metrics,
     Attention and the traces of executions you know predate the backup
     (`GET /api/admin/operations/executions`, `…/traces/{requestId}`) are
     present.
@@ -662,20 +674,24 @@ Activate, verify, release (a resource stop shown; `STOP_SCOPE` and
 
 <!-- exec: emergency-activate -->
 ```bash
+if [ "$STOP_SCOPE" = global ]; then STOP_BODY='{"scope":"global"}'; else STOP_BODY="{\"scope\":\"$STOP_SCOPE\",\"value\":\"$STOP_VALUE\"}"; fi
 curl -sS -w '\n' -X POST -H "$ADMIN" -H 'content-type: application/json' \
-  -d "{\"scope\":\"$STOP_SCOPE\",\"value\":\"$STOP_VALUE\"}" \
+  -d "$STOP_BODY" \
   http://127.0.0.1:8787/api/admin/emergency-controls/activate
 curl -sS -w '\n' -H "$OBSERVER" http://127.0.0.1:8787/api/admin/emergency-controls
 ```
 
 The response is `"outcome": "activated"`; the list shows the stop under
 `active`. A governed action within its scope is now withheld. For a global
-stop the body is `{"scope":"global"}`.
+stop set `STOP_SCOPE=global` and leave `STOP_VALUE` unset: the block then
+sends `{"scope":"global"}`, as the API requires (a global stop carries no
+value).
 
 <!-- exec: emergency-release -->
 ```bash
+if [ "$STOP_SCOPE" = global ]; then STOP_BODY='{"scope":"global"}'; else STOP_BODY="{\"scope\":\"$STOP_SCOPE\",\"value\":\"$STOP_VALUE\"}"; fi
 curl -sS -w '\n' -X POST -H "$ADMIN" -H 'content-type: application/json' \
-  -d "{\"scope\":\"$STOP_SCOPE\",\"value\":\"$STOP_VALUE\"}" \
+  -d "$STOP_BODY" \
   http://127.0.0.1:8787/api/admin/emergency-controls/release
 curl -sS -w '\n' -H "$OBSERVER" http://127.0.0.1:8787/api/admin/emergency-controls
 ```

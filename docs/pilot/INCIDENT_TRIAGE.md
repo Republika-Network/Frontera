@@ -57,17 +57,22 @@ still runs, and failures are part of the evidence):
 <!-- exec: evidence-capture -->
 ```bash
 EVIDENCE_DIR="frontera-evidence-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$EVIDENCE_DIR"
-curl -sS -o "$EVIDENCE_DIR/version.json" http://127.0.0.1:8787/version
-curl -sS -o "$EVIDENCE_DIR/live.json" http://127.0.0.1:8787/live
-curl -sS -o "$EVIDENCE_DIR/ready.json" http://127.0.0.1:8787/ready
-curl -sS -o "$EVIDENCE_DIR/health.json" http://127.0.0.1:8787/health
-curl -sS -o "$EVIDENCE_DIR/operations-health.json" -H "$OBSERVER" http://127.0.0.1:8787/api/admin/operations/health
-curl -sS -o "$EVIDENCE_DIR/attention.json" -H "$OBSERVER" 'http://127.0.0.1:8787/api/admin/operations/attention?limit=50'
-docker compose ps -a > "$EVIDENCE_DIR/compose-ps.txt"
-docker compose logs --no-color --timestamps > "$EVIDENCE_DIR/compose-logs.txt"
-docker compose run --rm config-check > "$EVIDENCE_DIR/config-check.txt" 2>&1
+(
+  umask 077
+  mkdir -p "$EVIDENCE_DIR"
+  curl -sS -o "$EVIDENCE_DIR/version.json" http://127.0.0.1:8787/version
+  curl -sS -o "$EVIDENCE_DIR/live.json" http://127.0.0.1:8787/live
+  curl -sS -o "$EVIDENCE_DIR/ready.json" http://127.0.0.1:8787/ready
+  curl -sS -o "$EVIDENCE_DIR/health.json" http://127.0.0.1:8787/health
+  curl -sS -o "$EVIDENCE_DIR/operations-health.json" -H "$OBSERVER" http://127.0.0.1:8787/api/admin/operations/health
+  curl -sS -o "$EVIDENCE_DIR/attention.json" -H "$OBSERVER" 'http://127.0.0.1:8787/api/admin/operations/attention?limit=50'
+  docker compose ps -a > "$EVIDENCE_DIR/compose-ps.txt"
+  docker compose logs --no-color --timestamps > "$EVIDENCE_DIR/compose-logs.txt"
+  docker compose run --rm config-check > "$EVIDENCE_DIR/config-check.txt" 2>&1
+)
 ```
+
+The bundle is created private (directory `700`, files `600`).
 
 Then add, by hand, to the same record:
 

@@ -142,16 +142,21 @@ describe('PROD-03-04 pilot operations documentation', () => {
     }
   });
 
-  it('backup and restore run only on a stopped Host, and archives are created private', () => {
+  it('backup and restore run only on a stopped Host, and archives and evidence are created private', () => {
+    assert.match(DOCS['INCIDENT_TRIAGE.md'], /\(\n {2}umask 077\n {2}mkdir -p "\$EVIDENCE_DIR"/, 'the evidence bundle is created under umask 077');
+    assert.match(DOCS['OPERATIONS_RUNBOOK.md'], /\[ "\$WITNESS_BACKUP_DIR" != "\$BACKUP_DIR" \] &&/, 'the witness set never goes to the state backup destination');
+    let archives = 0;
     for (const block of BLOCKS) {
       for (const line of block.body.split('\n').filter((candidate) => /(backup|restore)-enterprise-v1\.mjs/.test(candidate))) {
         const guarded = block.body.slice(0, block.body.indexOf(line) + line.length);
         assert.match(guarded, /docker compose ps -q --status running frontera\)" \] &&/, `${block.name}: ${line.slice(0, 80)} runs without checking the Host is stopped`);
       }
-      for (const line of block.body.split('\n').filter((candidate) => /> "\$BACKUP_(?:FILE|DIR)/.test(candidate) && /\.tar|BACKUP_FILE"/.test(candidate))) {
+      for (const line of block.body.split('\n').filter((candidate) => /\btar\b[^>|]*\s-[a-zA-Z]*c[a-zA-Z]*\s/.test(candidate) && /> "\$[A-Z_]+/.test(candidate))) {
         assert.match(line, /umask 077/, `${block.name}: archive written without umask 077: ${line.slice(0, 80)}`);
       }
+      archives += block.body.split('\n').filter((candidate) => /\btar\b[^>|]*\s-[a-zA-Z]*c[a-zA-Z]*\s/.test(candidate) && /> "\$[A-Z_]+/.test(candidate)).length;
     }
+    assert.equal(archives, 2, 'the state and the witness archives are both checked');
   });
 
   it('no sentence teaches retrying, replaying or resending a governed action', () => {

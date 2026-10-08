@@ -51,7 +51,7 @@ const option = (name) => {
 export const EXECUTED_DOCUMENTS = ['docs/pilot/OPERATIONS_RUNBOOK.md', 'docs/pilot/INCIDENT_TRIAGE.md'];
 
 /** Markers the documented blocks print when they stop short; any of them fails the block. */
-const BLOCK_FAILURE_MARKERS = /BACKUP FAILED|WITNESS BACKUP FAILED|RESTORE NOT COMPLETED/;
+const BLOCK_FAILURE_MARKERS = /BACKUP FAILED|BACKUP VERIFICATION FAILED|WITNESS BACKUP FAILED|RESTORE NOT COMPLETED/;
 
 /** Every block id this qualification executes; the structure test requires the documents to carry exactly these. */
 export const EXECUTED_BLOCKS = [
@@ -129,8 +129,10 @@ async function qualify() {
   const exportDir = join(work, 'frontera');
   const pilotDir = join(exportDir, 'deploy', 'pilot');
   const backupDir = join(work, 'backups');
+  const witnessBackupDir = join(work, 'witness-backups');
   mkdirSync(exportDir);
   mkdirSync(backupDir);
+  mkdirSync(witnessBackupDir);
 
   const requested = option('--from-commit') ?? option('--commit');
   const resolved = requested === undefined ? null : spawnSync('git', ['-C', REPO, 'rev-parse', '--verify', `${requested}^{commit}`], { encoding: 'utf8' });
@@ -297,6 +299,7 @@ async function qualify() {
       operatorVariables.ADMIN = `Authorization: ${operator.admin}`;
       operatorVariables.OBSERVER = `Authorization: ${operator.observer}`;
       operatorVariables.BACKUP_DIR = backupDir;
+      operatorVariables.WITNESS_BACKUP_DIR = witnessBackupDir;
       log(`     built ${IMAGE} from ${commit.slice(0, 12)}; project ${PROJECT}; port ${port}`);
     } catch (error) {
       record('O1', 'build and configuration', false, error.message);
@@ -383,9 +386,15 @@ async function qualify() {
       check(/"outcome":"released"/.test(released.stdout) && /"active":\[\]/.test(released.stdout), 'release not shown as documented');
       const afterRelease = await govern(RESOURCE_B, 'accept-after-release-1');
       check(afterRelease.body.withheldBy !== 'emergency-control', 'still withheld after release');
+      // A global stop: the documented block sends no value for it.
+      const global = { STOP_SCOPE: 'global', STOP_VALUE: '' };
+      check(/"outcome":"activated"/.test(doc('emergency-activate', global).stdout), 'a global stop was not activated');
+      const globallyWithheld = await govern(RESOURCE_A, 'accept-global-1');
+      check(globallyWithheld.body.withheldBy === 'emergency-control', `under a global stop the action was ${globallyWithheld.body.status}`);
+      check(/"outcome":"released"/.test(doc('emergency-release', global).stdout), 'the global stop was not released');
       // A stop that stays active, so the restart and restore cases carry one.
       doc('emergency-activate', stop);
-      record('O12', 'documented emergency control: activate → withheld → release → not withheld; an unauthorized action is denied', true, `authorized action '${allowed.body.status}'`);
+      record('O12', 'documented emergency control (resource and global): activate → withheld → release → not withheld; an unauthorized action is denied', true, `authorized action '${allowed.body.status}'`);
     } catch (error) {
       record('O12', 'emergency control', false, error.message);
       return;
@@ -435,13 +444,16 @@ async function qualify() {
       }
       evidence.operatorResolution = { result: 'not-applicable', refusals };
       record('O10', 'documented resolution commands answer as documented; refusals record nothing', true, refusals.join('; '));
-
+    } catch (error) {
+      record('O10', 'operator resolution', false, error.message);
+    }
+    try {
       const operations = await http('GET', '/api/admin/operations/health', { authorization: operator.observer });
       const ops = operations.body.operations;
       check(ops && typeof ops.unresolvedExecutions === 'number' && typeof ops.attentionRequired === 'number' && ops.scan?.complete === true, 'operations health does not surface unresolved executions and the scan');
       record('O11', 'Attention and capacity follow-up are surfaced as documented', true, `${flag('--host-build') ? 'pending → adjusted in-process; ' : ''}unresolved=${ops.unresolvedExecutions}`);
     } catch (error) {
-      record('O10', 'operator resolution', false, error.message);
+      record('O11', 'Attention and capacity surfacing', false, error.message);
     }
 
     // ---- approvals (documented answer on a deployment without approvals) ---------------------------
@@ -512,15 +524,25 @@ async function qualify() {
       check(!readFileSync(`${state.backupFile}.sha256`, 'utf8').includes('/'), 'the archive checksum names a path, not the archive beside it');
       check((statSync(state.backupFile).mode & 0o777) === 0o600, 'the backup archive is not mode 600');
       check(same(await snapshot(), state.beforeBackup), 'the backup changed operational state');
+      // A damaged archive is never verified, and gets no checksum file.
+      const corrupt = join(backupDir, 'corrupt-copy.tar');
+      writeFileSync(corrupt, readFileSync(state.backupFile).subarray(0, Math.floor(statSync(state.backupFile).size / 2)));
+      const refused = doc('backup-verify', { BACKUP_FILE: corrupt }, { allowFailure: true });
+      check(refused.stderr.includes('BACKUP VERIFICATION FAILED') && !existsSync(`${corrupt}.sha256`), 'a truncated archive was verified');
+      rmSync(corrupt);
+      // The witness set never goes to the state backup's destination.
+      const shared = doc('witness-backup', { WITNESS_BACKUP_DIR: backupDir }, { allowFailure: true });
+      check(shared.stderr.includes('WITNESS BACKUP FAILED') && !readdirSync(backupDir).some((name) => name.startsWith('frontera-witness-')), 'the witness archive was written beside the state backups');
+      await waitHealthy();
       const witness = doc('witness-backup');
-      const witnessFile = readdirSync(backupDir).find((name) => name.startsWith('frontera-witness-'));
-      const listing = run('tar', ['-tf', join(backupDir, witnessFile)]).stdout;
+      const witnessFile = readdirSync(witnessBackupDir).find((name) => name.startsWith('frontera-witness-'));
+      const listing = run('tar', ['-tf', join(witnessBackupDir, witnessFile)]).stdout;
       check(['./witness.sqlite', './receipt-key.pem', './receipt-key.pem.pub'].every((name) => listing.split('\n').includes(name)), 'the witness archive is incomplete');
-      check((statSync(join(backupDir, witnessFile)).mode & 0o777) === 0o600, 'the witness archive (key material) is not mode 600');
+      check((statSync(join(witnessBackupDir, witnessFile)).mode & 0o777) === 0o600, 'the witness archive (key material) is not mode 600');
       captured.push(witness.stdout);
       await waitHealthy();
       evidence.backup = { backupId: report.backupId, verified: true, stores: report.stores.length };
-      record('O4', 'documented backup: cold, streamed out, checksums verified, complete, source commit = the release; witness set separate', true, `${report.backupId}, ${report.stores.length} stores`);
+      record('O4', 'documented backup: cold, streamed out, verified (a truncated copy is refused), mode 600, source commit = the release; witness set private and on its own destination', true, `${report.backupId}, ${report.stores.length} stores`);
     } catch (error) {
       record('O4', 'backup', false, error.message);
       return;
@@ -584,7 +606,9 @@ async function qualify() {
     try {
       const bundle = doc('evidence-capture', {}, { exports: ['EVIDENCE_DIR'] });
       const dir = join(pilotDir, bundle.values.EVIDENCE_DIR);
+      check((statSync(dir).mode & 0o777) === 0o700, 'the evidence directory is not private');
       const files = readdirSync(dir);
+      for (const name of files) check((statSync(join(dir, name)).mode & 0o077) === 0, `evidence file ${name} is readable by others`);
       for (const name of ['version.json', 'live.json', 'ready.json', 'health.json', 'operations-health.json', 'attention.json', 'compose-ps.txt', 'compose-logs.txt', 'config-check.txt']) check(files.includes(name), `the bundle lacks ${name}`);
       check(JSON.parse(readFileSync(join(dir, 'version.json'), 'utf8')).commit === commit, 'the bundle does not identify the release');
       const bundleText = files.map((name) => readFileSync(join(dir, name), 'utf8')).join('\n');
@@ -655,11 +679,11 @@ async function qualify() {
       // Proven on the reference deployment only; the pilot proves these with its own provider (PILOT_ACCEPTANCE.md §1).
       const REFERENCE_ONLY = {
         A5: 'qualification output: the decision path only (the reference provider is unreachable by design)',
-        A9: 'qualification output: resolution refusals in the container and the PROD-03-02 in-process suite (no real unresolved execution)',
+        A9: 'qualification output: resolution refusals in the container and the PROD-03-02 in-process suite, run with --host-build (no real unresolved execution)',
       };
       const criteria = {
         A1: caseResult('O1', 'O6'), A2: caseResult('O1'), A3: caseResult('O1', 'O7'), A4: caseResult('O6'), A5: caseResult('O12'), A6: caseResult('O12'),
-        A7: caseResult('O12'), A8: caseResult('O7', 'O10'), A9: caseResult('O10', 'O11'), A10: caseResult('O3'), A11: caseResult('O4'), A12: caseResult('O5'),
+        A7: caseResult('O12'), A8: caseResult('O7', 'O10'), A9: flag('--host-build') ? caseResult('O10', 'O11') : 'not-run', A10: caseResult('O3'), A11: caseResult('O4'), A12: caseResult('O5'),
         A13: caseResult('O2'), A14: 'not-run', A15: 'not-run', A16: 'not-run', A17: 'not-run',
       };
       writeFileSync(
@@ -676,7 +700,7 @@ async function qualify() {
             configCheck: automated.get('O1') === true ? 'PASS' : 'not-run',
             readiness: automated.get('O7') === true ? { live: 200, ready: 200 } : null,
             health: evidence.health,
-            cases: Object.entries(criteria).map(([id, result]) => ({ id, result, evidence: result === 'not-run' ? 'human acknowledgement: never recorded by the qualification' : (REFERENCE_ONLY[id] ?? 'qualification output'), by: result === 'not-run' ? null : 'qualification' })),
+            cases: Object.entries(criteria).map(([id, result]) => ({ id, result, evidence: result === 'not-run' ? (id === 'A9' ? 'not run: the PROD-03-02 in-process suite needs --host-build' : 'human acknowledgement: never recorded by the qualification') : (REFERENCE_ONLY[id] ?? 'qualification output'), by: result === 'not-run' ? null : 'qualification' })),
             qualification: results,
             backup: evidence.backup,
             restore: evidence.restore,

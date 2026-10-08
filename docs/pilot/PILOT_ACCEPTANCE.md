@@ -125,7 +125,7 @@ A documented command that does not work fails the qualification.
 | O1 | documented startup: identity, configuration check, volumes, start, `/live`, `/ready`, health, version — the Host is ready |
 | O2 | documented shutdown: every service exits 0, `shutdown_complete` logged, both volumes kept |
 | O3 | documented restart (service restart and full stop/start): operational state identical |
-| O4 | documented backup: a cold backup streamed out, checksums verified, manifest complete, source commit = the release; the archive and the witness archive are mode 600; the archive's checksum file is portable |
+| O4 | documented backup: a cold backup streamed out, checksums verified, manifest complete, source commit = the release; a truncated copy fails verification and gets no checksum file; the archive and the witness archive are mode 600, the witness set on its own destination (a shared one is refused); the archive's checksum file is portable |
 | O5 | the restore block refuses while the Host runs and changes nothing; documented restore, after state changed and into a replaced state volume: the Host is ready, the backed-up records are present, the later ones are not |
 | O6 | `/version` matches the approved commit and the image label |
 | O7 | `/live`, `/ready` and `/health` are distinguishable as documented, and the operator health view adds operations |
@@ -133,8 +133,8 @@ A documented command that does not work fails the qualification.
 | O9 | a required dependency down at boot: refused, never ready (`refused to start`) |
 | O10 | documented resolution commands: Attention and inspection answer; a resolution of an executed action is refused (`EXECUTION_OUTCOME_ALREADY_DEFINITIVE`); the withheld one is not resolvable (shown `resolvable: false`, outside Attention, and refused — `409 EXECUTION_NOT_RESOLVABLE` or, withheld before preparation, `404 EXECUTION_NOT_FOUND`, as PROD-03-02's R8); an unknown one `404`; an observer `403` — nothing recorded; with `--host-build`, the PROD-03-02 in-process suite (R1–R8, capacity) passes |
 | O11 | capacity reconciliation and Attention are surfaced as documented (operations health `unresolvedExecutions`, `scan`); with `--host-build`, the pending → adjusted path passes in-process |
-| O12 | documented emergency control: activate → the resource is withheld → release → no longer withheld; an unauthorized action is denied |
-| O13 | the evidence bundle and every output contain no secret, and the bundle identifies the release |
+| O12 | documented emergency control, resource and global scope: activate → withheld → release → no longer withheld; an unauthorized action is denied |
+| O13 | the evidence bundle is private (`700` / `600`), identifies the release, and neither it nor any output contains a secret |
 | O14 | the documents promise no schema downgrade and keep `down -v` out of every command |
 | O15 | the deployment and the documents require no payment rail |
 
@@ -146,4 +146,5 @@ without a provider on a public address; that path is qualified in-process by
 `src/enterprise/__tests__/prod0302-operator-resolution-host.test.ts`.
 
 The qualification fills only the automatable fields of the evidence pack; it
-never records a human acknowledgement (A14–A17) and marks them `not-run`.
+never records a human acknowledgement (A14–A17) and marks them `not-run`, as it
+does A9 when run without `--host-build`.
