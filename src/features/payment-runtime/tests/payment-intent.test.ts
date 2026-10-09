@@ -177,6 +177,23 @@ describe('PAY-01 P4 — source and destination', () => {
     assert.deepEqual(paymentDestinationOf(counterparty), destination);
     for (const malformed of ['vendor-4471', ':x', 'Account:x', 'account:', 'account:a/b', 7, undefined]) assert.equal(paymentDestinationOf(malformed), undefined, String(malformed));
   });
+
+  it('encodes exactly the destination values it validated, reading each once (review P2)', () => {
+    let kindReads = 0;
+    let referenceReads = 0;
+    const tricky = {
+      get kind() {
+        kindReads += 1;
+        return kindReads === 1 ? 'account' : 'Account';
+      },
+      get reference() {
+        referenceReads += 1;
+        return referenceReads === 1 ? 'vendor-4471' : 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig';
+      },
+    };
+    assert.equal(paymentCounterpartyOf(tricky), 'account:vendor-4471');
+    assert.deepEqual([kindReads, referenceReads], [1, 1]);
+  });
 });
 
 describe('PAY-01 validation — closed, bounded, secret-free, fail closed', () => {
@@ -345,13 +362,15 @@ describe('PAY-01 compilation onto the governed-action envelope', () => {
       ['NaN', { score: Number.NaN }],
       ['Infinity', { score: Number.POSITIVE_INFINITY }],
       ['a nested -Infinity', { nested: [Number.NEGATIVE_INFINITY] }],
+      ['negative zero, which serializes as 0', { score: -0 }],
+      ['a nested negative zero', { nested: { values: [1, -0] } }],
       ['a non-enumerable property', Object.defineProperty({ visible: 1 }, 'hidden', { value: 2, enumerable: false })],
       ['a symbol property', { visible: 1, [Symbol('fact')]: 2 }],
     ];
     for (const [label, assertedContext] of refused) {
       assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: assertedContext as Record<string, unknown> }), RangeError, label);
     }
-    for (const version of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const version of [Number.NaN, Number.POSITIVE_INFINITY, -0]) {
       assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { expectedGovernanceProfile: { id: 'p', version } }), RangeError, String(version));
     }
     // Plain, dense, finite JSON — including an empty array and nulls — still compiles unchanged.

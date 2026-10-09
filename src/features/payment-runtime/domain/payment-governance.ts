@@ -95,8 +95,11 @@ const DESTINATION_SEPARATOR = ':';
 
 /** The one encoding of a destination as the governed counterparty: `<kind>:<reference>`. Injective: two destinations never share a counterparty. */
 export function paymentCounterpartyOf(destination: PaymentDestination): string {
-  if (!isPaymentDestinationKind(destination.kind) || !isPaymentReference(destination.reference)) throw new RangeError('The destination is not canonical.');
-  return `${destination.kind}${DESTINATION_SEPARATOR}${destination.reference}`;
+  // Each field read once; the encoded value is exactly the one checked.
+  const kind: unknown = destination?.kind;
+  const reference: unknown = destination?.reference;
+  if (!isPaymentDestinationKind(kind) || !isPaymentReference(reference)) throw new RangeError('The destination is not canonical.');
+  return `${kind}${DESTINATION_SEPARATOR}${reference}`;
 }
 
 /** The inverse of `paymentCounterpartyOf`, or `undefined` for a counterparty no canonical destination encodes to. */
@@ -162,7 +165,8 @@ function envelopeDataValue(source: object, key: string): unknown {
  * decision — after compilation.
  *
  * Exactly JSON, so that the copy and its canonical serialization describe the
- * same value: finite numbers only (`NaN` and `Infinity` have no JSON form);
+ * same value: finite numbers only (`NaN` and `Infinity` have no JSON form)
+ * and never `-0` (it serializes as `0`);
  * dense arrays only (a hole would serialize like a shorter array and let two
  * different contexts share one digest); every own property an enumerable
  * string-keyed data property (a non-enumerable or symbol property would be
@@ -175,7 +179,8 @@ function envelopeDataValue(source: object, key: string): unknown {
 function snapshotEnvelopeValue(value: unknown, depth: number): unknown {
   if (depth > ENVELOPE_COPY_MAXIMUM_DEPTH) return refuseEnvelope('nested too deeply');
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : refuseEnvelope('numbers must be finite');
+  // Finite, and never -0: canonical serialization writes -0 as 0, so a kept -0 would let two contexts policy can tell apart share one digest.
+  if (typeof value === 'number') return Number.isFinite(value) && !Object.is(value, -0) ? value : refuseEnvelope('numbers must be finite and not -0');
   if (Array.isArray(value)) {
     const keys = Reflect.ownKeys(value);
     const length = value.length;
@@ -213,7 +218,7 @@ function snapshotProfileExpectation(value: unknown): { readonly id: string; read
   const id = Object.getOwnPropertyDescriptor(value, 'id');
   const version = Object.getOwnPropertyDescriptor(value, 'version');
   if (id === undefined || version === undefined || !('value' in id) || !('value' in version)) return refuse();
-  if (typeof id.value !== 'string' || typeof version.value !== 'number' || !Number.isFinite(version.value)) return refuse();
+  if (typeof id.value !== 'string' || typeof version.value !== 'number' || !Number.isFinite(version.value) || Object.is(version.value, -0)) return refuse();
   return Object.freeze({ id: id.value, version: version.value });
 }
 
