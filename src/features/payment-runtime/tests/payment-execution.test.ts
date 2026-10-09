@@ -88,6 +88,8 @@ describe('PAY-01 P9 — the rail receives exactly the normalized, granted paymen
     ['no purpose', { parameters: [] }, R.PAYMENT_EXECUTION_PARAMETERS_INVALID],
     ['a purpose outside the vocabulary', { parameters: [{ dimension: 'paymentPurpose', type: 'token', value: 'gift' }] }, R.PAYMENT_EXECUTION_PARAMETERS_INVALID],
     ['a purpose of the wrong type', { parameters: [{ dimension: 'paymentPurpose', type: 'boolean', value: true }] }, R.PAYMENT_EXECUTION_PARAMETERS_INVALID],
+    ['a credential-shaped business reference (review P2)', { parameters: [{ dimension: 'paymentPurpose', type: 'token', value: 'payroll' }, { dimension: 'paymentReference', type: 'token', value: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' }] }, R.PAYMENT_EXECUTION_PARAMETERS_INVALID],
+    ['a credential-shaped rail preference (review P2)', { parameters: [{ dimension: 'paymentPurpose', type: 'token', value: 'payroll' }, { dimension: 'paymentRail', type: 'token', value: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' }] }, R.PAYMENT_EXECUTION_PARAMETERS_INVALID],
     ['a rail of the wrong type', { parameters: [{ dimension: 'paymentPurpose', type: 'token', value: 'payroll' }, { dimension: 'paymentRail', type: 'integer', value: 1 }] }, R.PAYMENT_EXECUTION_PARAMETERS_INVALID],
   ];
   for (const [label, overrides, refusal] of refusals) {
@@ -195,6 +197,10 @@ describe('PAY-01 rail composition', () => {
       assert.throws(() => createPaymentRailExecutionAdapter({ rail: createRecordingPaymentRail(undefined, railId), binding: BINDING }), PaymentConfigurationError, railId);
     }
     assert.throws(() => createPaymentRailExecutionAdapter({ rail: createRecordingPaymentRail(), binding: undefined as never }), PaymentConfigurationError);
+    // Review P2: a binding not built by the factory is held to the factory's grammar at composition, not after a grant.
+    for (const action of ['', ' payment.send', 'payment\nsend', 'p'.repeat(257), 7]) {
+      assert.throws(() => createPaymentRailExecutionAdapter({ rail: createRecordingPaymentRail(), binding: { action } as never }), PaymentConfigurationError, String(action));
+    }
   });
 
   it('snapshots the rail at composition: a later mutation cannot change which code runs', async () => {

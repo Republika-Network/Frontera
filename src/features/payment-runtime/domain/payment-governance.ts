@@ -1,5 +1,5 @@
 import type { ParameterDimensionDeclaration } from '../../governed-parameter-runtime/index.js';
-import { isPaymentDestinationKind, isPaymentEnvelopeIdentifier, isPaymentReference } from './payment-grammar.js';
+import { isPaymentDestinationKind, isPaymentEnvelopeIdentifier, isPaymentReference, isPlainRecord } from './payment-grammar.js';
 import { isWellFormedPaymentIntent, type PaymentDestination, type PaymentIntent } from './payment-intent.js';
 
 /**
@@ -139,14 +139,50 @@ export interface PaymentEnvelopeOptions {
   readonly expectedGovernanceProfile?: { readonly id: string; readonly version: number };
 }
 
+/** Deepest asserted-context nesting a compiled payment will copy — the envelope's own bound. */
+const ENVELOPE_COPY_MAXIMUM_DEPTH = 8;
+
+/**
+ * A fresh, frozen copy of envelope-owned JSON data, so nothing the caller
+ * still holds can change a compiled payment — and therefore its digest and
+ * decision — after compilation. Keys are *defined*, never assigned, so an own
+ * `__proto__` key stays data. Anything that is not plain JSON data (a class
+ * instance, a function, a cycle, excessive depth) is refused, never coerced;
+ * the orchestrator's own validation still runs on the result.
+ */
+function snapshotEnvelopeValue(value: unknown, depth: number): unknown {
+  if (depth > ENVELOPE_COPY_MAXIMUM_DEPTH) throw new RangeError('Envelope data is nested too deeply to compile.');
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (Array.isArray(value)) return Object.freeze(value.map((item: unknown) => snapshotEnvelopeValue(item, depth + 1)));
+  if (isPlainRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !('value' in descriptor)) throw new RangeError('Envelope data must be plain data properties.');
+      Object.defineProperty(out, key, { value: snapshotEnvelopeValue(descriptor.value, depth + 1), enumerable: true });
+    }
+    return Object.freeze(out);
+  }
+  throw new RangeError('Envelope data must be plain JSON data.');
+}
+
+function snapshotProfileExpectation(value: unknown): { readonly id: string; readonly version: number } {
+  if (!isPlainRecord(value)) throw new RangeError('expectedGovernanceProfile must be { id, version }.');
+  const id: unknown = value['id'];
+  const version: unknown = value['version'];
+  if (typeof id !== 'string' || typeof version !== 'number') throw new RangeError('expectedGovernanceProfile must be { id, version }.');
+  return Object.freeze({ id, version });
+}
+
 /**
  * Compiles a validated payment intent to its governed-action intent.
  *
  * Pure and deterministic: the same intent and binding always produce an
  * equal, frozen object with the same key order, so its digest — and therefore
  * idempotency replay and conflict on the governed path — is a function of the
- * payment alone. Throws `RangeError` for a value that is not a canonical
- * payment intent: compilation never repairs.
+ * payment alone. Envelope-owned values are copied and frozen too. Throws
+ * `RangeError` for a value that is not a canonical payment intent, or for
+ * envelope data that is not plain JSON: compilation never repairs.
  */
 export function compilePaymentIntent(intent: PaymentIntent, binding: PaymentGovernanceBinding, envelope: PaymentEnvelopeOptions = {}): PaymentGovernedActionIntent {
   if (!isWellFormedPaymentIntent(intent)) throw new RangeError('compilePaymentIntent needs a payment intent validatePaymentIntent accepted.');
@@ -154,6 +190,9 @@ export function compilePaymentIntent(intent: PaymentIntent, binding: PaymentGove
   const parameters: Record<string, string> = { [PAYMENT_PARAMETER_DIMENSION_IDS.purpose]: intent.purpose };
   if (intent.reference !== undefined) parameters[PAYMENT_PARAMETER_DIMENSION_IDS.reference] = intent.reference;
   if (intent.rail !== undefined) parameters[PAYMENT_PARAMETER_DIMENSION_IDS.rail] = intent.rail;
+  const assertedContext = envelope.assertedContext === undefined ? undefined : (snapshotEnvelopeValue(envelope.assertedContext, 0) as Readonly<Record<string, unknown>>);
+  if (assertedContext !== undefined && (assertedContext === null || typeof assertedContext !== 'object' || Array.isArray(assertedContext))) throw new RangeError('assertedContext must be a plain object.');
+  const expectedGovernanceProfile = envelope.expectedGovernanceProfile === undefined ? undefined : snapshotProfileExpectation(envelope.expectedGovernanceProfile);
   return Object.freeze({
     action: binding.action,
     resource: intent.source.accountId,
@@ -162,7 +201,7 @@ export function compilePaymentIntent(intent: PaymentIntent, binding: PaymentGove
     parameters: Object.freeze(parameters),
     idempotencyKey: intent.idempotencyKey,
     ...(intent.correlationId !== undefined ? { correlationId: intent.correlationId } : {}),
-    ...(envelope.assertedContext !== undefined ? { assertedContext: envelope.assertedContext } : {}),
-    ...(envelope.expectedGovernanceProfile !== undefined ? { expectedGovernanceProfile: envelope.expectedGovernanceProfile } : {}),
+    ...(assertedContext !== undefined ? { assertedContext } : {}),
+    ...(expectedGovernanceProfile !== undefined ? { expectedGovernanceProfile } : {}),
   });
 }

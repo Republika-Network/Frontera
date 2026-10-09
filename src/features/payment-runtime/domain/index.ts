@@ -2,8 +2,10 @@ export {
   PAYMENT_DESTINATION_KIND_MAXIMUM_LENGTH,
   PAYMENT_ENVELOPE_IDENTIFIER_MAXIMUM_LENGTH,
   PAYMENT_REFERENCE_MAXIMUM_LENGTH,
+  isPaymentBusinessReference,
   isPaymentDestinationKind,
   isPaymentEnvelopeIdentifier,
+  isPaymentRailId,
   isPaymentReference,
 } from './payment-grammar.js';
 

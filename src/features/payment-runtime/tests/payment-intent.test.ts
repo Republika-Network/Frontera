@@ -223,6 +223,11 @@ describe('PAY-01 validation — closed, bounded, secret-free, fail closed', () =
     assert.deepEqual(codes(rawPayment({ correlationId: 'line\nbreak' })), [V.PAYMENT_CORRELATION_ID_INVALID]);
   });
 
+  it('refuses a credential-shaped business reference or rail, though the token grammars admit its characters (review P2)', () => {
+    assert.deepEqual(codes(rawPayment({ reference: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' })), [V.PAYMENT_REFERENCE_INVALID]);
+    assert.deepEqual(codes(rawPayment({ rail: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' })), [V.PAYMENT_RAIL_INVALID]);
+  });
+
   it('refuses a non-object, an array and a class instance', () => {
     for (const raw of [null, undefined, 'payment', 7, [rawPayment()], new (class Payment {})()]) assert.deepEqual(codes(raw), [V.PAYMENT_INTENT_NOT_OBJECT]);
   });
@@ -269,6 +274,31 @@ describe('PAY-01 compilation onto the governed-action envelope', () => {
     assert.equal(one, two);
   });
 
+  it('snapshots envelope-owned values: a caller mutating them after compilation changes nothing (review P2)', () => {
+    const context: Record<string, unknown> = { passportId: 'passport-1', evidence: { ids: ['e-1'] } };
+    const profile = { id: 'governed-payment', version: 1 };
+    const compiled = compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: context, expectedGovernanceProfile: profile });
+    const before = JSON.stringify(compiled);
+    context['passportId'] = 'passport-2';
+    (context['evidence'] as { ids: string[] }).ids.push('e-2');
+    profile.version = 2;
+    assert.equal(JSON.stringify(compiled), before);
+    assert.notEqual(compiled.assertedContext, context);
+    assert.ok(Object.isFrozen(compiled.assertedContext) && Object.isFrozen(compiled.expectedGovernanceProfile));
+    const withProto = JSON.parse('{"__proto__": {"x": 1}}') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: withProto }).assertedContext ?? {}), ['__proto__']);
+  });
+
+  it('refuses envelope data that is not plain JSON, rather than carrying a live reference', () => {
+    for (const assertedContext of [new Map(), { at: new Date(0) }, { run: () => 1 }, [] as unknown as Record<string, unknown>]) {
+      assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: assertedContext as Record<string, unknown> }), RangeError);
+    }
+    const cyclic: Record<string, unknown> = {};
+    cyclic['self'] = cyclic;
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: cyclic }), RangeError);
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { expectedGovernanceProfile: { id: 'p' } as never }), RangeError);
+  });
+
   it('omits optional parameters rather than inventing them', () => {
     assert.deepEqual(compilePaymentIntent(valid(rawPayment()), BINDING).parameters, { paymentPurpose: 'vendor-payment' });
   });
@@ -276,6 +306,9 @@ describe('PAY-01 compilation onto the governed-action envelope', () => {
   it('never repairs: refuses a value that is not a canonical payment intent, and a malformed binding', () => {
     assert.throws(() => compilePaymentIntent({ ...valid(rawPayment()), amount: { value: '0', unit: 'USD' } }, BINDING), RangeError);
     assert.throws(() => compilePaymentIntent({ ...valid(rawPayment()), extra: 1 } as unknown as PaymentIntent, BINDING), RangeError);
+    // Review P2: an amount carrying a contradictory extra field is not canonical, and is refused rather than silently narrowed.
+    assert.throws(() => compilePaymentIntent({ ...valid(rawPayment()), amount: { value: '10', unit: 'USD', currency: 'EUR' } } as unknown as PaymentIntent, BINDING), RangeError);
+    assert.throws(() => compilePaymentIntent({ ...valid(rawPayment()), reference: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' }, BINDING), RangeError);
     assert.throws(() => compilePaymentIntent(valid(rawPayment()), { action: ' ' }), PaymentConfigurationError);
     assert.throws(() => createPaymentGovernanceBinding({ action: '' }), PaymentConfigurationError);
   });

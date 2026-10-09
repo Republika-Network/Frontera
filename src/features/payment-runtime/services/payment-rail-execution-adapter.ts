@@ -1,5 +1,5 @@
 import { EXECUTION_FAILURE_REASONS, isRecordableExecutionAdapterId, type ExecutionAdapter, type ExecutionAdapterResult, type ValidatedExecutionAction } from '../../execution-runtime/index.js';
-import { isSemanticIdentifier } from '../../governed-parameter-runtime/index.js';
+import { isPaymentEnvelopeIdentifier, isPaymentRailId } from '../domain/payment-grammar.js';
 import { PaymentConfigurationError, type PaymentGovernanceBinding } from '../domain/payment-governance.js';
 import { preparePaymentExecution } from '../domain/payment-execution.js';
 import { PAYMENT_RAIL_DETAILS, executionResultOfPaymentRail, type PaymentRail, type PaymentRailResult } from '../domain/payment-rail.js';
@@ -41,11 +41,15 @@ export function createPaymentRailExecutionAdapter(options: PaymentRailExecutionA
   if (rail === null || typeof rail !== 'object') throw new PaymentConfigurationError('A payment rail is required.');
   const railId: unknown = (rail as { readonly railId?: unknown }).railId;
   const execute: unknown = (rail as { readonly execute?: unknown }).execute;
-  if (!isSemanticIdentifier(railId) || !isRecordableExecutionAdapterId(railId)) throw new PaymentConfigurationError('A payment rail id must be a semantic identifier.');
+  if (!isPaymentRailId(railId) || !isRecordableExecutionAdapterId(railId)) throw new PaymentConfigurationError('A payment rail id must be a semantic identifier.');
   if (typeof execute !== 'function') throw new PaymentConfigurationError(`Payment rail '${railId}' has no execute function.`);
-  const binding = options.binding;
-  if (binding === null || typeof binding !== 'object' || typeof binding.action !== 'string') throw new PaymentConfigurationError('A payment governance binding is required.');
-  const boundAction = Object.freeze({ action: binding.action });
+  // Read once and validated with the binding factory's own grammar, so a
+  // mis-wired binding fails at composition — never after a decision was
+  // committed and a grant issued for a payment no execution could prepare.
+  const binding: unknown = options.binding;
+  const action: unknown = binding !== null && typeof binding === 'object' ? (binding as { readonly action?: unknown }).action : undefined;
+  if (!isPaymentEnvelopeIdentifier(action)) throw new PaymentConfigurationError('A payment governance binding with a canonical action is required.');
+  const boundAction: PaymentGovernanceBinding = Object.freeze({ action });
   const invoke = (request: PaymentExecutionRequest): Promise<PaymentRailResult> => (execute as PaymentRail['execute']).call(rail, request);
 
   return Object.freeze({

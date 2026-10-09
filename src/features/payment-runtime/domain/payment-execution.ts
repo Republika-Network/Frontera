@@ -1,7 +1,6 @@
 import type { ValidatedExecutionAction } from '../../execution-runtime/index.js';
-import { isGovernedParameterToken, isSemanticIdentifier } from '../../governed-parameter-runtime/index.js';
 import { isPositiveMonetaryAmount, isWellFormedMonetaryAmount, type MonetaryAmount } from '../../monetary-runtime/index.js';
-import { isPaymentReference } from './payment-grammar.js';
+import { isPaymentBusinessReference, isPaymentRailId, isPaymentReference } from './payment-grammar.js';
 import { PAYMENT_PARAMETER_DIMENSION_IDS, paymentDestinationOf, type PaymentGovernanceBinding } from './payment-governance.js';
 import { isPaymentPurpose, type PaymentDestination, type PaymentPurpose, type PaymentSourceRef } from './payment-intent.js';
 
@@ -104,8 +103,8 @@ export function preparePaymentExecution(action: ValidatedExecutionAction, bindin
   const reference = tokenParameter(action, PAYMENT_PARAMETER_DIMENSION_IDS.reference);
   const rail = tokenParameter(action, PAYMENT_PARAMETER_DIMENSION_IDS.rail);
   if (!isPaymentPurpose(purpose)) return { prepared: false, refusal: R.PAYMENT_EXECUTION_PARAMETERS_INVALID };
-  if (reference === null || (reference !== undefined && !isGovernedParameterToken(reference))) return { prepared: false, refusal: R.PAYMENT_EXECUTION_PARAMETERS_INVALID };
-  if (rail === null || (rail !== undefined && !isSemanticIdentifier(rail))) return { prepared: false, refusal: R.PAYMENT_EXECUTION_PARAMETERS_INVALID };
+  if (reference === null || (reference !== undefined && !isPaymentBusinessReference(reference))) return { prepared: false, refusal: R.PAYMENT_EXECUTION_PARAMETERS_INVALID };
+  if (rail === null || (rail !== undefined && !isPaymentRailId(rail))) return { prepared: false, refusal: R.PAYMENT_EXECUTION_PARAMETERS_INVALID };
 
   return {
     prepared: true,

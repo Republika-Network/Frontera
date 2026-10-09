@@ -1,8 +1,9 @@
-import { isGovernedParameterToken, isSemanticIdentifier } from '../../governed-parameter-runtime/index.js';
 import { isPositiveMonetaryAmount, isWellFormedMonetaryAmount, parseMonetaryAmount, type MonetaryAmount, type MonetaryAssetRegistry } from '../../monetary-runtime/index.js';
 import {
+  isPaymentBusinessReference,
   isPaymentDestinationKind,
   isPaymentEnvelopeIdentifier,
+  isPaymentRailId,
   isPaymentReference,
   isPlainRecord,
   isSecretShapedPropertyName,
@@ -280,9 +281,9 @@ export function validatePaymentIntent(raw: unknown, trust: PaymentIntentTrust): 
   const purpose = fields['purpose'];
   if (checked('purpose') && !isPaymentPurpose(purpose)) violations.push({ code: V.PAYMENT_PURPOSE_INVALID, field: 'purpose' });
   const reference = fields['reference'];
-  if (checked('reference') && reference !== undefined && !isGovernedParameterToken(reference)) violations.push({ code: V.PAYMENT_REFERENCE_INVALID, field: 'reference' });
+  if (checked('reference') && reference !== undefined && !isPaymentBusinessReference(reference)) violations.push({ code: V.PAYMENT_REFERENCE_INVALID, field: 'reference' });
   const rail = fields['rail'];
-  if (checked('rail') && rail !== undefined && !isSemanticIdentifier(rail)) violations.push({ code: V.PAYMENT_RAIL_INVALID, field: 'rail' });
+  if (checked('rail') && rail !== undefined && !isPaymentRailId(rail)) violations.push({ code: V.PAYMENT_RAIL_INVALID, field: 'rail' });
   const idempotencyKey = fields['idempotencyKey'];
   if (checked('idempotencyKey') && !isPaymentEnvelopeIdentifier(idempotencyKey)) violations.push({ code: V.PAYMENT_IDEMPOTENCY_KEY_INVALID, field: 'idempotencyKey' });
   const correlationId = fields['correlationId'];
@@ -316,6 +317,7 @@ export function isWellFormedPaymentIntent(value: unknown): value is PaymentInten
   if (Object.keys(value).some((key) => !INTENT_KEYS.includes(key))) return false;
   const source = value['source'];
   const destination = value['destination'];
+  const amount = value['amount'];
   return (
     isPlainRecord(source) &&
     Object.keys(source).length === 1 &&
@@ -324,11 +326,13 @@ export function isWellFormedPaymentIntent(value: unknown): value is PaymentInten
     Object.keys(destination).length === 2 &&
     isPaymentDestinationKind(destination['kind']) &&
     isPaymentReference(destination['reference']) &&
-    isWellFormedMonetaryAmount(value['amount']) &&
-    isPositiveMonetaryAmount(value['amount'] as MonetaryAmount) &&
+    isPlainRecord(amount) &&
+    Object.keys(amount).length === 2 &&
+    isWellFormedMonetaryAmount(amount) &&
+    isPositiveMonetaryAmount(amount) &&
     isPaymentPurpose(value['purpose']) &&
-    (value['reference'] === undefined || isGovernedParameterToken(value['reference'])) &&
-    (value['rail'] === undefined || isSemanticIdentifier(value['rail'])) &&
+    (value['reference'] === undefined || isPaymentBusinessReference(value['reference'])) &&
+    (value['rail'] === undefined || isPaymentRailId(value['rail'])) &&
     isPaymentEnvelopeIdentifier(value['idempotencyKey']) &&
     (value['correlationId'] === undefined || isPaymentEnvelopeIdentifier(value['correlationId']))
   );

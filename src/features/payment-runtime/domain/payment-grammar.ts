@@ -1,4 +1,5 @@
 import { isRecordableProviderRef } from '../../execution-runtime/index.js';
+import { isGovernedParameterToken, isSemanticIdentifier } from '../../governed-parameter-runtime/index.js';
 
 /**
  * The grammars every payment reference is held to (PAY-01).
@@ -40,6 +41,21 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
  */
 export function isPaymentReference(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= PAYMENT_REFERENCE_MAXIMUM_LENGTH && PAYMENT_REFERENCE.test(value) && isRecordableProviderRef(value);
+}
+
+/**
+ * A payment's business reference: a governed token (the grammar the grant
+ * binds it in) that is also not credential-shaped. The token grammar admits a
+ * JWT's characters, so the recordable-reference rule is applied on top — a
+ * reference is policy input, rail input and durable evidence, never a secret.
+ */
+export function isPaymentBusinessReference(value: unknown): value is string {
+  return isGovernedParameterToken(value) && isRecordableProviderRef(value);
+}
+
+/** A rail identity or rail preference: a semantic identifier that is not credential-shaped either. */
+export function isPaymentRailId(value: unknown): value is string {
+  return isSemanticIdentifier(value) && isRecordableProviderRef(value);
 }
 
 export function isPaymentDestinationKind(value: unknown): value is string {
