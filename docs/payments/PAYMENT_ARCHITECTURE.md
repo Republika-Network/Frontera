@@ -43,7 +43,7 @@ PaymentExecutionRequest             ── preparePaymentExecution(ValidatedExec
    ↓
 PaymentRail      (host-composed)    ── behind createPaymentRailExecutionAdapter → ExecutionAdapter
    ↓
-rail-specific implementation        (later milestones)
+rail-specific implementation        ── PAY-02: XRPL / RLUSD (rails/xrpl, §9)
 ```
 
 ## 2. The payment intent
@@ -274,3 +274,36 @@ no submission, no settlement polling, no exchange rates, no liquidity
 routing, no destination allowlist beyond the existing counterparty bound and
 policy, no protocol parsing (PAY-02), no public HTTP route, no new store and
 no export from the frozen package entrypoints.
+
+## 9. PAY-02 — the XRPL / RLUSD rail
+
+The first rail implements the contract above without changing it. Full
+detail: `docs/payments/XRPL_RLUSD_RAIL.md`; decision record:
+`docs/architecture/ADR-XRPL-RLUSD-PAYMENT-RAIL.md`.
+
+```
+PaymentIntent { destination: { kind: 'xrpl-tagged-account', reference: 'r…:4471' }, amount: { value, unit: <RLUSD asset id> }, rail: 'xrpl-rlusd', … }
+   ⋮ compile → governed path → grant → claim                         (PAY-01 + core, unchanged)
+createPaymentRailExecutionAdapter({ rail: createXrplRlusdRail({ configuration, client, signers }), binding })
+   ↓ PaymentExecutionRequest
+XRPL / RLUSD rail  (src/features/payment-runtime/rails/xrpl)
+   build (trusted asset / source / issuer) → network_id check → prepare → sign (port) → verify → submit ONCE → validated?
+   ↓ PaymentRailResult: completed | not-completed | unconfirmed (+ tx hash)
+P11 → P12 (operator resolution by hash) when unconfirmed
+```
+
+- **Composition.** The host builds `createXrplRlusdRailConfiguration(...)`
+  (trusted: network, endpoint, issuer, currency, source mapping), an
+  `XrplClientPort` (`createXrplSdkClient`, the one network site, EP-069) and
+  one `XrplTransactionSigner` per source account (its own custody — none
+  ships), and composes the rail through the PAY-01 bridge exactly as §4
+  describes. Not exported from this module's barrel or any package entrypoint;
+  not composable from Host configuration.
+- **What PAY-01 provides unchanged:** the destination tag rides the governed
+  counterparty (`xrpl-tagged-account:r…:4471`), the RLUSD asset is a P9 asset
+  id, `rail: 'xrpl-rlusd'` is the exact-bound rail preference, and the
+  three-way outcome maps through `executionResultOfPaymentRail`.
+- **What PAY-02 adds below the boundary:** XRPL parsing, the RLUSD mapping,
+  exact-decimal proof, transaction construction, signing verification, the
+  single submission, finality reading, the no-retry rule, and the
+  conservative `unconfirmed` mapping for every ambiguous case.

@@ -17,9 +17,11 @@ Architecture: `docs/payments/PAYMENT_ARCHITECTURE.md`. Rail contract:
 | `domain/payment-execution.ts` | `PaymentExecutionRequest` and `preparePaymentExecution` — the prepared payment, derived from a `ValidatedExecutionAction` alone. |
 | `domain/payment-rail.ts` | The `PaymentRail` contract, `PaymentRailResult`, and its mapping onto `ExecutionAdapterResult`. |
 | `services/payment-rail-execution-adapter.ts` | `createPaymentRailExecutionAdapter` — a rail composed as an ordinary `ExecutionAdapter`. The only place a rail is invoked. |
+| `rails/xrpl/` | PAY-02: the XRPL / RLUSD rail (`createXrplRlusdRail`) and its SDK client. A rail **below** the contract — the contract never imports it. `docs/payments/XRPL_RLUSD_RAIL.md`. |
 
-What it will never do: implement a rail, hold a key, sign, submit, poll,
-convert an asset, read a clock, perform I/O, decide whether a payment is
-allowed, or be imported by Frontera's core.
+What the contract (`domain/`, `services/`) will never do: implement a rail,
+hold a key, sign, submit, poll, convert an asset, read a clock, perform I/O,
+decide whether a payment is allowed, or be imported by Frontera's core.
+Rails live under `rails/`, each held to its own boundary test.
 `tests/payment-runtime-boundaries.test.ts` fails the build if any of that
 changes. `tests/payment-rail-fixture.ts` is the test-only reference rail.

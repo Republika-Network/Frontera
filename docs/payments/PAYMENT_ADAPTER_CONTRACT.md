@@ -76,3 +76,6 @@ frozen.
 `src/features/payment-runtime/tests/payment-rail-fixture.ts` is the reference
 rail — in-memory, no external effect, test-only. A later milestone (PAY-03)
 turns these rules into a reusable rail conformance suite.
+
+The first real rail, XRPL / RLUSD (PAY-02), satisfies every rule above:
+`docs/payments/XRPL_RLUSD_RAIL.md`.
