@@ -215,6 +215,12 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
         'src/features/execution-runtime/domain/index.ts',
         'src/features/execution-runtime/services/execution-adapter-registry.ts',
         'src/features/execution-runtime/services/grant-execution-service.ts',
+        // PAY-01: the payment rail bridge **implements** the port, exactly as
+        // the Generic HTTP adapter does — a provider adapter the host composes
+        // as `executionAdapter` or a registry child. It invokes no adapter; it
+        // prepares a payment from the validated action and calls the one rail
+        // it was built with. Not a new effect path: EP-011's provider hop.
+        'src/features/payment-runtime/services/payment-rail-execution-adapter.ts',
       ],
       'NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md §7.1 enumerates every ExecutionAdapter reference. ' +
         'A new holder is a new potential call site and must be added there before it ships.',
