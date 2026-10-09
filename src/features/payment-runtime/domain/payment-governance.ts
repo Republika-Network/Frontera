@@ -207,6 +207,24 @@ function snapshotEnvelopeValue(value: unknown, depth: number): unknown {
   return refuseEnvelope('not a JSON value');
 }
 
+/**
+ * The envelope options themselves, read **once**: a plain record whose only
+ * own properties are `assertedContext` and `expectedGovernanceProfile`, each
+ * an enumerable data property. An accessor is refused without being run — a
+ * getter could answer `undefined` to an omission test and data to the
+ * snapshot, or different data each time.
+ */
+function readEnvelopeOptions(envelope: unknown): { readonly assertedContext?: unknown; readonly expectedGovernanceProfile?: unknown } {
+  if (envelope === undefined) return {};
+  if (!isPlainRecord(envelope)) return refuseEnvelope('the envelope options must be a plain object');
+  const out: { assertedContext?: unknown; expectedGovernanceProfile?: unknown } = {};
+  for (const key of Reflect.ownKeys(envelope)) {
+    if (key !== 'assertedContext' && key !== 'expectedGovernanceProfile') return refuseEnvelope('the envelope options carry an undeclared property');
+    out[key] = envelopeDataValue(envelope, key);
+  }
+  return out;
+}
+
 /** Exactly `{ id, version }` as two data properties, read once — anything more or other is refused, never repaired into a clean pin. */
 function snapshotProfileExpectation(value: unknown): { readonly id: string; readonly version: number } {
   const refuse = (): never => {
@@ -241,9 +259,10 @@ export function compilePaymentIntent(raw: PaymentIntent, binding: PaymentGoverna
   const parameters: Record<string, string> = { [PAYMENT_PARAMETER_DIMENSION_IDS.purpose]: intent.purpose };
   if (intent.reference !== undefined) parameters[PAYMENT_PARAMETER_DIMENSION_IDS.reference] = intent.reference;
   if (intent.rail !== undefined) parameters[PAYMENT_PARAMETER_DIMENSION_IDS.rail] = intent.rail;
-  const assertedContext = envelope.assertedContext === undefined ? undefined : (snapshotEnvelopeValue(envelope.assertedContext, 0) as Readonly<Record<string, unknown>>);
+  const options = readEnvelopeOptions(envelope);
+  const assertedContext = options.assertedContext === undefined ? undefined : (snapshotEnvelopeValue(options.assertedContext, 0) as Readonly<Record<string, unknown>>);
   if (assertedContext !== undefined && (assertedContext === null || typeof assertedContext !== 'object' || Array.isArray(assertedContext))) throw new RangeError('assertedContext must be a plain object.');
-  const expectedGovernanceProfile = envelope.expectedGovernanceProfile === undefined ? undefined : snapshotProfileExpectation(envelope.expectedGovernanceProfile);
+  const expectedGovernanceProfile = options.expectedGovernanceProfile === undefined ? undefined : snapshotProfileExpectation(options.expectedGovernanceProfile);
   return Object.freeze({
     action,
     resource: intent.source.accountId,

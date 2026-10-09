@@ -378,6 +378,24 @@ describe('PAY-01 compilation onto the governed-action envelope', () => {
     assert.deepEqual(compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: context }).assertedContext, context);
   });
 
+  it('reads the envelope options once: accessor and undeclared options are refused without being run (review P2)', () => {
+    let reads = 0;
+    const getterContext = {
+      get assertedContext() {
+        reads += 1;
+        return reads === 1 ? undefined : { fact: 'second' };
+      },
+    };
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, getterContext as never), RangeError);
+    const getterProfile = Object.defineProperty({}, 'expectedGovernanceProfile', { enumerable: true, get: () => ({ id: 'p', version: 1 }) });
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, getterProfile as never), RangeError);
+    assert.equal(reads, 0);
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: {}, extra: 1 } as never), RangeError);
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, 'envelope' as never), RangeError);
+    // An explicitly undefined option is simply absent, exactly as before.
+    assert.equal('assertedContext' in compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: undefined } as never), false);
+  });
+
   it('enforces the envelope width bound before traversing anything (review P2)', () => {
     let touched = 0;
     const wide = Array.from({ length: 65 }, (_, index) => index);
