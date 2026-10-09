@@ -1049,7 +1049,7 @@ Real leakage:
 | L-5 | `src/features/authority-graph/domain/authority-grant.ts` (`spending_limit {currency, maximum, window}`) | A money-typed constraint in the authority definition layer | Low-Medium — **retained as P10 specialization** (money stays `max_amount` / `spending_limit`) | **Resolved by CTRL-02 (pre-push hardening):** the generic authority-sourced non-money limit CORE-03 ADR §8 assigned to CTRL-02 now exists — standing `parameterBounds` on authority and delegation grants, in the canonical CORE-03 bound shape, enforced on the decision's lineage before any grant (SEC-INV-198). (The first CTRL-02 candidate had dropped this ownership; the adversarial pre-push review caught it.) |
 | L-6 | `governed-action/intent.ts` reserved keys (`paymentCeiling`, `spendingLimit`, `providerRef`, `finalOutcome`) | Denylist names, not logic | Low — **resolved (CORE-03):** the built-in list stays and is now a registry trusted configuration extends (`governance.reservedContextKeys`, SEC-INV-135); declared dimension ids are reserved in any case | — (PAY-02 registers its keys there, L-7) |
 | L-7 | P13 branch adds `mppChallenge`, `mppRealm`, `paymentCredential`, `merchantRealm`, … to the generic `intent.ts` reserved list | Protocol vocabulary in the generic intent validator | Medium, **if merged as-is** | PAY-02 must supply reserved keys through the CORE-03 registry (`governance.reservedContextKeys`), never the built-in list |
-| L-8 | `monetary-asset.ts:24-29` examples `xrpl:USD/rIssuer` | Comment only. The `/issuer` segment is XRPL-shaped by convention, not by grammar | Low | PAY-01 |
+| L-8 | `monetary-asset.ts:24-29` examples `xrpl:USD/rIssuer` | Comment only. The `/issuer` segment is XRPL-shaped by convention, not by grammar | Low — **resolved (PAY-01):** structured reading lives in PAY (`describePaymentAsset`), which names the segment a rail-neutral *qualifier*; P9 grammar unchanged | PAY-01 |
 | L-9 | `content-protection/pinata-storage-adapter.ts` exported from a core barrel | An adapter living inside a core folder | Low | CORE |
 | L-10 | `providerRef` | **Not leakage.** It is a handle, never identity or proof | — | — |
 
@@ -1228,7 +1228,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 
 | Field | Content |
 |---|---|
-| Status | PLANNED (PARTIAL foundations) |
+| Status | IMPLEMENTED — `src/features/payment-runtime`; `docs/payments/PAYMENT_ARCHITECTURE.md`; `ADR-PAYMENTS-AS-A-GOVERNED-VERTICAL.md` |
 | Depends on | CORE-03 (hard) |
 | Purpose | A payment-specific intent that **compiles down** to the generic governed-action envelope |
 | Existing reused | `GovernedActionIntent`, `MonetaryAmount`, asset registry, classifier, `idempotencyKey`, P10 ceilings |

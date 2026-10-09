@@ -232,6 +232,8 @@ export interface WorldOptions {
   readonly executionOutcomes?: ExecutionOutcomeStore;
   /** CORE-05 — the durable-approval port, handed to the orchestrator exactly as the composition root hands it. */
   readonly approvals?: GovernedActionOrchestratorOptions['approvals'];
+  /** CORE-03 — the trusted Governance Profile registry, handed to the orchestrator exactly as the composition root hands it. */
+  readonly governance?: GovernedActionOrchestratorOptions['governance'];
 }
 
 /** P10 — a generous durable monetary authority for suites whose subject is not payment ceilings themselves. */
@@ -452,6 +454,7 @@ export function buildGovernedWorld(options: WorldOptions = {}): GovernedWorld {
     ...(options.emergencyControl !== undefined ? { emergencyControl: options.emergencyControl } : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
     ...(options.approvals !== undefined ? { approvals: options.approvals } : {}),
+    ...(options.governance !== undefined ? { governance: options.governance } : {}),
     ...(hostRevalidate !== undefined
       ? {
           revalidateSource: (correlation: GrantCorrelation) => {
