@@ -307,6 +307,39 @@ export function validatePaymentIntent(raw: unknown, trust: PaymentIntentTrust): 
   };
 }
 
+/** A closed record's own data properties, each read once into a fresh frozen copy — or `undefined` for anything else (an accessor, an undeclared key, a non-plain object). */
+function snapshotClosed(value: unknown, declared: readonly string[]): Readonly<Record<string, unknown>> | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || !declared.includes(key)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    if (descriptor.value !== undefined) Object.defineProperty(out, key, { value: descriptor.value as unknown, enumerable: true });
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * A canonical payment intent read **once** into a fresh, frozen snapshot, or
+ * `undefined` when it is not one.
+ *
+ * What compilation consumes. Every property at every level is read exactly
+ * once as a data property — an accessor is refused, never run — and the
+ * well-formedness check runs on the snapshot, so nothing a caller's object
+ * does later can make the compiled payment differ from the value checked.
+ */
+export function snapshotPaymentIntent(value: unknown): PaymentIntent | undefined {
+  const intent = snapshotClosed(value, INTENT_KEYS);
+  if (intent === undefined) return undefined;
+  const source = snapshotClosed(intent['source'], SOURCE_KEYS);
+  const destination = snapshotClosed(intent['destination'], DESTINATION_KEYS);
+  const amount = snapshotClosed(intent['amount'], AMOUNT_KEYS);
+  if (source === undefined || destination === undefined || amount === undefined) return undefined;
+  const snapshot = Object.freeze({ ...intent, source, destination, amount });
+  return isWellFormedPaymentIntent(snapshot) ? snapshot : undefined;
+}
+
 /**
  * Whether a value is structurally a canonical payment intent — the fail-closed
  * re-check for a value that reaches compilation without having come from

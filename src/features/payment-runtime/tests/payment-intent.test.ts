@@ -228,6 +228,12 @@ describe('PAY-01 validation — closed, bounded, secret-free, fail closed', () =
     assert.deepEqual(codes(rawPayment({ rail: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' })), [V.PAYMENT_RAIL_INVALID]);
   });
 
+  it('refuses credential-shaped idempotency keys and correlation ids, which are stored durably (review P2)', () => {
+    assert.deepEqual(codes(rawPayment({ idempotencyKey: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' })), [V.PAYMENT_IDEMPOTENCY_KEY_INVALID]);
+    assert.deepEqual(codes(rawPayment({ correlationId: 'Bearer abcdefgh12345678' })), [V.PAYMENT_CORRELATION_ID_INVALID]);
+    assert.deepEqual(codes(rawPayment({ correlationId: 'authorization: x' })), [V.PAYMENT_CORRELATION_ID_INVALID]);
+  });
+
   it('refuses a non-object, an array and a class instance', () => {
     for (const raw of [null, undefined, 'payment', 7, [rawPayment()], new (class Payment {})()]) assert.deepEqual(codes(raw), [V.PAYMENT_INTENT_NOT_OBJECT]);
   });
@@ -287,6 +293,38 @@ describe('PAY-01 compilation onto the governed-action envelope', () => {
     assert.ok(Object.isFrozen(compiled.assertedContext) && Object.isFrozen(compiled.expectedGovernanceProfile));
     const withProto = JSON.parse('{"__proto__": {"x": 1}}') as Record<string, unknown>;
     assert.deepEqual(Object.keys(compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: withProto }).assertedContext ?? {}), ['__proto__']);
+  });
+
+  it('compiles from a single read: a getter-backed intent is refused without running it (review P2)', () => {
+    let reads = 0;
+    const tricky = { ...valid(rawPayment()) } as Record<string, unknown>;
+    Object.defineProperty(tricky, 'reference', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? 'INV-1' : 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig';
+      },
+    });
+    assert.throws(() => compilePaymentIntent(tricky as unknown as PaymentIntent, BINDING), RangeError);
+    assert.equal(reads, 0);
+  });
+
+  it('reads the binding action once and emits exactly the value it checked (review P2)', () => {
+    let reads = 0;
+    const binding = {
+      get action() {
+        reads += 1;
+        return reads === 1 ? 'payment.send' : 'payment.other';
+      },
+    };
+    assert.equal(compilePaymentIntent(valid(rawPayment()), binding).action, 'payment.send');
+    assert.equal(reads, 1);
+  });
+
+  it('refuses a profile expectation that is not exactly two data properties, never repairing it (review P2)', () => {
+    for (const pin of [{ id: 'p', version: 1, extra: true }, { id: 'p' }, Object.defineProperty({ version: 1 }, 'id', { enumerable: true, get: () => 'p' })]) {
+      assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { expectedGovernanceProfile: pin as never }), RangeError, JSON.stringify(pin));
+    }
   });
 
   it('refuses envelope data that is not plain JSON, rather than carrying a live reference', () => {

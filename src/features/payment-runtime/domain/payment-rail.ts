@@ -38,7 +38,8 @@ export interface PaymentRail {
  *
  * - `completed` — the provider confirmed the payment instruction completed.
  *   **Not** a claim of final settlement: it is P11's `confirmed-completed`,
- *   no more.
+ *   no more. It carries no `detail`: the execution outcome a completion maps
+ *   to has nowhere to record one, so the contract does not advertise it.
  * - `not-completed` — the provider provably did not perform it. `reason` is
  *   the execution runtime's existing closed vocabulary; payment specifics
  *   (insufficient funds, a destination the provider refused) are the rail's
@@ -52,7 +53,7 @@ export interface PaymentRail {
  * nothing assumes it is any particular kind of identifier.
  */
 export type PaymentRailResult =
-  | { readonly status: 'completed'; readonly externalReference?: string; readonly detail?: string }
+  | { readonly status: 'completed'; readonly externalReference?: string }
   | { readonly status: 'not-completed'; readonly reason: ExecutionFailureReason; readonly externalReference?: string; readonly detail?: string }
   | { readonly status: 'unconfirmed'; readonly externalReference?: string; readonly detail?: string };
 
@@ -105,8 +106,8 @@ export function executionResultOfPaymentRail(value: unknown): ExecutionAdapterRe
   const source = value as Record<string, unknown>;
   const status = source['status'];
   const reference = referenceOf(source['externalReference']);
-  const detail = detailOf(source['detail']);
   if (status === 'completed') return Object.freeze({ outcome: 'completed', ...reference });
+  const detail = detailOf(source['detail']);
   if (status === 'unconfirmed') return Object.freeze({ outcome: 'unconfirmed', ...reference, ...detail });
   if (status === 'not-completed') {
     const reason = source['reason'];

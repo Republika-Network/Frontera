@@ -130,6 +130,8 @@ describe('PAY-01 P10–P12 — rail results map onto the existing execution outc
 
   it('P10: completed → completed, carrying the provider handle', async () => {
     assert.deepEqual(await run(() => ({ status: 'completed', externalReference: 'prov-123' })), { outcome: 'completed', providerRef: 'prov-123' });
+    // Review P2: a completion has no detail in the contract; one a rail attaches anyway is not carried.
+    assert.deepEqual(await run(() => ({ status: 'completed', detail: 'settled-fast' }) as unknown as PaymentRailResult), { outcome: 'completed' });
   });
 
   it('P11: not-completed → failed, with the existing reason vocabulary and a bounded detail', async () => {

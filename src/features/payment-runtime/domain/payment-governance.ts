@@ -1,6 +1,6 @@
 import type { ParameterDimensionDeclaration } from '../../governed-parameter-runtime/index.js';
 import { isPaymentDestinationKind, isPaymentEnvelopeIdentifier, isPaymentReference, isPlainRecord } from './payment-grammar.js';
-import { isWellFormedPaymentIntent, type PaymentDestination, type PaymentIntent } from './payment-intent.js';
+import { snapshotPaymentIntent, type PaymentDestination, type PaymentIntent } from './payment-intent.js';
 
 /**
  * How a payment becomes a governed action (PAY-01).
@@ -166,12 +166,19 @@ function snapshotEnvelopeValue(value: unknown, depth: number): unknown {
   throw new RangeError('Envelope data must be plain JSON data.');
 }
 
+/** Exactly `{ id, version }` as two data properties, read once — anything more or other is refused, never repaired into a clean pin. */
 function snapshotProfileExpectation(value: unknown): { readonly id: string; readonly version: number } {
-  if (!isPlainRecord(value)) throw new RangeError('expectedGovernanceProfile must be { id, version }.');
-  const id: unknown = value['id'];
-  const version: unknown = value['version'];
-  if (typeof id !== 'string' || typeof version !== 'number') throw new RangeError('expectedGovernanceProfile must be { id, version }.');
-  return Object.freeze({ id, version });
+  const refuse = (): never => {
+    throw new RangeError('expectedGovernanceProfile must be exactly { id, version }.');
+  };
+  if (!isPlainRecord(value)) return refuse();
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 2 || !keys.includes('id') || !keys.includes('version')) return refuse();
+  const id = Object.getOwnPropertyDescriptor(value, 'id');
+  const version = Object.getOwnPropertyDescriptor(value, 'version');
+  if (id === undefined || version === undefined || !('value' in id) || !('value' in version)) return refuse();
+  if (typeof id.value !== 'string' || typeof version.value !== 'number') return refuse();
+  return Object.freeze({ id: id.value, version: version.value });
 }
 
 /**
@@ -184,9 +191,12 @@ function snapshotProfileExpectation(value: unknown): { readonly id: string; read
  * `RangeError` for a value that is not a canonical payment intent, or for
  * envelope data that is not plain JSON: compilation never repairs.
  */
-export function compilePaymentIntent(intent: PaymentIntent, binding: PaymentGovernanceBinding, envelope: PaymentEnvelopeOptions = {}): PaymentGovernedActionIntent {
-  if (!isWellFormedPaymentIntent(intent)) throw new RangeError('compilePaymentIntent needs a payment intent validatePaymentIntent accepted.');
-  if (!isPaymentEnvelopeIdentifier(binding?.action)) throw new PaymentConfigurationError('The payment governance binding is not canonical.');
+export function compilePaymentIntent(raw: PaymentIntent, binding: PaymentGovernanceBinding, envelope: PaymentEnvelopeOptions = {}): PaymentGovernedActionIntent {
+  // Read once, checked once, compiled from the same snapshot (review P2).
+  const intent = snapshotPaymentIntent(raw);
+  if (intent === undefined) throw new RangeError('compilePaymentIntent needs a payment intent validatePaymentIntent accepted.');
+  const action: unknown = binding !== null && typeof binding === 'object' ? (binding as { readonly action?: unknown }).action : undefined;
+  if (!isPaymentEnvelopeIdentifier(action)) throw new PaymentConfigurationError('The payment governance binding is not canonical.');
   const parameters: Record<string, string> = { [PAYMENT_PARAMETER_DIMENSION_IDS.purpose]: intent.purpose };
   if (intent.reference !== undefined) parameters[PAYMENT_PARAMETER_DIMENSION_IDS.reference] = intent.reference;
   if (intent.rail !== undefined) parameters[PAYMENT_PARAMETER_DIMENSION_IDS.rail] = intent.rail;
@@ -194,7 +204,7 @@ export function compilePaymentIntent(intent: PaymentIntent, binding: PaymentGove
   if (assertedContext !== undefined && (assertedContext === null || typeof assertedContext !== 'object' || Array.isArray(assertedContext))) throw new RangeError('assertedContext must be a plain object.');
   const expectedGovernanceProfile = envelope.expectedGovernanceProfile === undefined ? undefined : snapshotProfileExpectation(envelope.expectedGovernanceProfile);
   return Object.freeze({
-    action: binding.action,
+    action,
     resource: intent.source.accountId,
     counterparty: paymentCounterpartyOf(intent.destination),
     amount: Object.freeze({ value: intent.amount.value, currency: intent.amount.unit }),

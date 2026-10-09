@@ -25,7 +25,7 @@ const PAYMENT_DESTINATION_KIND = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 /** At most this many characters per destination kind. */
 export const PAYMENT_DESTINATION_KIND_MAXIMUM_LENGTH = 32;
 
-/** An envelope identifier (idempotency key, correlation id, action): non-empty, bounded, trim-stable, control-character-free — the envelope's own rule. */
+/** An envelope identifier (idempotency key, correlation id, action): the envelope's own rule — non-empty, bounded, trim-stable, control-character-free — and, because these values are stored durably, never credential-shaped. */
 export const PAYMENT_ENVELOPE_IDENTIFIER_MAXIMUM_LENGTH = 256;
 
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
@@ -63,7 +63,7 @@ export function isPaymentDestinationKind(value: unknown): value is string {
 }
 
 export function isPaymentEnvelopeIdentifier(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= PAYMENT_ENVELOPE_IDENTIFIER_MAXIMUM_LENGTH && value === value.trim() && !CONTROL.test(value);
+  return typeof value === 'string' && value.length > 0 && value.length <= PAYMENT_ENVELOPE_IDENTIFIER_MAXIMUM_LENGTH && value === value.trim() && !CONTROL.test(value) && isRecordableProviderRef(value);
 }
 
 /**

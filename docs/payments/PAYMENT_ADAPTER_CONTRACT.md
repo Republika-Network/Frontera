@@ -14,7 +14,7 @@ interface PaymentRail {
 }
 
 type PaymentRailResult =
-  | { status: 'completed'; externalReference?: string; detail?: string }
+  | { status: 'completed'; externalReference?: string }
   | { status: 'not-completed'; reason: ExecutionFailureReason; externalReference?: string; detail?: string }
   | { status: 'unconfirmed'; externalReference?: string; detail?: string };
 ```

@@ -9,7 +9,7 @@ export {
   isPaymentReference,
 } from './payment-grammar.js';
 
-export { PAYMENT_INTENT_VIOLATIONS, PAYMENT_PURPOSES, isPaymentPurpose, isWellFormedPaymentIntent, validatePaymentIntent } from './payment-intent.js';
+export { PAYMENT_INTENT_VIOLATIONS, PAYMENT_PURPOSES, isPaymentPurpose, isWellFormedPaymentIntent, snapshotPaymentIntent, validatePaymentIntent } from './payment-intent.js';
 export type {
   PaymentDestination,
   PaymentIntent,
