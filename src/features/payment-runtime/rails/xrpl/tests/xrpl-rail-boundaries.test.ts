@@ -113,8 +113,10 @@ describe('PAY-02 — the one XRPL submission site (§43, X15)', () => {
     };
     const prepare = rail.slice(rail.indexOf('async function prepareAndSign('), rail.indexOf('async function awaitFinality('));
     ordered(prepare, ['await ensureConnected()', 'client.validatedLedgerIndex()', 'client.autofill(', 'BigInt(configuration.maxFeeDrops)', 'await sign(prepared)', 'signedPaymentMatches(prepared']);
+    const submit = rail.slice(rail.indexOf('async function submitOnceAndAwait('), rail.indexOf('async function execute('));
+    ordered(submit, ['client.submit(signed.signedTransaction)', 'readSubmission(answer', 'awaitFinality(request']);
     const execute = rail.slice(rail.indexOf('async function execute('));
-    ordered(execute, ['buildXrplPayment(request', 'prepareAndSign(request', 'client.submit(', 'awaitFinality(request']);
+    ordered(execute, ['buildXrplPayment(request', 'serialized(account', 'prepareAndSign(request', 'submitOnceAndAwait(request', 'unresolved.set(account']);
   });
 
   it('no retry, resubmission or replay vocabulary exists in the rail’s production code', () => {

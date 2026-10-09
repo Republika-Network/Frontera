@@ -24,6 +24,8 @@ export const XRPL_RAIL_DETAILS = Object.freeze({
   SIGNING_FAILED: 'xrpl-signing-failed',
   SIGNATURE_MISMATCH: 'xrpl-signature-mismatch',
   SUBMISSION_NOT_ATTEMPTED: 'xrpl-submission-not-attempted',
+  /** An earlier payment from the same account is still unconfirmed and could still take this sequence. */
+  SEQUENCE_IN_FLIGHT: 'xrpl-sequence-in-flight',
   RAIL_ERROR_BEFORE_SUBMISSION: 'xrpl-rail-error-before-submission',
   // — after submission, provably not included: definitive —
   TRANSACTION_EXPIRED: 'xrpl-transaction-expired',

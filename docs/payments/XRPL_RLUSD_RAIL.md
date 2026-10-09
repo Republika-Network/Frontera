@@ -216,9 +216,17 @@ rail ── prepared Payment ──▶ XrplTransactionSigner.sign ──▶ { si
 | submit | `client.submit` — **once** | §12 |
 | finality | `tx` lookups each `pollIntervalMs` until validated, expired, or `finalityTimeoutMs` | §12 |
 
-Preparation-to-submission is serialized per source account inside one rail
-instance, so two concurrent payments never autofill the same `Sequence`.
-Finality is awaited outside that lock.
+Payments from one source account run **one at a time** inside one rail
+instance — from preparation **through finality** — so a second payment is
+never autofilled while the first could still be invisible to `autofill`.
+And after an `unconfirmed` outcome, the rail remembers that transaction's
+`Sequence` and `LastLedgerSequence`: until the ledger has validated that
+`LastLedgerSequence`, a new payment from the same account autofilled with
+the same (or a lower) `Sequence` — one that would compete with the unresolved
+transaction, only one of them able to validate — is refused **before signing**
+(`not-completed PROVIDER_UNAVAILABLE`, `xrpl-sequence-in-flight`). A higher
+sequence proceeds. Throughput per source account is therefore one payment per
+finality wait.
 
 ## 12. Submission versus finality, and the outcome mapping
 
@@ -228,9 +236,9 @@ transaction applied to the server's open ledger. The only final facts are:
 - **validated** — a `tx` answer with `validated: true` and
   `meta.TransactionResult`; validated ledgers are immutable;
 - **expired** — `txnNotFound` with `searched_all: true` over
-  `[first possible ledger, LastLedgerSequence]`, read after the validated
-  ledger index passed `LastLedgerSequence` (the protocol forbids inclusion
-  after it);
+  `[first possible ledger, LastLedgerSequence]`, read once the validated
+  ledger index has reached `LastLedgerSequence` (that ledger itself
+  validated; the protocol forbids inclusion after it);
 - **malformed** — a `tem…` submit result: the transaction can never be
   applied.
 
@@ -242,6 +250,7 @@ transaction applied to the server's open ledger. The only final facts are:
 | expired (above) | `not-completed PROVIDER_REJECTED`, `xrpl-transaction-expired` | `confirmed-not-completed` |
 | refused before submission (§11) | `not-completed`, its reason and detail | `confirmed-not-completed` |
 | submission provably not attempted (no open connection) | `not-completed PROVIDER_UNAVAILABLE`, `xrpl-submission-not-attempted` | `confirmed-not-completed` |
+| would reuse the sequence of an earlier, still-unconfirmed payment (§11) | `not-completed PROVIDER_UNAVAILABLE`, `xrpl-sequence-in-flight`, nothing signed | `confirmed-not-completed` |
 | `submit` threw — timeout, reset, disconnect | `unconfirmed`, ref = hash, `xrpl-submission-outcome-unknown` | `unconfirmed` → P12 |
 | `submit` answer unreadable | `unconfirmed`, `xrpl-submission-response-unreadable` | `unconfirmed` → P12 |
 | no validated answer by the deadline | `unconfirmed`, `xrpl-finality-unknown` | `unconfirmed` → P12 |

@@ -2,7 +2,7 @@ import { EXECUTION_FAILURE_REASONS, type ExecutionFailureReason } from '../../..
 import type { PaymentExecutionRequest, PaymentRail, PaymentRailResult } from '../../domain/index.js';
 import { isXrplClassicAddress } from './xrpl-address.js';
 import { signedPaymentMatches } from './xrpl-codec.js';
-import { XrplRailConfigurationError, type XrplRlusdRailConfiguration } from './xrpl-config.js';
+import { XrplRailConfigurationError, isXrplRlusdRailConfiguration, type XrplRlusdRailConfiguration } from './xrpl-config.js';
 import { XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction, type XrplPreparedPayment, type XrplTransactionSigner } from './xrpl-client-port.js';
 import { buildXrplPayment } from './xrpl-payment-builder.js';
 import { XRPL_RAIL_DETAILS, type XrplRailDetail } from './xrpl-rail-details.js';
@@ -42,14 +42,6 @@ export interface XrplRlusdRail extends PaymentRail {
 const F = EXECUTION_FAILURE_REASONS;
 const D = XRPL_RAIL_DETAILS;
 
-/** The submission was answered provisionally; finality is still to be read. Internal to `execute`. */
-interface Submitted {
-  readonly status: 'submitted';
-  readonly hash: string;
-  readonly prepared: XrplPreparedPayment;
-  readonly minLedger: number;
-}
-
 /** Thrown inside `execute` to leave the pre-submission phase with a definitive refusal. Never escapes the rail. */
 class Refusal {
   constructor(
@@ -74,11 +66,15 @@ class Refusal {
  * build      buildXrplPayment — asset, source mapping, destination, amount     refusal → not-completed (nothing contacted)
  * connect    client.connect + server network_id == configured network        failure → not-completed (nothing submitted)
  * prepare    LastLedgerSequence = validated index + trusted offset; autofill
- *            Sequence / Fee; fee ≤ trusted ceiling                            failure → not-completed (nothing submitted)
+ *            Sequence / Fee; fee ≤ trusted ceiling; Sequence not held by an
+ *            earlier, still-unconfirmed payment from the same account        failure → not-completed (nothing submitted)
  * sign       signer.sign; the blob must sign exactly the prepared payment      failure → not-completed (nothing submitted)
  * submit     client.submit, ONCE                                              see below
  * finality   tx lookups until validated, expired, or the finality deadline     see below
  * ```
+ *
+ * Payments from one source account run one at a time, preparation through
+ * finality (`serialized`).
  *
  * ## Outcome
  *
@@ -87,7 +83,7 @@ class Refusal {
  * | validated `tesSUCCESS`, delivered exactly the granted amount | `completed`, ref = tx hash |
  * | validated `tec…` | `not-completed` `PROVIDER_REJECTED`, detail = the engine code |
  * | submit answered `tem…` (malformed: never applied, never can be) | `not-completed` `PROVIDER_REJECTED`, detail = the engine code |
- * | not in any ledger ≤ `LastLedgerSequence`, which validation has passed, complete history | `not-completed` `PROVIDER_REJECTED`, `xrpl-transaction-expired` |
+ * | not in any ledger ≤ `LastLedgerSequence`, which is validated, complete history | `not-completed` `PROVIDER_REJECTED`, `xrpl-transaction-expired` |
  * | submission provably not attempted (no open connection) | `not-completed` `PROVIDER_UNAVAILABLE` |
  * | submit threw (timeout, reset) after the blob may have been written | `unconfirmed`, ref = tx hash |
  * | submit answer unreadable | `unconfirmed`, ref = tx hash |
@@ -106,7 +102,7 @@ class Refusal {
  */
 export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRail {
   const configuration = options?.configuration;
-  if (configuration === null || typeof configuration !== 'object' || !Object.isFrozen(configuration)) {
+  if (!isXrplRlusdRailConfiguration(configuration)) {
     throw new XrplRailConfigurationError('configuration', 'must come from createXrplRlusdRailConfiguration');
   }
   const client = options.client;
@@ -132,7 +128,12 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
   const logger = options.logger;
   const railId = configuration.railId;
 
-  /** One preparation-to-submission at a time per source account, so two payments never autofill the same `Sequence` in this process. */
+  /**
+   * One payment at a time per source account, held from preparation **through
+   * finality**, so two payments never autofill the same `Sequence` in this
+   * process: until the first is validated or expired, the next one's autofill
+   * could still see the old account sequence (review P1).
+   */
   const sourceQueues = new Map<string, Promise<unknown>>();
   function serialized<T>(account: string, work: () => Promise<T>): Promise<T> {
     const previous = sourceQueues.get(account) ?? Promise.resolve();
@@ -147,6 +148,16 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     });
     return next;
   }
+
+  /**
+   * Per source account: the sequence and `LastLedgerSequence` of the last
+   * submission whose outcome is still `unconfirmed`. Until the ledger has
+   * validated that `LastLedgerSequence`, that transaction may still be
+   * included, so a new payment autofilled with the same (or a lower)
+   * `Sequence` would compete with it — exactly one of the two could validate.
+   * Such a payment is refused **before** it is signed (review P1).
+   */
+  const unresolved = new Map<string, { readonly sequence: number; readonly lastLedgerSequence: number }>();
 
   const log = (level: 'info' | 'warn', event: string, fields: Readonly<Record<string, unknown>>): void => {
     try {
@@ -194,6 +205,12 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     const autofilled = readAutofill(filled, built as unknown as Readonly<Record<string, unknown>>);
     if (autofilled === undefined) throw new Refusal(F.PROVIDER_RESPONSE_INVALID, D.PREPARATION_INVALID);
     if (BigInt(autofilled.Fee) > BigInt(configuration.maxFeeDrops)) throw new Refusal(F.PROVIDER_REJECTED, D.FEE_CEILING_EXCEEDED);
+    const inFlight = unresolved.get(built.Account);
+    if (inFlight !== undefined) {
+      // Once its LastLedgerSequence is validated, the earlier transaction is final either way and its sequence is settled.
+      if (validated >= inFlight.lastLedgerSequence) unresolved.delete(built.Account);
+      else if (autofilled.Sequence <= inFlight.sequence) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SEQUENCE_IN_FLIGHT);
+    }
     const prepared: XrplPreparedPayment = Object.freeze({ ...built, Sequence: autofilled.Sequence, Fee: autofilled.Fee });
     log('info', 'xrpl.payment.prepared', { executionId: request.executionId });
 
@@ -239,7 +256,8 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
         case 'validated-unrecognized':
           return unconfirmed(request, expected.hash, D.RESULT_UNRECOGNIZED);
         case 'not-found-complete':
-          if (validatedIndex !== undefined && validatedIndex > window.maxLedger) {
+          // Validated through and including LastLedgerSequence, and absent from every ledger in the window: never included, never can be.
+          if (validatedIndex !== undefined && validatedIndex >= window.maxLedger) {
             log('warn', 'xrpl.payment.failed', { executionId: request.executionId, transactionHash: expected.hash, detail: D.TRANSACTION_EXPIRED });
             return { status: 'not-completed', reason: F.PROVIDER_REJECTED, ...reference, detail: D.TRANSACTION_EXPIRED };
           }
@@ -257,49 +275,52 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     return { status: 'unconfirmed', externalReference: hash, detail };
   }
 
+  /**
+   * The one submission, then finality. Never throws, except to report that the
+   * client proved nothing was sent; every other failure from here on is
+   * `unconfirmed`, because the blob may have reached the network.
+   */
+  async function submitOnceAndAwait(request: PaymentExecutionRequest, signed: { readonly prepared: XrplPreparedPayment; readonly signedTransaction: string; readonly hash: string; readonly minLedger: number }): Promise<PaymentRailResult> {
+    let answer: unknown;
+    try {
+      answer = await client.submit(signed.signedTransaction);
+    } catch (error) {
+      if (error instanceof XrplSubmissionNotAttemptedError) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SUBMISSION_NOT_ATTEMPTED);
+      return unconfirmed(request, signed.hash, D.SUBMISSION_OUTCOME_UNKNOWN);
+    }
+    try {
+      const submission = readSubmission(answer, signed.hash);
+      if (submission.kind === 'unreadable') return unconfirmed(request, signed.hash, D.SUBMISSION_RESPONSE_UNREADABLE);
+      log('info', 'xrpl.payment.submitted', { executionId: request.executionId, transactionHash: signed.hash, engineResult: submission.engineResult });
+      if (submission.kind === 'malformed') {
+        log('warn', 'xrpl.payment.failed', { executionId: request.executionId, transactionHash: signed.hash, engineResult: submission.engineResult });
+        return { status: 'not-completed', reason: F.PROVIDER_REJECTED, externalReference: signed.hash, detail: submission.engineResult };
+      }
+      const amount = signed.prepared.Amount;
+      return await awaitFinality(request, { hash: signed.hash, currency: amount.currency, issuer: amount.issuer, value: amount.value }, { minLedger: signed.minLedger, maxLedger: signed.prepared.LastLedgerSequence });
+    } catch {
+      return unconfirmed(request, signed.hash, D.RAIL_ERROR_AFTER_SUBMISSION);
+    }
+  }
+
   async function execute(request: PaymentExecutionRequest): Promise<PaymentRailResult> {
     const build = buildXrplPayment(request, configuration);
     if (!build.built) return { status: 'not-completed', reason: F.ADAPTER_ERROR, detail: build.detail };
     const transaction = build.transaction;
-
-    let hash: string | undefined;
-    let submitted = false;
+    const account = transaction.Account;
     try {
-      const phase = await serialized(transaction.Account, async (): Promise<PaymentRailResult | Submitted> => {
+      return await serialized(account, async () => {
         const signed = await prepareAndSign(request, transaction);
-        hash = signed.hash;
-        // ─── the one submission ───────────────────────────────────────────
-        let answer: unknown;
-        try {
-          submitted = true;
-          answer = await client.submit(signed.signedTransaction);
-        } catch (error) {
-          if (error instanceof XrplSubmissionNotAttemptedError) {
-            submitted = false;
-            throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SUBMISSION_NOT_ATTEMPTED);
-          }
-          return unconfirmed(request, signed.hash, D.SUBMISSION_OUTCOME_UNKNOWN);
-        }
-        const submission = readSubmission(answer, signed.hash);
-        if (submission.kind === 'unreadable') return unconfirmed(request, signed.hash, D.SUBMISSION_RESPONSE_UNREADABLE);
-        log('info', 'xrpl.payment.submitted', { executionId: request.executionId, transactionHash: signed.hash, engineResult: submission.engineResult });
-        if (submission.kind === 'malformed') {
-          log('warn', 'xrpl.payment.failed', { executionId: request.executionId, transactionHash: signed.hash, engineResult: submission.engineResult });
-          return { status: 'not-completed', reason: F.PROVIDER_REJECTED, externalReference: signed.hash, detail: submission.engineResult };
-        }
-        return { status: 'submitted', hash: signed.hash, prepared: signed.prepared, minLedger: signed.minLedger };
+        // ─── the one submission, and its finality, still inside the account's queue ───
+        const outcome = await submitOnceAndAwait(request, signed);
+        if (outcome.status === 'unconfirmed') unresolved.set(account, { sequence: signed.prepared.Sequence, lastLedgerSequence: signed.prepared.LastLedgerSequence });
+        return outcome;
       });
-      if (phase.status !== 'submitted') return phase;
-      // The per-account queue is released once the submission is answered; finality is awaited outside it.
-      const amount = phase.prepared.Amount;
-      return await awaitFinality(request, { hash: phase.hash, currency: amount.currency, issuer: amount.issuer, value: amount.value }, { minLedger: phase.minLedger, maxLedger: phase.prepared.LastLedgerSequence });
     } catch (error) {
-      if (!submitted || hash === undefined) {
-        const refusal = error instanceof Refusal ? error : new Refusal(F.ADAPTER_ERROR, D.RAIL_ERROR_BEFORE_SUBMISSION);
-        log('warn', 'xrpl.payment.failed', { executionId: request.executionId, detail: refusal.detail });
-        return { status: 'not-completed', reason: refusal.reason, detail: refusal.detail };
-      }
-      return unconfirmed(request, hash, D.RAIL_ERROR_AFTER_SUBMISSION);
+      // Reached only before anything was submitted: a refusal or fault in preparation, or a client that proved nothing was sent.
+      const refusal = error instanceof Refusal ? error : new Refusal(F.ADAPTER_ERROR, D.RAIL_ERROR_BEFORE_SUBMISSION);
+      log('warn', 'xrpl.payment.failed', { executionId: request.executionId, detail: refusal.detail });
+      return { status: 'not-completed', reason: refusal.reason, detail: refusal.detail };
     }
   }
 

@@ -14,6 +14,8 @@ import {
   canonicalDecimalOfLedgerValue,
   createXrplRlusdRail,
   createXrplRlusdRailConfiguration,
+  createXrplSdkClient,
+  isXrplRlusdRailConfiguration,
   isXrplClassicAddress,
   parseXrplDestination,
   readAutofill,
@@ -166,6 +168,18 @@ describe('PAY-02 X1 / X2 / X22 — configuration composes, refuses, and never de
     assert.throws(() => createXrplRlusdRail({ configuration, client, signers: [createTestSoftwareXrplSigner(TREASURY), createTestSoftwareXrplSigner(TREASURY)] }), XrplRailConfigurationError);
     assert.throws(() => createXrplRlusdRail({ configuration: { ...configuration }, client, signers: [createTestSoftwareXrplSigner(TREASURY)] }), XrplRailConfigurationError, 'an unfrozen, hand-built configuration');
     assert.throws(() => createXrplRlusdRail({ configuration, client: { ...client, submit: undefined } as never, signers: [createTestSoftwareXrplSigner(TREASURY)] }), XrplRailConfigurationError);
+  });
+
+  it('X2 / X22 (review P1): only a factory-validated configuration is accepted — a hand-built, frozen look-alike selecting mainnet is refused', () => {
+    const genuine = testConfiguration();
+    assert.equal(isXrplRlusdRailConfiguration(genuine), true);
+    const forged = Object.freeze({ ...genuine, network: 'mainnet', networkId: 0, endpoint: 'wss://xrplcluster.com' });
+    assert.equal(Object.isFrozen(forged), true);
+    assert.equal(isXrplRlusdRailConfiguration(forged), false);
+    const signers = [createTestSoftwareXrplSigner(TREASURY)];
+    assert.throws(() => createXrplRlusdRail({ configuration: forged as never, client: createFakeXrplClient(), signers }), (error: unknown) => (error as XrplRailConfigurationError).field === 'configuration');
+    assert.throws(() => createXrplSdkClient(forged as never), (error: unknown) => (error as XrplRailConfigurationError).field === 'configuration');
+    for (const value of [undefined, null, {}, 'testnet']) assert.equal(isXrplRlusdRailConfiguration(value), false);
   });
 
   it('X22: mainnet is never implicit — it needs network: mainnet AND allowMainnet: true, and contradictions are refused', () => {
@@ -457,8 +471,16 @@ describe('PAY-02 X10 / X11 / X12 / X13 / X14 — submission versus finality', ()
     assert.equal(client.calls.submit, 1);
   });
 
+  it('X11 (review P2): validated exactly through LastLedgerSequence, with complete history and no transaction → expired, without waiting a ledger more', async () => {
+    // Preparation reads 1000 → LastLedgerSequence 1020; the first finality read sees ledger 1020 itself validated.
+    const { rail, client } = harness({ validatedLedgerIndex: (call) => (call === 1 ? 1000 : 1020), lookup: () => ({ error: 'txnNotFound', searched_all: true }) });
+    const result = await rail.execute(request());
+    assert.equal(result.status === 'not-completed' && result.detail, D.TRANSACTION_EXPIRED);
+    assert.equal(client.calls.lookup, 1);
+  });
+
   it('X11: not found is NOT expiry while validation has not passed LastLedgerSequence, or history is incomplete', async () => {
-    const before = harness({ validatedLedgerIndex: () => 1000, lookup: () => ({ error: 'txnNotFound', searched_all: true }) });
+    const before = harness({ validatedLedgerIndex: (call) => (call === 1 ? 1000 : 1019), lookup: () => ({ error: 'txnNotFound', searched_all: true }) });
     assert.equal((await before.rail.execute(request())).status, 'unconfirmed');
     const incomplete = harness({ validatedLedgerIndex: (call) => 1000 + call * 50, lookup: () => ({ error: 'txnNotFound', searched_all: false }) });
     assert.equal((await incomplete.rail.execute(request())).status, 'unconfirmed');
@@ -610,7 +632,7 @@ describe('PAY-02 X15 — at most one XRPL submission per execution, whatever hap
     assert.equal(client.calls.submit, 1);
   });
 
-  it('concurrent payments from one source account are prepared and submitted one at a time (no shared Sequence)', async () => {
+  it('concurrent payments from one source account run one at a time, through finality (review P1: no shared Sequence)', async () => {
     const order: string[] = [];
     let sequence = 10;
     const { rail, client } = harness({
@@ -623,12 +645,63 @@ describe('PAY-02 X15 — at most one XRPL submission per execution, whatever hap
         order.push('submit');
         return { engine_result: 'tesSUCCESS', tx_json: { hash } };
       },
+      lookup: (context) => {
+        order.push('lookup');
+        return context.attempt % 2 === 1 ? { hash: context.hash, validated: false } : { hash: context.hash, validated: true, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: context.transaction['Amount'] } };
+      },
     });
     const results = await Promise.all([rail.execute(request({ executionId: 'aoc.exec:a' })), rail.execute(request({ executionId: 'aoc.exec:b' }))]);
     assert.deepEqual(results.map((result) => result.status), ['completed', 'completed']);
-    assert.deepEqual(order, ['autofill', 'submit', 'autofill', 'submit']);
+    assert.deepEqual(order, ['autofill', 'submit', 'lookup', 'lookup', 'autofill', 'submit', 'lookup', 'lookup'], 'the second payment is prepared only after the first is final');
     const sequences = client.submitted.map((blob) => (decode(blob) as { Sequence: number }).Sequence);
     assert.deepEqual(sequences, [11, 12]);
+  });
+
+  it('review P1: after an unconfirmed payment, a payment that would reuse its sequence is refused unsigned until that sequence is settled', async () => {
+    let ledger = 1000;
+    let submits = 0;
+    const { rail, client, signer } = harness({
+      validatedLedgerIndex: () => ledger,
+      // The account sequence never advances: the first transaction is not (yet) visible to autofill.
+      autofill: (tx) => ({ ...tx, Sequence: 7, Fee: '12' }),
+      submit: (_blob, hash) => {
+        submits += 1;
+        if (submits === 1) throw new Error('Timeout for request');
+        return { engine_result: 'tesSUCCESS', tx_json: { hash } };
+      },
+    });
+    const first = await rail.execute(request({ executionId: 'aoc.exec:first' }));
+    assert.equal(first.status, 'unconfirmed');
+
+    const blocked = await rail.execute(request({ executionId: 'aoc.exec:second' }));
+    assert.deepEqual(blocked, { status: 'not-completed', reason: F.PROVIDER_UNAVAILABLE, detail: D.SEQUENCE_IN_FLIGHT });
+    assert.equal(client.calls.submit, 1, 'the competing payment was never submitted');
+    assert.equal(signer.signCount, 1, 'nor signed');
+
+    ledger = 1000 + 20; // the first transaction's LastLedgerSequence is now validated: its sequence is settled either way
+    const after = await rail.execute(request({ executionId: 'aoc.exec:third' }));
+    assert.equal(after.status, 'completed');
+    assert.equal(client.calls.submit, 2);
+  });
+
+  it('review P1: a higher autofilled sequence proceeds while an earlier payment is still unconfirmed', async () => {
+    let sequence = 6;
+    let submits = 0;
+    const { rail, client } = harness({
+      validatedLedgerIndex: () => 1000,
+      autofill: (tx) => {
+        sequence += 1;
+        return { ...tx, Sequence: sequence, Fee: '12' };
+      },
+      submit: (_blob, hash) => {
+        submits += 1;
+        if (submits === 1) throw new Error('reset');
+        return { engine_result: 'tesSUCCESS', tx_json: { hash } };
+      },
+    });
+    assert.equal((await rail.execute(request({ executionId: 'aoc.exec:first' }))).status, 'unconfirmed');
+    assert.equal((await rail.execute(request({ executionId: 'aoc.exec:second' }))).status, 'completed');
+    assert.equal(client.calls.submit, 2);
   });
 });
 

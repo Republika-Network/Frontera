@@ -1,5 +1,5 @@
 import { Client, NotConnectedError, RippledError } from 'xrpl';
-import type { XrplRlusdRailConfiguration } from './xrpl-config.js';
+import { XrplRailConfigurationError, isXrplRlusdRailConfiguration, type XrplRlusdRailConfiguration } from './xrpl-config.js';
 import { XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction } from './xrpl-client-port.js';
 
 /**
@@ -18,6 +18,7 @@ import { XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentT
  * this repository and is made at most once per call — no retry.
  */
 export function createXrplSdkClient(configuration: XrplRlusdRailConfiguration): XrplClientPort {
+  if (!isXrplRlusdRailConfiguration(configuration)) throw new XrplRailConfigurationError('configuration', 'must come from createXrplRlusdRailConfiguration');
   const client = new Client(configuration.endpoint, { timeout: configuration.requestTimeoutMs, connectionTimeout: configuration.requestTimeoutMs });
 
   return Object.freeze({

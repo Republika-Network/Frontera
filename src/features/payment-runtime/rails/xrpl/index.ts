@@ -14,7 +14,7 @@ export { XRPL_DESTINATION_KINDS, isXrplClassicAddress, parseXrplDestination } fr
 export type { XrplDestination } from './xrpl-address.js';
 export { XRPL_ISSUED_VALUE_LIMITS, canonicalDecimalOfLedgerValue, xrplIssuedValueOf } from './xrpl-amount.js';
 export { isXrplTransactionHash, signedPaymentMatches } from './xrpl-codec.js';
-export { XRPL_NETWORK_IDS, XRPL_RAIL_LIMITS, XRPL_RLUSD_RAIL_ID, XrplRailConfigurationError, createXrplRlusdRailConfiguration, isXrplCurrencyCode } from './xrpl-config.js';
+export { XRPL_NETWORK_IDS, XRPL_RAIL_LIMITS, XRPL_RLUSD_RAIL_ID, XrplRailConfigurationError, createXrplRlusdRailConfiguration, isXrplCurrencyCode, isXrplRlusdRailConfiguration } from './xrpl-config.js';
 export type { XrplNetwork, XrplRlusdRailConfiguration, XrplRlusdRailConfigurationInput } from './xrpl-config.js';
 export { XrplSubmissionNotAttemptedError } from './xrpl-client-port.js';
 export type { XrplClientPort, XrplPaymentTransaction, XrplPreparedPayment, XrplTransactionSigner } from './xrpl-client-port.js';

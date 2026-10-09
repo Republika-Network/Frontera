@@ -97,6 +97,19 @@ export const XRPL_RAIL_LIMITS = Object.freeze({
   pollIntervalMs: Object.freeze({ minimum: 250, maximum: 30_000, default: 4_000 }),
 });
 
+/**
+ * Every configuration `createXrplRlusdRailConfiguration` produced — and only
+ * those. Module-private and unforgeable: a structurally identical object an
+ * embedder built (and froze) by hand is not in it, so it cannot skip the
+ * factory's checks — `allowMainnet` above all (review P1).
+ */
+const VALIDATED_CONFIGURATIONS = new WeakSet<object>();
+
+/** Whether a value is a configuration this module's factory validated. The rail and the SDK client accept nothing else. */
+export function isXrplRlusdRailConfiguration(value: unknown): value is XrplRlusdRailConfiguration {
+  return value !== null && typeof value === 'object' && VALIDATED_CONFIGURATIONS.has(value);
+}
+
 export class XrplRailConfigurationError extends Error {
   readonly code: 'XRPL_RAIL_CONFIGURATION_INVALID';
   /** The configuration path refused. Never the value. */
@@ -225,7 +238,7 @@ export function createXrplRlusdRailConfiguration(input: XrplRlusdRailConfigurati
   const pollIntervalMs = readInteger(raw['pollIntervalMs'], 'pollIntervalMs', XRPL_RAIL_LIMITS.pollIntervalMs);
   if (pollIntervalMs >= finalityTimeoutMs) refuse('pollIntervalMs', 'must be shorter than finalityTimeoutMs');
 
-  return Object.freeze({
+  const configuration: XrplRlusdRailConfiguration = Object.freeze({
     railId: railId as string,
     network,
     networkId: XRPL_NETWORK_IDS[network],
@@ -238,4 +251,6 @@ export function createXrplRlusdRailConfiguration(input: XrplRlusdRailConfigurati
     finalityTimeoutMs,
     pollIntervalMs,
   });
+  VALIDATED_CONFIGURATIONS.add(configuration);
+  return configuration;
 }

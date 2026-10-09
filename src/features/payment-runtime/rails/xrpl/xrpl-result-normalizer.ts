@@ -20,8 +20,9 @@ import { canonicalDecimalOfLedgerValue } from './xrpl-amount.js';
  *   configured currency and issuer, is a completed payment. A `tec…` result
  *   there is a definitive failure (the fee was consumed; no value moved).
  * - `txnNotFound` with `searched_all: true` over `[minLedger, LastLedgerSequence]`
- *   — read **after** the validated ledger index has passed
- *   `LastLedgerSequence` — proves the transaction was never included and,
+ *   — read once the validated ledger index has **reached**
+ *   `LastLedgerSequence` (that ledger itself validated) — proves the
+ *   transaction was never included and,
  *   because the protocol forbids inclusion after `LastLedgerSequence`, never
  *   can be.
  *
