@@ -2,8 +2,8 @@
   "name": "@aoc-enterprise/runtime",
   "version": "1.6.0",
   "generated": {
-    "commit": "48bebb0a2f6b7cb17485bb04fd1fe395948611c3",
-    "branch": "feat/prod-03-03-pilot-deployment-kit",
+    "commit": "f065d38b532df81f66aa1653c4660d7696ad7385",
+    "branch": "feat/prod-03-04-pilot-readiness",
     "node": "v22.23.1"
   },
   "runtimeVersions": {
@@ -130,7 +130,7 @@
       },
       {
         "path": "scripts/portability/lib-portability.mjs",
-        "checksum": "sha256:05d5f3ea1d46b608066913207e5d1d530a5dd7d018db075585fbeef1c0c17521"
+        "checksum": "sha256:2e50c2237b240210bb0df96d6298e28131fbe8ab138ff33aeb72304ed911f97b"
       },
       {
         "path": "scripts/portability/restore-enterprise-v1.mjs",

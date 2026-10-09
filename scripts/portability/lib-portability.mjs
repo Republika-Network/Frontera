@@ -295,15 +295,25 @@ export async function safeSqliteCopy(sourcePath, destPath) {
 export function gitInfo() {
   const git = (args) => {
     try {
-      return execSync(`git ${args}`, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+      return execSync(`git ${args}`, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch {
       return null;
     }
   };
-  return {
-    commit: git('rev-parse HEAD'),
-    branch: git('rev-parse --abbrev-ref HEAD'),
-  };
+  const commit = git('rev-parse HEAD');
+  if (commit) return { commit, branch: git('rev-parse --abbrev-ref HEAD') };
+  // No git checkout (the pilot image, PROD-03-04): the commit the release
+  // identity recorded at build time, when it is a release build. Never a guess.
+  return { commit: releaseIdentityCommit(), branch: null };
+}
+
+function releaseIdentityCommit() {
+  try {
+    const identity = JSON.parse(readFileSync(resolve(REPO_ROOT, 'dist/release-identity.json'), 'utf8'));
+    return identity.build === 'release' && /^[0-9a-f]{40}$/.test(identity.commit) ? identity.commit : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A staging directory created as a *sibling* of `finalPath` so the final move is a same-filesystem `rename` (atomic) rather than a cross-device copy (Phase 5 point 16). */

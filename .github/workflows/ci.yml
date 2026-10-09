@@ -41,3 +41,18 @@ jobs:
         with:
           node-version: '22'
       - run: node scripts/deploy/qualify-pilot-deployment.mjs --commit "$(git rev-parse HEAD)"
+
+  pilot-acceptance:
+    # PROD-03-04: the pilot operations runbooks, executed as written against a
+    # clean export of this commit (startup, shutdown, restart, backup, restore,
+    # upgrade/rollback commands, degraded and required-failure behaviour,
+    # operator resolution, emergency control, evidence and secret hygiene:
+    # O1-O15), plus the PROD-03-02 in-process resolution suite (--host-build).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/deploy/qualify-pilot-acceptance.mjs --commit "$(git rev-parse HEAD)" --host-build
