@@ -178,10 +178,60 @@ function readFeeCeiling(value: unknown): string {
   return value;
 }
 
-function readRecord(value: unknown, field: string): Readonly<Record<string, unknown>> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return refuse(field, 'must be an object');
-  return value as Readonly<Record<string, unknown>>;
+/** A property name safe to repeat in a refusal: short and printable. Anything else is reported as `<property>`. Never a value. */
+function reportable(name: string | symbol): string {
+  return typeof name === 'string' && /^[A-Za-z0-9_.$-]{1,64}$/.test(name) ? name : '<property>';
 }
+
+const join = (path: string, name: string): string => (path === '' ? name : `${path}.${name}`);
+
+/** One own property's value, if it is an enumerable data property. An accessor is refused without being run. */
+function dataValue(source: object, key: string, field: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  if (descriptor === undefined || !('value' in descriptor)) return refuse(field, 'must be a data property, not an accessor');
+  if (descriptor.enumerable !== true) return refuse(field, 'must be an enumerable property');
+  return descriptor.value as unknown;
+}
+
+/**
+ * A closed configuration record, read **once** into a fresh snapshot (review
+ * P2): a plain object whose own properties are all declared, string-keyed,
+ * enumerable data properties. An undeclared name — a typo like `maxFeeDrop`
+ * above all, which would otherwise leave the default in force — a symbol, a
+ * non-enumerable property or an accessor is refused, never ignored, and no
+ * getter is ever run. Nothing is repaired or defaulted here.
+ */
+function readClosedRecord(value: unknown, path: string, declared: readonly string[]): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return refuse(path === '' ? 'configuration' : path, 'must be an object');
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  if (prototype !== Object.prototype && prototype !== null) return refuse(path === '' ? 'configuration' : path, 'must be a plain object');
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Reflect.ownKeys(value)) {
+    const field = join(path, reportable(key));
+    if (typeof key !== 'string' || !declared.includes(key)) return refuse(field, 'is not a declared field');
+    out[key] = dataValue(value, key, field);
+  }
+  return out;
+}
+
+/** A dense list, read once: exactly the indices `0 … length − 1` as enumerable data properties, plus `length`, and nothing else. A hole is refused, never skipped. */
+function readDenseArray(value: unknown, path: string, minimum: number, maximum: number): readonly unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return refuse(path, 'must be a plain list');
+  const length = value.length;
+  if (length < minimum || length > maximum) return refuse(path, `must list between ${minimum} and ${maximum} entries`);
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length + 1) return refuse(path, 'must be a dense list with no other properties');
+  const out: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(value, index)) return refuse(path, 'must be a dense list with no other properties');
+    out.push(dataValue(value, String(index), `${path}[${index}]`));
+  }
+  return out;
+}
+
+const CONFIGURATION_FIELDS: readonly string[] = ['railId', 'network', 'allowMainnet', 'endpoint', 'asset', 'sourceAccounts', 'lastLedgerOffset', 'maxFeeDrops', 'requestTimeoutMs', 'finalityTimeoutMs', 'pollIntervalMs'];
+const ASSET_FIELDS: readonly string[] = ['paymentAsset', 'currency', 'issuer'];
+const SOURCE_ACCOUNT_FIELDS: readonly string[] = ['accountId', 'address'];
 
 /**
  * Validates and freezes the rail configuration, or throws
@@ -190,7 +240,7 @@ function readRecord(value: unknown, field: string): Readonly<Record<string, unkn
  * connects (`readiness`, and before every preparation).
  */
 export function createXrplRlusdRailConfiguration(input: XrplRlusdRailConfigurationInput): XrplRlusdRailConfiguration {
-  const raw = readRecord(input, '');
+  const raw = readClosedRecord(input, '', CONFIGURATION_FIELDS);
 
   const railId = raw['railId'] ?? XRPL_RLUSD_RAIL_ID;
   if (!isPaymentRailId(railId)) refuse('railId', 'must be a semantic identifier');
@@ -204,8 +254,7 @@ export function createXrplRlusdRailConfiguration(input: XrplRlusdRailConfigurati
 
   const endpoint = readEndpoint(raw['endpoint'], network);
 
-  const asset = readRecord(raw['asset'], 'asset');
-  for (const key of Object.keys(asset)) if (key !== 'paymentAsset' && key !== 'currency' && key !== 'issuer') refuse(`asset.${key.slice(0, 32)}`, 'is not a declared field');
+  const asset = readClosedRecord(raw['asset'], 'asset', ASSET_FIELDS);
   const paymentAsset = asset['paymentAsset'];
   const currency = asset['currency'];
   const issuer = asset['issuer'];
@@ -213,16 +262,12 @@ export function createXrplRlusdRailConfiguration(input: XrplRlusdRailConfigurati
   if (!isXrplCurrencyCode(currency)) refuse('asset.currency', 'must be a 3-character code other than XRP, or 40 uppercase hex digits');
   if (!isXrplClassicAddress(issuer)) refuse('asset.issuer', 'must be a valid XRPL classic address');
 
-  const sources = raw['sourceAccounts'];
-  if (!Array.isArray(sources) || sources.length === 0 || sources.length > XRPL_RAIL_LIMITS.maximumSourceAccounts) {
-    return refuse('sourceAccounts', `must list between 1 and ${XRPL_RAIL_LIMITS.maximumSourceAccounts} source account mappings`);
-  }
+  const sources = readDenseArray(raw['sourceAccounts'], 'sourceAccounts', 1, XRPL_RAIL_LIMITS.maximumSourceAccounts);
   const sourceAccounts = new Map<string, string>();
   const addresses = new Set<string>();
   sources.forEach((entry: unknown, index: number) => {
     const field = `sourceAccounts[${index}]`;
-    const mapping = readRecord(entry, field);
-    for (const key of Object.keys(mapping)) if (key !== 'accountId' && key !== 'address') refuse(field, 'carries an undeclared field');
+    const mapping = readClosedRecord(entry, field, SOURCE_ACCOUNT_FIELDS);
     const accountId = mapping['accountId'];
     const address = mapping['address'];
     if (!isPaymentReference(accountId)) refuse(`${field}.accountId`, 'must be a payment account reference');

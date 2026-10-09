@@ -63,6 +63,15 @@ never reaches this one).
 `XrplRailConfigurationError` (`XRPL_RAIL_CONFIGURATION_INVALID`, with the
 refused field path — never the value).
 
+The input is an **exact, closed, data-only record** at every level (top
+level, `asset`, each `sourceAccounts` entry): plain objects whose own
+properties are all declared, string-keyed, enumerable data properties, and a
+dense `sourceAccounts` list with no property but its indices and `length`.
+An undeclared name (a typo such as `maxFeeDrop` is refused — it never leaves
+the `maxFeeDrops` default in force), a symbol, a non-enumerable property, an
+accessor (never run), an inherited field or a sparse list is refused. Each
+property is read once, by descriptor; nothing is normalized.
+
 | field | class | rule |
 | --- | --- | --- |
 | `network` | REQUIRED | `testnet` \| `devnet` \| `mainnet`. **No default.** |
@@ -75,7 +84,7 @@ refused field path — never the value).
 | `lastLedgerOffset` | OPTIONAL (20) | 4…200 ledgers |
 | `maxFeeDrops` | OPTIONAL (`'1000'`) | fee ceiling, whole drops as text, ≤ 1 000 000 |
 | `requestTimeoutMs` | OPTIONAL (10 000) | per SDK request |
-| `finalityTimeoutMs` | OPTIONAL (120 000) | wait for a validated result |
+| `finalityTimeoutMs` | OPTIONAL (120 000) | total wall-clock budget for the post-submission finality phase (§13) |
 | `pollIntervalMs` | OPTIONAL (4 000) | between lookups; shorter than the finality timeout |
 | `networkId` | DERIVED | 0 mainnet · 1 testnet · 2 devnet |
 | signer | **not configuration** | an `XrplTransactionSigner` capability per source account, composed separately |
@@ -277,6 +286,14 @@ signing *before* submission, so every post-submission outcome — including
   nothing was submitted.
 - A timeout or error **after** `submit` was called is `unconfirmed`. It is never
   `not-completed`: a caller who believed that would pay twice.
+- **`finalityTimeoutMs` is a real upper bound.** Before submission each request
+  is bounded by `requestTimeoutMs`. After submission the whole finality phase
+  shares one budget: each sleep is capped at what remains, and each read
+  (validated index, `tx` lookup) runs under `min(requestTimeoutMs, remaining)`
+  through the SDK's own per-request timeout, which rejects and forgets the
+  request when it elapses — nothing is left outstanding. No read begins once
+  the budget is spent. Exhausting it is `unconfirmed` (`xrpl-finality-unknown`)
+  → P12, never `not-completed`, and the account's queue is released.
 - **No automatic retry.** `client.submit` is called from one place, at most once
   per `execute`; nothing resubmits, re-signs, re-prepares or reconnects and
   re-sends. Lookups after submission are reads. The SDK client sends

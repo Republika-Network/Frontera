@@ -21,6 +21,18 @@ export function createXrplSdkClient(configuration: XrplRlusdRailConfiguration): 
   if (!isXrplRlusdRailConfiguration(configuration)) throw new XrplRailConfigurationError('configuration', 'must come from createXrplRlusdRailConfiguration');
   const client = new Client(configuration.endpoint, { timeout: configuration.requestTimeoutMs, connectionTimeout: configuration.requestTimeoutMs });
 
+  /**
+   * A read under `min(requestTimeoutMs, timeoutMs)`. The SDK's own
+   * per-request timeout (`Connection.request(request, timeout)`, which
+   * `Client.request` delegates to after adding the API version) rejects the
+   * request and forgets it when it elapses — a late answer is discarded, so
+   * nothing is left outstanding past the caller's budget. Reads only.
+   */
+  const read = async (request: Record<string, unknown>, timeoutMs: number | undefined): Promise<{ readonly result: unknown }> => {
+    const timeout = Math.max(1, Math.floor(Math.min(configuration.requestTimeoutMs, timeoutMs ?? configuration.requestTimeoutMs)));
+    return (await client.connection.request({ ...request, api_version: client.apiVersion } as never, timeout)) as { readonly result: unknown };
+  };
+
   return Object.freeze({
     async connect(): Promise<void> {
       if (!client.isConnected()) await client.connect();
@@ -31,8 +43,10 @@ export function createXrplSdkClient(configuration: XrplRlusdRailConfiguration): 
     async serverInfo(): Promise<unknown> {
       return (await client.request({ command: 'server_info' })).result;
     },
-    async validatedLedgerIndex(): Promise<unknown> {
-      return client.getLedgerIndex();
+    async validatedLedgerIndex(timeoutMs?: number): Promise<unknown> {
+      const response = await read({ command: 'ledger', ledger_index: 'validated' }, timeoutMs);
+      const result = response.result;
+      return result !== null && typeof result === 'object' ? (result as { readonly ledger_index?: unknown }).ledger_index : undefined;
     },
     async autofill(transaction: XrplPaymentTransaction): Promise<unknown> {
       // A copy: the SDK fills the object it is handed.
@@ -48,9 +62,9 @@ export function createXrplSdkClient(configuration: XrplRlusdRailConfiguration): 
         throw error;
       }
     },
-    async lookupTransaction(query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }): Promise<unknown> {
+    async lookupTransaction(query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }, timeoutMs?: number): Promise<unknown> {
       try {
-        return (await client.request({ command: 'tx', transaction: query.hash, min_ledger: query.minLedger, max_ledger: query.maxLedger })).result;
+        return (await read({ command: 'tx', transaction: query.hash, min_ledger: query.minLedger, max_ledger: query.maxLedger }, timeoutMs)).result;
       } catch (error) {
         if (error instanceof RippledError) {
           const data = (error as { readonly data?: unknown }).data;

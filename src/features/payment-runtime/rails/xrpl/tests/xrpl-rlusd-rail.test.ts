@@ -41,6 +41,7 @@ import {
   testConfigurationInput,
   validatedFailure,
   type FakeXrplClient,
+  type TestClock,
   type FakeXrplScript,
 } from './xrpl-test-fixtures.js';
 
@@ -71,20 +72,23 @@ interface Harness {
   readonly client: FakeXrplClient;
   readonly signer: ReturnType<typeof createTestSoftwareXrplSigner>;
   readonly logs: { readonly level: string; readonly message: string; readonly fields: unknown }[];
+  readonly clock: TestClock;
 }
 
 function harness(script: FakeXrplScript = {}, configuration = testConfiguration()): Harness {
-  const client = createFakeXrplClient(script);
+  const clock = testClock();
+  const client = createFakeXrplClient(script, clock);
   const signer = createTestSoftwareXrplSigner(TREASURY);
   const logs: { level: string; message: string; fields: unknown }[] = [];
   const rail = createXrplRlusdRail({
     configuration,
     client,
     signers: [signer],
-    ...testClock(),
+    now: clock.now,
+    sleep: clock.sleep,
     logger: { info: (message, fields) => logs.push({ level: 'info', message, fields }), warn: (message, fields) => logs.push({ level: 'warn', message, fields }) },
   });
-  return { rail, client, signer, logs };
+  return { rail, client, signer, logs, clock };
 }
 
 const HASH = /^[0-9A-F]{64}$/;
@@ -130,7 +134,7 @@ describe('PAY-02 X1 / X2 / X22 — configuration composes, refuses, and never de
       ['sourceAccounts[0].accountId', { sourceAccounts: [{ accountId: 'has space', address: TREASURY.classicAddress }] }],
       ['sourceAccounts[1].accountId', { sourceAccounts: [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress }, { accountId: GOVERNED_ACCOUNT, address: OTHER_SOURCE.classicAddress }] }],
       ['sourceAccounts[1].address', { sourceAccounts: [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress }, { accountId: 'other', address: TREASURY.classicAddress }] }],
-      ['sourceAccounts[0]', { sourceAccounts: [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress, seed: 'x' }] }],
+      ['sourceAccounts[0].seed', { sourceAccounts: [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress, seed: 'x' }] }],
       ['lastLedgerOffset', { lastLedgerOffset: 1 }],
       ['lastLedgerOffset', { lastLedgerOffset: 2.5 }],
       ['maxFeeDrops', { maxFeeDrops: 12 }],
@@ -372,7 +376,7 @@ describe('PAY-02 §17 — the signing boundary: a signature of exactly the prepa
     const client = createFakeXrplClient();
     const real = createTestSoftwareXrplSigner(TREASURY);
     const rail = createXrplRlusdRail({ configuration: testConfiguration(), client, signers: [{ address: TREASURY.classicAddress, sign: (tx) => sign.call(real, tx) }], ...testClock() });
-    return { rail, client, signer: real, logs: [] };
+    return { rail, client, signer: real, logs: [], clock: testClock() };
   }
 
   it('a signer that signs a different destination, adds a memo, or lies about the hash is refused before submission', async () => {
@@ -546,7 +550,7 @@ describe('PAY-02 X10 / X11 / X12 / X13 / X14 — submission versus finality', ()
     assert.equal(result.status, 'unconfirmed');
     assert.equal(result.status === 'unconfirmed' && result.detail, D.FINALITY_UNKNOWN);
     assert.equal(client.calls.submit, 1);
-    assert.equal(client.calls.lookup, 60_000 / 1_000, 'one read per poll interval until the deadline');
+    assert.equal(client.calls.lookup, 60_000 / 1_000 - 1, 'one read per poll interval; none begins once the budget is spent');
   });
 
   it('X14: an unreadable submit answer → unconfirmed (the submission happened), never a definitive failure', async () => {
@@ -754,5 +758,221 @@ describe('PAY-02 — lifecycle', () => {
   it('createXrplRlusdRailConfiguration is the only way in', () => {
     assert.throws(() => createXrplRlusdRailConfiguration(undefined as never), XrplRailConfigurationError);
     assert.throws(() => createXrplRlusdRailConfiguration([] as never), XrplRailConfigurationError);
+  });
+});
+
+describe('PAY-02 review P2 (A) — the configuration is an exact, closed, data-only record', () => {
+  const field = (expected: string) => (error: unknown) => error instanceof XrplRailConfigurationError && error.field === expected;
+
+  it('A1 / A10: a misspelled safety field is refused — it never leaves the default in force', () => {
+    assert.throws(() => createXrplRlusdRailConfiguration({ ...testConfigurationInput(), maxFeeDrop: '10' } as never), field('maxFeeDrop'));
+    let produced: unknown;
+    try {
+      produced = createXrplRlusdRailConfiguration({ ...testConfigurationInput(), maxFeeDrop: '10' } as never);
+    } catch {
+      produced = undefined;
+    }
+    assert.equal(produced, undefined, 'no configuration with maxFeeDrops === "1000" is produced from a typo');
+  });
+
+  it('A2: an unrelated extra top-level field is refused', () => {
+    assert.throws(() => createXrplRlusdRailConfiguration({ ...testConfigurationInput(), foo: true } as never), field('foo'));
+  });
+
+  it('A3: a non-enumerable top-level field is refused — declared or not', () => {
+    const hidden = { ...testConfigurationInput() };
+    Object.defineProperty(hidden, 'maxFeeDrops', { value: '10', enumerable: false });
+    assert.throws(() => createXrplRlusdRailConfiguration(hidden), field('maxFeeDrops'));
+    const undeclared = { ...testConfigurationInput() };
+    Object.defineProperty(undeclared, 'secretOverride', { value: true, enumerable: false });
+    assert.throws(() => createXrplRlusdRailConfiguration(undeclared), field('secretOverride'));
+  });
+
+  it('A4: a symbol top-level field is refused', () => {
+    assert.throws(() => createXrplRlusdRailConfiguration({ ...testConfigurationInput(), [Symbol('network')]: 'mainnet' } as never), field('<property>'));
+  });
+
+  it('A5: a getter-backed field is refused without running the getter', () => {
+    let ran = 0;
+    const input = { ...testConfigurationInput() } as Record<string, unknown>;
+    delete input['network'];
+    Object.defineProperty(input, 'network', {
+      enumerable: true,
+      get() {
+        ran += 1;
+        return 'testnet';
+      },
+    });
+    assert.throws(() => createXrplRlusdRailConfiguration(input as never), field('network'));
+    assert.equal(ran, 0);
+  });
+
+  it('A5: a non-plain object (class instance, inherited fields) is refused', () => {
+    const inherited = Object.create(testConfigurationInput()) as object;
+    assert.throws(() => createXrplRlusdRailConfiguration(inherited as never), field('configuration'));
+    assert.throws(() => createXrplRlusdRailConfiguration({ ...testConfigurationInput(), asset: Object.create({ paymentAsset: RLUSD_ASSET }) } as never), field('asset'));
+  });
+
+  it('A6: a sparse sourceAccounts list is refused, never compacted', () => {
+    const sources: unknown[] = [];
+    sources.length = 2;
+    sources[1] = { accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress };
+    assert.throws(() => testConfiguration({ sourceAccounts: sources }), field('sourceAccounts'));
+  });
+
+  it('A6: a sourceAccounts list that is not a plain Array is refused', () => {
+    class Mappings extends Array<unknown> {}
+    const sources = new Mappings();
+    sources.push({ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress });
+    assert.throws(() => testConfiguration({ sourceAccounts: sources }), field('sourceAccounts'));
+  });
+
+  it('A7: a sourceAccounts list carrying an extra property is refused', () => {
+    const sources = [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress }] as unknown[] & { extra?: boolean };
+    sources.extra = true;
+    assert.throws(() => testConfiguration({ sourceAccounts: sources }), field('sourceAccounts'));
+  });
+
+  it('A8: a getter-backed source-account entry (or entry field) is refused without running it', () => {
+    let ran = 0;
+    const sources: unknown[] = [];
+    Object.defineProperty(sources, 0, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        ran += 1;
+        return { accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress };
+      },
+    });
+    assert.throws(() => testConfiguration({ sourceAccounts: sources }), field('sourceAccounts[0]'));
+    const entry = { accountId: GOVERNED_ACCOUNT };
+    Object.defineProperty(entry, 'address', {
+      enumerable: true,
+      get() {
+        ran += 1;
+        return TREASURY.classicAddress;
+      },
+    });
+    assert.throws(() => testConfiguration({ sourceAccounts: [entry] }), field('sourceAccounts[0].address'));
+    assert.equal(ran, 0);
+  });
+
+  it('A8: undeclared or hidden fields inside an entry or the asset are refused', () => {
+    assert.throws(() => testConfiguration({ sourceAccounts: [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress, signer: 'x' }] }), field('sourceAccounts[0].signer'));
+    const asset = { paymentAsset: RLUSD_ASSET, currency: RLUSD_CURRENCY_HEX, issuer: ISSUER.classicAddress };
+    Object.defineProperty(asset, 'issuerOverride', { value: OTHER_SOURCE.classicAddress, enumerable: false });
+    assert.throws(() => testConfiguration({ asset }), field('asset.issuerOverride'));
+  });
+
+  it('a refusal names the field path, never the rejected value', () => {
+    try {
+      createXrplRlusdRailConfiguration({ ...testConfigurationInput(), endpointSecret: 'CANARY-VALUE-91' } as never);
+      assert.fail('refused');
+    } catch (error) {
+      assert.equal(String((error as Error).message).includes('CANARY-VALUE-91'), false);
+      assert.equal((error as XrplRailConfigurationError).field, 'endpointSecret');
+    }
+  });
+
+  it('A9: the canonical configuration still composes exactly as before', () => {
+    const configuration = testConfiguration({ maxFeeDrops: '10', lastLedgerOffset: 30 });
+    assert.deepEqual(
+      { ...configuration, asset: { ...configuration.asset }, sourceAccounts: configuration.sourceAccounts.map((entry) => ({ ...entry })) },
+      {
+        railId: 'xrpl-rlusd',
+        network: 'testnet',
+        networkId: 1,
+        endpoint: 'wss://xrpl-test.invalid:51233',
+        asset: { paymentAsset: RLUSD_ASSET, currency: RLUSD_CURRENCY_HEX, issuer: ISSUER.classicAddress },
+        sourceAccounts: [{ accountId: GOVERNED_ACCOUNT, address: TREASURY.classicAddress }],
+        lastLedgerOffset: 30,
+        maxFeeDrops: '10',
+        requestTimeoutMs: 10_000,
+        finalityTimeoutMs: 60_000,
+        pollIntervalMs: 1_000,
+      },
+    );
+    assert.equal(isXrplRlusdRailConfiguration(configuration), true);
+  });
+});
+
+describe('PAY-02 review P2 (B) — finalityTimeoutMs is a real wall-clock budget for the finality phase', () => {
+  const short = () => testConfiguration({ finalityTimeoutMs: 5_000, pollIntervalMs: 4_000, requestTimeoutMs: 60_000 });
+  const pending = (context: { readonly hash: string }) => ({ hash: context.hash, validated: false });
+
+  /** Wall-clock time spent after the submission, measured on the injected clock. */
+  function finalitySpan(h: Harness, run: Promise<PaymentRailResult>): Promise<{ readonly result: PaymentRailResult; readonly spent: number }> {
+    const start = h.clock.now();
+    return run.then((result) => ({ result, spent: h.clock.now() - start }));
+  }
+
+  it('B1: a 5 s budget with a 60 s request timeout ends unconfirmed within 5 s; every read was bounded by the remaining budget', async () => {
+    const h = harness({ lookup: pending, readLatencyMs: () => 30_000 }, short());
+    const { result, spent } = await finalitySpan(h, h.rail.execute(request()));
+    assert.equal(result.status, 'unconfirmed');
+    assert.equal(result.status === 'unconfirmed' && result.detail, D.FINALITY_UNKNOWN);
+    assert.ok(spent <= 5_000, `spent ${spent} ms`);
+    assert.ok(h.client.readTimeouts.length > 0);
+    for (const read of h.client.readTimeouts) assert.ok(read.timeoutMs <= 5_000 && read.timeoutMs > 0, JSON.stringify(read));
+  });
+
+  it('B2: a first read that would outlast the remaining budget is cut at the deadline → unconfirmed, and no read starts after it', async () => {
+    const h = harness({ readLatencyMs: () => 10_000 }, short());
+    const { result, spent } = await finalitySpan(h, h.rail.execute(request()));
+    assert.equal(result.status, 'unconfirmed');
+    assert.equal(spent, 5_000, 'exactly the budget: a 4 s sleep, then a ledger read bounded to the remaining 1 s');
+    assert.deepEqual(h.client.readTimeouts, [{ read: 'ledger', timeoutMs: 1_000 }]);
+    assert.equal(h.client.calls.lookup, 0, 'the lookup was never begun once the budget was spent');
+  });
+
+  it('B3: the poll interval is capped by what remains — no sleep past the deadline', async () => {
+    const h = harness({ lookup: pending }, testConfiguration({ finalityTimeoutMs: 6_000, pollIntervalMs: 4_000 }));
+    const { spent } = await finalitySpan(h, h.rail.execute(request()));
+    assert.deepEqual(h.clock.sleeps, [4_000, 2_000]);
+    assert.equal(spent, 6_000);
+  });
+
+  it('B4 / B5 / B6: definitive answers inside the budget are unchanged — completed, validated failure, proven expiry', async () => {
+    assert.equal((await harness({ readLatencyMs: () => 200 }, short()).rail.execute(request())).status, 'completed');
+    const failed = await harness({ lookup: validatedFailure('tecPATH_DRY'), readLatencyMs: () => 200 }, short()).rail.execute(request());
+    assert.equal(failed.status === 'not-completed' && failed.detail, 'tecPATH_DRY');
+    const expired = await harness({ validatedLedgerIndex: (call) => (call === 1 ? 1000 : 1020), lookup: () => ({ error: 'txnNotFound', searched_all: true }) }, short()).rail.execute(request());
+    assert.equal(expired.status === 'not-completed' && expired.detail, D.TRANSACTION_EXPIRED);
+  });
+
+  it('B7: an exhausted budget never resubmits and never becomes a definitive failure', async () => {
+    for (const latency of [0, 1_000, 30_000]) {
+      const h = harness({ lookup: pending, readLatencyMs: () => latency }, short());
+      const result = await h.rail.execute(request());
+      assert.equal(result.status, 'unconfirmed', String(latency));
+      assert.equal(h.client.calls.submit, 1);
+      assert.equal(h.signer.signCount, 1);
+    }
+  });
+
+  it('B8 / B9: the account queue is released at the deadline; a conflicting sequence stays refused, a later one proceeds once settled', async () => {
+    let ledger = 1000;
+    let lookups = 0;
+    const h = harness(
+      {
+        validatedLedgerIndex: () => ledger,
+        autofill: (tx) => ({ ...tx, Sequence: 7, Fee: '12' }),
+        lookup: (context) => {
+          lookups += 1;
+          return lookups === 1 ? pending(context) : { hash: context.hash, validated: true, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: context.transaction['Amount'] } };
+        },
+        readLatencyMs: () => 30_000,
+      },
+      short(),
+    );
+    const first = await h.rail.execute(request({ executionId: 'aoc.exec:first' }));
+    assert.equal(first.status, 'unconfirmed', 'the deadline released the queue');
+    const conflicting = await h.rail.execute(request({ executionId: 'aoc.exec:second' }));
+    assert.deepEqual(conflicting, { status: 'not-completed', reason: F.PROVIDER_UNAVAILABLE, detail: D.SEQUENCE_IN_FLIGHT }, 'B9: sequence safety is unchanged');
+    assert.equal(h.client.calls.submit, 1);
+    ledger = 1020;
+    const h2 = await h.rail.execute(request({ executionId: 'aoc.exec:third' }));
+    assert.notEqual(h2.status === 'not-completed' && h2.detail, D.SEQUENCE_IN_FLIGHT, 'B8: once settled, a later payment proceeds');
+    assert.equal(h.client.calls.submit, 2);
   });
 });

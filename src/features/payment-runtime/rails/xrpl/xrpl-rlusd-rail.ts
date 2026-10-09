@@ -229,20 +229,40 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     return { prepared, signedTransaction: signed.signedTransaction, hash: signed.hash, minLedger: validated + 1 };
   }
 
-  /** After the one submission: wait for a validated answer or the deadline. Reads only. */
+  /**
+   * After the one submission: wait for a validated answer or the deadline.
+   * Reads only.
+   *
+   * `finalityTimeoutMs` is a real wall-clock budget for this whole phase
+   * (review P2): every sleep is capped at what remains, and every read is
+   * bounded by `min(requestTimeoutMs, remaining)` through the client's own
+   * per-request timeout — so the account's queue is never held past the
+   * deadline by a slow read. An exhausted budget is `unconfirmed`, never
+   * `not-completed`: running out of time proves nothing about the ledger.
+   */
   async function awaitFinality(request: PaymentExecutionRequest, expected: XrplExpectedPayment, window: { readonly minLedger: number; readonly maxLedger: number }): Promise<PaymentRailResult> {
     const deadline = now() + configuration.finalityTimeoutMs;
     const reference = { externalReference: expected.hash };
-    while (now() < deadline) {
-      await sleep(configuration.pollIntervalMs);
+    const remaining = (): number => deadline - now();
+    const readBudget = (): number | undefined => {
+      const left = remaining();
+      return left > 0 ? Math.min(configuration.requestTimeoutMs, left) : undefined;
+    };
+    for (;;) {
+      if (remaining() <= 0) break;
+      await sleep(Math.min(configuration.pollIntervalMs, remaining()));
       let validatedIndex: number | undefined;
       let reading: ReturnType<typeof readLookup>;
       try {
-        // The validated index is read FIRST: if it is already past the window, every ledger the lookup searches was validated before it ran.
-        validatedIndex = readLedgerIndex(await client.validatedLedgerIndex());
-        reading = readLookup(await client.lookupTransaction({ hash: expected.hash, ...window }), expected);
+        // The validated index is read FIRST: if it is already at the window's end, every ledger the lookup searches was validated before it ran.
+        const indexBudget = readBudget();
+        if (indexBudget === undefined) break;
+        validatedIndex = readLedgerIndex(await client.validatedLedgerIndex(indexBudget));
+        const lookupBudget = readBudget();
+        if (lookupBudget === undefined) break;
+        reading = readLookup(await client.lookupTransaction({ hash: expected.hash, ...window }, lookupBudget), expected);
       } catch {
-        continue; // a failed read is not an outcome; read again until the deadline
+        continue; // a failed or timed-out read is not an outcome; read again while budget remains
       }
       switch (reading.kind) {
         case 'validated-success':

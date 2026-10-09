@@ -41,8 +41,12 @@ export interface XrplClientPort {
   disconnect(): Promise<void>;
   /** The raw `server_info` result (`{ info: { network_id, … } }`). */
   serverInfo(): Promise<unknown>;
-  /** The index of the most recent validated ledger. */
-  validatedLedgerIndex(): Promise<unknown>;
+  /**
+   * The index of the most recent validated ledger. `timeoutMs`, when given,
+   * bounds this one request below the client's own request timeout: the
+   * rail passes what is left of its finality budget, so no read outlives it.
+   */
+  validatedLedgerIndex(timeoutMs?: number): Promise<unknown>;
   /** Fills `Sequence` and `Fee` from the ledger. Must not change any field the rail set. */
   autofill(transaction: XrplPaymentTransaction): Promise<unknown>;
   /**
@@ -56,9 +60,10 @@ export interface XrplClientPort {
    * Looks a transaction up by hash in `[minLedger, maxLedger]`. Answers the
    * raw `tx` result, or — for a server error answer such as `txnNotFound` —
    * the raw error object `{ error, searched_all? }`. Throws for a transport
-   * failure.
+   * failure or when `timeoutMs` (bounding this one request, as for
+   * `validatedLedgerIndex`) elapses.
    */
-  lookupTransaction(query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }): Promise<unknown>;
+  lookupTransaction(query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }, timeoutMs?: number): Promise<unknown>;
 }
 
 /** Thrown by a client's `submit` only when the blob provably never left the process (for example, no open connection). */
