@@ -337,6 +337,45 @@ describe('PAY-01 compilation onto the governed-action envelope', () => {
     assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { expectedGovernanceProfile: { id: 'p' } as never }), RangeError);
   });
 
+  it('refuses envelope data whose JSON form would differ from the value: holes, non-finite numbers, hidden properties (review P2)', () => {
+    const refused: readonly [string, unknown][] = [
+      ['a sparse array', { evidence: new Array(1) }],
+      ['a hole among values', { evidence: (() => { const a: unknown[] = ['a', 'b']; delete a[0]; return a; })() }],
+      ['an array with an extra property', { evidence: Object.assign(['a'], { extra: 1 }) }],
+      ['NaN', { score: Number.NaN }],
+      ['Infinity', { score: Number.POSITIVE_INFINITY }],
+      ['a nested -Infinity', { nested: [Number.NEGATIVE_INFINITY] }],
+      ['a non-enumerable property', Object.defineProperty({ visible: 1 }, 'hidden', { value: 2, enumerable: false })],
+      ['a symbol property', { visible: 1, [Symbol('fact')]: 2 }],
+    ];
+    for (const [label, assertedContext] of refused) {
+      assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: assertedContext as Record<string, unknown> }), RangeError, label);
+    }
+    for (const version of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { expectedGovernanceProfile: { id: 'p', version } }), RangeError, String(version));
+    }
+    // Plain, dense, finite JSON — including an empty array and nulls — still compiles unchanged.
+    const context = { evidence: [], ids: ['a', null], score: 0.5, flags: { ok: true } };
+    assert.deepEqual(compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: context }).assertedContext, context);
+  });
+
+  it('enforces the envelope width bound before traversing anything (review P2)', () => {
+    let touched = 0;
+    const wide = Array.from({ length: 65 }, (_, index) => index);
+    const watched = new Proxy(wide, {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^[0-9]+$/.test(property)) touched += 1;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: { wide: watched } }), RangeError);
+    assert.equal(touched, 0, 'no element is read once the width is known to exceed the bound');
+    const wideObject = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`k${index}`, index]));
+    assert.throws(() => compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: wideObject }), RangeError);
+    const atBound = Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`k${index}`, index]));
+    assert.equal(Object.keys(compilePaymentIntent(valid(rawPayment()), BINDING, { assertedContext: atBound }).assertedContext ?? {}).length, 64);
+  });
+
   it('omits optional parameters rather than inventing them', () => {
     assert.deepEqual(compilePaymentIntent(valid(rawPayment()), BINDING).parameters, { paymentPurpose: 'vendor-payment' });
   });

@@ -142,28 +142,64 @@ export interface PaymentEnvelopeOptions {
 /** Deepest asserted-context nesting a compiled payment will copy — the envelope's own bound. */
 const ENVELOPE_COPY_MAXIMUM_DEPTH = 8;
 
+/** Widest array or object a compiled payment will copy per level — the envelope's own `MAX_CONTEXT_KEYS`, checked **before** anything is traversed. */
+const ENVELOPE_COPY_MAXIMUM_WIDTH = 64;
+
+const refuseEnvelope = (reason: string): never => {
+  throw new RangeError(`Envelope data must be plain JSON data: ${reason}.`);
+};
+
+/** One own property's value, if it is an enumerable data property; otherwise refused — never run, never skipped. */
+function envelopeDataValue(source: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) return refuseEnvelope('every property must be an enumerable data property');
+  return descriptor.value as unknown;
+}
+
 /**
  * A fresh, frozen copy of envelope-owned JSON data, so nothing the caller
  * still holds can change a compiled payment — and therefore its digest and
- * decision — after compilation. Keys are *defined*, never assigned, so an own
- * `__proto__` key stays data. Anything that is not plain JSON data (a class
- * instance, a function, a cycle, excessive depth) is refused, never coerced;
- * the orchestrator's own validation still runs on the result.
+ * decision — after compilation.
+ *
+ * Exactly JSON, so that the copy and its canonical serialization describe the
+ * same value: finite numbers only (`NaN` and `Infinity` have no JSON form);
+ * dense arrays only (a hole would serialize like a shorter array and let two
+ * different contexts share one digest); every own property an enumerable
+ * string-keyed data property (a non-enumerable or symbol property would be
+ * dropped silently rather than refused); at most 64 entries per level,
+ * checked before anything is traversed; bounded depth, which also refuses a
+ * cycle. Keys are *defined*, never assigned, so an own `__proto__` key stays
+ * data. Anything else is refused, never coerced; the orchestrator's own
+ * validation still runs on the result.
  */
 function snapshotEnvelopeValue(value: unknown, depth: number): unknown {
-  if (depth > ENVELOPE_COPY_MAXIMUM_DEPTH) throw new RangeError('Envelope data is nested too deeply to compile.');
-  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return value;
-  if (Array.isArray(value)) return Object.freeze(value.map((item: unknown) => snapshotEnvelopeValue(item, depth + 1)));
-  if (isPlainRecord(value)) {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !('value' in descriptor)) throw new RangeError('Envelope data must be plain data properties.');
-      Object.defineProperty(out, key, { value: snapshotEnvelopeValue(descriptor.value, depth + 1), enumerable: true });
+  if (depth > ENVELOPE_COPY_MAXIMUM_DEPTH) return refuseEnvelope('nested too deeply');
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : refuseEnvelope('numbers must be finite');
+  if (Array.isArray(value)) {
+    const keys = Reflect.ownKeys(value);
+    const length = value.length;
+    if (length > ENVELOPE_COPY_MAXIMUM_WIDTH) return refuseEnvelope(`at most ${ENVELOPE_COPY_MAXIMUM_WIDTH} entries per level`);
+    // Exactly the indices 0…length-1, plus `length` itself: no hole, no extra or symbol property.
+    if (keys.length !== length + 1) return refuseEnvelope('arrays must be dense and carry no other properties');
+    const out: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) return refuseEnvelope('arrays must be dense');
+      out.push(snapshotEnvelopeValue(envelopeDataValue(value, String(index)), depth + 1));
     }
     return Object.freeze(out);
   }
-  throw new RangeError('Envelope data must be plain JSON data.');
+  if (isPlainRecord(value)) {
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > ENVELOPE_COPY_MAXIMUM_WIDTH) return refuseEnvelope(`at most ${ENVELOPE_COPY_MAXIMUM_WIDTH} entries per level`);
+    const out: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (typeof key !== 'string') return refuseEnvelope('symbol properties are not data');
+      Object.defineProperty(out, key, { value: snapshotEnvelopeValue(envelopeDataValue(value, key), depth + 1), enumerable: true });
+    }
+    return Object.freeze(out);
+  }
+  return refuseEnvelope('not a JSON value');
 }
 
 /** Exactly `{ id, version }` as two data properties, read once — anything more or other is refused, never repaired into a clean pin. */
@@ -177,7 +213,7 @@ function snapshotProfileExpectation(value: unknown): { readonly id: string; read
   const id = Object.getOwnPropertyDescriptor(value, 'id');
   const version = Object.getOwnPropertyDescriptor(value, 'version');
   if (id === undefined || version === undefined || !('value' in id) || !('value' in version)) return refuse();
-  if (typeof id.value !== 'string' || typeof version.value !== 'number') return refuse();
+  if (typeof id.value !== 'string' || typeof version.value !== 'number' || !Number.isFinite(version.value)) return refuse();
   return Object.freeze({ id: id.value, version: version.value });
 }
 
