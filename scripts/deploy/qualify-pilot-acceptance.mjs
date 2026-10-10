@@ -641,10 +641,12 @@ async function qualify() {
       record('O14', 'documentation boundaries', false, error.message);
     }
     try {
-      const configured = [...Object.keys(state.env), ...compose(['config']).stdout.split('\n').filter((line) => /^\s+[A-Z_]+:/.test(line))].join('\n');
+      // A `*_SQLITE_PATH` entry is a store location (PAY-03's XRPL interlock among them); it composes nothing.
+      const configured = [...Object.keys(state.env), ...compose(['config']).stdout.split('\n').filter((line) => /^\s+[A-Z_]+:/.test(line) && !/^\s+AOC_ENTERPRISE_[A-Z_]+_SQLITE_PATH:/.test(line))].join('\n');
       const commands = [...blocks.values()].join('\n');
       const hits = `${configured}\n${commands}`.match(/xrpl|rlusd|lightning|wallet|PAY_/gi) ?? [];
       check(hits.length === 0, `rail configuration present: ${hits.join(', ')}`);
+      check(JSON.parse(readFileSync(join(pilotDir, 'governed-actions.json'), 'utf8')).xrplPaymentRail === undefined, 'governed-actions.json configures xrplPaymentRail');
       record('O15', 'no payment rail in the deployment or any documented command', true);
     } catch (error) {
       record('O15', 'rail neutrality', false, error.message);

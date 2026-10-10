@@ -1,12 +1,13 @@
 import { EXECUTION_FAILURE_REASONS, type ExecutionFailureReason } from '../../../execution-runtime/index.js';
 import type { PaymentExecutionRequest, PaymentRail, PaymentRailResult } from '../../domain/index.js';
 import { isXrplClassicAddress } from './xrpl-address.js';
-import { signedPaymentMatches } from './xrpl-codec.js';
+import { isXrplSigningPublicKey, signedByPinnedKey, signedPaymentMatches } from './xrpl-codec.js';
 import { XrplRailConfigurationError, isXrplRlusdRailConfiguration, type XrplRlusdRailConfiguration } from './xrpl-config.js';
 import { XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction, type XrplPreparedPayment, type XrplTransactionSigner } from './xrpl-client-port.js';
 import { buildXrplPayment } from './xrpl-payment-builder.js';
 import { XRPL_RAIL_DETAILS, type XrplRailDetail } from './xrpl-rail-details.js';
 import { readAutofill, readLedgerIndex, readLookup, readNetworkId, readSubmission, type XrplExpectedPayment } from './xrpl-result-normalizer.js';
+import { XRPL_RESTART_QUARANTINE_MARGIN, type XrplInterlockSettlement, type XrplSubmissionInterlock } from './xrpl-submission-interlock.js';
 
 /**
  * A logger the host bridges to its own — structurally a subset of the
@@ -26,6 +27,15 @@ export interface XrplRlusdRailOptions {
   /** Exactly one signer per mapped source account, and no other. */
   readonly signers: readonly XrplTransactionSigner[];
   readonly logger?: XrplRailLogger;
+  /**
+   * PAY-03: the durable submission interlock. When composed, every submission
+   * is durably reserved before it is made, an open record from **any**
+   * process or any earlier run blocks a competing sequence, and the rail
+   * observes a restart quarantine (`XRPL_RESTART_QUARANTINE_MARGIN`). Absent,
+   * the rail keeps PAY-02's in-process protection only — the Host never
+   * composes it that way.
+   */
+  readonly interlock?: XrplSubmissionInterlock;
   /** Injected for deterministic qualification; default the process clock and timers. */
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
@@ -48,6 +58,25 @@ class Refusal {
     readonly reason: ExecutionFailureReason,
     readonly detail: XrplRailDetail,
   ) {}
+}
+
+/** A prepared payment, signed and verified, not yet submitted. */
+interface Signed {
+  readonly prepared: XrplPreparedPayment;
+  readonly signedTransaction: string;
+  readonly hash: string;
+  readonly minLedger: number;
+  /** The validated ledger index the preparation read. */
+  readonly validated: number;
+}
+
+/** The ledger fact a definitive post-submission outcome rests on — what the interlock records when it settles. */
+function settlementOf(outcome: PaymentRailResult): XrplInterlockSettlement | undefined {
+  if (outcome.status === 'completed') return 'validated-success';
+  if (outcome.status !== 'not-completed') return undefined;
+  if (outcome.detail === XRPL_RAIL_DETAILS.TRANSACTION_EXPIRED) return 'expired';
+  if (typeof outcome.detail === 'string' && outcome.detail.startsWith('tem')) return 'malformed';
+  return 'validated-failure';
 }
 
 /**
@@ -112,13 +141,18 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
   const signers = new Map<string, XrplTransactionSigner['sign']>();
   const supplied: unknown = options.signers;
   if (!Array.isArray(supplied)) throw new XrplRailConfigurationError('signers', 'must be a list');
+  /** PAY-03: per account, the signing public key a signer was pinned to, when it declared one. */
+  const pinnedKeys = new Map<string, string>();
   for (const [index, signer] of (supplied as readonly XrplTransactionSigner[]).entries()) {
     const address: unknown = signer?.address;
     const sign: unknown = signer?.sign;
+    const signingPublicKey: unknown = signer?.signingPublicKey;
     if (!isXrplClassicAddress(address) || typeof sign !== 'function') throw new XrplRailConfigurationError(`signers[${index}]`, 'must have a classic address and a sign function');
+    if (signingPublicKey !== undefined && !isXrplSigningPublicKey(signingPublicKey)) throw new XrplRailConfigurationError(`signers[${index}]`, 'declares a signing public key that is not 33 bytes of uppercase hex');
     if (!configuration.sourceAccounts.some((mapping) => mapping.address === address)) throw new XrplRailConfigurationError(`signers[${index}]`, 'signs for an account no source mapping names');
     if (signers.has(address)) throw new XrplRailConfigurationError(`signers[${index}]`, 'duplicates another signer');
     signers.set(address, (transaction) => (sign as XrplTransactionSigner['sign']).call(signer, transaction));
+    if (signingPublicKey !== undefined) pinnedKeys.set(address, signingPublicKey);
   }
   for (const mapping of configuration.sourceAccounts) {
     if (!signers.has(mapping.address)) throw new XrplRailConfigurationError('signers', `no signer for source account '${mapping.accountId}'`);
@@ -127,6 +161,26 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const logger = options.logger;
   const railId = configuration.railId;
+  const interlock = options.interlock;
+  if (interlock !== undefined) {
+    for (const method of ['recorded', 'blocking', 'reserve', 'markUnconfirmed', 'settle'] as const) {
+      if (typeof interlock?.[method] !== 'function') throw new XrplRailConfigurationError('interlock', `must implement ${method}`);
+    }
+  }
+
+  /**
+   * PAY-03 restart quarantine: the first validated ledger index this rail
+   * instance observed. With a durable interlock, nothing is prepared until the
+   * validated ledger has passed it by `lastLedgerOffset + margin` — so a
+   * transaction an earlier process submitted, whose record a rollback might
+   * have lost, has provably left its window (see `xrpl-submission-interlock.ts`).
+   */
+  let firstValidatedIndex: number | undefined;
+  const quarantineLedgers = configuration.lastLedgerOffset + XRPL_RESTART_QUARANTINE_MARGIN;
+  const observeValidated = (index: number): void => {
+    if (firstValidatedIndex === undefined) firstValidatedIndex = index;
+  };
+  const quarantined = (index: number): boolean => interlock !== undefined && (firstValidatedIndex === undefined || index < firstValidatedIndex + quarantineLedgers);
 
   /**
    * One payment at a time per source account, held from preparation **through
@@ -179,11 +233,26 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     } catch {
       return { status: 'unavailable', detail: D.NETWORK_UNAVAILABLE };
     }
-    return readNetworkId(info) === configuration.networkId ? { status: 'ready' } : { status: 'unavailable', detail: D.NETWORK_MISMATCH };
+    if (readNetworkId(info) !== configuration.networkId) return { status: 'unavailable', detail: D.NETWORK_MISMATCH };
+    return { status: 'ready' };
+  }
+
+  /** Readiness also starts the restart quarantine's clock when an interlock is composed: the Host calls it at boot. */
+  async function readiness(): Promise<XrplRailReadiness> {
+    const connected = await ensureConnected();
+    if (connected.status !== 'ready' || interlock === undefined) return connected;
+    try {
+      const index = readLedgerIndex(await client.validatedLedgerIndex());
+      if (index === undefined) return { status: 'unavailable', detail: D.PREPARATION_INVALID };
+      observeValidated(index);
+    } catch {
+      return { status: 'unavailable', detail: D.NETWORK_UNAVAILABLE };
+    }
+    return { status: 'ready' };
   }
 
   /** Everything before the one submission. Throws `Refusal` only; nothing here has written to the ledger. */
-  async function prepareAndSign(request: PaymentExecutionRequest, transaction: Omit<XrplPaymentTransaction, 'LastLedgerSequence'>): Promise<{ readonly prepared: XrplPreparedPayment; readonly signedTransaction: string; readonly hash: string; readonly minLedger: number }> {
+  async function prepareAndSign(request: PaymentExecutionRequest, transaction: Omit<XrplPaymentTransaction, 'LastLedgerSequence'>): Promise<Signed> {
     const readiness = await ensureConnected();
     if (readiness.status !== 'ready') throw new Refusal(readiness.detail === D.NETWORK_MISMATCH ? F.ADAPTER_ERROR : F.PROVIDER_UNAVAILABLE, readiness.detail);
 
@@ -194,6 +263,8 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
       throw new Refusal(F.PROVIDER_UNAVAILABLE, D.PREPARATION_FAILED);
     }
     if (validated === undefined) throw new Refusal(F.PROVIDER_RESPONSE_INVALID, D.PREPARATION_INVALID);
+    observeValidated(validated);
+    if (quarantined(validated)) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.RESTART_QUARANTINE);
     const built: XrplPaymentTransaction = Object.freeze({ ...transaction, LastLedgerSequence: validated + configuration.lastLedgerOffset });
 
     let filled: unknown;
@@ -211,6 +282,16 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
       if (validated >= inFlight.lastLedgerSequence) unresolved.delete(built.Account);
       else if (autofilled.Sequence <= inFlight.sequence) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SEQUENCE_IN_FLIGHT);
     }
+    if (interlock !== undefined) {
+      // Non-binding: refuse before spending a signature. `reserve` asks again, atomically.
+      let blocked: boolean;
+      try {
+        blocked = (await interlock.blocking({ account: built.Account, sequence: autofilled.Sequence, validatedLedgerIndex: validated })) === true;
+      } catch {
+        throw new Refusal(F.ADAPTER_ERROR, D.INTERLOCK_UNAVAILABLE);
+      }
+      if (blocked) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SEQUENCE_IN_FLIGHT);
+    }
     const prepared: XrplPreparedPayment = Object.freeze({ ...built, Sequence: autofilled.Sequence, Fee: autofilled.Fee });
     log('info', 'xrpl.payment.prepared', { executionId: request.executionId });
 
@@ -226,7 +307,9 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
       throw error instanceof Refusal ? error : new Refusal(F.ADAPTER_ERROR, D.SIGNING_FAILED);
     }
     if (!signedPaymentMatches(prepared, signed)) throw new Refusal(F.ADAPTER_ERROR, D.SIGNATURE_MISMATCH);
-    return { prepared, signedTransaction: signed.signedTransaction, hash: signed.hash, minLedger: validated + 1 };
+    const pinned = pinnedKeys.get(prepared.Account);
+    if (pinned !== undefined && !signedByPinnedKey(signed.signedTransaction, pinned)) throw new Refusal(F.ADAPTER_ERROR, D.SIGNING_KEY_MISMATCH);
+    return { prepared, signedTransaction: signed.signedTransaction, hash: signed.hash, minLedger: validated + 1, validated };
   }
 
   /**
@@ -300,12 +383,16 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
    * client proved nothing was sent; every other failure from here on is
    * `unconfirmed`, because the blob may have reached the network.
    */
-  async function submitOnceAndAwait(request: PaymentExecutionRequest, signed: { readonly prepared: XrplPreparedPayment; readonly signedTransaction: string; readonly hash: string; readonly minLedger: number }): Promise<PaymentRailResult> {
+  async function submitOnceAndAwait(request: PaymentExecutionRequest, signed: Signed): Promise<PaymentRailResult> {
     let answer: unknown;
     try {
       answer = await client.submit(signed.signedTransaction);
     } catch (error) {
-      if (error instanceof XrplSubmissionNotAttemptedError) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SUBMISSION_NOT_ATTEMPTED);
+      if (error instanceof XrplSubmissionNotAttemptedError) {
+        // Provably never left the process: the reservation is closed, not left to expire.
+        await settleQuietly(request, signed.hash, 'not-submitted');
+        throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SUBMISSION_NOT_ATTEMPTED);
+      }
       return unconfirmed(request, signed.hash, D.SUBMISSION_OUTCOME_UNKNOWN);
     }
     try {
@@ -323,6 +410,69 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     }
   }
 
+  /**
+   * PAY-03: the durable reservation, strictly before the one submission. On
+   * return the record is durable; any failure here is a refusal with nothing
+   * submitted. An execution that already has a record is never signed or
+   * submitted again — and, since its earlier transaction may have been
+   * submitted, it is reported `unconfirmed` with that transaction's hash,
+   * never as a definitive failure.
+   */
+  async function reserve(request: PaymentExecutionRequest, signed: Signed): Promise<PaymentRailResult | undefined> {
+    if (interlock === undefined) return undefined;
+    const amount = signed.prepared.Amount;
+    let reservation: Awaited<ReturnType<XrplSubmissionInterlock['reserve']>>;
+    try {
+      reservation = await interlock.reserve(
+        {
+          executionId: request.executionId,
+          account: signed.prepared.Account,
+          sequence: signed.prepared.Sequence,
+          lastLedgerSequence: signed.prepared.LastLedgerSequence,
+          minLedger: signed.minLedger,
+          transactionHash: signed.hash,
+          amount: { currency: amount.currency, issuer: amount.issuer, value: amount.value },
+        },
+        signed.validated,
+      );
+    } catch {
+      throw new Refusal(F.ADAPTER_ERROR, D.INTERLOCK_UNAVAILABLE);
+    }
+    switch (reservation?.outcome) {
+      case 'reserved':
+        return undefined;
+      case 'blocked':
+        throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SEQUENCE_IN_FLIGHT);
+      case 'execution-recorded':
+        return unconfirmed(request, reservation.transactionHash, D.EXECUTION_PREVIOUSLY_SUBMITTED);
+      default:
+        throw new Refusal(F.ADAPTER_ERROR, D.INTERLOCK_UNAVAILABLE);
+    }
+  }
+
+  /** PAY-03: the earlier transaction of this execution, reported `unconfirmed` with its hash — it may have been submitted. */
+  async function recordedFor(request: PaymentExecutionRequest): Promise<PaymentRailResult | undefined> {
+    if (interlock === undefined) return undefined;
+    let hash: string | undefined;
+    try {
+      hash = await interlock.recorded(request.executionId);
+    } catch {
+      throw new Refusal(F.ADAPTER_ERROR, D.INTERLOCK_UNAVAILABLE);
+    }
+    return typeof hash === 'string' ? unconfirmed(request, hash, D.EXECUTION_PREVIOUSLY_SUBMITTED) : undefined;
+  }
+
+  /** Bookkeeping after a ledger fact. A failure only leaves the record open until the ledger closes its window: never an outcome change. */
+  async function settleQuietly(request: PaymentExecutionRequest, hash: string, settlement: XrplInterlockSettlement | undefined): Promise<void> {
+    if (interlock === undefined) return;
+    try {
+      if (settlement === undefined) await interlock.markUnconfirmed(request.executionId, hash);
+      else await interlock.settle(request.executionId, hash, settlement);
+    } catch {
+      log('warn', 'xrpl.interlock.update_failed', { executionId: request.executionId, transactionHash: hash });
+    }
+  }
+
   async function execute(request: PaymentExecutionRequest): Promise<PaymentRailResult> {
     const build = buildXrplPayment(request, configuration);
     if (!build.built) return { status: 'not-completed', reason: F.ADAPTER_ERROR, detail: build.detail };
@@ -330,10 +480,17 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     const account = transaction.Account;
     try {
       return await serialized(account, async () => {
+        // ─── PAY-03: an execution the interlock already holds is never prepared, signed or submitted again ───
+        const earlier = await recordedFor(request);
+        if (earlier !== undefined) return earlier;
         const signed = await prepareAndSign(request, transaction);
+        // ─── PAY-03: durable before the submission, or no submission ───
+        const previously = await reserve(request, signed);
+        if (previously !== undefined) return previously;
         // ─── the one submission, and its finality, still inside the account's queue ───
         const outcome = await submitOnceAndAwait(request, signed);
         if (outcome.status === 'unconfirmed') unresolved.set(account, { sequence: signed.prepared.Sequence, lastLedgerSequence: signed.prepared.LastLedgerSequence });
+        await settleQuietly(request, signed.hash, settlementOf(outcome));
         return outcome;
       });
     } catch (error) {
@@ -347,9 +504,7 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
   return Object.freeze({
     railId,
     execute,
-    async readiness(): Promise<XrplRailReadiness> {
-      return ensureConnected();
-    },
+    readiness,
     async close(): Promise<void> {
       await client.disconnect();
     },

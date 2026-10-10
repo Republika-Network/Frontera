@@ -178,8 +178,12 @@ describe('PROD-03-03 pilot deployment kit', () => {
     // The guide states the kit's rail neutrality, and the qualifications' D14 /
     // O15 detectors name the rails they look for: the only files that may.
     const declaresNeutrality = new Set(['docs/deployment/PILOT_DEPLOYMENT.md', 'scripts/deploy/qualify-pilot-deployment.mjs', 'scripts/deploy/qualify-pilot-acceptance.mjs']);
+    // A store LOCATION composes nothing (PAY-03: the kit lists the payment-rail
+    // interlock's path with every other store, so an opted-in rail keeps its
+    // safety state on the volume); only `*_SQLITE_PATH` declarations are exempt.
+    const storeLocation = /^\s+AOC_ENTERPRISE_[A-Z_]+_SQLITE_PATH: \/var\/lib\/frontera\/[a-z-]+\.sqlite$/gm;
     for (const file of kitFiles()) {
-      const text = read(file);
+      const text = file === 'deploy/pilot/compose.yaml' ? read(file).replace(storeLocation, '') : read(file);
       const hit = personalOrPlatform.exec(text) ?? (declaresNeutrality.has(file) ? null : rail.exec(text));
       assert.equal(hit, null, `${file}: ${hit?.[0]}`);
     }

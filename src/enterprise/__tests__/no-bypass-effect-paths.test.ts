@@ -206,6 +206,10 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
         // adapters to the composition root's registry and supplies the trusted
         // route selector. It invokes nothing.
         'src/enterprise/host/enterprise-host.ts',
+        // PAY-03 — Type-only: the production XRPL composition builds the PAY-01
+        // bridge around the rail and hands the resulting adapter to the Host,
+        // which adds it to the same registry. It invokes nothing.
+        'src/enterprise/xrpl-payment-rail/host-composition.ts',
         // Deliberately NOT `src/enterprise/index.ts`: the Enterprise barrel has
         // never re-exported a `src/features` type — not `BoundedGrantStorePort`,
         // not `KernelGrantCapability`, not `ExecutionAdapter` — even where an
@@ -415,6 +419,8 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     'src/enterprise/external-authority-signer/http-transport.ts',
     // CORE-07: `node:https` (and `node:http` to loopback) — the authority-state witness transport (EP-057).
     'src/enterprise/authority-state-freshness/http-transport.ts',
+    // PAY-03: `node:https` (and `node:http` to loopback) — the external XRPL transaction signer transport (EP-070).
+    'src/enterprise/xrpl-payment-rail/signer-http-transport.ts',
   ];
 
   it('the detection patterns match a real client import or call and not a mention of one', () => {
@@ -437,7 +443,7 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     );
   });
 
-  it('exactly five production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057), the web control plane’s Host client (EP-067) and the XRPL rail’s SDK client (EP-069)', () => {
+  it('exactly six production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057), the web control plane’s Host client (EP-067), the XRPL rail’s SDK client (EP-069) and the external XRPL signer transport (EP-070)', () => {
     const transport = 'src/enterprise/execution-adapters/generic-http/node-https-transport.ts';
     const signerTransport = 'src/enterprise/external-authority-signer/http-transport.ts';
     const witnessTransport = 'src/enterprise/authority-state-freshness/http-transport.ts';
@@ -445,18 +451,26 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     const consoleClient = 'src/control-plane-web/host-client.ts';
     // PAY-02: the XRPL SDK opens its own WebSocket, so the site is its client construction, not a Node module import.
     const xrplClient = 'src/features/payment-runtime/rails/xrpl/xrpl-sdk-client.ts';
+    // PAY-03: the external, customer-controlled XRPL transaction signer — a signing request, never a submission.
+    const xrplSignerTransport = 'src/enterprise/xrpl-payment-rail/signer-http-transport.ts';
     const constructsXrplClient = (file: string): boolean => /from\s+['"]xrpl['"]/.test(valueCode(file)) && /\bnew\s+Client\s*\(/.test(codeOf(file));
     const importsClient = (file: string): boolean => /from\s+['"]node:(?:https|dns)['"]/.test(valueCode(file)) || constructsXrplClient(file);
     // `fetch(` is counted under src/ only: packages/ holds the customer-side
     // SDK, whose fetch is the caller reaching Frontera, not Frontera reaching a provider.
     const fetches = (file: string): boolean => file.startsWith('src/') && /\bfetch\s*\(/.test(codeOf(file));
     const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && (importsClient(file) || CLIENT_CALL.test(codeOf(file)) || fetches(file)));
-    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient, xrplClient].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient, xrplClient, xrplSignerTransport].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    const xrplSigner = codeOf(xrplSignerTransport);
+    assert.equal([...xrplSigner.matchAll(/\bsend\s*\(/g)].length, 1, 'the XRPL signer transport issues its request from exactly one place');
+    assert.equal(/command:|submit/.test(xrplSigner), false, 'the XRPL signer transport never submits');
+    assert.ok(DOC.includes('EP-070') && DOC.includes(xrplSignerTransport), 'EP-070 is inventoried');
     const xrpl = codeOf(xrplClient);
     assert.equal([...xrpl.matchAll(/command:\s*'submit'/g)].length, 1, 'the XRPL client issues its one write from exactly one place');
     assert.ok(DOC.includes('EP-069') && DOC.includes(xrplClient), 'EP-069 is inventoried');
-    const factoryUsers = PRODUCTION_SOURCES.filter((file) => /createXrplSdkClient\s*\(/.test(codeOf(file)) && file !== xrplClient && !file.endsWith('/rails/xrpl/index.ts'));
-    assert.deepEqual(factoryUsers, [], 'no production source composes the XRPL client: EP-069 is composition-gated, an embedder composes it');
+    // PAY-03: the one production composition of the XRPL client is the Host's XRPL composition edge, reached only
+    // when the governed-action file configures `xrplPaymentRail` (EP-069 stays composition-gated; the kit configures none).
+    const factoryUsers = PRODUCTION_SOURCES.filter((file) => /\bcreateXrplSdkClient\b/.test(codeOf(file)) && file !== xrplClient && !file.endsWith('/rails/xrpl/index.ts'));
+    assert.deepEqual(factoryUsers, ['src/enterprise/xrpl-payment-rail/host-composition.ts'], 'only the Host XRPL composition composes the XRPL client');
     const client = codeOf(consoleClient);
     assert.equal([...client.matchAll(/\bfetch\s*\(/g)].length, 1, 'the console client issues its request from exactly one place');
     assert.match(client, /redirect: 'manual'/, 'the console client follows no redirect');
@@ -616,7 +630,7 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Nine of sixty-nine effect paths are under bounded-grant control.'),
+      DOC.includes('Nine of seventy effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
@@ -629,7 +643,8 @@ describe('NB — the canonical document keeps its shape', () => {
         'CTRL-02 added EP-063 … EP-066 — Kernel-Authority provisioning over the operator plane, operator-issued agent credential issuance and revocation, and Governance Profile lifecycle transitions — none bounded-grant controlled and none a way to reach a provider, so only the denominator moved, by four. ' +
         'CTRL-03 added EP-067 — the web control plane, a separate operator-run process whose one outbound call reaches the Host operator API, every write of it an existing operator-plane path authorized again by the Host — not bounded-grant controlled, so only the denominator moved, by one. ' +
         'CTRL-04 added EP-068 — the approval verdicts over the operator plane, the HTTP entry onto the CORE-05 approval commands (EP-059), decided by CORE-05 and executing nothing — not bounded-grant controlled, so only the denominator moved, by one. ' +
-        'PAY-02 added EP-069 — the XRPL / RLUSD rail\'s submission, like EP-050 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one.',
+        'PAY-02 added EP-069 — the XRPL / RLUSD rail\'s submission, like EP-050 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one. ' +
+        'PAY-03 added EP-070 — the XRPL signing request to the external customer-controlled signer, like EP-056 a deployment-gated signing request and not a provider effect, reached only inside EP-069 — so only the denominator moved, by one.',
     );
   });
 

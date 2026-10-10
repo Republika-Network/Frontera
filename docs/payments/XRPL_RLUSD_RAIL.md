@@ -9,6 +9,10 @@
 - Contract it implements: `docs/payments/PAYMENT_ADAPTER_CONTRACT.md` (PAY-01, unchanged)
 - Architecture: `docs/payments/PAYMENT_ARCHITECTURE.md`
 - Effect path: EP-069 in `docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`
+- **Production composition: PAY-03, `docs/payments/XRPL_PRODUCTION_COMPOSITION.md`** — the
+  shipped Host composes this rail from configuration with an external customer-controlled
+  signer, a durable submission interlock and a read-only P12 XRPL resolution authority.
+  Sections below marked *(PAY-03)* note where that changed what PAY-02 stated.
 
 ## 1. Architecture
 
@@ -109,12 +113,11 @@ Mainnet is never implicit:
 
 ### Config check and Host composition
 
-The rail is **not** Host-config composable in PAY-02: the pilot deployment kit
-deliberately carries no XRPL configuration (PROD-03 D14), and the Host's
-config check is unchanged. An embedder composes the rail in code and passes
-the resulting adapter as `executionAdapters` / `executionAdapter`.
-`createXrplRlusdRailConfiguration` is the pure config check: it needs no
-network.
+*(PAY-03)* The shipped Host now composes the rail from the governed-action
+file's optional `xrplPaymentRail` section, validated by the Host's config check
+through this same `createXrplRlusdRailConfiguration` (pure, no network); the
+pilot kit still configures none (D14 / O15). An embedder may still compose the
+rail in code. In PAY-02 the rail was not Host-config composable.
 
 ## 5. Source account mapping
 
@@ -206,7 +209,11 @@ rail ── prepared Payment ──▶ XrplTransactionSigner.sign ──▶ { si
   issuer or flags, or added a memo, is refused with nothing submitted
   (`xrpl-signature-mismatch`).
 - **PAY-02 ships no production signer.** A host composes one backed by its
-  own custody (HSM, external signing service). The software signer used for
+  own custody (HSM, external signing service). *(PAY-03)* The Host composes
+  the external XRPL transaction signer (`frontera.external-xrpl-transaction-signer.v1`);
+  a signer may declare its pinned `signingPublicKey`, and the rail then also
+  refuses — before submitting — a blob not signed by exactly that key
+  (`xrpl-signing-key-mismatch`). The software signer used for
   qualification (`tests/xrpl-test-fixtures.ts`) is test-only; boundary tests
   fail the build if `Wallet`, seeds, keypairs or mnemonics appear in any
   production source.
@@ -236,6 +243,15 @@ transaction, only one of them able to validate — is refused **before signing**
 (`not-completed PROVIDER_UNAVAILABLE`, `xrpl-sequence-in-flight`). A higher
 sequence proceeds. Throughput per source account is therefore one payment per
 finality wait.
+
+*(PAY-03)* Composed with a durable `XrplSubmissionInterlock`, the rail also:
+refuses an execution the interlock already holds before preparing anything
+(`unconfirmed`, `xrpl-execution-previously-submitted` — never signed or
+submitted again); checks the interlock before signing; **reserves the
+submission durably before `submit`** (`xrpl-interlock-unavailable` with nothing
+submitted when it cannot); records the outcome afterwards; and observes a
+restart quarantine (`xrpl-restart-quarantine`). The in-process protection above
+then extends across restarts, processes and restores.
 
 ## 12. Submission versus finality, and the outcome mapping
 
@@ -307,7 +323,10 @@ signing *before* submission, so every post-submission outcome — including
 ## 14. P12
 
 An `unconfirmed` XRPL payment enters the **existing** P12 flow; there is no
-XRPL-specific resolution path in PAY-02. The operator looks up the recorded
+XRPL-specific resolution path in PAY-02. *(PAY-03)* The Host composes the
+read-only XRPL resolution authority (`frontera.xrpl-rlusd-ledger`) into that
+same flow and binds every rail payment to it; the operator path below applies
+to embedder compositions without it. The operator looks up the recorded
 `providerRef` (the transaction hash) in an XRPL explorer or with their own
 client, and records `confirmed-completed` or `confirmed-not-completed`
 through operator resolution. After `LastLedgerSequence` + a few ledgers the
@@ -365,3 +384,9 @@ authority (operators resolve by hash); Host-config / deployment-kit
 composition; mainnet qualification; automatic retry of an ambiguous payment.
 Sequence collisions across *separate processes* signing for the same account
 are not coordinated (one fails as expired, definitively).
+
+*(PAY-03)* Delivered since: an external production signer boundary, the
+XRPL P12 resolution authority, Host-config and deployment composition
+(opt-in), and cross-process / cross-restart sequence coordination over one
+shared state (`docs/payments/XRPL_PRODUCTION_COMPOSITION.md` §9). Still not
+provided: custody itself, mainnet qualification, any retry.

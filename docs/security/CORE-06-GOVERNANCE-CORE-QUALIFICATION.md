@@ -264,6 +264,8 @@ Mutations M24 and M24b–e each fail the check: removing one row's evidence, dro
 
 **Appended by PAY-02 (2026-10-09).** PAY-02 added no THREAT_MODEL_V1 BLOCKED rows and no route; it moved the current effect-path count: **9 of 69** are bounded-grant controlled (EP-069, the XRPL / RLUSD rail's submission, added — a provider effect below the bounded-grant path, reached only through the PAY-01 bridge, so both numbers moved by one). Its rail contract, governed-path and structural qualification are `rails/xrpl/tests/xrpl-rlusd-rail.test.ts`, `pay02-xrpl-rlusd-rail.test.ts` and `rails/xrpl/tests/xrpl-rail-boundaries.test.ts` (`docs/payments/XRPL_RLUSD_RAIL.md`).
 
+**Appended by PAY-03 (2026-10-10).** PAY-03 added no THREAT_MODEL_V1 BLOCKED rows and no route; it moved only the denominator: **9 of 70** are bounded-grant controlled (EP-070, the XRPL signing request to the external customer-controlled signer, added — a deployment-gated signing request reached only inside EP-069, not a provider effect). Its production-composition qualification is `pay03-xrpl-host.test.ts`, `pay03-xrpl-interlock.test.ts`, `pay03-xrpl-external-signer.test.ts`, `pay03-xrpl-resolution-authority.test.ts` and `pay03-xrpl-production-structure.test.ts` (`docs/payments/XRPL_PRODUCTION_COMPOSITION.md`).
+
 <!-- core06:blocked-matrix:start -->
 
 | ID | Src | Threat | Disposition | Status | Evidence |

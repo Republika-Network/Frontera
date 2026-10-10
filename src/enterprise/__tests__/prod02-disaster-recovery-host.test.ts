@@ -286,16 +286,19 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       assert.equal(manifest.consistency.mode, 'cold-attested');
       assert.equal(manifest.consistency.toolVerifiedHostStopped, false, 'the tool never claims to have proven the Host stopped');
       // Every store the shipped Host composes — since PROD-03-02 including P12, composed with the operator plane.
+      // PAY-03: the XRPL submission interlock is composed only with a configured payment rail, which this deployment has not.
+      const composed = registry.STORE_DEFINITIONS.filter((storeDef) => storeDef.condition !== 'xrpl-payment-rail');
       assert.deepEqual(
         manifest.stores.map((store) => store.name),
-        registry.STORE_DEFINITIONS.map((storeDef) => storeDef.name),
-        'every registry store is in the backup (thirteen at PROD-02; fourteen since ASSURE-01 added the Evidence Bundle Store)',
+        composed.map((storeDef) => storeDef.name),
+        'every store this deployment composes is in the backup (thirteen at PROD-02; fourteen since ASSURE-01 added the Evidence Bundle Store)',
       );
       assert.deepEqual(
         manifest.coverage.stores.filter((store) => store.required).map((store) => store.name).sort(),
-        registry.STORE_DEFINITIONS.map((storeDef) => storeDef.name).sort(),
+        composed.map((storeDef) => storeDef.name).sort(),
         'every store is required by this deployment (twelve at PROD-02, thirteen since ASSURE-01, fourteen since PROD-03-02 composes P12 with the operator plane)',
       );
+      assert.equal(manifest.coverage.stores.find((store) => store.name === 'xrpl-submission-interlock')?.required, false, 'and the interlock is known, not required');
 
       // ── no secret value, no private key, no witness state in any byte of the backup ──
       assert.deepEqual(secretsFound(backupDir, deployment.secretValues(), [cli.stdout, cli.stderr]), [], 'no canary appears anywhere in the backup set or the CLI output');
@@ -336,7 +339,8 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       }
       // Restore mapping: each restored file is the one the Host variable names.
       for (const target of report.targets) assert.equal(recoveredEnv[target.envVar], target.path, target.envVar);
-      assert.deepEqual(report.notRestored, []);
+      // PAY-03: only the XRPL interlock, which this deployment does not compose (no payment rail configured).
+      assert.deepEqual(report.notRestored, ['xrpl-submission-interlock']);
 
       // ── the real secure Host on the restored data, the surviving witness, secrets from outside ──
       const h2 = await boot(recoveredEnv);

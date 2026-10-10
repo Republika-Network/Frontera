@@ -44,6 +44,7 @@ PaymentExecutionRequest             ── preparePaymentExecution(ValidatedExec
 PaymentRail      (host-composed)    ── behind createPaymentRailExecutionAdapter → ExecutionAdapter
    ↓
 rail-specific implementation        ── PAY-02: XRPL / RLUSD (rails/xrpl, §9)
+   ⋮ production Host composition       ── PAY-03: xrplPaymentRail (§10)
 ```
 
 ## 2. The payment intent
@@ -298,7 +299,7 @@ P11 → P12 (operator resolution by hash) when unconfirmed
   one `XrplTransactionSigner` per source account (its own custody — none
   ships), and composes the rail through the PAY-01 bridge exactly as §4
   describes. Not exported from this module's barrel or any package entrypoint;
-  not composable from Host configuration.
+  not composable from Host configuration in PAY-02 (since PAY-03 it is — §10).
 - **What PAY-01 provides unchanged:** the destination tag rides the governed
   counterparty (`xrpl-tagged-account:r…:4471`), the RLUSD asset is a P9 asset
   id, `rail: 'xrpl-rlusd'` is the exact-bound rail preference, and the
@@ -307,3 +308,24 @@ P11 → P12 (operator resolution by hash) when unconfirmed
   exact-decimal proof, transaction construction, signing verification, the
   single submission, finality reading, the no-retry rule, and the
   conservative `unconfirmed` mapping for every ambiguous case.
+
+## 10. PAY-03 — production composition of the XRPL rail
+
+The shipped Host composes the PAY-02 rail from the governed-action file's
+optional `xrplPaymentRail` section — and only then. Full detail:
+`docs/payments/XRPL_PRODUCTION_COMPOSITION.md`; decision record:
+`docs/architecture/ADR-XRPL-PRODUCTION-COMPOSITION.md`.
+
+```
+governed-action file: xrplPaymentRail { paymentAction, network, endpoint, asset, sourceAccounts[+signingPublicKey], signer{…} }
+bootEnterpriseHost
+   ├─ durable XRPL submission interlock (SQLite, PROD-02 registry, backup / restore)
+   ├─ external XRPL transaction signer (customer custody; identity pinned; the Host holds no key)
+   ├─ createXrplRlusdRail({ …, interlock }) → createPaymentRailExecutionAdapter → the existing adapter registry
+   └─ P12: the read-only XRPL resolution authority, bound before the claim to every rail payment
+```
+
+Nothing above the PAY-01 boundary changed: the payment contract, the bridge,
+the outcome mapping and P12's semantics are exactly as in §4–§7. What PAY-03
+adds is composition, custody and durability below it: one submission is still
+at most one per execution, now across restarts and processes too.
