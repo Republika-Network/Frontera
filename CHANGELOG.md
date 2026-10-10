@@ -4,6 +4,14 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — PAY-02 XRPL / RLUSD payment rail
+- **First payment rail** `src/features/payment-runtime/rails/xrpl` (`docs/payments/XRPL_RLUSD_RAIL.md`, `ADR-XRPL-RLUSD-PAYMENT-RAIL.md`): `createXrplRlusdRail` is a PAY-01 `PaymentRail`, composed only through `createPaymentRailExecutionAdapter`, below the unchanged governed path. Rail id `xrpl-rlusd`. No PAY-01 or core change.
+- **Trusted configuration** `createXrplRlusdRailConfiguration`: explicit network (no default; mainnet needs `allowMainnet: true`), `wss://` endpoint, RLUSD issuer and currency code, governed-account → XRPL-account mapping, fee ceiling, `LastLedgerSequence` offset. The server's `network_id` is checked before every preparation. No secret field.
+- **Destinations** `xrpl-account` and `xrpl-tagged-account` (`<classic>:<tag>`) — the destination tag is part of the governed counterparty. X-addresses refused.
+- **One transaction shape**: an issued-currency `Payment`, `Flags: 0`, the canonical decimal unchanged (proven exactly representable), no memo / path / `SendMax`. Signing through an `XrplTransactionSigner` port whose blob is verified to sign exactly the prepared payment; no production signer ships.
+- **Finality, not submission**: `completed` only for a validated `tesSUCCESS` delivering exactly the granted amount; `not-completed` for validated `tec…`, `tem…`, proven expiry, or a refusal before submission; every other post-submission case `unconfirmed` with the transaction hash, for P12. One `submit` per execution, never retried.
+- **NO_BYPASS** EP-069 (path-local; nine of sixty-nine). `xrpl@5.3.0` (ISC) pinned as a development dependency, imported by three rail files only; not a runtime dependency of the published artifact. Opt-in XRPL Testnet smoke test (`FRONTERA_XRPL_TESTNET_SMOKE=1`).
+
 ### Added — PAY-01 governed payment intent & rail adapter contract
 - **Canonical payment intent** `src/features/payment-runtime` (`docs/payments/PAYMENT_ARCHITECTURE.md`, `ADR-PAYMENTS-AS-A-GOVERNED-VERTICAL.md`): source account, destination `{ kind, reference }`, exact P9 amount, closed purpose vocabulary, optional business reference and rail preference, idempotency key. `validatePaymentIntent` is closed and fail-closed with machine-readable violations; it refuses undeclared, envelope-owned, secret-shaped and accessor properties, numbers, `NaN`/`Infinity`, zero, excess precision and unknown assets.
 - **Compiles down to the unchanged governed-action envelope** (`compilePaymentIntent`): source → `resource`, destination → `counterparty`, amount → `amount`, purpose / reference / rail → CORE-03 token parameters (`PAYMENT_PARAMETER_DIMENSIONS`, bound `exact`). No new envelope, Kernel, grant or store field; idempotency, P10 ceilings, P7 exposure, approvals, P11 outcomes, P12 resolution, evidence and disclosure are the existing ones.

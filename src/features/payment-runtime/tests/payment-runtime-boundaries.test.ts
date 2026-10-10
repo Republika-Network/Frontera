@@ -35,7 +35,15 @@ function walk(dir: string, includeTests: boolean): readonly string[] {
   return out;
 }
 
-const PRODUCTION_SOURCES = walk(ROOT, false);
+/**
+ * The PAY-01 contract: everything in the vertical except `rails/`. A rail is
+ * the provider-specific code this contract exists to keep out of it, so a
+ * rail directory is held to its own, stricter boundary test instead
+ * (`rails/xrpl/tests/xrpl-rail-boundaries.test.ts`, PAY-02) — and the contract
+ * is proven here never to import one.
+ */
+const RAILS = join(ROOT, 'rails');
+const PRODUCTION_SOURCES = walk(ROOT, false).filter((file) => !file.startsWith(`${RAILS}/`));
 
 function importsOf(file: string): readonly string[] {
   return [...readFileSync(file, 'utf8').matchAll(/\bfrom\s+'([^']+)'/g)].map((match) => match[1] ?? '');
@@ -51,6 +59,12 @@ function codeOf(file: string): string {
 describe('Payment runtime boundaries (PAY-01)', () => {
   it('has production sources to check', () => {
     assert.ok(PRODUCTION_SOURCES.length >= 9, `found ${PRODUCTION_SOURCES.length}`);
+  });
+
+  it('the contract never imports a rail: rails depend on the contract, never the reverse', () => {
+    for (const file of PRODUCTION_SOURCES) {
+      for (const specifier of importsOf(file)) assert.equal(/rails\//.test(specifier), false, `${file} imports '${specifier}'`);
+    }
   });
 
   it('imports only itself and the generic primitives it composes — never the enterprise layer, the Kernel, a store or Node', () => {
