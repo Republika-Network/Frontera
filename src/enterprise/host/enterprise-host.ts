@@ -3,7 +3,10 @@ import type { ContextProvider, PolicyPackProvider } from '../../kernel/index.js'
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import type { AocEnterprise, CreateEnterpriseOptions } from '../composition/composition-root.js';
 import type { GrantAuthorityBinding } from '../execution-governance/index.js';
-import { createOperatorAttestationAuthority, selectOperatorAttestation } from '../execution-reconciliation/operator-attestation.js';
+import type { ExecutionResolutionAuthority } from '../execution-reconciliation/authority.js';
+import { OPERATOR_ATTESTATION_AUTHORITY_ID, createOperatorAttestationAuthority } from '../execution-reconciliation/operator-attestation.js';
+import type { ComposedXrplPaymentRail, XrplLedgerClientFactory } from '../xrpl-payment-rail/host-composition.js';
+import { xrplKeyMaterialVariables } from '../xrpl-payment-rail/host-configuration.js';
 import type { EnterpriseHealthPosture } from '../health/health-check.js';
 import { createEnterpriseLogger, type EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { createEnterpriseServer, type EnterpriseServer } from './enterprise-server.js';
@@ -90,6 +93,14 @@ export interface BootEnterpriseHostOptions {
    * is nothing to decide with it.
    */
   readonly policyPackProvider?: PolicyPackProvider;
+  /**
+   * PAY-03 — trusted in-process composition of the XRPL ledger client used
+   * when the governed-action file configures `xrplPaymentRail`. Default: the
+   * official SDK client over the configured endpoint. The launcher passes
+   * none. It is a client factory only: the rail, the external signer, the
+   * interlock and the resolver are always the Host's own.
+   */
+  readonly xrplLedgerClient?: XrplLedgerClientFactory;
   readonly logger?: EnterpriseLogger;
 }
 
@@ -105,7 +116,7 @@ export interface EnterpriseHost {
   close(): Promise<void>;
 }
 
-function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions): CreateEnterpriseOptions {
+function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions, xrpl?: ComposedXrplPaymentRail): CreateEnterpriseOptions {
   const governed = host.governedActions;
   const base: CreateEnterpriseOptions = {
     configuration: host.configuration,
@@ -114,7 +125,8 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
   };
   if (governed === undefined) return base;
 
-  const extra = options.executionAdapters ?? [];
+  // PAY-03: the composed XRPL rail joins the same trusted registry, reachable only through its configured route.
+  const extra = [...(options.executionAdapters ?? []), ...(xrpl !== undefined ? [xrpl.adapter] : [])];
   const known = new Set([...extra.map((adapter) => adapter.adapterId), ...governed.genericHttpAdapters.map((adapter) => adapter.adapterId)]);
   for (const [action, adapterId] of governed.routes) {
     if (!known.has(adapterId)) {
@@ -168,10 +180,44 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
     // no definitive outcome can later be closed by an authorized operator's
     // recorded attestation, and by nothing else: the authority never answers
     // on its own, and nothing here can execute.
-    ...((host.configuration.administration?.operators?.length ?? 0) > 0
-      ? { executionReconciliation: { enabled: true, authorities: [createOperatorAttestationAuthority()], selectAuthority: selectOperatorAttestation } }
-      : {}),
+    //
+    // PAY-03: with the XRPL rail, P12 also composes the read-only XRPL
+    // resolution authority, and every execution of the rail's payment action
+    // is bound to it before its claim — so an unconfirmed XRPL payment is
+    // resolved from the ledger, under P12's unchanged rules (one binding, one
+    // resolution, provider truth first). Nothing here can execute.
+    ...executionReconciliationOf(host, xrpl),
+    ...(xrpl !== undefined ? { modules: xrpl.modules } : {}),
   };
+}
+
+function executionReconciliationOf(host: EnterpriseHostConfiguration, xrpl: ComposedXrplPaymentRail | undefined): Pick<CreateEnterpriseOptions, 'executionReconciliation'> {
+  const operators = (host.configuration.administration?.operators?.length ?? 0) > 0;
+  if (!operators && xrpl === undefined) return {};
+  const authorities: ExecutionResolutionAuthority[] = [...(operators ? [createOperatorAttestationAuthority()] : []), ...(xrpl !== undefined ? [xrpl.authority] : [])];
+  // Synchronous and total over the trusted action; there is no fallback inside P12.
+  // Without an operator plane, every other action binds to the XRPL authority, which
+  // holds no interlock record for it and therefore only ever answers `unresolved`.
+  const fallback = operators ? OPERATOR_ATTESTATION_AUTHORITY_ID : xrpl!.authorityId;
+  const selectAuthority = (context: { readonly action: string }): string => (xrpl !== undefined && context.action === xrpl.paymentAction ? xrpl.authorityId : fallback);
+  return { executionReconciliation: { enabled: true, authorities, selectAuthority } };
+}
+
+/**
+ * PAY-03: the Host requests XRPL signatures; it never holds an XRPL key. With
+ * the rail configured, a variable that would carry XRPL key material — or the
+ * reference signer's own configuration — anywhere in this process refuses the
+ * Host. Presence alone; the value is never read. Checked against both the
+ * configuration map and the real process environment.
+ */
+function assertProcessHoldsNoXrplKey(host: EnterpriseHostConfiguration, env: Readonly<Record<string, string | undefined>>): void {
+  if (host.governedActions?.xrplPaymentRail === undefined) return;
+  const present = [...new Set([...xrplKeyMaterialVariables(env), ...xrplKeyMaterialVariables(process.env)])];
+  if (present.length === 0) return;
+  throw new EnterpriseHostConfigurationError(
+    'HOST_ENVIRONMENT_INVALID',
+    `The XRPL payment rail is configured and this process environment carries ${present.join(', ')}. The Host only requests XRPL signatures from the external signer; XRPL key material and the signer's own configuration belong to the signer's process, never this one.`,
+  );
 }
 
 /** Posture a secure-profile Host must have composed. Checked against the composed objects, after composition, before listen. */
@@ -254,16 +300,36 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
   // Before composition: nothing is opened and the signer is not contacted.
   try {
     assertProcessHoldsNoAuthorityKey(host);
+    assertProcessHoldsNoXrplKey(host, options.env ?? process.env);
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
     throw error;
   }
   logger.info('enterprise.host.configuration_validated', { phase: 'config_validated', status: host.configuration.environment });
+  // PAY-03: only an explicitly configured rail is composed; the XRPL SDK is not even loaded otherwise.
+  let xrpl: ComposedXrplPaymentRail | undefined;
+  const xrplConfiguration = host.governedActions?.xrplPaymentRail;
+  if (xrplConfiguration !== undefined) {
+    try {
+      const { composeXrplPaymentRail } = await import('../xrpl-payment-rail/host-composition.js');
+      xrpl = await composeXrplPaymentRail({
+        configuration: xrplConfiguration,
+        interlockPath: host.configuration.xrplInterlock?.sqlitePath ?? '.data/xrpl-submission-interlock.sqlite',
+        busyTimeoutMs: host.configuration.persistence.busyTimeoutMs,
+        logger,
+        ...(options.xrplLedgerClient !== undefined ? { ledgerClient: options.xrplLedgerClient } : {}),
+      });
+    } catch (error) {
+      logger.error('enterprise.host.refused', { phase: 'xrpl_payment_rail', errorCode: refusalCode(error) });
+      throw error;
+    }
+  }
   let server: EnterpriseServer;
   try {
-    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }));
+    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }, xrpl));
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'composition', errorCode: refusalCode(error) });
+    await xrpl?.close();
     throw error;
   }
   const { enterprise } = server;
@@ -341,6 +407,7 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'health_gate', errorCode: refusalCode(error) });
     await server.close().catch(() => {});
+    await xrpl?.close();
     throw error;
   }
 }

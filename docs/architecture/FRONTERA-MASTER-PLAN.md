@@ -264,7 +264,7 @@ wiring inventory is §3.8.
 | Grant expiry (checked at exercise, never scheduled) | VERIFIED | `governed-action/orchestrator.ts:547` |
 | Revocation (durable, signed) | **VERIFIED (sqlite only)** — revocation-state integrity closed by CORE-01 | `sqlite-bounded-grant-store.ts` (`verifiedRevocationState`); `revocation-state-integrity.test.ts`. Operable over HTTP by configured administrators since CTRL-01 (`/api/admin/authority/...`; `authority-administration-api.test.ts`). Cross-restart rollback refused with the external authority-state witness (CORE-07; required on the secure Host); not claimed without one |
 | **Authority artifact authenticity (PRE-00 + CORE-01)** | **VERIFIED; required on the shipped secure Host** (PROD-01) | §3.7. The secure Host refuses to bind unless its grant store is `authenticated-durable` and its revocation state verifies. Embedding default still `memory`. Key custody (CORE-02): `external` — no authority private key in the process — or `software` (process-resident, AA-001), stated as posture `authoritySigner` |
-| No-bypass execution (single adapter call site) | VERIFIED, path-local | `no-bypass-effect-paths.test.ts`, `security-invariants.test.ts`. 9 of 69 effect paths are grant-controlled (re-enumerated by CORE-06; CTRL-02 added EP-063 … EP-066, CTRL-03 EP-067, CTRL-04 EP-068, none grant-controlled; PAY-02 added EP-069, the XRPL rail submission below the grant path); the rest are excepted, deployment-gated or separate models (`docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`) |
+| No-bypass execution (single adapter call site) | VERIFIED, path-local | `no-bypass-effect-paths.test.ts`, `security-invariants.test.ts`. 9 of 70 effect paths are grant-controlled (re-enumerated by CORE-06; CTRL-02 added EP-063 … EP-066, CTRL-03 EP-067, CTRL-04 EP-068, none grant-controlled; PAY-02 added EP-069, the XRPL rail submission below the grant path; PAY-03 added EP-070, the external XRPL signing request, not grant-controlled); the rest are excepted, deployment-gated or separate models (`docs/security/NO_BYPASS_AUTHORITY_CONTROLLED_EXECUTION.md`) |
 | Emergency control / kill switch (P4) | VERIFIED (opt-in); durable and composed on the shipped secure Host | `composition-root.ts`; `emergency-control-*.test.ts`. Operable over `/api/admin/emergency-controls` by configured administrators (CTRL-01) |
 | Aggregate / velocity / reservation controls (P7) | VERIFIED (opt-in); composed (required) on the shipped secure Host, with no host-imposed limits — the authority's own (P10) apply | `composition-root.ts`; `exercise-control-*.test.ts`. Without P7, grants are exercisable without count limit, and financial actions are always withheld |
 | Authority-sourced payment ceilings (P10) | VERIFIED (requires P7) | `kernel-authority/monetary-constraints.ts:75-91`; `authority-payment-ceilings*.test.ts` |
@@ -320,7 +320,8 @@ wiring inventory is §3.8.
 |---|---|
 | x402 | ABSENT |
 | MPP | ABSENT on `main`. It exists only on the **unmerged** branch `origin/feat/p13-mpp-business-idempotency` (`24dd264`). That branch has a client-side parser for draft-httpauth-payment-01 challenges, business-operation idempotency and 7 test files, and conflicts with `main` |
-| XRPL, Lightning, EVM, Solana, Stellar, Hedera, Cardano, RLUSD | ABSENT. No SDK dependency, no client. XRPL appears only in asset-id doc comments and negative boundary tests |
+| XRPL, RLUSD | **IMPLEMENTED** (updated by PAY-03). PAY-02: the XRPL / RLUSD `PaymentRail` (`src/features/payment-runtime/rails/xrpl/`), Testnet-qualified on the governed path. PAY-03: production Host composition from the governed-action file's `xrplPaymentRail` (external customer-controlled transaction signer, durable submission interlock, read-only P12 XRPL resolution authority); `xrpl@5.3.0` is a runtime dependency. Before PAY-02 this row read "ABSENT. No SDK dependency, no client" |
+| Lightning, EVM, Solana, Stellar, Hedera, Cardano | ABSENT. No SDK dependency, no client |
 | Receipts, settlement state, finality, refunds | ABSENT. `execution-outcome-store/contracts.ts:40` explicitly says "Not settlement". P7's "settled" means reservation capacity was consumed |
 | Stripe | Exists **only** in `apps/agent-passport-web` as Agent Passport SaaS billing. It is unrelated to governed payments |
 
@@ -480,7 +481,7 @@ MASTER-00 record.
 | Monetary / exercise controls (P7, P9, P10) | WIRED INTO PRODUCTION HOST | No host-imposed aggregate policy; authority-sourced limits apply |
 | Authority event stream (P8) | WIRED INTO PRODUCTION HOST | Optional by design; no route of its own — read per request through the ASSURE-01 trace |
 | Execution outcomes (P11) | WIRED INTO PRODUCTION HOST | Required |
-| Reconciliation (P12) | NOT WIRED (intentional) | No resolution-authority implementation ships (PAY-03/04) |
+| Reconciliation (P12) | WIRED INTO PRODUCTION HOST (when configured) | Operator attestation when operators are configured (PROD-03-02); the read-only XRPL ledger resolution authority when `xrplPaymentRail` is configured (PAY-03). Explicit `reconcile` only; no timer (earlier text: "NOT WIRED — no resolution-authority implementation ships") |
 | Governed-action API | WIRED INTO PRODUCTION HOST | `POST /api/governed-actions` |
 | Generic HTTP adapter (P6) | WIRED INTO PRODUCTION HOST | Only as configured in the file; routed by action |
 | Governance Profiles / typed parameters (CORE-03) | WIRED INTO PRODUCTION HOST (optional) | From the governed-action file's `governance` key; validated at startup; absent → nothing classified |
@@ -961,7 +962,7 @@ as a roadmap mechanism (§15).
 | P2–P6 governed-action spine | #127–#132 | 09-19 → 09-21 | Principal binding, orchestrator, adapter routing, emergency control, API/SDK, Generic HTTP adapter | CORE (P2–P5), PAY-neutral execution (P6) | VERIFIED (opt-in) |
 | P7–P12 financial track | #133–#140 | 09-21 → 09-24 | Aggregate controls, event stream, monetary semantics, authority ceilings, durable outcomes, reconciliation | CORE (P7, P9, P10), ASSURE (P8), CORE execution (P11, P12) | VERIFIED (opt-in) |
 | Security Prompt 5 → PRE-00 | #142 | 09-25 | Ed25519 authority artifact authenticity | CORE | PARTIAL (§3.7) |
-| P13 MPP business idempotency | unmerged `24dd264` | — | MPP challenge parser, business-operation store | PAY | Not merged. Input to PAY-02 |
+| P13 MPP business idempotency | unmerged `24dd264` | — | MPP challenge parser, business-operation store | PAY | Not merged. Input to PAY-04 (planned as PAY-02 before the PAY renumbering, §9) |
 
 ### 6.2 Per-item mapping of named historical work
 
@@ -984,7 +985,7 @@ as a roadmap mechanism (§15).
 | Prompt 15: Tamper-evident evidence | ASSURE | PARTIAL | Integrity yes, authenticity no → ASSURE-02 |
 | Prompt 17 / P17: Deployment topology / store-set durability | PROD | VERIFIED | Host topology VERIFIED by PROD-01 (NB-005, GS-003 closed for the shipped Host); store-set backup/restore VERIFIED by PROD-02 (all thirteen stores) |
 | Prompt 18 / 19: Adversarial suite; rogue-agent scenarios | ASSURE | PARTIAL | → CORE-06 qualification, ASSURE-03 |
-| Prompt 20: Customer-controlled signer contract | PAY / CORE | PLANNED | → CORE-02 (authority keys), PAY-03 (transaction signing) |
+| Prompt 20: Customer-controlled signer contract | PAY / CORE | PLANNED | → CORE-02 (authority keys), PAY-03 (transaction signing — delivered for XRPL as the external transaction signer) |
 | Prompt 21 / 22 / 23 / 24: Posture, readiness gate, pentest prep, certification | PROD | PLANNED / DEFERRED | → PROD-03, PROD-04 |
 | P1 | — | Never assigned | No artifact found |
 | P2–P6 | CORE | VERIFIED (opt-in) | See §6.1 |
@@ -993,12 +994,12 @@ as a roadmap mechanism (§15).
 | P9: Canonical monetary semantics | CORE | VERIFIED | Generic, not payment-specific |
 | P10: Authority-sourced payment ceilings | CORE | VERIFIED | Money-typed constraint in CORE; see §8 |
 | P11: Durable monetary outcomes | CORE (execution) | VERIFIED (opt-in) | |
-| P12: Reconciliation / resolution authority | CORE (execution) | VERIFIED (port) | Rail-specific resolvers → PAY-03/04 |
-| P13: MPP + business idempotency | PAY | Unmerged | → PAY-02 |
-| P14: Stripe + credential custody | PAY | DEFERRED (Stripe); PLANNED (credential boundary) | → PAY-03 |
+| P12: Reconciliation / resolution authority | CORE (execution) | VERIFIED (port) | Rail-specific resolvers: XRPL delivered by PAY-03 |
+| P13: MPP + business idempotency | PAY | Unmerged | → PAY-04 (historically mapped to PAY-02) |
+| P14: Stripe + credential custody | PAY | DEFERRED (Stripe); credential boundary DELIVERED for XRPL | Credential boundary → PAY-03 (external customer-controlled transaction signer); Stripe → PAY-09 |
 | P15: Receipts, settlement, payment obligations | PAY | PLANNED | → PAY-05 |
 | P16: Payment observability | PROD | PLANNED | → PROD-04 |
-| P18: XRPL | PAY | PLANNED | → PAY-04 |
+| P18: XRPL | PAY | IMPLEMENTED | → PAY-02 (rail, Testnet) + PAY-03 (production composition); historically mapped to PAY-04 |
 | P19: Containment | PROD | DEFERRED | |
 | P20: KMS/HSM | CORE | **Delivered for the authority key** as a vendor-neutral external-signer boundary (CORE-02); vendor adapters are deployment work | → CORE-02 |
 | TARGET architecture Phases 0–12 | CORE | Phase 0, 7, 8 done; 2–6, 9–12 partial or absent | Superseded as a sequence by this document |
@@ -1024,7 +1025,7 @@ as a roadmap mechanism (§15).
 | Idempotency | `requestId` from `idempotencyKey` (spine) · P13 business-operation identity (unmerged) · Stripe webhook idempotency (passport-web) | Spine vs P13: Intentional (request vs business operation), must be reconciled when P13 lands. Stripe: separate product | PAY-02 |
 | Policy context | Kernel `request.context`, Recognition `PolicyContext`, domain-pack `aoc.context`, `ExerciseControlPolicy`, `GovernedActionGrantPolicy` | Mostly intentional (one per gate). Since CORE-04 the trusted-context object policy reads is the admitted-facts list (`contextFacts` / `restrictiveFacts`); the caller bag stays recognition metadata only | CORE-04 (done) |
 | Advisory vs RiskSignal (future) | `Advisory` (ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY §3, unimplemented) · RiskSignal (§4.4.4, unimplemented) · assurance-runtime typed signals (§7.14 of the threat model; assessment-scoped) | Not duplicated. The admitted schema is a restrict-only fact (CORE-04, done); a candidate RiskSignal must be an `Advisory` kind, not a second advisory shape; assurance signals stay assessment-scoped | INTEL-05 |
-| Challenge normalization / payment intents | Only P13 (unmerged) | Not yet duplicated. Keep it that way | PAY-01/02 |
+| Challenge normalization / payment intents | Only P13 (unmerged) | Not yet duplicated. Keep it that way | PAY-01/04 |
 | Control plane | `src/features/aoc-control-plane` · `packages/control-plane` (orphan) · `control-plane-sdk` (types) · passport-web admin | **Reconciled by CTRL-03:** one shipped control plane — the web console over the Host's operator API; two pure legacy components reused; the legacy library stays library-only, `packages/control-plane` / `control-plane-sdk` stay orphan (TD-4), passport-web stays a separate product (ADR-CTRL-03 §1.1) | CTRL-03 (done) |
 
 ---
@@ -1080,7 +1081,7 @@ Candidate items from the MASTER-00 brief were changed as follows:
   - CORE-01 (revocation integrity, a correctness defect in a merged guarantee).
   - CORE-05 (durable approvals).
   - PROD-01 and PROD-02 (a bootable, recoverable host is a pilot prerequisite that did not appear in the candidate plan).
-- **Split:** "PAY-03 Settlement Rail Boundary + XRPL" into PAY-03 (boundary + credentials) and PAY-04 (XRPL).
+- **Split:** "PAY-03 Settlement Rail Boundary + XRPL" into PAY-03 (boundary + credentials) and PAY-04 (XRPL). *(Historical. Superseded by the PAY numbering map in §9: XRPL was delivered as PAY-02 (rail) and PAY-03 (production composition, credentials, resolution).)*
 - **Deferred:** mobile (CTRL-06/07), and Stripe and other rails beyond the second.
 
 MASTER-01 (2026-09-27) changed the roadmap as follows:
@@ -1122,7 +1123,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Existing reused | `AuthorityArtifactSigner` (async, domain-aware, five operations: `signGrant`, `signRevocation`, `signRevocationState`, `signObligationDischargeState`, `signApprovalState`), `AuthorityArtifactVerifier` and the trusted registry, `createSoftwareAuthorityArtifactSigner` (kept as the explicit `software` custody and reused *inside* the reference custody service), the three signed stores and their sign-outside / re-verify-inside ordering, configuration redaction, the durable emergency stop |
 | Remaining work | (delivered — see below) |
 | Exit criteria | No production composition holds an authority private key in process memory when an external signer is configured. Refusal paths are tested. CORE imports no KMS vendor SDK |
-| Non-goals | Customer transaction-signing keys for rails (PAY-03); signing evidence (ASSURE-02); a PKI |
+| Non-goals | Customer transaction-signing keys for rails (PAY-03 — delivered for XRPL); signing evidence (ASSURE-02); a PKI |
 | Delivered | **Custody is explicit:** `authorityAuthenticity` is `software` (default when no mode is set; key in process, AA-001) or `external` (`AOC_ENTERPRISE_AUTHORITY_SIGNER_MODE=external`: endpoint, service credential, pinned key id, trusted public keys). The external variant has no private-key field; `AOC_ENTERPRISE_AUTHORITY_SIGNING_KEY_PEM` is never read under it and its presence refuses the Host (`HOST_ENVIRONMENT_INVALID`) and the composition; external variables without the mode are refused; no auto-detection, no fallback, no mixed custody (runtime custody brand on signers and stores; the Host refuses a composed signer that is not external). **Software signing remains permitted** in every configuration that does not select `external`, including the secure profile (§11.1 item 3 requires that keys are *not required* to be process-resident, not that external custody is mandatory); posture `authoritySigner` states which runs. **Boundary** (`src/enterprise/external-authority-signer/`, enterprise composition edge): vendor-neutral structured protocol `frontera.external-authority-signer.v1` — a non-signing `GET /v1/identity` and one `POST /v1/sign/<artifact>` per operation, a grant as its canonical bytes (round-trip exact), no byte-signing and no key-export operation; transport port with a bounded HTTP transport (https anywhere, http to loopback only, bearer credential, no redirects, response cap); the external `AuthorityArtifactSigner` keeps the five methods. **Identity:** the pin is the trusted-registry entry (key id, algorithm, SPKI public key), proven before any store opens (exact protocol, artifact version and five operations); mismatch, malformed answer, unsupported algorithm, refused credential or no answer refuses the Host; no TOFU; mid-process key change refused. **Pre-commit verification:** every answer must be the exact envelope under the pinned key id/algorithm and verify locally, over the exact artifact, under the pinned key, before a store sees it; the discharge and approval appends gained an in-transaction read-back. **Failure taxonomy:** closed `EXTERNAL_SIGNER_{TIMEOUT, UNREACHABLE, UNAVAILABLE, AUTHENTICATION_FAILED, REFUSED, IDENTITY_MISMATCH, MALFORMED_RESPONSE, CAPABILITY_UNSUPPORTED, SIGNATURE_INVALID}`; per-attempt timeout (default 5 s) × bounded attempts (default 2, max 3), availability failures only. **Outage:** reads verify locally; issuance, revocation, discharge, approval and genesis write nothing; admin revocation answers `503 AUTHORITY_SIGNER_UNAVAILABLE` with `recorded: false` ("remains exercisable"); emergency stop still works (signer-independent, not a revocation); `/health` `degraded` with `authoritySigner` state/reason from a non-signing probe, `/ready` unaffected; restart with the signer unreachable refuses to start (AA-011). **AA-005:** issuance preflight (already issued, precluded, `commitGuard`) before signing; call budget documented and tested. **Byte compatibility:** external and software signatures identical for all five artifacts; no format, domain, version or schema change. **Reference custody service:** `npm run start:reference-authority-signer` — separate process, owns its key file, writes the public half, loopback only, labelled NOT an HSM; signs through the software signer so `createPrivateKey` stays in one file. **TD-5 decided:** no passport operation on the authority signer; the Host composes no passport signer; passport key role → CTRL-02. ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY; `AUTHORITY_ARTIFACT_AUTHENTICITY.md` §29 (AA-INV-028 … 034, AA-010, AA-011); SEC-INV-147 … 154; threat model §7.16d |
 | Evidence | **Suites (new, 77 tests):** `external-authority-signer-contract` (25: five-op byte parity with the software signer; interface shape and custody brand; reference service offers no generic/raw/key route, refuses unauthenticated and malformed artifacts; handshake — endpoint substitution, same key id with other material, registry substitution, 13-case malformed-capability matrix, no TOFU, unreachable/credential/hang; malicious signer — attacker key, other key id, other algorithm, other grant, truncated, bad base64url, other version, extra field, garbage, empty; 5×4 cross-domain matrix + same-kind replay; still-trusted historical key mid-process; timeouts, retry classes, HTTP status taxonomy with no body/credential echo, transport URL rules, concurrency, budget validation), `-stores` (15: outage writes nothing for issuance/revocation/discharge/approval/genesis and recovers exactly once; real outage — reads verify, mutations refused; untrusted head signature rolled back by read-back; AA-005 call budget; eligibility withdrawn in flight; stale revocation plan re-planned; stale discharge refused; unknown outcome → one transition; rotation software A → external B re-attests each store once externally, retiring A; rotation during outage; transaction-ordering structure), `-configuration` (9), `-host` (12: canonical `bootEnterpriseHost()` with the signer as a **separate process** that generated its own key — no key in env, `process.env` or internal configuration; five operations with exact external counts; every persisted artifact re-verified from public keys alone; kill signer → `/health` degraded, `/ready` 200, reads OK, revoke `503 AUTHORITY_SIGNER_UNAVAILABLE` recorded:false, issuance/discharge/approval write nothing; emergency stop during outage; signer back → revocation commits, one of each, no duplicates; restart up/down; PEM, endpoint, registry and credential refusals), `-structure` (13), `tests/external-authority-signer-launcher` (2: `npm run start:enterprise` under external custody, `/proc/<pid>/environ` holds no private key, `authoritySigner=external`, genesis crossed the process boundary; PEM refused). **Non-vacuity:** 24 deliberate violations (compiled code, or TS source for lexical rules), each restored byte-for-byte (SHA-256); all 24 fail focused tests: external + key accepted (1), software fallback on outage (7), key id trusted without public-key match (2), TOFU (2), algorithm mismatch (1), operation omitted (1), generic `signBytes` on the port (1), local verification skipped (3), malformed signature accepted (2), signer call inside a transaction (1), stale-plan check removed (1), exact-base check removed (1), unsigned grant on outage (4), revocation reported successful on outage (1), partial discharge write (3), partial approval write (3), credential leaked to public config (1), timeout removed (hang — suite cancelled, 1), mid-process key substitution (2), re-attestation skipped (2), external mode reads the key variable (20), read-back removed (1), AA-005 preflight removed (1), Host accepts non-external composed signer (1). A first pass ran the Host/composition suites under a 30 s suite timeout, which cancelled them (rows showed 0 failures of 1 test) and put #10 on the wrong suite; those eleven rows were rerun correctly and are the numbers above. **Pre-existing tests changed deliberately:** the commit-guard ordering test (the preflight asks the guard once before signing; eligibility withdrawn during signing still refuses at commit), the config-flag rule (measures both custody variants), the PROD-01 posture assertion (+`authoritySigner`), and the no-bypass network inventory (EP-056 added, 'eight of fifty-six'). **Regressions:** CORE-01/04/05/PROD-01/CTRL-01 focused suites 422/422 |
 | Residual (owned elsewhere) | **AA-010:** under external custody a compromised Host can still *request* signatures with its service credential while compromised (no independent service-side authorization; the reference service enforces no policy) — "Host compromise cannot mint authority" is not claimed. **AA-004** open: revocation needs the signer (bounded, observable, mitigated by emergency stop; no redundant signers or signer-independent revocation). **AA-002** narrowed: signer↔verifier agreement proven at startup, but endpoint + registry + configuration rewritten together still control trust (no independent configuration trust root). **AA-006:** `ed25519-v1` only (provider must support Ed25519 or sit behind a custody server). **AA-011:** restart during a signer outage does not start. No vendor KMS/HSM adapter ships; the shipped transport has no mTLS/workload identity. Software custody remains resident (AA-001) by choice. Passport key role (CTRL-02). Rollback across restart (CORE-07) |
@@ -1212,7 +1213,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Field | Content |
 |---|---|
 | Status | **VERIFIED** (2026-09-30, branch `feat/core-08-action-neutrality-qualification`) — **GOVERNED ACTION THESIS PROVEN → ACHIEVED** (§11.6) |
-| Depends on | CORE-03 (hard) — VERIFIED, CORE-04 (hard) — VERIFIED, CORE-05 (hard) — VERIFIED, CORE-06 (soft: reuse its adversarial and no-bypass harness) — VERIFIED; one monetary execution path (PAY-04 preferred, Generic HTTP acceptable — §11.6) |
+| Depends on | CORE-03 (hard) — VERIFIED, CORE-04 (hard) — VERIFIED, CORE-05 (hard) — VERIFIED, CORE-06 (soft: reuse its adversarial and no-bypass harness) — VERIFIED; one monetary execution path (the XRPL rail, PAY-02/PAY-03, preferred; Generic HTTP acceptable — §11.6) |
 | Purpose | The gate for **GOVERNED ACTION THESIS PROVEN** (§11.6): prove action neutrality — the same deterministic core governs materially different action/resource domains |
 | Existing reused | Generic HTTP adapter (P6) for non-monetary domains; P9/P10 for the monetary domain; structural boundary tests; the orchestrator scenario suites |
 | Remaining work | Three reference domains expressed only through Governance Profiles, organization policy, context sources, domain validation and adapters. A structural test that the Kernel and orchestrator contain no domain branching. Cross-domain denial, over-bound, revoked-mid-flight and missing-context cases |
@@ -1234,9 +1235,45 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Existing reused | `GovernedActionIntent`, `MonetaryAmount`, asset registry, classifier, `idempotencyKey`, P10 ceilings |
 | Remaining work | Payee/instrument reference, rail preference, expiry, purpose/memo. Structured asset namespace/issuer parsing kept in PAY (L-8). The mapping to envelope parameters |
 | Exit criteria | A payment intent governs through the unchanged spine. No new CORE field. Structural tests forbid PAY imports in CORE |
-| Non-goals | Protocol parsing (PAY-02), rails (PAY-03/04) |
+| Non-goals | Protocol parsing (PAY-04), rails (PAY-02/PAY-03) |
 
-**PAY-02: Payment Protocol Adapter Boundary + MPP**
+**PAY numbering — current roadmap and historical mapping (reconciled by PAY-03).**
+The PAY sequence below was planned (MASTER-01) as PAY-02 protocol boundary + MPP,
+PAY-03 rail boundary + credentials, PAY-04 XRPL. Delivery took a different order:
+the rail port landed in PAY-01, the XRPL rail was delivered first as **PAY-02**, and
+its production composition — the credential boundary and the rail resolution
+authority among it — as **PAY-03**. The code wins; the planning text is kept below
+the map, marked historical.
+
+| Planned as (MASTER-01, historical) | Current milestone | Status |
+|---|---|---|
+| PAY-01 Canonical Payment Intent | PAY-01 | IMPLEMENTED |
+| PAY-04 XRPL Rail Adapter | **PAY-02** XRPL / RLUSD Payment Rail Adapter | IMPLEMENTED (Testnet-qualified) |
+| PAY-03 Settlement Rail Boundary & Execution Credential Boundary | rail port: PAY-01 · signer port and finality mapping: PAY-02 · credential boundary, P12 rail resolver, production composition: **PAY-03** · rail conformance suite: PAY-07 | IMPLEMENTED for XRPL; conformance suite PLANNED |
+| PAY-02 Payment Protocol Adapter Boundary + MPP (P13) | **PAY-04** Payment Protocol Adapter Boundary + MPP | PLANNED |
+| PAY-05 … PAY-09 | PAY-05 … PAY-09 (unchanged numbers) | as below |
+
+**PAY-02: XRPL / RLUSD Payment Rail Adapter**
+
+| Field | Content |
+|---|---|
+| Status | IMPLEMENTED — `src/features/payment-runtime/rails/xrpl/`; `docs/payments/XRPL_RLUSD_RAIL.md`; `ADR-XRPL-RLUSD-PAYMENT-RAIL.md`; EP-069 (PR #176) |
+| Depends on | PAY-01 (hard) |
+| Delivered | A `PaymentRail` under the PAY-01 bridge: XRPL issued-currency `Payment` construction, one submission and no retry, mainnet only with `network: mainnet` **and** `allowMainnet: true`, finality mapping onto P11 certainty, P12-compatible `unconfirmed`, per-source in-process sequencing, an `XrplTransactionSigner` port, real XRPL Testnet execution |
+| Left to PAY-03 | Production signer, Host composition, restart-safe sequence protection, XRPL P12 resolution authority |
+| Non-goals | AMM, DEX, escrow, XLS-65/66 (CREDIT), Lightning, x402 |
+
+**PAY-03: Production XRPL Composition, External Transaction Signing & Durable Reconciliation**
+
+| Field | Content |
+|---|---|
+| Status | IMPLEMENTED — `src/enterprise/xrpl-payment-rail/`; `docs/payments/XRPL_PRODUCTION_COMPOSITION.md`; `ADR-XRPL-PRODUCTION-COMPOSITION.md`; EP-070 |
+| Depends on | PAY-02 (hard), CORE-02 (pattern), P12 (port, unchanged), PROD-02 (registry) |
+| Delivered | Explicit Host composition from the governed-action file's `xrplPaymentRail` through the existing adapter registry and P12; the external customer-controlled transaction signer (`frontera.external-xrpl-transaction-signer.v1`: one operation, identity pinned, blob verified locally under the pinned key) — the Host holds no customer key; a durable XRPL submission interlock written before every submission (cross-restart, cross-process, backed up and restored) and a ledger-based restart quarantine; the read-only P12 XRPL resolution authority; runtime-dependency packaging; health modules; a reference signer process for Testnet qualification |
+| Residual | Restart-quarantine availability cost; an execution crashed before its durable reservation stays P12-unresolved; one Host per state volume (no distributed locking); no mTLS signer transport; no mainnet qualification |
+| Non-goals | Lightning, x402, AMM / DEX, TrustSet automation, multi-rail routing, wallet UI, Frontera-held keys, any retry or resubmission |
+
+**PAY-04: Payment Protocol Adapter Boundary + MPP** *(planned as PAY-02 under MASTER-01)*
 
 | Field | Content |
 |---|---|
@@ -1248,34 +1285,18 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Exit criteria | An MPP challenge produces a governed payment intent. No `mpp*` symbol exists in CORE |
 | Non-goals | x402 (PAY-08), credentials, rails |
 
-**PAY-03: Settlement Rail Boundary & Execution Credential Boundary**
+*Historical planning text (MASTER-01), superseded by the map above and kept for provenance:*
 
-| Field | Content |
-|---|---|
-| Status | PLANNED |
-| Depends on | PAY-01 (hard), CORE-02 (soft: reuse the external-signer pattern) |
-| Purpose | Define the rail adapter port (destination, fees, finality, provider-certainty mapping, resolution authority) and how transaction credentials are held **without** Frontera holding customer keys (Security Prompt 20) |
-| Existing reused | `ExecutionAdapter` port, registry routing, `executionId` as provider idempotency handle, P11 certainty, P12 `ExecutionResolutionAuthority` port |
-| Remaining work | The rail port. A customer-controlled transaction-signer port. A per-rail resolution authority contract. A rail conformance suite (modelled on `provider-conformance-suite`) |
-| Exit criteria | A fake rail passes the conformance suite. No rail symbol exists in CORE |
-| Non-goals | Any real rail |
-
-**PAY-04: XRPL Rail Adapter**
-
-| Field | Content |
-|---|---|
-| Status | PLANNED |
-| Depends on | PAY-03 |
-| Remaining work | XRPL client in an adapter package. Payment submission via the external transaction signer. Tx-hash resolution authority (P12). Finality mapping to P11 certainty. Issued-asset registry entries (e.g. RLUSD) as configuration |
-| Exit criteria | Testnet payment governed end to end, including an unconfirmed → resolved path |
-| Non-goals | AMM, DEX, escrow, XLS-65/66 (CREDIT) |
+> **PAY-03: Settlement Rail Boundary & Execution Credential Boundary** — PLANNED; depends on PAY-01 (hard), CORE-02 (soft). Purpose: define the rail adapter port (destination, fees, finality, provider-certainty mapping, resolution authority) and how transaction credentials are held **without** Frontera holding customer keys (Security Prompt 20). Remaining work: the rail port; a customer-controlled transaction-signer port; a per-rail resolution authority contract; a rail conformance suite. Exit: a fake rail passes the conformance suite; no rail symbol in CORE.
+>
+> **PAY-04: XRPL Rail Adapter** — PLANNED; depends on PAY-03. Remaining work: XRPL client in an adapter package; payment submission via the external transaction signer; tx-hash resolution authority (P12); finality mapping to P11 certainty; issued-asset registry entries (e.g. RLUSD) as configuration. Exit: Testnet payment governed end to end, including an unconfirmed → resolved path. Non-goals: AMM, DEX, escrow, XLS-65/66.
 
 **PAY-05: Settlement, Receipt & Payment Obligation Semantics**
 
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | PAY-04, CORE-04 — VERIFIED |
+| Depends on | PAY-03, CORE-04 — VERIFIED |
 | Purpose | Former P15: receipts, a settlement state machine, finality, refunds, payment obligations discharged through CORE-04 obligations |
 | Exit criteria | "settled" means funds finality with evidence, distinct from P7 capacity settlement |
 
@@ -1284,7 +1305,7 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | PAY-03 (hard), PAY-05 (soft) |
+| Depends on | PAY-01 rail port and PAY-03 production pattern (hard), PAY-05 (soft) |
 | Purpose | The second, structurally different rail (§ below) |
 | Remaining work | bolt11 decode, node integration via an adapter, preimage as settlement evidence, routing-fee bounds, HTLC-timeout → P11 certainty |
 | Exit criteria | The same CORE, unchanged, governs Lightning |
@@ -1294,7 +1315,8 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | PAY-04, PAY-06, ASSURE-01 |
+| Depends on | PAY-03, PAY-06, ASSURE-01 |
+| Remaining work | The rail conformance suite (modelled on `provider-conformance-suite`; from the MASTER-01 PAY-03 plan), run against both rails — including a check that the XRPL rail, delivered first, did not shape the port |
 | Exit criteria | §11.2 |
 
 **PAY-08: x402 Protocol Adapter**
@@ -1302,8 +1324,8 @@ MASTER-01 (2026-09-27) changed the roadmap as follows:
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | PAY-02 |
-| Note | Parallelizable with PAY-04/06 |
+| Depends on | PAY-04 (the protocol adapter boundary) |
+| Note | Parallelizable with PAY-05/06 |
 
 **PAY-09: Stripe / fiat rail**
 
@@ -1327,7 +1349,7 @@ that would expose rail-specific authority logic:
 
 If P10 ceilings, P11 certainty and P12 resolution govern both unchanged, neutrality is
 demonstrated. Prerequisites: PAY-01 and PAY-03 (so neither adapter shapes the
-port), and P11 certainty mapping for in-flight HTLCs. A second
+port — the XRPL rail was delivered first, so PAY-07's conformance suite checks it did not), and P11 certainty mapping for in-flight HTLCs. A second
 *account-based* rail (EVM, Stellar) would prove less.
 
 ### CREDIT
@@ -1363,7 +1385,7 @@ port), and P11 certainty mapping for in-flight HTLCs. A second
 | Field | Content |
 |---|---|
 | Status | PLANNED |
-| Depends on | CREDIT-03, PAY-04 (soft: shared XRPL client) |
+| Depends on | CREDIT-03, PAY-02/PAY-03 (soft: shared XRPL client) |
 
 **CREDIT-05: XLS-66 Loan Adapter + Repayment Obligations**
 
@@ -1646,13 +1668,13 @@ CORE-01✓ ──► CORE-02✓ ──► CORE-07✓
    └┄┄► CORE-03✓ ──► CORE-04✓ ┄┄► CORE-05✓
            │           │
            │           └───────────────────────────┐
-           ├──► PAY-01 ──► PAY-02 ──► PAY-08       │
-           │       └────► PAY-03 ──► PAY-04 ──► PAY-05 ◄── CORE-04
-           │                 └────► PAY-06 ◄┄┄ PAY-05
-           │                        PAY-04 + PAY-06 + ASSURE-01 ──► PAY-07
+           ├──► PAY-01✓ ──► PAY-02✓ ──► PAY-03✓ ──► PAY-05 ◄── CORE-04
+           │       ├────► PAY-04 ──► PAY-08        │
+           │       └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄► PAY-06 ◄┄┄ PAY-05 (PAY-06 ◄── PAY-03 pattern)
+           │                        PAY-03 + PAY-06 + ASSURE-01 ──► PAY-07
            └──► CREDIT-01 ──► CREDIT-02 ◄── CORE-04
                     └──► CREDIT-03 ◄┄┄ PAY-03
-                             └──► CREDIT-04 ◄┄┄ PAY-04
+                             └──► CREDIT-04 ◄┄┄ PAY-02/PAY-03
                                      └──► CREDIT-05 ◄── CORE-04, ◄┄┄ PAY-05
                                              └──► CREDIT-06 ──► CREDIT-07 ◄── ASSURE-01
 
@@ -1679,7 +1701,7 @@ and (via CORE-05 → CTRL-04 and CORE-06) PILOT READY.
 |---|---|---|
 | **Critical pilot path** | CORE-03 → CORE-04 → CORE-05 → CORE-06, joined by CTRL-02 → CTRL-03 → CTRL-04 (needs CORE-05), PROD-02, ASSURE-01 → PROD-03 | PILOT READY (§11.3) |
 | **Governed Action Thesis path** | CORE-03 → CORE-04 → CORE-05 → CORE-08 — all VERIFIED | GOVERNED ACTION THESIS PROVEN (§11.6) — **ACHIEVED** 2026-09-30 |
-| **Rail-neutrality path** | CORE-03 → PAY-01 → PAY-03 → PAY-04 / PAY-06 (+ PAY-02, PAY-05, ASSURE-01) → PAY-07, on GOVERNANCE CORE STABLE | CORE PROVEN (§11.2) |
+| **Rail-neutrality path** | CORE-03 → PAY-01 → PAY-02 → PAY-03 → PAY-06 (+ PAY-04, PAY-05, ASSURE-01) → PAY-07, on GOVERNANCE CORE STABLE | CORE PROVEN (§11.2) |
 | **Intelligence path** | CORE-03 → INTEL-01 / INTEL-02 → INTEL-03; CORE-04 → INTEL-04; ASSURE-01 → ASSURE-04 → INTEL-05 → INTEL-06 | adaptive containment; not a pilot blocker |
 | **Credit path** | CORE-03 → CREDIT-01 … CREDIT-07 | CREDIT THESIS PROVEN (§11.4) |
 
@@ -1730,7 +1752,7 @@ that is GOVERNED ACTION THESIS PROVEN (§11.6), and the two share no criteria.
 
 Requires GOVERNANCE CORE STABLE, plus:
 
-1. One representative flow runs end to end on **XRPL (PAY-04)** and on **Lightning (PAY-06)**:
+1. One representative flow runs end to end on **XRPL (PAY-02 / PAY-03)** and on **Lightning (PAY-06)**:
    agent → protocol requirement (MPP) → `PaymentIntent` → governed-action envelope →
    authority/policy/ceiling → grant → rail → settlement result → evidence.
 2. **CORE source is byte-identical between the two runs.** Rail-specific
@@ -1763,7 +1785,7 @@ Requires:
 - polished onboarding automation.
 
 A pilot may govern **Generic HTTP actions only**. It does not require PAY
-unless the pilot's use case is payments, in which case PAY-01 … PAY-04 are added.
+unless the pilot's use case is payments, in which case PAY-01 … PAY-03 (delivered) and PAY-04 are added.
 
 **MASTER-01 re-evaluation: INTEL is not required for PILOT READY.** A valid
 pilot uses deterministic policy, manually configured or source-resolved trusted
@@ -1812,7 +1834,7 @@ Requires CORE-03, CORE-04 and CORE-05 VERIFIED, plus:
    end on the same Host. Representative (substitutable, provided semantic
    diversity is kept):
    - **Treasury:** transfer × monetary asset (e.g. XRP), exercising P9/P10
-     ceilings; execution via XRPL (PAY-04) when available, otherwise any
+     ceilings; execution via XRPL (PAY-02 / PAY-03, now available), otherwise any
      governed monetary adapter — rail neutrality is not what is being proven.
    - **DevOps:** deploy × production environment, via an HTTP /
      Kubernetes-like adapter, with material facts such as change window and
@@ -1900,8 +1922,8 @@ composition (`bootEnterpriseHost({ policyPackProvider })`).
 - **CTRL-01 → CTRL-03** need stable authority/control APIs only. They do **not** need any PAY work.
 - **After CORE-03:**
   - PAY-01 and CREDIT-01 (design) can proceed in parallel.
-  - PAY rail work (PAY-03/04/06) and CREDIT-02/03 are independent until CREDIT-04, which shares the XRPL client with PAY-04.
-- **PAY-08 (x402)** is parallel to PAY-04/06.
+  - PAY rail work (PAY-06; PAY-02/03 delivered) and CREDIT-02/03 are independent until CREDIT-04, which shares the XRPL client with PAY-02/PAY-03.
+- **PAY-08 (x402)** follows PAY-04 and is parallel to PAY-05/06.
 - **PROD-02** — VERIFIED 2026-10-02.
 - **MASTER-01:** CTRL-02 runs in parallel with CORE-03 (soft dependency only on
   CORE-03's bound schemas). ASSURE-01 → ASSURE-04 can run alongside CORE-03/04.
@@ -1985,7 +2007,7 @@ composition (`bootEnterpriseHost({ policyPackProvider })`).
 | Root `PROMPT_1..5_*_RESULT.md` | Historical records; preserved for provenance |
 | "Not in Pn" lists in P9–P12 ADRs (P13–P21) | Historical; mapping §6.2. ADR bodies remain authoritative for their mechanisms |
 | `CURRENT_STATE_*` docs, `ADR-ACCESS-LIFECYCLE.md` phases, `docs/release/*` next-step sections, SK005 deck | Historical |
-| Unmerged branch `feat/p13-mpp-business-idempotency` | Input to PAY-02; not to be merged as-is |
+| Unmerged branch `feat/p13-mpp-business-idempotency` | Input to PAY-04 (historically PAY-02); not to be merged as-is |
 | `ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY.md` hard invariants 4 and 7, §7; `ADR-AUTHORITY-CONTROL-LAYERING.md` layer G | In force. Narrowed in *direction* by MASTER-01 for restrict-only admitted RiskSignals only (§4.4.6); superseded for those clauses only when INTEL-06 lands its ADR |
 
 **Rules:**

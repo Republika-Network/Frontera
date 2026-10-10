@@ -49,7 +49,10 @@ export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
  *   variable is set explicitly and its file exists; a file at its default path
  *   with the variable unset is reported (`present-not-configured`), never
  *   silently skipped. (The condition keeps its PROD-02 name, which manifests
- *   already record.)
+ *   already record.) Since PAY-03 the Host also composes it whenever the file
+ *   configures `xrplPaymentRail` (the read-only XRPL resolution authority).
+ * - `xrpl-payment-rail` — the file configures `xrplPaymentRail` (PAY-03): the
+ *   durable XRPL submission interlock.
  */
 export const STORE_CONDITIONS = Object.freeze([
   'always',
@@ -59,6 +62,7 @@ export const STORE_CONDITIONS = Object.freeze([
   'approvals-declared',
   'operators-configured',
   'embedder-reconciliation',
+  'xrpl-payment-rail',
 ]);
 
 /**
@@ -256,6 +260,23 @@ export const STORE_DEFINITIONS = Object.freeze([
     lossEffect: 'bindings would have to be re-inferred and resolutions lost (reconciliation diverges)',
   },
   {
+    name: 'xrpl-submission-interlock',
+    filename: 'xrpl-submission-interlock.sqlite',
+    envVar: 'AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH',
+    configKey: 'xrplInterlock.sqlitePath',
+    configPathOf: (config) => config.xrplInterlock.sqlitePath,
+    targetFilename: 'xrpl-submission-interlock.sqlite',
+    condition: 'xrpl-payment-rail',
+    purpose: 'PAY-03: every XRPL Payment signed for an execution, recorded before its one submission, with its sequence window and settlement',
+    version: { kind: 'versions-table', table: 'xrpl_interlock_store_versions', migrationState: true },
+    supportedSchemaVersionsOf: ({ xrplInterlock }) => [xrplInterlock.XRPL_INTERLOCK_STORE_SCHEMA_VERSION],
+    recordTable: 'xrpl_submissions',
+    integrity: 'identity and state digests, forward-only lifecycle triggers, append-only transition log (unsigned; rollback bounded by the rail restart quarantine, not CORE-07)',
+    // No scope: verification adopts the file's own recorded scope, verifies every record and creates nothing.
+    open: ({ factories }, path) => factories.xrplInterlock.createSqliteXrplSubmissionInterlock(path, { now: () => new Date().toISOString() }),
+    lossEffect: 'an unresolved XRPL submission is forgotten: a second payment could compete for its sequence until its LastLedgerSequence passes (bounded by the restart quarantine), and P12 can no longer resolve it from the ledger',
+  },
+  {
     name: 'obligation-discharges',
     filename: 'obligation-discharges.sqlite',
     envVar: 'AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH',
@@ -363,6 +384,11 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
     reason: 'External-custody signer key: lives with the signer service, never with the Host data.',
   },
   {
+    name: 'reference-xrpl-signer-key-file',
+    envVar: 'FRONTERA_REFERENCE_XRPL_SIGNER_KEY_FILE',
+    reason: 'PAY-03: the reference XRPL signer\'s key lives with that signer process, never with the Host data. The Host refuses to start with it in its environment.',
+  },
+  {
     name: 'policy-packs',
     envVar: null,
     reason: 'Composed in-process by the embedder; no durable store exists on the Host.',
@@ -449,7 +475,9 @@ export function deriveDeploymentRequirements(env, configuration) {
     approvalsDeclared: governedActions && profiles.some((profile) => profile !== null && typeof profile === 'object' && profile.approval !== undefined),
     operatorsConfigured: governedActions && Array.isArray(file.operators) && file.operators.length > 0,
     // PROD-03-02: the Host composes P12 (operator attestation) exactly when it serves an operator plane.
-    executionReconciliation: governedActions && Array.isArray(file.operators) && file.operators.length > 0,
+    // PAY-03: and whenever it composes the XRPL rail (the XRPL resolution authority).
+    executionReconciliation: governedActions && ((Array.isArray(file.operators) && file.operators.length > 0) || file.xrplPaymentRail !== undefined),
+    xrplPaymentRail: governedActions && file.xrplPaymentRail !== undefined,
     governedActionsFileDigest: fileDigest,
     secretReferenceEnvVars: [...secretReferences].sort(),
   };
@@ -473,6 +501,8 @@ export function conditionHolds(condition, requirements) {
       return requirements.governedActions === true && requirements.operatorsConfigured === true;
     case 'embedder-reconciliation':
       return requirements.executionReconciliation === true;
+    case 'xrpl-payment-rail':
+      return requirements.governedActions === true && requirements.xrplPaymentRail === true;
     default:
       // An unknown condition is a registry defect; refusing is the only safe reading.
       throw new DeploymentRequirementsError(`Unknown store condition '${String(condition)}'.`);
@@ -520,6 +550,7 @@ export async function loadRegistryModules(repoRoot) {
     approvals: await required('enterprise/approval-authority/contracts.js'),
     controlPlane: await required('enterprise/operator-control/control-plane-store.js'),
     evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
+    xrplInterlock: await required('enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js'),
     authenticity: await required('enterprise/authority-authenticity/index.js'),
   };
   cachedModules.factories = {
@@ -533,6 +564,7 @@ export async function loadRegistryModules(repoRoot) {
     approvals: await required('enterprise/approval-authority/index.js'),
     controlPlane: await required('enterprise/operator-control/control-plane-store.js'),
     evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
+    xrplInterlock: await required('enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js'),
   };
   return cachedModules;
 }

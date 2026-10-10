@@ -14,6 +14,7 @@ import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, t
 import { GovernedActionConfigurationError } from '../governed-action/errors.js';
 import { composeGovernedTrust, type ObligationConfiguration, type TrustedContextConfiguration } from '../trusted-context/index.js';
 import type { MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
+import { XrplHostConfigurationProblem, parseXrplPaymentRailSection, type EnterpriseHostXrplPaymentRailConfiguration } from '../xrpl-payment-rail/host-configuration.js';
 
 /**
  * The Enterprise Host's configuration: the environment
@@ -113,6 +114,13 @@ export interface EnterpriseHostGovernedActionConfiguration {
    * resolves. Absent: every configured profile is active, as before.
    */
   readonly profileLifecycle?: 'operator-promoted';
+  /**
+   * PAY-03 — the production XRPL / RLUSD payment rail. Absent: no XRPL rail is
+   * composed and the Host is unchanged. Present: validated in full here
+   * (`xrpl-payment-rail/host-configuration.ts`) and composed at boot through
+   * the existing adapter registry and P12, or the Host refuses.
+   */
+  readonly xrplPaymentRail?: EnterpriseHostXrplPaymentRailConfiguration;
 }
 
 export interface EnterpriseHostConfiguration {
@@ -276,7 +284,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
   closedKeys(
     parsed,
-    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes'],
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail'],
     'the file',
   );
   if (parsed.version !== 1) invalid('version must be 1.');
@@ -393,6 +401,24 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     routes.set(action, text(entry.adapterId, `${where}.adapterId`));
   });
 
+  // PAY-03: validated completely now — rail, signer pins, credential reference,
+  // route and P7 coupling — so a mis-configured rail stops the Host here.
+  let xrplPaymentRail: EnterpriseHostXrplPaymentRailConfiguration | undefined;
+  if (parsed.xrplPaymentRail !== undefined) {
+    try {
+      xrplPaymentRail = parseXrplPaymentRailSection(env, parsed.xrplPaymentRail, { routes, financialActions: monetary.financialActions, assets: monetary.assets });
+    } catch (error) {
+      if (error instanceof XrplHostConfigurationProblem) {
+        if (error.kind === 'secret-unresolved') throw new EnterpriseHostConfigurationError('HOST_SECRET_REFERENCE_UNRESOLVED', error.message);
+        invalid(error.message);
+      }
+      throw error;
+    }
+    if (genericHttpAdapters.some((adapter) => (adapter as { readonly adapterId?: unknown }).adapterId === xrplPaymentRail?.rail.railId)) {
+      invalid(`genericHttpAdapters reuses the XRPL rail's adapter id '${xrplPaymentRail.rail.railId}'.`);
+    }
+  }
+
   return {
     governedActions: {
       trustDomainId,
@@ -405,6 +431,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
       genericHttpAdapters,
       routes,
       ...(profileLifecycle !== undefined ? { profileLifecycle } : {}),
+      ...(xrplPaymentRail !== undefined ? { xrplPaymentRail } : {}),
     },
     customerKeys: customerPrincipals,
     administrators,
@@ -550,6 +577,14 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     }
     if (governed.routes.size === 0) {
       throw new EnterpriseHostConfigurationError('HOST_EXECUTION_ROUTE_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: routes must route at least one action to an adapter.`);
+    }
+    // PAY-03: the sequence interlock exists to survive a restart. In memory it
+    // would not, so the rail is never composed over non-durable persistence.
+    if (governed.xrplPaymentRail !== undefined && configuration.persistence.provider !== 'sqlite') {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_PERSISTENCE_NOT_DURABLE',
+        `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplPaymentRail requires AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite — its submission interlock must survive a restart, or a second payment could compete with an unconfirmed one.`,
+      );
     }
   }
 

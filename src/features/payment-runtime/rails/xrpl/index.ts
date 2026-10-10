@@ -13,7 +13,7 @@
 export { XRPL_DESTINATION_KINDS, isXrplClassicAddress, parseXrplDestination } from './xrpl-address.js';
 export type { XrplDestination } from './xrpl-address.js';
 export { XRPL_ISSUED_VALUE_LIMITS, canonicalDecimalOfLedgerValue, xrplIssuedValueOf } from './xrpl-amount.js';
-export { isXrplTransactionHash, signedPaymentMatches } from './xrpl-codec.js';
+export { isXrplSigningPublicKey, isXrplTransactionHash, signedByPinnedKey, signedPaymentMatches } from './xrpl-codec.js';
 export { XRPL_NETWORK_IDS, XRPL_RAIL_LIMITS, XRPL_RLUSD_RAIL_ID, XrplRailConfigurationError, createXrplRlusdRailConfiguration, isXrplCurrencyCode, isXrplRlusdRailConfiguration } from './xrpl-config.js';
 export type { XrplNetwork, XrplRlusdRailConfiguration, XrplRlusdRailConfigurationInput } from './xrpl-config.js';
 export { XrplSubmissionNotAttemptedError } from './xrpl-client-port.js';
@@ -25,5 +25,7 @@ export type { XrplRailDetail } from './xrpl-rail-details.js';
 export { readAutofill, readLedgerIndex, readLookup, readNetworkId, readSubmission } from './xrpl-result-normalizer.js';
 export type { XrplExpectedPayment, XrplLookupReading, XrplSubmissionReading } from './xrpl-result-normalizer.js';
 export { createXrplRlusdRail } from './xrpl-rlusd-rail.js';
+export { XRPL_INTERLOCK_SETTLEMENTS, XRPL_RESTART_QUARANTINE_MARGIN } from './xrpl-submission-interlock.js';
+export type { XrplInterlockSettlement, XrplSubmissionInterlock, XrplSubmissionRecordInput, XrplSubmissionReservation } from './xrpl-submission-interlock.js';
 export type { XrplRailLogger, XrplRailReadiness, XrplRlusdRail, XrplRlusdRailOptions } from './xrpl-rlusd-rail.js';
 export { createXrplSdkClient } from './xrpl-sdk-client.js';

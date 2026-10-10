@@ -467,6 +467,17 @@ until the cause is fixed; it never becomes ready.
   image.
 - Mounted secret files (`*_FILE` variables).
 - Store schema downgrade.
+- A payment rail. The kit is rail-neutral (D14 / O15): its governed-action file
+  configures no `xrplPaymentRail`. The XRPL / RLUSD rail (PAY-03) is a Host
+  feature, **opt-in** and not part of the qualified kit: adding the section to
+  `governed-actions.json` (example: `examples/payments/governed-actions.xrpl-testnet.example.json`)
+  composes it, with its submission interlock already placed on the state
+  volume (`AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH` is listed with every
+  other store, so a backup sees one layout). The kit ships **no XRPL signer**:
+  the external transaction signer is the customer's custody service, a
+  separate process with its own key, reachable by the Host only; the Host
+  refuses to start with any XRPL key material in its environment. See
+  `docs/payments/XRPL_PRODUCTION_COMPOSITION.md`.
 
 ## 18. Qualification
 
