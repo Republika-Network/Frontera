@@ -121,13 +121,15 @@ export const RIPPLE_EPOCH_UNIX_SECONDS = 946_684_800;
  * index `V` only when
  *
  * ```
- * close_time(validated ledger V − XRPL_RESTART_QUARANTINE_LEDGERS) ≥ start + XRPL_RESTART_ANCHOR_SLACK_SECONDS
+ * (a) close_time(validated ledger V − XRPL_RESTART_QUARANTINE_LEDGERS) ≥ start + XRPL_RESTART_ANCHOR_SLACK_SECONDS
+ * (b) V ≥ F + XRPL_RESTART_QUARANTINE_LEDGERS, F = the first validated index the rail observed
  * ```
  *
- * (one ledger read by index; once true for some ledger, every later `V` past
- * it by the window passes without another read). Otherwise — including when
- * that ledger cannot be read, is not validated, or is malformed — it refuses
- * with nothing signed.
+ * ((a) is one ledger read by index; once true for some ledger, every later `V`
+ * past it by the window passes without another read. `F` is read by the
+ * Host's boot readiness, or else by the first preparation.) Otherwise —
+ * including when that ledger cannot be read, is not validated, or is
+ * malformed — it refuses with nothing signed.
  *
  * Why this holds even when the interlock file was rolled back, restored from
  * an old backup, or the configuration changed:
@@ -148,14 +150,19 @@ export const RIPPLE_EPOCH_UNIX_SECONDS = 946_684_800;
  *    transaction's `LastLedgerSequence` has been validated, and it can never
  *    be included.
  *
- * Nothing has to observe the ledger at a particular moment: the check reads
- * history, so a Host nobody probed during the quarantine is no slower out of
- * it.
+ * Step 3 trusts this host's clock not to be behind the network's close time
+ * by more than the slack allows. Rule (b) is an independent proof of the same
+ * conclusion that trusts the server instead: `F` was observed after the start,
+ * so if that server was current then, `F ≥ N0 ≥ vP` and `V ≥ F + window`
+ * again gives `V > vP + oP + margin`. Both must hold, so the quarantine ends
+ * early only if this host's clock is slow **and** the server it read `F` from
+ * was lagging — never through either fault alone, and never through the
+ * configuration.
  *
  * Assumptions: the configured XRPL server is trusted to report validated
  * ledgers (the rail's general trust in it) and keeps at least the window's
- * worth of recent history (every rippled does); this host's clock is not
- * behind the network's close time by more than the slack allows.
+ * worth of recent history (every rippled does); and at least one of the two
+ * independent witnesses above holds.
  *
  * Cost: XRPL payments are refused (`xrpl-restart-quarantine`) for roughly the
  * slack plus 204 ledgers (≈ 15–17 min) after each start.

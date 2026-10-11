@@ -196,10 +196,12 @@ prepares a payment at validated index `V` only when the validated ledger
 `V − 204` (`XRPL_RESTART_QUARANTINE_LEDGERS`: the historical maximum
 `lastLedgerOffset`, 200, plus a margin of 4) has a consensus `close_time` at
 least 180 s after the rail started — one ledger read by index, cached once it
-passes. Otherwise, and whenever that ledger cannot be read, is not validated
-or is malformed, it refuses with nothing signed (`xrpl-restart-quarantine`).
-Nothing has to observe the ledger at a particular moment: the check reads
-history, so a Host nobody probed is no slower out of the quarantine.
+passes — **and** `V` is at least 204 ledgers past the first validated index
+the rail observed (the Host reads it at boot; a rail never probed reads it at
+its first preparation and counts from there). Otherwise, and whenever that
+ledger cannot be read, is not validated or is malformed, it refuses with
+nothing signed (`xrpl-restart-quarantine`). Past the boot read, nothing has to
+observe the ledger at a particular moment: the close-time check reads history.
 
 The proof (`xrpl-submission-interlock.ts`) needs nothing from the local file
 or the current configuration:
@@ -218,13 +220,25 @@ or the current configuration:
   passes, every earlier transaction's window has been validated, and it can
   never be included.
 
+That argument trusts the Host's clock (step 3). The progress floor is a
+second, independent proof that trusts the boot server instead: the first
+index `F` was read after the start, so a current server gives `F ≥ N0 ≥ vP`,
+and `V ≥ F + 204` again gives `V > vP + oP + 4`. Both are required, so the
+quarantine can end early only if the Host's clock is behind the network's
+close time by more than the slack (≈ 2 min) **and** the server read at boot
+was lagging — neither fault alone, and no configuration change, can do it
+(qualified: a Host clock an hour slow with a current server, and a server
+1,000 ledgers behind with a correct clock, both stay refused through the lost
+window).
+
 Lowering `lastLedgerOffset` therefore cannot shorten it, and a stale restore
 or rollback that lost an unresolved record cannot reopen sequence reuse. Cost:
 XRPL payments are refused for roughly 180 s + 204 ledgers (≈ 15–17 min) after
 each start; the Host composes, serves and reports health meanwhile.
 Assumptions: the configured XRPL server is trusted to report validated
-ledgers (as everywhere in the rail), and the Host's clock is not behind the
-network's close time by more than the slack allows (≈ 2 min).
+ledgers (as everywhere in the rail), and at least one of the two witnesses
+holds — the Host's clock (keep it NTP-synchronized) or a server that is
+current at boot.
 
 **Cross-process.** Supported concurrency model: any number of Host processes
 on **one shared state** (one SQLite file on one host). `reserve` is a single

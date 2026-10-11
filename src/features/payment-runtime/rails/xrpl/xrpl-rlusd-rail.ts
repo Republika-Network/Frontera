@@ -186,15 +186,28 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
    * reported; no observation at the right moment needed. So a transaction an
    * earlier process signed — under any configuration, whose record a rollback
    * or stale restore might have lost — has provably left its window.
+   *
+   * And, independently, the validated ledger must have progressed a full
+   * window past the first validated index this rail observed (the Host's boot
+   * readiness, or else the first preparation). The close-time rule alone
+   * trusts this host's clock; this floor alone trusts the boot server not to
+   * lag. Requiring both, an early release needs a slow clock **and** a lagging
+   * boot server at once.
    */
   const startedAt: unknown = typeof client.now === 'function' ? client.now() : now();
   if (interlock !== undefined && (typeof startedAt !== 'number' || !Number.isSafeInteger(Math.floor(startedAt)) || startedAt <= 0)) throw new XrplRailConfigurationError('client', 'the clock the restart quarantine compares ledger close times against must answer a positive time');
   const startedAtCloseTime = Math.floor((startedAt as number) / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + XRPL_RESTART_ANCHOR_SLACK_SECONDS;
+  /** The first validated index this rail observed: the progress floor. */
+  let firstObserved: number | undefined;
+  const observeValidated = (index: number): void => {
+    if (firstObserved === undefined) firstObserved = index;
+  };
   /** The lowest ledger proven to have closed after the start. Every `V ≥ proven + window` is past the quarantine with no further read. */
   let proven: number | undefined;
   /** Whether the quarantine still holds at validated index `validated`. Throws when the ledger cannot be read: the caller refuses. */
   async function quarantined(validated: number): Promise<boolean> {
     if (interlock === undefined) return false;
+    if (firstObserved === undefined || validated < firstObserved + XRPL_RESTART_QUARANTINE_LEDGERS) return true;
     if (proven !== undefined && validated >= proven + XRPL_RESTART_QUARANTINE_LEDGERS) return false;
     const candidate = validated - XRPL_RESTART_QUARANTINE_LEDGERS;
     if (candidate < 1) return true;
@@ -259,11 +272,14 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     return { status: 'ready' };
   }
 
+  /** Readiness also sets the restart quarantine's progress floor when an interlock is composed: the Host calls it at boot. */
   async function readiness(): Promise<XrplRailReadiness> {
     const connected = await ensureConnected();
     if (connected.status !== 'ready' || interlock === undefined) return connected;
     try {
-      if (readLedgerIndex(await client.validatedLedgerIndex()) === undefined) return { status: 'unavailable', detail: D.PREPARATION_INVALID };
+      const index = readLedgerIndex(await client.validatedLedgerIndex());
+      if (index === undefined) return { status: 'unavailable', detail: D.PREPARATION_INVALID };
+      observeValidated(index);
     } catch {
       return { status: 'unavailable', detail: D.NETWORK_UNAVAILABLE };
     }
@@ -282,6 +298,7 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
       throw new Refusal(F.PROVIDER_UNAVAILABLE, D.PREPARATION_FAILED);
     }
     if (validated === undefined) throw new Refusal(F.PROVIDER_RESPONSE_INVALID, D.PREPARATION_INVALID);
+    observeValidated(validated);
     let held: boolean;
     try {
       held = await quarantined(validated);
