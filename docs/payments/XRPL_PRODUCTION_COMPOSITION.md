@@ -252,7 +252,9 @@ witness-anchored, and does not claim to be. A stale restore that loses an open
 record cannot reopen sequence reuse: the restart quarantine above covers every
 transaction submitted before the restored process started, under any
 `lastLedgerOffset` it was configured with, and whatever the restored file or
-the current configuration says.
+the current configuration says. The quarantine is a property of a **start**:
+a restore is applied with every Host on that state stopped
+(`docs/deployment/PILOT_DEPLOYMENT.md`), never underneath a running one.
 
 ## 10. P12 XRPL resolution authority
 
