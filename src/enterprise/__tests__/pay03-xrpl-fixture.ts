@@ -4,7 +4,14 @@ import { join } from 'node:path';
 
 import { decode, hashes } from 'xrpl';
 
-import { RIPPLE_EPOCH_UNIX_SECONDS, XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction } from '../../features/payment-runtime/rails/xrpl/index.js';
+import {
+  RIPPLE_EPOCH_UNIX_SECONDS,
+  XRPL_RESTART_ANCHOR_SLACK_SECONDS,
+  XRPL_RESTART_QUARANTINE_LEDGERS,
+  XrplSubmissionNotAttemptedError,
+  type XrplClientPort,
+  type XrplPaymentTransaction,
+} from '../../features/payment-runtime/rails/xrpl/index.js';
 import { TREASURY } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 
 /**
@@ -31,15 +38,16 @@ export interface SimulatedTransaction {
 }
 
 export interface LedgerSimulator extends XrplClientPort {
-  /** The validated ledger index the server reports. */
-  index: number;
   /**
-   * The validated ledger's consensus close time (seconds since the Ripple
-   * epoch) the server reports. `undefined`: a current server — the ledger
-   * closed an hour from now on the wall clock, so it always anchors. Set it to
-   * play a server that is still syncing or lagging behind the network.
+   * The validated ledger index the server reports. Raising it beyond any index
+   * reported before **closes** the new ledgers, one every
+   * `SIMULATED_LEDGER_SECONDS` on the simulator's clock, which moves forward
+   * with them; lowering it plays a server lagging behind ledgers that already
+   * closed (their close times stay what they were).
    */
-  closeTime: number | undefined;
+  index: number;
+  /** The simulator's wall clock (ms since the Unix epoch): real time plus the time the simulated ledgers took to close. The rail's restart quarantine reads it (the client port's `now`). */
+  now(): number;
   /** The account's next sequence, as autofill reads it. Advances when a transaction validates (success or tec). */
   sequence: number;
   networkId: number;
@@ -54,21 +62,51 @@ export interface LedgerSimulator extends XrplClientPort {
   malformedLookups: boolean;
   readonly transactions: Map<string, SimulatedTransaction>;
   readonly submitted: string[];
-  readonly calls: { connect: number; serverInfo: number; validatedLedgerIndex: number; validatedLedgerHeader: number; autofill: number; submit: number; lookup: number; disconnect: number };
+  readonly calls: { connect: number; serverInfo: number; validatedLedgerIndex: number; ledgerHeader: number; autofill: number; submit: number; lookup: number; disconnect: number };
   /** Moves a transaction to a validated outcome (advancing the sequence when it validates). */
   validate(hash: string, outcome: 'success' | 'tec'): void;
 }
 
+/** Seconds between simulated ledger closes. */
+export const SIMULATED_LEDGER_SECONDS = 4;
+
+/**
+ * Validated ledgers past a rail's start before its restart quarantine is over
+ * on the simulator: the ledgers that close during the anchor slack, plus the
+ * quarantine window.
+ */
+export const SIMULATED_RESTART_QUARANTINE = XRPL_RESTART_QUARANTINE_LEDGERS + Math.ceil(XRPL_RESTART_ANCHOR_SLACK_SECONDS / SIMULATED_LEDGER_SECONDS);
+
 export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'index' | 'sequence' | 'networkId'>> = {}): LedgerSimulator {
-  const calls = { connect: 0, serverInfo: 0, validatedLedgerIndex: 0, validatedLedgerHeader: 0, autofill: 0, submit: 0, lookup: 0, disconnect: 0 };
+  const calls = { connect: 0, serverInfo: 0, validatedLedgerIndex: 0, ledgerHeader: 0, autofill: 0, submit: 0, lookup: 0, disconnect: 0 };
+  // The simulated wall clock: real time plus the seconds the simulated ledgers took to close.
+  let advancedMs = 0;
+  const clockNow = (): number => Date.now() + advancedMs;
+  const rippleSeconds = (ms: number): number => Math.floor(ms / 1000) - RIPPLE_EPOCH_UNIX_SECONDS;
+  let reported = initial.index ?? 1000;
+  let highest = reported;
+  // Ledgers up to the initial index closed in the past, one every SIMULATED_LEDGER_SECONDS, the last one now.
+  const genesis = { index: highest, closeTime: rippleSeconds(clockNow()) };
+  const closed = new Map<number, number>();
+  const closeTimeOf = (index: number): number => closed.get(index) ?? genesis.closeTime - SIMULATED_LEDGER_SECONDS * (genesis.index - index);
   const transactions = new Map<string, SimulatedTransaction>();
   const submitted: string[] = [];
   const unreachable = (): never => {
     throw new Error('simulated: server unreachable');
   };
   const simulator: LedgerSimulator = {
-    index: initial.index ?? 1000,
-    closeTime: undefined,
+    get index(): number {
+      return reported;
+    },
+    set index(next: number) {
+      for (let index = highest + 1; index <= next; index += 1) {
+        advancedMs += SIMULATED_LEDGER_SECONDS * 1000;
+        closed.set(index, rippleSeconds(clockNow()));
+      }
+      highest = Math.max(highest, next);
+      reported = next;
+    },
+    now: clockNow,
     sequence: initial.sequence ?? 7,
     networkId: initial.networkId ?? 1,
     submitMode: 'accept',
@@ -102,10 +140,11 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
       if (simulator.unavailable) unreachable();
       return simulator.index;
     },
-    async validatedLedgerHeader() {
-      calls.validatedLedgerHeader += 1;
+    async ledgerHeader(index: number) {
+      calls.ledgerHeader += 1;
       if (simulator.unavailable) unreachable();
-      return { ledger_index: simulator.index, close_time: simulator.closeTime ?? Math.floor(Date.now() / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + 3600 };
+      if (index > reported) return { ledger_index: index, validated: false };
+      return { ledger_index: index, close_time: closeTimeOf(index), validated: true };
     },
     async autofill(transaction: XrplPaymentTransaction) {
       calls.autofill += 1;

@@ -8,7 +8,6 @@ import Database from 'better-sqlite3';
 
 import type { PaymentExecutionRequest } from '../../features/payment-runtime/index.js';
 import {
-  RIPPLE_EPOCH_UNIX_SECONDS,
   XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET,
   XRPL_RAIL_DETAILS as D,
   XRPL_RAIL_LIMITS,
@@ -23,7 +22,7 @@ import {
 import { GOVERNED_ACCOUNT, OTHER_SOURCE, RLUSD_ASSET, TREASURY, VENDOR, createTestSoftwareXrplSigner, testClock, testConfiguration } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { createSqliteXrplSubmissionInterlock, type DurableXrplSubmissionInterlock } from '../xrpl-payment-rail/sqlite-xrpl-submission-interlock.js';
 import { createXrplResolutionAuthority, readOnlyXrplLedger } from '../xrpl-payment-rail/xrpl-resolution-authority.js';
-import { createLedgerSimulator, scratch, type LedgerSimulator } from './pay03-xrpl-fixture.js';
+import { SIMULATED_LEDGER_SECONDS, SIMULATED_RESTART_QUARANTINE, createLedgerSimulator, scratch, type LedgerSimulator } from './pay03-xrpl-fixture.js';
 
 /**
  * PAY-03 — the durable submission interlock, the write order and the restart
@@ -47,7 +46,7 @@ const CONFIGURATION = testConfiguration({
   finalityTimeoutMs: 5_000,
   pollIntervalMs: 1_000,
 });
-const QUARANTINE = XRPL_RESTART_QUARANTINE_LEDGERS;
+const QUARANTINE = SIMULATED_RESTART_QUARANTINE;
 const SCOPE = { railId: CONFIGURATION.railId, networkId: CONFIGURATION.networkId };
 const iso = (): string => new Date().toISOString();
 
@@ -192,7 +191,7 @@ describe('PAY-03 interlock qualification (I1–I15)', () => {
     const firstStore = await openStore(path);
     const firstRail = createXrplRlusdRail({ configuration: wide, client: ledger, signers: [createTestSoftwareXrplSigner(TREASURY), createTestSoftwareXrplSigner(OTHER_SOURCE)], interlock: firstStore, ...testClock() });
     await firstRail.readiness();
-    ledger.index += 204;
+    ledger.index += QUARANTINE;
     assert.equal((await firstRail.execute(request())).status, 'unconfirmed');
     await firstStore.close();
 
@@ -600,17 +599,17 @@ describe('PAY-03 restart quarantine: independent of the current lastLedgerOffset
   const withOffset = (lastLedgerOffset: number) => testConfiguration({ sourceAccounts: CONFIGURATION.sourceAccounts.map((mapping) => ({ ...mapping })), lastLedgerOffset, finalityTimeoutMs: 5_000, pollIntervalMs: 1_000 });
   const freshSigners = () => [createTestSoftwareXrplSigner(TREASURY), createTestSoftwareXrplSigner(OTHER_SOURCE)];
   const detailOf = (outcome: unknown): string | undefined => (outcome as { detail?: string }).detail;
+  const anInterlock = (): XrplSubmissionInterlock => ({ recorded: async () => undefined, blocking: async () => false, reserve: async () => ({ outcome: 'reserved' }), markUnconfirmed: async () => {}, settle: async () => {} });
 
-  it('the quarantine is the historical maximum window plus margin, and the historical bound never falls below what configuration accepts', () => {
+  it('the quarantine window is the historical maximum offset plus margin, the historical bound never falls below what configuration accepts, and the rail refuses a durable interlock it cannot prove the quarantine for', () => {
     assert.ok(XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET >= XRPL_RAIL_LIMITS.lastLedgerOffset.maximum, 'raise XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET with the limit; never lower it');
     assert.equal(XRPL_RESTART_QUARANTINE_LEDGERS, XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET + XRPL_RESTART_QUARANTINE_MARGIN);
     const ledger = createLedgerSimulator();
-    const { validatedLedgerHeader: _omitted, ...headerless } = ledger;
-    assert.throws(
-      () => createXrplRlusdRail({ configuration: CONFIGURATION, client: headerless as never, signers: freshSigners(), interlock: { recorded: async () => undefined, blocking: async () => false, reserve: async () => ({ outcome: 'reserved' }), markUnconfirmed: async () => {}, settle: async () => {} } }),
-      /validatedLedgerHeader/,
-      'a durable interlock without a close-time-capable client is refused at composition',
-    );
+    const { ledgerHeader: _header, ...headerless } = ledger;
+    assert.throws(() => createXrplRlusdRail({ configuration: CONFIGURATION, client: headerless as never, signers: freshSigners(), interlock: anInterlock() }), /ledgerHeader/, 'no close-time-capable client');
+    for (const broken of [() => Number.NaN, () => -1, () => 'now' as never]) {
+      assert.throws(() => createXrplRlusdRail({ configuration: CONFIGURATION, client: { ...ledger, ledgerHeader: ledger.ledgerHeader, now: broken } as never, signers: freshSigners(), interlock: anInterlock() }), /clock/, 'a clock that could make every ledger look fresh');
+    }
   });
 
   it('T1–T7: a transaction signed under lastLedgerOffset 200 and lost by a stale restore keeps a restart configured with offset 4 refusing until the 200-ledger window is closed', async () => {
@@ -642,8 +641,8 @@ describe('PAY-03 restart quarantine: independent of the current lastLedgerOffset
     const narrow = withOffset(4);
     const store = await openStore(path);
     const signers = freshSigners();
-    const rail = createXrplRlusdRail({ configuration: narrow, client: ledger, signers, interlock: store, ...testClock() });
     const restartIndex = ledger.index;
+    const rail = createXrplRlusdRail({ configuration: narrow, client: ledger, signers, interlock: store, ...testClock() });
     await rail.readiness();
     ledger.nextOutcome = 'success';
 
@@ -657,9 +656,9 @@ describe('PAY-03 restart quarantine: independent of the current lastLedgerOffset
     assert.equal(signers[0]!.signCount, 0, 'nothing signed');
     assert.equal(ledger.calls.submit, 1, 'nothing submitted');
 
-    // T7: beyond the maximum possible historical window, the lost transaction can never be included: a new execution proceeds.
+    // T7: beyond the maximum possible historical window (and the slack), the lost transaction can never be included: a new execution proceeds.
     ledger.index = restartIndex + QUARANTINE;
-    assert.ok(ledger.index >= lostTx.lastLedgerSequence + XRPL_RESTART_QUARANTINE_MARGIN);
+    assert.ok(ledger.index > lostTx.lastLedgerSequence + XRPL_RESTART_QUARANTINE_MARGIN);
     lostTx.outcome = 'dropped';
     const next = await rail.execute(request());
     assert.equal(next.status, 'completed');
@@ -667,7 +666,7 @@ describe('PAY-03 restart quarantine: independent of the current lastLedgerOffset
     await store.close();
   });
 
-  it('a server that is lagging when the Host starts cannot anchor the quarantine early: only a ledger that closed after the start anchors it', async () => {
+  it('a server lagging behind the network when the Host restarts cannot end the quarantine early: only ledgers that closed after the restart count', async () => {
     const ledger = createLedgerSimulator({ index: 10_000 });
     // A prior process, on a current server, signs under offset 200; its record is then lost (the restarted process gets an empty store).
     const priorStore = await openStore(join(tmp.dir(), 'prior.sqlite'));
@@ -678,35 +677,27 @@ describe('PAY-03 restart quarantine: independent of the current lastLedgerOffset
     const lost = await prior.execute(request());
     const lostTx = ledger.transactions.get((lost as { externalReference: string }).externalReference)!;
     await priorStore.close();
-
-    // The restart reaches a server 1,000 ledgers behind the network, whose newest validated ledger closed an hour ago.
-    const started = Date.now();
-    const rippleNow = Math.floor(started / 1000) - RIPPLE_EPOCH_UNIX_SECONDS;
     const network = ledger.index;
+
+    // The restart reaches a server 1,000 ledgers behind the network.
     ledger.index = network - 1_000;
-    ledger.closeTime = rippleNow - 3_600;
     const store = await openStore(join(tmp.dir(), 'restarted.sqlite'));
     const signers = freshSigners();
-    const rail = createXrplRlusdRail({ configuration: withOffset(4), client: ledger, signers, interlock: store, ...testClock(started) });
+    const rail = createXrplRlusdRail({ configuration: withOffset(4), client: ledger, signers, interlock: store, ...testClock() });
     await rail.readiness();
     ledger.nextOutcome = 'success';
 
-    // The server catches up — far past "first observed index + window" — but every ledger it reports closed before the start: no anchor, refused.
+    // It catches up — far past "its first index + window" — but every ledger it reports closed before the restart: refused.
     for (const index of [network - 1_000 + QUARANTINE, network, lostTx.lastLedgerSequence - 1]) {
       ledger.index = index;
-      assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE, `no anchor yet at ${index}`);
+      assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE, `still refused at ${index}`);
     }
-    // A ledger that closed before start + slack still does not anchor.
-    ledger.closeTime = rippleNow + XRPL_RESTART_ANCHOR_SLACK_SECONDS - 1;
+    // The network moves on: refused until the ledger a full window back closed after the restart plus slack.
+    const slackLedgers = Math.ceil(XRPL_RESTART_ANCHOR_SLACK_SECONDS / SIMULATED_LEDGER_SECONDS);
+    ledger.index = network + slackLedgers + XRPL_RESTART_QUARANTINE_LEDGERS - 1;
     assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE);
-    // Current now: the first ledger closed after start + slack anchors, and the full window runs from it.
-    ledger.closeTime = rippleNow + XRPL_RESTART_ANCHOR_SLACK_SECONDS;
-    const anchor = ledger.index;
-    assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE);
-    ledger.index = anchor + QUARANTINE - 1;
-    assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE);
-    assert.equal(signers[0]!.signCount, 0, 'nothing signed while the anchor was unproven or the window open');
-    ledger.index = anchor + QUARANTINE;
+    assert.equal(signers[0]!.signCount, 0, 'nothing signed while the window could still be open');
+    ledger.index = network + QUARANTINE;
     assert.ok(ledger.index > lostTx.lastLedgerSequence);
     lostTx.outcome = 'dropped';
     assert.equal((await rail.execute(request())).status, 'completed');
@@ -714,17 +705,31 @@ describe('PAY-03 restart quarantine: independent of the current lastLedgerOffset
     await store.close();
   });
 
-  it('an unreadable or malformed ledger header never anchors: refused, nothing signed', async () => {
+  it('the quarantine needs no observation at the right moment: a rail nobody probed passes it as soon as the history proves it', async () => {
     const ledger = createLedgerSimulator();
     const store = await openStore(join(tmp.dir(), 'interlock.sqlite'));
-    const signers = freshSigners();
-    const malformed = { ...ledger, validatedLedgerHeader: async () => ({ ledger_index: ledger.index, close_time: 'soon' }) };
-    const rail = createXrplRlusdRail({ configuration: CONFIGURATION, client: malformed, signers, interlock: store, ...testClock() });
-    await rail.readiness();
-    ledger.index += QUARANTINE * 3;
-    assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE);
-    assert.equal(signers[0]!.signCount, 0);
-    assert.equal(ledger.calls.submit, 0);
+    const rail = createXrplRlusdRail({ configuration: CONFIGURATION, client: ledger, signers: freshSigners(), interlock: store, ...testClock() });
+    // No readiness, no health, no attempt during the quarantine: the first look comes after it.
+    ledger.index += QUARANTINE;
+    assert.equal((await rail.execute(request())).status, 'completed');
     await store.close();
+  });
+
+  it('an unreadable, unvalidated or malformed ledger header never ends the quarantine: refused, nothing signed', async () => {
+    for (const answer of [async () => Promise.reject(new Error('unreachable')), async () => ({ ledger_index: 1, close_time: 2 ** 40, validated: false }), async () => ({ ledger_index: 1, close_time: 'soon', validated: true }), async () => ({ ledger_index: 2, close_time: 2 ** 40, validated: true })]) {
+      const ledger = createLedgerSimulator();
+      const store = await openStore(join(tmp.dir(), 'interlock.sqlite'));
+      const signers = freshSigners();
+      const client = Object.assign(Object.create(null) as object, {
+        connect: ledger.connect, disconnect: ledger.disconnect, serverInfo: ledger.serverInfo, validatedLedgerIndex: ledger.validatedLedgerIndex, autofill: ledger.autofill, submit: ledger.submit, lookupTransaction: ledger.lookupTransaction, now: ledger.now,
+        ledgerHeader: answer,
+      });
+      const rail = createXrplRlusdRail({ configuration: CONFIGURATION, client: client as never, signers, interlock: store, ...testClock() });
+      ledger.index += QUARANTINE * 3;
+      assert.equal(detailOf(await rail.execute(request())), D.RESTART_QUARANTINE);
+      assert.equal(signers[0]!.signCount, 0);
+      assert.equal(ledger.calls.submit, 0);
+      await store.close();
+    }
   });
 });

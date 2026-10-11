@@ -96,18 +96,18 @@ export const XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET = 200;
 export const XRPL_RESTART_QUARANTINE_MARGIN = 4;
 
 /**
- * The restart quarantine, in validated ledgers past the anchor. Independent
- * of the **current** `lastLedgerOffset`: lowering the offset can never
- * shorten it below the window of a transaction an earlier process signed.
+ * The restart quarantine's window, in validated ledgers. Independent of the
+ * **current** `lastLedgerOffset`: lowering the offset can never shorten it
+ * below the window of a transaction an earlier process signed.
  */
 export const XRPL_RESTART_QUARANTINE_LEDGERS = XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET + XRPL_RESTART_QUARANTINE_MARGIN;
 
 /**
- * How long after the rail started (its own clock) a validated ledger must
- * have closed (the network's consensus `close_time`) before it can anchor the
- * quarantine. Covers close-time rounding (at most half the largest close-time
- * resolution, 120 s) plus up to 120 s of disagreement between this host's
- * clock and the network's close time.
+ * How long after the rail started (its own clock) the ledger that opens the
+ * quarantine must have closed (the network's consensus `close_time`). Covers
+ * close-time rounding (at most half the largest close-time resolution, 120 s)
+ * plus up to 120 s of disagreement between this host's clock and the
+ * network's close time.
  */
 export const XRPL_RESTART_ANCHOR_SLACK_SECONDS = 180;
 
@@ -117,15 +117,17 @@ export const RIPPLE_EPOCH_UNIX_SECONDS = 946_684_800;
 /*
  * ## The restart quarantine (PAY-03; the ledger is its own freshness witness)
  *
- * With a durable interlock composed, the rail prepares nothing until
+ * With a durable interlock composed, the rail prepares a payment at validated
+ * index `V` only when
  *
  * ```
- * validatedIndex ≥ anchor + XRPL_RESTART_QUARANTINE_LEDGERS
+ * close_time(validated ledger V − XRPL_RESTART_QUARANTINE_LEDGERS) ≥ start + XRPL_RESTART_ANCHOR_SLACK_SECONDS
  * ```
  *
- * where `anchor` is the index of the first validated ledger this rail
- * observed whose `close_time ≥ start + XRPL_RESTART_ANCHOR_SLACK_SECONDS`.
- * Until such a ledger is seen, everything is refused.
+ * (one ledger read by index; once true for some ledger, every later `V` past
+ * it by the window passes without another read). Otherwise — including when
+ * that ledger cannot be read, is not validated, or is malformed — it refuses
+ * with nothing signed.
  *
  * Why this holds even when the interlock file was rolled back, restored from
  * an old backup, or the configuration changed:
@@ -140,14 +142,19 @@ export const RIPPLE_EPOCH_UNIX_SECONDS = 946_684_800;
  * 3. Ledger close times never decrease with the sequence, and `N0` closed
  *    before this rail started; so a validated ledger that closed after the
  *    start plus slack has a sequence above `N0` — **however far behind the
- *    server was when the rail first asked** (a syncing or lagging server
- *    simply provides no anchor until it is current).
- * 4. Hence `anchor + XRPL_RESTART_QUARANTINE_LEDGERS > vP + oP + margin`:
- *    once the quarantine passes, the earlier transaction's
- *    `LastLedgerSequence` has been validated, and it can never be included.
+ *    server was when the rail started** (a lagging server's ledgers simply
+ *    closed too early to pass the check).
+ * 4. Hence `V − window > N0 ≥ vP`, i.e. `V > vP + oP + margin`: every earlier
+ *    transaction's `LastLedgerSequence` has been validated, and it can never
+ *    be included.
+ *
+ * Nothing has to observe the ledger at a particular moment: the check reads
+ * history, so a Host nobody probed during the quarantine is no slower out of
+ * it.
  *
  * Assumptions: the configured XRPL server is trusted to report validated
- * ledgers (the rail's general trust in it), and this host's clock is not
+ * ledgers (the rail's general trust in it) and keeps at least the window's
+ * worth of recent history (every rippled does); this host's clock is not
  * behind the network's close time by more than the slack allows.
  *
  * Cost: XRPL payments are refused (`xrpl-restart-quarantine`) for roughly the

@@ -102,12 +102,12 @@ export function readLedgerIndex(raw: unknown): number | undefined {
   return typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
 }
 
-/** PAY-03: a validated ledger's index and consensus close time (seconds since the Ripple epoch), or `undefined` when either is absent or malformed. */
+/** PAY-03: a **validated** ledger's index and consensus close time (seconds since the Ripple epoch), or `undefined` when it is not validated or either fact is absent or malformed. */
 export function readLedgerHeader(raw: unknown): { readonly index: number; readonly closeTime: number } | undefined {
   const header = recordOf(raw);
   const index = readLedgerIndex(header?.['ledger_index']);
   const closeTime = header?.['close_time'];
-  if (index === undefined || typeof closeTime !== 'number' || !Number.isSafeInteger(closeTime) || closeTime < 0) return undefined;
+  if (header?.['validated'] !== true || index === undefined || typeof closeTime !== 'number' || !Number.isSafeInteger(closeTime) || closeTime < 0) return undefined;
   return { index, closeTime };
 }
 

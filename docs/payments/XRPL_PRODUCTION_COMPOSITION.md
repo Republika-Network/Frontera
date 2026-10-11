@@ -53,7 +53,7 @@ With `xrplPaymentRail`, `bootEnterpriseHost` (before `createEnterprise`):
 | 2 | opens the durable interlock and verifies every record | `XRPL_INTERLOCK_UNAVAILABLE` (refuse) |
 | 3 | proves the external signer's identity against the pins | mismatch → `XRPL_SIGNER_IDENTITY_MISMATCH` (refuse); unreachable → start **degraded** |
 | 4 | builds two SDK clients (rail; read-only resolver) | — |
-| 5 | composes the PAY-02 rail with the interlock; `readiness()` connects, checks `network_id`, looks for the restart quarantine's close-time-proven anchor (and on every health refresh) | network mismatch → `XRPL_NETWORK_MISMATCH` (refuse); unreachable → **degraded** |
+| 5 | composes the PAY-02 rail with the interlock; `readiness()` connects, checks `network_id`, reads the validated index | network mismatch → `XRPL_NETWORK_MISMATCH` (refuse); unreachable → **degraded** |
 | 6 | wraps it in PAY-01's `createPaymentRailExecutionAdapter` and adds it to the **existing** execution-adapter registry, reachable only by its configured route | — |
 | 7 | composes P12 with the XRPL resolution authority (plus operator attestation when operators are configured) | — |
 
@@ -192,12 +192,14 @@ All qualified in `pay03-xrpl-interlock.test.ts` (and C9 in `pay03-xrpl-host.test
 ## 9. Restart, cross-process, rollback and freshness
 
 **Restart quarantine.** When composed with the durable interlock, the rail
-prepares nothing until the validated ledger has advanced
-`XRPL_RESTART_QUARANTINE_LEDGERS` = **204** ledgers (the historical maximum
-`lastLedgerOffset`, 200, plus a margin of 4) past an **anchor**: the first
-validated ledger this process observed whose consensus `close_time` is at
-least 180 s after the rail started. Until such a ledger is seen, everything is
-refused (`xrpl-restart-quarantine`).
+prepares a payment at validated index `V` only when the validated ledger
+`V − 204` (`XRPL_RESTART_QUARANTINE_LEDGERS`: the historical maximum
+`lastLedgerOffset`, 200, plus a margin of 4) has a consensus `close_time` at
+least 180 s after the rail started — one ledger read by index, cached once it
+passes. Otherwise, and whenever that ledger cannot be read, is not validated
+or is malformed, it refuses with nothing signed (`xrpl-restart-quarantine`).
+Nothing has to observe the ledger at a particular moment: the check reads
+history, so a Host nobody probed is no slower out of the quarantine.
 
 The proof (`xrpl-submission-interlock.ts`) needs nothing from the local file
 or the current configuration:
@@ -210,10 +212,11 @@ or the current configuration:
 - close times never decrease with the sequence and `N0` closed before the
   start, so a ledger that closed after the start (plus slack for close-time
   rounding and clock disagreement) is above `N0` — **however far behind the
-  server was when the rail first asked**: a syncing or lagging server simply
-  provides no anchor until it is current;
-- so `anchor + 204 > vP + oP + 4`: once the quarantine passes, every earlier
-  transaction's window has been validated, and it can never be included.
+  server was when the rail started**: a lagging server's ledgers simply
+  closed too early to pass the check;
+- so `V − 204 > N0 ≥ vP`, i.e. `V > vP + oP + 4`: once the quarantine
+  passes, every earlier transaction's window has been validated, and it can
+  never be included.
 
 Lowering `lastLedgerOffset` therefore cannot shorten it, and a stale restore
 or rollback that lost an unresolved record cannot reopen sequence reuse. Cost:

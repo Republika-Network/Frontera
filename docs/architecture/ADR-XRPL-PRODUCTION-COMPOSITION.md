@@ -48,11 +48,11 @@ holding a customer key or accepting that gap.
    window is open; every release is a ledger fact. It is in the PROD-02 store
    registry, backed up and restored.
 4. **A restart quarantine instead of witness anchoring.** With the interlock
-   composed, the rail prepares nothing until the validated ledger has passed
-   204 ledgers (the historical maximum `lastLedgerOffset`, 200, + 4) beyond an
-   anchor ledger that provably closed after the start (its consensus
-   `close_time`, plus slack) — never the current, mutable offset, never a
-   possibly lagging server's first answer. Any transaction from before the
+   composed, the rail prepares at validated index `V` only once the validated
+   ledger `V − 204` (the historical maximum `lastLedgerOffset`, 200, + 4)
+   provably closed after the start (its consensus `close_time`, plus slack) —
+   never the current, mutable offset, never a possibly lagging server's first
+   answer, and with no need to observe the ledger at a particular moment. Any transaction from before the
    restart — under any configuration, even one whose record a rollback or a
    stale restore lost — has then left its window. The ledger is the freshness
    witness; the interlock is not CORE-07 anchored. Cost: ≈ 15–17 min without

@@ -48,13 +48,20 @@ export interface XrplClientPort {
    */
   validatedLedgerIndex(timeoutMs?: number): Promise<unknown>;
   /**
-   * PAY-03: the most recent validated ledger's header facts, raw —
-   * `{ ledger_index, close_time }`, `close_time` in seconds since the Ripple
-   * epoch (2000-01-01T00:00:00Z), as the network agreed it. Read only by the
-   * restart quarantine's anchor, and required only when the rail is composed
-   * with a durable interlock.
+   * PAY-03: the header facts of the ledger with sequence `index`, raw —
+   * `{ ledger_index, close_time, validated }`, `close_time` in seconds since
+   * the Ripple epoch (2000-01-01T00:00:00Z), as the network agreed it. Read
+   * only by the restart quarantine, and required only when the rail is
+   * composed with a durable interlock. A read; never anything else.
    */
-  validatedLedgerHeader?(timeoutMs?: number): Promise<unknown>;
+  ledgerHeader?(index: number, timeoutMs?: number): Promise<unknown>;
+  /**
+   * PAY-03, trusted composition seam for deterministic qualification: the
+   * wall-clock time (ms since the Unix epoch) the restart quarantine compares
+   * ledger close times against — so a simulated ledger and its clock agree.
+   * The SDK client has none: the process clock is used.
+   */
+  now?(): number;
   /** Fills `Sequence` and `Fee` from the ledger. Must not change any field the rail set. */
   autofill(transaction: XrplPaymentTransaction): Promise<unknown>;
   /**

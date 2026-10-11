@@ -37,9 +37,9 @@ export interface XrplRlusdRailOptions {
    * PAY-03: the durable submission interlock. When composed, every submission
    * is durably reserved before it is made, an open record from **any**
    * process or any earlier run blocks a competing sequence, and the rail
-   * observes a restart quarantine (`XRPL_RESTART_QUARANTINE_LEDGERS` past a
-   * close-time-proven anchor; the client must then implement
-   * `validatedLedgerHeader`). Absent,
+   * observes a restart quarantine (`XRPL_RESTART_QUARANTINE_LEDGERS`, proven
+   * by ledger close times; the client must then implement `ledgerHeader`).
+   * Absent,
    * the rail keeps PAY-02's in-process protection only — the Host never
    * composes it that way.
    */
@@ -174,28 +174,35 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     for (const method of ['recorded', 'blocking', 'reserve', 'markUnconfirmed', 'settle'] as const) {
       if (typeof interlock?.[method] !== 'function') throw new XrplRailConfigurationError('interlock', `must implement ${method}`);
     }
-    if (typeof client.validatedLedgerHeader !== 'function') throw new XrplRailConfigurationError('client', 'must implement validatedLedgerHeader when composed with a durable interlock');
+    if (typeof client.ledgerHeader !== 'function') throw new XrplRailConfigurationError('client', 'must implement ledgerHeader when composed with a durable interlock');
   }
 
   /**
-   * PAY-03 restart quarantine (proof in `xrpl-submission-interlock.ts`). The
-   * anchor is the first validated ledger this rail instance observed that
-   * **closed after it started** (plus slack) — never merely the first one a
-   * possibly lagging server reported. Nothing is prepared until the validated
-   * ledger has passed the anchor by the historical maximum window, never the
-   * current, mutable `lastLedgerOffset`: so a transaction an earlier process
-   * signed, under any configuration and whose record a rollback or stale
-   * restore might have lost, has provably left its window.
+   * PAY-03 restart quarantine (proof in `xrpl-submission-interlock.ts`): a
+   * payment may be prepared at validated index `V` only once the validated
+   * ledger `V − XRPL_RESTART_QUARANTINE_LEDGERS` provably **closed after this
+   * rail started** (its consensus `close_time`, plus slack). Never the current,
+   * mutable `lastLedgerOffset`; never the first index a possibly lagging server
+   * reported; no observation at the right moment needed. So a transaction an
+   * earlier process signed — under any configuration, whose record a rollback
+   * or stale restore might have lost — has provably left its window.
    */
-  const startedAtCloseTime = Math.floor(now() / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + XRPL_RESTART_ANCHOR_SLACK_SECONDS;
-  let anchor: number | undefined;
-  /** Reads the validated ledger header until a fresh anchor is found. Throws when the server cannot be read. */
-  async function observeAnchor(): Promise<void> {
-    if (interlock === undefined || anchor !== undefined) return;
-    const header = readLedgerHeader(await client.validatedLedgerHeader!());
-    if (header !== undefined && header.closeTime >= startedAtCloseTime) anchor = header.index;
+  const startedAt: unknown = typeof client.now === 'function' ? client.now() : now();
+  if (interlock !== undefined && (typeof startedAt !== 'number' || !Number.isSafeInteger(Math.floor(startedAt)) || startedAt <= 0)) throw new XrplRailConfigurationError('client', 'the clock the restart quarantine compares ledger close times against must answer a positive time');
+  const startedAtCloseTime = Math.floor((startedAt as number) / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + XRPL_RESTART_ANCHOR_SLACK_SECONDS;
+  /** The lowest ledger proven to have closed after the start. Every `V ≥ proven + window` is past the quarantine with no further read. */
+  let proven: number | undefined;
+  /** Whether the quarantine still holds at validated index `validated`. Throws when the ledger cannot be read: the caller refuses. */
+  async function quarantined(validated: number): Promise<boolean> {
+    if (interlock === undefined) return false;
+    if (proven !== undefined && validated >= proven + XRPL_RESTART_QUARANTINE_LEDGERS) return false;
+    const candidate = validated - XRPL_RESTART_QUARANTINE_LEDGERS;
+    if (candidate < 1) return true;
+    const header = readLedgerHeader(await client.ledgerHeader!(candidate));
+    if (header === undefined || header.index !== candidate || header.closeTime < startedAtCloseTime) return true;
+    proven = proven === undefined ? candidate : Math.min(proven, candidate);
+    return false;
   }
-  const quarantined = (index: number): boolean => interlock !== undefined && (anchor === undefined || index < anchor + XRPL_RESTART_QUARANTINE_LEDGERS);
 
   /**
    * One payment at a time per source account, held from preparation **through
@@ -252,12 +259,11 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     return { status: 'ready' };
   }
 
-  /** Readiness also looks for the restart quarantine's anchor when an interlock is composed: the Host calls it at boot and on every health refresh. */
   async function readiness(): Promise<XrplRailReadiness> {
     const connected = await ensureConnected();
     if (connected.status !== 'ready' || interlock === undefined) return connected;
     try {
-      await observeAnchor();
+      if (readLedgerIndex(await client.validatedLedgerIndex()) === undefined) return { status: 'unavailable', detail: D.PREPARATION_INVALID };
     } catch {
       return { status: 'unavailable', detail: D.NETWORK_UNAVAILABLE };
     }
@@ -276,12 +282,13 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
       throw new Refusal(F.PROVIDER_UNAVAILABLE, D.PREPARATION_FAILED);
     }
     if (validated === undefined) throw new Refusal(F.PROVIDER_RESPONSE_INVALID, D.PREPARATION_INVALID);
+    let held: boolean;
     try {
-      await observeAnchor();
+      held = await quarantined(validated);
     } catch {
-      throw new Refusal(F.PROVIDER_UNAVAILABLE, D.RESTART_QUARANTINE);
+      held = true;
     }
-    if (quarantined(validated)) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.RESTART_QUARANTINE);
+    if (held) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.RESTART_QUARANTINE);
     const built: XrplPaymentTransaction = Object.freeze({ ...transaction, LastLedgerSequence: validated + configuration.lastLedgerOffset });
 
     let filled: unknown;

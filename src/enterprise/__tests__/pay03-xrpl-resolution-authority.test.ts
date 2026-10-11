@@ -5,13 +5,13 @@ import { join } from 'node:path';
 
 import { EXECUTION_FAILURE_REASONS } from '../../features/execution-runtime/index.js';
 import type { PaymentExecutionRequest } from '../../features/payment-runtime/index.js';
-import { XRPL_RESTART_QUARANTINE_LEDGERS, createXrplRlusdRail } from '../../features/payment-runtime/rails/xrpl/index.js';
+import { createXrplRlusdRail } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { GOVERNED_ACCOUNT, RLUSD_ASSET, TREASURY, VENDOR, createTestSoftwareXrplSigner, testClock, testConfiguration } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import type { ExecutionResolutionQuery } from '../execution-reconciliation/authority.js';
 import { normalizeResolutionAnswer } from '../execution-reconciliation/authority.js';
 import { createSqliteXrplSubmissionInterlock, type DurableXrplSubmissionInterlock } from '../xrpl-payment-rail/sqlite-xrpl-submission-interlock.js';
 import { XRPL_RESOLUTION_AUTHORITY_ID, createXrplResolutionAuthority, readOnlyXrplLedger } from '../xrpl-payment-rail/xrpl-resolution-authority.js';
-import { createLedgerSimulator, scratch, type LedgerSimulator, type SimulatedOutcome } from './pay03-xrpl-fixture.js';
+import { SIMULATED_RESTART_QUARANTINE, createLedgerSimulator, scratch, type LedgerSimulator, type SimulatedOutcome } from './pay03-xrpl-fixture.js';
 
 /**
  * PAY-03 — the read-only P12 XRPL resolution authority (R1–R10). Every
@@ -56,7 +56,7 @@ async function unconfirmed(eventual: SimulatedOutcome = 'pending'): Promise<Unco
   const store = await createSqliteXrplSubmissionInterlock(join(tmp.dir(), 'interlock.sqlite'), { scope: { railId: CONFIGURATION.railId, networkId: CONFIGURATION.networkId }, now: () => new Date().toISOString() });
   const rail = createXrplRlusdRail({ configuration: CONFIGURATION, client: ledger, signers: [createTestSoftwareXrplSigner(TREASURY)], interlock: store, ...testClock() });
   await rail.readiness();
-  ledger.index += XRPL_RESTART_QUARANTINE_LEDGERS;
+  ledger.index += SIMULATED_RESTART_QUARANTINE;
   // The rail's own finality loop sees "pending" whatever the eventual outcome; the ledger decides only afterwards.
   const lookup = ledger.lookupTransaction.bind(ledger);
   let railReading = true;

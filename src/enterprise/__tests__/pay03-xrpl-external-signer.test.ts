@@ -7,14 +7,14 @@ import { join } from 'node:path';
 import { decode, encode, hashes } from 'xrpl';
 
 import type { PaymentExecutionRequest } from '../../features/payment-runtime/index.js';
-import { XRPL_RAIL_DETAILS as D, XRPL_RESTART_QUARANTINE_LEDGERS, createXrplRlusdRail, type XrplPreparedPayment } from '../../features/payment-runtime/rails/xrpl/index.js';
+import { XRPL_RAIL_DETAILS as D, createXrplRlusdRail, type XrplPreparedPayment } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { GOVERNED_ACCOUNT, ISSUER, OTHER_SOURCE, RLUSD_ASSET, TREASURY, VENDOR, testClock, testConfiguration } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { createExternalXrplSigner, type ExternalXrplSignerPin } from '../xrpl-payment-rail/external-xrpl-signer.js';
 import { startReferenceXrplSigner } from '../xrpl-payment-rail/reference/reference-xrpl-signer-service.js';
 import { createHttpExternalXrplSignerTransport, ExternalXrplSignerConfigurationError, type ExternalXrplSignerTransport } from '../xrpl-payment-rail/signer-http-transport.js';
 import { EXTERNAL_XRPL_SIGNER_PROTOCOL, parseExternalXrplSigningRequest } from '../xrpl-payment-rail/signer-protocol.js';
 import { createSqliteXrplSubmissionInterlock } from '../xrpl-payment-rail/sqlite-xrpl-submission-interlock.js';
-import { SIGNER_ID, SIGNER_TOKEN, createLedgerSimulator, scratch } from './pay03-xrpl-fixture.js';
+import { SIGNER_ID, SIGNER_TOKEN, SIMULATED_RESTART_QUARANTINE, createLedgerSimulator, scratch } from './pay03-xrpl-fixture.js';
 
 /**
  * PAY-03 — the external XRPL transaction signer: protocol, identity pinning,
@@ -64,7 +64,7 @@ async function railWith(transport: ExternalXrplSignerTransport, pin: ExternalXrp
   const signer = createExternalXrplSigner({ transport, pin, timeoutMs, probeIntervalMs: 0 });
   const rail = createXrplRlusdRail({ configuration: CONFIGURATION, client: ledger, signers: signer.signers, interlock: store, ...testClock() });
   await rail.readiness();
-  ledger.index += XRPL_RESTART_QUARANTINE_LEDGERS;
+  ledger.index += SIMULATED_RESTART_QUARANTINE;
   return { ledger, store, signer, rail };
 }
 

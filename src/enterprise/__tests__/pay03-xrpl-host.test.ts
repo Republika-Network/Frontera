@@ -8,7 +8,6 @@ import Database from 'better-sqlite3';
 
 import { createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { PAYMENT_PARAMETER_DIMENSIONS, PAYMENT_PROFILE_PARAMETERS, compilePaymentIntent, createPaymentGovernanceBinding, validatePaymentIntent, type PaymentIntent } from '../../features/payment-runtime/index.js';
-import { XRPL_RESTART_QUARANTINE_LEDGERS } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { ISSUER as XRPL_ISSUER, OTHER_SOURCE, RLUSD_ASSET, RLUSD_CURRENCY_HEX, TREASURY, VENDOR } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host.js';
 import { XRPL_PAYMENT_RAIL_MODULE_ID, XRPL_SUBMISSION_INTERLOCK_MODULE_ID } from '../xrpl-payment-rail/host-composition.js';
@@ -18,7 +17,7 @@ import { XRPL_RESOLUTION_AUTHORITY_ID } from '../xrpl-payment-rail/xrpl-resoluti
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
 import { withDeploymentWitness } from './core07-freshness-fixture.js';
 import { ACCOUNT, AGENT, AUTH, ISSUER, ORG, OWNER, SECRETS, TRUST_DOMAIN, bootstrapOrganization, call, capturingLogger, create, createWorkspace, expectStatus, logLines, responses, type Reply } from './ctrl02-host-fixture.js';
-import { SIGNER_ID, SIGNER_TOKEN, SIGNER_TOKEN_ENV, createLedgerSimulator, type LedgerSimulator } from './pay03-xrpl-fixture.js';
+import { SIGNER_ID, SIGNER_TOKEN, SIGNER_TOKEN_ENV, SIMULATED_RESTART_QUARANTINE, createLedgerSimulator, type LedgerSimulator } from './pay03-xrpl-fixture.js';
 import { portability } from './prod02-recovery-fixture.js';
 
 /**
@@ -43,7 +42,7 @@ const ASSETS = createMonetaryAssetRegistry([
   { assetId: RLUSD_ASSET, scale: 15 },
 ]);
 const BINDING = createPaymentGovernanceBinding({ action: PAYMENT });
-const QUARANTINE = XRPL_RESTART_QUARANTINE_LEDGERS; // the historical maximum window + margin, whatever lastLedgerOffset is
+const QUARANTINE = SIMULATED_RESTART_QUARANTINE; // the anchor slack plus the historical maximum window + margin, whatever lastLedgerOffset is
 
 const workspace = createWorkspace('frontera-pay03-host-');
 let signer: Awaited<ReturnType<typeof startReferenceXrplSigner>>;
