@@ -22,10 +22,17 @@ export { buildXrplPayment } from './xrpl-payment-builder.js';
 export type { XrplPaymentBuild } from './xrpl-payment-builder.js';
 export { XRPL_RAIL_DETAILS } from './xrpl-rail-details.js';
 export type { XrplRailDetail } from './xrpl-rail-details.js';
-export { readAutofill, readLedgerIndex, readLookup, readNetworkId, readSubmission } from './xrpl-result-normalizer.js';
+export { readAutofill, readLedgerHeader, readLedgerIndex, readLookup, readNetworkId, readSubmission } from './xrpl-result-normalizer.js';
 export type { XrplExpectedPayment, XrplLookupReading, XrplSubmissionReading } from './xrpl-result-normalizer.js';
 export { createXrplRlusdRail } from './xrpl-rlusd-rail.js';
-export { XRPL_INTERLOCK_SETTLEMENTS, XRPL_RESTART_QUARANTINE_MARGIN } from './xrpl-submission-interlock.js';
+export {
+  XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET,
+  XRPL_INTERLOCK_SETTLEMENTS,
+  XRPL_RESTART_ANCHOR_SLACK_SECONDS,
+  XRPL_RESTART_QUARANTINE_LEDGERS,
+  XRPL_RESTART_QUARANTINE_MARGIN,
+  RIPPLE_EPOCH_UNIX_SECONDS,
+} from './xrpl-submission-interlock.js';
 export type { XrplInterlockSettlement, XrplSubmissionInterlock, XrplSubmissionRecordInput, XrplSubmissionReservation } from './xrpl-submission-interlock.js';
 export type { XrplRailLogger, XrplRailReadiness, XrplRlusdRail, XrplRlusdRailOptions } from './xrpl-rlusd-rail.js';
 export { createXrplSdkClient } from './xrpl-sdk-client.js';

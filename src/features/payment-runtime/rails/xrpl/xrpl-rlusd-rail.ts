@@ -6,8 +6,14 @@ import { XrplRailConfigurationError, isXrplRlusdRailConfiguration, type XrplRlus
 import { XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction, type XrplPreparedPayment, type XrplTransactionSigner } from './xrpl-client-port.js';
 import { buildXrplPayment } from './xrpl-payment-builder.js';
 import { XRPL_RAIL_DETAILS, type XrplRailDetail } from './xrpl-rail-details.js';
-import { readAutofill, readLedgerIndex, readLookup, readNetworkId, readSubmission, type XrplExpectedPayment } from './xrpl-result-normalizer.js';
-import { XRPL_RESTART_QUARANTINE_MARGIN, type XrplInterlockSettlement, type XrplSubmissionInterlock } from './xrpl-submission-interlock.js';
+import { readAutofill, readLedgerHeader, readLedgerIndex, readLookup, readNetworkId, readSubmission, type XrplExpectedPayment } from './xrpl-result-normalizer.js';
+import {
+  RIPPLE_EPOCH_UNIX_SECONDS,
+  XRPL_RESTART_ANCHOR_SLACK_SECONDS,
+  XRPL_RESTART_QUARANTINE_LEDGERS,
+  type XrplInterlockSettlement,
+  type XrplSubmissionInterlock,
+} from './xrpl-submission-interlock.js';
 
 /**
  * A logger the host bridges to its own — structurally a subset of the
@@ -31,7 +37,9 @@ export interface XrplRlusdRailOptions {
    * PAY-03: the durable submission interlock. When composed, every submission
    * is durably reserved before it is made, an open record from **any**
    * process or any earlier run blocks a competing sequence, and the rail
-   * observes a restart quarantine (`XRPL_RESTART_QUARANTINE_MARGIN`). Absent,
+   * observes a restart quarantine (`XRPL_RESTART_QUARANTINE_LEDGERS` past a
+   * close-time-proven anchor; the client must then implement
+   * `validatedLedgerHeader`). Absent,
    * the rail keeps PAY-02's in-process protection only — the Host never
    * composes it that way.
    */
@@ -166,21 +174,28 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     for (const method of ['recorded', 'blocking', 'reserve', 'markUnconfirmed', 'settle'] as const) {
       if (typeof interlock?.[method] !== 'function') throw new XrplRailConfigurationError('interlock', `must implement ${method}`);
     }
+    if (typeof client.validatedLedgerHeader !== 'function') throw new XrplRailConfigurationError('client', 'must implement validatedLedgerHeader when composed with a durable interlock');
   }
 
   /**
-   * PAY-03 restart quarantine: the first validated ledger index this rail
-   * instance observed. With a durable interlock, nothing is prepared until the
-   * validated ledger has passed it by `lastLedgerOffset + margin` — so a
-   * transaction an earlier process submitted, whose record a rollback might
-   * have lost, has provably left its window (see `xrpl-submission-interlock.ts`).
+   * PAY-03 restart quarantine (proof in `xrpl-submission-interlock.ts`). The
+   * anchor is the first validated ledger this rail instance observed that
+   * **closed after it started** (plus slack) — never merely the first one a
+   * possibly lagging server reported. Nothing is prepared until the validated
+   * ledger has passed the anchor by the historical maximum window, never the
+   * current, mutable `lastLedgerOffset`: so a transaction an earlier process
+   * signed, under any configuration and whose record a rollback or stale
+   * restore might have lost, has provably left its window.
    */
-  let firstValidatedIndex: number | undefined;
-  const quarantineLedgers = configuration.lastLedgerOffset + XRPL_RESTART_QUARANTINE_MARGIN;
-  const observeValidated = (index: number): void => {
-    if (firstValidatedIndex === undefined) firstValidatedIndex = index;
-  };
-  const quarantined = (index: number): boolean => interlock !== undefined && (firstValidatedIndex === undefined || index < firstValidatedIndex + quarantineLedgers);
+  const startedAtCloseTime = Math.floor(now() / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + XRPL_RESTART_ANCHOR_SLACK_SECONDS;
+  let anchor: number | undefined;
+  /** Reads the validated ledger header until a fresh anchor is found. Throws when the server cannot be read. */
+  async function observeAnchor(): Promise<void> {
+    if (interlock === undefined || anchor !== undefined) return;
+    const header = readLedgerHeader(await client.validatedLedgerHeader!());
+    if (header !== undefined && header.closeTime >= startedAtCloseTime) anchor = header.index;
+  }
+  const quarantined = (index: number): boolean => interlock !== undefined && (anchor === undefined || index < anchor + XRPL_RESTART_QUARANTINE_LEDGERS);
 
   /**
    * One payment at a time per source account, held from preparation **through
@@ -237,14 +252,12 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
     return { status: 'ready' };
   }
 
-  /** Readiness also starts the restart quarantine's clock when an interlock is composed: the Host calls it at boot. */
+  /** Readiness also looks for the restart quarantine's anchor when an interlock is composed: the Host calls it at boot and on every health refresh. */
   async function readiness(): Promise<XrplRailReadiness> {
     const connected = await ensureConnected();
     if (connected.status !== 'ready' || interlock === undefined) return connected;
     try {
-      const index = readLedgerIndex(await client.validatedLedgerIndex());
-      if (index === undefined) return { status: 'unavailable', detail: D.PREPARATION_INVALID };
-      observeValidated(index);
+      await observeAnchor();
     } catch {
       return { status: 'unavailable', detail: D.NETWORK_UNAVAILABLE };
     }
@@ -263,7 +276,11 @@ export function createXrplRlusdRail(options: XrplRlusdRailOptions): XrplRlusdRai
       throw new Refusal(F.PROVIDER_UNAVAILABLE, D.PREPARATION_FAILED);
     }
     if (validated === undefined) throw new Refusal(F.PROVIDER_RESPONSE_INVALID, D.PREPARATION_INVALID);
-    observeValidated(validated);
+    try {
+      await observeAnchor();
+    } catch {
+      throw new Refusal(F.PROVIDER_UNAVAILABLE, D.RESTART_QUARANTINE);
+    }
     if (quarantined(validated)) throw new Refusal(F.PROVIDER_UNAVAILABLE, D.RESTART_QUARANTINE);
     const built: XrplPaymentTransaction = Object.freeze({ ...transaction, LastLedgerSequence: validated + configuration.lastLedgerOffset });
 

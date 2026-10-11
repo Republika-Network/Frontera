@@ -53,7 +53,7 @@ With `xrplPaymentRail`, `bootEnterpriseHost` (before `createEnterprise`):
 | 2 | opens the durable interlock and verifies every record | `XRPL_INTERLOCK_UNAVAILABLE` (refuse) |
 | 3 | proves the external signer's identity against the pins | mismatch → `XRPL_SIGNER_IDENTITY_MISMATCH` (refuse); unreachable → start **degraded** |
 | 4 | builds two SDK clients (rail; read-only resolver) | — |
-| 5 | composes the PAY-02 rail with the interlock; `readiness()` connects, checks `network_id`, starts the restart quarantine clock | network mismatch → `XRPL_NETWORK_MISMATCH` (refuse); unreachable → **degraded** |
+| 5 | composes the PAY-02 rail with the interlock; `readiness()` connects, checks `network_id`, looks for the restart quarantine's close-time-proven anchor (and on every health refresh) | network mismatch → `XRPL_NETWORK_MISMATCH` (refuse); unreachable → **degraded** |
 | 6 | wraps it in PAY-01's `createPaymentRailExecutionAdapter` and adds it to the **existing** execution-adapter registry, reachable only by its configured route | — |
 | 7 | composes P12 with the XRPL resolution authority (plus operator attestation when operators are configured) | — |
 
@@ -193,14 +193,35 @@ All qualified in `pay03-xrpl-interlock.test.ts` (and C9 in `pay03-xrpl-host.test
 
 **Restart quarantine.** When composed with the durable interlock, the rail
 prepares nothing until the validated ledger has advanced
-`lastLedgerOffset + 4` ledgers past the first validated index this process
-observed (the Host reads it at boot). Any transaction an earlier process
-submitted had `LastLedgerSequence ≤` its validated index + offset `≤` this
-process's first index + offset — so once the quarantine passes, none can
-still be included, **whatever the local file says**. The ledger is its own
-freshness witness. Cost: XRPL payments are refused
-(`xrpl-restart-quarantine`) for roughly `(offset + 4) × ~4 s` after each start
-(≈ 30 s at the minimum offset 4, ≈ 1.5 min at the default 20).
+`XRPL_RESTART_QUARANTINE_LEDGERS` = **204** ledgers (the historical maximum
+`lastLedgerOffset`, 200, plus a margin of 4) past an **anchor**: the first
+validated ledger this process observed whose consensus `close_time` is at
+least 180 s after the rail started. Until such a ledger is seen, everything is
+refused (`xrpl-restart-quarantine`).
+
+The proof (`xrpl-submission-interlock.ts`) needs nothing from the local file
+or the current configuration:
+
+- a transaction any earlier process signed has `LastLedgerSequence = vP + oP`,
+  `vP` the validated index it read and `oP ≤ 200` — whatever offset was
+  configured then or is configured now (the historical bound may grow, never
+  shrink; structurally tested against the configuration limit);
+- `vP ≤ N0`, the network's last validated ledger at this start;
+- close times never decrease with the sequence and `N0` closed before the
+  start, so a ledger that closed after the start (plus slack for close-time
+  rounding and clock disagreement) is above `N0` — **however far behind the
+  server was when the rail first asked**: a syncing or lagging server simply
+  provides no anchor until it is current;
+- so `anchor + 204 > vP + oP + 4`: once the quarantine passes, every earlier
+  transaction's window has been validated, and it can never be included.
+
+Lowering `lastLedgerOffset` therefore cannot shorten it, and a stale restore
+or rollback that lost an unresolved record cannot reopen sequence reuse. Cost:
+XRPL payments are refused for roughly 180 s + 204 ledgers (≈ 15–17 min) after
+each start; the Host composes, serves and reports health meanwhile.
+Assumptions: the configured XRPL server is trusted to report validated
+ledgers (as everywhere in the rail), and the Host's clock is not behind the
+network's close time by more than the slack allows (≈ 2 min).
 
 **Cross-process.** Supported concurrency model: any number of Host processes
 on **one shared state** (one SQLite file on one host). `reserve` is a single
@@ -212,10 +233,9 @@ remains one Host per state volume (`docs/deployment/PILOT_DEPLOYMENT.md`).
 **Rollback / stale restore (assessed).** The interlock is **not** CORE-07
 witness-anchored, and does not claim to be. A stale restore that loses an open
 record cannot reopen sequence reuse: the restart quarantine above covers every
-transaction submitted before the restored process started. Residual: if
-`lastLedgerOffset` is *lowered* in the same change as a rollback that loses a
-record whose window used the larger offset, the quarantine is shorter than
-that window. Do not lower the offset across a restore; raise it freely.
+transaction submitted before the restored process started, under any
+`lastLedgerOffset` it was configured with, and whatever the restored file or
+the current configuration says.
 
 ## 10. P12 XRPL resolution authority
 

@@ -49,10 +49,14 @@ holding a customer key or accepting that gap.
    registry, backed up and restored.
 4. **A restart quarantine instead of witness anchoring.** With the interlock
    composed, the rail prepares nothing until the validated ledger has passed
-   `lastLedgerOffset + 4` ledgers beyond the first index it observed. Any
-   transaction from before the restart — even one whose record a rollback lost
-   — has then left its window. The ledger is the freshness witness; the
-   interlock is not CORE-07 anchored.
+   204 ledgers (the historical maximum `lastLedgerOffset`, 200, + 4) beyond an
+   anchor ledger that provably closed after the start (its consensus
+   `close_time`, plus slack) — never the current, mutable offset, never a
+   possibly lagging server's first answer. Any transaction from before the
+   restart — under any configuration, even one whose record a rollback or a
+   stale restore lost — has then left its window. The ledger is the freshness
+   witness; the interlock is not CORE-07 anchored. Cost: ≈ 15–17 min without
+   XRPL payments after each start.
 5. **P12 read-only XRPL resolution.** `frontera.xrpl-rlusd-ledger` is bound
    before the claim to every execution of the rail's payment action and answers
    from validated ledger facts only; anything ambiguous is `unresolved`, and

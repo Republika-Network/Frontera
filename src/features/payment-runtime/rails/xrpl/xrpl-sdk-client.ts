@@ -48,6 +48,14 @@ export function createXrplSdkClient(configuration: XrplRlusdRailConfiguration): 
       const result = response.result;
       return result !== null && typeof result === 'object' ? (result as { readonly ledger_index?: unknown }).ledger_index : undefined;
     },
+    async validatedLedgerHeader(timeoutMs?: number): Promise<unknown> {
+      const response = await read({ command: 'ledger', ledger_index: 'validated' }, timeoutMs);
+      const result = response.result;
+      if (result === null || typeof result !== 'object') return undefined;
+      const { ledger_index, ledger } = result as { readonly ledger_index?: unknown; readonly ledger?: unknown };
+      const close_time = ledger !== null && typeof ledger === 'object' ? (ledger as { readonly close_time?: unknown }).close_time : undefined;
+      return { ledger_index, close_time };
+    },
     async autofill(transaction: XrplPaymentTransaction): Promise<unknown> {
       // A copy: the SDK fills the object it is handed.
       return client.autofill({ ...transaction, Amount: { ...transaction.Amount } });

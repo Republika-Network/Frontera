@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 
 import { createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { PAYMENT_PARAMETER_DIMENSIONS, PAYMENT_PROFILE_PARAMETERS, compilePaymentIntent, createPaymentGovernanceBinding, validatePaymentIntent, type PaymentIntent } from '../../features/payment-runtime/index.js';
+import { XRPL_RESTART_QUARANTINE_LEDGERS } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { ISSUER as XRPL_ISSUER, OTHER_SOURCE, RLUSD_ASSET, RLUSD_CURRENCY_HEX, TREASURY, VENDOR } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host.js';
 import { XRPL_PAYMENT_RAIL_MODULE_ID, XRPL_SUBMISSION_INTERLOCK_MODULE_ID } from '../xrpl-payment-rail/host-composition.js';
@@ -42,7 +43,7 @@ const ASSETS = createMonetaryAssetRegistry([
   { assetId: RLUSD_ASSET, scale: 15 },
 ]);
 const BINDING = createPaymentGovernanceBinding({ action: PAYMENT });
-const QUARANTINE = 4 + 4; // lastLedgerOffset 4 (the minimum) + margin
+const QUARANTINE = XRPL_RESTART_QUARANTINE_LEDGERS; // the historical maximum window + margin, whatever lastLedgerOffset is
 
 const workspace = createWorkspace('frontera-pay03-host-');
 let signer: Awaited<ReturnType<typeof startReferenceXrplSigner>>;

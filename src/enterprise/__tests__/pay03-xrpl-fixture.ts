@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { decode, hashes } from 'xrpl';
 
-import { XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction } from '../../features/payment-runtime/rails/xrpl/index.js';
+import { RIPPLE_EPOCH_UNIX_SECONDS, XrplSubmissionNotAttemptedError, type XrplClientPort, type XrplPaymentTransaction } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { TREASURY } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 
 /**
@@ -33,6 +33,13 @@ export interface SimulatedTransaction {
 export interface LedgerSimulator extends XrplClientPort {
   /** The validated ledger index the server reports. */
   index: number;
+  /**
+   * The validated ledger's consensus close time (seconds since the Ripple
+   * epoch) the server reports. `undefined`: a current server — the ledger
+   * closed an hour from now on the wall clock, so it always anchors. Set it to
+   * play a server that is still syncing or lagging behind the network.
+   */
+  closeTime: number | undefined;
   /** The account's next sequence, as autofill reads it. Advances when a transaction validates (success or tec). */
   sequence: number;
   networkId: number;
@@ -47,13 +54,13 @@ export interface LedgerSimulator extends XrplClientPort {
   malformedLookups: boolean;
   readonly transactions: Map<string, SimulatedTransaction>;
   readonly submitted: string[];
-  readonly calls: { connect: number; serverInfo: number; validatedLedgerIndex: number; autofill: number; submit: number; lookup: number; disconnect: number };
+  readonly calls: { connect: number; serverInfo: number; validatedLedgerIndex: number; validatedLedgerHeader: number; autofill: number; submit: number; lookup: number; disconnect: number };
   /** Moves a transaction to a validated outcome (advancing the sequence when it validates). */
   validate(hash: string, outcome: 'success' | 'tec'): void;
 }
 
 export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'index' | 'sequence' | 'networkId'>> = {}): LedgerSimulator {
-  const calls = { connect: 0, serverInfo: 0, validatedLedgerIndex: 0, autofill: 0, submit: 0, lookup: 0, disconnect: 0 };
+  const calls = { connect: 0, serverInfo: 0, validatedLedgerIndex: 0, validatedLedgerHeader: 0, autofill: 0, submit: 0, lookup: 0, disconnect: 0 };
   const transactions = new Map<string, SimulatedTransaction>();
   const submitted: string[] = [];
   const unreachable = (): never => {
@@ -61,6 +68,7 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
   };
   const simulator: LedgerSimulator = {
     index: initial.index ?? 1000,
+    closeTime: undefined,
     sequence: initial.sequence ?? 7,
     networkId: initial.networkId ?? 1,
     submitMode: 'accept',
@@ -93,6 +101,11 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
       calls.validatedLedgerIndex += 1;
       if (simulator.unavailable) unreachable();
       return simulator.index;
+    },
+    async validatedLedgerHeader() {
+      calls.validatedLedgerHeader += 1;
+      if (simulator.unavailable) unreachable();
+      return { ledger_index: simulator.index, close_time: simulator.closeTime ?? Math.floor(Date.now() / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + 3600 };
     },
     async autofill(transaction: XrplPaymentTransaction) {
       calls.autofill += 1;

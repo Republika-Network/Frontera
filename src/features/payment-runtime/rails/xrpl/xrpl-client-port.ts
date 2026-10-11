@@ -47,6 +47,14 @@ export interface XrplClientPort {
    * rail passes what is left of its finality budget, so no read outlives it.
    */
   validatedLedgerIndex(timeoutMs?: number): Promise<unknown>;
+  /**
+   * PAY-03: the most recent validated ledger's header facts, raw —
+   * `{ ledger_index, close_time }`, `close_time` in seconds since the Ripple
+   * epoch (2000-01-01T00:00:00Z), as the network agreed it. Read only by the
+   * restart quarantine's anchor, and required only when the rail is composed
+   * with a durable interlock.
+   */
+  validatedLedgerHeader?(timeoutMs?: number): Promise<unknown>;
   /** Fills `Sequence` and `Fee` from the ledger. Must not change any field the rail set. */
   autofill(transaction: XrplPaymentTransaction): Promise<unknown>;
   /**

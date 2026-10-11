@@ -9,6 +9,7 @@ import { Client, type Wallet } from 'xrpl';
 
 import { createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { PAYMENT_PARAMETER_DIMENSIONS, PAYMENT_PROFILE_PARAMETERS, compilePaymentIntent, createPaymentGovernanceBinding, validatePaymentIntent, type PaymentIntent } from '../../features/payment-runtime/index.js';
+import { RIPPLE_EPOCH_UNIX_SECONDS, XRPL_RESTART_ANCHOR_SLACK_SECONDS, XRPL_RESTART_QUARANTINE_LEDGERS } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { RLUSD_CURRENCY_HEX } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { REFERENCE_XRPL_SIGNER_KEY_FILE_FORMAT } from '../xrpl-payment-rail/reference/reference-xrpl-signer-service.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
@@ -66,7 +67,7 @@ function started(child: ChildProcess, marker: RegExp, what: string): Promise<Reg
 }
 
 describe('PAY-03 live Testnet production-shaped qualification (opt-in)', { skip: ENABLED ? false : 'set FRONTERA_XRPL_TESTNET_PAY03=1 to run against XRPL Testnet' }, () => {
-  it('Host process → external reference signer process → XRPL Testnet: a governed payment validates tesSUCCESS, P11 and the trace carry the hash, and the Host never held the key', { timeout: 600_000 }, async () => {
+  it('Host process → external reference signer process → XRPL Testnet: a governed payment validates tesSUCCESS, P11 and the trace carry the hash, and the Host never held the key', { timeout: 1_800_000 }, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'frontera-pay03-live-'));
     const children: ChildProcess[] = [];
     const setup = new Client(ENDPOINT, { timeout: 20_000 });
@@ -186,13 +187,19 @@ describe('PAY-03 live Testnet production-shaped qualification (opt-in)', { skip:
       await create(baseUrl, AUTH.provisioner, 'capability-token', { capabilityTokenId: 'capability-live', subjectActorId: agentId, principalActorId: ownerId, issuerActorId: ownerId, trustDomainId: TRUST_DOMAIN, capability: 'payables.execute', actions: [PAYMENT], resourceScopes: [ACCOUNT], riskLevel: 'medium' });
       await create(baseUrl, AUTH.provisioner, 'delegation-grant', { delegationGrantId: 'delegation-live', delegatorActorId: ownerId, delegateActorId: agentId, delegateActorType: 'agent', trustDomainId: TRUST_DOMAIN, sourceAuthorityGrantId: 'authority-live', capability: 'payables.execute', actions: [PAYMENT], resourceScopes: [ACCOUNT], canRedelegate: false });
 
-      // The restart quarantine: wait for the ledger to pass it (offset 4 + margin 4) before paying.
-      const startIndex = (await setup.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
-      for (;;) {
-        const now = (await setup.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
-        if (now >= startIndex + 10) break;
-        await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
+      // The restart quarantine, as the Host computes it: an anchor ledger that closed after its start plus slack,
+      // then the historical maximum window (whatever lastLedgerOffset is). Started before now, so this anchor is no earlier than the Host's.
+      const anchorAfter = Math.floor(Date.now() / 1000) - RIPPLE_EPOCH_UNIX_SECONDS + XRPL_RESTART_ANCHOR_SLACK_SECONDS + 5;
+      const validated = async (): Promise<{ readonly index: number; readonly closeTime: number }> => {
+        const { result } = await setup.request({ command: 'ledger', ledger_index: 'validated' });
+        return { index: result.ledger_index, closeTime: result.ledger.close_time };
+      };
+      let anchor = await validated();
+      while (anchor.closeTime < anchorAfter) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 4_000));
+        anchor = await validated();
       }
+      while ((await validated()).index < anchor.index + XRPL_RESTART_QUARANTINE_LEDGERS + 2) await new Promise((resolveWait) => setTimeout(resolveWait, 4_000));
 
       const assets = createMonetaryAssetRegistry([{ assetId: ASSET, scale: 15 }]);
       const validation = validatePaymentIntent({ source: { accountId: ACCOUNT }, destination: { kind: 'xrpl-account', reference: vendor.classicAddress }, amount: { value: '12.5', unit: ASSET }, purpose: 'vendor-payment', reference: 'INV-PAY03-LIVE', rail: 'xrpl-rlusd', idempotencyKey: `pay03-live-${Date.now()}` }, { assets });
