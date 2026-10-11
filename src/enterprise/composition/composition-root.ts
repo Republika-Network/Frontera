@@ -150,7 +150,7 @@ import {
   type AuthorityStateEnrollmentContext,
   type AuthorityStateFreshnessBoundary,
 } from '../authority-state-freshness/session.js';
-import type { AuthorityStateKind } from '../authority-state-freshness/checkpoint.js';
+import { isAuthorityStoreKind, type AuthorityStoreKind } from '../authority-state-freshness/checkpoint.js';
 import { authorityStateWitnessKeyBytes, establishAuthorityStateWitness } from '../authority-state-freshness/witness-client.js';
 import {
   CustomerIdentityConfigurationError,
@@ -1267,6 +1267,16 @@ async function withAuthoritySignerHealth(report: EnterpriseHealthReport, authent
  * the signer's: the freshness witness and the authority signer are different
  * trust roles, and neither is allowed to stand in for the other.
  */
+/**
+ * PAY-03: the same boundary, for the Host's XRPL composition, which anchors
+ * its submission interlock's reservation history in its own slot — built by
+ * the same code, with the same pinned identity and the same separation rules.
+ * `undefined` when no external witness is configured.
+ */
+export function buildAuthorityStateFreshnessBoundary(configuration: EnterpriseConfiguration): Promise<AuthorityStateFreshnessBoundary | undefined> {
+  return buildAuthorityFreshness(configuration);
+}
+
 async function buildAuthorityFreshness(configuration: EnterpriseConfiguration): Promise<AuthorityStateFreshnessBoundary | undefined> {
   const freshness = configuration.authorityFreshness;
   if (freshness?.mode !== 'external') return undefined;
@@ -2920,8 +2930,8 @@ export function createDefaultEnterprise(configuration?: EnterpriseConfiguration)
 export async function enrollExistingAuthorityStores(
   configuration: EnterpriseConfiguration,
   context: AuthorityStateEnrollmentContext,
-  stateKinds: readonly AuthorityStateKind[],
-): Promise<readonly { readonly stateKind: AuthorityStateKind; readonly sequence: number }[]> {
+  stateKinds: readonly AuthorityStoreKind[],
+): Promise<readonly { readonly stateKind: AuthorityStoreKind; readonly sequence: number }[]> {
   if (!isAuthorityStateEnrollmentContext(context)) {
     throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'Enrolling an existing store requires a trusted enrollment context { operator: true, operatorId, attestation }.');
   }
@@ -2933,7 +2943,11 @@ export async function enrollExistingAuthorityStores(
   }
   const kinds = [...new Set(stateKinds)];
   if (kinds.length === 0) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'Name at least one authority store to enroll.');
-  const pathOf: Record<AuthorityStateKind, string> = {
+  // Only the authority stores: an anchored operational state (PAY-03's XRPL reservations) is never baselined by this ceremony.
+  for (const kind of kinds) {
+    if (!isAuthorityStoreKind(kind)) throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `'${String(kind)}' is not an authority store. The enrollment ceremony baselines authority stores only.`);
+  }
+  const pathOf: Record<AuthorityStoreKind, string> = {
     'bounded-grant-revocation-state': configuration.boundedGrant.sqlitePath,
     'obligation-discharge-state': configuration.obligationDischarge.sqlitePath,
     'approval-state': configuration.approval.sqlitePath,
@@ -2953,7 +2967,7 @@ export async function enrollExistingAuthorityStores(
   // the Host would open it, without the witness — before the witness is even
   // contacted. One unverifiable store refuses the whole ceremony, so no other
   // named store is enrolled behind a refusal.
-  const unverifiable: AuthorityStateKind[] = [];
+  const unverifiable: AuthorityStoreKind[] = [];
   for (const kind of kinds) {
     let verified = false;
     try {
@@ -2989,7 +3003,9 @@ export async function enrollExistingAuthorityStores(
           : await createSqliteApprovalStore(pathOf[kind], { now, busyTimeoutMs, organizationId, authenticity: signed, freshness });
     await store.close();
   }
-  const enrolled = boundary.sessions().map((session) => ({ stateKind: session.binding.stateKind, sequence: session.status().sequence }));
+  const enrolled = boundary
+    .sessions()
+    .flatMap((session) => (isAuthorityStoreKind(session.binding.stateKind) ? [{ stateKind: session.binding.stateKind, sequence: session.status().sequence }] : []));
   // Defense in depth: a store that established no session was not enrolled, and saying otherwise would be a false success.
   const missing = kinds.filter((kind) => !enrolled.some((entry) => entry.stateKind === kind));
   if (missing.length > 0) {

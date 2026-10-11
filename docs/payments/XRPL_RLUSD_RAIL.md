@@ -255,7 +255,10 @@ submitted again); checks the interlock before signing; **reserves the
 submission durably before `submit`** (`xrpl-interlock-unavailable` with nothing
 submitted when it cannot); records the outcome afterwards; and observes a
 restart quarantine (`xrpl-restart-quarantine`). The in-process protection above
-then extends across restarts, processes and restores.
+then extends across restarts, processes and restores — in the Host, with the
+interlock's reservation history anchored at the CORE-07 witness, so a restore
+that lost a reservation is refused before anything is signed
+(`XRPL_PRODUCTION_COMPOSITION.md` §9).
 
 ## 12. Submission versus finality, and the outcome mapping
 

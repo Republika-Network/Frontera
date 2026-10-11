@@ -13,6 +13,7 @@ import { RIPPLE_EPOCH_UNIX_SECONDS, XRPL_RESTART_ANCHOR_SLACK_SECONDS, XRPL_REST
 import { RLUSD_CURRENCY_HEX } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { REFERENCE_XRPL_SIGNER_KEY_FILE_FORMAT } from '../xrpl-payment-rail/reference/reference-xrpl-signer-service.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
+import { freshnessEnv, spawnReferenceWitness } from './core07-freshness-fixture.js';
 import { ACCOUNT, AGENT, AUTH, ISSUER, ORG, OWNER, SECRETS, TRUST_DOMAIN, bootstrapOrganization, call, create, expectStatus } from './ctrl02-host-fixture.js';
 
 /**
@@ -95,6 +96,12 @@ describe('PAY-03 live Testnet production-shaped qualification (opt-in)', { skip:
       children.push(signer);
       const signerPort = (await started(signer, /listening on http:\/\/127\.0\.0\.1:(\d+)/, 'the reference signer'))[1];
 
+      // ── the CORE-07 freshness witness: its own process and directory, outside the Host's state; the interlock's reservation history is anchored there ──
+      const witnessDir = join(dir, 'witness');
+      (await import('node:fs')).mkdirSync(witnessDir, { mode: 0o700 });
+      const witness = await spawnReferenceWitness({ dir: witnessDir });
+      children.push(witness.child);
+
       // ── the Host process: xrplPaymentRail configured, a clean environment, no key ──
       const governed = join(dir, 'governed-actions.json');
       writeFileSync(
@@ -166,6 +173,7 @@ describe('PAY-03 live Testnet production-shaped qualification (opt-in)', { skip:
         FRONTERA_CTRL02_PROVISIONER: SECRETS.provisioner,
         FRONTERA_CTRL02_OBSERVER: SECRETS.observer,
         FRONTERA_PAY03_XRPL_SIGNER_TOKEN: SIGNER_TOKEN,
+        ...freshnessEnv(witness),
       };
       const host = spawn(process.execPath, [resolve('scripts/run-enterprise-host.mjs')], { env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       children.push(host);

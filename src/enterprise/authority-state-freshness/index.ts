@@ -14,15 +14,17 @@
 export {
   AUTHORITY_STATE_CHECKPOINT_FORMAT,
   AUTHORITY_STATE_KINDS,
+  AUTHORITY_STORE_KINDS,
   approvalStateCheckpoint,
   authorityStateCheckpointProblem,
   isAuthorityStateKind,
+  isAuthorityStoreKind,
   obligationDischargeStateCheckpoint,
   revocationStateCheckpoint,
   sameCheckpoint,
   serializeAuthorityStateCheckpoint,
 } from './checkpoint.js';
-export type { AuthorityStateBinding, AuthorityStateCheckpoint, AuthorityStateHead, AuthorityStateKind } from './checkpoint.js';
+export type { AuthorityStateBinding, AuthorityStateCheckpoint, AuthorityStateHead, AuthorityStateKind, AuthorityStoreKind } from './checkpoint.js';
 
 export { AUTHORITY_STATE_FRESHNESS_ERROR_CODES, AuthorityStateFreshnessError, isAuthorityStateFreshnessError, isRetryableAuthorityStateFreshnessFailure } from './errors.js';
 export type { AuthorityStateFreshnessErrorCode } from './errors.js';

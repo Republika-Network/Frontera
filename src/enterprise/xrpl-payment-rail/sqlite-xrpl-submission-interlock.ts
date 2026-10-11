@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -8,6 +9,16 @@ import {
   type XrplSubmissionRecordInput,
   type XrplSubmissionReservation,
 } from '../../features/payment-runtime/rails/xrpl/index.js';
+import type { AuthorityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
+import {
+  isAuthorityStateFreshnessBoundary,
+  isFailedAuthorityStateFreshnessStatus,
+  markComposedUnderFreshness,
+  type AuthorityStateFreshnessBoundary,
+  type AuthorityStateFreshnessSession,
+  type AuthorityStateFreshnessStatusValue,
+} from '../authority-state-freshness/session.js';
 import { computeDigest } from '../governance-store/digest.js';
 
 /**
@@ -41,8 +52,29 @@ import { computeDigest } from '../governance-store/digest.js';
  * competing sequence. No transaction is held across a network call.
  *
  * The digests are unkeyed: a writer able to rewrite a row *and* recompute its
- * digests defeats them (integrity, not authenticity). Rollback of the whole
- * file is bounded by the rail's restart quarantine, not by this store
+ * digests defeats them (integrity, not authenticity).
+ *
+ * ## Freshness (`freshness`: the CORE-07 witness, required by the Host)
+ *
+ * A store cannot prove its own freshness: a stale backup restored over this
+ * file loses exactly the reservations that may still be live on the ledger.
+ * So, when composed with a CORE-07 freshness boundary, the store anchors its
+ * **reservation history** at the external authority-state witness, in the
+ * slot `xrpl-submission-reservations`: sequence = the number of reservations
+ * ever made, digest = a hash chain over their identity digests, in commit
+ * order. Every `reserve` is one CORE-07 transition (witness `prepare` → this
+ * file's `BEGIN IMMEDIATE` insert → `finalize`), so no reservation — and so no
+ * submission — exists that the witness has not seen. At open, the history is
+ * reconciled with the witness before anything is served: an older history (a
+ * stale restore or rollback) is `ROLLBACK_DETECTED`, a different one a fork,
+ * a prepared reservation the file does not hold `PENDING_RECOVERY` — each
+ * refuses the open, with nothing signed. Before every signing (`blocking`),
+ * the witness is read again: unreachable, moved ahead, or failed → refused.
+ *
+ * Only reservations are anchored: `markUnconfirmed` and `settle` only move a
+ * record toward closed, so losing one keeps a record open — a false block,
+ * never a false release. No clock and no XRPL server are involved: the
+ * witness lives outside this file's backup, restore and snapshot domain
  * (`docs/payments/XRPL_PRODUCTION_COMPOSITION.md` §9).
  */
 export const XRPL_INTERLOCK_STORE_SCHEMA_VERSION = 'aoc.xrpl-submission-interlock.schema.v1';
@@ -85,11 +117,15 @@ export interface XrplInterlockStoreHealth {
   readonly schemaVersion: string;
   /** Records still open (`submitting` or `unconfirmed`). Never itself unhealthy: an open record is the interlock doing its job. */
   readonly open?: number;
+  /** CORE-07 freshness of the reservation history: `not-anchored` when composed without a witness (never by the Host). A failed status is unhealthy. */
+  readonly freshness?: AuthorityStateFreshnessStatusValue | 'not-anchored';
 }
 
 /** The interlock port the rail uses, plus what the resolver, readiness and restore read. */
 export interface DurableXrplSubmissionInterlock extends XrplSubmissionInterlock {
   readonly providerKind: 'sqlite';
+  /** Whether the reservation history is anchored at a CORE-07 freshness witness. */
+  readonly anchored: boolean;
   /** The record for one execution, verified, or `undefined`. */
   read(executionId: string): Promise<XrplSubmissionRecord | undefined>;
   /** Re-verifies every row and the transition log as a whole. Throws `XRPL_INTERLOCK_CORRUPT`. */
@@ -108,6 +144,34 @@ export interface CreateSqliteXrplSubmissionInterlockOptions {
   readonly scope?: { readonly railId: string; readonly networkId: number };
   readonly now: () => string;
   readonly busyTimeoutMs?: number;
+  /**
+   * CORE-07: anchors the reservation history at the external witness (see the
+   * module comment). Required by the Host composition. A store once anchored
+   * is never opened for the rail without it; verification tooling (no
+   * `scope`) reads it without the witness and writes nothing.
+   */
+  readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary };
+}
+
+/** The CORE-07 slot of the reservation history. */
+export const XRPL_RESERVATIONS_STATE_KIND = 'xrpl-submission-reservations';
+const RESERVATIONS_DIGEST_DOMAIN = 'aoc.xrpl-submission-interlock.reservations.v1';
+
+function reservationsGenesisDigest(storeId: string, scope: { readonly railId: string; readonly networkId: number }): string {
+  return computeDigest({ domain: RESERVATIONS_DIGEST_DOMAIN, storeId, railId: scope.railId, networkId: scope.networkId, sequence: 0 });
+}
+
+function nextReservationsDigest(previous: string, identity: string): string {
+  return computeDigest({ domain: RESERVATIONS_DIGEST_DOMAIN, previous, identityDigest: identity });
+}
+
+/** The reservation history's head: how many reservations, the chain over them, and the last row folded in. */
+interface ReservationsHead {
+  readonly lastRowId: number;
+  /** The identity digest of that last row, so a history replaced underneath a running process is noticed. */
+  readonly lastIdentity: string | null;
+  readonly sequence: number;
+  readonly digest: string;
 }
 
 const SCHEMA_V1 = `
@@ -170,6 +234,15 @@ CREATE TRIGGER IF NOT EXISTS xrpl_submission_transitions_append_only_update BEFO
 BEGIN SELECT RAISE(ABORT, 'xrpl submission transitions are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS xrpl_submission_transitions_append_only_delete BEFORE DELETE ON xrpl_submission_transitions
 BEGIN SELECT RAISE(ABORT, 'xrpl submission transitions are append-only'); END;
+CREATE TABLE IF NOT EXISTS xrpl_interlock_anchor (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  store_id TEXT NOT NULL,
+  anchored_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS xrpl_interlock_anchor_immutable BEFORE UPDATE ON xrpl_interlock_anchor
+BEGIN SELECT RAISE(ABORT, 'xrpl interlock anchor is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS xrpl_interlock_anchor_no_delete BEFORE DELETE ON xrpl_interlock_anchor
+BEGIN SELECT RAISE(ABORT, 'xrpl interlock anchor is immutable'); END;
 `;
 
 const COLUMNS = 'execution_id, account, sequence, last_ledger_sequence, min_ledger, transaction_hash, currency, issuer, value, reserved_at, identity_digest, state, settlement, updated_at, state_digest';
@@ -259,6 +332,10 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
   const busyTimeoutMs = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > MAX_BUSY_TIMEOUT_MS) throw unavailable(`The XRPL submission interlock busy timeout must be an integer from 0 to ${MAX_BUSY_TIMEOUT_MS}.`);
   const now = options.now;
+  const freshness = options.freshness;
+  if (freshness !== undefined && (!isAuthorityStateFreshnessBoundary(freshness.boundary) || scope === undefined)) {
+    throw unavailable('The XRPL submission interlock freshness option needs a boundary built by createAuthorityStateFreshnessBoundary, and the store scope.');
+  }
   const { default: Database } = await import('better-sqlite3');
 
   const db = new Database(dbPath === ':memory:' ? ':memory:' : resolveOnDisk(dbPath));
@@ -322,6 +399,9 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
   const insertRow = db.prepare(
     `INSERT INTO xrpl_submissions (${COLUMNS}) VALUES (@executionId, @account, @sequence, @lastLedgerSequence, @minLedger, @transactionHash, @currency, @issuer, @value, @reservedAt, @identityDigest, 'submitting', NULL, @reservedAt, @stateDigest)`,
   );
+  const selectReservationsAfter = db.prepare('SELECT row_id, identity_digest FROM xrpl_submissions WHERE row_id > ? ORDER BY row_id ASC');
+  const selectReservationAt = db.prepare('SELECT identity_digest FROM xrpl_submissions WHERE row_id = ?');
+  const selectAnchor = db.prepare('SELECT store_id FROM xrpl_interlock_anchor WHERE id = 1');
   const updateState = db.prepare('UPDATE xrpl_submissions SET state = @state, settlement = @settlement, updated_at = @updatedAt, state_digest = @stateDigest WHERE execution_id = @executionId');
   const insertTransition = db.prepare('INSERT INTO xrpl_submission_transitions (execution_id, from_state, to_state, settlement, recorded_at) VALUES (?, ?, ?, ?, ?)');
 
@@ -329,6 +409,45 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
   const assertOpen = (): void => {
     if (closed) throw unavailable('The XRPL submission interlock has been closed.');
   };
+
+  // ── CORE-07: the reservation history and its freshness session ──
+  let storeId: string | undefined;
+  let session: AuthorityStateFreshnessSession | undefined;
+  let headCache: ReservationsHead | undefined;
+
+  /** The head folded forward from `base` over every committed row after it. Pure: never caches. */
+  function headFrom(base: ReservationsHead): ReservationsHead {
+    let { lastRowId, lastIdentity, sequence, digest } = base;
+    if (lastRowId > 0 && (selectReservationAt.get(lastRowId) as { identity_digest: unknown } | undefined)?.identity_digest !== lastIdentity) throw corrupt('reservations-head');
+    for (const row of selectReservationsAfter.all(lastRowId) as { row_id: number; identity_digest: unknown }[]) {
+      if (typeof row.identity_digest !== 'string') throw corrupt('reservations-head');
+      digest = nextReservationsDigest(digest, row.identity_digest);
+      sequence += 1;
+      lastRowId = row.row_id;
+      lastIdentity = row.identity_digest;
+    }
+    if (sequence !== (countRows.get() as { n: number }).n) throw corrupt('reservations-head');
+    return { lastRowId, lastIdentity, sequence, digest };
+  }
+
+  /** The current head (outside a write, or before this connection's own insert in one). */
+  function currentHead(): ReservationsHead {
+    if (storeId === undefined || scope === undefined) throw unavailable('The XRPL submission interlock is not anchored.');
+    headCache = headFrom(headCache ?? { lastRowId: 0, lastIdentity: null, sequence: 0, digest: reservationsGenesisDigest(storeId, scope) });
+    return headCache;
+  }
+
+  function checkpointOf(head: ReservationsHead): AuthorityStateCheckpoint {
+    return { stateKind: XRPL_RESERVATIONS_STATE_KIND, organizationId: freshness!.boundary.organizationId, storeId: storeId!, sequence: head.sequence, stateDigest: head.digest };
+  }
+
+  /** Local, synchronous, no network: the read refuses when the history is older than (or forked from) what this process established. */
+  function observeFresh(): void {
+    if (session !== undefined) session.observe(checkpointOf(currentHead()));
+  }
+
+  /** One anchored reservation at a time in this process; across processes the witness's compare-and-advance decides. */
+  let reserving: Promise<unknown> = Promise.resolve();
 
   /** Decodes and fully verifies one row, including its lifecycle against the log. */
   function decode(row: Row): XrplSubmissionRecord {
@@ -418,13 +537,72 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
     }).immediate();
   }
 
+  function insertReservation(record: XrplSubmissionRecordInput, reservedAt: string, identity: string): void {
+    insertRow.run({
+      executionId: record.executionId,
+      account: record.account,
+      sequence: record.sequence,
+      lastLedgerSequence: record.lastLedgerSequence,
+      minLedger: record.minLedger,
+      transactionHash: record.transactionHash,
+      currency: record.amount.currency,
+      issuer: record.amount.issuer,
+      value: record.amount.value,
+      reservedAt,
+      identityDigest: identity,
+      stateDigest: stateDigest(identity, 'submitting', null, reservedAt),
+    });
+    insertTransition.run(record.executionId, null, 'submitting', null, reservedAt);
+  }
+
+  /**
+   * One anchored reservation — a CORE-07 transition. The blocking rule and the
+   * one-record-per-execution rule are decided first, on the current head; the
+   * witness then prepares exactly that head's successor (another writer that
+   * advanced it first makes the prepare conflict: refused, nothing written);
+   * the local commit re-checks that the head is still the one prepared from
+   * and inserts; `finalize` follows. Durable on return, and witnessed.
+   */
+  async function reserveAnchored(record: XrplSubmissionRecordInput, validatedLedgerIndex: number): Promise<XrplSubmissionReservation> {
+    assertOpen();
+    if (session === undefined) throw unavailable('The XRPL submission interlock is not anchored.');
+    const decided = guarded(() =>
+      db.transaction((): XrplSubmissionReservation | { readonly head: ReservationsHead } => {
+        observeFresh();
+        const existing = selectByExecution.get(record.executionId) as Row | undefined;
+        if (existing !== undefined) return { outcome: 'execution-recorded', transactionHash: decode(existing).transactionHash };
+        if (openBlocking(record.account, record.sequence, validatedLedgerIndex)) return { outcome: 'blocked' };
+        return { head: currentHead() };
+      })(),
+    );
+    if ('outcome' in decided) return decided;
+    const reservedAt = now();
+    const identity = identityDigest(record, reservedAt);
+    const expected = checkpointOf(decided.head);
+    const proposed: AuthorityStateCheckpoint = { ...expected, sequence: expected.sequence + 1, stateDigest: nextReservationsDigest(expected.stateDigest, identity) };
+    await session.transition(expected, proposed, () => ({ value: undefined, state: guarded(() => db.transaction(() => commitReservation(record, reservedAt, identity, decided.head)).immediate()) }));
+    return { outcome: 'reserved' };
+  }
+
+  /** Inside the write transaction: the head is still the one the witness prepared a successor of; insert; the successor. Synchronous. */
+  function commitReservation(record: XrplSubmissionRecordInput, reservedAt: string, identity: string, preparedFrom: ReservationsHead): AuthorityStateCheckpoint {
+    const before = currentHead();
+    if (before.sequence !== preparedFrom.sequence || before.digest !== preparedFrom.digest) throw corrupt('reservations-head');
+    insertReservation(record, reservedAt, identity);
+    return checkpointOf(headFrom(before));
+  }
+
   const store: DurableXrplSubmissionInterlock = {
     providerKind: 'sqlite',
+    get anchored() {
+      return session !== undefined;
+    },
     async recorded(executionId) {
       assertOpen();
       if (typeof executionId !== 'string' || !EXECUTION_ID.test(executionId)) throw invalid('executionId');
       return guarded(() =>
         db.transaction(() => {
+          observeFresh();
           verifyCompleteness();
           const row = selectByExecution.get(executionId) as Row | undefined;
           return row === undefined ? undefined : decode(row).transactionHash;
@@ -434,12 +612,27 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
     async blocking(query) {
       assertOpen();
       if (typeof query?.account !== 'string' || !CLASSIC_ADDRESS.test(query.account) || !isPositiveInteger(query.sequence) || !isPositiveInteger(query.validatedLedgerIndex)) throw invalid('query');
-      return guarded(() => db.transaction(() => openBlocking(query.account, query.sequence, query.validatedLedgerIndex))());
+      // CORE-07, before every signing: the witness is read and compared with this file now. Unreachable, ahead of it, or failed: refused.
+      if (session !== undefined) {
+        const freshnessNow = await session.probe();
+        if (freshnessNow.status !== 'ready') throw new AuthorityStateFreshnessError(freshnessNow.reason ?? 'AUTHORITY_FRESHNESS_UNAVAILABLE', `The XRPL reservation history's freshness is '${freshnessNow.status}': nothing is signed.`);
+      }
+      return guarded(() =>
+        db.transaction(() => {
+          observeFresh();
+          return openBlocking(query.account, query.sequence, query.validatedLedgerIndex);
+        })(),
+      );
     },
     async reserve(record, validatedLedgerIndex): Promise<XrplSubmissionReservation> {
       assertOpen();
       validateInput(record);
       if (!isPositiveInteger(validatedLedgerIndex)) throw invalid('validatedLedgerIndex');
+      if (session !== undefined) {
+        const result = reserving.then(() => reserveAnchored(record, validatedLedgerIndex));
+        reserving = result.catch(() => undefined);
+        return result;
+      }
       return guarded(() =>
         db
           .transaction((): XrplSubmissionReservation => {
@@ -447,22 +640,7 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
             if (existing !== undefined) return { outcome: 'execution-recorded', transactionHash: decode(existing).transactionHash };
             if (openBlocking(record.account, record.sequence, validatedLedgerIndex)) return { outcome: 'blocked' };
             const reservedAt = now();
-            const identity = identityDigest(record, reservedAt);
-            insertRow.run({
-              executionId: record.executionId,
-              account: record.account,
-              sequence: record.sequence,
-              lastLedgerSequence: record.lastLedgerSequence,
-              minLedger: record.minLedger,
-              transactionHash: record.transactionHash,
-              currency: record.amount.currency,
-              issuer: record.amount.issuer,
-              value: record.amount.value,
-              reservedAt,
-              identityDigest: identity,
-              stateDigest: stateDigest(identity, 'submitting', null, reservedAt),
-            });
-            insertTransition.run(record.executionId, null, 'submitting', null, reservedAt);
+            insertReservation(record, reservedAt, identityDigest(record, reservedAt));
             return { outcome: 'reserved' };
           })
           .immediate(),
@@ -482,6 +660,7 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
       if (typeof executionId !== 'string' || !EXECUTION_ID.test(executionId)) return undefined;
       return guarded(() =>
         db.transaction(() => {
+          observeFresh();
           verifyCompleteness();
           const row = selectByExecution.get(executionId) as Row | undefined;
           return row === undefined ? undefined : decode(row);
@@ -508,7 +687,11 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
             return (selectOpen.all() as Row[]).map(decode).length;
           })(),
         );
-        return { status: 'healthy', readable: true, writable: true, schemaVersion: XRPL_INTERLOCK_STORE_SCHEMA_VERSION, open };
+        const freshnessStatus = session?.status().status ?? 'not-anchored';
+        if (freshnessStatus !== 'not-anchored' && isFailedAuthorityStateFreshnessStatus(freshnessStatus)) {
+          return { status: 'unhealthy', readable: true, writable: false, schemaVersion: XRPL_INTERLOCK_STORE_SCHEMA_VERSION, freshness: freshnessStatus };
+        }
+        return { status: 'healthy', readable: true, writable: true, schemaVersion: XRPL_INTERLOCK_STORE_SCHEMA_VERSION, open, freshness: freshnessStatus };
       } catch {
         return { status: 'unhealthy', readable: false, writable: false, schemaVersion: XRPL_INTERLOCK_STORE_SCHEMA_VERSION };
       }
@@ -521,7 +704,31 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
     },
   };
   try {
+    const anchorRow = selectAnchor.get() as { store_id: unknown } | undefined;
+    if (anchorRow !== undefined && (typeof anchorRow.store_id !== 'string' || anchorRow.store_id.length === 0)) throw corrupt('anchor');
+    if (freshness === undefined) {
+      // A history once anchored is never served to the rail without its witness: that would forgo rollback detection. Verification tooling (no scope) only reads.
+      if (anchorRow !== undefined && scope !== undefined) throw unavailable('The XRPL submission interlock is anchored at a freshness witness and is never opened for the rail without it.');
+    } else if (anchorRow === undefined) {
+      // Never anchored after the fact: a history the witness has not seen from its first reservation could already have lost one.
+      if ((countRows.get() as { n: number }).n > 0) throw unavailable('The XRPL submission interlock holds reservations recorded without a freshness anchor, and is never anchored after the fact: start from a new interlock file once every recorded window has closed.');
+      // Genesis: enrolled at the witness before it is committed here (CORE-07 §2.6). A witness holding this slot beyond genesis refuses the empty file — a stale restore of a never-used backup included.
+      const genesisId = await freshness.boundary.genesisStoreId(XRPL_RESERVATIONS_STATE_KIND, { newStoreId: () => `xrpl-submission-interlock:${randomUUID()}`, genesisDigest: (id) => reservationsGenesisDigest(id, scope!) });
+      db.transaction(() => {
+        const raced = selectAnchor.get() as { store_id: unknown } | undefined;
+        if (raced === undefined) db.prepare('INSERT INTO xrpl_interlock_anchor (id, store_id, anchored_at) VALUES (1, ?, ?)').run(genesisId, now());
+        else if (raced.store_id !== genesisId) throw corrupt('anchor');
+      }).immediate();
+      storeId = genesisId;
+    } else {
+      storeId = anchorRow.store_id as string;
+    }
     await store.verifyAll();
+    if (freshness !== undefined) {
+      // CORE-07, before the store is handed to anything: an older history (rollback, stale restore), a fork, a prepared reservation this file does not hold, an unenrolled slot or an unreachable witness refuses the open.
+      session = await freshness.boundary.establish(checkpointOf(currentHead()), () => checkpointOf(currentHead()));
+      markComposedUnderFreshness(store, freshness.boundary);
+    }
   } catch (error) {
     closed = true;
     db.close();

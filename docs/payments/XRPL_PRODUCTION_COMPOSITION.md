@@ -50,7 +50,7 @@ With `xrplPaymentRail`, `bootEnterpriseHost` (before `createEnterprise`):
 | step | does | on failure |
 | --- | --- | --- |
 | 1 | refuses if the process environment carries XRPL key material or the reference signer's configuration (`*XRPL*SEED/SECRET/PRIVATE/MNEMONIC/WALLET*`, `FRONTERA_REFERENCE_XRPL_SIGNER_*`) — presence only, never read | `HOST_ENVIRONMENT_INVALID` |
-| 2 | opens the durable interlock and verifies every record | `XRPL_INTERLOCK_UNAVAILABLE` (refuse) |
+| 2 | opens the durable interlock, verifies every record, and proves its reservation history fresh at the CORE-07 witness (a new history is enrolled as a genesis first) — §9 | `XRPL_INTERLOCK_UNAVAILABLE` / `XRPL_INTERLOCK_FRESHNESS_FAILED` (refuse) |
 | 3 | proves the external signer's identity against the pins | mismatch → `XRPL_SIGNER_IDENTITY_MISMATCH` (refuse); unreachable → start **degraded** |
 | 4 | builds two SDK clients (rail; read-only resolver) | — |
 | 5 | composes the PAY-02 rail with the interlock; `readiness()` connects, checks `network_id`, reads the validated index | network mismatch → `XRPL_NETWORK_MISMATCH` (refuse); unreachable → **degraded** |
@@ -191,70 +191,100 @@ All qualified in `pay03-xrpl-interlock.test.ts` (and C9 in `pay03-xrpl-host.test
 
 ## 9. Restart, cross-process, rollback and freshness
 
-**Restart quarantine.** When composed with the durable interlock, the rail
-prepares a payment at validated index `V` only when the validated ledger
-`V − 204` (`XRPL_RESTART_QUARANTINE_LEDGERS`: the historical maximum
-`lastLedgerOffset`, 200, plus a margin of 4) has a consensus `close_time` at
-least 180 s after the rail started — one ledger read by index, cached once it
-passes — **and** `V` is at least 204 ledgers past the first validated index
-the rail observed (the Host reads it at boot; a rail never probed reads it at
-its first preparation and counts from there). Otherwise, and whenever that
-ledger cannot be read, is not validated or is malformed, it refuses with
-nothing signed (`xrpl-restart-quarantine`). Past the boot read, nothing has to
-observe the ledger at a particular moment: the close-time check reads history.
+**The invariant.** After any restart or stale restore, no XRPL payment is
+signed or submitted while a transaction an earlier process created could still
+be included — whatever the Host's clock says, however far behind the
+configured XRPL server is, and whatever the restored interlock file holds.
 
-The proof (`xrpl-submission-interlock.ts`) needs nothing from the local file
-or the current configuration:
+**The boundary: the reservation history is anchored at the CORE-07 witness.**
+Every transaction that can reach XRPL was durably reserved first (§6). The
+interlock's reservation history — sequence = the number of reservations ever
+made, digest = a hash chain over their identity digests — is anchored at the
+Host's external authority-state witness (CORE-07,
+`docs/architecture/ADR-AUTHORITY-STATE-FRESHNESS-AND-ROLLBACK-DETECTION.md`)
+in its own slot, `xrpl-submission-reservations`, through CORE-07's unchanged
+session, client, protocol and reference witness:
 
-- a transaction any earlier process signed has `LastLedgerSequence = vP + oP`,
-  `vP` the validated index it read and `oP ≤ 200` — whatever offset was
-  configured then or is configured now (the historical bound may grow, never
-  shrink; structurally tested against the configuration limit);
-- `vP ≤ N0`, the network's last validated ledger at this start;
-- close times never decrease with the sequence and `N0` closed before the
-  start, so a ledger that closed after the start (plus slack for close-time
-  rounding and clock disagreement) is above `N0` — **however far behind the
-  server was when the rail started**: a lagging server's ledgers simply
-  closed too early to pass the check;
-- so `V − 204 > N0 ≥ vP`, i.e. `V > vP + oP + 4`: once the quarantine
-  passes, every earlier transaction's window has been validated, and it can
-  never be included.
+- **every reservation is a CORE-07 transition**: witness `prepare` → the
+  interlock's `BEGIN IMMEDIATE` check-and-insert → `finalize`. No reservation,
+  and so no submission, exists that the witness has not seen. A witness that
+  does not prepare (unreachable, or another writer advanced it first) refuses
+  the reservation with nothing submitted;
+- **at open**, before the rail is composed, the history is reconciled with the
+  witness: an older one (a stale restore or rollback that lost a reservation)
+  is `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`, a different one a fork, a
+  reservation the witness prepared but the file does not hold
+  `PENDING_RECOVERY`, an unreachable witness `UNAVAILABLE` — each refuses the
+  composition (`XRPL_INTERLOCK_FRESHNESS_FAILED`): nothing is ever signed;
+- **before every signing**, the interlock's pre-check reads the witness again:
+  unreachable, ahead of the file, or failed → refused before the signer is
+  called;
+- once the history is proven fresh it holds every earlier reservation, and the
+  blocking rule (§7) refuses a competing `Sequence` until the validated ledger
+  has reached that transaction's own `LastLedgerSequence` — a ledger fact. A
+  lagging server only reports a lower validated index, which blocks longer; no
+  clock is read.
 
-That argument trusts the Host's clock (step 3). The progress floor is a
-second, independent proof that trusts the boot server instead: the first
-index `F` was read after the start, so a current server gives `F ≥ N0 ≥ vP`,
-and `V ≥ F + 204` again gives `V > vP + oP + 4`. Both are required, so the
-quarantine can end early only if the Host's clock is behind the network's
-close time by more than the slack (≈ 2 min) **and** the server read at boot
-was lagging — neither fault alone, and no configuration change, can do it
-(qualified: a Host clock an hour slow with a current server, and a server
-1,000 ledgers behind with a correct clock, both stay refused through the lost
-window).
+Only reservations are anchored: `markUnconfirmed` and `settle` only move a
+record toward closed, so losing one keeps a record open — a false block, never
+a false release. The Host refuses an `xrplPaymentRail` without
+`AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external` in **every** profile
+(`HOST_AUTHORITY_FRESHNESS_REQUIRED`), and an anchored interlock is never
+opened for the rail without its witness. A file holding reservations recorded
+without an anchor is never anchored after the fact. Qualified in
+`pay03-xrpl-restart-freshness.test.ts` (F1–F10), including the exact combined
+fault: an unresolved transaction near the 200-ledger maximum window, its row
+lost to a stale restore, a Host clock an hour slow **and** a server 1,000
+ledgers behind at boot — the restart quarantine below passes, and the restored
+history is still refused, with zero signatures and zero submissions.
 
-Lowering `lastLedgerOffset` therefore cannot shorten it, and a stale restore
-or rollback that lost an unresolved record cannot reopen sequence reuse. Cost:
-XRPL payments are refused for roughly 180 s + 204 ledgers (≈ 15–17 min) after
-each start; the Host composes, serves and reports health meanwhile.
-Assumptions: the configured XRPL server is trusted to report validated
-ledgers (as everywhere in the rail), and at least one of the two witnesses
-holds — the Host's clock (keep it NTP-synchronized) or a server that is
-current at boot.
+**Where the witness lives.** Outside the interlock's backup, restore and
+snapshot domain: `backup:v1` never backs it up (`EXCLUDED_DURABLE_STATE`), and
+the deployment requirement is CORE-07's — the witness's state on a different
+volume, backup set and snapshot schedule. A stale restore of the interlock is
+refused; a witness rolled back alone is refused (the history is ahead of
+anything it has seen). The one case CORE-07 does not claim — the witness and
+the interlock restored as **one** snapshot to the same earlier moment — is what
+that requirement excludes.
+
+**Recovery.** A refused history is never repaired, re-enrolled or cleared by
+the Host: the operator restores the newest interlock file (the restored
+history then proves fresh, and its unresolved records block until their
+windows close). A pending reservation the file does not hold, or an
+unrecoverable loss of the newest file, is trusted operational recovery at the
+witness, outside the Host — as for every CORE-07 slot. Availability is lost;
+`Sequence` reuse is not reopened.
+
+**Restart quarantine (defense in depth).** Independently, the rail prepares a
+payment at validated index `V` only when the validated ledger `V − 204`
+(`XRPL_RESTART_QUARANTINE_LEDGERS`: the historical maximum `lastLedgerOffset`,
+200, plus a margin of 4) has a consensus `close_time` at least 180 s after the
+rail started **and** `V` is at least 204 ledgers past the first validated index
+the rail observed (read at boot). Otherwise — including when that ledger cannot
+be read, is not validated or is malformed — it refuses with nothing signed
+(`xrpl-restart-quarantine`). It never depends on the current
+`lastLedgerOffset`, and a slow clock alone or a lagging boot server alone
+cannot end it early (proof in `xrpl-submission-interlock.ts`); both at once
+can, which is why it is **not** the safety boundary — the anchored history
+above is. Cost: XRPL payments are refused for roughly 180 s + 204 ledgers
+(≈ 15–17 min) after each start; the Host composes, serves and reports health
+meanwhile.
 
 **Cross-process.** Supported concurrency model: any number of Host processes
 on **one shared state** (one SQLite file on one host). `reserve` is a single
 `BEGIN IMMEDIATE` check-and-insert, so a second process cannot bypass an open
-record; the per-process queue still serializes within a process. Distributed
-locking across machines is **not** provided; Frontera's deployment model
-remains one Host per state volume (`docs/deployment/PILOT_DEPLOYMENT.md`).
+record; the per-process queue still serializes within a process, and anchored
+reservations are serialized per process and decided across processes by the
+witness's compare-and-advance (a writer that loses the `prepare` is refused,
+nothing written). Distributed locking across machines is **not** provided;
+Frontera's deployment model remains one Host per state volume
+(`docs/deployment/PILOT_DEPLOYMENT.md`).
 
-**Rollback / stale restore (assessed).** The interlock is **not** CORE-07
-witness-anchored, and does not claim to be. A stale restore that loses an open
-record cannot reopen sequence reuse: the restart quarantine above covers every
-transaction submitted before the restored process started, under any
-`lastLedgerOffset` it was configured with, and whatever the restored file or
-the current configuration says. The quarantine is a property of a **start**:
-a restore is applied with every Host on that state stopped
-(`docs/deployment/PILOT_DEPLOYMENT.md`), never underneath a running one.
+**Rollback / stale restore.** Refused at the next start, as above, before
+anything is signed. A restore is applied with every Host on that state stopped
+(`docs/deployment/PILOT_DEPLOYMENT.md`); a file replaced underneath a running
+Host is refused by the next read or pre-signing check that sees the older
+history.
 
 ## 10. P12 XRPL resolution authority
 
@@ -307,7 +337,9 @@ answer changes nothing.
 
 Closed at every level (`seed`, `secret`, a typo — refused). Requires
 `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite` (`HOST_PERSISTENCE_NOT_DURABLE`
-otherwise). **Config check** (`npm run check:host-configuration`, the pilot's
+otherwise) and, in every profile, the external CORE-07 freshness witness
+(`AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external` and its endpoint, token, id
+and pinned key — `HOST_AUTHORITY_FRESHNESS_REQUIRED` otherwise; §9). **Config check** (`npm run check:host-configuration`, the pilot's
 `config-check`) runs the same validation — contacting nothing — and requires
 the interlock store's storage. Example: `examples/payments/governed-actions.xrpl-testnet.example.json`.
 
@@ -358,8 +390,9 @@ variable in its own environment.
 Not provided: a production custody service (HSM / KMS integration is the
 customer's signer); mTLS or workload identity on the signer transport (a
 further `ExternalXrplSignerTransport`); multi-signing; distributed locking
-across machines; CORE-07 anchoring of the interlock (bounded by the restart
-quarantine instead, §9); P12 resolution of an execution that crashed before
+across machines; an XRPL rail without the external CORE-07 witness (refused
+in every profile, §9); automatic recovery of a refused reservation history
+(trusted operational recovery, §9); P12 resolution of an execution that crashed before
 its durable reservation (stays `unresolved`, capacity consumed; it provably
 submitted nothing, but absence is not used as evidence); resolution when the
 configured server lacks the history (`searched_all: false` → `unresolved`; use

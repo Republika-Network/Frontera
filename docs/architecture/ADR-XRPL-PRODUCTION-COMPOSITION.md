@@ -47,18 +47,30 @@ holding a customer key or accepting that gap.
    blocks a competing sequence on its account while its `LastLedgerSequence`
    window is open; every release is a ledger fact. It is in the PROD-02 store
    registry, backed up and restored.
-4. **A restart quarantine instead of witness anchoring.** With the interlock
-   composed, the rail prepares at validated index `V` only once the validated
-   ledger `V − 204` (the historical maximum `lastLedgerOffset`, 200, + 4)
-   provably closed after the start (its consensus `close_time`, plus slack)
-   **and** `V` is 204 ledgers past the first validated index the rail observed
-   (read at boot) — never the current, mutable offset. A lagging boot server
-   cannot end it early (the close-time proof), nor can a slow Host clock (the
-   progress floor); only both at once could. Any transaction from before the
-   restart — under any configuration, even one whose record a rollback or a
-   stale restore lost — has then left its window. The ledger is the freshness
-   witness; the interlock is not CORE-07 anchored. Cost: ≈ 15–17 min without
-   XRPL payments after each start.
+4. **The interlock's reservation history is anchored at the CORE-07 witness
+   (review fix).** A local file cannot prove its own freshness, and the Host
+   clock and the configured XRPL server cannot vouch for each other: a clock
+   behind the network and a server lagging at boot cancel out. So every
+   reservation is a CORE-07 transition (`prepare` → local `BEGIN IMMEDIATE`
+   insert → `finalize`) in the slot `xrpl-submission-reservations`, through
+   CORE-07's unchanged session, client, protocol and reference witness; at open
+   an older, forked or unheld-pending history — or an unreachable witness —
+   refuses the composition (`XRPL_INTERLOCK_FRESHNESS_FAILED`), and before
+   every signing the witness is read again. A history proven fresh holds every
+   reservation, so the blocking rule keeps a competing `Sequence` refused until
+   the ledger has validated that transaction's own `LastLedgerSequence`. No
+   clock is read. Reuse, not a second freshness system: CORE-07 gains one slot
+   kind; its enrollment ceremony and authority-store composition stay limited
+   to the three authority stores (`AUTHORITY_STORE_KINDS`), and the freshness
+   module imports no payment code. The Host refuses an XRPL rail without the
+   external witness in every profile.
+   The **restart quarantine** stays as defense in depth: the rail prepares at
+   validated index `V` only once ledger `V − 204` (the historical maximum
+   `lastLedgerOffset`, 200, + 4) provably closed after the start **and** `V`
+   is 204 ledgers past the first validated index read at boot — never the
+   current, mutable offset. Either fault alone cannot end it early; both at
+   once can, which is why it is not the safety boundary. Cost: ≈ 15–17 min
+   without XRPL payments after each start.
 5. **P12 read-only XRPL resolution.** `frontera.xrpl-rlusd-ledger` is bound
    before the claim to every execution of the rail's payment action and answers
    from validated ledger facts only; anything ambiguous is `unresolved`, and
@@ -74,7 +86,9 @@ holding a customer key or accepting that gap.
   customer key, and its ambiguity safety survives restart, a second process on
   the same state, and restore.
 - Availability costs: XRPL payments are refused during each restart quarantine
-  (≈ 30 s – 1.5 min); a payment crashed before its reservation stays P12
+  (≈ 15–17 min), while the CORE-07 witness is unreachable, and after a refused
+  (rolled-back) reservation history until the newest interlock file is
+  restored; a payment crashed before its reservation stays P12
   `unresolved` (it provably submitted nothing, but that proof is not used);
   operators cannot override the ledger authority on XRPL-bound executions.
 - New durable state, a new required health module and an optional one; one
@@ -89,9 +103,15 @@ holding a customer key or accepting that gap.
 - **Pre-submit record without signature (two-phase reserve, then attach hash).**
   More crash windows, and a rollback still defeats any inference from absence;
   the quarantine is needed either way.
-- **CORE-07 anchoring of the interlock.** Possible, but every payment would
-  need a witness round-trip; the ledger already bounds what a stale record can
-  hide.
+- **The restart quarantine as the only rollback bound (rejected by review).**
+  It needs a trustworthy present: the Host clock or the configured server.
+  Errors in both cancel, and nothing local can tell. Adopted instead: CORE-07
+  anchoring (decision 4), at the cost of a witness `prepare` / `finalize` per
+  reservation and one witness read before each signing.
+- **A second, XRPL-specific freshness witness (or a signer-attested high-water
+  mark).** A second trust root, receipt key and recovery story to operate; the
+  signer's protocol has no authenticated answers, so a forged low mark would
+  fail open. CORE-07 already provides all of it.
 - **Releasing the interlock on P12 / operator resolution.** Unnecessary — the
   ledger fact that justifies a resolution already releases the interlock — and
   an operator's attestation is not a ledger fact.

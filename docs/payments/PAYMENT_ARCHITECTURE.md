@@ -319,7 +319,7 @@ optional `xrplPaymentRail` section — and only then. Full detail:
 ```
 governed-action file: xrplPaymentRail { paymentAction, network, endpoint, asset, sourceAccounts[+signingPublicKey], signer{…} }
 bootEnterpriseHost
-   ├─ durable XRPL submission interlock (SQLite, PROD-02 registry, backup / restore)
+   ├─ durable XRPL submission interlock (SQLite, PROD-02 registry, backup / restore; reservation history anchored at the CORE-07 witness)
    ├─ external XRPL transaction signer (customer custody; identity pinned; the Host holds no key)
    ├─ createXrplRlusdRail({ …, interlock }) → createPaymentRailExecutionAdapter → the existing adapter registry
    └─ P12: the read-only XRPL resolution authority, bound before the claim to every rail payment

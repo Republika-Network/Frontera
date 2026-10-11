@@ -586,6 +586,16 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
         `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplPaymentRail requires AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite — its submission interlock must survive a restart, or a second payment could compete with an unconfirmed one.`,
       );
     }
+    // PAY-03: in every profile, the interlock's reservation history is anchored
+    // at the external CORE-07 witness. Without it a stale restore of the
+    // interlock could lose a still-live transaction, and no clock or XRPL
+    // server reading can prove otherwise.
+    if (governed.xrplPaymentRail !== undefined && configuration.authorityFreshness?.mode !== 'external') {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_AUTHORITY_FRESHNESS_REQUIRED',
+        `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplPaymentRail requires an external authority-state freshness witness (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external): its submission interlock's reservation history is anchored there, outside the interlock's backup and restore domain.`,
+      );
+    }
   }
 
   return { configuration, governedActions: governed, secureProfile };

@@ -271,10 +271,10 @@ export const STORE_DEFINITIONS = Object.freeze([
     version: { kind: 'versions-table', table: 'xrpl_interlock_store_versions', migrationState: true },
     supportedSchemaVersionsOf: ({ xrplInterlock }) => [xrplInterlock.XRPL_INTERLOCK_STORE_SCHEMA_VERSION],
     recordTable: 'xrpl_submissions',
-    integrity: 'identity and state digests, forward-only lifecycle triggers, append-only transition log (unsigned; rollback bounded by the rail restart quarantine, not CORE-07)',
+    integrity: 'identity and state digests, forward-only lifecycle triggers, append-only transition log (unsigned); the reservation history is anchored at the CORE-07 witness, so a rolled-back or stale copy is refused at the next start (slot xrpl-submission-reservations; not a signed store)',
     // No scope: verification adopts the file's own recorded scope, verifies every record and creates nothing.
     open: ({ factories }, path) => factories.xrplInterlock.createSqliteXrplSubmissionInterlock(path, { now: () => new Date().toISOString() }),
-    lossEffect: 'an unresolved XRPL submission is forgotten: a second payment could compete for its sequence until its LastLedgerSequence passes (bounded by the restart quarantine), and P12 can no longer resolve it from the ledger',
+    lossEffect: 'restoring an older copy loses reservations the witness has seen: the Host refuses the XRPL rail (XRPL_INTERLOCK_FRESHNESS_FAILED, ROLLBACK_DETECTED) and signs nothing until the newest copy is restored; P12 cannot resolve a forgotten submission from the ledger',
   },
   {
     name: 'obligation-discharges',

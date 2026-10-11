@@ -80,6 +80,25 @@ describe('CORE-07 — structure of the freshness boundary', () => {
     }
   });
 
+  it('PAY-03: the XRPL submission interlock anchors its reservation history the same way — one synchronous-commit transition, freshness before it is returned, a witnessed genesis — and the freshness module knows nothing of XRPL', () => {
+    const interlock = 'src/enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.ts';
+    const source = code(interlock);
+    const calls = [...source.matchAll(/session\.transition\(/g)];
+    assert.equal(calls.length, 1, 'exactly one transition: the reservation');
+    const args = argumentsAt(source, (calls[0]!.index ?? 0) + 'session.transition'.length);
+    assert.equal(/\bawait\b|\basync\b/.test(args.slice(args.indexOf('() =>'))), false, 'the commit handed to the transition does not await');
+    assert.equal(/\banchor\s*\.|witness-client|http-transport/.test(source), false, 'the interlock reaches the witness only through its session');
+    const establish = source.indexOf('boundary.establish(');
+    assert.ok(establish > 0 && establish < source.lastIndexOf('return Object.freeze(store);'), 'freshness is established before the store is returned');
+    assert.ok(source.includes('boundary.genesisStoreId('), 'a new history is enrolled at the witness before it is committed');
+    assert.ok(source.includes('session.observe('), 'every read passes the floor');
+    const composition = code('src/enterprise/xrpl-payment-rail/host-composition.ts');
+    assert.ok(/freshness: \{ boundary \}/.test(composition) && /XRPL_INTERLOCK_FRESHNESS_FAILED/.test(composition), 'the Host composes the interlock only anchored');
+    for (const file of walk(MODULE).filter((path) => path.endsWith('.ts'))) {
+      assert.equal(/xrpl-payment-rail|payment-runtime/.test(code(file)), false, `${file}: the freshness module imports no payment code`);
+    }
+  });
+
   it('the in-process witnesses of the discharge and approval stores remember the digest as well as the sequence', () => {
     for (const store of STORES.slice(1)) {
       const source = code(store);

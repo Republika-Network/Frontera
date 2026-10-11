@@ -32,10 +32,33 @@ import type { ObligationDischargeStateCommitment } from '../obligation-discharge
 
 export const AUTHORITY_STATE_CHECKPOINT_FORMAT = 'frontera.authority-state-checkpoint.v1';
 
-/** The closed set of freshness-relevant authority state. Nothing else is anchored, and nothing else can be named. */
-export const AUTHORITY_STATE_KINDS = ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state'] as const;
+/**
+ * The three durable **authority** stores — the only kinds the enrollment
+ * ceremony and the authority-store composition know. Governance semantics
+ * live here and nowhere else.
+ */
+export const AUTHORITY_STORE_KINDS = ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state'] as const;
+
+export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
+
+/**
+ * The closed set of anchored state. Nothing else is anchored, and nothing else
+ * can be named. Beyond the authority stores, one operational safety state
+ * (PAY-03): `xrpl-submission-reservations`, the append-only reservation
+ * history of the XRPL submission interlock, whose rollback could let a
+ * restarted Host reuse a source account's `Sequence` while an earlier
+ * transaction is still live. The witness treats it exactly like any other
+ * slot; this module knows nothing else about it (its store, in
+ * `src/enterprise/xrpl-payment-rail/`, maps itself onto a checkpoint), and it
+ * is never enrolled by the authority ceremony.
+ */
+export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'xrpl-submission-reservations'] as const;
 
 export type AuthorityStateKind = (typeof AUTHORITY_STATE_KINDS)[number];
+
+export function isAuthorityStoreKind(value: unknown): value is AuthorityStoreKind {
+  return typeof value === 'string' && (AUTHORITY_STORE_KINDS as readonly string[]).includes(value);
+}
 
 export function isAuthorityStateKind(value: unknown): value is AuthorityStateKind {
   return typeof value === 'string' && (AUTHORITY_STATE_KINDS as readonly string[]).includes(value);

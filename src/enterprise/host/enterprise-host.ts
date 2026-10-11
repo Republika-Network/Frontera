@@ -312,8 +312,11 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
   if (xrplConfiguration !== undefined) {
     try {
       const { composeXrplPaymentRail } = await import('../xrpl-payment-rail/host-composition.js');
+      const { buildAuthorityStateFreshnessBoundary } = await import('../composition/composition-root.js');
       xrpl = await composeXrplPaymentRail({
         configuration: xrplConfiguration,
+        // PAY-03: the CORE-07 witness the interlock's reservation history is anchored at (configuration refuses an XRPL rail without one).
+        freshness: await buildAuthorityStateFreshnessBoundary(host.configuration),
         interlockPath: host.configuration.xrplInterlock?.sqlitePath ?? '.data/xrpl-submission-interlock.sqlite',
         busyTimeoutMs: host.configuration.persistence.busyTimeoutMs,
         logger,

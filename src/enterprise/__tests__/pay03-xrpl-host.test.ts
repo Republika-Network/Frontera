@@ -15,7 +15,7 @@ import { startReferenceXrplSigner } from '../xrpl-payment-rail/reference/referen
 import { createSqliteXrplSubmissionInterlock } from '../xrpl-payment-rail/sqlite-xrpl-submission-interlock.js';
 import { XRPL_RESOLUTION_AUTHORITY_ID } from '../xrpl-payment-rail/xrpl-resolution-authority.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
-import { withDeploymentWitness } from './core07-freshness-fixture.js';
+import { boundaryFor, withDeploymentWitness } from './core07-freshness-fixture.js';
 import { ACCOUNT, AGENT, AUTH, ISSUER, ORG, OWNER, SECRETS, TRUST_DOMAIN, bootstrapOrganization, call, capturingLogger, create, createWorkspace, expectStatus, logLines, responses, type Reply } from './ctrl02-host-fixture.js';
 import { SIGNER_ID, SIGNER_TOKEN, SIGNER_TOKEN_ENV, SIMULATED_RESTART_QUARANTINE, createLedgerSimulator, type LedgerSimulator } from './pay03-xrpl-fixture.js';
 import { portability } from './prod02-recovery-fixture.js';
@@ -378,6 +378,8 @@ describe('PAY-03 Host startup, readiness and configuration', () => {
   it('refuses to start — before listening, with a closed code and no secret in the message — on every unsafe configuration', async () => {
     const cases: [string, () => Record<string, string | undefined>, string][] = [
       ['memory persistence', () => hostEnv(workspace.dir(), governedFile(), { AOC_ENTERPRISE_ENV: 'development', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory' }), 'HOST_PERSISTENCE_NOT_DURABLE'],
+      // PAY-03 freshness fix: in every profile — here development, durable, with no external witness — the interlock must be anchored.
+      ['no CORE-07 freshness witness (development profile)', () => hostEnv(workspace.dir(), governedFile(), { AOC_ENTERPRISE_ENV: 'development' }), 'HOST_AUTHORITY_FRESHNESS_REQUIRED'],
       ['missing signer credential', () => hostEnv(workspace.dir(), governedFile(), { [SIGNER_TOKEN_ENV]: undefined }), 'HOST_SECRET_REFERENCE_UNRESOLVED'],
       ['missing signer section', () => hostEnv(workspace.dir(), governedFile({}, { ...railSection(), signer: undefined })), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
       ['malformed signing public key', () => hostEnv(workspace.dir(), governedFile({}, railSection({ sourceAccounts: [{ accountId: ACCOUNT, address: TREASURY.classicAddress, signingPublicKey: 'ED12' }] }))), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
@@ -457,8 +459,10 @@ describe('PAY-03 backup / restore and secrets', () => {
     const report = await runRestore({ backup: backupDir, target, env: { ...witnessed, ...registry.storeEnvironmentFor(target) } });
     assert.equal(report.status, 'restored');
     assert.deepEqual(interlockRows(target).map((row) => row['state']), ['unconfirmed'], 'restore cleared nothing');
-    // The restored interlock blocks the competing sequence exactly as before (the window is still open at this ledger index).
-    const store = await createSqliteXrplSubmissionInterlock(registry.storeEnvironmentFor(target)['AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH']!, { scope: { railId: RAIL, networkId: 1 }, now: () => new Date().toISOString() });
+    // The restored interlock — the newest reservation history, so the deployment's CORE-07 witness proves it fresh — blocks the competing sequence exactly as before (the window is still open at this ledger index).
+    const witness = { endpoint: witnessed['AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT']!, witnessId: witnessed['AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID']!, publicKeyPem: witnessed['AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY']! };
+    const store = await createSqliteXrplSubmissionInterlock(registry.storeEnvironmentFor(target)['AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH']!, { scope: { railId: RAIL, networkId: 1 }, now: () => new Date().toISOString(), freshness: { boundary: await boundaryFor(witness, ORG) } });
+    assert.equal(store.anchored, true);
     const restored = interlockRows(target)[0]!;
     assert.equal(await store.blocking({ account: TREASURY.classicAddress, sequence: restored['sequence'] as number, validatedLedgerIndex: ledger.index }), true);
     assert.equal(await store.blocking({ account: OTHER_SOURCE.classicAddress, sequence: restored['sequence'] as number, validatedLedgerIndex: ledger.index }), false, 'scoped to its source account');

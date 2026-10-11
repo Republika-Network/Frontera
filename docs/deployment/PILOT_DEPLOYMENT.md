@@ -476,8 +476,11 @@ until the cause is fixed; it never becomes ready.
   other store, so a backup sees one layout). The kit ships **no XRPL signer**:
   the external transaction signer is the customer's custody service, a
   separate process with its own key, reachable by the Host only; the Host
-  refuses to start with any XRPL key material in its environment. See
-  `docs/payments/XRPL_PRODUCTION_COMPOSITION.md`.
+  refuses to start with any XRPL key material in its environment. It also
+  requires the external CORE-07 freshness witness (which the kit does not
+  ship): the interlock's reservation history is anchored there, so a stale
+  restore of the state volume is refused before any XRPL payment is signed. See
+  `docs/payments/XRPL_PRODUCTION_COMPOSITION.md` §9.
 
 ## 18. Qualification
 

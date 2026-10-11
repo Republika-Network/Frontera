@@ -1,4 +1,6 @@
 import type { ExecutionAdapter } from '../../features/execution-runtime/index.js';
+import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
+import { isAuthorityStateFreshnessBoundary, type AuthorityStateFreshnessBoundary } from '../authority-state-freshness/session.js';
 import { createPaymentGovernanceBinding, createPaymentRailExecutionAdapter } from '../../features/payment-runtime/index.js';
 import { XRPL_RAIL_DETAILS, createXrplRlusdRail, createXrplSdkClient, type XrplClientPort, type XrplRailLogger, type XrplRlusdRailConfiguration } from '../../features/payment-runtime/rails/xrpl/index.js';
 import type { ExecutionResolutionAuthority } from '../execution-reconciliation/authority.js';
@@ -15,7 +17,12 @@ export const XRPL_SUBMISSION_INTERLOCK_MODULE_ID = 'aoc.enterprise.xrpl-submissi
 const LEDGER_PROBE_INTERVAL_MS = 5_000;
 
 /** Why PAY-03 composition refused. A closed code; the message names no value. */
-export type XrplCompositionFailure = 'XRPL_INTERLOCK_UNAVAILABLE' | 'XRPL_SIGNER_IDENTITY_MISMATCH' | 'XRPL_NETWORK_MISMATCH' | 'XRPL_COMPOSITION_FAILED';
+export type XrplCompositionFailure =
+  | 'XRPL_INTERLOCK_UNAVAILABLE'
+  | 'XRPL_INTERLOCK_FRESHNESS_FAILED'
+  | 'XRPL_SIGNER_IDENTITY_MISMATCH'
+  | 'XRPL_NETWORK_MISMATCH'
+  | 'XRPL_COMPOSITION_FAILED';
 
 export class XrplCompositionError extends Error {
   readonly code: XrplCompositionFailure;
@@ -44,6 +51,12 @@ export type XrplLedgerClientFactory = (configuration: XrplRlusdRailConfiguration
 export interface ComposeXrplPaymentRailOptions {
   readonly configuration: EnterpriseHostXrplPaymentRailConfiguration;
   readonly interlockPath: string;
+  /**
+   * The CORE-07 freshness boundary (the Host's external authority-state
+   * witness) the interlock's reservation history is anchored at. Required:
+   * `undefined` refuses the composition (`XRPL_INTERLOCK_FRESHNESS_FAILED`).
+   */
+  readonly freshness: AuthorityStateFreshnessBoundary | undefined;
   readonly busyTimeoutMs?: number;
   readonly logger?: XrplRailLogger;
   /**
@@ -60,7 +73,9 @@ export interface ComposeXrplPaymentRailOptions {
  * before the Enterprise is created:
  *
  * ```
- * 1. durable interlock   open + verify every record (corrupt / foreign scope → refuse)
+ * 1. durable interlock   open + verify every record (corrupt / foreign scope → refuse); its reservation
+ *                       history reconciled with the CORE-07 witness (rollback, fork, unheld pending,
+ *                       unreachable witness → refuse: XRPL_INTERLOCK_FRESHNESS_FAILED)
  * 2. external signer     identity handshake against the pins (mismatch → refuse; unreachable → degraded, proven before first signature)
  * 3. XRPL client         one for the rail; one, read-only, for the resolver
  * 4. rail                PAY-02 rail + interlock; readiness connects, checks network_id (mismatch → refuse; unreachable → degraded), starts the restart quarantine
@@ -81,14 +96,22 @@ export async function composeXrplPaymentRail(options: ComposeXrplPaymentRailOpti
   };
 
   try {
+    const boundary = options.freshness;
+    if (!isAuthorityStateFreshnessBoundary(boundary)) {
+      throw new XrplCompositionError('XRPL_INTERLOCK_FRESHNESS_FAILED', 'The XRPL submission interlock needs the external authority-state freshness witness; the XRPL rail is not composed.');
+    }
     let interlock: DurableXrplSubmissionInterlock;
     try {
       interlock = await createSqliteXrplSubmissionInterlock(options.interlockPath, {
         scope: { railId: railConfiguration.railId, networkId: railConfiguration.networkId },
         now,
+        freshness: { boundary },
         ...(options.busyTimeoutMs !== undefined ? { busyTimeoutMs: options.busyTimeoutMs } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthorityStateFreshnessError) {
+        throw new XrplCompositionError('XRPL_INTERLOCK_FRESHNESS_FAILED', `The XRPL submission interlock's reservation history could not be proven fresh at the authority-state witness (${error.code}); no XRPL payment is signed. The XRPL rail is not composed.`);
+      }
       throw new XrplCompositionError('XRPL_INTERLOCK_UNAVAILABLE', 'The XRPL submission interlock could not be opened and verified; the XRPL rail is not composed.');
     }
     opened.push(() => interlock.close());
@@ -152,13 +175,22 @@ export async function composeXrplPaymentRail(options: ComposeXrplPaymentRailOpti
       },
       async initialize() {},
       async health(): Promise<EnterpriseModuleHealth> {
+        // CORE-07: the witness is compared with the reservation history (rate-limited, single-flight) before the store reports.
+        await boundary.probe().catch(() => undefined);
         const report = await interlock.health();
         return {
           status: report.status,
           checkedAt: now(),
-          ...(report.status === 'healthy' ? {} : { message: 'The XRPL submission interlock is unreadable or failed its integrity checks; every XRPL payment is refused before signing.' }),
+          ...(report.status === 'healthy' ? {} : { message: 'The XRPL submission interlock is unreadable, failed its integrity checks or its reservation history is not proven fresh; every XRPL payment is refused before signing.' }),
           // An open record is the interlock doing its job — counted, never unhealthy.
-          details: { provider: interlock.providerKind, readable: report.readable, writable: report.writable, schemaVersion: report.schemaVersion, ...(report.open !== undefined ? { openSubmissions: report.open } : {}) },
+          details: {
+            provider: interlock.providerKind,
+            readable: report.readable,
+            writable: report.writable,
+            schemaVersion: report.schemaVersion,
+            ...(report.open !== undefined ? { openSubmissions: report.open } : {}),
+            ...(report.freshness !== undefined ? { freshness: report.freshness } : {}),
+          },
         };
       },
       async shutdown() {

@@ -430,6 +430,30 @@ read, a genesis enrollment for a new store, a finalize to complete a crash);
 each authority transition (one prepare, one finalize); the rate-bounded
 health probe. Ordinary reads — including every grant exercise — make none.
 
+### 2.17 One operational slot: the XRPL reservation history (PAY-03)
+
+PAY-03's durable XRPL submission interlock is anchored here too, in its own
+slot `xrpl-submission-reservations`. It is not authority state: it is the
+append-only history of every XRPL Payment reserved before its one submission,
+whose rollback could let a restarted Host reuse a source account's `Sequence`
+while an earlier transaction is still live — the same defect class (a state
+that cannot prove it is the newest), so the same boundary, reused unchanged:
+
+- the checkpoint is the history's own head (sequence = reservations ever
+  made, digest = a hash chain over their identity digests), unsigned — the
+  threat is a stale restore or rollback, which the witness detects whatever
+  the digests' keying; a re-sealing database writer remains the interlock's
+  documented integrity limit;
+- the interlock uses `genesisStoreId`, `establish`, `transition` (one per
+  reservation; synchronous commit), `observe` and `probe`, exactly as the
+  authority stores do, and a structural test pins it;
+- `AUTHORITY_STATE_KINDS` gains the one value; `AUTHORITY_STORE_KINDS` (the
+  three authority stores) is what the enrollment ceremony and the authority
+  composition know — the ceremony refuses the XRPL slot, and an interlock is
+  never baselined after the fact. This module imports no payment code.
+
+`docs/payments/XRPL_PRODUCTION_COMPOSITION.md` §9.
+
 ## 3. The reference witness
 
 `scripts/run-reference-authority-state-witness.mjs` — a separate process,

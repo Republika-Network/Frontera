@@ -162,7 +162,13 @@ export const RIPPLE_EPOCH_UNIX_SECONDS = 946_684_800;
  * Assumptions: the configured XRPL server is trusted to report validated
  * ledgers (the rail's general trust in it) and keeps at least the window's
  * worth of recent history (every rippled does); and at least one of the two
- * independent witnesses above holds.
+ * independent witnesses above holds. Because both can fail together, the
+ * quarantine is **not** the safety boundary for a lost interlock record: the
+ * Host's durable interlock anchors its reservation history at an external
+ * freshness witness outside its restore domain, so a history that lost a
+ * reservation is refused before anything is signed (PAY-03,
+ * `docs/payments/XRPL_PRODUCTION_COMPOSITION.md` §9). The quarantine is
+ * defense in depth.
  *
  * Cost: XRPL payments are refused (`xrpl-restart-quarantine`) for roughly the
  * slack plus 204 ledgers (≈ 15–17 min) after each start.
