@@ -1,5 +1,7 @@
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { copyFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
@@ -459,5 +461,122 @@ describe('PAY-03 crash matrix (C1–C10): may another payment safely proceed?', 
     assert.deepEqual(rows(path), before);
     assert.deepEqual(await reopened.verifyAll(), { records: 1, open: 1 });
     await reopened.close();
+  });
+});
+
+describe('PAY-03 interlock review hardening (I10 across OS processes, I12 unknown schema, I16 stale restore)', () => {
+  /** One OS process: opens its own connection, waits at the barrier, reserves once, reports the outcome. */
+  const RESERVING_PROCESS = `
+const { existsSync } = require('node:fs');
+(async () => {
+  const p = JSON.parse(process.argv[1]);
+  const { createSqliteXrplSubmissionInterlock } = require(p.module);
+  const store = await createSqliteXrplSubmissionInterlock(p.db, { scope: p.scope, now: () => new Date().toISOString(), busyTimeoutMs: 30000 });
+  process.stdout.write('ready\\n');
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (!existsSync(p.go)) Atomics.wait(pause, 0, 0, 1);
+  let outcome;
+  try {
+    outcome = (await store.reserve(p.record, p.validated)).outcome;
+  } catch (error) {
+    outcome = 'error:' + String(error && error.code);
+  }
+  await store.close();
+  process.stdout.write(JSON.stringify({ outcome }) + '\\n');
+})();
+`;
+
+  it('I10: independent OS processes racing reserve on one file — exactly one wins per account; another account is independent', async () => {
+    const dir = tmp.dir();
+    const path = join(dir, 'race.sqlite');
+    await (await openStore(path)).close();
+    const go = join(dir, 'go');
+    const module = join(process.cwd(), 'dist/src/enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js');
+    const amount = { currency: CONFIGURATION.asset.currency, issuer: CONFIGURATION.asset.issuer, value: '1' };
+    const contenders = [...Array.from({ length: 7 }, () => TREASURY.classicAddress), OTHER_SOURCE.classicAddress];
+    const children = contenders.map((account, index) => {
+      const record = { executionId: `aoc.exec:os-race-${index}`, account, sequence: 9, lastLedgerSequence: 5020, minLedger: 5001, transactionHash: (index + 1).toString(16).toUpperCase().padStart(64, '0'), amount };
+      const child = spawn(process.execPath, ['-e', RESERVING_PROCESS, JSON.stringify({ module, db: path, go, scope: SCOPE, record, validated: 5000 })], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let output = '';
+      child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString('utf8')));
+      const ready = new Promise<void>((resolve, reject) => {
+        const check = (): void => (output.includes('ready\n') ? resolve() : undefined);
+        child.stdout.on('data', check);
+        child.once('exit', () => reject(new Error(`contender ${index} exited before the barrier`)));
+      });
+      const done = new Promise<string>((resolve) => child.once('exit', () => resolve((JSON.parse(output.split('\n').filter((line) => line.startsWith('{')).pop() ?? '{}') as { outcome?: string }).outcome ?? 'no-answer')));
+      return { account, ready, done };
+    });
+    await Promise.all(children.map((child) => child.ready));
+    writeFileSync(go, '');
+    const outcomes = await Promise.all(children.map(async (child) => ({ account: child.account, outcome: await child.done })));
+    const of = (account: string): string[] => outcomes.filter((entry) => entry.account === account).map((entry) => entry.outcome).sort();
+    assert.deepEqual(of(TREASURY.classicAddress), ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'reserved'], 'exactly one of seven processes reserves the contested sequence; no error, no second winner');
+    assert.deepEqual(of(OTHER_SOURCE.classicAddress), ['reserved'], 'a different source account is independent');
+    const store = await openStore(path);
+    assert.deepEqual(await store.verifyAll(), { records: 2, open: 2 });
+    await store.close();
+  });
+
+  it('I12: a file recorded under an unknown schema version is refused, unmutated — nothing is migrated, repaired or signed against', async () => {
+    const path = join(tmp.dir(), 'interlock.sqlite');
+    await (await openStore(path)).close();
+    const db = new Database(path);
+    db.prepare(`INSERT INTO xrpl_interlock_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.xrpl-submission-interlock.schema.v2', 'current', ?)`).run(iso());
+    db.close();
+    const versions = (): unknown[] => {
+      const reader = new Database(path, { readonly: true });
+      try {
+        return reader.prepare('SELECT schema_version FROM xrpl_interlock_store_versions ORDER BY id').all();
+      } finally {
+        reader.close();
+      }
+    };
+    const before = versions();
+    await assert.rejects(openStore(path), (error: { code?: string; message?: string }) => error.code === 'XRPL_INTERLOCK_UNAVAILABLE' && /schema version/.test(error.message ?? ''));
+    assert.deepEqual(versions(), before, 'refused unmutated');
+  });
+
+  it('I16 / C12: a stale restore that loses an unresolved record cannot reopen its sequence while its window is open — the restart quarantine outlasts it', async () => {
+    const ledger = createLedgerSimulator();
+    const dir = tmp.dir();
+    const path = join(dir, 'interlock.sqlite');
+    const stale = join(dir, 'stale-backup.sqlite');
+    // The backup is taken before the payment: bound, empty.
+    await (await openStore(path)).close();
+    copyFileSync(path, stale);
+
+    // A later run submits a payment whose outcome is unknown; its record exists only in the live file.
+    ledger.nextOutcome = 'pending';
+    const first = await startProcess(path, ledger, { warm: true });
+    const lost = await first.rail.execute(request());
+    assert.equal(lost.status, 'unconfirmed');
+    const lostTx = ledger.transactions.get((lost as { externalReference: string }).externalReference)!;
+    await exitProcess(first);
+
+    // Restore the stale backup over it: the unresolved record is gone.
+    for (const suffix of ['-wal', '-shm']) rmSync(`${path}${suffix}`, { force: true });
+    copyFileSync(stale, path);
+    assert.deepEqual(rows(path), [], 'the stale restore lost the unresolved record');
+
+    // The restored process refuses everything, unsigned, for as long as the lost transaction could still be included.
+    ledger.nextOutcome = 'success';
+    const restored = await startProcess(path, ledger);
+    while (ledger.index < lostTx.lastLedgerSequence) {
+      const refused = await restored.rail.execute(request());
+      assert.deepEqual([refused.status, (refused as { detail?: string }).detail], ['not-completed', D.RESTART_QUARANTINE], `refused at ledger ${ledger.index} (lost window ends at ${lostTx.lastLedgerSequence})`);
+      ledger.index += 1;
+    }
+    assert.equal(restored.signers[0]!.signCount, 0, 'nothing signed while the lost window was open');
+    assert.equal(ledger.calls.submit, 1);
+
+    // Once the quarantine has passed, the ledger has closed the lost window: the same sequence is free and nothing competes.
+    ledger.index += 4 + QUARANTINE;
+    lostTx.outcome = 'dropped';
+    const next = await restored.rail.execute(request());
+    assert.equal(next.status, 'completed');
+    const reused = ledger.transactions.get((next as { externalReference: string }).externalReference)!;
+    assert.equal(reused.sequence, lostTx.sequence, 'the sequence is reused only after the lost transaction can never be included');
+    await exitProcess(restored);
   });
 });

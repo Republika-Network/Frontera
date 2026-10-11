@@ -19,7 +19,11 @@ const SIGNED_BLOB = /^(?:[0-9A-F]{2}){32,4096}$/;
  * compared, byte for byte, with the signing encoding of the payment the rail
  * prepared — so a signer that changed the destination, the amount, the
  * issuer, the flags, or added a memo, a path or a `SendMax`, is caught before
- * anything is submitted. Total — a blob that does not decode is `false`.
+ * anything is submitted. The signing encoding omits non-signing fields, so the
+ * blob's field set is also checked: exactly the prepared fields plus
+ * `SigningPubKey` and `TxnSignature` — a signer cannot ride a `Signers`,
+ * `Signature`, `MasterSignature` or any other non-signing field along with an
+ * otherwise exact signature. Total — a blob that does not decode is `false`.
  */
 export function signedPaymentMatches(prepared: XrplPreparedPayment, signed: { readonly signedTransaction: unknown; readonly hash: unknown }): signed is { readonly signedTransaction: string; readonly hash: string } {
   const { signedTransaction, hash } = signed;
@@ -28,6 +32,10 @@ export function signedPaymentMatches(prepared: XrplPreparedPayment, signed: { re
     const decoded = decode(signedTransaction) as Record<string, unknown>;
     const signingPubKey = decoded['SigningPubKey'];
     if (typeof signingPubKey !== 'string' || signingPubKey.length === 0) return false;
+    const txnSignature = decoded['TxnSignature'];
+    if (typeof txnSignature !== 'string' || txnSignature.length === 0) return false;
+    const allowed = new Set([...Object.keys(prepared), 'SigningPubKey', 'TxnSignature']);
+    if (Object.keys(decoded).some((field) => !allowed.has(field))) return false;
     // `decode` answers the codec's JSON form, which is what `encodeForSigning` reads; the cast states that, it converts nothing.
     if (encodeForSigning(decoded as unknown as Transaction) !== encodeForSigning({ ...prepared, SigningPubKey: signingPubKey } as unknown as Transaction)) return false;
     return hashes.hashSignedTx(signedTransaction) === hash;

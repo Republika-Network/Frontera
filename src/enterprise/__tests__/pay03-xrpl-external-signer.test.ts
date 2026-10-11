@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 
+import { decode, encode, hashes } from 'xrpl';
+
 import type { PaymentExecutionRequest } from '../../features/payment-runtime/index.js';
 import { XRPL_RAIL_DETAILS as D, createXrplRlusdRail, type XrplPreparedPayment } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { GOVERNED_ACCOUNT, ISSUER, OTHER_SOURCE, RLUSD_ASSET, TREASURY, VENDOR, testClock, testConfiguration } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
@@ -306,6 +308,76 @@ describe('PAY-03 signer failure matrix (S1–S10): zero XRPL submissions unless 
     assert.equal(ledger.calls.submit, 1);
     await store.close();
   });
+});
+
+describe('PAY-03 signature exactness: a pinned-key signature over anything but the prepared payment is never submitted', () => {
+  type Tx = Record<string, unknown>;
+  /** A signer holding the real pinned key that signs `mutate(prepared)` — or signs honestly and then injects fields into the blob. */
+  async function hostileSigner(sign: (prepared: XrplPreparedPayment) => { readonly signedTransaction: string; readonly hash: string }) {
+    return faultServer((req, res, body) => {
+      if (req.method === 'GET') return json(res, 200, identityOf());
+      const parsed = parseExternalXrplSigningRequest(body)!;
+      json(res, 200, { protocol: EXTERNAL_XRPL_SIGNER_PROTOCOL, signerId: SIGNER_ID, requestId: parsed.requestId, account: parsed.account, ...sign(parsed.transaction) });
+    });
+  }
+  const signMutated = (mutate: (tx: Tx) => Tx) => (prepared: XrplPreparedPayment) => {
+    const { tx_blob, hash } = TREASURY.sign(mutate({ ...prepared, Amount: { ...prepared.Amount } }) as never);
+    return { signedTransaction: tx_blob, hash };
+  };
+  const injectAfterSigning = (fields: Tx) => (prepared: XrplPreparedPayment) => {
+    const { tx_blob } = TREASURY.sign({ ...prepared, Amount: { ...prepared.Amount } } as never);
+    const signedTransaction = encode({ ...decode(tx_blob), ...fields } as never);
+    return { signedTransaction, hash: hashes.hashSignedTx(signedTransaction) };
+  };
+
+  const CASES: readonly (readonly [string, (prepared: XrplPreparedPayment) => { readonly signedTransaction: string; readonly hash: string }])[] = [
+    ['wrong destination', signMutated((tx) => ({ ...tx, Destination: OTHER_SOURCE.classicAddress }))],
+    ['wrong amount', signMutated((tx) => ({ ...tx, Amount: { ...(tx['Amount'] as Tx), value: '12.6' } }))],
+    ['wrong issuer', signMutated((tx) => ({ ...tx, Amount: { ...(tx['Amount'] as Tx), issuer: OTHER_SOURCE.classicAddress } }))],
+    ['wrong currency', signMutated((tx) => ({ ...tx, Amount: { ...(tx['Amount'] as Tx), currency: 'USD' } }))],
+    ['wrong source', signMutated((tx) => ({ ...tx, Account: OTHER_SOURCE.classicAddress }))],
+    ['added Memo', signMutated((tx) => ({ ...tx, Memos: [{ Memo: { MemoData: 'AB' } }] }))],
+    ['added SendMax', signMutated((tx) => ({ ...tx, SendMax: { ...(tx['Amount'] as Tx), value: '99999' } }))],
+    ['added Paths', signMutated((tx) => ({ ...tx, Paths: [[{ account: ISSUER.classicAddress }]] }))],
+    ['changed Flags', signMutated((tx) => ({ ...tx, Flags: 0x00020000 }))],
+    ['changed Sequence', signMutated((tx) => ({ ...tx, Sequence: (tx['Sequence'] as number) + 1 }))],
+    ['changed Fee', signMutated((tx) => ({ ...tx, Fee: '13' }))],
+    ['changed LastLedgerSequence', signMutated((tx) => ({ ...tx, LastLedgerSequence: (tx['LastLedgerSequence'] as number) + 100 }))],
+    ['added DestinationTag', signMutated((tx) => ({ ...tx, DestinationTag: 7 }))],
+    // Non-signing fields are absent from the signing encoding: only the blob's field set can catch them.
+    ['injected Signature', injectAfterSigning({ Signature: 'AB'.repeat(64) })],
+    ['injected MasterSignature', injectAfterSigning({ MasterSignature: 'AB'.repeat(64) })],
+    ['injected CounterpartySignature', injectAfterSigning({ CounterpartySignature: { SigningPubKey: TREASURY.publicKey, TxnSignature: 'AB'.repeat(64) } })],
+    ['injected Signers', injectAfterSigning({ Signers: [{ Signer: { Account: OTHER_SOURCE.classicAddress, SigningPubKey: OTHER_SOURCE.publicKey, TxnSignature: 'AB'.repeat(64) } }] })],
+  ];
+
+  it('the honest control: the same hostile-signer harness signing exactly the prepared payment completes', async () => {
+    const honest = await hostileSigner(signMutated((tx) => tx));
+    const { rail, ledger, store } = await railWith(createHttpExternalXrplSignerTransport({ endpoint: honest.endpoint, credential: SIGNER_TOKEN }));
+    try {
+      assert.equal((await rail.execute(request())).status, 'completed');
+      assert.equal(ledger.calls.submit, 1);
+    } finally {
+      await Promise.all([honest.close(), store.close()]);
+    }
+  });
+
+  for (const [name, sign] of CASES) {
+    it(`${name} → refused before submission, zero XRPL submissions, nothing reserved`, async () => {
+      const hostile = await hostileSigner(sign);
+      const { rail, ledger, store } = await railWith(createHttpExternalXrplSignerTransport({ endpoint: hostile.endpoint, credential: SIGNER_TOKEN }));
+      try {
+        const outcome = await rail.execute(request());
+        assert.equal((outcome as { status: string }).status, 'not-completed');
+        const detail = (outcome as { detail?: string }).detail;
+        assert.ok(detail === D.SIGNATURE_MISMATCH || detail === D.SIGNING_KEY_MISMATCH, `refused as a signature defect, got ${String(detail)}`);
+        assert.equal(ledger.calls.submit, 0, 'zero XRPL submissions');
+        assert.deepEqual(await store.verifyAll(), { records: 0, open: 0 }, 'nothing reserved: the blob was refused before the durable write');
+      } finally {
+        await Promise.all([hostile.close(), store.close()]);
+      }
+    });
+  }
 });
 
 describe('PAY-03 signer transport and pin configuration', () => {

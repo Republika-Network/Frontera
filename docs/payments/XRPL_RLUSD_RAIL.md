@@ -207,7 +207,11 @@ rail ── prepared Payment ──▶ XrplTransactionSigner.sign ──▶ { si
   encoding must equal the prepared payment's, byte for byte, and the hash
   must be the blob's own. A signer that changed the destination, amount,
   issuer or flags, or added a memo, is refused with nothing submitted
-  (`xrpl-signature-mismatch`).
+  (`xrpl-signature-mismatch`). *(PAY-03 review)* The signing encoding omits
+  non-signing fields, so the blob's field set must also be exactly the
+  prepared fields plus `SigningPubKey` and `TxnSignature`: a `Signers`,
+  `Signature`, `MasterSignature`, `CounterpartySignature` or any other field
+  riding along with an otherwise exact signature is refused the same way.
 - **PAY-02 ships no production signer.** A host composes one backed by its
   own custody (HSM, external signing service). *(PAY-03)* The Host composes
   the external XRPL transaction signer (`frontera.external-xrpl-transaction-signer.v1`);

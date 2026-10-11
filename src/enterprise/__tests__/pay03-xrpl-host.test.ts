@@ -1,6 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -467,25 +467,43 @@ describe('PAY-03 backup / restore and secrets', () => {
     await store.close();
   });
 
-  it('the signer secret and the XRPL key appear in no response, log line, health report or durable store', async () => {
+  it('the signer secret and the XRPL key appear in no response, error, log line, health / readiness report, P11 / P12 / evidence / ASSURE store, resolution or backup', async () => {
     const dir = workspace.dir();
     const ledger = createLedgerSimulator();
-    const { host, baseUrl, credential } = await readyPayer(dir, ledger, 'canary');
+    const { host, baseUrl, credential, env } = await readyPayer(dir, ledger, 'canary');
     await pay(baseUrl, credential);
     ledger.nextOutcome = 'pending';
+    const unconfirmed = await pay(baseUrl, credential);
+    const executionId = unconfirmed.body['executionId'] as string;
+    // A refusal (the competing payment) and a P12 resolution from the ledger are part of what is scanned.
     await pay(baseUrl, credential);
+    ledger.validate([...ledger.transactions.keys()].pop()!, 'success');
+    const resolution = JSON.stringify(await host.enterprise.executionReconciliation?.reconcile({ organizationId: ORG, executionId }));
+    assert.match(resolution, /confirmed-completed/);
     const health = JSON.stringify(await host.enterprise.health());
-    const durable = ['AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH', 'AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH', 'AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH', 'AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH', 'AOC_ENTERPRISE_AUTHORITY_EVENT_STREAM_SQLITE_PATH']
-      .map((name) => registry.storeEnvironmentFor(dir)[name]!)
-      .filter((path) => existsSync(path))
+    const probes = (await Promise.all(['/health', '/ready', '/live'].map((path) => call(baseUrl, 'GET', path, {})))).map((reply) => reply.text).join('\n');
+    await host.close();
+    // Every durable store of this deployment — P11 outcomes, P12 resolutions, evidence, ASSURE, the interlock, the event stream, all of them.
+    const storePaths = Object.values(registry.storeEnvironmentFor(dir)).filter((path): path is string => typeof path === 'string' && existsSync(path));
+    assert.ok(storePaths.length >= 8, `scanned ${storePaths.length} stores`);
+    const durable = storePaths.map((path) => readFileSync(path).toString('latin1')).join('\n');
+    const { runBackup } = await portability();
+    const backupDir = join(workspace.dir(), 'backup');
+    await runBackup({ output: backupDir, env, cold: true });
+    const backup = (readdirSync(backupDir, { recursive: true }) as string[])
+      .map((entry) => join(backupDir, entry))
+      .filter((path) => statSync(path).isFile())
       .map((path) => readFileSync(path).toString('latin1'))
       .join('\n');
     for (const secret of [SEED_CANARY, SIGNER_TOKEN, TREASURY.privateKey]) {
       for (const [where, text] of [
-        ['responses', responses.join('\n')],
+        ['responses and errors', responses.join('\n')],
         ['logs', logLines.join('\n')],
         ['health', health],
+        ['health / readiness / liveness probes', probes],
+        ['P12 resolution', resolution],
         ['durable stores', durable],
+        ['backup', backup],
       ] as const) {
         assert.equal(text.includes(secret), false, `${where} must not contain the signer secret or the XRPL key`);
       }

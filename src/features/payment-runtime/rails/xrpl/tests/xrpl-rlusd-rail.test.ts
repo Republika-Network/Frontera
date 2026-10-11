@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { decode } from 'xrpl';
+import { decode, encode, hashes } from 'xrpl';
 
 import { EXECUTION_FAILURE_REASONS as F } from '../../../../execution-runtime/index.js';
 import type { PaymentExecutionRequest, PaymentRailResult } from '../../../domain/index.js';
@@ -414,6 +414,25 @@ describe('PAY-02 §17 — the signing boundary: a signature of exactly the prepa
     const prepared = { TransactionType: 'Payment', Account: TREASURY.classicAddress, Destination: VENDOR.classicAddress, Amount: { currency: RLUSD_CURRENCY_HEX, issuer: ISSUER.classicAddress, value: '1' }, Flags: 0, LastLedgerSequence: 50, Sequence: 3, Fee: '12' } as const;
     const { tx_blob, hash } = TREASURY.sign({ ...prepared, Amount: { ...prepared.Amount } });
     assert.equal(signedPaymentMatches(prepared, { signedTransaction: tx_blob, hash }), true);
+  });
+
+  it('signedPaymentMatches refuses an exact signature carrying any extra non-signing field, or none at all (PAY-03 review)', () => {
+    const prepared = { TransactionType: 'Payment', Account: TREASURY.classicAddress, Destination: VENDOR.classicAddress, Amount: { currency: RLUSD_CURRENCY_HEX, issuer: ISSUER.classicAddress, value: '1' }, Flags: 0, LastLedgerSequence: 50, Sequence: 3, Fee: '12' } as const;
+    const { tx_blob } = TREASURY.sign({ ...prepared, Amount: { ...prepared.Amount } });
+    const extras: readonly Record<string, unknown>[] = [
+      { Signature: 'AB'.repeat(64) },
+      { MasterSignature: 'AB'.repeat(64) },
+      { CounterpartySignature: { SigningPubKey: TREASURY.publicKey, TxnSignature: 'AB'.repeat(64) } },
+      { Signers: [{ Signer: { Account: VENDOR.classicAddress, SigningPubKey: VENDOR.publicKey, TxnSignature: 'AB'.repeat(64) } }] },
+    ];
+    for (const extra of extras) {
+      // Non-signing: the signing encoding is unchanged, so only the field set can tell.
+      const signedTransaction = encode({ ...decode(tx_blob), ...extra } as never);
+      assert.equal(signedPaymentMatches(prepared, { signedTransaction, hash: hashes.hashSignedTx(signedTransaction) }), false, Object.keys(extra).join());
+    }
+    const { TxnSignature: _omitted, ...unsigned } = decode(tx_blob) as Record<string, unknown>;
+    const withoutSignature = encode(unsigned as never);
+    assert.equal(signedPaymentMatches(prepared, { signedTransaction: withoutSignature, hash: hashes.hashSignedTx(withoutSignature) }), false, 'no TxnSignature');
   });
 });
 
