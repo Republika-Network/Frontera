@@ -454,6 +454,38 @@ that cannot prove it is the newest), so the same boundary, reused unchanged:
 
 `docs/payments/XRPL_PRODUCTION_COMPOSITION.md` §9.
 
+### 2.18 A second operational slot: payment challenge ownership (PAY-04 post-merge hardening)
+
+The PAY-04 payment business-operation store is anchored in its own slot,
+`payment-business-operation-state`. Like PAY-03's, it is operational safety
+state, not authority: the append-only history of payment business operations
+and the protocol challenges each one owns. Its rollback — or its loss — could
+make a challenge already paid for look unowned, and so payable again under a
+new business operation: the same defect class, so the same boundary, reused
+unchanged:
+
+- the checkpoint is the history's own head (sequence = challenge rows ever
+  accepted, digest = a domain-separated hash chain over each row's ownership
+  entry, from a genesis bound to the store id and organization), unsigned;
+- the store uses `genesisStoreId`, `establish`, `transition` (one per accepted
+  challenge, completed before the payment is governed), `observe` and `probe`
+  (before every presentation), exactly as the other slots do; a structural
+  test pins that it implements no witness of its own;
+- `AUTHORITY_STATE_KINDS` gains the one value, named protocol-neutrally (no
+  protocol, realm, header, method or rail word reaches this module, which still
+  imports no payment code); `AUTHORITY_STORE_KINDS` is unchanged, so the
+  Host's authority enrollment ceremony refuses this slot as it refuses PAY-03's.
+  A non-empty business-operation file recorded before the hardening is never
+  baselined silently: only an explicit `establish(…, { enrollment })` by the
+  embedder's trusted operator code (the same `AuthorityStateEnrollmentContext`)
+  anchors it.
+
+The distinction stays: **authority-store kinds** (`AUTHORITY_STORE_KINDS`, the
+ceremony's and the authority composition's) versus **other operational
+freshness-protected state** (the XRPL reservation history, the payment
+challenge-ownership history), which only their own composition edges anchor.
+`docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md` §10.1.
+
 ## 3. The reference witness
 
 `scripts/run-reference-authority-state-witness.mjs` — a separate process,

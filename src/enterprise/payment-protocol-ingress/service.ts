@@ -19,6 +19,8 @@ import {
   type PaymentProtocolInterpretation,
   type PaymentPurpose,
 } from '../../features/payment-runtime/index.js';
+import { isAuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
+import { freshnessBoundaryOf } from '../authority-state-freshness/session.js';
 import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import type { GovernanceProfileRegistry } from '../governance-profile/index.js';
 import type { GovernedActionMonetaryTrust } from '../governed-action/contracts.js';
@@ -34,6 +36,7 @@ import {
   type PaymentBusinessTerms,
 } from './business-operation.js';
 import type { PaymentProtocolIngress, PaymentProtocolIngressRefusal, PaymentProtocolIngressResult } from './contracts.js';
+import { isVolatilePaymentBusinessOperationStore } from './in-memory-payment-business-operation-store.js';
 import type { PaymentBusinessOperationWriter, RecordPaymentChallengeResult } from './store-contracts.js';
 import { isPaymentBusinessOperationStoreError } from './store-errors.js';
 import { isCanonicalPaymentInstant } from './store-integrity.js';
@@ -52,14 +55,27 @@ import { isCanonicalPaymentInstant } from './store-integrity.js';
  *   → canonical PaymentIntent (PAY-01 validator)          no second payment model
  *   → compilePaymentIntent (PAY-01 compiler)              the envelope, unchanged
  *   → validated by the orchestrator's own validator       P9 financial + CORE-03 profile
- *   → business operation + challenge, ONE durable write   BEFORE governance
+ *   → business operation + challenge, ONE durable write   BEFORE governance — and, for the durable
+ *                                                          store, compared with and anchored at the
+ *                                                          CORE-07 witness before it resolves
  *   → orchestrator.govern(identity, compiled)             the existing spine
  *   → requestId agreement
  * ```
  *
  * Every refusal happens before `govern()`: no Kernel evaluation, no grant, no
  * P7 reservation, no claim, no adapter, no rail. A business operation that
- * cannot be made durable never reaches governance.
+ * cannot be made durable never reaches governance, and neither does one whose
+ * store cannot prove its history current (`store-freshness-unverified`).
+ *
+ * ## Challenge ownership survives rollback (PAY-04 post-merge hardening)
+ *
+ * The derived governed key protects one business operation across any loss
+ * of the store. It cannot protect a challenge already paid for from being
+ * presented under a **new** `businessOperationId` — a different key, a
+ * different governed request. Only the store's one-operation-per-challenge
+ * record can, so the ingress composes only a store whose history is anchored
+ * at the CORE-07 witness (or the volatile test store, which says it is one):
+ * a durable store without a witness is a composition error.
  *
  * ## Refresh is not retry
  *
@@ -73,6 +89,7 @@ import { isCanonicalPaymentInstant } from './store-integrity.js';
  */
 export interface PaymentProtocolIngressOptions {
   readonly orchestrator: Pick<GovernedActionOrchestrator, 'organizationId' | 'govern'>;
+  /** The durable store composed under its CORE-07 freshness boundary (`createSqlitePaymentBusinessOperationStore(path, { freshness })`), or the volatile test store. Anything else is refused. */
   readonly store: PaymentBusinessOperationWriter;
   /** The trusted protocol adapters, snapshotted once by `protocolId`. */
   readonly adapters: readonly PaymentProtocolAdapter[];
@@ -197,6 +214,15 @@ export function createPaymentProtocolIngress(options: PaymentProtocolIngressOpti
   const { orchestrator, store, monetary, governance, now } = options;
   if (orchestrator === null || typeof orchestrator !== 'object' || typeof orchestrator.govern !== 'function') throw new PaymentProtocolIngressConfigurationError('A governed-action orchestrator is required.');
   if (store === null || typeof store !== 'object' || typeof store.record !== 'function') throw new PaymentProtocolIngressConfigurationError('A business-operation store is required.');
+  const freshnessBoundary = freshnessBoundaryOf(store);
+  if (freshnessBoundary === undefined && !isVolatilePaymentBusinessOperationStore(store)) {
+    throw new PaymentProtocolIngressConfigurationError(
+      'The business-operation store must be anchored at the CORE-07 freshness witness (createSqlitePaymentBusinessOperationStore with `freshness`): without it, a stale restore or a lost store makes a challenge already paid for payable again under a new businessOperationId.',
+    );
+  }
+  if (freshnessBoundary !== undefined && freshnessBoundary.organizationId !== orchestrator.organizationId) {
+    throw new PaymentProtocolIngressConfigurationError('The business-operation store is anchored for another organization than the orchestrator serves.');
+  }
   if (typeof now !== 'function') throw new PaymentProtocolIngressConfigurationError('A clock is required.');
   if (monetary === null || typeof monetary !== 'object' || typeof monetary.actionClassifier?.classify !== 'function') throw new PaymentProtocolIngressConfigurationError('The P9 monetary trust is required.');
   if (governance === null || typeof governance !== 'object' || typeof governance.reservesContextKey !== 'function') throw new PaymentProtocolIngressConfigurationError('The CORE-03 Governance Profile registry is required.');
@@ -301,6 +327,8 @@ export function createPaymentProtocolIngress(options: PaymentProtocolIngressOpti
           if (error.code === 'PAYMENT_BUSINESS_OPERATION_CHALLENGE_CONFLICT') return refused('challenge-conflict', businessOperationId);
           if (error.code === 'PAYMENT_BUSINESS_OPERATION_CHALLENGE_HISTORY_FULL') return refused('challenge-history-full', businessOperationId);
         }
+        // Unreachable, rolled back, forked, pending recovery: never "the local store looks valid", never "proceed for now".
+        if (isAuthorityStateFreshnessError(error)) return refused('store-freshness-unverified', businessOperationId);
         return refused('store-unavailable', businessOperationId);
       }
       if (

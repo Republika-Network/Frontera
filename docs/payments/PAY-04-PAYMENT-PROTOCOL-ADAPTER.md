@@ -9,6 +9,7 @@
 - Builds on: `docs/payments/PAYMENT_ARCHITECTURE.md` (PAY-01), `ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md` (P12), `ADR-DURABLE-MONETARY-OUTCOMES.md` (P11)
 - Master plan: `docs/architecture/FRONTERA-MASTER-PLAN.md` — PAY-04
 - Provenance: the unmerged P13 branch (`24dd264`, *feat(payments): add MPP challenge business idempotency*), audited and partly ported — §15
+- Post-merge hardening (rollback safety): the challenge-ownership history is anchored at the CORE-07 witness — §8.4, §10.1, §10.2; ADR D13
 
 ## 1. What PAY-04 is
 
@@ -344,11 +345,16 @@ twice for one challenge is the duplicate charge this rule prevents.
 
 This rule lives **only** in the business-operation store: the governed key is
 derived from the business operation, so the Governance Store never sees a
-challenge identity. If the store is lost or rolled back, the rule is lost with
-it — and a caller that then names a **new** `businessOperationId` for a
-challenge it already paid makes a second, independent purchase (pinned as a
-residual in `pay04-mpp-governed-payment.test.ts`). Business-operation identity
-is the caller's: it must not mint a new one for a purchase it already started.
+challenge identity. As merged, a lost or rolled-back store lost the rule with
+it, and the same already-paid challenge under a **new** `businessOperationId`
+derived a new governed key — a new governed request — and paid again (the
+merged regression showed the second rail call). The post-merge hardening
+closes that: the store's ownership history is anchored at the CORE-07 witness
+(§10.1), so the rule survives restart, loss, stale restore and a coordinated
+rollback of the governed spine's stores; the old regression is now a refusal
+with zero second rail calls (`pay04-mpp-governed-payment.test.ts`, `CLOSED`;
+`pay04-rollback-safety.test.ts`). Business-operation identity is still the
+caller's to keep stable.
 
 ## 9. Challenge refresh is not payment retry
 
@@ -372,10 +378,13 @@ complete is **not** retried by a refresh; a new purchase needs a new
 
 ## 10. The durable business-operation store
 
-`createSqlitePaymentBusinessOperationStore` (production) and
-`createInMemoryPaymentBusinessOperationStore` (tests; no history across a
-restart). Protocol-neutral: one business operation, whatever protocol presented
-it, with protocol challenges underneath as evidence.
+`createSqlitePaymentBusinessOperationStore(path, { now, freshness: { boundary } })`
+(production: anchored at the CORE-07 witness, §10.1) and
+`createInMemoryPaymentBusinessOperationStore` (tests and development; volatile,
+no history across a restart). Protocol-neutral: one business operation,
+whatever protocol presented it, with protocol challenges underneath as
+evidence. The ingress composes nothing else: a durable store without a witness
+is a configuration error.
 
 | table | key | holds |
 | --- | --- | --- |
@@ -409,59 +418,148 @@ raced for three operations binds to exactly one. In process, 20 concurrent
 presentations produce one governed request and one rail call.
 
 **Restart.** The SQLite file is the operation's durable memory: after a restart
-a refresh finds the same operation (`existing`, next position) and replays;
-conflicts survive restarts.
+(and the witness reconciliation, §10.1) a refresh finds the same operation
+(`existing`, next position) and replays; conflicts survive restarts.
 
-### 10.1 Stale restore — threat model and the CORE-07 decision
+**Anchored races.** With the witness, every accepted challenge is also a
+compare-and-advance at the witness: worker threads, each with its own
+connection **and its own witness client**, racing one challenge for three
+operations produce exactly one owner and exactly one witnessed transition;
+racing refreshes leave the file and the witness in exact agreement. A writer
+that loses the witness to another is retried a bounded number of times before
+governance, or refused — never a payment retry
+(`pay04-business-operation-concurrency.test.ts`).
 
-*Threat:* an older copy of the business-operation store is restored (or the
-store is lost) after an operation was paid or became unconfirmed, and the
-merchant refreshes its challenge.
+### 10.1 Rollback safety — the CORE-07 anchor (post-merge hardening)
 
-*What the store does not decide:* the governed key is **derived** from the
-scope, never read from the store. So after a rollback the same operation
-compiles to the same `requestId`, and:
+*Threat:* an older copy of the business-operation store is restored, or the
+store is lost, after a challenge was paid (or became unconfirmed) — and the
+same challenge is then presented under a **new** `businessOperationId`.
 
-- same terms → the Governance Store replays the committed decision and the
-  recorded outcome (tested: completed and unconfirmed, zero extra rail calls);
-- changed money terms → the Governance Store's own idempotency refuses them
-  (`GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`; tested), because the key is the same
-  and the payment differs.
+*Why the merged design was insufficient.* The governed key is derived from
+the scope, never read from the store, so after a rollback the **same**
+operation still compiles to the same `requestId`: same terms replay at the
+Governance Store, and changed money terms hit its idempotency conflict. That
+protects one operation. It cannot protect a challenge repackaged as a **new**
+operation: a new `businessOperationId` derives a new key, a new governed
+request, and the governed spine — which never sees a challenge identity —
+executes a second purchase. Merged PAY-04 pinned that as a "caller-dependent"
+residual (D9). It is not safe to depend on the caller: an application whose own
+state was restored from the same backup may mint the new id in good faith.
 
-*What a rollback does lose:* the challenge history, the one-operation-per-
-challenge record, and conflict detection for the terms the governed intent
-does not carry (the protected-request binding): after a stale restore, a
-changed `target` or body with the same money replays the original payment
-instead of conflicting — no second payment either way. Losing the
-one-operation-per-challenge record **does** matter if the caller also mints a
-new `businessOperationId` for an already-paid challenge (§8.4): that is then a
-second purchase, and nothing below the store can tell. A presentation that
-reaches governance after a restore is recorded first; if governance then
-refuses it as a conflict, the store keeps those refused terms, and later
-presentations of the original terms conflict at the store — fail-closed, no
-payment.
+*Decision (ADR D13).* The state whose loss reopens eligibility is anchored at
+the CORE-07 external witness, in the protocol-neutral slot
+`payment-business-operation-state`:
 
-*Decision:* rollback of this store **cannot reopen a payment for an existing
-business operation** — the guarantee the milestone requires — so the
-operation identity needs no CORE-07 freshness anchor. It **can** drop the
-cross-operation challenge-uniqueness record, which only matters when the
-caller also mints a new business operation for a purchase it already paid; that
-is recorded as a caller-dependent residual (§14) rather than closed with a
-witness anchor, which would make every protocol payment depend on the external
-witness. A later milestone may anchor the challenge-identity index if that
-residual is not acceptable for a deployment. The at-most-once barrier is the Governance Store, P7,
-P11 and the write-ahead claim; their own stale-restore behaviour is unchanged
-by PAY-04 and identical to a direct PAY-01 payment's (PROD-02 residual 2; for
-XRPL, PAY-03's interlock is CORE-07-anchored and refuses a stale reservation
-history before signing). PAY-04 adds no CORE-07 slot and no witness state.
+```text
+sequence = number of challenge rows ever accepted            (each = a challenge identity becoming owned;
+                                                              an operation's creation is its first row)
+entry    = H("aoc.payment.business-operation-ownership-entry.v1", organization, principal, businessOperationId,
+             businessSemanticDigest, governedRequestId, challengeIdentity, challengeDigest, position)
+digest   = H("aoc.payment.business-operation-ownership.v1", previous, entry)   in commit (rowid) order
+genesis  = H("aoc.payment.business-operation-ownership.v1", storeId, organization, 0)
+```
+
+Domain-separated `aoc.canonical-json.v1` digests. Row substitution, ownership
+reassignment, the same position with another owner, a substituted store and
+another organization's slot each change the digest or the binding. Refreshed
+challenges are anchored too: every new challenge identity becomes owned, and a
+later cross-operation check depends on it. Nothing else is anchored —
+timestamps, exact fields and the protected-request terms stay local under the
+record digests; the semantic digest is anchored through each row.
+
+| step | behaviour |
+| --- | --- |
+| **open** | Verify-first as before, then reconcile with the witness **before** the store is handed to anything. Older history (stale restore) → `ROLLBACK_DETECTED`; an empty file under a slot held beyond genesis (a lost or replaced store) → `ROLLBACK_DETECTED`; a different state at a witnessed position, or one ahead of it → `FORK_DETECTED`; a prepared transition the file lacks → `PENDING_RECOVERY`; another store or organization → binding mismatch. Each refuses the open; nothing is repaired, re-enrolled, truncated or recreated from current input. A new, empty store enrolls its genesis at the witness before its first use. |
+| **every presentation** | The witness is compared with the file first (`probe`) — even an exact replay that writes nothing. Not `ready` → `store-freshness-unverified`, before governance. |
+| **every accepted challenge** | One CORE-07 transition: witness `prepare` (expected head → successor) → `BEGIN IMMEDIATE` commit, which re-checks that the head and the decision are unchanged, samples `recordedAt` under the lock and inserts → `finalize`. Completed before `record` resolves — so before `govern()`. |
+| **running process** | Every read observes the head against the newest checkpoint this process established (local, no network). |
+
+Crash and failure analysis (each refuses, or recovers conservatively; no
+window where a payment executes and the witness never learned the ownership —
+the prepare precedes the commit, which precedes `govern()`):
+
+| case | outcome |
+| --- | --- |
+| C1 before `prepare` | nothing written anywhere; the presentation was refused or never governed |
+| C2 after `prepare`, before the local commit | witness holds a successor the file lacks: `PENDING_RECOVERY` at the next open (and in-process); indistinguishable from "committed, then rolled back", so refused until trusted operational recovery (F7) |
+| C3 after the local commit, before `finalize` | local head = witness-prepared successor: the payment may proceed (ownership is already prepared — a restore of the prior image is refused); further presentations refuse until `finalize` succeeds; the next open or transition finalizes it (F8) |
+| C4 after `finalize` | consistent |
+| C5 crash or failure inside the local transaction | SQLite rolls it back: C2. In process, a failed commit makes the session refuse for the life of the process (F7 / C5) |
+| C6 witness unavailable | open refused; every presentation refused before governance; no timeout-to-success (F6) |
+| C7 local disk failure | the store refuses (`store-unavailable`); a lost or replaced file is refused at the next open (F2, F3) |
+
+*Coordinated local rollback.* With the witness outside the local restore
+domain, restoring the business store **together with** the Governance Store,
+P7 and P11 to one older image — erasing every local at-most-once record of the
+payment — is still refused: the business store is refused at open, so nothing
+can govern (F4: the restored P11 and Governance Store have demonstrably
+forgotten the payment; zero second rail calls).
+
+*Same-snapshot assumption.* If one backup restores the business store **and**
+the witness together, the witness is defeated: nothing can then tell the old
+image from the current one. This is a deployment prohibition exactly like
+CORE-07's and PAY-03's: the witness must never share the local state's backup,
+restore or snapshot domain (`ADR-AUTHORITY-STATE-FRESHNESS-AND-ROLLBACK-DETECTION.md`).
+
+*Defence in depth.* The derived key (§8.1) is kept: it still turns a
+forgotten **same** operation into a replay, independent of the store.
+
+*Composition and availability.* The ingress refuses a durable store that is
+not composed under a CORE-07 boundary of its orchestrator's organization (read
+from CORE-07's composition record, not from the store); an anchored store
+serves exactly that organization. Protocol payments therefore depend on the
+witness's availability: an outage stops them. Availability loss is accepted;
+duplicate-payment eligibility is not. The volatile in-memory store remains
+composable for tests and development only: it keeps no history across a
+restart.
+
+**Health.** `health()` reports `freshness`: CORE-07's `ready`, `unavailable`,
+`regressed`, `forked`, `pending-recovery` or `unbound` (`not-anchored` for an
+unanchored or volatile store); a failed status is unhealthy and unwritable. No
+challenge, digest, witness credential or preimage appears in it.
+
+### 10.2 Pre-hardening files, enrollment, recovery and backup
+
+*Pre-hardening files.* PAY-04 was merged before this hardening, so a
+non-empty, unanchored business-operation file may exist. It is **never
+anchored after the fact**: opened with a witness, it is refused — a history
+the witness has not seen from its first challenge could already have lost one.
+Two safe exits:
+
+1. **Retire it.** Keep it for audit and start a new anchored file — only once
+   every challenge it records can no longer be presented: each has expired
+   (the adapter refuses an expired challenge before the store), or the
+   merchant has otherwise invalidated it. A challenge without `expires` cannot
+   be retired this way.
+2. **Enroll it** — the explicit CORE-07 enrollment ceremony,
+   `createSqlitePaymentBusinessOperationStore(path, { now, freshness: { boundary, enrollment } })`
+   with a trusted `AuthorityStateEnrollmentContext` (`operator: true`,
+   `operatorId`, `attestation: 'verified-local-state-is-current'`). The file is
+   fully verified, its store id is derived from that verified history, the
+   witness enrolls it as the baseline, and only then is the anchor written. The
+   operator attests what CORE-07 cannot check: that this file is the newest
+   state. A refused ceremony writes nothing; enrollment never rebinds a slot.
+
+An anchored file is written under the file schema
+`aoc.payment-business-operation-store.schema.v2` (its records keep the v1
+record format), so a runtime that predates the hardening — which would write
+without the witness — refuses it, and this runtime refuses to open it without
+its witness.
+
+*Recovery.* There is no API that clears a refusal. A stale or lost file is
+recovered by restoring the **newest** file (the witness then accepts it); a
+pending transition, a fork or a lost newest file needs trusted operational
+recovery at the witness, as for every CORE-07 slot. Neither recovery calls
+governance, retries, or replays a payment; only a new ingress request can.
 
 **Backup.** The Host composes no payment protocol ingress, so the store is
-not a Host store: it is listed in the PROD-02 registry's
-`EXCLUDED_DURABLE_STATE` (`payment-business-operations`) with this reason. An
-embedder that composes it backs its file up with the Governance Store it
-belongs to; `verifyAll()` is the deep restore check (store-level restore and
-stale-copy tests: `pay04-business-operation-store.test.ts`,
-`pay04-mpp-governed-payment.test.ts`).
+still not a Host store: it stays in the PROD-02 registry's
+`EXCLUDED_DURABLE_STATE` (`payment-business-operations`), and `backup:v1` does
+not cover it. An embedder that composes it backs its file up itself (with the
+Governance Store it belongs to), and must keep the CORE-07 witness **outside**
+that backup domain; a stale restore of the file is then detected by the
+witness at the next open. `verifyAll()` remains the deep integrity check.
 
 ## 11. Reserved context keys (L-7)
 
@@ -500,7 +598,10 @@ const governance = createGovernanceProfileRegistry({
 });
 // … createEnterprise({ governedActionOrchestrator: { enabled: true, governance, … }, … })
 const mpp = createMppPaymentProtocolAdapter({ methods: [/* trusted normalizers */], resolveCounterparty, selectChallenge, assets });
-const store = await createSqlitePaymentBusinessOperationStore(path, { now });
+// CORE-07, reused: the same builder, witness configuration (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_*) and credential as the
+// authority stores and PAY-03 — no second witness, no new secret. Required: the ingress refuses a durable store without it.
+const boundary = await buildAuthorityStateFreshnessBoundary(configuration);
+const store = await createSqlitePaymentBusinessOperationStore(path, { now, freshness: { boundary } });
 const ingress = createPaymentProtocolIngress({
   orchestrator: enterprise.governedActionOrchestrator, store, adapters: [mpp],
   binding: createPaymentGovernanceBinding({ action }), monetary, governance, now,
@@ -513,8 +614,11 @@ const outcome = await ingress.prepareAndGovern(identity, {
 
 Outcomes: `governed` (with the governed result, `operation: created | existing`,
 `challenge: appended | existing`, its position), `refused` (a closed refusal
-— every one **before** governance), or `inconsistent` (the orchestrator
-answered for another request id — a composition fault, reported, never masked).
+— every one **before** governance, including `store-freshness-unverified`
+when the store cannot prove its history current at the witness), or
+`inconsistent` (the orchestrator answered for another request id — a
+composition fault, reported, never masked). The ingress refuses to compose a
+durable store without its witness, or one anchored for another organization.
 `createPaymentProtocolContextReader(store)` hands later work the verified
 operation and its latest challenge by the trusted governed request id only.
 
@@ -530,19 +634,24 @@ Residual risks:
 
 1. **No merchant authenticity** (§5.2) — by protocol design.
 2. **Embedder-composed only** — the shipped Host has no caller of the ingress
-   and does not back its store up; an embedder owns both (§10.1).
-3. **Stale restore of the business store** loses challenge history and
-   protected-request conflict detection (never a payment) and can leave a
-   refused term set recorded (fail-closed) — §10.1.
-4. **The governed spine's own stale restore** (Governance Store, P11, P7) is
-   PROD-02 residual 2, unchanged and identical for direct payments.
+   and does not back its store up; an embedder owns both, and must keep the
+   witness outside that backup (§10.2).
+3. **Same-snapshot restore of the store and the witness** defeats the anchor
+   (deployment prohibition, as CORE-07 / PAY-03) — §10.1.
+4. **The governed spine's own stale restore** (Governance Store, P11, P7)
+   **alone** — with the business store current — is PROD-02 residual 2,
+   unchanged and identical for direct payments. Restored **together with** the
+   business store, it is refused at the business store's open (§10.1, F4).
 5. **Selection and normalization quality** are the host's: PAY-04 makes them
    trusted, fenced and closed, not correct.
 6. **No credential handoff yet**: the context reader exists; nothing reads it
    to construct a credential.
-7. **Challenge uniqueness across operations is not rollback-safe** (§8.4,
-   §10.1): after the store is lost or rolled back, a caller that mints a new
-   `businessOperationId` for an already-paid challenge pays again.
+7. **Witness availability** (§10.1): an unreachable or failed witness stops
+   protocol payments, and contended writers across processes may be refused
+   before governance. *Closed by the post-merge hardening:* challenge
+   uniqueness across operations was not rollback-safe as merged (a new
+   `businessOperationId` for an already-paid challenge after a store loss or
+   stale restore paid again); it now is.
 8. **A full challenge history (64) refuses even a replay** through the ingress
    (`challenge-history-full`, fail-closed, no money effect); the caller can
    still read the governed outcome directly.
@@ -550,6 +659,9 @@ Residual risks:
    call that validated a current challenge, but the merchant could still let
    that challenge lapse during a slow governance call; the future credential
    step must re-check it.
+10. **Pre-hardening files** are refused until retired or explicitly enrolled
+    (§10.2); the volatile store keeps no history across a restart (tests and
+    development only).
 
 ## 15. Historical P13 reconciliation (`24dd264`)
 
@@ -571,7 +683,7 @@ Residual risks:
 | `src/enterprise/mpp-challenge` / `mpp-business-operation-store` beside the core enterprise modules; `createEnterprise({ mppChallengePayments })`; `AocEnterprise` surfaces; a health module; enterprise configuration and env var | **rejected** — protocol code lives under PAY; the ingress is a protocol-neutral composition edge an embedder composes; no core composition, configuration or Host module |
 | "Not in portability v1 backup (P17)" | **superseded** by PROD-02: the store is classified in the registry (excluded, with the stale-restore analysis) |
 | P14 handoff by `requestId` | **reused** as the protocol-neutral `createPaymentProtocolContextReader`; `credentialHeaderField` stays an MPP helper (`mppCredentialHeaderField`) |
-| SEC-INV-123 … 137, SEC-TRUST-010, A-32, threat model 7.23 (P13's numbering) | **superseded** — those numbers are taken on `main`; PAY-04 records SEC-INV-238 … 245 and threat model §7.30 |
+| SEC-INV-123 … 137, SEC-TRUST-010, A-32, threat model 7.23 (P13's numbering) | **superseded** — those numbers are taken on `main`; PAY-04 records SEC-INV-238 … 245 (and the post-merge hardening SEC-INV-246 … 249) and threat model §7.30 |
 
 ## 16. Test map
 
@@ -582,10 +694,11 @@ Residual risks:
 | D store | `src/enterprise/__tests__/pay04-business-operation-store.test.ts` |
 | E concurrency | `pay04-business-operation-concurrency.test.ts` (worker threads, independent connections) |
 | F restart / rollback | `pay04-business-operation-store.test.ts`, `pay04-mpp-governed-payment.test.ts` |
+| R rollback safety (post-merge hardening, F1 – F12) | `pay04-rollback-safety.test.ts` (reference witness over loopback HTTP, its own database); anchored races in `pay04-business-operation-concurrency.test.ts`; structure in `pay04-payment-protocol-structure.test.ts` |
 | G/H PAY-01 compiler, governed path, P11 / P12 | `pay04-mpp-governed-payment.test.ts` |
 | I rail neutrality | `protocols/mpp/tests/mpp-protocol-boundaries.test.ts`, `tests/payment-runtime-boundaries.test.ts` |
 | J PAY-02 / PAY-03 regression | `pay04-mpp-xrpl-regression.test.ts`, plus the unchanged PAY-01 / PAY-02 / PAY-03 suites |
 | K NO_BYPASS / CORE purity | `pay04-payment-protocol-structure.test.ts` |
-| L backup / restore | store-level copy-restore and stale-copy tests above; `portability-store-registry.structure.test.mjs` |
+| L backup / restore | store-level copy-restore and stale-copy tests above; coordinated PAY-04 + Governance Store + P11 + P7 restore (F4); `portability-store-registry.structure.test.mjs` |
 
 The M1 – M40 and I1 – I12 matrices are named in the test titles.

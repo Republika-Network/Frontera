@@ -1,3 +1,4 @@
+import type { AuthorityStateFreshnessStatusValue } from '../authority-state-freshness/session.js';
 import type { PaymentBusinessTerms } from './business-operation.js';
 
 /**
@@ -29,11 +30,16 @@ import type { PaymentBusinessTerms } from './business-operation.js';
  *   governed request id.
  * - **Not authority.** A business operation names a purchase; it grants
  *   nothing. The Kernel, P10 and P7 decide exactly as for any governed payment.
- * - **Not the duplicate-payment barrier.** The governed key is *derived* from
- *   the scope, never read from here; the Governance Store's idempotency and
- *   the write-ahead claim are the barrier. This store adds conflict detection
- *   for the terms the governed intent does not carry (the protected-request
- *   binding), the challenge history and its one-operation-per-challenge rule.
+ * - **Not the only duplicate-payment barrier.** The governed key is *derived*
+ *   from the scope, never read from here; the Governance Store's idempotency
+ *   and the write-ahead claim remain the barrier for one operation. This store
+ *   adds the barrier the derived key cannot provide — one operation per
+ *   challenge identity, so a challenge already paid for is never paid again
+ *   under a new `businessOperationId` — plus conflict detection for the terms
+ *   the governed intent does not carry (the protected-request binding) and the
+ *   challenge history. Because that record must survive a rollback, the
+ *   durable store anchors its history at the CORE-07 witness (the
+ *   `payment-business-operation-state` slot).
  * - **Not a credential store.** A challenge is public server state. No
  *   `Authorization` value, customer key, payment credential, signature or
  *   provider secret has a column here.
@@ -133,6 +139,8 @@ export interface PaymentBusinessOperationStoreHealth {
   readonly writable: boolean;
   readonly schemaVersion: string;
   readonly checkedAt: string;
+  /** CORE-07 freshness of the business-operation history: `not-anchored` for a store without a witness (volatile, or legacy durable). A failed status is unhealthy. */
+  readonly freshness?: AuthorityStateFreshnessStatusValue | 'not-anchored';
 }
 
 /** The read half a later handoff needs: the verified operation a governed request maps to. Keyed by the trusted governed request id, never by a challenge id. */

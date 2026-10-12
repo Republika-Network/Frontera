@@ -70,6 +70,12 @@ export const PAYMENT_PROTOCOL_INGRESS_REFUSALS = [
   'challenge-history-full',
   /** The business-operation store could not durably establish the operation, or its state did not verify. Never read as "no previous operation". */
   'store-unavailable',
+  /**
+   * The business-operation store could not prove its history current at the CORE-07 freshness witness: the witness is
+   * unreachable, or the local history is older than (rolled back), divergent from (forked) or missing a transition (pending
+   * recovery) what the witness holds. No payment is attempted until it is recovered.
+   */
+  'store-freshness-unverified',
 ] as const;
 
 export type PaymentProtocolIngressRefusal = (typeof PAYMENT_PROTOCOL_INGRESS_REFUSALS)[number] | PaymentProtocolRefusal;
