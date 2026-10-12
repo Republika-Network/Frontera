@@ -48,7 +48,11 @@ export type {
 } from './store-contracts.js';
 export { PaymentBusinessOperationStoreError, isPaymentBusinessOperationStoreError } from './store-errors.js';
 export type { PaymentBusinessOperationStoreErrorCode } from './store-errors.js';
-export { createInMemoryPaymentBusinessOperationStore } from './in-memory-payment-business-operation-store.js';
+export { createInMemoryPaymentBusinessOperationStore, isVolatilePaymentBusinessOperationStore } from './in-memory-payment-business-operation-store.js';
 export type { CreateInMemoryPaymentBusinessOperationStoreOptions } from './in-memory-payment-business-operation-store.js';
-export { createSqlitePaymentBusinessOperationStore } from './sqlite-payment-business-operation-store.js';
+export {
+  PAYMENT_BUSINESS_OPERATION_STATE_KIND,
+  PAYMENT_BUSINESS_OPERATION_STORE_ANCHORED_SCHEMA_VERSION,
+  createSqlitePaymentBusinessOperationStore,
+} from './sqlite-payment-business-operation-store.js';
 export type { CreateSqlitePaymentBusinessOperationStoreOptions, DurablePaymentBusinessOperationStore } from './sqlite-payment-business-operation-store.js';

@@ -144,6 +144,61 @@ describe('PAY-04 — the ingress edge is protocol-neutral, rail-neutral and comp
   });
 });
 
+describe('PAY-04 post-merge hardening — rollback safety reuses the generic CORE-07 boundary, and nothing else', () => {
+  const sources = walk(EDGE);
+  const FRESHNESS = 'src/enterprise/authority-state-freshness';
+
+  it('the ingress edge may depend on the generic freshness boundary — its session, errors and checkpoint only; never a transport, a witness client or the reference witness', () => {
+    const allowed = new Set(['../authority-state-freshness/session.js', '../authority-state-freshness/errors.js', '../authority-state-freshness/checkpoint.js']);
+    const used = new Set<string>();
+    for (const file of sources) {
+      for (const match of codeOf(file).matchAll(/\bfrom\s+'([^']+)'/g)) {
+        const specifier = match[1] ?? '';
+        if (!specifier.includes('authority-state-freshness')) continue;
+        assert.equal(allowed.has(specifier), true, `${file} imports '${specifier}'`);
+        used.add(specifier);
+      }
+    }
+    assert.ok(used.has('../authority-state-freshness/session.js'), 'the store composes the CORE-07 session');
+  });
+
+  it('no duplicate witness: the edge implements no witness protocol, transport, receipt, compare-and-advance or witness table', () => {
+    for (const file of sources) {
+      const code = codeOf(file);
+      for (const pattern of [/witness_bindings|committed_sequence|pending_sequence/, /createHttpAuthorityStateWitnessTransport|establishAuthorityStateWitness|startReferenceAuthorityStateWitness/, /\.(?:prepare|finalize|enroll)\(\s*(?:expected|proposed|checkpoint)/, /witnessReceipt|signingBytes|\bed25519\b/i]) {
+        assert.equal(pattern.test(code), false, `${file}: ${String(pattern)}`);
+      }
+    }
+    const store = codeOf(join(EDGE, 'sqlite-payment-business-operation-store.ts'));
+    assert.match(store, /live\.transition\(expected, proposed,/, 'ownership transitions go through the CORE-07 session');
+    assert.match(store, /freshness\.boundary\.establish\(/, 'the open reconciles through the CORE-07 boundary');
+    assert.match(store, /freshness\.boundary\.genesisStoreId\(/, 'genesis is enrolled through the CORE-07 boundary');
+  });
+
+  it('CORE-07 imports no payment code, and its new slot is protocol- and rail-neutral', () => {
+    const core07 = walk(FRESHNESS);
+    assert.ok(core07.length >= 8, `found ${core07.length}`);
+    for (const file of core07) {
+      for (const match of codeOf(file).matchAll(/\bfrom\s+'([^']+)'/g)) {
+        const specifier = match[1] ?? '';
+        assert.equal(/payment-protocol-ingress|xrpl-payment-rail|payment-runtime|monetary-runtime/.test(specifier), false, `${file} imports '${specifier}'`);
+      }
+      const text = readFileSync(file, 'utf8');
+      for (const pattern of [...PROTOCOL_VOCABULARY, /challenge realm|WWW-Authenticate|Payment header|merchant method/i]) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
+    }
+    assert.match(readFileSync(join(FRESHNESS, 'checkpoint.ts'), 'utf8'), /'payment-business-operation-state'/);
+  });
+
+  it('the ingress orders the anchored record strictly before governance, and maps every freshness failure to a refusal before it', () => {
+    const service = codeOf(join(EDGE, 'service.ts'));
+    const recordAt = service.indexOf('await store.record(');
+    const freshnessRefusal = service.indexOf("refused('store-freshness-unverified'");
+    const governAt = service.indexOf('await orchestrator.govern(');
+    assert.ok(recordAt > 0 && freshnessRefusal > recordAt && governAt > freshnessRefusal, 'record → freshness refusal → govern');
+    assert.match(service, /freshnessBoundaryOf\(store\)/, 'the composition gate reads the CORE-07 composition record, not the store’s own claim');
+  });
+});
+
 describe('PAY-04 — NO_BYPASS: the edge reaches execution only through the governed path', () => {
   const sources = walk(EDGE);
 

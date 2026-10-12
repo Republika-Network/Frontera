@@ -38,6 +38,7 @@ import {
   type PaymentProtocolIngress,
   type PaymentProtocolIngressResult,
 } from '../payment-protocol-ingress/index.js';
+import { boundaryFor, closeAllWitnesses, startWitness } from './core07-freshness-fixture.js';
 import { ALLOWED_INTENT, DENIED_ACTOR, IDENTITY, NOW, ORG, TEST_ASSETS, buildGovernedWorld, identityFor, monetaryAuthority, type GovernedWorld } from './governed-action-support.js';
 
 /**
@@ -83,7 +84,8 @@ const GOVERNANCE_DEFINITION = {
 const GOVERNANCE = createGovernanceProfileRegistry({ ...GOVERNANCE_DEFINITION, reservedContextKeys: [...PAYMENT_PROTOCOL_RESERVED_CONTEXT_KEYS, ...MPP_RESERVED_CONTEXT_KEYS] });
 
 const directories: string[] = [];
-after(() => {
+after(async () => {
+  await closeAllWitnesses();
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
 });
 function freshPath(): string {
@@ -371,13 +373,19 @@ describe('PAY-04 — P11 / P12 replay is preserved under challenge refresh (M32 
 });
 
 describe('PAY-04 — restart and stale restore cannot reopen a payment (I10, I11, M35, M36)', () => {
+  /** The durable store, as the ingress composes it: anchored at the CORE-07 witness (PAY-04 post-merge hardening). */
+  async function anchoredStore(path: string, witness: Awaited<ReturnType<typeof startWitness>>) {
+    return createSqlitePaymentBusinessOperationStore(path, { now: ingressClock, freshness: { boundary: await boundaryFor(witness, ORG) } });
+  }
+
   it('I10 / M36: after a restart, a refreshed challenge finds the same operation and replays — no second payment', async () => {
     const path = freshPath();
-    const store = await createSqlitePaymentBusinessOperationStore(path, { now: ingressClock });
+    const witness = await startWitness();
+    const store = await anchoredStore(path, witness);
     const before = protocolWorld({ store, behaviour: () => ({ status: 'unconfirmed', externalReference: 'job-1' }) });
     governedResult(await before.ingress.prepareAndGovern(IDENTITY, request()));
     await store.close();
-    const reopened = await createSqlitePaymentBusinessOperationStore(path, { now: ingressClock });
+    const reopened = await anchoredStore(path, witness);
     const after = protocolWorld({ store: reopened, world: before.world, rail: before.rail });
     const replay = governedResult(await after.ingress.prepareAndGovern(IDENTITY, request({ challenges: paymentChallenge({ id: 'ch-after-restart' }) })));
     assert.deepEqual([replay.businessOperation, replay.sequence, replay.status], ['existing', 2, 'execution_unconfirmed']);
@@ -386,58 +394,53 @@ describe('PAY-04 — restart and stale restore cannot reopen a payment (I10, I11
     await reopened.close();
   });
 
-  it('I11 / M35: a stale restore of the business-operation store forgets history, but cannot make a completed or unconfirmed payment look new', async () => {
+  it('I11 / M35: a stale restore of the business-operation store is refused at open — a completed or unconfirmed payment can never look new', async () => {
     for (const behaviour of [(): PaymentRailResult => ({ status: 'completed', externalReference: 'p' }), (): PaymentRailResult => ({ status: 'unconfirmed', externalReference: 'u' })]) {
       const path = freshPath();
+      const witness = await startWitness();
       // An empty store, backed up before the payment.
-      await (await createSqlitePaymentBusinessOperationStore(path, { now: ingressClock })).close();
+      await (await anchoredStore(path, witness)).close();
       copyFileSync(path, `${path}.stale`);
-      const store = await createSqlitePaymentBusinessOperationStore(path, { now: ingressClock });
+      const store = await anchoredStore(path, witness);
       const live = protocolWorld({ store, behaviour });
-      const first = governedResult(await live.ingress.prepareAndGovern(IDENTITY, request()));
+      governedResult(await live.ingress.prepareAndGovern(IDENTITY, request()));
       await store.close();
       for (const suffix of ['', '-wal', '-shm']) if (existsSync(`${path}${suffix}`)) rmSync(`${path}${suffix}`);
       copyFileSync(`${path}.stale`, path);
-      const restored = await createSqlitePaymentBusinessOperationStore(path, { now: ingressClock });
-      const after = protocolWorld({ store: restored, world: live.world, rail: live.rail });
-      // Changed money terms first: the stale store believes the operation is new, but the derived key makes the
-      // Governance Store's own idempotency refuse a different payment under it.
-      const changed = governedResult(await after.ingress.prepareAndGovern(IDENTITY, request({ challenges: paymentChallenge({ id: 'ch-bigger', request: { ...DEFAULT_CHARGE, amount: '9900' } }) })));
-      assert.equal(changed.businessOperation, 'created', 'the stale store forgot the operation');
-      assert.equal(changed.status, 'rejected', JSON.stringify(changed));
-      assert.deepEqual(changed.reasonCodes, [R.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT]);
-      assert.equal(changed.requestId, first.requestId);
-      // Same terms on another restored copy: replayed, whatever the store says.
-      await restored.close();
-      for (const suffix of ['', '-wal', '-shm']) if (existsSync(`${path}${suffix}`)) rmSync(`${path}${suffix}`);
-      copyFileSync(`${path}.stale`, path);
-      const again = await createSqlitePaymentBusinessOperationStore(path, { now: ingressClock });
-      const replay = governedResult(await protocolWorld({ store: again, world: live.world, rail: live.rail }).ingress.prepareAndGovern(IDENTITY, request({ challenges: paymentChallenge({ id: 'ch-after-restore' }) })));
-      assert.equal(replay.businessOperation, 'created');
-      assert.equal(replay.requestId, first.requestId);
-      assert.equal(replay.status, first.status);
-      await again.close();
+      await assert.rejects(anchoredStore(path, witness), (error: { code?: string }) => error.code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED');
       assert.equal(live.rail.callCount, 1, 'never a second payment');
     }
   });
 
-  it('RESIDUAL (pinned, SEC-INV-242): after the store is lost, a caller minting a NEW businessOperationId for an already-paid challenge is a second purchase', async () => {
-    const first = protocolWorld();
+  it('CLOSED (formerly the pinned SEC-INV-242 residual): after the store is lost, the same already-paid challenge under a NEW businessOperationId is refused — zero second rail calls', async () => {
+    const path = freshPath();
+    const witness = await startWitness();
+    const store = await anchoredStore(path, witness);
+    const first = protocolWorld({ store });
     governedResult(await first.ingress.prepareAndGovern(IDENTITY, request()));
     assert.equal(refusalOf(await first.ingress.prepareAndGovern(IDENTITY, request({ businessOperationId: 'checkout-2002' }))), 'challenge-conflict', 'refused while the store is intact');
-    const amnesiac = protocolWorld({ world: first.world, rail: first.rail, store: createInMemoryPaymentBusinessOperationStore({ now: ingressClock }) });
-    const second = governedResult(await amnesiac.ingress.prepareAndGovern(IDENTITY, request({ businessOperationId: 'checkout-2002' })));
-    assert.equal(second.status, 'executed');
-    assert.equal(first.rail.callCount, 2, 'the challenge-uniqueness record is lost with the store: business identity is the caller’s to keep');
+    await store.close();
+    // The store is lost. Before the hardening, a fresh store here forgot that the challenge was owned, and checkout-2002 paid
+    // again (a different derived key — a different governed request). Now the witness remembers: no fresh store is accepted,
+    // so no ingress can be composed over one, and nothing reaches governance.
+    for (const suffix of ['', '-wal', '-shm']) if (existsSync(`${path}${suffix}`)) rmSync(`${path}${suffix}`);
+    await assert.rejects(anchoredStore(path, witness), (error: { code?: string }) => error.code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED');
+    assert.equal(first.governed.length, 1, 'only the original presentation reached governance');
+    assert.equal(first.rail.callCount, 1, 'one challenge, one payment');
   });
 
-  it('a wholly lost (process-local) store behaves the same: the derived key replays, the rail is not called twice', async () => {
+  it('defence in depth — the derived governed key, independent of the store: a wholly lost (volatile) store replays the same operation, and changed money terms hit the Governance Store’s own idempotency', async () => {
     const first = protocolWorld({ behaviour: () => ({ status: 'unconfirmed', externalReference: 'u' }) });
-    governedResult(await first.ingress.prepareAndGovern(IDENTITY, request()));
+    const original = governedResult(await first.ingress.prepareAndGovern(IDENTITY, request()));
     const amnesiac = protocolWorld({ world: first.world, rail: first.rail, store: createInMemoryPaymentBusinessOperationStore({ now: ingressClock }) });
     const replay = governedResult(await amnesiac.ingress.prepareAndGovern(IDENTITY, request()));
     assert.equal(replay.businessOperation, 'created');
     assert.equal(replay.status, 'execution_unconfirmed');
+    const other = protocolWorld({ world: first.world, rail: first.rail, store: createInMemoryPaymentBusinessOperationStore({ now: ingressClock }) });
+    const changed = governedResult(await other.ingress.prepareAndGovern(IDENTITY, request({ challenges: paymentChallenge({ id: 'ch-bigger', request: { ...DEFAULT_CHARGE, amount: '9900' } }) })));
+    assert.equal(changed.status, 'rejected', JSON.stringify(changed));
+    assert.deepEqual(changed.reasonCodes, [R.GOVERNED_ACTION_IDEMPOTENCY_CONFLICT]);
+    assert.equal(changed.requestId, original.requestId);
     assert.equal(first.rail.callCount, 1);
   });
 });

@@ -27,16 +27,27 @@ import {
 
 /**
  * The process-local payment business-operation store (PAY-04): tests and
- * embedders that accept **no** business-operation history across a restart.
- * It is never the production composition — the durable store is
- * `createSqlitePaymentBusinessOperationStore`. Losing it loses the challenge
- * history and the protected-request conflict check; it cannot reopen a
- * payment, because the governed key is derived, never read from here.
+ * development only — **no** business-operation history across a restart.
+ * It is never the production composition: the durable store,
+ * `createSqlitePaymentBusinessOperationStore` composed with its CORE-07
+ * freshness witness, is. A restart loses everything here, including the
+ * one-operation-per-challenge record: a challenge already paid for, presented
+ * after a restart under a **new** `businessOperationId`, is not recognized.
+ * (The same operation still replays — its governed key is derived, never read
+ * from here.) The ingress accepts this store only because it is volatile by
+ * construction and says so (`isVolatilePaymentBusinessOperationStore`).
  *
  * Every write decision is one synchronous critical section — no `await`
  * between reading and inserting — over records rebuilt and verified on every
  * read, exactly as the SQLite store does.
  */
+
+const VOLATILE_STORES = new WeakSet<object>();
+
+/** Whether `store` was built by `createInMemoryPaymentBusinessOperationStore` (runtime brand, not shape): volatile, test and development only. */
+export function isVolatilePaymentBusinessOperationStore(store: unknown): boolean {
+  return typeof store === 'object' && store !== null && VOLATILE_STORES.has(store);
+}
 
 export interface CreateInMemoryPaymentBusinessOperationStoreOptions {
   readonly now: () => string;
@@ -76,7 +87,7 @@ export function createInMemoryPaymentBusinessOperationStore(options: CreateInMem
     return { kind: 'this-operation', record };
   }
 
-  return {
+  const store: PaymentBusinessOperationStore = {
     providerKind: 'memory',
 
     async record(context: PaymentBusinessOperationAccessContext, input: RecordPaymentChallengeInput): Promise<RecordPaymentChallengeResult> {
@@ -125,11 +136,13 @@ export function createInMemoryPaymentBusinessOperationStore(options: CreateInMem
     },
 
     async health(): Promise<PaymentBusinessOperationStoreHealth> {
-      return { status: closed ? 'unhealthy' : 'healthy', readable: !closed, writable: !closed, schemaVersion: PAYMENT_BUSINESS_OPERATION_STORE_SCHEMA_VERSION, checkedAt: now() };
+      return { status: closed ? 'unhealthy' : 'healthy', readable: !closed, writable: !closed, schemaVersion: PAYMENT_BUSINESS_OPERATION_STORE_SCHEMA_VERSION, checkedAt: now(), freshness: 'not-anchored' };
     },
 
     async close(): Promise<void> {
       closed = true;
     },
   };
+  VOLATILE_STORES.add(store);
+  return store;
 }

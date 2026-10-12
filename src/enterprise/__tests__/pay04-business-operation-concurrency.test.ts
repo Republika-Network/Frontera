@@ -7,7 +7,8 @@ import { Worker } from 'node:worker_threads';
 
 import Database from 'better-sqlite3';
 
-import { createSqlitePaymentBusinessOperationStore } from '../payment-protocol-ingress/sqlite-payment-business-operation-store.js';
+import { PAYMENT_BUSINESS_OPERATION_STATE_KIND, createSqlitePaymentBusinessOperationStore } from '../payment-protocol-ingress/sqlite-payment-business-operation-store.js';
+import { boundaryFor, closeAllWitnesses, startWitness, witnessRows, type StartedWitness } from './core07-freshness-fixture.js';
 import { STORE_ORG, storeEntry, type StoreChallenge, type StoreTerms } from './pay04-protocol-support.js';
 
 /**
@@ -24,7 +25,8 @@ import { STORE_ORG, storeEntry, type StoreChallenge, type StoreTerms } from './p
  */
 
 const directories: string[] = [];
-after(() => {
+after(async () => {
+  await closeAllWitnesses();
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -39,13 +41,15 @@ interface Participant {
   readonly challenge: StoreChallenge;
 }
 
-async function race(path: string, participants: readonly Participant[]): Promise<readonly string[]> {
-  // Create the schema first, so every participant races on the write, not the DDL.
-  await (await createSqlitePaymentBusinessOperationStore(path, { now: () => '2026-09-24T12:00:00.000Z' })).close();
+async function race(path: string, participants: readonly Participant[], witness?: StartedWitness): Promise<readonly string[]> {
+  // Create the schema (and, anchored, the witnessed genesis) first, so every participant races on the write, not the DDL.
+  const freshness = witness === undefined ? {} : { freshness: { boundary: await boundaryFor(witness, STORE_ORG) } };
+  await (await createSqlitePaymentBusinessOperationStore(path, { now: () => '2026-09-24T12:00:00.000Z', ...freshness })).close();
   const barrier = new SharedArrayBuffer(4);
   const gate = new Int32Array(barrier);
   let ready = 0;
-  const workers = participants.map((participant) => new Worker(join(__dirname, 'pay04-business-operation-concurrency-worker.js'), { workerData: { path, barrier, ...participant } }));
+  const pinned = witness === undefined ? {} : { witness: { endpoint: witness.endpoint, witnessId: witness.witnessId, publicKeyPem: witness.publicKeyPem } };
+  const workers = participants.map((participant) => new Worker(join(__dirname, 'pay04-business-operation-concurrency-worker.js'), { workerData: { path, barrier, ...participant, ...pinned } }));
   const results = workers.map(
     (worker) =>
       new Promise<string>((resolve, reject) => {
@@ -148,5 +152,54 @@ describe('PAY-04 E — refreshed challenges and one challenge for two operations
     assert.equal(outcomes.every((outcome) => outcome.startsWith('existing:appended:')), true, outcomes.join('\n'));
     assert.deepEqual(outcomes.map((outcome) => outcome.split(':')[2]).sort(), ['2', '3', '4', '5']);
     assert.equal(rows(path).operations, 1);
+  });
+});
+
+describe('PAY-04 hardening — anchored at the CORE-07 witness, raced across threads (F9 across processes)', () => {
+  /** What the witness holds for the store's slot: its committed sequence, and whether a transition is still prepared. */
+  async function witnessed(witness: StartedWitness): Promise<{ readonly sequence: number; readonly pending: boolean }> {
+    const row = (await witnessRows(witness.databasePath)).find((entry) => entry['state_kind'] === PAYMENT_BUSINESS_OPERATION_STATE_KIND);
+    return { sequence: Number(row?.['committed_sequence'] ?? -1), pending: row?.['pending_sequence'] !== null && row?.['pending_sequence'] !== undefined };
+  }
+
+  /** A participant that did not win either lost cleanly (a conflict decided by the store) or was refused by the witness before writing — never anything else. */
+  const CLEAN_LOSS = /^(PAYMENT_BUSINESS_OPERATION_CHALLENGE_CONFLICT|AUTHORITY_FRESHNESS_CONFLICT|AUTHORITY_FRESHNESS_PENDING_RECOVERY)$/;
+
+  it('M30 raced, anchored: one challenge presented for three operations by three connections binds to at most one owner — exactly one ownership transition at the witness', async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const witness = await startWitness();
+      const path = freshPath();
+      const outcomes = await race(
+        path,
+        [
+          { terms: { businessOperationId: 'bop-x' }, challenge: { id: 'shared' } },
+          { terms: { businessOperationId: 'bop-y' }, challenge: { id: 'shared' } },
+          { terms: { businessOperationId: 'bop-z', principalId: 'principal-b' }, challenge: { id: 'shared' } },
+        ],
+        witness,
+      );
+      const winners = outcomes.filter((outcome) => outcome.startsWith('created:appended:1:'));
+      assert.equal(winners.length, 1, outcomes.join('\n'));
+      for (const outcome of outcomes) if (!winners.includes(outcome)) assert.match(outcome, CLEAN_LOSS);
+      assert.deepEqual({ operations: rows(path).operations, challenges: rows(path).challenges }, { operations: 1, challenges: 1 });
+      assert.deepEqual(await witnessed(witness), { sequence: 1, pending: false }, 'the witness saw exactly the one ownership the file holds');
+      // And the file still opens: every connection's transition was a clean compare-and-advance, never a fork.
+      await (await createSqlitePaymentBusinessOperationStore(path, { now: () => '2026-09-24T12:00:01.000Z', freshness: { boundary: await boundaryFor(witness, STORE_ORG) } })).close();
+    }
+  });
+
+  it('refreshes raced, anchored: every accepted challenge is one witnessed transition; the file and the witness agree exactly', async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const witness = await startWitness();
+      const path = freshPath();
+      const outcomes = await race(path, Array.from({ length: 4 }, (_, index) => ({ terms: {}, challenge: { id: `refresh-${index}` } })), witness);
+      const accepted = outcomes.filter((outcome) => /^(created|existing):appended:/.test(outcome));
+      for (const outcome of outcomes) if (!accepted.includes(outcome)) assert.match(outcome, CLEAN_LOSS);
+      assert.ok(accepted.length >= 1, outcomes.join('\n'));
+      assert.equal(outcomes.filter((outcome) => outcome.startsWith('created:')).length, 1, outcomes.join('\n'));
+      assert.deepEqual({ operations: rows(path).operations, challenges: rows(path).challenges }, { operations: 1, challenges: accepted.length });
+      assert.deepEqual(await witnessed(witness), { sequence: accepted.length, pending: false });
+      await (await createSqlitePaymentBusinessOperationStore(path, { now: () => '2026-09-24T12:00:01.000Z', freshness: { boundary: await boundaryFor(witness, STORE_ORG) } })).close();
+    }
   });
 });

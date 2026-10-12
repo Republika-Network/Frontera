@@ -261,7 +261,7 @@ describe('PAY-04 F (sqlite) — durability, restart, tamper and schema', () => {
     }
   });
 
-  it('I11 / M35 (store level): restoring an older copy loses history only — the derived identity of every operation is unchanged', async () => {
+  it('I11 / M35 (unanchored store level): restoring an older copy loses history — the derived identity of every operation is unchanged (the anchored store refuses the copy: pay04-rollback-safety.test.ts)', async () => {
     const path = freshPath();
     const store = await createSqlitePaymentBusinessOperationStore(path, { now: clock });
     await store.record(ctx, storeEntry({}, { id: 'a' }));
