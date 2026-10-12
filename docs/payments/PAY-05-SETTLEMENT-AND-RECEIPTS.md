@@ -147,7 +147,8 @@ PaymentFinalityEvidence {
   method                      '<rail>.<method>.v<n>'  (how finality was established, versioned)
   providerRef                 the rail's handle on the final transfer — must equal P11 / P12's when recorded
   amount, source, destination what it verified — compared EXACTLY with the canonical payment
-  finalizedAt?                an instant the rail itself established (UTC text), never a local clock
+  finalizedAt?                an instant the rail itself established (UTC text), never a local clock;
+                              a REAL calendar instant (2026-02-31 / 2026-02-29 refused), second or millisecond precision
   facts[]                     ≤ 16 normalized { name: '<rail>.<fact>', value } — sorted, unique
 }
 ```
@@ -161,6 +162,20 @@ secret-named facts — checked with separators folded, so `private-key`,
 (there is no field for one). Recorded with the authority id and
 `proofDigest` = SHA-256 over `{ method, providerRef, finalizedAt, facts }`
 under its own domain tag: anyone holding the rail can re-derive it.
+
+**Deterministic evidence (authority rule).** A settlement store is not
+anchored (§12) because it is rebuilt by asking the rail again — so an
+authority's `final` answer for one transfer must carry the **same** evidence
+every time it is given, whatever the rail's momentary availability or answer
+shape. Optional enrichment that is present on one read and absent on another
+(a close time from a call that may fail, a hash only some answer versions
+carry) is never put into the evidence conditionally: it is either a required
+part of every `final` answer (no fact, no `final` — the answer is `not-final`
+and a later verification settles with the full set) or it is left out. The
+XRPL authority's choice is §15. `finalizedAt` is validated semantically
+(`isPaymentFinalityInstant`): the canonical shape **and** a date that exists,
+round-tripped through the calendar, so an impossible instant never becomes
+evidence (TIME-1 – TIME-9).
 
 Exact matching (`paymentFinalityMismatch`): another execution, another
 handle, another amount, another asset (even the same number), another source,
@@ -235,6 +250,12 @@ settlement record, never from `PaymentRailResult.completed`.
   ids, rail, canonical terms, and the finality authority, method, handle,
   `finalizedAt` and `proofDigest` — and **no local instant**, so a receipt
   re-derived after a restart, a restore or a re-verification is byte-identical.
+  This is an executable invariant, not a hope: with the deterministic-evidence
+  rule (§6, §15) the XRPL settlement is rebuilt after the settlement SQLite
+  file is lost with the same `receiptDigest` (DET-4), the same `contentDigest`
+  after a restart (DET-5), and the same receipt whether or not the ledger
+  header was readable on an earlier attempt or the `tx` answer carried a ledger
+  hash (DET-2, DET-3, DET-6).
 - **No store of its own.** Because it is a pure derivation, there is no crash
   window between a settlement and its receipt (C3), and no receipt can be
   emitted twice with different content.
@@ -265,8 +286,9 @@ requestRefund(identity, { originalExecutionId, refundKey, amount })
   → the original's canonical settlement (read and believed, §7) — never a caller-supplied reference
   → money rules: same asset, strictly positive, exact P9                       (payment-refund.ts)
   → trusted counterparty mapping: refund source account + beneficiary          (no address-reversal assumption)
+  → PaymentIntent { purpose: 'refund', idempotencyKey = reference = refund-<operation> }, validated
+  → COMPILED for the governed path (pure) — a malformed envelope or binding throws HERE, nothing reserved
   → refund accounting: RESERVE against the original's refundable balance       (CORE-07-anchored, atomic)
-  → PaymentIntent { purpose: 'refund', idempotencyKey = reference = refund-<operation> }
   → the EXISTING governed path, as the requester: Kernel, policy, P10, approval, grant, P7, claim, rail, P11
 reconcileRefund(refundOperationId)  → release ONLY on proof the refund moved nothing
 ```
@@ -292,10 +314,28 @@ reconcileRefund(refundOperationId)  → release ONLY on proof the refund moved n
 - **Counted until proven.** A reservation is counted from the moment it is
   durable. It is released only by `reconcileRefund` on a definitive canonical
   fact: the refund's committed decision is `denied`; P11 `confirmed-not-completed`
-  or `withheld`; or P12 `confirmed-not-completed` (F9). Unconfirmed,
-  unresolved, pending approval, never decided (a crash before governance) — the
-  reservation stays counted (F8). A released operation is closed; a new refund
-  needs a new refund key. No automatic retry of anything.
+  or `withheld`; or P12 `confirmed-not-completed` (F9) — read through the
+  **same** canonical P12 validator the settlement basis uses
+  (`canonicalPaymentResolution`): bound to the refund's P11 attempt, to the
+  P11 observation on record **now** (a resolution of an earlier or another
+  observation says nothing about this one), to its P12 binding (digest,
+  attempt, authority), and with a provider handle consistent with P11's. A P12
+  state inconsistent on any of these is `basis-unavailable` and never
+  releases (RREL-1 – RREL-6). Unconfirmed, unresolved, pending approval, never
+  decided (a crash before governance) — the reservation stays counted (F8). A
+  released operation is closed; a new refund needs a new refund key. No
+  automatic retry of anything.
+- **Compile before reserve.** `compilePaymentIntent` is pure and runs before
+  the reservation: an envelope or binding it refuses throws with nothing
+  reserved and nothing governed, so an invalid request can never strand
+  refundable balance behind a durable, witnessed reservation no governance
+  record will ever resolve (COMP-1 – COMP-3).
+- **Unavailable is not a refusal.** An original whose settlement cannot be
+  read or believed, or a counterparty mapping that throws, answers
+  `basis-unavailable` — never `original-not-settled` or
+  `counterparty-unresolved` — with nothing reserved or governed. A crash **after** the reservation
+  and before governance still leaves it conservatively counted (C6, COMP-4) —
+  there is no automatic release.
 - **Concurrency.** The reservation decision is one `BEGIN IMMEDIATE` per
   original inside one CORE-07 transition; two connections racing over one file
   and one witness reserve at most the allowable total (F7).
@@ -315,6 +355,21 @@ genesis), forked or pending history refuses the open (F12). There is no
 unanchored durable mode and no enrollment path (no earlier file ever existed).
 `createInMemoryPaymentRefundLedger` is test-only, and the refund service
 refuses it unless told `allowVolatileLedger: true`.
+
+**Two layers, neither a substitute for the other.** CORE-07 answers "is this
+the newest committed history?" — the witness holds the head
+`(sequence, chain digest)`. Local hash-chain verification answers "are these
+rows exactly the contents of that history?" Every read and every write
+decision recomputes every entry's digest **from its content** and the chain
+from genesis, inside the same SQLite transaction that reads the entries a
+balance or a decision consumes. No cached position is trusted because a
+digest *string* is unchanged: a historical or tail row whose amount,
+principal, original settlement, refund operation or release basis was
+rewritten — with its stored and embedded digest strings and its key columns
+kept consistent — still matches the witness, and is refused here as
+corruption; nothing is reserved, released or governed after it
+(LEDGER-TAMPER-1 – 5). The cost is one linear pass per read over the ledger of
+one organization; correctness over performance.
 
 ## 12. Rollback safety and the CORE-07 decision
 
@@ -361,7 +416,8 @@ one observation through CORE-04's own trusted recorder:
 createPaymentObligationDischarger({ settlements, registry, recorder, discharges, sourceId, writer, now })
 dischargeObligation({ organizationId, obligation: { correlation, obligationType }, executionId })
   → registry (trusted, payment-specific): is this a payment obligation, and what payment does it expect?
-       { amount, destination, source? }                        unknown → not-a-payment-obligation
+       { amount, destination, source? }                        answered "none" (undefined) → not-a-payment-obligation
+                                                                threw / rejected / answered outside the contract → basis-unavailable
   → the execution's settlement, believed (§7), local           none → not-settled
   → EXACT match: asset, amount, destination, source (when expected), not a refund,
                  and reference === paymentObligationReference(correlation, obligationType)
@@ -370,6 +426,12 @@ dischargeObligation({ organizationId, obligation: { correlation, obligationType 
                               observedAt: now, reference: receiptId, subjectId: authorityId })
 ```
 
+- **Registry availability.** Only the registry's successful answer "none"
+  is the negative fact `not-a-payment-obligation`. A registry that throws,
+  rejects its promise or answers something that is neither `undefined` nor a
+  well-formed expectation was not consulted: `basis-unavailable`, nothing is
+  written to CORE-04, and the caller may ask again explicitly — a later call
+  records the discharge once the registry answers (OBREG-1 – OBREG-5).
 - **Exact correlation.** The business reference that satisfies an obligation
   is **derived** from the obligation instance (`payobl-<sha256>` over the
   correlation and kind) — not configurable, not chosen. The payer pays under
@@ -415,16 +477,32 @@ dischargeObligation({ organizationId, obligation: { correlation, obligationType 
   `Payment`; `Account` = the trusted source mapping; `Destination` and
   `DestinationTag` = the governed destination (a tag present exactly when
   governed); `Amount` / `DeliverMax` exactly the governed amount, currency and
-  issuer; no flags (no partial payment); the validated ledger index (and hash).
-  The server must report the configured `network_id`. The hash only locates.
+  issuer; no flags (no partial payment); the validated ledger index. The
+  server must report the configured `network_id`. The hash only locates.
+- **The validated ledger header is required** (`readXrplFinalLedger`, pure).
+  The ledger hash and the consensus close time every `final` answer carries
+  come from the validated header of the ledger the transaction is in — read
+  with `ledgerHeader` (now a required capability) — never from whichever
+  optional field a `tx` answer shape happened to include: an API v2 `tx`
+  answer carries `ledger_hash`, an API v1 one does not (confirmed on Testnet
+  against the §20 transaction). When the `tx` answer does state a ledger
+  hash, it must be the header's. A header that cannot be read, is not
+  validated, names another index, or lacks a well-formed hash or close time
+  → `not-final` (never a weaker `final`); a later explicit verification
+  settles with exactly the same evidence. So one final transaction has one
+  evidence set, one `proofDigest`, one settlement content digest and one
+  receipt, across restarts, store loss and server answer shapes (DET-1 –
+  DET-6).
 - **Answers.** All of it → `final`, with facts `xrpl.network-id`,
   `xrpl.ledger-index`, `xrpl.ledger-hash`, `xrpl.transaction-result`,
   `xrpl.source-address`, `xrpl.destination-address`, `xrpl.destination-tag`,
-  `xrpl.currency`, `xrpl.issuer`, `xrpl.delivered-value`, and `finalizedAt` =
-  the validated ledger's consensus close time. A validated failure, a delivered
+  `xrpl.currency`, `xrpl.issuer`, `xrpl.delivered-value` — the ledger hash
+  always present — and `finalizedAt` = the validated ledger's consensus close
+  time, always present. A validated failure, a delivered
   or instructed difference, any field difference → `contradicted`. Pending, not
   found, incomplete history, network failure or mismatch, an unreadable answer,
-  no interlock record, a record that disagrees → `not-final`.
+  no interlock record, a record that disagrees, the ledger header unreadable or
+  disagreeing → `not-final`.
 - **No P12 duplication, no dependency either way.** P12's authority and reader
   are unchanged; PAY-05's reader calls P12's `readLookup` and adds the
   settlement-only checks; P12 imports nothing from PAY-05.
@@ -481,12 +559,12 @@ EP-057 trigger.
 
 | suite | covers |
 | --- | --- |
-| `payment-settlement.test.ts` | state machine, closed answer, bounds and secret refusal, exact matching, refund money rules |
+| `payment-settlement.test.ts` | state machine, closed answer, bounds and secret refusal, exact matching, refund money rules, finality-instant calendar validity (TIME-1 – TIME-9) |
 | `xrpl-finality.test.ts` | the XRPL proof: v1 / v2 shapes, every field substitution, contradictions, never-negative |
 | `pay05-settlement.test.ts` | S1 – S20, R1 – R10 |
-| `pay05-xrpl-settlement.test.ts` | governed RLUSD payment → PAY-02 rail + interlock → P11 / P12 → XRPL finality → settlement → receipt |
-| `pay05-refunds.test.ts` | F1 – F12, C6 – C8, durable races and stale restore at the witness |
-| `pay05-payment-obligations.test.ts` | O1 – O12, C4, C5 |
+| `pay05-xrpl-settlement.test.ts` | governed RLUSD payment → PAY-02 rail + interlock → P11 / P12 → XRPL finality → settlement → receipt; deterministic reconstruction DET-1 – DET-6 |
+| `pay05-refunds.test.ts` | F1 – F12, C6 – C8, durable races and stale restore at the witness; canonical P12 release RREL-1 – RREL-6; compile-before-reserve COMP-1 – COMP-4; local integrity under a cached head LEDGER-TAMPER-1 – 5 |
+| `pay05-payment-obligations.test.ts` | O1 – O12, C4, C5; registry availability OBREG-1 – OBREG-5 |
 | `pay05-exit-proof-host.test.ts` | the obligation exit proof on the shipped Host |
 | `pay05-settlement-structure.test.ts` | structural boundaries (§16, §18) |
 | `pay03-xrpl-testnet-production.test.ts` | opt-in live Testnet: the PAY-03 governed payment, then settled (§20) |
@@ -508,6 +586,14 @@ receipt `payment-receipt:18a100a66879117720a05da2f9f737c6e8a0892f30759edcc90f941
 (verified against the settlement), method `xrpl.validated-ledger.v1`,
 `finalizedAt` 2026-10-12T07:15:30Z (the ledger's consensus close time), facts
 `xrpl.network-id` 1 and `xrpl.ledger-index` 21473742; no further submission.
+
+Hardening re-read (read-only, no payment): the same transaction re-verified
+by the finality authority over a live SDK client, once with the API v2 `tx`
+answer (which carries `ledger_hash`) and once with the API v1 answer (which
+does not), yields identical evidence — ledger hash
+`D93E165682DD97502927381B150AC4912FE2706AB4A31C302807549482A61803` from the
+validated header, `finalizedAt` 2026-10-12T07:15:30Z — and so an identical
+`proofDigest`.
 
 ## 21. Residuals
 

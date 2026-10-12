@@ -1,5 +1,6 @@
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createFinancialActionClassifier, createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
@@ -18,7 +19,7 @@ import { snapshotResolutionAuthorities } from '../execution-reconciliation/autho
 import { createExecutionReconciliationService } from '../execution-reconciliation/service.js';
 import { createInMemoryExecutionResolutionStore } from '../execution-resolution-store/in-memory-execution-resolution-store.js';
 import { createGovernanceProfileRegistry } from '../governance-profile/index.js';
-import { createInMemoryPaymentSettlementStore, createPaymentSettlementService, verifyPaymentReceipt } from '../payment-settlement/index.js';
+import { createInMemoryPaymentSettlementStore, createPaymentSettlementService, createSqlitePaymentSettlementStore, verifyPaymentReceipt, type PaymentReceipt, type PaymentSettlementStore } from '../payment-settlement/index.js';
 import { createSqliteXrplSubmissionInterlock, type DurableXrplSubmissionInterlock } from '../xrpl-payment-rail/sqlite-xrpl-submission-interlock.js';
 import { XRPL_FINALITY_AUTHORITY_ID, XRPL_FINALITY_METHOD, createXrplFinalityAuthority, readOnlyXrplFinalityLedger } from '../xrpl-payment-rail/xrpl-finality-authority.js';
 import { XRPL_RESOLUTION_AUTHORITY_ID, createXrplResolutionAuthority, readOnlyXrplLedger } from '../xrpl-payment-rail/xrpl-resolution-authority.js';
@@ -238,6 +239,120 @@ describe('PAY-05 XRPL — governed RLUSD payment → final validated ledger proo
     assert.equal(Object.isFrozen(reader), true);
     const authority = createXrplFinalityAuthority({ configuration: CONFIGURATION, ledger: reader, interlock: x.interlock });
     assert.deepEqual(Object.keys(authority).sort(), ['authorityId', 'verifyFinality']);
+    await x.interlock.close();
+  });
+});
+
+describe('PAY-05 hardening DET-1 – DET-6 — a final XRPL transaction always yields the same canonical settlement and receipt', () => {
+  /** A settlement service over its own store and its own local clock: nothing local may reach the canonical content. */
+  function serviceOver(x: XrplWorld, store: PaymentSettlementStore, now: () => string) {
+    return createPaymentSettlementService({
+      outcomes: x.world.outcomes,
+      resolutions: createInMemoryExecutionResolutionStore({ now }),
+      governance: x.world.rawStore,
+      payments: [BINDING],
+      store,
+      authorities: [createXrplFinalityAuthority({ configuration: CONFIGURATION, ledger: readOnlyXrplFinalityLedger(x.ledger), interlock: x.interlock })],
+      selectAuthority: () => XRPL_FINALITY_AUTHORITY_ID,
+      now,
+    });
+  }
+  const clock = (instant: string) => () => instant;
+
+  async function settledReceipt(x: XrplWorld & { readonly executionId: string }, store: PaymentSettlementStore = createInMemoryPaymentSettlementStore({ now: clock(NOW) }), now = clock(NOW)): Promise<{ readonly receipt: PaymentReceipt; readonly contentDigest: string; readonly proofDigest: string }> {
+    const settled = await serviceOver(x, store, now).verifySettlement({ organizationId: ORG, executionId: x.executionId });
+    assert.equal(settled.outcome, 'settled', JSON.stringify(settled));
+    if (settled.outcome !== 'settled') throw new Error('unreachable');
+    assert.deepEqual(verifyPaymentReceipt(settled.receipt, settled.settlement), { valid: true });
+    return { receipt: settled.receipt, contentDigest: settled.settlement.contentDigest, proofDigest: settled.settlement.finality.proofDigest };
+  }
+
+  it('DET-1: the final transaction, ledger header available → canonical receipt R, carrying the validated ledger’s hash and close time', async () => {
+    const x = await governedXrplPayment('success');
+    const r = await settledReceipt(x);
+    assert.match(r.receipt.finality.finalizedAt ?? '', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const again = await settledReceipt(x);
+    assert.deepEqual(again, r, 'a second verification into another store: byte-identical');
+    await x.interlock.close();
+  });
+
+  it('DET-2: the ledger header temporarily unavailable → not final, nothing recorded; once readable → exactly R', async () => {
+    const x = await governedXrplPayment('success');
+    const r = await settledReceipt(x);
+    const store = createInMemoryPaymentSettlementStore({ now: clock(NOW) });
+    const service = serviceOver(x, store, clock(NOW));
+    x.ledger.headerUnavailable = true;
+    assert.deepEqual(await service.verifySettlement({ organizationId: ORG, executionId: x.executionId }), { outcome: 'not-final' }, 'never a weaker final answer');
+    assert.deepEqual(await service.readSettlement({ organizationId: ORG, executionId: x.executionId }), { outcome: 'status', state: 'awaiting-finality' });
+    assert.equal(await store.read({ organizationId: ORG }, x.executionId), undefined);
+    x.ledger.headerUnavailable = false;
+    assert.deepEqual(await settledReceipt(x, store), r);
+    await x.interlock.close();
+  });
+
+  it('DET-3: a tx answer with ledger_hash present or absent (API v2 / v1 shape) → the same R; a tx ledger_hash that disagrees with the header is refused', async () => {
+    const x = await governedXrplPayment('success');
+    const r = await settledReceipt(x);
+    x.ledger.lookupOmitsLedgerHash = true;
+    assert.deepEqual(await settledReceipt(x), r, 'the hash comes from the validated header, not from the answer shape');
+    x.ledger.lookupOmitsLedgerHash = false;
+    const lookup = x.ledger.lookupTransaction.bind(x.ledger);
+    x.ledger.lookupTransaction = async (query, timeoutMs) => ({ ...((await lookup(query, timeoutMs)) as Record<string, unknown>), ledger_hash: 'F'.repeat(64) });
+    assert.deepEqual(await serviceOver(x, createInMemoryPaymentSettlementStore({ now: clock(NOW) }), clock(NOW)).verifySettlement({ organizationId: ORG, executionId: x.executionId }), { outcome: 'not-final' });
+    x.ledger.lookupTransaction = lookup;
+    const header = x.ledger.ledgerHeader!.bind(x.ledger);
+    for (const broken of [{ ledger_hash: undefined }, { ledger_hash: 'not-hex' }, { ledger_index: 1 }, { validated: false }, { close_time: undefined }]) {
+      x.ledger.ledgerHeader = async (index) => ({ ...((await header(index)) as Record<string, unknown>), ...broken });
+      assert.deepEqual(await serviceOver(x, createInMemoryPaymentSettlementStore({ now: clock(NOW) }), clock(NOW)).verifySettlement({ organizationId: ORG, executionId: x.executionId }), { outcome: 'not-final' }, JSON.stringify(broken));
+    }
+    x.ledger.ledgerHeader = header;
+    await x.interlock.close();
+  });
+
+  it('DET-4: the settlement SQLite store is lost → re-verifying the same transaction rebuilds exactly the same receipt (receiptDigest identical)', async () => {
+    const x = await governedXrplPayment('success');
+    const path = join(tmp.dir(), 'settlements.sqlite');
+    let store = await createSqlitePaymentSettlementStore(path, { now: clock('2026-01-01T00:00:00.000Z') });
+    const r = await settledReceipt(x, store, clock('2026-01-01T00:00:00.000Z'));
+    await store.close();
+    for (const suffix of ['', '-wal', '-shm']) if (existsSync(`${path}${suffix}`)) rmSync(`${path}${suffix}`);
+    store = await createSqlitePaymentSettlementStore(path, { now: clock('2027-06-30T12:00:00.000Z') });
+    x.ledger.index += 50; // the network moved on; the validated ledger the transaction is in did not
+    const rebuilt = await settledReceipt(x, store, clock('2027-06-30T12:00:00.000Z'));
+    assert.equal(rebuilt.receipt.receiptDigest, r.receipt.receiptDigest);
+    assert.deepEqual(rebuilt, r);
+    await store.close();
+    await x.interlock.close();
+  });
+
+  it('DET-5: the same transaction after a restart → the same settlement contentDigest', async () => {
+    const x = await governedXrplPayment('success');
+    const path = join(tmp.dir(), 'settlements.sqlite');
+    let store = await createSqlitePaymentSettlementStore(path, { now: clock(NOW) });
+    const r = await settledReceipt(x, store);
+    await store.close();
+    store = await createSqlitePaymentSettlementStore(path, { now: clock('2027-01-01T00:00:00.000Z') });
+    const service = serviceOver(x, store, clock('2027-01-01T00:00:00.000Z'));
+    const read = await service.readSettlement({ organizationId: ORG, executionId: x.executionId });
+    assert.equal(read.outcome === 'status' && read.settlement?.contentDigest, r.contentDigest);
+    const reverified = await service.verifySettlement({ organizationId: ORG, executionId: x.executionId });
+    assert.equal(reverified.outcome === 'settled' && reverified.settlement.contentDigest, r.contentDigest);
+    assert.deepEqual(reverified.outcome === 'settled' && reverified.receipt, r.receipt);
+    await store.close();
+    await x.interlock.close();
+  });
+
+  it('DET-6: optional enrichment in either answer cannot affect receipt identity; the header capability is required', async () => {
+    const x = await governedXrplPayment('success');
+    const r = await settledReceipt(x);
+    const lookup = x.ledger.lookupTransaction.bind(x.ledger);
+    const header = x.ledger.ledgerHeader!.bind(x.ledger);
+    x.ledger.lookupTransaction = async (query, timeoutMs) => ({ ...((await lookup(query, timeoutMs)) as Record<string, unknown>), close_time_iso: '2030-01-01T00:00:00Z', ctid: 'C000000000000000', date: 1 });
+    x.ledger.ledgerHeader = async (index) => ({ ...((await header(index)) as Record<string, unknown>), close_time_iso: '2030-01-01T00:00:00Z', parent_hash: 'E'.repeat(64) });
+    assert.deepEqual(await settledReceipt(x), r);
+    const { ledgerHeader: _withheld, ...headerless } = readOnlyXrplFinalityLedger(x.ledger);
+    assert.throws(() => createXrplFinalityAuthority({ configuration: CONFIGURATION, ledger: headerless as never, interlock: x.interlock }), /ledgerHeader/);
+    assert.throws(() => readOnlyXrplFinalityLedger(headerless as never), /ledgerHeader/);
     await x.interlock.close();
   });
 });

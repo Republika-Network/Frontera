@@ -507,10 +507,22 @@ balance** — the same defect class, the same boundary, reused unchanged:
   opened without its boundary;
 - `AUTHORITY_STATE_KINDS` gains the one value, named rail- and
   protocol-neutrally; `AUTHORITY_STORE_KINDS` is unchanged.
+- **Freshness is not integrity.** The witness answers "is this the newest
+  committed history?" by its head; it says nothing about whether the rows under
+  that head are still that history's contents. The refund accounting therefore
+  recomputes every entry digest from its content and the chain from genesis on
+  every read and write decision, and never trusts a cached boundary because a
+  digest *string* is unchanged — a row rewritten in place with its digest
+  strings kept matches the witness and is refused locally as corruption
+  (PAY-05 hardening, LEDGER-TAMPER-1 – 5). Both layers are required; neither
+  substitutes for the other.
 
 PAY-05's settlement records are deliberately **not** anchored: they are
 reconstructible from immutable external finality, and a rollback of them costs
-availability only (`docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md` §12).
+availability only (`docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md` §12). The
+reconstruction is deterministic — the identical content and receipt, tested
+against store loss and answer-shape variation — which is what makes leaving
+them unanchored sound.
 
 ## 3. The reference witness
 

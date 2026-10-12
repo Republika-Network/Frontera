@@ -16,6 +16,7 @@ import type { GovernanceRecord, GovernanceStoreAccessContext } from '../governan
 import type { GovernedActionResult } from '../governed-action/contracts.js';
 import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId } from '../governed-action/identifiers.js';
 import { boundScopeOf } from '../governed-action/kernel-request.js';
+import { canonicalPaymentResolution } from './basis.js';
 import type { PaymentReceipt, PaymentSettlementRecord } from './contracts.js';
 import {
   paymentRefundGovernedKey,
@@ -36,12 +37,15 @@ import type { PaymentSettlementService } from './service.js';
  *   → the ORIGINAL's canonical settlement (verified; never a caller's reference)   none → original-not-settled
  *   → refund money rules: same asset, positive, exact P9                              (the ledger decides the balance)
  *   → trusted counterparty mapping: who refunds, to whom                               none → counterparty-unresolved
+ *   → PaymentIntent { purpose: 'refund', key + reference DERIVED from the refund operation }, validated
+ *   → compiled for the governed path (pure; a malformed envelope or binding throws HERE, before any accounting write)
  *   → refund accounting: reserve (CORE-07-anchored, atomic per original)               over → refused
- *   → PaymentIntent { purpose: 'refund', key + reference DERIVED from the refund operation }
  *   → the EXISTING governed path, as the requester: authority, policy, P10, approval, grant, P7, claim, rail, P11
  * reconcileRefund(refundOperationId)
- *   → the refund's canonical outcome: denied · confirmed-not-completed · withheld · P12 not completed → release
- *                                     anything else (completed, unconfirmed, pending, unknown)        → stays counted
+ *   → the refund's canonical outcome: denied · confirmed-not-completed · withheld → release
+ *                                     P12 not completed, bound to the CURRENT P11 observation → release
+ *                                     anything else (completed, unconfirmed, pending, unknown)  → stays counted
+ *                                     P12 inconsistent with P11 (stale, unbound, other attempt) → basis-unavailable, stays counted
  * ```
  *
  * ## What it is not
@@ -119,7 +123,12 @@ export type PaymentRefundRequestResult =
   /** This refund operation was released (its payment provably moved nothing). It is closed; use a new refund key. */
   | { readonly outcome: 'closed'; readonly refundOperationId: string }
   /** The refund accounting could not be read, written or proven fresh. Nothing reserved, nothing governed. */
-  | { readonly outcome: 'accounting-unavailable' };
+  | { readonly outcome: 'accounting-unavailable' }
+  /**
+   * The original's settlement could not be believed or read, or the trusted counterparty mapping failed: an availability
+   * failure, never "not settled" or "unresolved". Nothing reserved, nothing governed; asking again is safe.
+   */
+  | { readonly outcome: 'basis-unavailable' };
 
 export type PaymentRefundReconciliation =
   | { readonly outcome: 'released'; readonly basis: PaymentRefundReleaseBasis; readonly reservation: PaymentRefundReservation }
@@ -146,28 +155,36 @@ export function createPaymentRefundService(options: PaymentRefundServiceOptions)
   if (typeof counterparties !== 'function') throw new TypeError('The refund service needs a trusted counterparty mapping.');
   if (typeof orchestrator?.govern !== 'function') throw new TypeError('The refund service governs refunds through the existing governed-action orchestrator.');
 
-  /** The original's canonical settlement and its receipt — verified, re-checked against P11 / P12, local. */
-  async function settledOriginal(executionId: unknown): Promise<{ readonly settlement: PaymentSettlementRecord; readonly receipt: PaymentReceipt } | undefined> {
-    if (!isOpaqueExecutionIdentifier(executionId)) return undefined;
-    const status = await settlements.readSettlement({ organizationId, executionId });
-    return status.outcome === 'status' && status.state === 'settled' && status.settlement !== undefined && status.receipt !== undefined ? { settlement: status.settlement, receipt: status.receipt } : undefined;
+  /** The original's canonical settlement and its receipt — verified, re-checked against P11 / P12, local. A failure to read is not "not settled". */
+  async function settledOriginal(executionId: unknown): Promise<{ readonly settlement: PaymentSettlementRecord; readonly receipt: PaymentReceipt } | 'not-settled' | 'unavailable'> {
+    if (!isOpaqueExecutionIdentifier(executionId)) return 'not-settled';
+    let status;
+    try {
+      status = await settlements.readSettlement({ organizationId, executionId });
+    } catch {
+      return 'unavailable';
+    }
+    if (status.outcome === 'basis-unavailable') return 'unavailable';
+    return status.outcome === 'status' && status.state === 'settled' && status.settlement !== undefined && status.receipt !== undefined ? { settlement: status.settlement, receipt: status.receipt } : 'not-settled';
   }
 
   async function requestRefund(identity: BoundCustomerIdentity, request: PaymentRefundRequest): Promise<PaymentRefundRequestResult> {
     const scope = boundScopeOf(identity, organizationId);
     if (scope === undefined) return { outcome: 'identity-refused' };
     const settled = await settledOriginal(request?.originalExecutionId);
-    if (settled === undefined) return { outcome: 'original-not-settled' };
+    if (settled === 'unavailable') return { outcome: 'basis-unavailable' };
+    if (settled === 'not-settled') return { outcome: 'original-not-settled' };
     const original = settled.settlement;
     if (original.payment.purpose === 'refund') return { outcome: 'original-is-refund' };
     const refundKey = request.refundKey;
     if (!isOpaqueExecutionIdentifier(refundKey)) return { outcome: 'refused', refusal: 'PAYMENT_REFUND_KEY_INVALID' };
 
+    // Only the mapping's answer "none" refuses the refund; a mapping that throws was not consulted.
     let counterparty: PaymentRefundCounterparty | undefined;
     try {
       counterparty = counterparties(Object.freeze({ organizationId, original }));
     } catch {
-      counterparty = undefined;
+      return { outcome: 'basis-unavailable' };
     }
     if (counterparty === undefined) return { outcome: 'counterparty-unresolved' };
 
@@ -191,7 +208,10 @@ export function createPaymentRefundService(options: PaymentRefundServiceOptions)
     // The money rules the service can state before touching the accounting: same asset, strictly positive, exact.
     const moneyRefusal = paymentRefundRefusal(original.payment.amount, '0', intent.amount);
     if (moneyRefusal !== undefined) return { outcome: 'refused', refusal: moneyRefusal };
-    const refundRequestId = deriveGovernedActionRequestId({ organizationId, principalId: scope.principalId, idempotencyKey: intent.idempotencyKey });
+    // Compiled before anything is reserved: compilation is pure, and an input it refuses must never strand refundable balance
+    // behind a durable, witnessed reservation that no governance record will ever resolve.
+    const governed = compilePaymentIntent(intent, binding, request.envelope);
+    const refundRequestId = deriveGovernedActionRequestId({ organizationId, principalId: scope.principalId, idempotencyKey: governed.idempotencyKey });
 
     let reserved;
     try {
@@ -215,7 +235,7 @@ export function createPaymentRefundService(options: PaymentRefundServiceOptions)
 
     // Durable and witnessed before anything is governed. A crash from here on leaves the reservation counted; calling again with
     // the same refund key finds it and governs the same request identity — the governed path replays or executes it once.
-    const result = await orchestrator.govern(identity, compilePaymentIntent(intent, binding, request.envelope));
+    const result = await orchestrator.govern(identity, governed);
     return { outcome: 'governed', refundOperationId, reservation: reserved.outcome, balance: reserved.balance, result };
   }
 
@@ -250,9 +270,12 @@ export function createPaymentRefundService(options: PaymentRefundServiceOptions)
     } catch {
       return { kind: 'unavailable' };
     }
-    const resolution = state?.resolution;
-    if (resolution === undefined || resolution.attemptDigest !== outcome.attempt.attemptDigest) return { kind: 'pending' };
-    if (resolution.certainty === 'confirmed-not-completed') return { kind: 'release', basis: 'resolution-confirmed-not-completed', reference: resolution.resolutionDigest };
+    // The same P12 reading the settlement basis uses: a resolution releases only when it is bound to this attempt, to the
+    // P11 observation on record now, and to its binding. A stale or unbound one is never read as "not completed".
+    const resolved = canonicalPaymentResolution(outcome, state);
+    if (resolved.kind === 'none') return { kind: 'pending' };
+    if (resolved.kind === 'inconsistent') return { kind: 'unavailable' };
+    if (resolved.kind === 'not-completed') return { kind: 'release', basis: 'resolution-confirmed-not-completed', reference: resolved.digest };
     return { kind: 'completed', executionId };
   }
 

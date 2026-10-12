@@ -64,8 +64,19 @@ settlement-only field checks; P12 imports nothing from PAY-05.
 `(organization, settlement)`. A receipt carries no local instant and has no
 store, so the same settlement content always derives the identical receipt —
 after a restart, a restore or a re-verification — and C3 does not exist.
-*Rejected:* a receipt table (a second record that could diverge or be emitted
-twice); random ids.
+That holds only if the evidence an authority returns for one final transfer is
+itself deterministic, so it is a rule of the port (hardening): no
+availability- or shape-dependent field enters `final` evidence conditionally —
+it is required (absent → `not-final`) or left out. The XRPL authority requires
+the validated ledger header's hash and close time for every `final` answer,
+never the `tx` answer's optional `ledger_hash`; reconstruction after store loss
+is tested byte-identical (spec §15, DET-1 – DET-6). Finality instants are
+calendar-valid, not only well-shaped. *Rejected:* a receipt table (a second
+record that could diverge or be emitted twice); random ids; optional
+enrichment in the canonical proof; anchoring the settlement store at CORE-07
+instead of making reconstruction deterministic (it would turn an
+availability-only state into a witness dependency without a money-moving
+reason).
 
 **D7 — Receipts are integrity-verifiable, not signed.** Frontera's signing keys
 are authority-artifact keys (CORE-01/02); reusing them for payment evidence
@@ -74,11 +85,15 @@ verified for integrity (its digest) and correlation (re-derived from the
 canonical settlement), and says so.
 
 **D8 — CORE-07 only where rollback moves money.** Settlement records are
-reconstructible from immutable external finality: their rollback costs
-availability only — not anchored. Refund accounting is not reconstructible: a
+reconstructible from immutable external finality — deterministically (D6) —
+so their rollback costs availability only — not anchored. Refund accounting is not reconstructible: a
 rollback would recreate refundable balance — anchored, always, in one new slot
 `payment-refund-state` (no unanchored durable mode, no enrollment path).
-Obligation discharges stay in CORE-04's already-anchored store.
+Obligation discharges stay in CORE-04's already-anchored store. The witness
+proves freshness only; local integrity is a separate layer: the refund
+accounting recomputes every entry's digest from its content and the chain from
+genesis on every read, and never trusts a cached head because a digest string
+is unchanged.
 
 **D9 — Payment obligations through CORE-04, unchanged.** PAY-05 writes one
 observation via CORE-04's trusted recorder, citing a configured source whose
@@ -86,7 +101,9 @@ verification class CORE-04 decides. No second lifecycle, no `PaymentIntent` in
 CORE state. Exact correlation by a **derived** business reference
 (`paymentObligationReference`): a payment satisfies an obligation only if it
 was made for it. A trusted, payment-specific registry states the expected
-amount, destination and (optionally) source. The bridge reports at its own
+amount, destination and (optionally) source; only its successful answer
+"none" means not a payment obligation — a registry failure is
+`basis-unavailable`, never an authoritative negative. The bridge reports at its own
 observation instant (CORE-04 orders reports by time). *Rejected:* matching by
 amount / asset / time window; a configurable reference; a bridge-owned "used
 receipts" table (the derived reference makes reuse structurally impossible).
@@ -95,8 +112,11 @@ receipts" table (the derived reference makes reuse structurally impossible).
 key derived from `(organization, principal, original settlement, refundKey)`,
 governed by the existing orchestrator as the requester. Partial refunds are
 supported against a durable, CORE-07-anchored refundable balance; reservations
-count until a definitive canonical fact proves the refund moved nothing.
-Refund direction comes from a trusted counterparty mapping, never address
+count until a definitive canonical fact proves the refund moved nothing — a
+P12 resolution only through the same canonical validator the settlement basis
+uses (bound to the attempt, the current P11 observation and its binding). The
+refund is compiled (pure) before it is reserved, so a refused input never
+strands balance. Refund direction comes from a trusted counterparty mapping, never address
 reversal. *Rejected:* modelling a refund as a reversal or negative amount;
 reusing P7 as the refund ledger; one-full-refund-only (it would need the same
 durable accounting anyway to stop a second full refund).

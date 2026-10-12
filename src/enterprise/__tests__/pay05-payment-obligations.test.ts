@@ -223,3 +223,73 @@ describe('PAY-05 O1 – O12 — a payment obligation is verified only by the exa
     assert.equal(a, paymentObligationReference({ ...ORDER_A }, PAYMENT_OBLIGATION), 'deterministic');
   });
 });
+
+describe('PAY-05 hardening OBREG-1 – OBREG-5 — a registry outage is unavailability, never "not a payment obligation"', () => {
+  /** The bridge composed over one world with a scripted registry, and a recorder that counts CORE-04 writes. */
+  function withRegistry(w: ObligationWorld, scripted: PaymentObligationRegistry): { readonly bridge: PaymentObligationDischarger; readonly writes: () => number } {
+    const recorder = createObligationDischargeRecorder({ store: w.store, sources: SOURCES, organizationId: ORG, now: () => RECORDED_AT });
+    let writes = 0;
+    const counting = { record: (...args: Parameters<typeof recorder.record>) => ((writes += 1), recorder.record(...args)) };
+    const bridge = createPaymentObligationDischarger({ settlements: w.settlement.service, registry: scripted, recorder: counting, discharges: w.store, sourceId: 'payment-settlement', writer: WRITER, now: bridgeNow });
+    return { bridge, writes: () => writes };
+  }
+  const ask = (bridge: PaymentObligationDischarger, executionId: string) => bridge.dischargeObligation({ organizationId: ORG, obligation: { correlation: ORDER_A, obligationType: PAYMENT_OBLIGATION }, executionId });
+
+  it('OBREG-1: the registry answers undefined (successfully) → not-a-payment-obligation; nothing written', async () => {
+    const w = obligationWorld();
+    const executionId = await pay(w);
+    const { bridge, writes } = withRegistry(w, () => undefined);
+    assert.deepEqual(await ask(bridge, executionId), { outcome: 'not-a-payment-obligation' });
+    assert.equal(writes(), 0);
+    assert.equal(await w.state(ORDER_A), 'required');
+  });
+
+  it('OBREG-2 / OBREG-5: the registry throws → basis-unavailable; zero CORE-04 writes; the obligation stays required', async () => {
+    const w = obligationWorld();
+    const executionId = await pay(w);
+    const { bridge, writes } = withRegistry(w, () => {
+      throw new Error('order system unreachable');
+    });
+    assert.deepEqual(await ask(bridge, executionId), { outcome: 'basis-unavailable' });
+    assert.equal(writes(), 0);
+    assert.deepEqual(await w.store.read(ORG, ORDER_A), []);
+    assert.equal(await w.state(ORDER_A), 'required');
+  });
+
+  it('OBREG-3 / OBREG-5: the registry rejects its Promise → basis-unavailable; zero CORE-04 writes', async () => {
+    const w = obligationWorld();
+    const executionId = await pay(w);
+    const { bridge, writes } = withRegistry(w, async () => Promise.reject(new Error('database outage')));
+    assert.deepEqual(await ask(bridge, executionId), { outcome: 'basis-unavailable' });
+    assert.equal(writes(), 0);
+    assert.deepEqual(await w.store.read(ORG, ORDER_A), []);
+  });
+
+  it('a registry answer outside the contract (not undefined, not an expectation) is unavailability too — never a negative fact', async () => {
+    const w = obligationWorld();
+    const executionId = await pay(w);
+    for (const answer of [null, 'yes', { amount: { value: '1e2', unit: 'USD' }, destination: EXPECTED.destination }, { amount: EXPECTED.amount }]) {
+      const { bridge, writes } = withRegistry(w, () => answer as never);
+      assert.deepEqual(await ask(bridge, executionId), { outcome: 'basis-unavailable' }, JSON.stringify(answer));
+      assert.equal(writes(), 0);
+    }
+  });
+
+  it('OBREG-4: the registry fails once and succeeds later — the caller’s explicit retry records the discharge exactly once', async () => {
+    const w = obligationWorld();
+    const executionId = await pay(w);
+    let calls = 0;
+    const { bridge, writes } = withRegistry(w, async (query) => {
+      calls += 1;
+      if (calls === 1) throw new Error('transient outage');
+      return registry(query);
+    });
+    assert.deepEqual(await ask(bridge, executionId), { outcome: 'basis-unavailable' });
+    assert.equal(await w.state(ORDER_A), 'required');
+    assert.equal((await ask(bridge, executionId)).outcome, 'recorded');
+    assert.equal((await ask(bridge, executionId)).outcome, 'already-recorded');
+    assert.equal(writes(), 1);
+    assert.equal(calls, 3, 'asked only when the caller asked — no automatic retry');
+    assert.equal(await w.state(ORDER_A), 'verified', 'CORE-04 still decides: an independent source verifies');
+  });
+});

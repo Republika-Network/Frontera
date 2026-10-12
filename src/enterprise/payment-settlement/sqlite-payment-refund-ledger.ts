@@ -55,6 +55,19 @@ import {
  * read      verified, and the head held against what the witness established (local, no network)
  * ```
  *
+ * ## Two layers, neither a substitute for the other
+ *
+ * - **Freshness (CORE-07):** "is this the newest committed history?" The
+ *   witness holds the head `(sequence, chain digest)`; an older or forked head
+ *   is refused.
+ * - **Integrity (local hash chain):** "are these rows exactly the contents of
+ *   that history?" Every read recomputes every entry's digest from its content
+ *   and the chain from genesis. A witnessed head says nothing about the rows
+ *   under it: a row whose amount, principal, original or release was rewritten
+ *   while its stored digest strings were kept matches the witness and fails
+ *   here. Nothing is trusted because a digest *string* is unchanged — no
+ *   cached position skips the recomputation.
+ *
  * A reservation is acknowledged only once it is durable **and** witnessed, so
  * no refund is ever governed against a reservation a restore could erase; a
  * witness that does not prepare refuses it with nothing written. There is no
@@ -226,7 +239,6 @@ export async function createSqlitePaymentRefundLedger(dbPath: string, options: C
 
   const selectAnchor = db.prepare(`SELECT store_id, organization_id FROM ${ANCHOR_TABLE} WHERE id = 1`);
   const selectAfter = db.prepare(`SELECT sequence, kind, organization_id, refund_operation_id, original_settlement_id, entry_json, entry_digest, chain_digest FROM ${ENTRIES_TABLE} WHERE sequence > ? ORDER BY sequence ASC`);
-  const selectAt = db.prepare(`SELECT sequence, kind, organization_id, refund_operation_id, original_settlement_id, entry_json, entry_digest, chain_digest FROM ${ENTRIES_TABLE} WHERE sequence = ?`);
   const selectOperation = db.prepare(`SELECT sequence, kind, organization_id, refund_operation_id, original_settlement_id, entry_json, entry_digest, chain_digest FROM ${ENTRIES_TABLE} WHERE organization_id = ? AND refund_operation_id = ? ORDER BY sequence ASC`);
   const selectOriginalOperations = db.prepare(`SELECT refund_operation_id FROM ${ENTRIES_TABLE} WHERE organization_id = ? AND original_settlement_id = ? AND kind = 'reserve'`);
   const countEntries = db.prepare(`SELECT COUNT(*) AS n FROM ${ENTRIES_TABLE}`);
@@ -238,8 +250,12 @@ export async function createSqlitePaymentRefundLedger(dbPath: string, options: C
 
   let anchor: { readonly storeId: string; readonly organizationId: string } | undefined;
   let session: AuthorityStateFreshnessSession | undefined;
-  /** The last verified position: a history replaced underneath a running process is noticed at its next read. */
-  let verified: (LedgerHead & { readonly entryDigest: string | null }) | undefined;
+  /**
+   * The last verified head. Not a shortcut — every read still recomputes the whole chain — but a prefix this process
+   * already accepted: the recomputed chain must pass through it, so a history replaced underneath a running process is
+   * noticed at its next read even before the witness is consulted.
+   */
+  let verified: LedgerHead | undefined;
   let closed = false;
   let failedTransition: AuthorityStateFreshnessError | undefined;
   let writing: Promise<unknown> = Promise.resolve();
@@ -248,29 +264,31 @@ export async function createSqlitePaymentRefundLedger(dbPath: string, options: C
     if (closed) throw unavailable('The refund accounting has been closed.');
   }
 
-  function genesis(): LedgerHead & { readonly entryDigest: string | null } {
+  function genesis(): LedgerHead {
     if (anchor === undefined) throw unavailable('The refund accounting is not anchored.');
-    return { sequence: 0, digest: paymentRefundGenesisDigest(anchor.storeId, anchor.organizationId), entryDigest: null };
+    return { sequence: 0, digest: paymentRefundGenesisDigest(anchor.storeId, anchor.organizationId) };
   }
 
-  /** The head, verified forward from the last verified position over every newer entry. */
+  /**
+   * The head, recomputed from genesis over **every** entry: each entry's digest from its content, each link of the chain
+   * from its predecessor. Called inside the same SQLite transaction as every read of entries, so the rows a balance or a
+   * decision consumes are exactly the rows just verified.
+   */
   function currentHead(): LedgerHead {
-    let { sequence, digest, entryDigest } = verified ?? genesis();
-    if (sequence > 0) {
-      const at = selectAt.get(sequence) as Row | undefined;
-      if (at === undefined || entryOf(at).entryDigest !== entryDigest) throw corruptLedger('the history changed underneath this process');
-    }
-    for (const row of selectAfter.all(sequence) as Row[]) {
+    let { sequence, digest } = genesis();
+    const accepted = verified;
+    for (const row of selectAfter.all(0) as Row[]) {
       const entry = entryOf(row);
       const failure = paymentRefundEntryFailure(entry, sequence + 1, digest);
       if (failure !== undefined) throw corruptLedger(failure);
       if (entry.organizationId !== anchor?.organizationId) throw corruptLedger("the ledger holds another organization's entries");
       sequence = entry.sequence;
       digest = entry.chainDigest;
-      entryDigest = entry.entryDigest;
+      if (accepted !== undefined && sequence === accepted.sequence && digest !== accepted.digest) throw corruptLedger('the history changed underneath this process');
     }
+    if (accepted !== undefined && sequence < accepted.sequence) throw corruptLedger('the history changed underneath this process');
     if ((countEntries.get() as { n: unknown }).n !== sequence) throw corruptLedger('the chain does not account for every entry');
-    verified = { sequence, digest, entryDigest };
+    verified = { sequence, digest };
     return { sequence, digest };
   }
 

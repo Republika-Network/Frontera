@@ -131,15 +131,39 @@ function termsOf(record: GovernanceRecord, attempt: ExecutionAttemptRecord): Pay
   });
 }
 
-/** The P12 state for this execution, verified by its store and held to this attempt and observation. */
-function resolutionBasis(outcome: ExecutionOutcomeRecord, state: ExecutionResolutionState | undefined): { readonly kind: 'completed'; readonly digest: string; readonly providerRef?: string } | { readonly kind: 'not-completed' } | { readonly kind: 'none' } | { readonly kind: 'inconsistent' } {
+export type CanonicalPaymentResolution =
+  | { readonly kind: 'completed'; readonly digest: string; readonly providerRef?: string }
+  | { readonly kind: 'not-completed'; readonly digest: string }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'inconsistent' };
+
+/**
+ * The P12 state for this execution, verified by its store and held to the
+ * **current** P11 record — the one semantic definition every PAY-05 consumer
+ * of P12 uses (settlement basis and refund release alike):
+ *
+ * - bound attempt: the resolution names this P11 attempt;
+ * - bound observation: it was reached from exactly the P11 observation now on
+ *   record (none when P11 recorded none) — a resolution of an earlier or
+ *   another observation says nothing about this one;
+ * - valid binding: P12's binding is present and is the one the resolution names;
+ * - provider reference: a handle P11 recorded with the uncertainty and one P12
+ *   learned must be the same transfer's.
+ *
+ * Anything else is `inconsistent` and is never read as either certainty.
+ * Pure; reads nothing; P12's own semantics are unchanged.
+ */
+export function canonicalPaymentResolution(outcome: ExecutionOutcomeRecord, state: ExecutionResolutionState | undefined): CanonicalPaymentResolution {
   const resolution = state?.resolution;
   if (resolution === undefined) return { kind: 'none' };
   if (resolution.attemptDigest !== outcome.attempt.attemptDigest) return { kind: 'inconsistent' };
   const observationDigest = outcome.terminal?.observationDigest;
   if (resolution.basisObservationDigest !== observationDigest) return { kind: 'inconsistent' };
-  if (state?.binding === undefined || state.binding.bindingDigest !== resolution.bindingDigest) return { kind: 'inconsistent' };
-  if (resolution.certainty === 'confirmed-not-completed') return { kind: 'not-completed' };
+  if (state?.binding === undefined || state.binding.bindingDigest !== resolution.bindingDigest || state.binding.attemptDigest !== resolution.attemptDigest || state.binding.authorityId !== resolution.authorityId) return { kind: 'inconsistent' };
+  const observation = outcome.terminal?.observation;
+  const initialRef = observation?.kind === 'provider' ? observation.providerRef : undefined;
+  if (initialRef !== undefined && resolution.providerRef !== undefined && initialRef !== resolution.providerRef) return { kind: 'inconsistent' };
+  if (resolution.certainty === 'confirmed-not-completed') return { kind: 'not-completed', digest: resolution.resolutionDigest };
   return { kind: 'completed', digest: resolution.resolutionDigest, ...(resolution.providerRef !== undefined ? { providerRef: resolution.providerRef } : {}) };
 }
 
@@ -175,7 +199,7 @@ export async function readPaymentSettlementBasis(sources: PaymentSettlementBasis
     } catch (error) {
       return { kind: 'unavailable', reason: isExecutionResolutionStoreError(error) && error.code === 'EXECUTION_RESOLUTION_CORRUPT' ? 'resolution-corrupt' : 'resolution-unreadable' };
     }
-    const resolved = resolutionBasis(outcome, state);
+    const resolved = canonicalPaymentResolution(outcome, state);
     if (resolved.kind === 'none') return { kind: 'state', state: 'execution-uncertain' };
     if (resolved.kind === 'inconsistent') return { kind: 'unavailable', reason: 'resolution-inconsistent' };
     if (resolved.kind === 'not-completed') return { kind: 'state', state: 'not-settleable' };
@@ -186,10 +210,8 @@ export async function readPaymentSettlementBasis(sources: PaymentSettlementBasis
       ...(outcome.terminal !== undefined ? { observationDigest: outcome.terminal.observationDigest } : {}),
       resolutionDigest: resolved.digest,
     };
-    // A handle P11 recorded with the uncertainty is the transfer's; a later one from P12 must agree with it.
-    const initialRef = observation?.kind === 'provider' ? observation.providerRef : undefined;
-    if (initialRef !== undefined && resolved.providerRef !== undefined && initialRef !== resolved.providerRef) return { kind: 'unavailable', reason: 'resolution-inconsistent' };
-    providerRef = initialRef ?? resolved.providerRef;
+    // A handle P11 recorded with the uncertainty is the transfer's; P12's, when it learned one, agrees with it (held above).
+    providerRef = (observation?.kind === 'provider' ? observation.providerRef : undefined) ?? resolved.providerRef;
   }
 
   let record: GovernanceRecord | null;

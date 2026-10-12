@@ -195,8 +195,17 @@ export const PAYMENT_FINALITY_EVIDENCE_LIMITS = Object.freeze({
 /** A dotted, hyphenated lowercase name — `acme.final-proof.v1`. The grammar of a method, a reason and a fact name. */
 const DOTTED_NAME = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 
-/** An instant in UTC, millisecond or second precision: `2026-10-12T09:30:00Z` / `…:00.000Z`. Text only; never read as a clock. */
-const UTC_INSTANT = /^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{3})?Z$/;
+/** The lexical shape of an instant in UTC, millisecond or second precision: `2026-10-12T09:30:00Z` / `…:00.000Z`. Shape only — see `isPaymentFinalityInstant`. */
+const UTC_INSTANT = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{3})?Z$/;
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+
+/** The value of a run of ASCII digits the shape already matched — a calendar field, never money. */
+function digitsOf(text: string | undefined): number {
+  let value = 0;
+  for (let index = 0; index < (text ?? '').length; index += 1) value = value * 10 + ((text ?? '').charCodeAt(index) - 48);
+  return value;
+}
 
 function isDottedName(value: unknown, maximum: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maximum && DOTTED_NAME.test(value);
@@ -206,8 +215,25 @@ export function isPaymentFinalityMethod(value: unknown): value is string {
   return isDottedName(value, PAYMENT_FINALITY_EVIDENCE_LIMITS.methodLength);
 }
 
+/**
+ * A real UTC instant, never read as a clock: the canonical shape **and** a date
+ * that exists in the proleptic Gregorian calendar — the day within its month's
+ * length, February 29 only in a leap year (every fourth year, except centuries
+ * not divisible by 400). `2026-02-29`, `2026-02-31` or `2026-04-31`, which a
+ * lenient date parser would roll over into the next month, are refused, never
+ * repaired. Pure arithmetic over the text — no `Date`. The same semantics as
+ * P11's `isCanonicalOutcomeInstant`, which also admits the second-precision form.
+ */
 export function isPaymentFinalityInstant(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= PAYMENT_FINALITY_EVIDENCE_LIMITS.instantLength && UTC_INSTANT.test(value);
+  if (typeof value !== 'string' || value.length > PAYMENT_FINALITY_EVIDENCE_LIMITS.instantLength) return false;
+  const shape = UTC_INSTANT.exec(value);
+  if (shape === null) return false;
+  const year = digitsOf(shape[1]);
+  const month = digitsOf(shape[2]);
+  const day = digitsOf(shape[3]);
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const length = month === 2 && leap ? 29 : (DAYS_IN_MONTH[month - 1] ?? 0);
+  return day <= length;
 }
 
 /**

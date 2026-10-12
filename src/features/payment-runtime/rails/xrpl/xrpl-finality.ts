@@ -1,5 +1,5 @@
 import { canonicalDecimalOfLedgerValue } from './xrpl-amount.js';
-import { readLookup, type XrplExpectedPayment } from './xrpl-result-normalizer.js';
+import { readLedgerHeader, readLookup, type XrplExpectedPayment } from './xrpl-result-normalizer.js';
 
 /**
  * XRPL settlement finality (PAY-05) — pure, total and conservative.
@@ -30,7 +30,24 @@ import { readLookup, type XrplExpectedPayment } from './xrpl-result-normalizer.j
  * - the instructed amount (`Amount`, and `DeliverMax` where the server reports
  *   it) is exactly the governed amount, currency and issuer;
  * - no `tfPartialPayment` (or any) flag;
- * - the ledger it was validated in, by index.
+ * - the ledger it was validated in, by index — and, from that validated
+ *   ledger's own header (`readXrplFinalLedger`), its hash and consensus close
+ *   time.
+ *
+ * ## One evidence set per final transaction
+ *
+ * The facts a settlement records must be the same every time the same final
+ * transaction is read, whatever the server's answer shape or momentary
+ * availability: a settlement store that is lost or rolled back is rebuilt by
+ * reading the rail again, and must rebuild the identical receipt. So nothing
+ * optional enters the evidence. The ledger hash and close time are **required**
+ * and come from one source that always states them — the validated ledger
+ * header — never from whichever `tx` answer shape happened to carry them (an
+ * API v1 `tx` answer has no `ledger_hash`; an API v2 one does). A `tx` answer
+ * that does state a ledger hash must state the header's. Without the header,
+ * the transaction is not provably final *yet* for settlement purposes: the
+ * answer is `not-final`, and a later explicit verification can settle it with
+ * exactly the same evidence.
  *
  * A hash alone proves nothing here: it only locates the transaction whose
  * fields are then compared exactly. No fuzzy matching, and never "the same
@@ -76,6 +93,29 @@ function amountMatches(raw: unknown, expected: XrplExpectedSettlement): boolean 
   const amount = recordOf(raw);
   if (amount === undefined || Object.keys(amount).length !== 3) return false;
   return amount['currency'] === expected.currency && amount['issuer'] === expected.issuer && canonicalDecimalOfLedgerValue(amount['value']) === expected.value;
+}
+
+/** The validated ledger a final transaction is in, read from its header: required for any `final` answer. */
+export interface XrplFinalLedger {
+  readonly ledgerIndex: number;
+  readonly ledgerHash: string;
+  /** Seconds since the Ripple epoch: the ledger's consensus close time. */
+  readonly closeTime: number;
+}
+
+/**
+ * Reads the validated header of the ledger a `final` reading names: validated,
+ * the same index, a well-formed hash, a close time — and, when the `tx` answer
+ * itself stated a ledger hash, the same hash. `undefined` otherwise: not final
+ * for settlement yet, never a contradiction.
+ */
+export function readXrplFinalLedger(rawHeader: unknown, reading: { readonly ledgerIndex: number; readonly ledgerHash?: string }): XrplFinalLedger | undefined {
+  const header = readLedgerHeader(rawHeader);
+  if (header === undefined || header.index !== reading.ledgerIndex) return undefined;
+  const ledgerHash = recordOf(rawHeader)?.['ledger_hash'];
+  if (typeof ledgerHash !== 'string' || !LEDGER_HASH.test(ledgerHash)) return undefined;
+  if (reading.ledgerHash !== undefined && reading.ledgerHash !== ledgerHash) return undefined;
+  return { ledgerIndex: header.index, ledgerHash, closeTime: header.closeTime };
 }
 
 /**

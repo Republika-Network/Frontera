@@ -704,6 +704,12 @@ PAY-05 defines funds settlement for governed payments: a payment is `settled` on
 | T24 Rail-specific settlement vocabulary leaking into the generic core | **BLOCKED** (the repository's own sources) | Structural scans of the contract, the edge and the core (SEC-INV-262) |
 | T25 A raw provider body or secret retained as settlement evidence | **BLOCKED** | Closed, bounded, normalized evidence; secret-shaped and secret-named content refused (SEC-INV-252) |
 | T26 A database writer forging a settlement row together with P11, P12 and the Governance Store | **RESIDUAL** — integrity, not authenticity | Unkeyed digests, as P11 / P12; a consistent rewrite of all of them is not detected (spec §21) |
+| T27 A stale, unbound or mismatched P12 resolution releasing refund balance | **BLOCKED** | Refund release reads P12 through the settlement basis's own validator: bound to the attempt, to the P11 observation on record now, to its binding, with a consistent handle; anything else is `basis-unavailable` and the reservation stays counted (SEC-INV-259; RREL-1 – RREL-6) |
+| T28 A refund-ledger row rewritten under a cached, witnessed head (digest strings and key columns kept) | **BLOCKED** | Every read recomputes every entry digest from content and the chain from genesis; CORE-07 freshness and local integrity are separate layers and neither substitutes for the other (SEC-INV-260; LEDGER-TAMPER-1 – 5) |
+| T29 An invalid refund request stranding refundable balance behind a reservation | **BLOCKED** | The refund is compiled (pure) before anything is reserved; a refused envelope or binding throws with nothing reserved or governed (SEC-INV-257; COMP-1 – COMP-4) |
+| T30 A payment-obligation registry outage read as "not a payment obligation" | **BLOCKED** | Only a successful `undefined` is the negative fact; a throw, a rejection or an out-of-contract answer is `basis-unavailable`, nothing written, explicitly retryable (SEC-INV-256; OBREG-1 – OBREG-5) |
+| T31 Evidence availability or answer shape changing the canonical settlement or receipt | **BLOCKED** | No optional field enters finality evidence conditionally; the XRPL authority requires the validated header's hash and close time or answers `not-final`, so reconstruction after store loss is byte-identical (SEC-INV-255, SEC-INV-261; DET-1 – DET-6) |
+| T32 An impossible calendar instant recorded as finality evidence | **BLOCKED** | Finality instants are validated for date existence, not only shape (SEC-INV-252; TIME-1 – TIME-9) |
 
 ## 8. Accepted risks (v1)
 

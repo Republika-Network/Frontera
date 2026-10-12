@@ -127,7 +127,7 @@ export type PaymentObligationDischargeResult =
   | { readonly outcome: 'not-settled' }
   /** The settled payment is not the payment this obligation expects. Nothing written. */
   | { readonly outcome: 'mismatch'; readonly field: PaymentObligationMismatch }
-  /** Settlement or CORE-04 state could not be believed or read. Nothing written. */
+  /** The registry, settlement or CORE-04 state could not be consulted, believed or read. Nothing written; asking again is safe. */
   | { readonly outcome: 'basis-unavailable' }
   /** The report could not be recorded (CORE-04 refused or failed). Nothing is claimed. */
   | { readonly outcome: 'discharge-unrecorded' };
@@ -168,13 +168,18 @@ export function createPaymentObligationDischarger(options: PaymentObligationDisc
     if (correlation === undefined || typeof obligationType !== 'string' || !isObligationType(obligationType)) return { outcome: 'not-a-payment-obligation' };
     const scope: ObligationCorrelation = { requestId: correlation.requestId, action: correlation.action, resourceScope: correlation.resourceScope };
 
-    let expected: PaymentObligationExpectation | undefined;
+    // Only the registry's successful answer "none" is the negative fact. A registry that throws, rejects or answers outside the
+    // contract was not consulted: an availability failure, never "not a payment obligation" — nothing is written, and the
+    // caller may ask again.
+    let answer: unknown;
     try {
-      expected = expectationOf(await registry(Object.freeze({ organizationId, correlation: Object.freeze({ ...scope }), obligationType })));
+      answer = await registry(Object.freeze({ organizationId, correlation: Object.freeze({ ...scope }), obligationType }));
     } catch {
-      expected = undefined;
+      return { outcome: 'basis-unavailable' };
     }
-    if (expected === undefined) return { outcome: 'not-a-payment-obligation' };
+    if (answer === undefined) return { outcome: 'not-a-payment-obligation' };
+    const expected = expectationOf(answer);
+    if (expected === undefined) return { outcome: 'basis-unavailable' };
 
     // The canonical settlement, verified and re-checked against P11 / P12. Local: no authority is asked here.
     const status = await settlements.readSettlement({ organizationId, executionId });

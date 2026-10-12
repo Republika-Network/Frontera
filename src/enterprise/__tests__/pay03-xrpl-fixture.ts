@@ -64,6 +64,10 @@ export interface LedgerSimulator extends XrplClientPort {
   searchedAll: boolean;
   /** The lookup answers anything that is not a `tx` answer. */
   malformedLookups: boolean;
+  /** `ledgerHeader` alone throws (a momentarily unavailable `ledger` read); every other read answers. */
+  headerUnavailable: boolean;
+  /** Validated `tx` answers omit `ledger_hash`, as an API v1 answer does. */
+  lookupOmitsLedgerHash: boolean;
   readonly transactions: Map<string, SimulatedTransaction>;
   readonly submitted: string[];
   readonly calls: { connect: number; serverInfo: number; validatedLedgerIndex: number; ledgerHeader: number; autofill: number; submit: number; lookup: number; disconnect: number };
@@ -93,6 +97,8 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
   const genesis = { index: highest, closeTime: rippleSeconds(clockNow()) };
   const closed = new Map<number, number>();
   const closeTimeOf = (index: number): number => closed.get(index) ?? genesis.closeTime - SIMULATED_LEDGER_SECONDS * (genesis.index - index);
+  // A deterministic stand-in for a validated ledger's hash: 64 uppercase hex digits.
+  const ledgerHashOf = (index: number): string => index.toString(16).toUpperCase().padStart(64, '0');
   const transactions = new Map<string, SimulatedTransaction>();
   const submitted: string[] = [];
   const unreachable = (): never => {
@@ -118,6 +124,8 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
     unavailable: false,
     searchedAll: true,
     malformedLookups: false,
+    headerUnavailable: false,
+    lookupOmitsLedgerHash: false,
     transactions,
     submitted,
     calls,
@@ -147,9 +155,9 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
     },
     async ledgerHeader(index: number) {
       calls.ledgerHeader += 1;
-      if (simulator.unavailable) unreachable();
+      if (simulator.unavailable || simulator.headerUnavailable) unreachable();
       if (index > reported) return { ledger_index: index, validated: false };
-      return { ledger_index: index, close_time: closeTimeOf(index), validated: true };
+      return { ledger_index: index, ledger_hash: ledgerHashOf(index), close_time: closeTimeOf(index), validated: true };
     },
     async autofill(transaction: XrplPaymentTransaction) {
       calls.autofill += 1;
@@ -203,8 +211,7 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
       hash: tx.hash,
       validated: true,
       ledger_index: ledgerIndex,
-      // A deterministic stand-in for the validated ledger's hash: 64 uppercase hex digits.
-      ledger_hash: ledgerIndex.toString(16).toUpperCase().padStart(64, '0'),
+      ...(simulator.lookupOmitsLedgerHash ? {} : { ledger_hash: ledgerHashOf(ledgerIndex) }),
       tx_json: { ...fields, ...(instructed !== undefined ? { DeliverMax: instructed } : {}) },
     };
   }

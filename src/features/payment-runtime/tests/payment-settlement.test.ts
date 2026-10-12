@@ -5,6 +5,7 @@ import {
   PAYMENT_REFUND_REFUSALS,
   PAYMENT_SETTLEMENT_STATES,
   isLegalPaymentSettlementTransition,
+  isPaymentFinalityInstant,
   isTerminalPaymentSettlementState,
   normalizePaymentFinalityAnswer,
   paymentFinalityMismatch,
@@ -182,4 +183,34 @@ describe('PAY-05 refund money rules — exact P9, same asset, never negative, ne
     assert.deepEqual(paymentRefundRemaining(original, '30'), { value: '70', unit: 'USD' });
     assert.throws(() => paymentRefundRemaining(original, '100.01'), RangeError);
   });
+});
+
+describe('PAY-05 hardening TIME-1 – TIME-9 — a finality instant is a real UTC instant, not just its shape', () => {
+  for (const [label, value, valid] of [
+    ['TIME-1: an ordinary date', '2026-02-28T09:30:00Z', true],
+    ['TIME-2: a leap day in a leap year', '2028-02-29T09:30:00Z', true],
+    ['TIME-3: a leap day in a common year', '2026-02-29T09:30:00Z', false],
+    ['TIME-4: February 31', '2026-02-31T09:30:00Z', false],
+    ['TIME-5: April 31', '2026-04-31T09:30:00Z', false],
+    ['TIME-6: the last second of the year', '2026-12-31T23:59:59Z', true],
+    ['TIME-7: the canonical millisecond form', '2026-10-12T09:30:00.123Z', true],
+    ['TIME-7: the canonical millisecond form, zero milliseconds', '2026-10-12T09:30:00.000Z', true],
+    ['TIME-8: one fractional digit', '2026-10-12T09:30:00.1Z', false],
+    ['TIME-8: two fractional digits', '2026-10-12T09:30:00.12Z', false],
+    ['TIME-8: four fractional digits', '2026-10-12T09:30:00.1234Z', false],
+    ['TIME-9: an explicit +00:00 offset instead of Z', '2026-10-12T09:30:00+00:00', false],
+    ['a century year that is not a leap year', '2100-02-29T00:00:00Z', false],
+    ['a 400-year leap year', '2000-02-29T00:00:00Z', true],
+    ['November 31', '2026-11-31T00:00:00Z', false],
+    ['hour 24 (a rollover spelling of midnight)', '2026-10-12T24:00:00Z', false],
+    ['a leap second (never printed by a UTC clock)', '2026-12-31T23:59:60Z', false],
+    ['lowercase z', '2026-10-12T09:30:00z', false],
+    ['a date only', '2026-10-12', false],
+  ] as const) {
+    it(`${label}: ${value} → ${valid ? 'valid' : 'invalid'}`, () => {
+      assert.equal(isPaymentFinalityInstant(value), valid);
+      // And as evidence: an impossible instant never becomes a final answer.
+      assert.equal(normalizePaymentFinalityAnswer({ outcome: 'final', evidence: evidence({ finalizedAt: value }) }) !== undefined, valid);
+    });
+  }
 });
