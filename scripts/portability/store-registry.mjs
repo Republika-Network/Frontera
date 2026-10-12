@@ -406,6 +406,18 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
       'PAY-04: the payment business-operation store (createSqlitePaymentBusinessOperationStore; file schema aoc.payment-business-operation-store.schema.v2 when anchored) is composed by an embedder beside the governed-action orchestrator; the Enterprise Host composes no payment protocol ingress and no Host configuration names the store, so backup:v1 does not cover it. An embedder that composes it backs its file up itself, with the Governance Store it belongs to (verifyAll() is the deep integrity check), and must keep the CORE-07 witness outside that backup domain. Since the PAY-04 post-merge hardening its challenge-ownership history is anchored at the CORE-07 witness (slot payment-business-operation-state; not a signed store): a stale or lost copy is refused at the next open, so a challenge already paid for never becomes payable again under a new business operation; the derived governed key still makes the same operation replay at the Governance Store (docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md §10.1, §10.2).',
   },
   {
+    name: 'payment-settlements',
+    envVar: null,
+    reason:
+      'PAY-05: the payment settlement store (createSqlitePaymentSettlementStore, schema aoc.payment-settlement-store.schema.v1) is composed by an embedder beside the governed-action orchestrator; the Enterprise Host composes no settlement service and no Host configuration names the store, so backup:v1 does not cover it. An embedder that composes it backs its file up itself, with the Governance Store and P11 / P12 stores it belongs to. It is reconstructible from immutable external finality and is not witness-anchored: a lost or stale copy makes a settled payment read awaiting-finality (no receipt, discharge or refund) until an explicit verification re-establishes the identical content and receipt — availability, never eligibility (docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md §12, §17).',
+  },
+  {
+    name: 'payment-refund-accounting',
+    envVar: null,
+    reason:
+      'PAY-05: the refund accounting (createSqlitePaymentRefundLedger, schema aoc.payment-refund-ledger.schema.v1) is composed by an embedder beside the refund service; the Enterprise Host composes neither, so backup:v1 does not cover it. An embedder that composes it backs its file up itself and must keep the CORE-07 witness outside that backup domain: its history is always anchored at the witness (slot payment-refund-state), so a stale or lost copy — which would recreate refundable balance — is refused at open, and recovery is restoring the newest file or trusted recovery at the witness (docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md §11, §12, §17).',
+  },
+  {
     name: 'governed-actions-file',
     envVar: 'AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE',
     reason: 'Configuration, secret-free by design, kept in configuration management. The manifest records its SHA-256 so a restore can be matched to it.',

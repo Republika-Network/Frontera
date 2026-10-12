@@ -323,6 +323,19 @@ the P12 record and the interlock cannot diverge into an unsafe state: if the
 window; if the P12 append fails, the interlock is unaffected. An `unresolved`
 answer changes nothing.
 
+### PAY-05 — the XRPL finality authority (not P12)
+
+`createXrplFinalityAuthority` (`xrpl-finality-authority.ts`) is PAY-05's
+read-only **settlement** authority, separate from this resolver: P12 answers
+whether an uncertain execution completed; the finality authority proves that a
+completed payment's funds transfer is final — every governed field read from
+the validated ledger's own transaction (`docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md`
+§15). It reuses the resolver's `readLookup` unchanged, reads the interlock
+(`read` only) and holds the same kind of frozen read-only ledger capability.
+The interlock's `settle` above is **bookkeeping** (a closed sequence window),
+not funds settlement. PAY-05 is embedder-composed; the Host composes neither
+it nor anything new here.
+
 ## 11. Configuration (`governed-actions.json` → `xrplPaymentRail`)
 
 | field | class | rule |

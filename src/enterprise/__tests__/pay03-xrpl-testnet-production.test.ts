@@ -9,11 +9,17 @@ import { Client, type Wallet } from 'xrpl';
 
 import { createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
 import { PAYMENT_PARAMETER_DIMENSIONS, PAYMENT_PROFILE_PARAMETERS, compilePaymentIntent, createPaymentGovernanceBinding, validatePaymentIntent, type PaymentIntent } from '../../features/payment-runtime/index.js';
-import { RIPPLE_EPOCH_UNIX_SECONDS, XRPL_RESTART_ANCHOR_SLACK_SECONDS, XRPL_RESTART_QUARANTINE_LEDGERS } from '../../features/payment-runtime/rails/xrpl/index.js';
+import { RIPPLE_EPOCH_UNIX_SECONDS, XRPL_RESTART_ANCHOR_SLACK_SECONDS, XRPL_RESTART_QUARANTINE_LEDGERS, createXrplRlusdRailConfiguration, createXrplSdkClient } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { RLUSD_CURRENCY_HEX } from '../../features/payment-runtime/rails/xrpl/tests/xrpl-test-fixtures.js';
 import { REFERENCE_XRPL_SIGNER_KEY_FILE_FORMAT } from '../xrpl-payment-rail/reference/reference-xrpl-signer-service.js';
+import { createSqliteExecutionOutcomeStore } from '../execution-outcome-store/sqlite-execution-outcome-store.js';
+import { createSqliteExecutionResolutionStore } from '../execution-resolution-store/sqlite-execution-resolution-store.js';
+import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
+import { createPaymentSettlementService, createSqlitePaymentSettlementStore, verifyPaymentReceipt } from '../payment-settlement/index.js';
+import { createSqliteXrplSubmissionInterlock } from '../xrpl-payment-rail/sqlite-xrpl-submission-interlock.js';
+import { XRPL_FINALITY_AUTHORITY_ID, createXrplFinalityAuthority, readOnlyXrplFinalityLedger } from '../xrpl-payment-rail/xrpl-finality-authority.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
-import { freshnessEnv, spawnReferenceWitness } from './core07-freshness-fixture.js';
+import { boundaryFor, freshnessEnv, spawnReferenceWitness } from './core07-freshness-fixture.js';
 import { ACCOUNT, AGENT, AUTH, ISSUER, ORG, OWNER, SECRETS, TRUST_DOMAIN, bootstrapOrganization, call, create, expectStatus } from './ctrl02-host-fixture.js';
 
 /**
@@ -37,6 +43,11 @@ import { ACCOUNT, AGENT, AUTH, ISSUER, ORG, OWNER, SECRETS, TRUST_DOMAIN, bootst
  * faucet-funded ephemeral accounts, a stand-in issuer of the RLUSD currency
  * code, trust lines, a small issuance. The Host's environment is read back from
  * `/proc` to prove it never held the key. No secret is printed.
+ *
+ * PAY-05 rides on the same run: the one governed payment it makes is then
+ * settled — finality re-read from Testnet by the read-only XRPL finality
+ * authority, a durable settlement and a verified receipt — without any further
+ * payment.
  */
 const ENABLED = process.env['FRONTERA_XRPL_TESTNET_PAY03'] === '1';
 const ENDPOINT = process.env['FRONTERA_XRPL_TESTNET_ENDPOINT'] ?? 'wss://s.altnet.rippletest.net:51233';
@@ -233,6 +244,49 @@ describe('PAY-03 live Testnet production-shaped qualification (opt-in)', { skip:
       console.log(
         `PAY-03 TESTNET PRODUCTION-SHAPED executionId=${String(executed.body['executionId'])} txHash=${hash} validated=true result=tesSUCCESS ledger=${String(tx.result.ledger_index)} certainty=${String(stages['outcome']?.['certainty'] ?? stages['outcome']?.['status'])} hostHeldKey=false signer=separate-process`,
       );
+
+      // ── PAY-05, on this same governed payment (no new payment is made for it): an embedder composes settlement beside
+      // the running Host — second connections to its P11, P12, Governance Store and witness-anchored interlock — and the
+      // read-only XRPL finality authority re-reads the validated transaction from Testnet with its own SDK client. ──
+      const executionId = String(executed.body['executionId']);
+      const now = (): string => new Date().toISOString();
+      const settlementConfiguration = createXrplRlusdRailConfiguration({ network: 'testnet', endpoint: ENDPOINT, asset: { paymentAsset: ASSET, currency: RLUSD_CURRENCY_HEX, issuer: issuer.classicAddress }, sourceAccounts: [{ accountId: ACCOUNT, address: treasury.classicAddress }], requestTimeoutMs: 20_000 });
+      const boundary = await boundaryFor(witness, ORG);
+      const outcomes = await createSqliteExecutionOutcomeStore(stores['AOC_ENTERPRISE_EXECUTION_OUTCOME_SQLITE_PATH']!, { now });
+      const resolutions = await createSqliteExecutionResolutionStore(stores['AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH']!, { now });
+      const governance = await createSqliteGovernanceStore(stores['AOC_ENTERPRISE_SQLITE_PATH']!);
+      const interlock = await createSqliteXrplSubmissionInterlock(stores['AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH']!, { scope: { railId: settlementConfiguration.railId, networkId: settlementConfiguration.networkId }, now, freshness: { boundary } });
+      const settlementStore = await createSqlitePaymentSettlementStore(join(dir, 'state', 'payment-settlements.sqlite'), { now });
+      const finalityClient = createXrplSdkClient(settlementConfiguration);
+      try {
+        const settlements = createPaymentSettlementService({
+          outcomes,
+          resolutions,
+          governance,
+          payments: [createPaymentGovernanceBinding({ action: PAYMENT })],
+          store: settlementStore,
+          authorities: [createXrplFinalityAuthority({ configuration: settlementConfiguration, ledger: readOnlyXrplFinalityLedger(finalityClient), interlock })],
+          selectAuthority: () => XRPL_FINALITY_AUTHORITY_ID,
+          now,
+        });
+        assert.deepEqual(await settlements.readSettlement({ organizationId: ORG, executionId }), { outcome: 'status', state: 'awaiting-finality' }, 'P11 confirmed-completed is not settled');
+        const settled = await settlements.verifySettlement({ organizationId: ORG, executionId });
+        assert.equal(settled.outcome, 'settled', JSON.stringify(settled));
+        if (settled.outcome === 'settled') {
+          assert.equal(settled.settlement.finality.providerRef, hash);
+          assert.deepEqual(verifyPaymentReceipt(settled.receipt, settled.settlement), { valid: true });
+          const facts = Object.fromEntries(settled.settlement.finality.facts.map((fact) => [fact.name, fact.value]));
+          assert.equal(facts['xrpl.network-id'], '1');
+          assert.equal(facts['xrpl.ledger-index'], String(tx.result.ledger_index));
+          assert.equal(JSON.stringify(settled).includes(treasury.seed!), false);
+          console.log(
+            `PAY-05 TESTNET SETTLEMENT executionId=${executionId} txHash=${hash} settlementId=${settled.settlement.settlementId} receiptId=${settled.receipt.receiptId} finalizedAt=${String(settled.settlement.finality.finalizedAt)} ledger=${facts['xrpl.ledger-index'] ?? '?'} method=${settled.settlement.finality.method} receiptVerified=true extraSubmissions=0`,
+          );
+        }
+      } finally {
+        await finalityClient.disconnect().catch(() => undefined);
+        for (const closable of [settlementStore, interlock, governance, resolutions, outcomes]) await closable.close();
+      }
     } finally {
       for (const child of children) child.kill('SIGTERM');
       await setup.disconnect();

@@ -296,6 +296,11 @@ No new outcome or failure vocabulary: reasons are the existing
 `ter…` submit answers are treated as provisional — the validated ledger, or
 expiry, decides.
 
+**Completed is not settled (PAY-05).** `completed` here is P11's provider
+confirmation. Funds settlement is established separately, by PAY-05's read-only
+XRPL finality authority re-reading the validated transaction and proving every
+governed field (`docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md` §15).
+
 **Provider reference.** The transaction hash (64 uppercase hex) is computed by
 signing *before* submission, so every post-submission outcome — including
 `unconfirmed` — carries it as `externalReference`, which P11 records as

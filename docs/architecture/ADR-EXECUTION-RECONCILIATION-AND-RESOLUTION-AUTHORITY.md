@@ -75,7 +75,8 @@ attempt digest, its own binding digest, and — when it resolves an `unconfirmed
 that observation's digest, so it proves exactly which uncertainty it answered.
 
 **Resolution is not settlement.** It answers "did the original provider effect complete?". Not
-funds, bank settlement, ledger finality, receipts, obligations or refunds (P15).
+funds, bank settlement, ledger finality, receipts, obligations or refunds (P15 — delivered as PAY-05,
+which reads a `confirmed-completed` resolution as a settlement *basis* only and never changes P12).
 
 **Resolution is not authority.** Nothing here passes through the Kernel, grant issuance, the
 Authority Graph or policy packs. The effect was authorized once; a resolution never rewrites that

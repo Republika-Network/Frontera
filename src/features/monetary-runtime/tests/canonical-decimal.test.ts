@@ -9,6 +9,7 @@ import {
   canonicalizeDecimalText,
   compareCanonicalDecimals,
   isCanonicalDecimal,
+  subtractCanonicalDecimals,
 } from '../index.js';
 
 /**
@@ -182,5 +183,28 @@ describe('P9 canonical decimals — a JSON number lexeme, as the client wrote it
 
   it('refuses a JavaScript number outright — it is not a lexeme', () => {
     for (const value of [0, 1, 7500, 0.1, 9007199254740993]) assert.equal(canonicalDecimalFromJsonNumberLexeme(value), undefined);
+  });
+});
+
+describe('subtractCanonicalDecimals (PAY-05 refundable balances)', () => {
+  for (const [left, right, difference] of [
+    ['100', '30', '70'],
+    ['100', '100', '0'],
+    ['0.3', '0.1', '0.2'],
+    ['1250.5', '0.05', '1250.45'],
+    ['9007199254740993', '1', '9007199254740992'],
+    ['1', '0.000000000000001', '0.999999999999999'],
+  ] as const) {
+    it(`${left} - ${right} is exactly ${difference}`, () => {
+      assert.equal(subtractCanonicalDecimals(left, right), difference);
+    });
+  }
+
+  it('refuses a negative difference instead of clamping it', () => {
+    assert.throws(() => subtractCanonicalDecimals('30', '30.01'), RangeError);
+  });
+
+  it('refuses a non-canonical operand', () => {
+    for (const [left, right] of [['10.0', '1'], ['10', '-1'], ['1e3', '1']] as const) assert.throws(() => subtractCanonicalDecimals(left, right), RangeError);
   });
 });

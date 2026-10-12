@@ -82,19 +82,20 @@ describe('Payment runtime boundaries (PAY-01)', () => {
     }
   });
 
-  it('nothing in Frontera core imports the payment runtime — except the PAY-03 and PAY-04 composition edges', () => {
+  it('nothing in Frontera core imports the payment runtime — except the PAY-03, PAY-04 and PAY-05 composition edges', () => {
     // PAY-03: the shipped Host composes the XRPL rail from configuration. PAY-04:
     // an embedder composes the payment protocol ingress beside the governed-action
-    // orchestrator. Each composition lives in one directory at the enterprise
-    // edge; the Kernel, the runtimes, the stores and every other enterprise
-    // module stay payment-free.
-    const COMPOSITION_EDGES = [join('src/enterprise', 'xrpl-payment-rail'), join('src/enterprise', 'payment-protocol-ingress')];
+    // orchestrator. PAY-05: an embedder composes settlement, receipts, the
+    // payment-obligation bridge and refunds the same way. Each composition lives
+    // in one directory at the enterprise edge; the Kernel, the runtimes, the
+    // stores and every other enterprise module stay payment-free.
+    const COMPOSITION_EDGES = [join('src/enterprise', 'xrpl-payment-rail'), join('src/enterprise', 'payment-protocol-ingress'), join('src/enterprise', 'payment-settlement')];
     const atEdge = (path: string): boolean => COMPOSITION_EDGES.some((edge) => path.startsWith(`${edge}/`));
     const roots = ['src/kernel', 'src/runtime', 'src/enterprise', 'src/kernel-host', 'src/control-plane-web'];
     const features = readdirSync('src/features').filter((name) => name !== 'payment-runtime').map((name) => join('src/features', name));
     const files = [...roots, ...features].flatMap((root) => walk(root, false));
     for (const file of files.filter((path) => !atEdge(path))) {
-      assert.equal(/payment-runtime|payment-protocol-ingress/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the payment vertical`);
+      assert.equal(/payment-runtime|payment-protocol-ingress|payment-settlement/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the payment vertical`);
     }
     for (const edge of COMPOSITION_EDGES) assert.ok(files.some((path) => path.startsWith(`${edge}/`) && /payment-runtime/.test(readFileSync(path, 'utf8'))), `${edge} is where the vertical is composed`);
   });

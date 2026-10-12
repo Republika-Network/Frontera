@@ -132,6 +132,21 @@ export function addCanonicalDecimals(left: string, right: string): string {
   return format({ coefficient: aligned.left + aligned.right, scale: aligned.scale });
 }
 
+/**
+ * `left - right`, exactly — PAY-05 refundable balances. Both operands must
+ * already be canonical; the result is canonical. A canonical decimal is never
+ * negative, so a subtraction that would go below zero is refused
+ * (`RangeError`) rather than clamped: a caller that needs "how much is left"
+ * has already proven `right <= left`.
+ */
+export function subtractCanonicalDecimals(left: string, right: string): string {
+  requireCanonical(left, 'left operand');
+  requireCanonical(right, 'right operand');
+  const aligned = align(parse(left), parse(right));
+  if (aligned.left < aligned.right) throw new RangeError('The difference of two canonical decimals would be negative.');
+  return format({ coefficient: aligned.left - aligned.right, scale: aligned.scale });
+}
+
 /** `-1`, `0` or `1` as `left` is below, equal to or above `right`, exactly. */
 export function compareCanonicalDecimals(left: string, right: string): -1 | 0 | 1 {
   requireCanonical(left, 'left operand');

@@ -35,4 +35,6 @@ export {
 } from './xrpl-submission-interlock.js';
 export type { XrplInterlockSettlement, XrplSubmissionInterlock, XrplSubmissionRecordInput, XrplSubmissionReservation } from './xrpl-submission-interlock.js';
 export type { XrplRailLogger, XrplRailReadiness, XrplRlusdRail, XrplRlusdRailOptions } from './xrpl-rlusd-rail.js';
+export { XRPL_FINALITY_CONTRADICTIONS, readXrplPaymentFinality } from './xrpl-finality.js';
+export type { XrplExpectedSettlement, XrplFinalityContradiction, XrplFinalityReading } from './xrpl-finality.js';
 export { createXrplSdkClient } from './xrpl-sdk-client.js';

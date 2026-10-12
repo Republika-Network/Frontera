@@ -486,6 +486,32 @@ freshness-protected state** (the XRPL reservation history, the payment
 challenge-ownership history), which only their own composition edges anchor.
 `docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md` §10.1.
 
+### 2.19 A third operational slot: refund accounting (PAY-05)
+
+PAY-05's durable refund accounting is anchored in its own slot,
+`payment-refund-state`. Like the two above, it is operational safety state, not
+authority: the append-only, hash-chained log of refund reservations and
+releases against settled payments. Its rollback or loss would stop counting a
+refund already sent, or still uncertain, and so **recreate refundable
+balance** — the same defect class, the same boundary, reused unchanged:
+
+- the checkpoint is the log's own head (sequence = entries ever written,
+  digest = the domain-separated chain from a genesis bound to the store id and
+  organization), unsigned;
+- the store uses `genesisStoreId`, `establish`, `transition` (one per
+  reservation or release, acknowledged only when durable and witnessed),
+  `observe` and `probe` (before every reservation), exactly as the other slots
+  do, and implements no witness of its own;
+- unlike PAY-04's store it has **no** unanchored durable mode and **no**
+  enrollment path: it is new, so no earlier file exists to baseline; it is never
+  opened without its boundary;
+- `AUTHORITY_STATE_KINDS` gains the one value, named rail- and
+  protocol-neutrally; `AUTHORITY_STORE_KINDS` is unchanged.
+
+PAY-05's settlement records are deliberately **not** anchored: they are
+reconstructible from immutable external finality, and a rollback of them costs
+availability only (`docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md` §12).
+
 ## 3. The reference witness
 
 `scripts/run-reference-authority-state-witness.mjs` — a separate process,
