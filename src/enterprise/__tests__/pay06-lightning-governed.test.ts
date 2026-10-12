@@ -16,7 +16,7 @@ import {
   type PaymentFinalityQuery,
   type PaymentIntent,
 } from '../../features/payment-runtime/index.js';
-import { createLightningInvoiceBook, createLightningRail, lightningDestinationOf, readOnlyLightningNode, type LightningRail } from '../../features/payment-runtime/rails/lightning/index.js';
+import { createLightningInvoiceBook, createLightningRail, lightningDestinationOf, readOnlyLightningNode, type LightningNodeReader, type LightningRail } from '../../features/payment-runtime/rails/lightning/index.js';
 import { BTC_ASSET, TEST_NOW_MS, btc, createSimulatedLightningNode, testPreimage, testRailConfiguration, type SimulatedInvoice, type SimulatedLightningNode } from '../../features/payment-runtime/rails/lightning/tests/lightning-test-fixtures.js';
 import { snapshotResolutionAuthorities } from '../execution-reconciliation/authority.js';
 import { createExecutionReconciliationService } from '../execution-reconciliation/service.js';
@@ -154,8 +154,8 @@ async function govern(lw: LightningWorld, invoice: SimulatedInvoice, overrides: 
   return lw.world.orchestrator.govern(IDENTITY, compilePaymentIntent(intentFor(invoice, overrides), BINDING, { assertedContext: ALLOWED_INTENT.assertedContext }));
 }
 
-function settlementService(lw: LightningWorld, resolutions: ExecutionResolutionStore, store: PaymentSettlementStore = createInMemoryPaymentSettlementStore({ now: () => NOW })) {
-  const authority = createLightningFinalityAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(lw.node), interlock: lw.interlock });
+function settlementService(lw: LightningWorld, resolutions: ExecutionResolutionStore, store: PaymentSettlementStore = createInMemoryPaymentSettlementStore({ now: () => NOW }), reader: LightningNodeReader = lw.node) {
+  const authority = createLightningFinalityAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(reader), interlock: lw.interlock });
   return createPaymentSettlementService({
     outcomes: lw.outcomes,
     resolutions,
@@ -168,8 +168,8 @@ function settlementService(lw: LightningWorld, resolutions: ExecutionResolutionS
   });
 }
 
-function reconciliation(lw: LightningWorld, resolutions: ExecutionResolutionStore) {
-  const authority = createLightningResolutionAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(lw.node), interlock: lw.interlock });
+function reconciliation(lw: LightningWorld, resolutions: ExecutionResolutionStore, reader: LightningNodeReader = lw.node) {
+  const authority = createLightningResolutionAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(reader), interlock: lw.interlock });
   return createExecutionReconciliationService({
     outcomes: lw.outcomes,
     resolutions,
@@ -209,8 +209,9 @@ describe('PAY-06 EXIT PROOF A — success: governed BTC payment → one node pay
     assert.equal(finality.providerRef, invoice.paymentHash);
     assert.equal(finality.finalizedAt, undefined, 'no payer-node clock in canonical evidence');
     const facts = Object.fromEntries(finality.facts.map((fact) => [fact.name, fact.value]));
-    assert.deepEqual(Object.keys(facts).sort(), ['lightning.amount-msat', 'lightning.fee-limit-msat', 'lightning.fee-msat', 'lightning.invoice-digest', 'lightning.network', 'lightning.payee-node', 'lightning.payment-hash', 'lightning.preimage-commitment']);
+    assert.deepEqual(Object.keys(facts).sort(), ['lightning.amount-msat', 'lightning.fee-limit-msat', 'lightning.fee-msat', 'lightning.invoice-digest', 'lightning.network', 'lightning.payee-node', 'lightning.payer-node', 'lightning.payment-hash', 'lightning.preimage-commitment']);
     assert.equal(facts['lightning.payment-hash'], invoice.paymentHash);
+    assert.equal(facts['lightning.payer-node'], lw.node.identity, 'the evidence names the payer node bound before the send');
     assert.equal(facts['lightning.amount-msat'], '2500000');
     assert.equal(facts['lightning.fee-msat'], '1000', 'the actual routing fee, recorded as a bounded accounting fact');
     assert.equal(facts['lightning.fee-limit-msat'], '25000');
@@ -540,6 +541,142 @@ describe('PAY-06 — governed binding regressions', () => {
     const result = await govern(lw, await invoiceFor(lw, 'over-ceiling'));
     assert.notEqual(result.status, 'executed');
     assert.equal(lw.node.calls.nodeInfo + lw.node.calls.sendPayment, 0, 'nothing below the bridge was touched');
+    await lw.interlock.close();
+  });
+});
+
+describe('PAY-06 payer-node binding — only the node that paid can establish P12 or finality (PAYER-2 … PAYER-7, PAYER-11, PAYER-12)', () => {
+  /** Another node on the SAME network, answering for the same payment hash — its own attempt at the same invoice. */
+  async function otherNode(answer: (invoice: SimulatedInvoice) => unknown, invoice: SimulatedInvoice): Promise<SimulatedLightningNode> {
+    const nodeB = await createSimulatedLightningNode({ identityLabel: 'payer-node-B' });
+    assert.equal(nodeB.network, lw0Network);
+    nodeB.statusOverride = () => answer(invoice);
+    return nodeB;
+  }
+  const lw0Network = CONFIGURATION.network;
+  const succeededFor = (invoice: SimulatedInvoice) => ({ state: 'succeeded', paymentHash: invoice.paymentHash, preimage: invoice.preimage, amountMsat: AMOUNT_MSAT, feeMsat: 1000n });
+  const failedFor = (invoice: SimulatedInvoice) => ({ state: 'failed', paymentHash: invoice.paymentHash, failure: 'incorrect-payment-details' });
+
+  async function uncertain(label: string) {
+    const lw = await lightningWorld();
+    lw.node.behaviour = 'hold';
+    const invoice = await invoiceFor(lw, label);
+    const result = await govern(lw, invoice);
+    assert.equal(result.status, 'execution_unconfirmed', show(result));
+    assert.equal((await lw.interlock.read(result.executionId!))?.payerNodeId, lw.node.identity);
+    const resolutions = await createSqliteExecutionResolutionStore(lw.paths.resolutions, { now: () => NOW });
+    return { lw, invoice, executionId: result.executionId!, resolutions };
+  }
+
+  async function completedPayment(label: string) {
+    const lw = await lightningWorld();
+    const invoice = await invoiceFor(lw, label);
+    const result = await govern(lw, invoice);
+    assert.equal(result.status, 'executed', show(result));
+    const resolutions = await createSqliteExecutionResolutionStore(lw.paths.resolutions, { now: () => NOW });
+    return { lw, invoice, executionId: result.executionId!, resolutions };
+  }
+
+  it('PAYER-2 / PAYER-3 same network, node B reports SUCCEEDED (a valid preimage) or FAILED for the same payment hash → P12 unresolved, nothing recorded, no send', async () => {
+    const { lw, invoice, executionId, resolutions } = await uncertain('payer-2');
+    for (const answer of [succeededFor, failedFor]) {
+      const nodeB = await otherNode(answer, invoice);
+      const p12 = reconciliation(lw, resolutions, nodeB);
+      assert.ok(['bound', 'existing'].includes((await p12.adoptResolutionAuthority({ organizationId: ORG, executionId, authorityId: LIGHTNING_RESOLUTION_AUTHORITY_ID })).outcome));
+      assert.deepEqual(await p12.reconcile({ organizationId: ORG, executionId }), { outcome: 'unresolved' }, `node B's ${String((answer(invoice) as { state: string }).state)} proves nothing about A's payment`);
+      assert.equal(nodeB.calls.sendPayment, 0);
+    }
+    assert.equal((await resolutions.read({ organizationId: ORG }, executionId))?.resolution, undefined, 'no resolution recorded from another node');
+    // A's payment is still in flight — the case where a borrowed "failed" would have released capacity for a payment that can still settle.
+    assert.equal(lw.node.payment(invoice.paymentHash)?.state, 'in-flight');
+    assert.equal(lw.node.calls.sendPayment, 1);
+    await lw.interlock.close();
+  });
+
+  it('PAYER-2 (authority level) the P12 table: same payer resolves; a different payer — succeeded, failed, in flight, not found, malformed — is always unresolved', async () => {
+    const { lw, invoice, executionId } = await uncertain('payer-2-table');
+    const query = { organizationId: ORG, executionId, providerRef: invoice.paymentHash, amount: { value: btc(AMOUNT_MSAT), unit: BTC_ASSET } } as never;
+    const authorityOver = (reader: LightningNodeReader) => createLightningResolutionAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(reader), interlock: lw.interlock });
+    for (const answer of [succeededFor, failedFor, (i: SimulatedInvoice) => ({ state: 'in-flight', paymentHash: i.paymentHash }), () => ({ state: 'not-found' }), () => ({ state: 'succeeded', weird: true })]) {
+      assert.deepEqual(await authorityOver(await otherNode(answer, invoice)).resolve(query), { outcome: 'unresolved' });
+    }
+    lw.node.statusOverride = () => failedFor(invoice);
+    assert.equal(((await authorityOver(lw.node).resolve(query)) as { certainty?: string }).certainty, 'confirmed-not-completed', 'control: the payer itself can fail it');
+    lw.node.statusOverride = () => succeededFor(invoice);
+    assert.equal(((await authorityOver(lw.node).resolve(query)) as { certainty?: string }).certainty, 'confirmed-completed', 'control: the payer itself can complete it');
+    await lw.interlock.close();
+  });
+
+  it('PAYER-4 / PAYER-5 same network, node B reports SUCCEEDED with a valid preimage → NOT final; FAILED → NOT final (never contradicted); malformed → not final', async () => {
+    const { lw, invoice, executionId, resolutions } = await completedPayment('payer-4');
+    for (const answer of [succeededFor, failedFor, () => ({ state: 'succeeded', weird: true })]) {
+      const nodeB = await otherNode(answer, invoice);
+      assert.deepEqual(await settlementService(lw, resolutions, undefined, nodeB).verifySettlement({ organizationId: ORG, executionId }), { outcome: 'not-final' });
+    }
+    assert.deepEqual(await settlementService(lw, resolutions).readSettlement({ organizationId: ORG, executionId }), { outcome: 'status', state: 'awaiting-finality' }, 'nothing recorded from another node');
+    // Control: the payer's own answers still settle, and still contradict.
+    lw.node.statusOverride = () => failedFor(invoice);
+    assert.deepEqual(await settlementService(lw, resolutions).verifySettlement({ organizationId: ORG, executionId }), { outcome: 'finality-contradicted', reason: 'lightning.payment-failed' }, 'same payer + failed while completed → contradicted, as defined');
+    delete lw.node.statusOverride;
+    assert.equal((await settlementService(lw, resolutions).verifySettlement({ organizationId: ORG, executionId })).outcome, 'settled');
+    assert.equal(lw.node.calls.sendPayment, 1);
+    await lw.interlock.close();
+  });
+
+  it('PAYER-6 / PAYER-7 restart with the reader still pointing at node A: P12 resolves and settlement completes; one send', async () => {
+    const { lw, invoice, executionId } = await uncertain('payer-6');
+    await lw.interlock.close();
+    await lw.outcomes.close();
+    lw.interlock = await createSqliteLightningPaymentInterlock(lw.paths.interlock, { scope: { railId: CONFIGURATION.railId, network: CONFIGURATION.network }, now: clock, freshness: { boundary: await boundaryFor(lw.witness, ORG) } });
+    lw.outcomes = await createSqliteExecutionOutcomeStore(lw.paths.outcomes, { now: () => NOW });
+    const resolutions = await createSqliteExecutionResolutionStore(`${lw.paths.resolutions}-restart`, { now: () => NOW });
+    assert.equal((await lw.interlock.read(executionId))?.payerNodeId, lw.node.identity, 'the payer survived the restart');
+    lw.node.settleHeld(invoice.paymentHash);
+    // A fresh reader object for node A — the same node identity, a new composition.
+    const readerA = readOnlyLightningNode(lw.node);
+    const p12 = reconciliation(lw, resolutions, readerA);
+    await p12.adoptResolutionAuthority({ organizationId: ORG, executionId, authorityId: LIGHTNING_RESOLUTION_AUTHORITY_ID });
+    const resolved = await p12.reconcile({ organizationId: ORG, executionId });
+    assert.equal(resolved.outcome === 'resolved' && resolved.resolution.certainty, 'confirmed-completed', show(resolved));
+    const settled = await settlementService(lw, resolutions, undefined, readerA).verifySettlement({ organizationId: ORG, executionId });
+    assert.equal(settled.outcome, 'settled', show(settled));
+    assert.equal(settled.outcome === 'settled' && settled.settlement.finality.facts.find((fact) => fact.name === 'lightning.payer-node')?.value, lw.node.identity);
+    assert.equal(lw.node.calls.sendPayment, 1);
+    await lw.interlock.close();
+  });
+
+  it('PAYER-11 the same payer identity on another network → P12 unresolved and not final', async () => {
+    const { lw, invoice, executionId, resolutions } = await uncertain('payer-11');
+    lw.node.settleHeld(invoice.paymentHash);
+    lw.node.network = 'testnet';
+    const p12 = reconciliation(lw, resolutions);
+    await p12.adoptResolutionAuthority({ organizationId: ORG, executionId, authorityId: LIGHTNING_RESOLUTION_AUTHORITY_ID });
+    assert.deepEqual(await p12.reconcile({ organizationId: ORG, executionId }), { outcome: 'unresolved' });
+    const finality = createLightningFinalityAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(lw.node), interlock: lw.interlock });
+    const query: PaymentFinalityQuery = { organizationId: ORG, executionId, requestId: 'req', decisionId: 'dec', basis: 'resolution-confirmed-completed', railId: CONFIGURATION.railId, providerRef: invoice.paymentHash, payment: { source: { accountId: ACCOUNT }, destination: lightningDestinationOf(invoice.payee, invoice.paymentHash), amount: { value: btc(AMOUNT_MSAT), unit: BTC_ASSET }, purpose: 'vendor-payment' } };
+    assert.deepEqual(await finality.verifyFinality(query), { outcome: 'not-final' });
+    lw.node.network = 'regtest';
+    assert.equal((await finality.verifyFinality(query)).outcome, 'final', 'control');
+    await lw.interlock.close();
+  });
+
+  it('PAYER-12 the same network but a malformed node identity (garbage, upper-case spelling of the payer’s key, missing) → unresolved and not final', async () => {
+    const { lw, invoice, executionId } = await uncertain('payer-12');
+    lw.node.settleHeld(invoice.paymentHash);
+    const query: PaymentFinalityQuery = { organizationId: ORG, executionId, requestId: 'req', decisionId: 'dec', basis: 'resolution-confirmed-completed', railId: CONFIGURATION.railId, providerRef: invoice.paymentHash, payment: { source: { accountId: ACCOUNT }, destination: lightningDestinationOf(invoice.payee, invoice.paymentHash), amount: { value: btc(AMOUNT_MSAT), unit: BTC_ASSET }, purpose: 'vendor-payment' } };
+    for (const identity of ['zz', lw.node.identity.toUpperCase(), `${lw.node.identity}00`, undefined]) {
+      const reader: LightningNodeReader = { nodeInfo: async () => ({ network: 'regtest', ...(identity !== undefined ? { identity } : {}) }), decodeInvoice: lw.node.decodeInvoice, paymentStatus: (hash, timeout) => lw.node.paymentStatus(hash, timeout) };
+      const p12 = createLightningResolutionAuthority({ configuration: CONFIGURATION, node: reader, interlock: lw.interlock });
+      assert.deepEqual(await p12.resolve({ organizationId: ORG, executionId, providerRef: invoice.paymentHash } as never), { outcome: 'unresolved' }, String(identity));
+      const finality = createLightningFinalityAuthority({ configuration: CONFIGURATION, node: reader, interlock: lw.interlock });
+      assert.deepEqual(await finality.verifyFinality(query), { outcome: 'not-final' }, String(identity));
+    }
+    // A reservation whose payer is malformed (an interlock that is not the verified store) proves nothing either.
+    const record = await lw.interlock.read(executionId);
+    const forged = { read: async () => ({ ...record!, payerNodeId: 'not-a-node-key' }) };
+    assert.deepEqual(await createLightningResolutionAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(lw.node), interlock: forged }).resolve({ organizationId: ORG, executionId, providerRef: invoice.paymentHash } as never), { outcome: 'unresolved' });
+    assert.deepEqual(await createLightningFinalityAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(lw.node), interlock: forged }).verifyFinality(query), { outcome: 'not-final' });
+    assert.equal(lw.node.calls.sendPayment, 1);
     await lw.interlock.close();
   });
 });

@@ -1,6 +1,7 @@
 import {
   btcDecimalOfMsat,
   concludeLightningPayment,
+  isLightningNodePublicKey,
   isLightningRailConfiguration,
   msatOfBtcDecimal,
   parseLightningDestination,
@@ -57,8 +58,9 @@ const CONTRADICTIONS: Readonly<Record<string, string>> = Object.freeze({
  *    send) and requires it to equal the canonical payment — payee and payment
  *    hash (the governed destination), amount (exact millisatoshis), network,
  *    and the P11 / P12 handle;
- * 2. asks the configured node for **that** logical payment by payment hash,
- *    on the configured network;
+ * 2. asks the node for **that** logical payment by payment hash — only once
+ *    the node proves it is **the payer the reservation bound** (`payerNodeId`,
+ *    verified before the send) on the reservation's network;
  * 3. requires a settled payment whose preimage **decodes to 32 bytes and
  *    hashes to the payment hash** (never a string compare), whose delivered
  *    amount is exactly the governed amount and whose fee is within the
@@ -70,11 +72,16 @@ const CONTRADICTIONS: Readonly<Record<string, string>> = Object.freeze({
  * | succeeded but the preimage does not hash to the payment hash, or another amount, or a fee above the cap | `contradicted` (nothing recorded; P11 / P12 never rewritten) |
  * | terminally failed although P11 / P12 say completed | `contradicted` |
  * | in flight, not found, unreachable, another network, unreadable; no reservation, or one that disagrees | `not-final` |
+ * | **another node** (another identity, even on the same network) — succeeded, failed or anything else | `not-final` |
+ *
+ * An identity mismatch is the **absence** of relevant evidence, never a
+ * contradiction: another node's record is about its own attempt to pay the
+ * same invoice, and can neither settle nor contradict this execution.
  *
  * ## Deterministic evidence
  *
  * Facts come only from the reservation, the governed payment and the settled
- * payment's immutable proof: network, payment hash, payee, invoice digest,
+ * payment's immutable proof: network, payment hash, payee, payer node, invoice digest,
  * amount, fee, fee cap and a **commitment** to the preimage — never a route,
  * an HTLC attempt, an attempt order, a node timestamp or a debug string. No
  * `finalizedAt`: a payer node's settle time is its own local clock, not an
@@ -120,13 +127,14 @@ export function createLightningFinalityAuthority(options: LightningFinalityAutho
       return NOT_FINAL;
     }
     // The reservation, the P11 / P12 handle and the canonical payment must describe the same logical payment.
-    if (record === undefined || record.executionId !== query.executionId || record.network !== configuration.network) return NOT_FINAL;
+    if (record === undefined || record.executionId !== query.executionId || record.network !== configuration.network || !isLightningNodePublicKey(record.payerNodeId)) return NOT_FINAL;
     if (record.paymentHash !== destination.paymentHash || record.payee !== destination.payee || record.amountMsat !== amountMsat) return NOT_FINAL;
     if (query.providerRef !== undefined && query.providerRef !== record.paymentHash) return NOT_FINAL;
 
     try {
       const info = readLightningNodeInfo(await node.nodeInfo(timeout));
-      if (info === undefined || info.network !== configuration.network) return NOT_FINAL;
+      // Only the payer the reservation bound, on its network, can make — or contradict — this payment's finality.
+      if (info === undefined || info.network !== record.network || info.identity !== record.payerNodeId) return NOT_FINAL;
       const observation = readLightningPaymentObservation(await node.paymentStatus(record.paymentHash, timeout));
       const conclusion = concludeLightningPayment(observation, record);
       switch (conclusion.kind) {
@@ -150,6 +158,7 @@ export function createLightningFinalityAuthority(options: LightningFinalityAutho
         { name: 'lightning.invoice-digest', value: record.invoiceDigest },
         { name: 'lightning.network', value: record.network },
         { name: 'lightning.payee-node', value: record.payee },
+        { name: 'lightning.payer-node', value: record.payerNodeId },
         { name: 'lightning.payment-hash', value: record.paymentHash },
         { name: 'lightning.preimage-commitment', value: preimageCommitment(conclusion.preimage) },
       ];

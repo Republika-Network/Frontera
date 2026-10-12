@@ -9,7 +9,9 @@ import { createAuthorityStateFreshnessBoundary, createHttpAuthorityStateWitnessT
 import type { PaymentExecutionRequest } from '../../features/payment-runtime/index.js';
 import { createLightningInvoiceBook, createLightningRail, lightningDestinationOf, type LightningPaymentReservationInput } from '../../features/payment-runtime/rails/lightning/index.js';
 import { BTC_ASSET, GOVERNED_ACCOUNT, TEST_NOW_MS, btc, createSimulatedLightningNode, testPreimage, testNodeKey, testRailConfiguration, type SimulatedLightningNode } from '../../features/payment-runtime/rails/lightning/tests/lightning-test-fixtures.js';
-import { PAYMENT_INITIATION_STATE_KIND, createSqliteLightningPaymentInterlock, type DurableLightningPaymentInterlock } from '../lightning-payment-rail/sqlite-lightning-payment-interlock.js';
+import { LIGHTNING_INTERLOCK_SCHEMA_VERSION, PAYMENT_INITIATION_STATE_KIND, createSqliteLightningPaymentInterlock, type DurableLightningPaymentInterlock } from '../lightning-payment-rail/sqlite-lightning-payment-interlock.js';
+import { canonicalSerialize } from '../governance-store/canonical-json.js';
+import { computeDigest } from '../governance-store/digest.js';
 import { ScriptedWitnessTransport, WITNESS_TOKEN, boundaryFor, closeAllWitnesses, connect, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
 
 /**
@@ -51,6 +53,7 @@ async function reservation(label: string, executionId: string): Promise<Lightnin
     paymentHash: testPreimage(label).paymentHash,
     payee: await testNodeKey('payee-node'),
     network: 'regtest',
+    payerNodeId: await testNodeKey('payer-node'),
     invoiceDigest: testPreimage(`digest-${label}`).paymentHash,
     amountMsat: 2_500_000n,
     feeLimitMsat: 25_000n,
@@ -143,7 +146,16 @@ describe('PAY-06 interlock — uniqueness (IL-1 … IL-4)', () => {
     const path = join(dir(), 'interlock.sqlite');
     const interlock = await open(path, await boundaryFor(witness, ORG));
     const good = await reservation('il-tamper', 'exec-il-tamper');
-    for (const bad of [{ ...good, paymentHash: 'zz' }, { ...good, amountMsat: 0n }, { ...good, amountMsat: 25 as never }, { ...good, network: 'mainnet' as const }, { ...good, executionId: 'bad id' }]) {
+    for (const bad of [
+      { ...good, paymentHash: 'zz' },
+      { ...good, amountMsat: 0n },
+      { ...good, amountMsat: 25 as never },
+      { ...good, network: 'mainnet' as const },
+      { ...good, executionId: 'bad id' },
+      { ...good, payerNodeId: 'zz' },
+      { ...good, payerNodeId: good.payerNodeId.toUpperCase() },
+      { ...good, payerNodeId: undefined as never },
+    ]) {
       await assert.rejects(interlock.reserve(bad), /LIGHTNING_INTERLOCK_INVALID|refused a malformed/);
     }
     await interlock.reserve(good);
@@ -348,3 +360,119 @@ describe('PAY-06 interlock — restart, crash, rollback (IL-7 … IL-12)', () =>
     assert.equal((await interlock.health()).status, 'unhealthy');
   });
 });
+
+describe('PAY-06 interlock — the payer node is part of the reservation (PAYER-1, PAYER-8, PAYER-9, PAYER-10)', () => {
+  /** The interlock's own digest rules, restated (test-only) to forge a row that is locally consistent. */
+  const entryDigest = (content: Record<string, unknown>): string => computeDigest({ domain: 'aoc.lightning-payment-interlock.entry.v2', ...content });
+  const chainDigest = (previous: string, entry: string): string => computeDigest({ domain: 'aoc.lightning-payment-interlock.chain.v1', previous, entryDigest: entry });
+
+  async function oneReservation(): Promise<{ readonly witness: StartedWitness; readonly path: string; readonly node: SimulatedLightningNode }> {
+    const witness = await startWitness();
+    const path = join(dir(), 'interlock.sqlite');
+    const interlock = await open(path, await boundaryFor(witness, ORG));
+    const host = await railOver(interlock, await createSimulatedLightningNode({ identityLabel: 'payer-A' }));
+    assert.equal((await host.execute('exec-payer', 'payer')).status, 'completed');
+    await interlock.close();
+    return { witness, path, node: host.node };
+  }
+
+  it('PAYER-1 the rail reserves under node A: the reservation holds A’s identity — from the ONE nodeInfo reading that proved network and no self-payment', async () => {
+    const witness = await startWitness();
+    const interlock = await open(join(dir(), 'interlock.sqlite'), await boundaryFor(witness, ORG));
+    const nodeA = await createSimulatedLightningNode({ identityLabel: 'payer-A' });
+    const host = await railOver(interlock, nodeA);
+    assert.equal((await host.execute('exec-payer-1', 'payer-1')).status, 'completed');
+    const record = await interlock.read('exec-payer-1');
+    assert.equal(record?.payerNodeId, nodeA.identity);
+    assert.equal(record?.payerNodeId, await testNodeKey('payer-A'));
+    assert.equal(nodeA.calls.nodeInfo, 1, 'no second, independent nodeInfo read to populate the reservation');
+    assert.equal(nodeA.calls.sendPayment, 1);
+    assert.equal(nodeA.sends.length, 1);
+    await interlock.close();
+  });
+
+  it('PAYER-8 an execution reserved under A, the rail later composed with node B: zero sends from B, the reservation still names A — never migrated', async () => {
+    const witness = await startWitness();
+    const path = join(dir(), 'interlock.sqlite');
+    let interlock = await open(path, await boundaryFor(witness, ORG));
+    const nodeA = await createSimulatedLightningNode({ identityLabel: 'payer-A' });
+    nodeA.behaviour = 'hold';
+    assert.equal((await (await railOver(interlock, nodeA)).execute('exec-payer-8', 'payer-8')).status, 'unconfirmed');
+    await interlock.close();
+    // Restart, recomposed against another node on the same network.
+    interlock = await open(path, await boundaryFor(witness, ORG));
+    const nodeB = await createSimulatedLightningNode({ identityLabel: 'payer-B' });
+    const hostB = await railOver(interlock, nodeB);
+    assert.deepEqual(await hostB.execute('exec-payer-8', 'payer-8'), { status: 'unconfirmed', externalReference: testPreimage('payer-8').paymentHash, detail: 'lightning-execution-previously-initiated' });
+    assert.equal(nodeB.calls.sendPayment, 0, 'node B never sends for an execution reserved under A');
+    assert.equal(nodeA.calls.sendPayment, 1, 'one send in total');
+    assert.equal((await interlock.read('exec-payer-8'))?.payerNodeId, nodeA.identity, 'the reservation owns its payer for good');
+    assert.deepEqual(await interlock.verifyAll(), { reservations: 1 }, 'nothing written');
+    await interlock.close();
+  });
+
+  it('PAYER-9 payerNodeId rewritten in SQLite with the digest strings kept → integrity refusal at open', async () => {
+    const { witness, path, node } = await oneReservation();
+    const other = await testNodeKey('payer-B');
+    const { default: Database } = await import('better-sqlite3');
+    const raw = new Database(path);
+    raw.exec('DROP TRIGGER lightning_reservations_append_only_update');
+    const changed = raw.prepare('UPDATE lightning_payment_reservations SET entry_json = replace(entry_json, ?, ?)').run(`"payerNodeId":"${node.identity}"`, `"payerNodeId":"${other}"`);
+    assert.equal(changed.changes, 1);
+    raw.close();
+    await assert.rejects(open(path, await boundaryFor(witness, ORG)), /integrity check.*entry digest does not match/);
+  });
+
+  it('PAYER-10 payerNodeId rewritten with the entry digest recomputed → chain refusal; with the WHOLE chain recomputed → CORE-07 refuses: the payer is in the witnessed state', async () => {
+    const { witness, path, node } = await oneReservation();
+    const other = await testNodeKey('payer-B');
+    const { default: Database } = await import('better-sqlite3');
+    const raw = new Database(path);
+    raw.exec('DROP TRIGGER lightning_reservations_append_only_update');
+    const row = raw.prepare('SELECT entry_json, chain_digest FROM lightning_payment_reservations WHERE sequence = 1').get() as { entry_json: string; chain_digest: string };
+    const forged = { ...(JSON.parse(row.entry_json) as Record<string, unknown>), payerNodeId: other };
+    const forgedJson = canonicalSerialize(forged);
+    const forgedEntry = entryDigest(forged);
+    assert.equal(chainDigest(computeGenesisFrom(raw), entryDigest(JSON.parse(row.entry_json) as Record<string, unknown>)), row.chain_digest, 'the restated digest rules match the interlock');
+    // (a) entry digest recomputed, chain left: the chain no longer links.
+    raw.prepare('UPDATE lightning_payment_reservations SET entry_json = ?, entry_digest = ? WHERE sequence = 1').run(forgedJson, forgedEntry);
+    raw.close();
+    await assert.rejects(open(path, await boundaryFor(witness, ORG)), /integrity check.*chain is broken/);
+    // (b) a perfect local forgery — entry and chain recomputed from genesis: locally consistent, so only the witness can tell.
+    const again = new Database(path);
+    // The refused open re-created the append-only trigger (CREATE … IF NOT EXISTS runs before verification).
+    again.exec('DROP TRIGGER IF EXISTS lightning_reservations_append_only_update');
+    again.prepare('UPDATE lightning_payment_reservations SET chain_digest = ? WHERE sequence = 1').run(chainDigest(computeGenesisFrom(again), forgedEntry));
+    again.close();
+    await assert.rejects(open(path, await boundaryFor(witness, ORG)), (error: { code?: string }) => typeof error.code === 'string' && error.code.startsWith('AUTHORITY_FRESHNESS_'));
+  });
+
+  it('a v1 interlock (the pre-merge shape, no payer) is refused at open, and a payer-less entry is refused by shape — no payer is ever inferred', async () => {
+    assert.equal(LIGHTNING_INTERLOCK_SCHEMA_VERSION, 'aoc.lightning-payment-interlock.schema.v2');
+    const { witness, path } = await oneReservation();
+    const { default: Database } = await import('better-sqlite3');
+    // A payer-less (v1-shaped) entry, its digests recomputed so only the shape rule can catch it.
+    let raw = new Database(path);
+    raw.exec('DROP TRIGGER lightning_reservations_append_only_update');
+    const row = raw.prepare('SELECT entry_json FROM lightning_payment_reservations WHERE sequence = 1').get() as { entry_json: string };
+    const { payerNodeId: _dropped, ...payerless } = JSON.parse(row.entry_json) as Record<string, unknown>;
+    const payerlessEntry = entryDigest(payerless);
+    raw.prepare('UPDATE lightning_payment_reservations SET entry_json = ?, entry_digest = ?, chain_digest = ? WHERE sequence = 1').run(canonicalSerialize(payerless), payerlessEntry, chainDigest(computeGenesisFrom(raw), payerlessEntry));
+    raw.close();
+    await assert.rejects(open(path, await boundaryFor(witness, ORG)), /integrity check.*another shape/);
+    // A file recorded under v1: refused by the version guard, before any CREATE, and left unmutated.
+    raw = new Database(path);
+    raw.prepare("UPDATE lightning_interlock_versions SET schema_version = 'aoc.lightning-payment-interlock.schema.v1'").run();
+    raw.close();
+    await assert.rejects(open(path, await boundaryFor(witness, ORG)), /schema version this runtime does not implement/);
+    raw = new Database(path, { readonly: true });
+    assert.deepEqual(raw.prepare('SELECT schema_version FROM lightning_interlock_versions').all(), [{ schema_version: 'aoc.lightning-payment-interlock.schema.v1' }], 'never upgraded in place');
+    raw.close();
+  });
+});
+
+/** The genesis chain digest of an anchored interlock file, restated from its anchor row (test-only). */
+function computeGenesisFrom(raw: import('better-sqlite3').Database): string {
+  const anchor = raw.prepare('SELECT store_id, organization_id, rail_id, network FROM lightning_interlock_anchor WHERE id = 1').get() as { store_id: string; organization_id: string; rail_id: string; network: string };
+  return computeDigest({ domain: 'aoc.lightning-payment-interlock.chain.v1', storeId: anchor.store_id, organizationId: anchor.organization_id, railId: anchor.rail_id, network: anchor.network, sequence: 0 });
+}

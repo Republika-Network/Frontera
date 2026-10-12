@@ -606,7 +606,9 @@ PAY-06's durable Lightning payment interlock is anchored in its own slot,
 `payment-initiation-reservations`. Operational safety state, not authority: the
 append-only, hash-chained history that binds each governed execution to the one
 rail-level payment it may initiate (one reservation per execution, one per
-payment identity — for Lightning, the payment hash). Its rollback or loss would
+payment identity — for Lightning, the payment hash — and records the rail-level
+payer it was initiated from, so every reservation field, the payer included,
+is in the witnessed head). Its rollback or loss would
 make a payment already initiated look new, or a paid payment hash look free —
 **initiable twice** — the PAY-04 defect class again, closed by the same
 boundary, reused unchanged: the checkpoint is the history's own head; the store

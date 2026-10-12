@@ -31,11 +31,33 @@ import { verifyBolt11Signature } from './lightning-signature.js';
  * | `p`, `s` | exactly one each |
  * | `d` / `h` | exactly one of them; `d` valid UTF-8 (fatal decoding) |
  * | `x`, `c`, `9` | minimal encoding (no leading zero word) |
- * | `9` | an unknown **even** (required) bit refused; unknown odd bits ignored; `basic_mpp` needs `payment_secret` |
+ * | `9` | an unknown **even** (required) bit refused; unknown odd bits ignored; every feature dependency set (`BOLT11_FEATURE_DEPENDENCIES`, below) |
  * | `r` | whole 51-byte hops, each a compressed node key — malformed refused (never interpreted further) |
  * | `f` | counted; unknown versions skipped |
  * | duplicates | `p`, `s`, `d`, `h`, `n`, `x`, `c`, `9`, `m` at most once; `r`, `f` bounded |
  * | signature | compact secp256k1 over SHA-256(hrp ‖ data); with `n`: verified under it, low-S required; without: the payee **recovered** with its recovery id |
+ *
+ * ## Feature dependencies (pinned policy)
+ *
+ * BOLT 11 tells a reader not to attempt a payment whose `9` field does not set
+ * every known, transitive feature dependency. A feature is **present** when
+ * either bit of its pair is set (required or optional). Enforced, each edge
+ * checked, so the closure is too:
+ *
+ * ```
+ * basic_mpp (16/17) → payment_secret (14/15) → var_onion_optin (8/9)
+ * ```
+ *
+ * `basic_mpp → payment_secret` is in BOLT 9's table at the pinned commit.
+ * `payment_secret → var_onion_optin` is not listed there any more: both bits
+ * are `ASSUMED` (lightning/bolts #1310 dropped their context and dependency
+ * columns), and BOLT 9 leaves an ASSUMED feature's semantics to the earlier
+ * revisions that defined it — where `payment_secret` depends on
+ * `var_onion_optin`. Frontera keeps that edge on purpose: an invoice that
+ * offers `payment_secret` without `var_onion_optin` is malformed under the
+ * revisions defining the feature, and refusing it is fail-closed — nothing is
+ * sent. (Real invoices set both: LND writes 9, 14 and 17.) An invoice with no
+ * `9` field sets no feature, so no dependency applies.
  *
  * ## What is not read
  *
@@ -68,6 +90,19 @@ export const BOLT11_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA = 18;
  * behaviour it cannot vouch for.
  */
 export const BOLT11_SUPPORTED_REQUIRED_FEATURES: readonly number[] = Object.freeze([8, 14, 16, 48]);
+
+/**
+ * The feature dependencies enforced in an invoice's `9` field, by feature pair
+ * (named by its even bit): a present feature needs every one it maps to
+ * present too. Checking every edge enforces the transitive closure. See
+ * "Feature dependencies" above for why each edge is here.
+ */
+export const BOLT11_FEATURE_DEPENDENCIES: ReadonlyMap<number, readonly number[]> = new Map<number, readonly number[]>([
+  // payment_secret → var_onion_optin
+  [14, Object.freeze([8])],
+  // basic_mpp → payment_secret
+  [16, Object.freeze([14])],
+]);
 
 const MAXIMUM_ROUTE_HINT_FIELDS = 8;
 const MAXIMUM_FALLBACK_FIELDS = 4;
@@ -161,6 +196,19 @@ function featureBits(words: readonly number[]): number[] {
     for (let bit = 0; bit < 5; bit += 1) if (((word >>> bit) & 1) === 1) bits.push(index * 5 + bit);
   }
   return bits;
+}
+
+/** A feature is present when either bit of its pair is set — required (even) or optional (odd). */
+function featurePresent(bits: readonly number[], pair: number): boolean {
+  return bits.includes(pair) || bits.includes(pair + 1);
+}
+
+/** Every present feature's dependencies are present: each edge of `BOLT11_FEATURE_DEPENDENCIES`, hence its closure. */
+function featureDependenciesSet(bits: readonly number[]): boolean {
+  for (const [feature, dependencies] of BOLT11_FEATURE_DEPENDENCIES) {
+    if (featurePresent(bits, feature) && !dependencies.every((dependency) => featurePresent(bits, dependency))) return false;
+  }
+  return true;
 }
 
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
@@ -265,10 +313,8 @@ function parse(text: string, maximumLength: number): Parsed {
       case TAG['9']: {
         if (field.length === 0 || field[0] === 0) refuse('bolt11-field-non-minimal');
         const bits = featureBits(field);
-        const has = (bit: number): boolean => bits.includes(bit);
         for (const bit of bits) if (bit % 2 === 0 && !BOLT11_SUPPORTED_REQUIRED_FEATURES.includes(bit)) refuse('bolt11-feature-unsupported');
-        // BOLT 9: `basic_mpp` (16/17) depends on `payment_secret` (14/15).
-        if ((has(16) || has(17)) && !(has(14) || has(15))) refuse('bolt11-feature-dependency-missing');
+        if (!featureDependenciesSet(bits)) refuse('bolt11-feature-dependency-missing');
         requiredFeatures = bits.filter((bit) => bit % 2 === 0).sort((left, right) => left - right);
         break;
       }

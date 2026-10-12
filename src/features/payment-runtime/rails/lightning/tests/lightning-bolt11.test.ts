@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { BOLT11_REFUSALS, decodeBolt11Invoice } from '../index.js';
 import { bytesToWords } from '../lightning-bech32.js';
+import { BOLT11_FEATURE_DEPENDENCIES } from '../lightning-bolt11.js';
 import { BOLT11_SPEC_VECTORS } from './bolt11-spec-vectors.js';
 import { buildInvoice, testNodeKey, testPreimage } from './lightning-test-fixtures.js';
 
@@ -193,5 +194,78 @@ describe('PAY-06 BOLT11 — B11 matrix (generated invoices)', () => {
     const decoded = await decodeBolt11Invoice(await invoice());
     assert.ok(decoded.valid && Object.isFrozen(decoded.invoice) && Object.isFrozen(decoded.invoice.requiredFeatures));
     assert.equal(decoded.valid && Object.getPrototypeOf(decoded.invoice), Object.prototype);
+  });
+});
+
+describe('PAY-06 BOLT11 — feature dependencies, transitive (FEAT-1 … FEAT-12)', () => {
+  const MISSING = { valid: false, refusal: 'bolt11-feature-dependency-missing' } as const;
+
+  /** A cryptographically valid invoice with exactly these feature bits — the signature verifies, so only the feature rule can refuse it. */
+  async function signed(features: readonly number[]) {
+    const text = await invoice({ features });
+    const control = await decodeBolt11Invoice(await invoice({ features: [8, 14] }));
+    assert.equal(control.valid, true, 'control: the same construction with dependencies set is accepted');
+    return decodeBolt11Invoice(text);
+  }
+
+  it('the pinned dependency edges: payment_secret → var_onion_optin, basic_mpp → payment_secret', () => {
+    assert.deepEqual([...BOLT11_FEATURE_DEPENDENCIES.entries()], [
+      [14, [8]],
+      [16, [14]],
+    ]);
+  });
+
+  it('FEAT-1 / FEAT-2 payment_secret (14 or 15) without var_onion_optin (8/9) → dependency missing', async () => {
+    assert.deepEqual(await signed([14]), MISSING);
+    assert.deepEqual(await signed([15]), MISSING);
+  });
+
+  it('FEAT-3 … FEAT-6 payment_secret with var_onion_optin, in every required / optional combination → accepted', async () => {
+    for (const features of [[8, 14], [9, 14], [8, 15], [9, 15]]) {
+      const decoded = await signed(features);
+      assert.equal(decoded.valid, true, `${show(features)} ${show(decoded)}`);
+      assert.deepEqual(decoded.valid && decoded.invoice.requiredFeatures, features.filter((bit) => bit % 2 === 0));
+    }
+  });
+
+  it('FEAT-7 / FEAT-8 basic_mpp + payment_secret but no var_onion_optin → refused for the TRANSITIVE dependency', async () => {
+    assert.deepEqual(await signed([16, 14]), MISSING);
+    assert.deepEqual(await signed([17, 15]), MISSING);
+    assert.deepEqual(await signed([17, 14]), MISSING);
+    assert.deepEqual(await signed([16, 15]), MISSING);
+  });
+
+  it('basic_mpp without payment_secret → refused, var_onion_optin or not (the direct edge)', async () => {
+    assert.deepEqual(await signed([8, 16]), MISSING);
+    assert.deepEqual(await signed([9, 17]), MISSING);
+    assert.deepEqual(await signed([17]), MISSING);
+  });
+
+  it('FEAT-9 basic_mpp + payment_secret + var_onion_optin, all required → accepted', async () => {
+    const decoded = await signed([8, 14, 16]);
+    assert.equal(decoded.valid, true, show(decoded));
+    assert.deepEqual(decoded.valid && decoded.invoice.requiredFeatures, [8, 14, 16]);
+  });
+
+  it('FEAT-10 the optional variants satisfying every dependency → accepted (LND writes 9, 14, 17)', async () => {
+    for (const features of [[9, 15, 17], [9, 14, 17], [8, 15, 17], [9, 15, 16]]) {
+      assert.equal((await signed(features)).valid, true, show(features));
+    }
+  });
+
+  it('FEAT-11 an unknown REQUIRED feature is still refused, dependencies set or not', async () => {
+    assert.deepEqual(await signed([8, 14, 100]), { valid: false, refusal: 'bolt11-feature-unsupported' });
+    assert.deepEqual(await signed([14, 100]), { valid: false, refusal: 'bolt11-feature-unsupported' }, 'unsupported is decided first');
+  });
+
+  it('FEAT-12 an unknown OPTIONAL feature stays ignored under the pinned policy — and never satisfies a dependency', async () => {
+    const decoded = await signed([8, 14, 101]);
+    assert.equal(decoded.valid, true);
+    assert.deepEqual(decoded.valid && decoded.invoice.requiredFeatures, [8, 14]);
+    assert.deepEqual(await signed([14, 101]), MISSING);
+  });
+
+  it('no `9` field at all: no feature is set, so no dependency applies (the `s` field is still required)', async () => {
+    assert.equal((await signed([])).valid, true);
   });
 });

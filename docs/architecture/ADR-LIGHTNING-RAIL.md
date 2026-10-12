@@ -40,16 +40,20 @@ criterion: the same CORE, unchanged, governs Lightning.
 3. **A strict in-repository BOLT11 decoder, pinned** to bolts `14901bd`, with
    the payee **recovered** (never assumed) via `@noble/curves` 2.4.0 — already
    shipped through `xrpl`, now an exact direct dependency — and every signature
-   verified a second time by Node's OpenSSL. Unknown required features, wrong
-   fixed lengths, non-minimal fields, duplicates, missing `s` and amountless
-   invoices are refused.
+   verified a second time by Node's OpenSSL. Unknown required features, unmet
+   feature dependencies (transitively: `basic_mpp → payment_secret →
+   var_onion_optin`; the second edge kept from the revisions defining those
+   now-ASSUMED features), wrong fixed lengths, non-minimal fields,
+   duplicates, missing `s` and amountless invoices are refused.
 4. **Exact BTC money:** one trusted BTC asset (scale ≤ 11); BTC decimal ⇄
    integer msat with text and `BigInt`; sub-msat values refused.
 5. **A narrow node port with one reference adapter: LND over REST.** Reads
    (`getinfo`, `payreq`, `track`) and one send (`SendPaymentV2` with
    `fee_limit_msat`, no self-payment, no AMP). Credentials (macaroon, pinned
    TLS certificate) stay in the adapter's closure; the authorities receive a
-   reader with no send method and a node-enforced read-only macaroon. No fake
+   reader with no send method and a node-enforced read-only macaroon.
+   Plaintext `http:` only to a literal loopback IP — never a hostname, since
+   the macaroon rides in the headers and a resolver could redirect it. No fake
    external signer: the node signs internally, and capability separation is
    the analogue of PAY-03's custody boundary.
 6. **At most one send per governed execution.** A durable, append-only,
@@ -57,6 +61,9 @@ criterion: the same CORE, unchanged, governs Lightning.
    hash is written — and witnessed at CORE-07 — strictly before the one
    `sendPayment`; an execution already reserved is never sent again; no retry.
    The node's internal route attempts are one logical payment, not a retry.
+   The reservation also binds the **payer node identity** read (once) before
+   the send — immutable, digested, chained and witnessed (interlock schema v2;
+   v1 refused, never migrated).
 7. **Routing fees are capped before the spend** by trusted configuration
    (`min(absolute, ppm)` in integer msat), handed to the node as its hard limit
    and re-checked on every answer. The governed amount is what the payee
@@ -64,13 +71,16 @@ criterion: the same CORE, unchanged, governs Lightning.
    semantics are unchanged (principal only).
 8. **Uncertainty is never failure.** Only a terminal node failure with nothing
    in flight is `confirmed-not-completed`; timeouts, disconnects after
-   connection, in-flight and unknown are `unconfirmed`; only a connection never
-   established is "not sent".
-9. **P12** reads the reserved payment hash from the node, read-only; absence is
-   never evidence.
+   connection, in-flight and unknown are `unconfirmed`; only a TCP connection
+   never established is "not sent" (a TLS handshake failure after it is
+   unknown).
+9. **P12** reads the reserved payment hash from the node, read-only, and only
+   from **the payer node the reservation bound** (identity and network); any
+   other node is unresolved whatever it says; absence is never evidence.
 10. **PAY-05 finality = the preimage**, verified by SHA-256 against the payment
-    hash, with exact amount, fee bound, payee and network; deterministic
-    evidence; no `finalizedAt` (a payer-node clock is not authoritative); the
+    hash, with exact amount, fee bound, payee and network, read only from the
+    reserved payer node (another node is `not-final`, never `contradicted`);
+    deterministic evidence (naming the payer node); no `finalizedAt` (a payer-node clock is not authoritative); the
     preimage is never recorded (a domain-separated commitment is).
 11. **Embedder-composed**, like PAY-04 / PAY-05: no Host configuration, route,
     module or package export. One new effect path, EP-071 (PROVEN — PATH LOCAL).
@@ -86,6 +96,9 @@ criterion: the same CORE, unchanged, governs Lightning.
   invoices, keysend, AMP, BOLT12 and LNURL are out of scope.
 - The payer node must be dedicated to Frontera (LND permits re-paying a hash
   whose payment failed).
+- The payer binding trusts the node's own identity report: it defeats a reader
+  composed against another honest node, not a compromised node that claims
+  another's key (node trust).
 
 ## Rejected alternatives
 
@@ -102,3 +115,11 @@ criterion: the same CORE, unchanged, governs Lightning.
   hash; the node's own duplicate refusal is defence in depth only.
 - **Frontera-level retry or invoice refresh:** never; refresh is the
   application's or protocol's business.
+- **Binding P12 / finality by network only:** a payment hash names an invoice,
+  not a payment — another node on the same network may have paid (or failed to
+  pay) the same invoice. Network identity alone let such a node complete or fail
+  this execution; the payer identity is bound instead.
+- **Inferring a payer for pre-v2 reservations** from whichever node is
+  configured: it would defeat the binding; v1 files are refused.
+- **Plain `http://localhost`:** a hostname resolved by the OS; a literal
+  loopback IP is deterministic.

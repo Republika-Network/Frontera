@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createFinancialActionClassifier, createMonetaryAssetRegistry } from '../../features/monetary-runtime/index.js';
-import { PAYMENT_PARAMETER_DIMENSIONS, PAYMENT_PROFILE_PARAMETERS, compilePaymentIntent, createPaymentGovernanceBinding, createPaymentRailExecutionAdapter, validatePaymentIntent, type PaymentIntent } from '../../features/payment-runtime/index.js';
+import { PAYMENT_PARAMETER_DIMENSIONS, PAYMENT_PROFILE_PARAMETERS, compilePaymentIntent, createPaymentGovernanceBinding, createPaymentRailExecutionAdapter, validatePaymentIntent, type PaymentFinalityQuery, type PaymentIntent } from '../../features/payment-runtime/index.js';
 import {
   btcDecimalOfMsat,
   createLightningInvoiceBook,
@@ -53,8 +53,8 @@ interface RegtestState {
   readonly network: 'regtest';
   readonly alice: { readonly endpoint: string; readonly identity: string };
   readonly bob: { readonly identity: string };
-  readonly carol: { readonly identity: string; readonly fee: { readonly baseMsat: number; readonly ppm: number } };
-  readonly files: { readonly certificate: string; readonly payerMacaroon: string; readonly readerMacaroon: string };
+  readonly carol: { readonly endpoint?: string; readonly identity: string; readonly fee: { readonly baseMsat: number; readonly ppm: number } };
+  readonly files: { readonly certificate: string; readonly payerMacaroon: string; readonly readerMacaroon: string; readonly carolCertificate?: string; readonly carolReaderMacaroon?: string };
 }
 
 const made: string[] = [];
@@ -97,6 +97,11 @@ interface RegtestWorld {
 
 function lndOptions(s: RegtestState, macaroon: 'payer' | 'reader') {
   return { endpoint: s.alice.endpoint, tlsCertificatePem: readFileSync(s.files.certificate, 'utf8'), macaroonHex: readFileSync(macaroon === 'payer' ? s.files.payerMacaroon : s.files.readerMacaroon, 'utf8').trim() };
+}
+
+/** A read-only adapter against carol — another real node on the same network, never a payer Frontera composes (R7). */
+function carolOptions(s: RegtestState) {
+  return { endpoint: s.carol.endpoint ?? '', tlsCertificatePem: readFileSync(s.files.carolCertificate ?? '', 'utf8'), macaroonHex: readFileSync(s.files.carolReaderMacaroon ?? '', 'utf8').trim() };
 }
 
 async function regtestWorld(fees: { readonly maximumFeeMsat?: string; readonly maximumFeePpm?: number }, timing: { readonly paymentTimeoutSeconds?: number } = {}): Promise<RegtestWorld> {
@@ -216,6 +221,8 @@ describe('PAY-06 regtest — real LND, real BOLT11, real HTLCs (opt-in)', { skip
     const f = facts(settled.settlement);
     assert.equal(f['lightning.payment-hash'], invoice.paymentHash);
     assert.equal(f['lightning.amount-msat'], '250000000');
+    assert.equal(f['lightning.payer-node'], state().alice.identity, 'the payer node bound before the send: alice');
+    assert.equal((await rw.interlock.read(result.executionId!))?.payerNodeId, state().alice.identity);
     const fee = BigInt(f['lightning.fee-msat'] ?? '-1');
     assert.equal(fee, BigInt(state().carol.fee.baseMsat) + (250_000_000n * BigInt(state().carol.fee.ppm)) / 1_000_000n, 'carol’s real routing fee');
     assert.ok(fee <= 300_000n, 'within the trusted cap');
@@ -330,6 +337,78 @@ describe('PAY-06 regtest — real LND, real BOLT11, real HTLCs (opt-in)', { skip
     assert.equal(rw.sends.count, 1, 'the second execution never reached the node');
     const lnd = createLndRestLightningNode(lndOptions(state(), 'payer'));
     await assert.rejects(lnd.sendPayment({ invoice: invoice.invoice, paymentHash: invoice.paymentHash, amountMsat: invoice.amountMsat, feeLimitMsat: 300_000n, timeoutSeconds: 10, deadlineMs: 15_000 }), LndRestNodeError, 'LND: invoice is already paid');
+    await rw.interlock.close();
+  });
+  it('R7 payer identity — alice pays a held HTLC; carol (a real second node, same network) fails HER OWN attempt at the same invoice: a reader against carol proves nothing — P12 unresolved, finality not-final; alice resolves and settles; one send', async () => {
+    const s = state();
+    assert.ok(s.carol.endpoint !== undefined && s.files.carolCertificate !== undefined, 'regtest state from a run of the current lightning-regtest.mjs (carol read-only access)');
+    const rw = await regtestWorld({ maximumFeeMsat: '300000', maximumFeePpm: 2000 }, { paymentTimeoutSeconds: 8 });
+    const preimage = randomBytes(32);
+    const invoice = await bobInvoice(rw, 70_000, { preimage });
+    const result = await govern(rw, invoice);
+    assert.equal(result.status, 'execution_unconfirmed', JSON.stringify(result));
+    const executionId = result.executionId!;
+    assert.equal(rw.sends.count, 1);
+    assert.equal(bob(['lookupinvoice', invoice.paymentHash])['state'], 'ACCEPTED', 'bob holds alice’s HTLC');
+    // PAYER-1, live: the reservation names alice — the node whose nodeInfo the rail verified, and the node that sent.
+    assert.equal((await rw.interlock.read(executionId))?.payerNodeId, s.alice.identity);
+
+    // carol, operated outside Frontera, tries to pay the SAME invoice herself; bob refuses her HTLC (the set is accepted).
+    try {
+      execFileSync('docker', ['exec', 'frontera-pay06-carol', 'lncli', '--network=regtest', 'payinvoice', '--force', '--timeout=20s', '--json', invoice.invoice], { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch {
+      // lncli exits non-zero for a failed payment; carol's own record is read below.
+    }
+    const carolReader = createLndRestLightningNodeReader(carolOptions(s));
+    assert.deepEqual(await carolReader.nodeInfo(10_000), { network: 'regtest', identity: s.carol.identity }, 'carol: same network, another identity');
+    const carolStatus = await carolReader.paymentStatus(invoice.paymentHash, 10_000);
+    assert.equal((carolStatus as { state?: string }).state, 'failed', `carol's own attempt is a real terminal failure for the same hash: ${JSON.stringify(carolStatus)}`);
+    const aliceStatus = await createLndRestLightningNodeReader(lndOptions(s, 'reader')).paymentStatus(invoice.paymentHash, 10_000);
+    assert.equal((aliceStatus as { state?: string }).state, 'in-flight', 'while alice’s payment is still in flight');
+
+    // P12 through carol: unresolved — her FAILED is about her own attempt (before PAY-06 hardening: confirmed-not-completed).
+    const resolutions = await createSqliteExecutionResolutionStore(rw.paths.resolutions, { now: () => NOW });
+    const viaCarol = createExecutionReconciliationService({
+      outcomes: rw.outcomes,
+      resolutions,
+      composition: snapshotResolutionAuthorities([createLightningResolutionAuthority({ configuration: rw.configuration, node: carolReader, interlock: rw.interlock })], () => LIGHTNING_RESOLUTION_AUTHORITY_ID, 'test'),
+      claimed: async () => true,
+      now: () => NOW,
+    });
+    await viaCarol.adoptResolutionAuthority({ organizationId: ORG, executionId, authorityId: LIGHTNING_RESOLUTION_AUTHORITY_ID });
+    assert.deepEqual(await viaCarol.reconcile({ organizationId: ORG, executionId }), { outcome: 'unresolved' }, 'carol cannot fail alice’s payment');
+    assert.equal((await resolutions.read({ organizationId: ORG }, executionId))?.resolution, undefined);
+
+    // bob settles alice's HTLC; carol's record stays FAILED.
+    bob(['settleinvoice', preimage.toString('hex')]);
+    const finalityQuery: PaymentFinalityQuery = {
+      organizationId: ORG,
+      executionId,
+      requestId: 'req',
+      decisionId: 'dec',
+      basis: 'resolution-confirmed-completed',
+      railId: rw.configuration.railId,
+      providerRef: invoice.paymentHash,
+      payment: { source: { accountId: ACCOUNT }, destination: lightningDestinationOf(s.bob.identity, invoice.paymentHash), amount: { value: btcDecimalOfMsat(invoice.amountMsat)!, unit: BTC }, purpose: 'vendor-payment' },
+    };
+    // Finality through carol: not-final — never contradicted by her failure (before PAY-06 hardening: contradicted, lightning.payment-failed).
+    assert.deepEqual(await createLightningFinalityAuthority({ configuration: rw.configuration, node: carolReader, interlock: rw.interlock }).verifyFinality(finalityQuery), { outcome: 'not-final' });
+    assert.deepEqual(await viaCarol.reconcile({ organizationId: ORG, executionId }), { outcome: 'unresolved' }, 'still nothing from carol after the settle');
+
+    // alice, the bound payer: P12 resolves completed, finality settles, the evidence names alice.
+    const reconciliation = p12(rw, resolutions);
+    let resolved: Awaited<ReturnType<typeof reconciliation.reconcile>> = { outcome: 'unresolved' };
+    for (let read = 0; read < 20 && resolved.outcome !== 'resolved'; read += 1) {
+      resolved = await reconciliation.reconcile({ organizationId: ORG, executionId });
+      if (resolved.outcome !== 'resolved') await new Promise((done) => setTimeout(done, 500));
+    }
+    assert.equal(resolved.outcome === 'resolved' && resolved.resolution.certainty, 'confirmed-completed', JSON.stringify(resolved));
+    const settled = await settlement(rw, resolutions).verifySettlement({ organizationId: ORG, executionId });
+    assert.equal(settled.outcome, 'settled', JSON.stringify(settled));
+    if (settled.outcome !== 'settled') return;
+    assert.equal(facts(settled.settlement)['lightning.payer-node'], s.alice.identity);
+    assert.equal(rw.sends.count, 1, 'ONE node send in total; carol’s attempt is not Frontera’s');
+    console.log(`PAY-06 regtest R7: alice ${s.alice.identity.slice(0, 12)}… in flight; carol ${s.carol.identity.slice(0, 12)}… ${JSON.stringify(carolStatus)} → P12 via carol unresolved, finality via carol not-final; alice → confirmed-completed → settled`);
     await rw.interlock.close();
   });
 });

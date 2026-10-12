@@ -52,16 +52,26 @@ import {
  *
  * One configured endpoint: `https:` with the node's certificate **pinned**
  * (it is the only trust anchor — LND's certificate is self-signed), or plain
- * `http:` to a loopback address only (LND `--no-rest-tls` on the same host).
- * No credentials, path, query or fragment in the endpoint; no redirects; no
- * retries; every call has a deadline; responses are size-bounded.
+ * `http:` to a **literal loopback IP address** only (LND `--no-rest-tls` on
+ * the same host): `127.0.0.0/8` or `[::1]`. No credentials, path, query or
+ * fragment in the endpoint; no redirects; no retries; every call has a
+ * deadline; responses are size-bounded.
+ *
+ * Plain `http:` never names a host: `http://localhost` is refused at
+ * configuration. `localhost` is a hostname — the hosts file, NSS or DNS decide
+ * where it goes — and a plaintext request carries the macaroon in its headers,
+ * so a poisoned resolver would receive the credential. A literal loopback
+ * address is decided by the URL alone, before any request exists, and never
+ * reaches a resolver. Over `https:` a hostname is fine: the macaroon is sent
+ * only inside a session whose certificate matched the pinned one.
  *
  * ## Not sent vs unknown
  *
- * `sendPayment` throws `LightningSendNotAttemptedError` only when the
+ * `sendPayment` throws `LightningSendNotAttemptedError` only when the TCP
  * connection was never established — so not one byte of the request left the
- * process. A timeout, a reset or an error after connecting is unknown: the
- * node may have accepted the payment.
+ * process. Once the node's port accepted the connection, a timeout, a reset or
+ * an error — the TLS handshake included — is unknown: the node may have
+ * accepted the payment.
  */
 
 export const LND_REST_FAILURE_REASONS = ['LND_UNREACHABLE', 'LND_TIMEOUT', 'LND_AUTHENTICATION_FAILED', 'LND_REFUSED', 'LND_UNAVAILABLE', 'LND_MALFORMED_RESPONSE'] as const;
@@ -88,7 +98,7 @@ export class LndRestConfigurationError extends Error {
 }
 
 export interface LndRestNodeOptions {
-  /** `https://host:port` (with `tlsCertificatePem`) or `http://127.0.0.1:port` (loopback, LND `--no-rest-tls`). */
+  /** `https://host:port` (with `tlsCertificatePem`) or `http://127.0.0.1:port` / `http://[::1]:port` (a literal loopback IP, LND `--no-rest-tls`; never a hostname). */
   readonly endpoint: string;
   /** LND's `tls.cert`, PEM — the pinned trust anchor. Required for `https:`. */
   readonly tlsCertificatePem?: string;
@@ -97,7 +107,17 @@ export interface LndRestNodeOptions {
 }
 
 const MAXIMUM_RESPONSE_BYTES = 1024 * 1024;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
+/** IPv4 `127.0.0.0/8` in the URL parser's canonical dotted-decimal form. */
+const LOOPBACK_IPV4 = /^127\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$/;
+
+/**
+ * A literal loopback IP — decided from the parsed URL alone, never resolved. The WHATWG parser has already
+ * canonicalized numeric spellings (`127.1`, `0x7f.0.0.1`, `[0:0::1]`) without a lookup; any hostname, `localhost`
+ * included, and any IPv4-mapped form (`[::ffff:127.0.0.1]`) is refused.
+ */
+function isLiteralLoopback(hostname: string): boolean {
+  return hostname === '[::1]' || (isIP(hostname) === 4 && LOOPBACK_IPV4.test(hostname));
+}
 
 const LND_NETWORKS: Readonly<Record<string, string>> = Object.freeze({ mainnet: 'mainnet', testnet: 'testnet', signet: 'signet', regtest: 'regtest' });
 
@@ -128,11 +148,11 @@ function endpointProblem(endpoint: unknown, certificate: unknown): string | unde
     return undefined;
   }
   if (url.protocol === 'http:') {
-    const host = url.hostname;
-    if (!LOOPBACK_HOSTS.has(host) && !(isIP(host) === 4 && host.startsWith('127.'))) return 'may use plain http only to a loopback address';
+    // The macaroon travels in plaintext headers: only to an address no resolver can redirect.
+    if (!isLiteralLoopback(url.hostname)) return 'may use plain http only to a literal loopback IP address (127.0.0.0/8 or [::1]) — never a hostname, localhost included';
     return undefined;
   }
-  return 'must use https (or http to loopback)';
+  return 'must use https (or http to a literal loopback IP address)';
 }
 
 interface Transport {
@@ -178,11 +198,14 @@ function createTransport(options: LndRestNodeOptions): Transport {
         (res) => onResponse(res, finish),
       );
       req.on('socket', (socket) => {
-        socket.once(secure ? 'secureConnect' : 'connect', () => {
+        // The TCP connection, for http AND https: once the node's port accepted it, nothing that follows — a TLS
+        // handshake failure included — proves the request never reached the node.
+        if (!socket.connecting) connected = true;
+        socket.once('connect', () => {
           connected = true;
         });
       });
-      // A deadline before the connection was established is still "never left the process"; after it, unknown.
+      // A deadline before the TCP connection was established is still "never left the process"; after it, unknown.
       timer = setTimeout(() => finish({ error: !connected && notAttempted !== undefined ? notAttempted() : new LndRestNodeError('LND_TIMEOUT') }), timeoutMs);
       // The underlying error can name addresses and system detail; it is never propagated.
       req.on('error', () => finish({ error: !connected && notAttempted !== undefined ? notAttempted() : new LndRestNodeError('LND_UNREACHABLE') }));

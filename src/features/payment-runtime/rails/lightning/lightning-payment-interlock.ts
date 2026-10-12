@@ -28,6 +28,15 @@ import type { LightningNetwork } from './lightning-bolt11.js';
  * execution and one logical payment. It holds no payment status — P11 holds
  * the initial observation, P12 the definitive resolution, and the node can
  * always be asked again by payment hash.
+ *
+ * ## Bound to the payer node
+ *
+ * A payment hash names an invoice, not a payment — every node can try to pay the
+ * same invoice, and each keeps its own record of its own attempt. So the
+ * reservation binds the **payer node identity** the rail verified just before
+ * the send, and only that node may later establish what happened (P12,
+ * PAY-05). A node with another identity — even on the same network — proves
+ * nothing about this execution: not success, not failure, not settlement.
  */
 
 /** Everything bound before the send. Public payment facts only — no preimage, no route, no credential. */
@@ -36,6 +45,11 @@ export interface LightningPaymentReservationInput {
   readonly paymentHash: string;
   readonly payee: string;
   readonly network: LightningNetwork;
+  /**
+   * The payer node's own identity key (33-byte compressed, lowercase hex), from the same `nodeInfo` reading
+   * that proved the network and ruled out a self-payment before the send. Public identity only — never a credential.
+   */
+  readonly payerNodeId: string;
   /** SHA-256 of the canonical (lowercase) invoice text: the invoice's identity, without storing route hints or descriptions. */
   readonly invoiceDigest: string;
   /** The exact governed amount the invoice states. */

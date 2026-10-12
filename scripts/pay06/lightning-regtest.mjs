@@ -18,6 +18,12 @@
  *   payer.macaroon   offchain:read offchain:write info:read   (the rail: read + the one send)
  *   reader.macaroon  offchain:read info:read                  (P12 / finality: LND itself refuses a send with it)
  *
+ * and, for the payer-identity qualification only, carol's REST endpoint, TLS
+ * certificate and a read-only macaroon baked on carol (another real node on the
+ * same network — never a payer Frontera composes):
+ *
+ *   carol-reader.macaroon  offchain:read info:read
+ *
  * bob's invoices (plain and hold) are created by the qualification test with
  * `docker exec … lncli` — the payee is outside Frontera, which never creates
  * or authorizes the invoice it pays. Regtest only: no mainnet, no real funds.
@@ -147,18 +153,29 @@ export async function up() {
   const reader = lncliRaw('alice', ['bakemacaroon', 'offchain:read', 'info:read']);
   if (!/^[0-9a-f]+$/.test(payer) || !/^[0-9a-f]+$/.test(reader)) throw new Error('regtest: a baked macaroon is not hex');
   const certificate = docker(['exec', `${PREFIX}-alice`, 'cat', '/root/.lnd/tls.cert']);
+  const carolReader = lncliRaw('carol', ['bakemacaroon', 'offchain:read', 'info:read']);
+  if (!/^[0-9a-f]+$/.test(carolReader)) throw new Error('regtest: a baked macaroon is not hex');
+  const carolCertificate = docker(['exec', `${PREFIX}-carol`, 'cat', '/root/.lnd/tls.cert']);
   const directory = stateDirectory();
   mkdirSync(directory, { recursive: true });
   const state = {
     network: 'regtest',
     alice: { endpoint: `https://127.0.0.1:${NODES.alice}`, identity: info.alice.identity_pubkey },
     bob: { identity: info.bob.identity_pubkey },
-    carol: { identity: info.carol.identity_pubkey, fee: CAROL_FEE },
-    files: { certificate: join(directory, 'alice-tls.cert'), payerMacaroon: join(directory, 'payer.macaroon'), readerMacaroon: join(directory, 'reader.macaroon') },
+    carol: { endpoint: `https://127.0.0.1:${NODES.carol}`, identity: info.carol.identity_pubkey, fee: CAROL_FEE },
+    files: {
+      certificate: join(directory, 'alice-tls.cert'),
+      payerMacaroon: join(directory, 'payer.macaroon'),
+      readerMacaroon: join(directory, 'reader.macaroon'),
+      carolCertificate: join(directory, 'carol-tls.cert'),
+      carolReaderMacaroon: join(directory, 'carol-reader.macaroon'),
+    },
   };
   writeFileSync(state.files.certificate, `${certificate}\n`);
   writeFileSync(state.files.payerMacaroon, payer, { mode: 0o600 });
   writeFileSync(state.files.readerMacaroon, reader, { mode: 0o600 });
+  writeFileSync(state.files.carolCertificate, `${carolCertificate}\n`);
+  writeFileSync(state.files.carolReaderMacaroon, carolReader, { mode: 0o600 });
   writeFileSync(join(directory, 'regtest.json'), JSON.stringify(state, null, 2));
   return state;
 }

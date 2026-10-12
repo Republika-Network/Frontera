@@ -2,6 +2,7 @@ import { EXECUTION_FAILURE_REASONS } from '../../features/execution-runtime/inde
 import {
   btcDecimalOfMsat,
   concludeLightningPayment,
+  isLightningNodePublicKey,
   isLightningRailConfiguration,
   readLightningNodeInfo,
   readLightningPaymentObservation,
@@ -36,15 +37,24 @@ const UNRESOLVED: ExecutionResolutionAuthorityResult = Object.freeze({ outcome: 
  *
  * Given an uncertain execution, it reads the one reservation the interlock
  * recorded for it — strictly before the send, so every payment that could
- * have been initiated has one — and asks the node for **that** logical
- * payment, by its payment hash:
+ * have been initiated has one — and asks **the payer node bound in that
+ * reservation** for **that** logical payment, by its payment hash:
  *
  * | node answer for the reserved payment hash | P12 answer |
  * | --- | --- |
- * | succeeded; preimage hashes to the payment hash; amount exactly the reserved amount; fee ≤ the reserved cap | `resolved / confirmed-completed`, ref = payment hash |
- * | failed — terminal, nothing in flight | `resolved / confirmed-not-completed PROVIDER_REJECTED`, ref = payment hash |
- * | in flight, not found, unreachable, another network, unreadable, succeeded but inconsistent | `unresolved` (no resolution recorded) |
+ * | the reserved payer: succeeded; preimage hashes to the payment hash; amount exactly the reserved amount; fee ≤ the reserved cap | `resolved / confirmed-completed`, ref = payment hash |
+ * | the reserved payer: failed — terminal, nothing in flight | `resolved / confirmed-not-completed PROVIDER_REJECTED`, ref = payment hash |
+ * | the reserved payer: in flight, not found, unreachable, unreadable, succeeded but inconsistent | `unresolved` (no resolution recorded) |
+ * | **another node** (another identity, even on the same network) — whatever it answers | `unresolved` |
+ * | another network | `unresolved` |
  * | no reservation for the execution, or one that disagrees with the P11 attempt (hash, asset, amount) | `unresolved` |
+ *
+ * **Another node proves nothing.** A payment hash names an invoice, and any
+ * node may have tried to pay it; its record is about its own attempt. So the
+ * node's identity must equal the reservation's `payerNodeId` — the identity
+ * verified before the send — before its payment status is even read. A reader
+ * composed against the wrong node, on the same network, can neither complete
+ * nor fail this execution.
  *
  * **Absence is never evidence.** A node that does not know the payment proves
  * nothing (it could have lost state; the request could still arrive); a
@@ -78,14 +88,15 @@ export function createLightningResolutionAuthority(options: LightningResolutionA
     } catch {
       return UNRESOLVED;
     }
-    if (record === undefined || record.executionId !== query.executionId || record.network !== configuration.network) return UNRESOLVED;
+    if (record === undefined || record.executionId !== query.executionId || record.network !== configuration.network || !isLightningNodePublicKey(record.payerNodeId)) return UNRESOLVED;
     // The P11 attempt and the reservation must describe the same payment.
     if (query.providerRef !== undefined && query.providerRef !== record.paymentHash) return UNRESOLVED;
     if (query.amount !== undefined && (query.amount.unit !== configuration.asset.paymentAsset || query.amount.value !== btcDecimalOfMsat(record.amountMsat))) return UNRESOLVED;
 
     try {
       const info = readLightningNodeInfo(await node.nodeInfo(timeout));
-      if (info === undefined || info.network !== configuration.network) return UNRESOLVED;
+      // The payer the reservation bound, on the reservation's network — or no answer at all.
+      if (info === undefined || info.network !== record.network || info.identity !== record.payerNodeId) return UNRESOLVED;
       const observation = readLightningPaymentObservation(await node.paymentStatus(record.paymentHash, timeout));
       const conclusion = concludeLightningPayment(observation, record);
       const reference = { providerRef: record.paymentHash };

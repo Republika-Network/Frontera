@@ -12,7 +12,7 @@
   `src/enterprise/lightning-payment-rail/` (embedder composition edge: LND node
   adapter, durable interlock, P12 and PAY-05 authorities)
 - Decision record: `docs/architecture/ADR-LIGHTNING-RAIL.md`
-- Master plan: PAY-06 · Invariants: SEC-INV-263 … SEC-INV-274 · Threat model: §7.32 ·
+- Master plan: PAY-06 · Invariants: SEC-INV-263 … SEC-INV-275 · Threat model: §7.32 ·
   Effect path: EP-071
 
 ## 1. Why Lightning is the proof
@@ -95,12 +95,27 @@ spec's own test vectors are pinned verbatim in
 | signature | compact secp256k1 over SHA-256(hrp ‖ padded data); without `n`, the payee is **recovered** with the stated recovery id (high-S accepted) |
 | expiry `x` | minimal encoding; default 3 600 s; checked with a margin by the rail |
 | `min_final_cltv_expiry_delta` `c` | minimal encoding; default 18; above `maximumFinalCltvExpiryDelta` (default 1 008) refused by the rail |
-| features `9` | minimal; an unknown **even** bit refused; odd bits ignored; `basic_mpp` needs `payment_secret`; supported required bits: 8, 14, 16, 48 |
+| features `9` | minimal; an unknown **even** bit refused; odd bits ignored; every feature dependency set, transitively — `basic_mpp` (16/17) → `payment_secret` (14/15) → `var_onion_optin` (8/9), a feature present when either bit of its pair is set; supported required bits: 8, 14, 16, 48 |
 | route hints `r` | whole 51-byte hops starting with a compressed key, ≤ 8 fields — counted, never interpreted |
 | fallback `f` | counted, ≤ 4; never used |
 | metadata `m` | allowed; never returned |
 | unknown tags | skipped (they stay covered by the signature), ≤ 8 |
 | duplicates | `p`, `s`, `d`, `h`, `n`, `x`, `c`, `9`, `m` at most once |
+
+**Feature dependencies.** BOLT 11 says a reader **MUST NOT attempt the
+payment** when the `9` field does not set every known, transitive feature
+dependency; the decoder checks each edge of `BOLT11_FEATURE_DEPENDENCIES`
+(hence the closure): `basic_mpp → payment_secret` and `payment_secret →
+var_onion_optin`. The first is in BOLT 9's table at the pinned commit. The
+second is **not listed there any more** — both bits are `ASSUMED` since
+bolts #1310, and BOLT 9 leaves an ASSUMED feature's semantics to the earlier
+revisions that defined it, where `payment_secret` depends on
+`var_onion_optin`. Frontera keeps that edge deliberately (a fail-closed
+policy, not a claim about the pinned table): an invoice offering
+`payment_secret` without `var_onion_optin` is malformed under the revisions
+defining the feature, and is refused with nothing sent. Real invoices set
+both (LND writes 9, 14, 17); every pinned spec vector still decodes as before.
+An invoice with no `9` field sets no feature, so no dependency applies.
 
 **Deliberate deviations, both conservative:** the spec vector "Same, but
 including fields which must be ignored." carries wrong-length `p`/`h`/`s`/`n`
@@ -163,9 +178,21 @@ an invoice source can withhold a payment, never redirect one. The node's
 own `DecodePayReq` must then equal Frontera's decoding on payee, payment hash
 and amount (a parser differential is a refusal: the node pays what it decodes).
 
-The interlock binds the execution to: payment hash, payee, network, invoice
-digest (SHA-256 of the canonical invoice text — its identity, without storing
-route hints or descriptions), exact amount, the fee cap and the expiry instant.
+The interlock binds the execution to: payment hash, payee, network, **payer
+node identity**, invoice digest (SHA-256 of the canonical invoice text — its
+identity, without storing route hints or descriptions), exact amount, the fee
+cap and the expiry instant.
+
+**The payer node.** A payment hash names an invoice, not a payment: any node
+can try to pay the same invoice, and each keeps its own record of its own
+attempt. So the reservation records `payerNodeId` — the compressed identity
+key from the **same** `nodeInfo` reading that proved the network and ruled out
+a self-payment (`checkNode` returns it; no second read) — and only that node
+can later establish P12 or finality facts for the execution (§14, §15). Public
+identity only; never a credential. An execution already reserved is never
+re-bound: recomposed against another node, the rail answers from the
+reservation (`unconfirmed`, `lightning-execution-previously-initiated`) and
+sends nothing.
 The description and description hash are merchant metadata and never
 authority; route hints are routing data the node reads from the invoice, never
 identity, authority or evidence.
@@ -225,11 +252,31 @@ with `offchain:read info:read` only, and LND refuses a send with it (regtest
 R0). The rail's macaroon is baked with `offchain:read offchain:write info:read`.
 
 **Transport.** One endpoint: `https:` with the node's certificate pinned as the
-only trust anchor, or `http:` to loopback only (LND `--no-rest-tls`); no
-credentials, path, query or fragment; `agent: false`; no redirects; bounded
-deadline and size; no retry. A connection **never established** (including a
-deadline before it was) is `LightningSendNotAttemptedError` — not one byte
-left the process; anything after it is unknown.
+only trust anchor, or `http:` to a **literal loopback IP address** only —
+`127.0.0.0/8` or `[::1]` (LND `--no-rest-tls`); no credentials, path, query or
+fragment; `agent: false`; no redirects; bounded deadline and size; no retry.
+Plain `http:` never names a host — `http://localhost` is refused at
+configuration: `localhost` is a hostname the hosts file, NSS or DNS resolve,
+and a plaintext request carries the macaroon in its headers, so a poisoned
+resolver would receive the credential. A literal address is decided from the
+URL alone, before any request exists (the WHATWG parser canonicalizes numeric
+spellings such as `127.1` without a lookup; IPv4-mapped `[::ffff:127.0.0.1]`
+is refused). Over `https:` a hostname is fine: the macaroon travels only inside
+a session whose certificate matched the pinned one.
+
+A TCP connection **never established** (including a deadline before it was)
+is `LightningSendNotAttemptedError` — not one byte left the process. Once the
+node's port accepted the connection, anything — a timeout, a reset, a TLS
+handshake that never completed — is unknown (`unconfirmed`, P12).
+
+**One node per port.** The rail reads the payer's identity once, before the
+reservation, and does not re-read it just before the send (another failure
+window that would still not prove where the send lands). That rests on the
+composition: one `LightningNodePort` is one node — the reference adapter is
+bound to one endpoint, one pinned certificate (each LND node's own) and a
+macaroon only that node's root key verifies, so a substituted node fails the
+TLS pin or rejects the macaroon. The P12 and finality authorities check the
+identity themselves on every read (§14, §15).
 
 **Not PAY-03's external signer.** XRPL needs a customer-controlled signer
 because the Host would otherwise hold the account key. A Lightning node signs
@@ -288,6 +335,7 @@ P12 the resolution, and the node can always be asked again by payment hash.
 | --- | --- |
 | the same execution again (replay, restart, another process) | `unconfirmed`, `lightning-execution-previously-initiated`, the recorded hash — never a second send |
 | the same execution with another invoice | `unconfirmed`, `lightning-execution-invoice-conflict`, the **recorded** hash; nothing rewritten |
+| the same execution, the rail recomposed against another payer node | `unconfirmed`, `lightning-execution-previously-initiated`; the reservation keeps its payer; zero sends (PAYER-8) |
 | another execution, the same payment hash | `not-completed`, `lightning-payment-hash-reserved`, before the node — even for the same amount |
 | four Hosts racing one execution / one hash on one file and one witness | exactly one reaches the node (IL-5, IL-6) |
 
@@ -325,12 +373,26 @@ pending history refused at open; no reservation — so no send — while the
 witness is unreachable. There is no unanchored durable mode. The slot name
 carries no Lightning word: CORE-07 does not learn Lightning exists.
 
+The payer node identity is part of every entry's canonical content, so of its
+entry digest, the chain and the witnessed state digest: a rewritten
+`payerNodeId` is refused locally (PAYER-9: digest mismatch; PAYER-10a: chain
+broken), and a perfectly re-hashed local forgery is refused by the witness
+(PAYER-10b) — exactly like any other reservation field.
+
+**Schema v2 (`aoc.lightning-payment-interlock.schema.v2`).** Adding
+`payerNodeId` changed the entry shape (entry digest domain `…entry.v2`). There
+is no migration from v1 — the pre-merge PAY-06 shape, which no release
+shipped: a v1 file is refused at open by the version guard (unmutated), and a
+payer-less entry is refused by the shape check. A payer is never inferred for
+an old reservation: reading whichever node is configured now would defeat the
+binding.
+
 | state | rollback makes … | money-moving? | decision |
 | --- | --- | --- | --- |
 | Lightning interlock | an initiated payment look new; a paid hash look free | **yes** | anchored at CORE-07; IL-9 – IL-11 |
 | settlement records / receipts | PAY-05 unchanged: availability only, re-derived identically from the node | no | not anchored (SET-LN-8 / 9) |
 
-**Backup.** Embedder-composed: `lightning-payment-interlock` is listed in
+**Backup.** Embedder-composed: `lightning-payment-interlock` (schema v2) is listed in
 `EXCLUDED_DURABLE_STATE` (`scripts/portability/store-registry.mjs`); the
 embedder backs the file up with the Governance Store, P11 and P12 it belongs to
 and keeps the witness outside that backup domain. A stale or lost copy is
@@ -365,10 +427,23 @@ unknown payment.
 — id `frontera.lightning-btc-node`, composed into P12 unchanged. It reads the
 execution's reservation (written before the send, so every possibly-initiated
 payment has one), requires the P11 attempt's handle and amount to match it,
-checks the node's network, and asks for **that** payment by hash:
-succeeded and consistent → `confirmed-completed`; terminally failed →
-`confirmed-not-completed PROVIDER_REJECTED`; in flight, not found, unreachable,
-inconsistent → unresolved (nothing recorded). Absence is never evidence. P12
+requires the node to be **the reservation's payer** — `nodeInfo` identity equal
+to `payerNodeId`, on the reservation's network — and only then asks for
+**that** payment by hash:
+
+| node | answer | P12 |
+| --- | --- | --- |
+| the payer | succeeded and consistent | `confirmed-completed` |
+| the payer | terminally failed | `confirmed-not-completed PROVIDER_REJECTED` |
+| the payer | in flight, not found, unreachable, inconsistent | unresolved |
+| **another node**, same network | succeeded, failed, anything | unresolved |
+| the payer's key on another network; a malformed identity | — | unresolved |
+
+Nothing is recorded when unresolved. Another node's record is about its own
+attempt to pay the same invoice — it proves nothing about this execution, so a
+reader composed against the wrong node can neither complete nor fail it (it
+would otherwise release P7 capacity for a payment still in flight, or record
+success for money this node never sent). Absence is never evidence. P12
 itself binds the resolution to the attempt digest, the current P11 observation
 and this authority (P12-LN-6). Read-only: a `LightningNodeReader`, no send.
 
@@ -380,15 +455,19 @@ implementing `PaymentFinalityAuthority` **unchanged**.
 
 `final` requires: this rail and asset; a mapped source; the governed
 destination's payee and payment hash equal the reservation's; the exact amount;
-the P11 / P12 handle equal to the payment hash; the node on the configured
-network reporting the payment **succeeded** with a preimage that decodes to
+the P11 / P12 handle equal to the payment hash; the node proving it is **the
+payer the reservation bound** (`nodeInfo` identity = `payerNodeId`, on the
+reservation's network) and reporting the payment **succeeded** with a preimage that decodes to
 exactly 32 bytes and whose SHA-256 is the payment hash; the delivered amount
 exact; the fee within the reserved cap. A malformed preimage → `not-final`; a
 well-formed one that does not hash → `contradicted` (`lightning.preimage-mismatch`);
 another amount → `lightning.amount-mismatch`; a fee above the cap →
 `lightning.fee-bound-exceeded`; a terminal failure → `lightning.payment-failed`;
 anything else (pending, unknown, another network, another hash) → `not-final`.
-Contradictions record nothing (PAY-05's rule).
+Contradictions record nothing (PAY-05's rule). **Another node** — another
+identity, even on the same network — is `not-final` whatever it reports
+(succeeded with a valid preimage, failed, malformed): an identity mismatch is
+the absence of relevant evidence, never a contradiction.
 
 **Evidence** (deterministic — same payment, any restart, any answer ordering or
 optional field → the same content and receipt digests):
@@ -396,7 +475,8 @@ optional field → the same content and receipt digests):
 ```
 providerRef = payment hash
 facts: lightning.amount-msat · lightning.fee-limit-msat · lightning.fee-msat · lightning.invoice-digest
-       lightning.network · lightning.payee-node · lightning.payment-hash · lightning.preimage-commitment
+       lightning.network · lightning.payee-node · lightning.payer-node · lightning.payment-hash
+       lightning.preimage-commitment
 ```
 
 No route, hop, channel, attempt, node timestamp or debug string. **No
@@ -438,8 +518,9 @@ hide finality facts from every tier.
 - **The node** is trusted to route, to enforce the fee cap it is handed and to
   report truthfully. Narrowed by: completion requiring the payee's preimage
   (unforgeable), exact comparison of amount and fee with the reservation, the
-  network check, its own decoding compared with Frontera's, a read-only
-  credential for authorities. A compromised node operator can mis-report a
+  network check, the payer-identity check (P12 and finality read only the node
+  the reservation bound), its own decoding compared with Frontera's, a
+  read-only credential for authorities. A compromised node operator can mis-report a
   failure as success only with a preimage it cannot obtain, but can lie about
   delivered amount and fee (reported facts) and can deny service.
 - **The invoice source** is trusted to supply text; it can withhold, never
@@ -469,13 +550,13 @@ queries through the same adapter file's reader.
 
 | suite | covers |
 | --- | --- |
-| `lightning-bolt11.test.ts` | every pinned spec vector; B11-1 … 12; recovery-id flip; high-S with and without `n` |
+| `lightning-bolt11.test.ts` | every pinned spec vector; B11-1 … 12; recovery-id flip; high-S with and without `n`; FEAT-1 … 12 (transitive feature dependencies, signed invoices) |
 | `lightning-amount.test.ts` | MONEY-1 … 8; hrp amounts; fee-cap arithmetic |
 | `lightning-rail.test.ts` | P11-LN-1 … 8; B11-3, 4, 6, 12 – 15; MONEY-9, 10; node checks; interlock and source failures; logs; readiness; in-process concurrency |
 | `lightning-rail-boundaries.test.ts` | imports, the one send site and its ordering, no retry vocabulary, no network / signing / credential in the rail, dependency pin |
-| `pay06-lightning-interlock.test.ts` | IL-1 … 12 with a real witness; cross-thread races (independent SQLite connections and witness clients); tamper; pending recovery; lost finalize |
-| `pay06-lightning-governed.test.ts` | exit proofs A – E on the unchanged spine; P12-LN-1 … 8; SET-LN-1 … 11; P7 release / hold; governed duplicate; over-ceiling |
-| `pay06-lnd-rest-node.test.ts` | the LND adapter against a fake LND: requests, mapping, not-sent vs unknown, deadlines, determinism; credential canaries through a full governed run |
+| `pay06-lightning-interlock.test.ts` | IL-1 … 12 with a real witness; cross-thread races (independent SQLite connections and witness clients); tamper; pending recovery; lost finalize; PAYER-1, 8, 9, 10; v1 / payer-less refusal |
+| `pay06-lightning-governed.test.ts` | exit proofs A – E on the unchanged spine; P12-LN-1 … 8; SET-LN-1 … 11; P7 release / hold; governed duplicate; over-ceiling; PAYER-2 … 7, 11, 12 |
+| `pay06-lnd-rest-node.test.ts` | the LND adapter against a fake LND: requests, mapping, not-sent vs unknown (TCP-connect boundary, http and https), deadlines, determinism; HTTP-1 … 10 (literal-loopback plaintext); credential canaries through a full governed run and every configuration refusal |
 | `pay06-lightning-structure.test.ts` | CORE purity; generic ports unchanged; read-only authorities; credential confinement; XRPL ↔ Lightning independence; MPP compatibility |
 | `pay06-lightning-regtest.test.ts` | opt-in, real LND (§20) |
 
@@ -484,21 +565,24 @@ queries through the same adapter file's reader.
 `node scripts/pay06/lightning-regtest.mjs up` starts Bitcoin Core 29.1 and three
 LND v0.20.5 nodes in Docker — alice (Frontera's payer) → carol (router, 5 000
 msat + 1 000 ppm) → bob (payee) — funds and opens channels, and bakes alice's
-two macaroons. Then `FRONTERA_LIGHTNING_REGTEST_PAY06=1` runs the governed
+two macaroons (plus carol's certificate and a read-only macaroon baked on
+carol, for the payer-identity case R7 only). Then `FRONTERA_LIGHTNING_REGTEST_PAY06=1` runs the governed
 flow through the real adapter, with bob's invoices (plain and hold) created by
 bob's own `lncli`. Product code never depends on Docker.
 
-Run of 2026-10-12 (regtest; 7 / 7 passed):
+Run of 2026-10-12, requalified after the pre-merge hardening on Bitcoin Core
+v29.1.0 and LND v0.20.5-beta (regtest; 8 / 8 passed):
 
 | case | result |
 | --- | --- |
 | R0 | LND's real invoices decode identically in Frontera and in LND's `DecodePayReq`; the read-only macaroon's send is refused by LND; bob unpaid |
-| R1 exit A | 250 000 sat routed through carol: P11 `confirmed-completed`, fee **255 000 msat** (carol's real fee, within the 300 000 msat cap), `awaiting-finality` → preimage-verified `settled`, receipt verified; one send |
+| R1 exit A | 250 000 sat routed through carol: P11 `confirmed-completed`, fee **255 000 msat** (carol's real fee, within the 300 000 msat cap), `awaiting-finality` → preimage-verified `settled`, receipt verified, reservation and evidence name alice as payer; one send |
 | R2 exit D | cap 25 000 msat below every route: never completed; bob unpaid; no HTLC above the cap; P11 `unconfirmed` while LND held a capped attempt, LND then `FAILED (timeout)`, P12 `confirmed-not-completed`; one send |
 | R3 exit B | a real held HTLC (bob's hold invoice): P11 `unconfirmed`; restart; P12 unresolved while held; bob settles; P12 `confirmed-completed`; `settled` on the resolution basis; one send |
 | R4 exit C | bob cancels the invoice: LND terminal failure → P11 `confirmed-not-completed`; `not-settleable`; one send |
 | R5 | held HTLC, bob cancels: `unconfirmed` → P12 `confirmed-not-completed` |
 | R6 | the same invoice under a second governed execution fails closed before LND; LND itself refuses a direct duplicate of the paid hash |
+| R7 payer identity | alice pays bob's hold invoice (held; the reservation names alice); carol — a real second node on the same network — tries the same invoice herself and LND records **her** payment `FAILED (incorrect payment details)` while alice's is still in flight: P12 through a carol reader is **unresolved** (nothing recorded) and finality through carol is **`not-final`**, never a contradiction; bob settles; P12 through alice → `confirmed-completed`, `settled`, evidence `lightning.payer-node` = alice; one send. Before the hardening, the carol reader's `FAILED` would have been recorded as `confirmed-not-completed` for a payment that then settled |
 
 **What the real node taught (fixed or encoded before this run):** LND's REST
 gateway requires the payment hash in the track path as URL-safe base64 **with
@@ -517,6 +601,16 @@ the regtest run uses real nodes for every semantic. No mainnet.
 
 - **Node trust** (§17): amount and fee are node-reported; a compromised node
   can deny service or mis-report those facts (never forge completion).
+- **Payer identity is the node's own report.** The P12 / finality binding
+  compares `getinfo`'s `identity_pubkey` with the reservation: it stops a
+  reader composed against another honest node (the reviewed failure), not a
+  compromised node that claims another node's key — which is node trust above,
+  narrowed for the reference adapter by the pinned certificate and a macaroon
+  only the payer node's root key verifies.
+- **The `payment_secret → var_onion_optin` edge** is enforced from the
+  revisions that define those ASSUMED features (§4), not from the pinned
+  table: an implementation that stops writing bit 8/9 beside 14/15 would see
+  its invoices refused — fail-closed, nothing sent.
 - **A shared payer node:** LND accepts a new payment for a hash whose earlier
   payment failed. If another client of the same node re-pays a hash after
   Frontera recorded a definitive failure, the payment can later succeed while

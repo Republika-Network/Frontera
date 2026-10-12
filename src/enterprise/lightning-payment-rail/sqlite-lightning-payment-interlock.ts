@@ -32,7 +32,8 @@ import { isCanonicalOutcomeInstant, isOpaqueExecutionIdentifier } from '../execu
  * One row per governed execution that ever reached the send step, written
  * strictly **before** that execution's one `sendPayment` — the binding
  * between the execution and exactly one logical payment (payment hash,
- * payee, network, invoice digest, amount, fee cap, expiry). Two `UNIQUE`
+ * payee, network, payer node identity, invoice digest, amount, fee cap,
+ * expiry). Two `UNIQUE`
  * columns make the uniqueness rules durable: one row per execution, one row
  * per payment hash, ever. Nothing is updated or deleted (triggers refuse it);
  * there is no status column — P11, P12 and the node hold payment state.
@@ -71,13 +72,22 @@ import { isCanonicalOutcomeInstant, isOpaqueExecutionIdentifier } from '../execu
  * One Host per state volume; across processes on one volume the witness's
  * compare-and-advance and `BEGIN IMMEDIATE` decide, and exactly one process
  * reserves a given execution or payment hash.
+ *
+ * ## Schema v2: the payer node is part of the reservation
+ *
+ * v2 binds `payerNodeId` into every entry's canonical content — so into its
+ * entry digest, the chain and the witnessed state digest. There is **no
+ * migration** from v1 (the pre-merge PAY-06 shape, without a payer): a v1 file
+ * is refused at open by the version guard, and a v1-shaped entry is refused by
+ * the shape check. A payer is never inferred for an old reservation — reading
+ * whichever node happens to be configured now would defeat the binding.
  */
-export const LIGHTNING_INTERLOCK_SCHEMA_VERSION = 'aoc.lightning-payment-interlock.schema.v1';
+export const LIGHTNING_INTERLOCK_SCHEMA_VERSION = 'aoc.lightning-payment-interlock.schema.v2';
 
 /** The CORE-07 slot of the reservation history — rail-neutral by name (CORE names no Lightning concept). */
 export const PAYMENT_INITIATION_STATE_KIND = 'payment-initiation-reservations';
 
-const ENTRY_DOMAIN = 'aoc.lightning-payment-interlock.entry.v1';
+const ENTRY_DOMAIN = 'aoc.lightning-payment-interlock.entry.v2';
 const CHAIN_DOMAIN = 'aoc.lightning-payment-interlock.chain.v1';
 const VERSIONS_TABLE = 'lightning_interlock_versions';
 const ANCHOR_TABLE = 'lightning_interlock_anchor';
@@ -181,6 +191,7 @@ interface EntryContent {
   readonly paymentHash: string;
   readonly payee: string;
   readonly network: LightningNetwork;
+  readonly payerNodeId: string;
   readonly invoiceDigest: string;
   readonly amountMsat: string;
   readonly feeLimitMsat: string;
@@ -220,6 +231,7 @@ function validateInput(record: LightningPaymentReservationInput): void {
   if (!isLightningPaymentHash(record.paymentHash)) throw invalid('paymentHash');
   if (!isLightningNodePublicKey(record.payee)) throw invalid('payee');
   if (!LIGHTNING_NETWORKS.includes(record.network)) throw invalid('network');
+  if (!isLightningNodePublicKey(record.payerNodeId)) throw invalid('payerNodeId');
   // A SHA-256 digest: the same 32-byte lowercase-hex shape as a payment hash.
   if (!isLightningPaymentHash(record.invoiceDigest)) throw invalid('invoiceDigest');
   if (typeof record.amountMsat !== 'bigint' || record.amountMsat <= 0n || !DECIMAL_MSAT.test(record.amountMsat.toString())) throw invalid('amountMsat');
@@ -245,6 +257,7 @@ function recordOf(content: EntryContent): LightningPaymentReservationRecord {
     paymentHash: content.paymentHash,
     payee: content.payee,
     network: content.network,
+    payerNodeId: content.payerNodeId,
     invoiceDigest: content.invoiceDigest,
     amountMsat: BigInt(content.amountMsat),
     feeLimitMsat: BigInt(content.feeLimitMsat),
@@ -329,7 +342,7 @@ export async function createSqliteLightningPaymentInterlock(dbPath: string, opti
     }
     if (content === null || typeof content !== 'object' || canonicalSerialize(content) !== row['entry_json']) throw corrupt('an entry is not canonical');
     const keys = Object.keys(content).sort().join(',');
-    if (keys !== 'amountMsat,executionId,expiresAt,feeLimitMsat,invoiceDigest,network,payee,paymentHash,reservedAt,sequence') throw corrupt('an entry has another shape');
+    if (keys !== 'amountMsat,executionId,expiresAt,feeLimitMsat,invoiceDigest,network,payee,payerNodeId,paymentHash,reservedAt,sequence') throw corrupt('an entry has another shape');
     if (content.sequence !== expectedSequence || row['sequence'] !== expectedSequence) throw corrupt('the sequence is not contiguous');
     if (row['execution_id'] !== content.executionId || row['payment_hash'] !== content.paymentHash) throw corrupt('the key columns disagree with an entry');
     if (typeof content.amountMsat !== 'string' || !DECIMAL_MSAT.test(content.amountMsat) || typeof content.feeLimitMsat !== 'string' || !DECIMAL_MSAT.test(content.feeLimitMsat)) throw corrupt('an amount is malformed');
@@ -420,6 +433,7 @@ export async function createSqliteLightningPaymentInterlock(dbPath: string, opti
           paymentHash: record.paymentHash,
           payee: record.payee,
           network: record.network,
+          payerNodeId: record.payerNodeId,
           invoiceDigest: record.invoiceDigest,
           amountMsat: record.amountMsat.toString(),
           feeLimitMsat: record.feeLimitMsat.toString(),

@@ -6,7 +6,7 @@ import { concludeLightningPayment } from './lightning-classification.js';
 import { LightningRailConfigurationError, isLightningRailConfiguration, lightningFeeLimitMsat, type LightningRailConfiguration } from './lightning-config.js';
 import { parseLightningDestination, type LightningDestination } from './lightning-destination.js';
 import type { LightningInvoiceSource } from './lightning-invoice-source.js';
-import { LightningSendNotAttemptedError, readLightningNodeInfo, readLightningNodeInvoiceView, readLightningPaymentObservation, type LightningNodePort } from './lightning-node-port.js';
+import { LightningSendNotAttemptedError, readLightningNodeInfo, readLightningNodeInvoiceView, readLightningPaymentObservation, type LightningNodeInfo, type LightningNodePort } from './lightning-node-port.js';
 import type { LightningPaymentInterlock, LightningPaymentReservationInput } from './lightning-payment-interlock.js';
 import { invoiceDigest } from './lightning-preimage.js';
 import { LIGHTNING_FAILURE_DETAILS, LIGHTNING_RAIL_DETAILS, type LightningRailDetail } from './lightning-rail-details.js';
@@ -75,9 +75,22 @@ interface Prepared {
  * interlock  an execution already reserved is NEVER sent again                                                        → unconfirmed (its payment hash)
  * invoice    trusted source → strict BOLT11 decode + signature → network, payee, payment hash, amount, expiry, CLTV  refusal → not-completed
  * node       network and identity (no self-payment); the node's OWN decoding must equal Frontera's                      refusal → not-completed
- * reserve    durable, atomic: one record per execution and per payment hash                                           refusal → not-completed
+ * reserve    durable, atomic: one record per execution and per payment hash, bound to the payer node identity just read  refusal → not-completed
  * send       node.sendPayment ONCE, with the trusted fee cap and timeout                                              see below
  * ```
+ *
+ * ## The payer node
+ *
+ * The identity the `node` step verified is the one reading of it the rail
+ * makes, and it is written into the reservation before the send: P12 and
+ * PAY-05 later trust only that node's account of the payment. The rail adds
+ * no second `nodeInfo` just before the send — it would be another failure
+ * window and still not prove which node the send reaches. That rests on the
+ * composition: one `LightningNodePort` is one node by construction (the
+ * reference LND adapter is bound to one endpoint, one pinned TLS certificate
+ * and a macaroon only that node accepts). An execution already reserved is
+ * never re-bound to another payer: it is answered from the reservation and
+ * never sent again, whichever node the rail is composed with now.
  *
  * ## Outcome (P11)
  *
@@ -160,8 +173,11 @@ export function createLightningRail(options: LightningRailOptions): LightningRai
     if (bolt11ExpiresAt(invoice) - configuration.minimumExpiryMarginSeconds <= seconds) throw new Refusal(F.PROVIDER_REJECTED, D.INVOICE_EXPIRED);
   }
 
-  /** The node is the configured network's, is not the payee, and reads the invoice exactly as Frontera does. Reads only. */
-  async function checkNode(invoice: Bolt11Invoice): Promise<void> {
+  /**
+   * The node is the configured network's, is not the payee, and reads the invoice exactly as Frontera does. Reads only.
+   * Returns the identity it verified: that one reading — not a second one — becomes the reservation's payer.
+   */
+  async function checkNode(invoice: Bolt11Invoice): Promise<LightningNodeInfo> {
     let info: ReturnType<typeof readLightningNodeInfo>;
     try {
       info = readLightningNodeInfo(await node.nodeInfo(timeout));
@@ -179,6 +195,7 @@ export function createLightningRail(options: LightningRailOptions): LightningRai
     }
     // A parser differential is a refusal: the node pays what IT decodes.
     if (view === undefined || view.payee !== invoice.payee || view.paymentHash !== invoice.paymentHash || view.amountMsat !== invoice.amountMsat) throw new Refusal(F.ADAPTER_ERROR, D.NODE_INVOICE_DISAGREEMENT);
+    return info;
   }
 
   function unconfirmed(request: PaymentExecutionRequest, paymentHash: string, detail: LightningRailDetail): PaymentRailResult {
@@ -252,12 +269,14 @@ export function createLightningRail(options: LightningRailOptions): LightningRai
       }
       if (earlier !== undefined) return previously(request, earlier, prepared);
       invoice = await verifiedInvoice(request, prepared);
-      await checkNode(invoice);
+      const payer = await checkNode(invoice);
       record = Object.freeze({
         executionId: request.executionId,
         paymentHash: invoice.paymentHash,
         payee: invoice.payee,
         network: invoice.network,
+        // Bound for good: only this node may later establish what happened (P12, PAY-05).
+        payerNodeId: payer.identity,
         invoiceDigest: invoiceDigest(invoice.canonical),
         amountMsat: prepared.amountMsat,
         feeLimitMsat: lightningFeeLimitMsat(configuration, prepared.amountMsat),

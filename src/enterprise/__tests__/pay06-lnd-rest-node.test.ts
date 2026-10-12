@@ -2,7 +2,8 @@ import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import type { AddressInfo } from 'node:net';
+import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
+import { inspect } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -338,5 +339,151 @@ describe('PAY-06 LND REST adapter — credential boundary', () => {
     }
     assert.equal(JSON.stringify(settled).includes('123x1x0'), false, 'no route detail in settlement evidence');
     await lnd.close();
+  });
+});
+
+describe('PAY-06 LND REST adapter — plaintext only to a literal loopback IP; never a hostname (HTTP-1 … HTTP-10)', () => {
+  /** Syntactically a pinned certificate: configuration checks it is one; no test here completes a TLS handshake with it. */
+  const PINNED = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n';
+
+  /** Every way a credential could surface from a configuration refusal: message, stack, JSON, inspection, own properties. */
+  function refusedWithoutSecret(endpoint: string, build: (options: { endpoint: string; macaroonHex: string }) => unknown): LndRestConfigurationError {
+    let caught: unknown;
+    try {
+      build({ endpoint, macaroonHex: MACAROON });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof LndRestConfigurationError, `${endpoint} must be refused at configuration`);
+    noSecret(caught, `the refusal of ${endpoint}`);
+    const surfaces = [inspect(caught, { showHidden: true, depth: 5 }), ...Object.getOwnPropertyNames(caught).map((name) => String((caught as unknown as Record<string, unknown>)[name]))];
+    for (const surface of surfaces) assert.equal(surface.includes(MACAROON.slice(18, 42)), false, `${endpoint}: a configuration error surface holds the macaroon`);
+    assert.equal(String((caught as Error).message).includes(endpoint), false, 'the refusal names the rule, never the value');
+    return caught as LndRestConfigurationError;
+  }
+
+  it('HTTP-1 … HTTP-3 literal loopback IPs are accepted: 127.0.0.1, the whole 127/8 (127.255.255.254), [::1] — and canonical numeric spellings of them', () => {
+    for (const endpoint of ['http://127.0.0.1:8080', 'http://127.255.255.254:8080', 'http://127.12.34.56:8080', 'http://[::1]:8080', 'http://127.0.0.1', 'http://[::1]', 'http://127.1:8080', 'http://[0:0:0:0:0:0:0:1]:8080']) {
+      for (const build of [createLndRestLightningNode, createLndRestLightningNodeReader]) assert.doesNotThrow(() => build({ endpoint, macaroonHex: MACAROON }), endpoint);
+    }
+  });
+
+  it('HTTP-4 … HTTP-8 hostnames and non-loopback addresses are refused at configuration: localhost, LOCALHOST, a DNS name, private ranges, IPv4-mapped loopback', () => {
+    for (const endpoint of [
+      'http://localhost:8080',
+      'http://LOCALHOST:8080',
+      'http://localhost.:8080',
+      'http://localhost',
+      'http://example.test:8080',
+      'http://127.0.0.1.nip.io:8080',
+      'http://192.168.1.1:8080',
+      'http://10.0.0.1:8080',
+      'http://0.0.0.0:8080',
+      'http://128.0.0.1:8080',
+      'http://[::ffff:127.0.0.1]:8080',
+      'http://[::]:8080',
+      'http://[fe80::1]:8080',
+    ]) {
+      for (const build of [createLndRestLightningNode, createLndRestLightningNodeReader]) {
+        const error = refusedWithoutSecret(endpoint, build);
+        assert.match(error.message, /literal loopback IP address/);
+      }
+    }
+  });
+
+  it('HTTP-9 https keeps its own rule: https://localhost with a pinned certificate is accepted as configuration (the macaroon only ever travels inside a pinned TLS session)', () => {
+    assert.doesNotThrow(() => createLndRestLightningNode({ endpoint: 'https://localhost:8080', tlsCertificatePem: PINNED, macaroonHex: MACAROON }));
+    assert.doesNotThrow(() => createLndRestLightningNodeReader({ endpoint: 'https://lnd.example:8080', tlsCertificatePem: PINNED, macaroonHex: READ_MACAROON }));
+    assert.throws(() => createLndRestLightningNode({ endpoint: 'https://localhost:8080', macaroonHex: MACAROON }), /pinned/, 'never https without the pin');
+  });
+
+  it('HTTP-10 a refused plaintext hostname creates no request: a listener on loopback receives nothing, no macaroon-bearing header is ever sent, nothing is logged', async () => {
+    const accepted: Socket[] = [];
+    const listener = createTcpServer((socket) => {
+      accepted.push(socket);
+      socket.destroy();
+    });
+    await new Promise<void>((resolveListen) => listener.listen(0, '127.0.0.1', resolveListen));
+    // Never holds the test process open, even when an assertion below fails first.
+    listener.unref();
+    const port = (listener.address() as AddressInfo).port;
+    const lnd = await fakeLnd({ 'GET /v1/getinfo': (_request, _body, response) => json(response, {}) });
+    const lndPort = new URL(lnd.endpoint).port;
+    const logged: string[] = [];
+    const original = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+    for (const level of ['log', 'warn', 'error', 'info'] as const) console[level] = (...entry: unknown[]) => void logged.push(entry.map(String).join(' '));
+    try {
+      for (const host of ['localhost', 'LOCALHOST']) {
+        for (const target of [port, lndPort]) {
+          for (const build of [createLndRestLightningNode, createLndRestLightningNodeReader]) refusedWithoutSecret(`http://${host}:${target}`, build);
+        }
+      }
+      await new Promise((resolveTick) => setTimeout(resolveTick, 100));
+    } finally {
+      Object.assign(console, original);
+    }
+    assert.equal(accepted.length, 0, 'no connection was ever opened');
+    assert.equal(lnd.requests.length, 0, 'no HTTP request — so no grpc-metadata-macaroon header — ever reached a server');
+    assert.equal(logged.join('\n').includes(MACAROON.slice(18, 42)), false, 'nothing logged the macaroon');
+    assert.deepEqual(logged, [], 'configuration refusals log nothing');
+    await new Promise<void>((resolveClose) => listener.close(() => resolveClose()));
+    await lnd.close();
+  });
+});
+
+describe('PAY-06 LND REST adapter — "never left the process" means the TCP connection was never established (re-audit)', () => {
+  const PINNED = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n';
+
+  async function tcpOnly(onConnection: (socket: Socket) => void): Promise<{ readonly port: number; readonly connections: () => number; close(): Promise<void> }> {
+    let connections = 0;
+    const sockets: Socket[] = [];
+    const server = createTcpServer((socket) => {
+      connections += 1;
+      sockets.push(socket);
+      onConnection(socket);
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    server.unref();
+    return {
+      port: (server.address() as AddressInfo).port,
+      connections: () => connections,
+      close: () =>
+        new Promise((resolveClose) => {
+          for (const socket of sockets) socket.destroy();
+          server.close(() => resolveClose());
+        }),
+    };
+  }
+
+  it('https: the node’s port accepted the TCP connection but the TLS handshake never completed → unknown (LND_TIMEOUT), never "not attempted"', async () => {
+    const server = await tcpOnly(() => undefined);
+    const node = createLndRestLightningNode({ endpoint: `https://127.0.0.1:${server.port}`, tlsCertificatePem: PINNED, macaroonHex: MACAROON });
+    await assert.rejects(node.sendPayment(instruction({ deadlineMs: 400 })), (error: unknown) => error instanceof LndRestNodeError && error.reason === 'LND_TIMEOUT' && !(error instanceof LightningSendNotAttemptedError));
+    assert.equal(server.connections(), 1);
+    await server.close();
+  });
+
+  it('https and http: a reset after the TCP connection → unknown (LND_UNREACHABLE), never "not attempted"', async () => {
+    const server = await tcpOnly((socket) => socket.destroy());
+    for (const node of [
+      createLndRestLightningNode({ endpoint: `https://127.0.0.1:${server.port}`, tlsCertificatePem: PINNED, macaroonHex: MACAROON }),
+      createLndRestLightningNode({ endpoint: `http://127.0.0.1:${server.port}`, macaroonHex: MACAROON }),
+    ]) {
+      await assert.rejects(node.sendPayment(instruction()), (error: unknown) => error instanceof LndRestNodeError && !(error instanceof LightningSendNotAttemptedError));
+    }
+    assert.equal(server.connections(), 2);
+    await server.close();
+  });
+
+  it('https and http: nothing listening (the connection refused) → not attempted', async () => {
+    const server = await tcpOnly(() => undefined);
+    const port = server.port;
+    await server.close();
+    for (const node of [
+      createLndRestLightningNode({ endpoint: `https://127.0.0.1:${port}`, tlsCertificatePem: PINNED, macaroonHex: MACAROON }),
+      createLndRestLightningNode({ endpoint: `http://127.0.0.1:${port}`, macaroonHex: MACAROON }),
+    ]) {
+      await assert.rejects(node.sendPayment(instruction()), LightningSendNotAttemptedError);
+    }
   });
 });
