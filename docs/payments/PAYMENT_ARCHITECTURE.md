@@ -45,6 +45,7 @@ PaymentRail      (host-composed)    ── behind createPaymentRailExecutionAdap
    ↓
 rail-specific implementation        ── PAY-02: XRPL / RLUSD (rails/xrpl, §9)
    ⋮ production Host composition       ── PAY-03: xrplPaymentRail (§10)
+                                    ── PAY-06: Lightning / BTC (rails/lightning, §13)
 ```
 
 ## 2. The payment intent
@@ -392,3 +393,31 @@ refund = a NEW governed payment (purpose refund) within a CORE-07-anchored refun
   validated-ledger inclusion with every governed field read from the ledger.
 - Nothing above PAY-05 changed: PAY-01's contract, the bridge, the rail
   contract, P11, P12, P7 and the governed path are as in §2 – §11.
+
+## 13. PAY-06 — the Lightning rail (the rail-neutrality proof)
+
+The second, structurally different rail implements the contract above
+**without changing it** — nor P12's resolution port nor PAY-05's finality port.
+Full detail: `docs/payments/PAY-06-LIGHTNING-RAIL.md`; decision record:
+`docs/architecture/ADR-LIGHTNING-RAIL.md`.
+
+```
+PaymentIntent { destination: { kind: 'lightning-invoice', reference: '<payee>:<payment hash>' }, amount: { value, unit: <BTC asset> }, rail: 'lightning-btc', … }
+   ⋮ compile → governed path → grant → claim                         (PAY-01 + core, unchanged)
+createPaymentRailExecutionAdapter({ rail: createLightningRail({ configuration, node, invoices, interlock }), binding })
+   ↓ PaymentExecutionRequest
+Lightning rail  (src/features/payment-runtime/rails/lightning)
+   exact msat → trusted invoice → strict BOLT11 (payee recovered) == governed payee / hash / amount / network
+   → node network, identity, own decoding → durable CORE-07-anchored reservation → sendPayment ONCE (fee cap on it)
+   ↓ PaymentRailResult: completed | not-completed | unconfirmed (+ payment hash)
+P11 → P12 (Lightning resolution authority, read-only) → PAY-05 (preimage finality) → receipt
+```
+
+- **What PAY-01 provides unchanged:** payee + payment hash ride the governed
+  counterparty; BTC is a P9 asset id; `rail: 'lightning-btc'` is the
+  exact-bound rail preference; the three-way outcome maps through
+  `executionResultOfPaymentRail`.
+- **What PAY-06 adds below the boundary:** BOLT11 decoding and binding, exact
+  msat money, the LND node adapter (credentials confined to it), the routing-fee
+  cap, the one-send interlock, the conservative uncertainty mapping, and the
+  read-only P12 and finality authorities. Embedder-composed only.

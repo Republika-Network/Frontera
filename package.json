@@ -119,6 +119,7 @@
     "@aoc-enterprise/governed-authorization": "*",
     "@aoc-enterprise/identity": "*",
     "@aoc-enterprise/scoped-access": "*",
+    "@noble/curves": "2.4.0",
     "better-sqlite3": "^12.11.1",
     "xrpl": "5.3.0"
   },

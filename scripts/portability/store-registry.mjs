@@ -418,6 +418,12 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
       'PAY-05: the refund accounting (createSqlitePaymentRefundLedger, schema aoc.payment-refund-ledger.schema.v1) is composed by an embedder beside the refund service; the Enterprise Host composes neither, so backup:v1 does not cover it. An embedder that composes it backs its file up itself and must keep the CORE-07 witness outside that backup domain: its history is always anchored at the witness (slot payment-refund-state), so a stale or lost copy — which would recreate refundable balance — is refused at open, and recovery is restoring the newest file or trusted recovery at the witness (docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md §11, §12, §17).',
   },
   {
+    name: 'lightning-payment-interlock',
+    envVar: null,
+    reason:
+      'PAY-06: the Lightning payment interlock (createSqliteLightningPaymentInterlock, schema aoc.lightning-payment-interlock.schema.v1) is composed by an embedder beside the Lightning rail; the Enterprise Host composes no Lightning rail and no Host configuration names the store, so backup:v1 does not cover it. An embedder that composes it backs its file up itself, with the Governance Store and P11 / P12 stores it belongs to, and must keep the CORE-07 witness outside that backup domain: its reservation history is always anchored at the witness (slot payment-initiation-reservations), so a stale or lost copy — which could make a payment already initiated look new — is refused at open with nothing sent, and recovery is restoring the newest file or trusted recovery at the witness (docs/payments/PAY-06-LIGHTNING-RAIL.md §12).',
+  },
+  {
     name: 'governed-actions-file',
     envVar: 'AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE',
     reason: 'Configuration, secret-free by design, kept in configuration management. The manifest records its SHA-256 so a restore can be matched to it.',

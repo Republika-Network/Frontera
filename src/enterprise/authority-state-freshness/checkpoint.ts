@@ -56,13 +56,17 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
  *   unowned, and so payable again under a new business operation;
  * - `payment-refund-state` (PAY-05): the append-only refund accounting of
  *   settled payments, whose rollback could recreate refundable balance, and so
- *   let the same money be refunded twice.
+ *   let the same money be refunded twice;
+ * - `payment-initiation-reservations` (PAY-06): the append-only history that
+ *   binds each governed execution to the one rail-level payment it may
+ *   initiate (and each rail payment identity to one execution), whose rollback
+ *   could make a payment already initiated look new, and so initiable twice.
  *
  * The witness treats each exactly like any other slot. This module knows
  * nothing else about them: each store lives in its own payment composition
  * edge, outside CORE, and maps itself onto a checkpoint.
  */
-export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state'] as const;
+export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations'] as const;
 
 export type AuthorityStateKind = (typeof AUTHORITY_STATE_KINDS)[number];
 
