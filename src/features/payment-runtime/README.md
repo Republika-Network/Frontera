@@ -17,7 +17,7 @@ Architecture: `docs/payments/PAYMENT_ARCHITECTURE.md`. Rail contract:
 | `domain/payment-execution.ts` | `PaymentExecutionRequest` and `preparePaymentExecution` — the prepared payment, derived from a `ValidatedExecutionAction` alone. |
 | `domain/payment-rail.ts` | The `PaymentRail` contract, `PaymentRailResult`, and its mapping onto `ExecutionAdapterResult`. |
 | `services/payment-rail-execution-adapter.ts` | `createPaymentRailExecutionAdapter` — a rail composed as an ordinary `ExecutionAdapter`. The only place a rail is invoked. |
-| `rails/xrpl/` | PAY-02: the XRPL / RLUSD rail (`createXrplRlusdRail`) and its SDK client. A rail **below** the contract — the contract never imports it. `docs/payments/XRPL_RLUSD_RAIL.md`. |
+| `rails/xrpl/` | PAY-02: the XRPL / RLUSD rail (`createXrplRlusdRail`) and its SDK client; PAY-03: the submission-interlock port and restart quarantine. A rail **below** the contract — the contract never imports it. `docs/payments/XRPL_RLUSD_RAIL.md`; production composition (Host, external signer, durable interlock, P12 resolver) in `src/enterprise/xrpl-payment-rail/`, `docs/payments/XRPL_PRODUCTION_COMPOSITION.md`. |
 
 What the contract (`domain/`, `services/`) will never do: implement a rail,
 hold a key, sign, submit, poll, convert an asset, read a clock, perform I/O,

@@ -514,10 +514,15 @@ async function main() {
 
   // ---- D14 rail neutrality -------------------------------------------------------------------
   try {
-    const configured = [...Object.keys(env), ...compose(['config']).stdout.split('\n').filter((line) => /^\s+[A-Z_]+:/.test(line))].join('\n');
+    // A `*_SQLITE_PATH` entry is a store location (the kit lists every store the
+    // Host can compose, PAY-03's XRPL interlock included); it composes nothing.
+    // Rail composition lives only in governed-actions.json, checked below.
+    const configured = [...Object.keys(env), ...compose(['config']).stdout.split('\n').filter((line) => /^\s+[A-Z_]+:/.test(line) && !/^\s+AOC_ENTERPRISE_[A-Z_]+_SQLITE_PATH:/.test(line))].join('\n');
     const hits = configured.match(/xrpl|rlusd|lightning|wallet|PAY_/gi) ?? [];
     check(hits.length === 0, `rail configuration present: ${hits.join(', ')}`);
-    record('D14', 'the deployment carries no XRPL, RLUSD, Lightning, wallet or PAY configuration', true);
+    const governedFile = JSON.parse(readFileSync(join(pilotDir, 'governed-actions.json'), 'utf8'));
+    check(governedFile.xrplPaymentRail === undefined, 'governed-actions.json configures xrplPaymentRail');
+    record('D14', 'the deployment composes no XRPL, RLUSD, Lightning, wallet or PAY rail (store locations aside)', true);
   } catch (error) {
     record('D14', 'rail neutrality', false, error.message);
   }

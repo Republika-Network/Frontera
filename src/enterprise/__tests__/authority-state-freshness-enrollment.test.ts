@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 
 import { createGrantIssuanceService, type GrantCorrelation, type GrantSourceAuthorization } from '../../features/grant-runtime/index.js';
 import { createSqliteApprovalStore } from '../approval-authority/sqlite-approval-store.js';
-import { AuthorityStateFreshnessError, type AuthorityStateEnrollmentContext, type AuthorityStateKind } from '../authority-state-freshness/index.js';
+import { AuthorityStateFreshnessError, type AuthorityStateEnrollmentContext, type AuthorityStoreKind } from '../authority-state-freshness/index.js';
 import { createSqliteBoundedGrantStore } from '../bounded-grant-store/index.js';
 import { enrollExistingAuthorityStores } from '../composition/composition-root.js';
 import { loadEnterpriseConfiguration, validateEnterpriseEnvironment } from '../configuration/enterprise-configuration.js';
@@ -33,7 +33,7 @@ import { WITNESS_TOKEN, closeAllWitnesses, freshnessEnv, startWitness, witnessRo
 const ORG = 'org-core07-enrollment';
 const NOW = '2026-01-01T12:00:00.000Z';
 const OPERATOR: AuthorityStateEnrollmentContext = { operator: true, operatorId: 'ops-primary', attestation: 'verified-local-state-is-current' };
-const ALL: readonly AuthorityStateKind[] = ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state'];
+const ALL: readonly AuthorityStoreKind[] = ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state'];
 const CORRUPT_DIGEST = `sha256:${'f'.repeat(64)}`;
 
 const directories: string[] = [];
@@ -45,14 +45,14 @@ after(async () => {
 interface Deployment {
   readonly env: Record<string, string>;
   readonly witness: StartedWitness;
-  readonly paths: Readonly<Record<AuthorityStateKind, string>>;
+  readonly paths: Readonly<Record<AuthorityStoreKind, string>>;
 }
 
 /** An existing deployment the witness has never seen: a grant store beyond genesis, a discharge store and an approval store, all authentic. */
 async function existingDeployment(): Promise<Deployment> {
   const dir = mkdtempSync(join(tmpdir(), 'frontera-core07-enroll-'));
   directories.push(dir);
-  const paths: Record<AuthorityStateKind, string> = {
+  const paths: Record<AuthorityStoreKind, string> = {
     'bounded-grant-revocation-state': join(dir, 'bounded-grants.sqlite'),
     'obligation-discharge-state': join(dir, 'obligation-discharges.sqlite'),
     'approval-state': join(dir, 'approvals.sqlite'),
@@ -95,7 +95,7 @@ async function existingDeployment(): Promise<Deployment> {
 }
 
 /** A database-level writer breaks the store's signed head: the digest no longer matches its signature. */
-function corrupt(deployment: Deployment, kind: AuthorityStateKind): void {
+function corrupt(deployment: Deployment, kind: AuthorityStoreKind): void {
   const db = new Database(deployment.paths[kind]);
   try {
     dropAuthorityStoreTriggers(db);
@@ -112,7 +112,7 @@ async function nothingEnrolled(witness: StartedWitness): Promise<void> {
   assert.equal(witness.operationCounts()['enroll'], 0, 'no enrollment was ever sent to the witness');
 }
 
-function refusedNaming(kind: AuthorityStateKind) {
+function refusedNaming(kind: AuthorityStoreKind) {
   return (error: unknown): true => {
     assert.ok(error instanceof AuthorityStateFreshnessError, `expected an AuthorityStateFreshnessError, got ${String(error)}`);
     assert.equal(error.code, 'AUTHORITY_FRESHNESS_CONFIGURATION_INVALID');
@@ -134,6 +134,15 @@ describe('CORE-07 — the enrollment ceremony refuses a named store whose local 
       ],
     );
     assert.equal((await witnessRows(deployment.witness.databasePath)).length, 3);
+  });
+
+  it('PAY-03: the ceremony baselines authority stores only — the anchored XRPL reservation history is never enrolled by it, and nothing else is enrolled behind the refusal', async () => {
+    const deployment = await existingDeployment();
+    await assert.rejects(
+      () => enrollExistingAuthorityStores(loadEnterpriseConfiguration(deployment.env), OPERATOR, [...ALL, 'xrpl-submission-reservations' as never]),
+      (error: AuthorityStateFreshnessError) => error.code === 'AUTHORITY_FRESHNESS_CONFIGURATION_INVALID' && /not an authority store/.test(error.message),
+    );
+    await nothingEnrolled(deployment.witness);
   });
 
   for (const invalid of ALL) {

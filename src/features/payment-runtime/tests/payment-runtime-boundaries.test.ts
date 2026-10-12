@@ -74,12 +74,18 @@ describe('Payment runtime boundaries (PAY-01)', () => {
     }
   });
 
-  it('nothing in Frontera core imports the payment runtime', () => {
+  it('nothing in Frontera core imports the payment runtime — except the PAY-03 composition edge', () => {
+    // PAY-03: the shipped Host composes the XRPL rail from configuration. That
+    // composition lives in one directory at the enterprise edge; the Kernel, the
+    // runtimes, the stores and every other enterprise module stay payment-free.
+    const COMPOSITION_EDGE = join('src/enterprise', 'xrpl-payment-rail');
     const roots = ['src/kernel', 'src/runtime', 'src/enterprise', 'src/kernel-host', 'src/control-plane-web'];
     const features = readdirSync('src/features').filter((name) => name !== 'payment-runtime').map((name) => join('src/features', name));
-    for (const file of [...roots, ...features].flatMap((root) => walk(root, false))) {
+    const files = [...roots, ...features].flatMap((root) => walk(root, false));
+    for (const file of files.filter((path) => !path.startsWith(COMPOSITION_EDGE))) {
       assert.equal(/payment-runtime/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the payment vertical`);
     }
+    assert.ok(files.some((path) => path.startsWith(COMPOSITION_EDGE) && /payment-runtime/.test(readFileSync(path, 'utf8'))), 'the composition edge is where the Host composes the rail');
   });
 
   it('names no rail, network, asset-issuance, custody or environment — the contract is rail-neutral', () => {

@@ -17,6 +17,7 @@
     "start:kernel-host": "node scripts/run-enterprise-host.mjs",
     "start:control-plane": "node scripts/run-control-plane-web.mjs",
     "start:reference-authority-signer": "node scripts/run-reference-authority-signer.mjs",
+    "start:reference-xrpl-signer": "node scripts/run-reference-xrpl-signer.mjs",
     "demo:commercial": "npm run demo --workspace=@aoc-enterprise/commercial-demo",
     "clean": "node scripts/clean.mjs",
     "validate:invalid-imports": "node scripts/assert-invalid-imports.mjs",
@@ -118,7 +119,8 @@
     "@aoc-enterprise/governed-authorization": "*",
     "@aoc-enterprise/identity": "*",
     "@aoc-enterprise/scoped-access": "*",
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^12.11.1",
+    "xrpl": "5.3.0"
   },
   "bundleDependencies": [
     "@aoc-enterprise/governed-authority",
@@ -133,7 +135,6 @@
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "xrpl": "5.3.0"
+    "react-dom": "^18.3.1"
   }
 }

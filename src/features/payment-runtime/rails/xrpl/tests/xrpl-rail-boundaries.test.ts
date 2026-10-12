@@ -53,6 +53,16 @@ const RAIL_PRODUCTION = walk(RAIL_DIR, (file) => file.endsWith('.ts'), false);
 /** The one SDK user outside the rail: the opt-in Testnet smoke test, which sets up its ledger fixtures (accounts, trust lines) with the SDK. A test, never composed. */
 const SMOKE = 'src/enterprise/__tests__/pay02-xrpl-testnet-smoke.test.ts';
 const isRailTestOrSmoke = (file: string): boolean => file.startsWith(`${RAIL_DIR}/tests/`) || file === SMOKE;
+/**
+ * PAY-03: the reference external XRPL signer — a separate custody process
+ * (`scripts/run-reference-xrpl-signer.mjs`), never composed into the Host —
+ * holds its own Testnet key. It is the one production source outside the rail
+ * that imports the SDK, and the one that holds a key; nothing in the Host
+ * imports it (`pay03-xrpl-production-structure.test.ts`).
+ */
+const REFERENCE_SIGNER = 'src/enterprise/xrpl-payment-rail/reference/reference-xrpl-signer-service.ts';
+/** PAY-03 qualification tests that start the reference signer or build fixtures with the SDK. Tests, never composed. */
+const isPay03Test = (file: string): boolean => /^src\/enterprise\/__tests__\/pay03-[a-z0-9-]+\.(?:test\.)?ts$/.test(file);
 const REPOSITORY_CODE = ['src', 'packages', 'apps', 'scripts', 'tests'].flatMap((root) => walk(root, isCode, true));
 
 /** A value or type import of the XRPL SDK or one of its codec / key libraries. */
@@ -65,11 +75,11 @@ describe('PAY-02 — XRPL SDK import boundary (X21, §44)', () => {
     for (const miss of ['the xrpl SDK', "'xrpl-rlusd'", "from './xrpl-config.js'", `assert.equal(RAIL.test("import { Client } from 'xrpl'"), true);`]) assert.equal(XRPL_SDK_IMPORT.test(miss), false, miss);
   });
 
-  it('only three rail files and the rail’s own tests import the SDK, repository-wide', () => {
+  it('only three rail files, the reference signer and tests import the SDK, repository-wide', () => {
     const importers = REPOSITORY_CODE.filter((file) => XRPL_SDK_IMPORT.test(readFileSync(file, 'utf8')));
-    const production = importers.filter((file) => !isRailTestOrSmoke(file));
-    assert.deepEqual(production.sort(), [`${RAIL_DIR}/xrpl-address.ts`, `${RAIL_DIR}/xrpl-codec.ts`, `${RAIL_DIR}/xrpl-sdk-client.ts`].sort());
-    for (const file of importers) assert.ok(file.startsWith(`${RAIL_DIR}/`) || file === SMOKE, `${file} imports the XRPL SDK outside the rail`);
+    const production = importers.filter((file) => !isRailTestOrSmoke(file) && !isPay03Test(file));
+    assert.deepEqual(production.sort(), [`${RAIL_DIR}/xrpl-address.ts`, `${RAIL_DIR}/xrpl-codec.ts`, `${RAIL_DIR}/xrpl-sdk-client.ts`, REFERENCE_SIGNER].sort());
+    for (const file of importers) assert.ok(file.startsWith(`${RAIL_DIR}/`) || file === SMOKE || file === REFERENCE_SIGNER || isPay03Test(file), `${file} imports the XRPL SDK outside the rail`);
   });
 
   it('PAY-01’s contract (domain, services, barrel) neither imports the rail nor names it', () => {
@@ -116,7 +126,8 @@ describe('PAY-02 — the one XRPL submission site (§43, X15)', () => {
     const submit = rail.slice(rail.indexOf('async function submitOnceAndAwait('), rail.indexOf('async function execute('));
     ordered(submit, ['client.submit(signed.signedTransaction)', 'readSubmission(answer', 'awaitFinality(request']);
     const execute = rail.slice(rail.indexOf('async function execute('));
-    ordered(execute, ['buildXrplPayment(request', 'serialized(account', 'prepareAndSign(request', 'submitOnceAndAwait(request', 'unresolved.set(account']);
+    // PAY-03: the durable reservation strictly between verification and the one submission.
+    ordered(execute, ['buildXrplPayment(request', 'serialized(account', 'prepareAndSign(request', 'await reserve(request, signed)', 'submitOnceAndAwait(request', 'unresolved.set(account']);
   });
 
   it('no retry, resubmission or replay vocabulary exists in the rail’s production code', () => {
@@ -145,7 +156,7 @@ describe('PAY-02 — signing and custody boundary (§17, §18, §45)', () => {
   it('no production source anywhere derives, holds or uses an XRPL key: Wallet, seeds, keypairs and mnemonics live only in the rail’s tests', () => {
     const custody = /\bWallet\b|fromSeed|fromSecret|fromMnemonic|fromEntropy|deriveKeypair|generateSeed|ripple-keypairs|secret-numbers/;
     const sites = REPOSITORY_CODE.filter((file) => XRPL_SDK_IMPORT.test(readFileSync(file, 'utf8')) && custody.test(codeOf(file)));
-    for (const file of sites) assert.ok(isRailTestOrSmoke(file), `${file} holds XRPL key material outside the test fixtures`);
+    for (const file of sites) assert.ok(isRailTestOrSmoke(file) || isPay03Test(file) || file === REFERENCE_SIGNER, `${file} holds XRPL key material outside the test fixtures and the reference signer process`);
     for (const file of RAIL_PRODUCTION) assert.equal(custody.test(codeOf(file)), false, file);
   });
 
@@ -161,7 +172,7 @@ describe('PAY-02 — signing and custody boundary (§17, §18, §45)', () => {
     assert.equal([...rail.matchAll(/\bawait\s+sign\s*\(/g)].length, 1);
     // The port declares `sign(transaction)`; nothing but the rail calls it.
     for (const file of RAIL_PRODUCTION.filter((path) => !path.endsWith('xrpl-rlusd-rail.ts') && !path.endsWith('xrpl-client-port.ts'))) assert.equal(/\bsign\s*\(/.test(codeOf(file)), false, file);
-    assert.equal(/signer\??\.(?!address\b|sign\b)[a-zA-Z]/.test(rail), false, 'the rail reads a signer’s address and sign function only');
+    assert.equal(/signer\??\.(?!address\b|sign\b|signingPublicKey\b)[a-zA-Z]/.test(rail), false, 'the rail reads a signer’s address, pinned signing key and sign function only');
   });
 });
 
@@ -177,9 +188,10 @@ describe('PAY-02 — network safety and published surface (X22, §60, NB-010)', 
     for (const root of ['src/index.ts', 'src/runtime/index.ts', 'src/enterprise/index.ts', 'src/kernel/index.ts', 'src/kernel-host/index.ts']) {
       if (existsSync(root)) assert.equal(/payment-runtime|rails\/xrpl/.test(readFileSync(root, 'utf8')), false, root);
     }
-    assert.equal(Object.keys(pkg.dependencies ?? {}).includes('xrpl'), false, 'the XRPL SDK is not a runtime dependency of the published artifact');
+    // PAY-03: the shipped Host composes the rail from configuration, so the SDK is a runtime dependency — once, exactly pinned.
+    assert.match(pkg.dependencies?.['xrpl'] ?? '', /^\d+\.\d+\.\d+$/, 'a runtime dependency, pinned to an exact version');
+    assert.equal(Object.keys(pkg.devDependencies ?? {}).includes('xrpl'), false, 'not duplicated in devDependencies');
     assert.equal(Object.keys(pkg.peerDependencies ?? {}).includes('xrpl'), false);
     assert.equal((pkg.bundleDependencies ?? []).includes('xrpl'), false);
-    assert.match(pkg.devDependencies?.['xrpl'] ?? '', /^\d+\.\d+\.\d+$/, 'pinned to an exact version');
   });
 });

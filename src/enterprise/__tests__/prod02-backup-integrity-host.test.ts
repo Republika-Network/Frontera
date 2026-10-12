@@ -515,7 +515,8 @@ describe('PROD-02 restore refuses a damaged or incomplete backup before touching
     const restored = (await runRestore({ backup, target, env: deployment.envFor(target), allowIncomplete: true }));
     assert.equal(restored.coverage.complete, false);
     // PROD-03-02: a Host with operators composes P12, so its store is backed up and restored like every other; only approvals was missing.
-    assert.deepEqual(restored.notRestored, ['approvals'], 'approvals was missing');
+    // PAY-03: the XRPL submission interlock is a registry store this deployment does not compose (no payment rail configured).
+    assert.deepEqual(restored.notRestored, ['xrpl-submission-interlock', 'approvals'], 'approvals was missing; the XRPL interlock is not part of this deployment');
     assert.equal(existsSync(join(target, 'approvals.sqlite')), false, 'restore never creates an empty authority store');
     // The Host would create a fresh approval store — and the surviving witness refuses that empty genesis.
     const adapter = recordingAdapter();

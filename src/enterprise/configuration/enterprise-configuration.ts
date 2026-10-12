@@ -282,6 +282,17 @@ export interface EnterpriseConfiguration {
     readonly sqlitePath: string;
   };
   /**
+   * PAY-03 — the durable XRPL submission interlock: which XRPL transactions
+   * were signed, and possibly submitted, and are not yet settled. Opened only
+   * when the governed-action file configures `xrplPaymentRail`, and then only
+   * under `sqlite` persistence (the Host refuses the rail otherwise). Its own
+   * file. Optional in the type so hand-built configurations stay valid; the
+   * loader always sets it.
+   */
+  readonly xrplInterlock?: {
+    readonly sqlitePath: string;
+  };
+  /**
    * CTRL-02 — the control-plane store: operator-issued agent credentials
    * (verifiers only, never secrets) and the Governance Profile lifecycle.
    * Opened only when CTRL-02 operators are configured; the SQLite file under
@@ -879,6 +890,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     executionResolution: {
       sqlitePath: env.AOC_ENTERPRISE_EXECUTION_RESOLUTION_SQLITE_PATH ?? '.data/execution-resolutions.sqlite',
+    },
+    xrplInterlock: {
+      sqlitePath: env.AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH ?? '.data/xrpl-submission-interlock.sqlite',
     },
     controlPlane: {
       sqlitePath: env.AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH ?? '.data/control-plane.sqlite',

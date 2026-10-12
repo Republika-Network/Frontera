@@ -276,12 +276,21 @@ describe('P12 boundaries — §12 / §42 / §81 / §101 / §160 / §161 scope', 
     // selector, and nothing else. No route reaches `reconcile` or `adoptResolutionAuthority` (the operator plane's one
     // resolution route reaches `recordOperatorResolution` only: prod0302-operator-resolution-structure.test.ts).
     const HOST = join('src', 'enterprise', 'host', 'enterprise-host.ts');
-    const SANCTIONED = /executionReconciliation: \{ enabled: true, authorities: \[createOperatorAttestationAuthority\(\)\], selectAuthority: selectOperatorAttestation \}/;
-    const SANCTIONED_IMPORT = "import { createOperatorAttestationAuthority, selectOperatorAttestation } from '../execution-reconciliation/operator-attestation.js';";
+    // PAY-03: and, when the file configures the XRPL rail, the read-only XRPL resolution authority beside it —
+    // composed by one function that builds an authority list and a synchronous selector, and nothing else.
+    const SANCTIONED = /function executionReconciliationOf\([\s\S]*?return \{ executionReconciliation: \{ enabled: true, authorities, selectAuthority \} \};\n\}/;
+    const SANCTIONED_CALL = '...executionReconciliationOf(host, xrpl),';
+    const SANCTIONED_IMPORTS = [
+      "import type { ExecutionResolutionAuthority } from '../execution-reconciliation/authority.js';",
+      "import { OPERATOR_ATTESTATION_AUTHORITY_ID, createOperatorAttestationAuthority } from '../execution-reconciliation/operator-attestation.js';",
+    ];
     assert.match(code(HOST), SANCTIONED);
-    assert.ok(code(HOST).includes(SANCTIONED_IMPORT));
+    const sanctioned = (SANCTIONED.exec(code(HOST))?.[0] ?? '').replace(/'executionReconciliation'/g, '');
+    assert.equal(/setInterval|setTimeout|\.reconcile\(|\.execute\(|adapter/i.test(sanctioned), false, 'the composition adds an authority and a selector, never an execution path');
+    assert.ok(code(HOST).includes(SANCTIONED_CALL));
+    for (const line of SANCTIONED_IMPORTS) assert.ok(code(HOST).includes(line), line);
     for (const file of [...walk('src/enterprise/api'), ...walk('src/enterprise/host'), ...walk('packages').filter((file) => !file.includes('node_modules'))]) {
-      const measured = file === HOST ? code(file).replace(SANCTIONED, '').replace(SANCTIONED_IMPORT, '') : code(file);
+      const measured = file === HOST ? SANCTIONED_IMPORTS.reduce((text, line) => text.replace(line, ''), code(file).replace(SANCTIONED, '').replace(SANCTIONED_CALL, '')) : code(file);
       assert.equal(/reconcil|executionResolution|resolutionAuthorit/i.test(measured), false, file);
     }
   });

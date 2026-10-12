@@ -27,6 +27,12 @@ export const XRPL_RAIL_DETAILS = Object.freeze({
   /** An earlier payment from the same account is still unconfirmed and could still take this sequence. */
   SEQUENCE_IN_FLIGHT: 'xrpl-sequence-in-flight',
   RAIL_ERROR_BEFORE_SUBMISSION: 'xrpl-rail-error-before-submission',
+  /** PAY-03: the durable submission interlock could not be read or written. Nothing was submitted. */
+  INTERLOCK_UNAVAILABLE: 'xrpl-interlock-unavailable',
+  /** PAY-03: this process has not yet seen the validated ledger pass the restart quarantine. Nothing was signed. */
+  RESTART_QUARANTINE: 'xrpl-restart-quarantine',
+  /** PAY-03: the signer's blob was not signed by the pinned signing key for this account. Nothing was submitted. */
+  SIGNING_KEY_MISMATCH: 'xrpl-signing-key-mismatch',
   // — after submission, provably not included: definitive —
   TRANSACTION_EXPIRED: 'xrpl-transaction-expired',
   // — after submission, outcome unknown: unconfirmed, P12 —
@@ -36,6 +42,8 @@ export const XRPL_RAIL_DETAILS = Object.freeze({
   DELIVERED_AMOUNT_MISMATCH: 'xrpl-delivered-amount-mismatch',
   RESULT_UNRECOGNIZED: 'xrpl-result-unrecognized',
   RAIL_ERROR_AFTER_SUBMISSION: 'xrpl-rail-error-after-submission',
+  /** PAY-03: the durable interlock already holds a transaction for this execution; it is never signed or submitted again. */
+  EXECUTION_PREVIOUSLY_SUBMITTED: 'xrpl-execution-previously-submitted',
 } as const);
 
 export type XrplRailDetail = (typeof XRPL_RAIL_DETAILS)[keyof typeof XRPL_RAIL_DETAILS];

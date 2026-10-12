@@ -102,6 +102,15 @@ export function readLedgerIndex(raw: unknown): number | undefined {
   return typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
 }
 
+/** PAY-03: a **validated** ledger's index and consensus close time (seconds since the Ripple epoch), or `undefined` when it is not validated or either fact is absent or malformed. */
+export function readLedgerHeader(raw: unknown): { readonly index: number; readonly closeTime: number } | undefined {
+  const header = recordOf(raw);
+  const index = readLedgerIndex(header?.['ledger_index']);
+  const closeTime = header?.['close_time'];
+  if (header?.['validated'] !== true || index === undefined || typeof closeTime !== 'number' || !Number.isSafeInteger(closeTime) || closeTime < 0) return undefined;
+  return { index, closeTime };
+}
+
 /** The `network_id` a raw `server_info` result reports, or `undefined` when absent or malformed. */
 export function readNetworkId(raw: unknown): number | undefined {
   const networkId = recordOf(recordOf(raw)?.['info'])?.['network_id'];

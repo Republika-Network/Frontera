@@ -47,6 +47,21 @@ export interface XrplClientPort {
    * rail passes what is left of its finality budget, so no read outlives it.
    */
   validatedLedgerIndex(timeoutMs?: number): Promise<unknown>;
+  /**
+   * PAY-03: the header facts of the ledger with sequence `index`, raw —
+   * `{ ledger_index, close_time, validated }`, `close_time` in seconds since
+   * the Ripple epoch (2000-01-01T00:00:00Z), as the network agreed it. Read
+   * only by the restart quarantine, and required only when the rail is
+   * composed with a durable interlock. A read; never anything else.
+   */
+  ledgerHeader?(index: number, timeoutMs?: number): Promise<unknown>;
+  /**
+   * PAY-03, trusted composition seam for deterministic qualification: the
+   * wall-clock time (ms since the Unix epoch) the restart quarantine compares
+   * ledger close times against — so a simulated ledger and its clock agree.
+   * The SDK client has none: the process clock is used.
+   */
+  now?(): number;
   /** Fills `Sequence` and `Fee` from the ledger. Must not change any field the rail set. */
   autofill(transaction: XrplPaymentTransaction): Promise<unknown>;
   /**
@@ -86,13 +101,21 @@ export class XrplSubmissionNotAttemptedError extends Error {
  * never sees key material; it verifies that what came back is a signature of
  * exactly the transaction it prepared (`xrpl-codec.ts`) before submitting.
  *
- * PAY-02 ships **no** production signer. A host composes one backed by its
- * own custody (an HSM, an external signing service). The software signer used
- * for testnet qualification lives under `tests/` and is never a production
- * source.
+ * PAY-02 ships **no** production signer. PAY-03's production composition is
+ * the external XRPL transaction signer (`src/enterprise/xrpl-payment-rail/`):
+ * the key stays in a separate, customer-controlled custody process and the
+ * Host only *requests* a signature. The software signer used for testnet
+ * qualification lives under `tests/` and is never a production source.
  */
 export interface XrplTransactionSigner {
   /** The classic address this signer signs for. Must equal the source account mapping it is composed for. */
   readonly address: string;
+  /**
+   * PAY-03: the signing public key (33 bytes, uppercase hex) trusted
+   * configuration pinned for this account. When declared, the rail refuses —
+   * before submitting — any blob whose `SigningPubKey` is not exactly this key
+   * or whose signature does not verify under it. The Host always declares it.
+   */
+  readonly signingPublicKey?: string;
   sign(transaction: XrplPreparedPayment): Promise<{ readonly signedTransaction: string; readonly hash: string }>;
 }

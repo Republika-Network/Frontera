@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "trustDomainId": "trust-domain-pilot",
+  "grantLifetimeSeconds": 300,
+  "customerPrincipals": [],
+  "operators": [
+    { "operatorId": "ops-admin", "role": "organization-administrator", "apiKeyEnv": "FRONTERA_OPERATOR_ADMIN_KEY" },
+    { "operatorId": "ops-observer", "role": "observer", "apiKeyEnv": "FRONTERA_OPERATOR_OBSERVER_KEY" }
+  ],
+  "monetary": {
+    "assets": [{ "assetId": "stable:RLUSD/<required: testnet issuer reference>", "scale": 15 }],
+    "financialActions": ["payment.execute"]
+  },
+  "governance": {
+    "parameterDimensions": [
+      { "id": "paymentPurpose", "type": "token", "bound": "exact" },
+      { "id": "paymentReference", "type": "token", "bound": "exact" },
+      { "id": "paymentRail", "type": "token", "bound": "exact" }
+    ],
+    "actionClasses": [{ "id": "payment", "actions": ["payment.execute"] }],
+    "resourceClasses": [{ "id": "governed-account", "resources": ["treasury-ops"] }],
+    "profiles": [
+      {
+        "profileId": "governed-payment",
+        "version": 1,
+        "owner": "<required: organization id>",
+        "provenance": { "authoredBy": "operator:treasury", "approvedBy": "operator:security" },
+        "actionClass": "payment",
+        "resourceClass": "governed-account",
+        "parameters": [
+          { "dimension": "paymentPurpose", "required": true },
+          { "dimension": "paymentReference", "required": false },
+          { "dimension": "paymentRail", "required": false }
+        ],
+        "materialFacts": [],
+        "relevantPolicies": []
+      }
+    ]
+  },
+  "routes": [{ "action": "payment.execute", "adapterId": "xrpl-rlusd" }],
+  "xrplPaymentRail": {
+    "paymentAction": "payment.execute",
+    "network": "testnet",
+    "endpoint": "wss://s.altnet.rippletest.net:51233",
+    "asset": {
+      "paymentAsset": "stable:RLUSD/<required: testnet issuer reference>",
+      "currency": "524C555344000000000000000000000000000000",
+      "issuer": "<required: RLUSD issuer classic address for XRPL Testnet, from Ripple's published documentation>"
+    },
+    "sourceAccounts": [
+      {
+        "accountId": "treasury-ops",
+        "address": "<required: the source account's classic address>",
+        "signingPublicKey": "<required: the source account's 33-byte signing public key, 66 uppercase hex digits>"
+      }
+    ],
+    "lastLedgerOffset": 20,
+    "maxFeeDrops": "1000",
+    "signer": {
+      "endpoint": "<required: https:// base URL of the customer-controlled XRPL signer>",
+      "signerId": "<required: the signer id the signer answers with>",
+      "credential": { "kind": "bearer", "tokenEnv": "FRONTERA_XRPL_SIGNER_TOKEN" },
+      "timeoutMs": 10000
+    }
+  }
+}
