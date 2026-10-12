@@ -319,7 +319,7 @@ wiring inventory is §3.8.
 | Item | Status |
 |---|---|
 | x402 | ABSENT |
-| MPP | ABSENT on `main`. It exists only on the **unmerged** branch `origin/feat/p13-mpp-business-idempotency` (`24dd264`). That branch has a client-side parser for draft-httpauth-payment-01 challenges, business-operation idempotency and 7 test files, and conflicts with `main` |
+| MPP | **IMPLEMENTED** (PAY-04). The protocol-neutral `PaymentProtocolAdapter` port (`src/features/payment-runtime/domain/payment-protocol.ts`), the MPP adapter pinned to `draft-httpauth-payment-01` (`src/features/payment-runtime/protocols/mpp/`), and the embedder-composed payment protocol ingress with its durable business-operation store (`src/enterprise/payment-protocol-ingress/`): an MPP challenge becomes the canonical `PaymentIntent` and governs on the unchanged spine. No Host route or Host composition. Before PAY-04 this row read "ABSENT on `main`; only on the unmerged branch `24dd264` (P13)" — that branch was audited and reconciled, not merged |
 | XRPL, RLUSD | **IMPLEMENTED** (updated by PAY-03). PAY-02: the XRPL / RLUSD `PaymentRail` (`src/features/payment-runtime/rails/xrpl/`), Testnet-qualified on the governed path. PAY-03: production Host composition from the governed-action file's `xrplPaymentRail` (external customer-controlled transaction signer, durable submission interlock, read-only P12 XRPL resolution authority); `xrpl@5.3.0` is a runtime dependency. Before PAY-02 this row read "ABSENT. No SDK dependency, no client" |
 | Lightning, EVM, Solana, Stellar, Hedera, Cardano | ABSENT. No SDK dependency, no client |
 | Receipts, settlement state, finality, refunds | ABSENT. `execution-outcome-store/contracts.ts:40` explicitly says "Not settlement". P7's "settled" means reservation capacity was consumed |
@@ -962,7 +962,7 @@ as a roadmap mechanism (§15).
 | P2–P6 governed-action spine | #127–#132 | 09-19 → 09-21 | Principal binding, orchestrator, adapter routing, emergency control, API/SDK, Generic HTTP adapter | CORE (P2–P5), PAY-neutral execution (P6) | VERIFIED (opt-in) |
 | P7–P12 financial track | #133–#140 | 09-21 → 09-24 | Aggregate controls, event stream, monetary semantics, authority ceilings, durable outcomes, reconciliation | CORE (P7, P9, P10), ASSURE (P8), CORE execution (P11, P12) | VERIFIED (opt-in) |
 | Security Prompt 5 → PRE-00 | #142 | 09-25 | Ed25519 authority artifact authenticity | CORE | PARTIAL (§3.7) |
-| P13 MPP business idempotency | unmerged `24dd264` | — | MPP challenge parser, business-operation store | PAY | Not merged. Input to PAY-04 (planned as PAY-02 before the PAY renumbering, §9) |
+| P13 MPP business idempotency | unmerged `24dd264` | — | MPP challenge parser, business-operation store | PAY | Not merged. Audited and reconciled by **PAY-04** (planned as PAY-02 before the PAY renumbering, §9): parser and business-operation idempotency ported and rewritten onto PAY-01; its hand-built envelope, core reserved keys and enterprise placement rejected |
 
 ### 6.2 Per-item mapping of named historical work
 
@@ -995,7 +995,7 @@ as a roadmap mechanism (§15).
 | P10: Authority-sourced payment ceilings | CORE | VERIFIED | Money-typed constraint in CORE; see §8 |
 | P11: Durable monetary outcomes | CORE (execution) | VERIFIED (opt-in) | |
 | P12: Reconciliation / resolution authority | CORE (execution) | VERIFIED (port) | Rail-specific resolvers: XRPL delivered by PAY-03 |
-| P13: MPP + business idempotency | PAY | Unmerged | → PAY-04 (historically mapped to PAY-02) |
+| P13: MPP + business idempotency | PAY | IMPLEMENTED by PAY-04 (branch `24dd264` itself never merged) | → PAY-04 (historically mapped to PAY-02) |
 | P14: Stripe + credential custody | PAY | DEFERRED (Stripe); credential boundary DELIVERED for XRPL | Credential boundary → PAY-03 (external customer-controlled transaction signer); Stripe → PAY-09 |
 | P15: Receipts, settlement, payment obligations | PAY | PLANNED | → PAY-05 |
 | P16: Payment observability | PROD | PLANNED | → PROD-04 |
@@ -1022,10 +1022,10 @@ as a roadmap mechanism (§15).
 | Signatures | Ed25519 authority-authenticity (five artifacts; software or external custody since CORE-02) · HMAC passport issuer (`apps/agent-passport-web`) · unkeyed digests everywhere else | **Reconcile.** Authority: done (CORE-02). Passport: **decided by CTRL-02** — no passport signer or key is added (none is needed for the exit criterion); a publicly verifiable passport needs its own asymmetric key role, may reuse the CORE-02 custody pattern, never `AuthorityArtifactSigner` (TD-5 open). Evidence: ASSURE-02 | CTRL-02, ASSURE-02 |
 | Evidence | Event stream (P8, runtime trace) · evidence bundle (one decision) · assurance runtime · verifiable export · `evidence-correlation` contract · `usage-event` | Bundle vs stream: **Reconciled by ASSURE-01** — the v2 bundle carries the request's trace, whose event stage reads and verifies the P8 stream and cross-checks it against the canonical records. Correlation / usage-event: SUPERSEDED by the stream | ASSURE-01 |
 | Execution outcomes | P11 outcome store · P12 resolution store · governance-store attempt row | Intentional: claim, observation and resolution are distinct facts | — |
-| Idempotency | `requestId` from `idempotencyKey` (spine) · P13 business-operation identity (unmerged) · Stripe webhook idempotency (passport-web) | Spine vs P13: Intentional (request vs business operation), must be reconciled when P13 lands. Stripe: separate product | PAY-02 |
+| Idempotency | `requestId` from `idempotencyKey` (spine) · PAY-04 business-operation identity · Stripe webhook idempotency (passport-web) | Spine vs business operation: **reconciled by PAY-04** — intentional and layered: the governed `idempotencyKey` is *derived* from `(organization, principal, businessOperationId)`, so one business operation is one governed request; the spine's idempotency stays the only at-most-once barrier. Stripe: separate product | PAY-04 (done) |
 | Policy context | Kernel `request.context`, Recognition `PolicyContext`, domain-pack `aoc.context`, `ExerciseControlPolicy`, `GovernedActionGrantPolicy` | Mostly intentional (one per gate). Since CORE-04 the trusted-context object policy reads is the admitted-facts list (`contextFacts` / `restrictiveFacts`); the caller bag stays recognition metadata only | CORE-04 (done) |
 | Advisory vs RiskSignal (future) | `Advisory` (ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY §3, unimplemented) · RiskSignal (§4.4.4, unimplemented) · assurance-runtime typed signals (§7.14 of the threat model; assessment-scoped) | Not duplicated. The admitted schema is a restrict-only fact (CORE-04, done); a candidate RiskSignal must be an `Advisory` kind, not a second advisory shape; assurance signals stay assessment-scoped | INTEL-05 |
-| Challenge normalization / payment intents | Only P13 (unmerged) | Not yet duplicated. Keep it that way | PAY-01/04 |
+| Challenge normalization / payment intents | PAY-04's protocol port → PAY-01's `PaymentIntent` | Not duplicated: protocols produce PAY-01 terms through one port; no second intent model | PAY-01/04 (done) |
 | Control plane | `src/features/aoc-control-plane` · `packages/control-plane` (orphan) · `control-plane-sdk` (types) · passport-web admin | **Reconciled by CTRL-03:** one shipped control plane — the web console over the Host's operator API; two pure legacy components reused; the legacy library stays library-only, `packages/control-plane` / `control-plane-sdk` stay orphan (TD-4), passport-web stays a separate product (ADR-CTRL-03 §1.1) | CTRL-03 (done) |
 
 ---
@@ -1035,8 +1035,12 @@ as a roadmap mechanism (§15).
 **FACT.**
 
 - `rlusd`, `lightning`, `bolt11`, `bitcoin`, `x402`, `ethereum`, `solana`, `hedera`, `cardano`, `xls-65/66` and
-  `evernorth` have zero hits in `src/`, `packages/` and `apps/`.
-- `mpp` has zero hits on `main`.
+  `evernorth` have zero hits in production code in `src/`, `packages/` and `apps/` outside the PAY vertical
+  and its composition edges (they appear in the structural tests that forbid them; `rlusd` in PAY-02's rail, PAY-03's
+  composition and the Host's `xrplPaymentRail` configuration reader). *(Reconciled by PAY-04.)*
+- `mpp` appears only inside the PAY vertical — the PAY-04 MPP adapter (`src/features/payment-runtime/protocols/mpp/`)
+  and PAY / structural tests — and has zero hits in CORE, pinned by `pay04-payment-protocol-structure.test.ts`.
+  (Before PAY-04: zero hits on `main`.)
 - Structural tests forbid rail and protocol vocabulary in core layers.
 
 Real leakage:
@@ -1049,7 +1053,7 @@ Real leakage:
 | L-4 | `src/enterprise/governed-action/contracts.ts` (`amount {value, currency}`, `actionClass: 'financial'\|'non-financial'`) | Financial is a first-class branch of the generic spine | ~~Medium~~ **Resolved (CORE-03):** domain-declared `semantics.actionClass`/`resourceClass` generalize classification; the P9 binary remains the host-trusted financial classifier for money only | — |
 | L-5 | `src/features/authority-graph/domain/authority-grant.ts` (`spending_limit {currency, maximum, window}`) | A money-typed constraint in the authority definition layer | Low-Medium — **retained as P10 specialization** (money stays `max_amount` / `spending_limit`) | **Resolved by CTRL-02 (pre-push hardening):** the generic authority-sourced non-money limit CORE-03 ADR §8 assigned to CTRL-02 now exists — standing `parameterBounds` on authority and delegation grants, in the canonical CORE-03 bound shape, enforced on the decision's lineage before any grant (SEC-INV-198). (The first CTRL-02 candidate had dropped this ownership; the adversarial pre-push review caught it.) |
 | L-6 | `governed-action/intent.ts` reserved keys (`paymentCeiling`, `spendingLimit`, `providerRef`, `finalOutcome`) | Denylist names, not logic | Low — **resolved (CORE-03):** the built-in list stays and is now a registry trusted configuration extends (`governance.reservedContextKeys`, SEC-INV-135); declared dimension ids are reserved in any case | — (PAY-02 registers its keys there, L-7) |
-| L-7 | P13 branch adds `mppChallenge`, `mppRealm`, `paymentCredential`, `merchantRealm`, … to the generic `intent.ts` reserved list | Protocol vocabulary in the generic intent validator | Medium, **if merged as-is** | PAY-02 must supply reserved keys through the CORE-03 registry (`governance.reservedContextKeys`), never the built-in list |
+| L-7 | P13 branch adds `mppChallenge`, `mppRealm`, `paymentCredential`, `merchantRealm`, … to the generic `intent.ts` reserved list | Protocol vocabulary in the generic intent validator | ~~Medium, if merged as-is~~ **Resolved (PAY-04):** the built-in list is unchanged; `PAYMENT_PROTOCOL_RESERVED_CONTEXT_KEYS` and `MPP_RESERVED_CONTEXT_KEYS` are registered through `governance.reservedContextKeys`, and the ingress refuses to compose without them (SEC-INV-245) | PAY-04 (done) |
 | L-8 | `monetary-asset.ts:24-29` examples `xrpl:USD/rIssuer` | Comment only. The `/issuer` segment is XRPL-shaped by convention, not by grammar | Low — **resolved (PAY-01):** structured reading lives in PAY (`describePaymentAsset`), which names the segment a rail-neutral *qualifier*; P9 grammar unchanged | PAY-01 |
 | L-9 | `content-protection/pinata-storage-adapter.ts` exported from a core barrel | An adapter living inside a core folder | Low | CORE |
 | L-10 | `providerRef` | **Not leakage.** It is a handle, never identity or proof | — | — |
@@ -1250,7 +1254,7 @@ the map, marked historical.
 | PAY-01 Canonical Payment Intent | PAY-01 | IMPLEMENTED |
 | PAY-04 XRPL Rail Adapter | **PAY-02** XRPL / RLUSD Payment Rail Adapter | IMPLEMENTED (Testnet-qualified) |
 | PAY-03 Settlement Rail Boundary & Execution Credential Boundary | rail port: PAY-01 · signer port and finality mapping: PAY-02 · credential boundary, P12 rail resolver, production composition: **PAY-03** · rail conformance suite: PAY-07 | IMPLEMENTED for XRPL; conformance suite PLANNED |
-| PAY-02 Payment Protocol Adapter Boundary + MPP (P13) | **PAY-04** Payment Protocol Adapter Boundary + MPP | PLANNED |
+| PAY-02 Payment Protocol Adapter Boundary + MPP (P13) | **PAY-04** Payment Protocol Adapter Boundary + MPP | IMPLEMENTED |
 | PAY-05 … PAY-09 | PAY-05 … PAY-09 (unchanged numbers) | as below |
 
 **PAY-02: XRPL / RLUSD Payment Rail Adapter**
@@ -1277,13 +1281,15 @@ the map, marked historical.
 
 | Field | Content |
 |---|---|
-| Status | PLANNED (PARTIAL: unmerged P13 branch) |
-| Depends on | PAY-01 (hard) |
+| Status | IMPLEMENTED — `src/features/payment-runtime/domain/payment-protocol.ts` (port), `src/features/payment-runtime/protocols/mpp/` (MPP adapter), `src/enterprise/payment-protocol-ingress/` (ingress, business-operation store); `docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md`; `ADR-PAYMENT-PROTOCOL-ADAPTER-BOUNDARY.md`; SEC-INV-238 … 245. Previously PLANNED (PARTIAL: unmerged P13 branch) |
+| Depends on | PAY-01 (hard); CORE-03 (reserved-key registry, L-7); P11 / P12 (unchanged) |
 | Purpose | Normalize protocol challenges (MPP first) into `PaymentIntent` |
-| Existing reused | P13 branch `24dd264`: MPP parser, business-operation idempotency store, 7 test files. It must be **rebased, not merged as-is** |
-| Remaining work | A protocol-neutral challenge → intent port. Reserved keys supplied through the CORE-03 registry (L-7). Business-operation vs request idempotency reconciliation. Conflict resolution against current `main` |
-| Exit criteria | An MPP challenge produces a governed payment intent. No `mpp*` symbol exists in CORE |
-| Non-goals | x402 (PAY-08), credentials, rails |
+| Delivered | A protocol-neutral `PaymentProtocolAdapter` port inside PAY-01's contract (no protocol vocabulary; an adapter's answer read closed into PAY-01 terms); the MPP adapter below it (`draft-httpauth-payment-01` / `draft-payment-intent-charge-00` at mpp-specs `08e7dd8`, unchanged from P13; RFC 9110 tokenizer, strict base64url, fatal UTF-8, bounded JCS JSON, RFC 3339, RFC 9530 and realm binding; trusted normalizers, counterparty resolver and selector; no dependency); the canonical `PaymentIntent` reused unchanged and compiled by `compilePaymentIntent`; business-operation identity `(organization, principal, businessOperationId)` deriving the governed `idempotencyKey`; a durable, protocol-neutral, append-only business-operation store (`BEGIN IMMEDIATE`, one operation per scope, one operation per challenge identity); refresh replays, changed terms conflict, no retry; P11 / P12 preserved; stale-restore analysis (no CORE-07 anchor needed: the key is derived); reserved keys through CORE-03; structural proof that no protocol word is in CORE |
+| Reconciled history | P13 branch `24dd264` audited: parser and business-idempotency concepts ported and rewritten onto PAY-01; its hand-built envelope, core reserved keys (L-7), enterprise placement and P17-era backup stance rejected (`PAY-04-PAYMENT-PROTOCOL-ADAPTER.md` §15). The branch itself is not merged |
+| Residual | Binding, not merchant authenticity; embedder-composed only (no Host route or module; the shipped Host does not back the store up); a stale restore of the business store loses challenge history and protected-request conflict detection (never a payment for the same operation) and the cross-operation challenge-uniqueness record (a caller minting a new business operation for an already-paid challenge then pays again); the spine's own stale restore is PROD-02 residual 2; MPP credential emission toward the merchant not implemented |
+| Exit criteria | An MPP challenge produces a governed payment intent. No `mpp*` symbol exists in CORE — **met** (`pay04-mpp-governed-payment.test.ts`, `pay04-payment-protocol-structure.test.ts`) |
+| Non-goals | x402 (PAY-08), credentials / custody (PAY-03), rails, settlement (PAY-05), Lightning (PAY-06), multi-rail qualification (PAY-07), Stripe (PAY-09), retry |
+| Next PAY milestone | PAY-05 (settlement, receipt & payment-obligation semantics); PAY-08 (x402) can now implement the same port |
 
 *Historical planning text (MASTER-01), superseded by the map above and kept for provenance:*
 
@@ -1785,7 +1791,7 @@ Requires:
 - polished onboarding automation.
 
 A pilot may govern **Generic HTTP actions only**. It does not require PAY
-unless the pilot's use case is payments, in which case PAY-01 … PAY-03 (delivered) and PAY-04 are added.
+unless the pilot's use case is payments, in which case PAY-01 … PAY-04 (delivered) are added.
 
 **MASTER-01 re-evaluation: INTEL is not required for PILOT READY.** A valid
 pilot uses deterministic policy, manually configured or source-resolved trusted
@@ -1970,6 +1976,8 @@ composition (`bootEnterpriseHost({ policyPackProvider })`).
 
 **NEXT: PROD-03 — Pilot Onboarding & Operational Qualification**
 
+**PAY track (outside the pilot path):** PAY-04 — **IMPLEMENTED** 2026-10-11 (branch `feat/pay-04-payment-protocol-mpp`, on `main @ 87ab460`): an MPP challenge becomes the canonical `PaymentIntent` and governs on the unchanged spine; no CORE change. The next PAY milestone is **PAY-05**. The global NEXT below is unchanged.
+
 **Previous NEXT:** ASSURE-01 — **VERIFIED** 2026-10-03 (§9). Before it PROD-02, CTRL-04, CTRL-03, CTRL-02, CORE-08, CORE-06, CORE-07, CORE-02, CORE-05, CORE-04, CORE-03, CTRL-02 (displaced by MASTER-01), PROD-01 and CORE-01.
 
 **Why PROD-03:** PILOT READY (§11.3) remains the open product milestone, and with ASSURE-01 done its only remaining requirement is **PROD-03** (runbooks, provisioning path, observability minimum, security posture / shared responsibility, readiness gate). Re-read from §10: PROD-03's hard dependencies — PROD-01, PROD-02, CTRL-01 … CTRL-04, CORE-06 — are all VERIFIED, and the critical pilot path orders it last (`… PROD-02, ASSURE-01 → PROD-03`). No other item is on the pilot path. **PILOT READY is not claimed:** PROD-03 remains.
@@ -2007,7 +2015,7 @@ composition (`bootEnterpriseHost({ policyPackProvider })`).
 | Root `PROMPT_1..5_*_RESULT.md` | Historical records; preserved for provenance |
 | "Not in Pn" lists in P9–P12 ADRs (P13–P21) | Historical; mapping §6.2. ADR bodies remain authoritative for their mechanisms |
 | `CURRENT_STATE_*` docs, `ADR-ACCESS-LIFECYCLE.md` phases, `docs/release/*` next-step sections, SK005 deck | Historical |
-| Unmerged branch `feat/p13-mpp-business-idempotency` | Input to PAY-04 (historically PAY-02); not to be merged as-is |
+| Unmerged branch `feat/p13-mpp-business-idempotency` | Input to PAY-04 (historically PAY-02); not merged — audited and reconciled by PAY-04 (`PAY-04-PAYMENT-PROTOCOL-ADAPTER.md` §15) |
 | `ADR-DETERMINISTIC-AUTHORIZATION-AI-BOUNDARY.md` hard invariants 4 and 7, §7; `ADR-AUTHORITY-CONTROL-LAYERING.md` layer G | In force. Narrowed in *direction* by MASTER-01 for restrict-only admitted RiskSignals only (§4.4.6); superseded for those clauses only when INTEL-06 lands its ADR |
 
 **Rules:**

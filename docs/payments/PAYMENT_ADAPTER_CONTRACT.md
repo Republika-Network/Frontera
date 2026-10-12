@@ -79,3 +79,14 @@ turns these rules into a reusable rail conformance suite.
 
 The first real rail, XRPL / RLUSD (PAY-02), satisfies every rule above:
 `docs/payments/XRPL_RLUSD_RAIL.md`.
+
+## A protocol adapter is not a rail adapter (PAY-04)
+
+A *payment protocol adapter* (`PaymentProtocolAdapter`, `domain/payment-protocol.ts`;
+MPP under `protocols/mpp/`) sits **above** the governed path: it turns an
+external challenge into `PaymentIntent` terms and never executes anything. A
+*rail* (this contract) sits **below** it and is reached only through the
+bridge after a grant. Neither knows the other exists: a protocol never selects,
+names or imports a rail (a rail preference is trusted composition riding
+PAY-01's exact-bound `rail` field), and a rail never sees a challenge. See
+`docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md`.

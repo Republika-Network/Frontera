@@ -43,7 +43,9 @@ function walk(dir: string, includeTests: boolean): readonly string[] {
  * is proven here never to import one.
  */
 const RAILS = join(ROOT, 'rails');
-const PRODUCTION_SOURCES = walk(ROOT, false).filter((file) => !file.startsWith(`${RAILS}/`));
+/** PAY-04: protocol adapters live under `protocols/`, below the contract like rails, each held to its own boundary test (`protocols/mpp/tests/mpp-protocol-boundaries.test.ts`). */
+const PROTOCOLS = join(ROOT, 'protocols');
+const PRODUCTION_SOURCES = walk(ROOT, false).filter((file) => !file.startsWith(`${RAILS}/`) && !file.startsWith(`${PROTOCOLS}/`));
 
 function importsOf(file: string): readonly string[] {
   return [...readFileSync(file, 'utf8').matchAll(/\bfrom\s+'([^']+)'/g)].map((match) => match[1] ?? '');
@@ -67,6 +69,12 @@ describe('Payment runtime boundaries (PAY-01)', () => {
     }
   });
 
+  it('PAY-04: the contract never imports a protocol adapter: protocols depend on the contract, never the reverse', () => {
+    for (const file of PRODUCTION_SOURCES) {
+      for (const specifier of importsOf(file)) assert.equal(/protocols\//.test(specifier), false, `${file} imports '${specifier}'`);
+    }
+  });
+
   it('imports only itself and the generic primitives it composes — never the enterprise layer, the Kernel, a store or Node', () => {
     const allowed = /^(?:\.\/|\.\.\/domain\/|\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|governed-parameter-runtime)\/index\.js$)/;
     for (const file of PRODUCTION_SOURCES) {
@@ -74,18 +82,21 @@ describe('Payment runtime boundaries (PAY-01)', () => {
     }
   });
 
-  it('nothing in Frontera core imports the payment runtime — except the PAY-03 composition edge', () => {
-    // PAY-03: the shipped Host composes the XRPL rail from configuration. That
-    // composition lives in one directory at the enterprise edge; the Kernel, the
-    // runtimes, the stores and every other enterprise module stay payment-free.
-    const COMPOSITION_EDGE = join('src/enterprise', 'xrpl-payment-rail');
+  it('nothing in Frontera core imports the payment runtime — except the PAY-03 and PAY-04 composition edges', () => {
+    // PAY-03: the shipped Host composes the XRPL rail from configuration. PAY-04:
+    // an embedder composes the payment protocol ingress beside the governed-action
+    // orchestrator. Each composition lives in one directory at the enterprise
+    // edge; the Kernel, the runtimes, the stores and every other enterprise
+    // module stay payment-free.
+    const COMPOSITION_EDGES = [join('src/enterprise', 'xrpl-payment-rail'), join('src/enterprise', 'payment-protocol-ingress')];
+    const atEdge = (path: string): boolean => COMPOSITION_EDGES.some((edge) => path.startsWith(`${edge}/`));
     const roots = ['src/kernel', 'src/runtime', 'src/enterprise', 'src/kernel-host', 'src/control-plane-web'];
     const features = readdirSync('src/features').filter((name) => name !== 'payment-runtime').map((name) => join('src/features', name));
     const files = [...roots, ...features].flatMap((root) => walk(root, false));
-    for (const file of files.filter((path) => !path.startsWith(COMPOSITION_EDGE))) {
-      assert.equal(/payment-runtime/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the payment vertical`);
+    for (const file of files.filter((path) => !atEdge(path))) {
+      assert.equal(/payment-runtime|payment-protocol-ingress/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the payment vertical`);
     }
-    assert.ok(files.some((path) => path.startsWith(COMPOSITION_EDGE) && /payment-runtime/.test(readFileSync(path, 'utf8'))), 'the composition edge is where the Host composes the rail');
+    for (const edge of COMPOSITION_EDGES) assert.ok(files.some((path) => path.startsWith(`${edge}/`) && /payment-runtime/.test(readFileSync(path, 'utf8'))), `${edge} is where the vertical is composed`);
   });
 
   it('names no rail, network, asset-issuance, custody or environment — the contract is rail-neutral', () => {

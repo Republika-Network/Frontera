@@ -41,3 +41,31 @@ export type { PaymentExecutionPreparation, PaymentExecutionRefusal, PaymentExecu
 
 export { PAYMENT_RAIL_DETAILS, executionResultOfPaymentRail } from './payment-rail.js';
 export type { PaymentRail, PaymentRailResult } from './payment-rail.js';
+
+export {
+  PAYMENT_CONTENT_DIGEST_MAXIMUM_LENGTH,
+  PAYMENT_PROTECTED_REALM_MAXIMUM_LENGTH,
+  PAYMENT_PROTOCOL_EVIDENCE_LIMITS,
+  PAYMENT_PROTOCOL_REFUSALS,
+  PAYMENT_PROTOCOL_RESERVED_CONTEXT_KEYS,
+  isPaymentProtocolId,
+  isPaymentProtocolRefusal,
+  isPaymentProtocolReservedContextKey,
+  parsePaymentContentDigest,
+  paymentContentDigestsAgree,
+  paymentIntentOfProtocolTerms,
+  readPaymentProtectedRequest,
+  readPaymentProtocolChallengeEvidence,
+  readPaymentProtocolInterpretation,
+} from './payment-protocol.js';
+export type {
+  PaymentContentDigest,
+  PaymentProtectedRequest,
+  PaymentProtectedRequestBinding,
+  PaymentProtocolAdapter,
+  PaymentProtocolChallengeEvidence,
+  PaymentProtocolInterpretation,
+  PaymentProtocolInterpretationContext,
+  PaymentProtocolRefusal,
+  PaymentProtocolTerms,
+} from './payment-protocol.js';

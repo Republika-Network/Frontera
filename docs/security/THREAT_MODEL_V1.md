@@ -634,6 +634,36 @@ ASSURE-01 adds a read-only, deterministic projection of one governed request ove
 | A trace, bundle or verification presented as cryptographically authentic or non-repudiable | **ACCEPTED** — ASSURE-02 | Integrity, correlation and completeness only; authenticity is reported only where the artifact carries its own signature (grants, revocations, approval and obligation chain heads); every verification states this boundary |
 | A privileged writer re-sealing an unsigned canonical store (Governance, P11, P12, P8, ledger) or the bundle store consistently | **RESIDUAL** — ASSURE-02 | Unkeyed digests detect tampering by a writer who does not recompute them; the signed stores (grants, approvals, obligations) are not affected |
 
+### 7.30 Payment protocol challenges & business-operation idempotency (added by PAY-04)
+
+PAY-04 adds a protocol-neutral payment protocol port, the MPP adapter (client-side `Payment` challenge parsing pinned to `draft-httpauth-payment-01`) and an embedder-composed ingress that turns a challenge into the canonical `PaymentIntent`, records the business operation durably and governs it on the unchanged path (`docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md`). The merchant and the challenge are untrusted; the ingress caller (the application layer naming the business operation) and the network layer describing the protected request are trusted in-process code.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| A challenge that states authority — a ceiling, grant, source account, purpose, adapter, identity, credential or issuer | **BLOCKED** | No such field is reachable: the adapter answers PAY-01 terms only, read closed; the trusted half of the `PaymentIntent` comes from the caller; the governed path decides (SEC-INV-238) |
+| A merchant string copied into a destination | **BLOCKED** | Destinations come only from the trusted counterparty resolver, held to PAY-01's grammar; an unmapped merchant is `counterparty-unresolved` (SEC-INV-238) |
+| Float, scientific, negative, zero, over-precise money or an unknown asset from a challenge | **BLOCKED** | Trusted normalizers' output passes the single P9 ingress; strictly positive; no conversion (M21 – M25) |
+| Header-smuggling: a comma or a parameter hidden in a quoted string, duplicated parameters (first- or last-wins), unknown parameters changing meaning | **BLOCKED** | RFC 9110 tokenizer with lookahead; duplicates refuse the challenge; unknown parameters are dropped unread (M1 – M5) |
+| Encoding attacks — padded or non-canonical base64url, invalid UTF-8, non-canonical or duplicate-member JSON, prototype-shaped keys, deep or wide JSON, oversized headers | **BLOCKED** | Strict decoders, JCS round trip, depth / member / byte bounds checked before allocation; total parsing (M6 – M13) |
+| First-wins challenge selection driven by the merchant's ordering | **BLOCKED** | A trusted selector must name exactly one candidate, even of one; refusal precedence is fixed (M20) |
+| An expired challenge used | **BLOCKED** | Compared with the trusted clock's instant; the adapter reads no clock (M15) |
+| A challenge captured for one request used for another — another protection space or another body | **BLOCKED** | Realm and RFC 9530 body-digest binding to the trusted protected request; a body-bearing request without a digest is refused (M16 – M18) |
+| A challenge captured for one purchase used to pay for another business operation | **BLOCKED** while the business store is intact | One challenge identity per operation, unique index under `BEGIN IMMEDIATE` (SEC-INV-242, M30) |
+| The same, after the business store is lost or rolled back and the caller mints a new `businessOperationId` | **RESIDUAL** — caller-dependent | The uniqueness record is lost with the store and the Governance Store never sees a challenge identity; the new operation is a second purchase. Business identity is the caller's; anchoring the challenge index (CORE-07) is possible later |
+| A merchant refreshing its challenge to obtain a second payment | **BLOCKED** | The governed key is derived from the business operation, never from a challenge: a refresh replays the same governed request (SEC-INV-240) |
+| A refreshed challenge with larger or different terms for the same operation | **BLOCKED** | Semantic-digest conflict before governance; the first operation stands (SEC-INV-241) |
+| A refresh after an unconfirmed or P12-resolved outcome re-sending the payment | **BLOCKED** | The Governance Store replays the recorded outcome; P11's claim and P12 own the outcome; no retry exists (SEC-INV-240; M32 – M34, also on the XRPL rail) |
+| Concurrent presentations forking a business operation | **BLOCKED** | Primary key + `BEGIN IMMEDIATE` across threads and connections; one operation, one governed request (SEC-INV-241) |
+| Restart forgetting a business operation | **BLOCKED** | Durable SQLite store; and the derived key makes forgetting harmless to money (SEC-INV-243) |
+| A stale restore or loss of the business-operation store making a paid or unconfirmed payment of the same business operation look new | **BLOCKED** | Same terms replay at the Governance Store; changed money terms hit its idempotency conflict; tested with a stale SQLite copy (SEC-INV-243) |
+| A stale restore of the business store hiding a changed protected-request binding | **RESIDUAL** — fail-safe | The changed body or target replays the original payment instead of conflicting; no second payment. A refused presentation recorded after a restore makes later original-term presentations conflict (fail-closed) |
+| Stale restore of the governed spine itself (Governance Store, P7, P11) | **RESIDUAL** — PROD-02 residual 2 | Unchanged by PAY-04 and identical for direct payments; XRPL submissions are additionally protected by PAY-03's CORE-07-anchored interlock |
+| Tampered, orphaned, foreign-schema business-operation state | **BLOCKED** (a writer who does not recompute digests and derivations) | Verify-first on open and read; refused, never repaired (SEC-INV-244) |
+| Secrets or credentials persisted with a challenge | **BLOCKED** | No credential column; evidence refuses secret-shaped field names; `description` is never stored (SEC-INV-244, M38) |
+| Protocol words smuggled into a governed request's asserted context | **BLOCKED** | Reserved through CORE-03's `reservedContextKeys`; the ingress refuses to compose without them (SEC-INV-245, L-7) |
+| Protocol vocabulary or protocol logic entering the core; MPP coupled to a rail | **BLOCKED** (the repository's own sources) | Structural scans (SEC-INV-245, M39, M40) |
+| A forged challenge proposing terms the host's trusted configuration accepts | **ACCEPTED** — by protocol design | A client cannot verify a merchant's challenge binding; PAY-04 binds, it does not authenticate. The governed path, ceilings, approvals and counterparty bounds still apply |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.

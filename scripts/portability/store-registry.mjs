@@ -400,6 +400,12 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
       'access-governance, authority-governance, mandate and protected-resource SQLite stores are library components the Enterprise Host never composes (no Host configuration names them). An embedder that composes one owns its backup.',
   },
   {
+    name: 'payment-business-operations',
+    envVar: null,
+    reason:
+      'PAY-04: the payment business-operation store (createSqlitePaymentBusinessOperationStore, schema aoc.payment-business-operation-store.schema.v1) is composed by an embedder beside the governed-action orchestrator; the Enterprise Host composes no payment protocol ingress and no Host configuration names the store. An embedder that composes it backs its file up with the Governance Store it belongs to (verifyAll() is the deep check). It is not the duplicate-payment barrier: the governed idempotency key is derived from (organization, principal, businessOperationId), never read from this store, so losing or rolling it back loses challenge history and protected-request conflict detection only — the Governance Store, P7, P11 and the write-ahead claim still replay or refuse (docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md §9).',
+  },
+  {
     name: 'governed-actions-file',
     envVar: 'AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE',
     reason: 'Configuration, secret-free by design, kept in configuration management. The manifest records its SHA-256 so a restore can be matched to it.',
