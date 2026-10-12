@@ -16,12 +16,14 @@ Architecture: `docs/payments/PAYMENT_ARCHITECTURE.md`. Rail contract:
 | `domain/payment-governance.ts` | The CORE-03 payment dimensions and profile parameters, the host binding, the destination ↔ counterparty encoding, and `compilePaymentIntent`. |
 | `domain/payment-execution.ts` | `PaymentExecutionRequest` and `preparePaymentExecution` — the prepared payment, derived from a `ValidatedExecutionAction` alone. |
 | `domain/payment-rail.ts` | The `PaymentRail` contract, `PaymentRailResult`, and its mapping onto `ExecutionAdapterResult`. |
+| `domain/payment-protocol.ts` | PAY-04: the protocol-neutral `PaymentProtocolAdapter` port, the closed reader of an adapter's answer, the trusted protected request and RFC 9530 digest, `paymentIntentOfProtocolTerms`, and the protocol words a host reserves through CORE-03. Names no protocol. |
 | `services/payment-rail-execution-adapter.ts` | `createPaymentRailExecutionAdapter` — a rail composed as an ordinary `ExecutionAdapter`. The only place a rail is invoked. |
 | `rails/xrpl/` | PAY-02: the XRPL / RLUSD rail (`createXrplRlusdRail`) and its SDK client; PAY-03: the submission-interlock port and restart quarantine. A rail **below** the contract — the contract never imports it. `docs/payments/XRPL_RLUSD_RAIL.md`; production composition (Host, external signer, durable interlock, P12 resolver) in `src/enterprise/xrpl-payment-rail/`, `docs/payments/XRPL_PRODUCTION_COMPOSITION.md`. |
+| `protocols/mpp/` | PAY-04: the MPP payment protocol adapter (`createMppPaymentProtocolAdapter`) — a protocol **below** the contract, not a rail; the contract never imports it. `docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md`; the protocol ingress and its business-operation store in `src/enterprise/payment-protocol-ingress/`. |
 
 What the contract (`domain/`, `services/`) will never do: implement a rail,
 hold a key, sign, submit, poll, convert an asset, read a clock, perform I/O,
 decide whether a payment is allowed, or be imported by Frontera's core.
-Rails live under `rails/`, each held to its own boundary test.
+Rails live under `rails/` and protocol adapters under `protocols/`, each held to its own boundary test.
 `tests/payment-runtime-boundaries.test.ts` fails the build if any of that
 changes. `tests/payment-rail-fixture.ts` is the test-only reference rail.

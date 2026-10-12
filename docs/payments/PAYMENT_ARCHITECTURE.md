@@ -273,7 +273,7 @@ needs to change for a new rail.
 No rail implementation of any kind, no SDK dependency, no signing or custody,
 no submission, no settlement polling, no exchange rates, no liquidity
 routing, no destination allowlist beyond the existing counterparty bound and
-policy, no protocol parsing (PAY-02), no public HTTP route, no new store and
+policy, no protocol parsing (PAY-04, §11), no public HTTP route, no new store and
 no export from the frozen package entrypoints.
 
 ## 9. PAY-02 — the XRPL / RLUSD rail
@@ -329,3 +329,34 @@ Nothing above the PAY-01 boundary changed: the payment contract, the bridge,
 the outcome mapping and P12's semantics are exactly as in §4–§7. What PAY-03
 adds is composition, custody and durability below it: one submission is still
 at most one per execution, now across restarts and processes too.
+
+## 11. PAY-04 — the payment protocol adapter boundary (MPP first)
+
+A payment protocol is an **ingress** into the payment vertical, never a rail.
+Full detail: `docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md`; decision
+record: `docs/architecture/ADR-PAYMENT-PROTOCOL-ADAPTER-BOUNDARY.md`.
+
+```
+MPP challenge (402 + WWW-Authenticate: Payment …)                         untrusted
+   ↓ PaymentProtocolAdapter.interpret  (protocols/mpp — trusted normalizers, resolver, selector; binding; expiry)
+PaymentProtocolTerms { destination, amount, reference?, rail? }
+   ↓ paymentIntentOfProtocolTerms — PAY-01's validator      + trusted source, purpose; key derived from the business operation
+PaymentIntent  (§2, unchanged)
+   ↓ business operation + challenge, durable (payment-protocol-ingress)    BEFORE governance
+   ↓ compilePaymentIntent (§3) → governed path → grant → claim → bridge (§4) → rail
+```
+
+- **Port** (`domain/payment-protocol.ts`): protocol-neutral; an adapter's
+  answer is untrusted output read closed into PAY-01 terms. The contract never
+  imports an adapter; adapters live under `protocols/` like rails under
+  `rails/`.
+- **Nothing above changes.** `PaymentIntent`, the compiler, the governance
+  mapping, the bridge, the rail contract and the outcome mapping are exactly
+  as in §2–§7. A protocol payment is a governed payment.
+- **Idempotency, one level up.** The envelope's request idempotency (§3) is
+  unchanged; PAY-04 derives the `idempotencyKey` from the business operation
+  `(organization, principal, businessOperationId)`, so a refreshed challenge
+  replays the same governed request and never pays twice, while changed terms
+  conflict.
+- **Not here:** credential emission toward the merchant, x402 (PAY-08),
+  settlement (PAY-05), any retry.

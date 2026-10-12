@@ -405,6 +405,8 @@ Architectural enumeration. Nothing here was exploited.
 
 > **SEC-TRUST-009 — A resolution authority is trusted to answer provider truth (P12).** When `executionReconciliation` is composed, each host-written `ExecutionResolutionAuthority` is trusted to say whether an execution it is durably bound to completed. Frontera constrains what crosses the port and which authority may answer which execution; it cannot verify the answer. A compromised authority can falsely return or falsely retain P7 capacity; it cannot authorize, change an amount, issue a grant or reach the original effect. Stated in `SECURITY_INVARIANTS.md` §6 and `ADR-EXECUTION-RECONCILIATION-AND-RESOLUTION-AUTHORITY.md` §3.
 
+> **SEC-TRUST-010 — A payment protocol ingress trusts its caller and its interpretation, never the merchant (PAY-04).** When an embedder composes the payment protocol ingress, the in-process caller is trusted to name the business operation, the source account and purpose, and the network layer to describe the protected request; the host's method normalizers, counterparty resolver and selector are trusted to interpret a challenge. The merchant's challenge is untrusted protocol data and is never authority, and its authenticity cannot be verified by a client (binding is not authenticity). A wrong interpretation can at most propose a payment the governed path then decides on — ceilings, approvals, counterparty bounds and grants unchanged; it cannot reach a rail except through a grant, and a refreshed challenge cannot cause a second payment. Stated in `docs/payments/PAY-04-PAYMENT-PROTOCOL-ADAPTER.md` §6 and `SECURITY_INVARIANTS.md` §4.25.
+
 ---
 
 ## 15. Security Boundary Diagrams
