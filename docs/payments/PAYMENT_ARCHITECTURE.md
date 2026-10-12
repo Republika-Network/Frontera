@@ -162,8 +162,9 @@ through the existing generic predicates. No parallel policy engine exists.
 - **Per-payment ceiling:** P10, `max_amount` on durable authority, enforced at
   issuance (`FINANCIAL_AUTHORITY_CEILING_EXCEEDED`).
 - **Cumulative exposure:** P10 `spending_limit`, enforced by P7 at exercise
-  with an atomic reservation; settled on completed and unconfirmed, released
-  only on a definitive non-completion.
+  with an atomic reservation; *capacity-settled* (kept consumed) on completed
+  and unconfirmed, released only on a definitive non-completion. P7's
+  "settled" is **capacity settlement** — never funds settlement (§12).
 - **Allowed asset:** the registry, and the ceiling's own asset (a different
   asset is incomparable, never converted).
 - **Source / destination restriction:** the grant's resource set and
@@ -228,7 +229,9 @@ enters the existing P12 flow: it is never retried, and an operator resolution
 is no payment-specific resolution.
 
 `completed` is the provider's confirmation of the instruction, **not** final
-settlement (P11). Settlement and receipts are PAY-05.
+settlement (P11). Funds settlement, receipts, refunds and payment obligations
+are PAY-05 (§12): a completed payment is at most `awaiting-finality` until a
+trusted finality authority proves it final.
 
 ## 6. Evidence and disclosure
 
@@ -359,4 +362,33 @@ PaymentIntent  (§2, unchanged)
   replays the same governed request and never pays twice, while changed terms
   conflict.
 - **Not here:** credential emission toward the merchant, x402 (PAY-08),
-  settlement (PAY-05), any retry.
+  settlement (PAY-05, §12 — a protocol payment settles exactly like a direct one), any retry.
+
+## 12. PAY-05 — settlement, receipts, refunds and payment obligations
+
+> **"Settled" means funds finality with evidence** — distinct from P11's
+> provider confirmation, P12's execution resolution and P7's capacity
+> settlement. Full detail: `docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md`;
+> decision record: `docs/architecture/ADR-PAYMENT-SETTLEMENT-RECEIPTS-AND-OBLIGATIONS.md`.
+
+```
+P11 confirmed-completed ─┐
+P11 unconfirmed + P12 resolved completed ─┴─▶ awaiting-finality
+   ─ verifySettlement (explicit) ─▶ trusted, read-only PaymentFinalityAuthority (per rail)
+   ─ final + exact evidence ─▶ durable settlement (one per execution) ─▶ receipt (derived, verifiable)
+   ─▶ optional: CORE-04 discharge of a payment obligation (independent source, derived reference)
+refund = a NEW governed payment (purpose refund) within a CORE-07-anchored refundable balance
+```
+
+- **Contract** (`domain/payment-settlement.ts`, `domain/payment-refund.ts`):
+  the closed state machine (`execution-uncertain`, `awaiting-finality`,
+  `settled`, `not-settleable` — only `settled` is stored), the finality port
+  and its closed, bounded answer, exact matching, refund money rules. Rail- and
+  protocol-neutral.
+- **Composition** (`src/enterprise/payment-settlement/`, embedder-composed):
+  basis reader, settlement service and store, receipts, the payment-obligation
+  bridge, refund accounting and the refund service.
+- **XRPL** (`rails/xrpl/xrpl-finality.ts`, `xrpl-payment-rail/xrpl-finality-authority.ts`):
+  validated-ledger inclusion with every governed field read from the ledger.
+- Nothing above PAY-05 changed: PAY-01's contract, the bridge, the rail
+  contract, P11, P12, P7 and the governed path are as in §2 – §11.

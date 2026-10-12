@@ -7,6 +7,7 @@ export {
   canonicalizeDecimalText,
   compareCanonicalDecimals,
   isCanonicalDecimal,
+  subtractCanonicalDecimals,
 } from './canonical-decimal.js';
 
 export {

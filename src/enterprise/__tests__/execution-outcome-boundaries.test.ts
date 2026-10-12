@@ -132,6 +132,15 @@ describe('P11 boundaries — who may hold it', () => {
     // ASSURE-01: the trace reads one execution's verified record through the
     // read-only reader it is handed (a type import only); it prepares and records nothing.
     'src/enterprise/evidence/trace-builder.ts',
+    // PAY-05: the settlement basis and the refund reconciliation read one
+    // execution's verified record through the read-only reader they are handed
+    // (types, and the store's error classification) — a completed P11 outcome is
+    // a settlement *basis*, never settlement; neither prepares nor records
+    // anything. `validation.ts` reuses P11's identifier and instant predicates
+    // verbatim (`pay05-settlement-structure.test.ts`).
+    'src/enterprise/payment-settlement/basis.ts',
+    'src/enterprise/payment-settlement/refund-service.ts',
+    'src/enterprise/payment-settlement/validation.ts',
   ]);
 
   it('no other production module imports the execution outcome store', () => {

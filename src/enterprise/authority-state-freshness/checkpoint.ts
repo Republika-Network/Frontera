@@ -43,7 +43,7 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
 
 /**
  * The closed set of anchored state. Nothing else is anchored, and nothing else
- * can be named. Beyond the authority stores, two operational safety states —
+ * can be named. Beyond the authority stores, three operational safety states —
  * never authority, and never enrolled by the authority ceremony:
  *
  * - `xrpl-submission-reservations` (PAY-03): the append-only reservation
@@ -53,13 +53,16 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
  * - `payment-business-operation-state` (PAY-04 hardening): the append-only
  *   history of payment business operations and the protocol challenges each
  *   one owns, whose rollback could make a challenge already paid for look
- *   unowned, and so payable again under a new business operation.
+ *   unowned, and so payable again under a new business operation;
+ * - `payment-refund-state` (PAY-05): the append-only refund accounting of
+ *   settled payments, whose rollback could recreate refundable balance, and so
+ *   let the same money be refunded twice.
  *
  * The witness treats each exactly like any other slot. This module knows
  * nothing else about them: each store lives in its own payment composition
  * edge, outside CORE, and maps itself onto a checkpoint.
  */
-export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'xrpl-submission-reservations', 'payment-business-operation-state'] as const;
+export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state'] as const;
 
 export type AuthorityStateKind = (typeof AUTHORITY_STATE_KINDS)[number];
 

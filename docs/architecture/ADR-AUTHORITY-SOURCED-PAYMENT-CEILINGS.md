@@ -247,4 +247,5 @@ Nothing a caller sends reaches any of this:
   delegate: it is withheld, never widened. Rotating authority for the same delegate is deferred.
 - **Out of scope:** provider certainty (P11), reconciliation (P12), MPP (P13), Stripe (P14),
   receipts and settlement (P15). P7's word "settled" still means reservation capacity, not financial
-  settlement.
+  settlement. *(PAY-05, which delivered P15, names the two "capacity settlement" and "funds
+  settlement" — `docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md` §1.)*

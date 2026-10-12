@@ -35,6 +35,10 @@ export interface SimulatedTransaction {
   readonly lastLedgerSequence: number;
   readonly amount: { readonly currency: string; readonly issuer: string; readonly value: string };
   outcome: SimulatedOutcome;
+  /** PAY-05: the decoded signed transaction, answered as `tx_json` (API v2) so a settlement verifier can read its own fields. */
+  readonly transaction?: Readonly<Record<string, unknown>>;
+  /** PAY-05: the validated ledger it was included in, once it validated. */
+  validatedIn?: number;
 }
 
 export interface LedgerSimulator extends XrplClientPort {
@@ -60,6 +64,10 @@ export interface LedgerSimulator extends XrplClientPort {
   searchedAll: boolean;
   /** The lookup answers anything that is not a `tx` answer. */
   malformedLookups: boolean;
+  /** `ledgerHeader` alone throws (a momentarily unavailable `ledger` read); every other read answers. */
+  headerUnavailable: boolean;
+  /** Validated `tx` answers omit `ledger_hash`, as an API v1 answer does. */
+  lookupOmitsLedgerHash: boolean;
   readonly transactions: Map<string, SimulatedTransaction>;
   readonly submitted: string[];
   readonly calls: { connect: number; serverInfo: number; validatedLedgerIndex: number; ledgerHeader: number; autofill: number; submit: number; lookup: number; disconnect: number };
@@ -89,6 +97,8 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
   const genesis = { index: highest, closeTime: rippleSeconds(clockNow()) };
   const closed = new Map<number, number>();
   const closeTimeOf = (index: number): number => closed.get(index) ?? genesis.closeTime - SIMULATED_LEDGER_SECONDS * (genesis.index - index);
+  // A deterministic stand-in for a validated ledger's hash: 64 uppercase hex digits.
+  const ledgerHashOf = (index: number): string => index.toString(16).toUpperCase().padStart(64, '0');
   const transactions = new Map<string, SimulatedTransaction>();
   const submitted: string[] = [];
   const unreachable = (): never => {
@@ -114,6 +124,8 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
     unavailable: false,
     searchedAll: true,
     malformedLookups: false,
+    headerUnavailable: false,
+    lookupOmitsLedgerHash: false,
     transactions,
     submitted,
     calls,
@@ -121,6 +133,7 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
       const tx = transactions.get(hash);
       if (tx === undefined) throw new Error('simulated: no such transaction');
       tx.outcome = outcome;
+      tx.validatedIn = Math.max(1, Math.min(tx.lastLedgerSequence, highest));
       if (simulator.sequence <= tx.sequence) simulator.sequence = tx.sequence + 1;
     },
     async connect() {
@@ -142,9 +155,9 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
     },
     async ledgerHeader(index: number) {
       calls.ledgerHeader += 1;
-      if (simulator.unavailable) unreachable();
+      if (simulator.unavailable || simulator.headerUnavailable) unreachable();
       if (index > reported) return { ledger_index: index, validated: false };
-      return { ledger_index: index, close_time: closeTimeOf(index), validated: true };
+      return { ledger_index: index, ledger_hash: ledgerHashOf(index), close_time: closeTimeOf(index), validated: true };
     },
     async autofill(transaction: XrplPaymentTransaction) {
       calls.autofill += 1;
@@ -159,7 +172,7 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
       const decoded = decode(blob) as Record<string, unknown>;
       if (simulator.submitMode === 'tem') return { engine_result: 'temBAD_AMOUNT', tx_json: { hash } };
       const amount = decoded['Amount'] as { currency: string; issuer: string; value: string };
-      transactions.set(hash, { hash, sequence: decoded['Sequence'] as number, lastLedgerSequence: decoded['LastLedgerSequence'] as number, amount: { ...amount }, outcome: 'pending' });
+      transactions.set(hash, { hash, sequence: decoded['Sequence'] as number, lastLedgerSequence: decoded['LastLedgerSequence'] as number, amount: { ...amount }, outcome: 'pending', transaction: decoded });
       const eventual = simulator.nextOutcome;
       if (eventual === 'success' || eventual === 'tec') simulator.validate(hash, eventual);
       else transactions.get(hash)!.outcome = eventual;
@@ -177,7 +190,7 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
         case 'pending':
           return { hash: tx.hash, validated: false };
         case 'success':
-          return { hash: tx.hash, validated: true, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: { ...tx.amount } } };
+          return { ...validatedShape(tx), meta: { TransactionResult: 'tesSUCCESS', delivered_amount: { ...tx.amount } } };
         case 'delivered-mismatch':
           return { hash: tx.hash, validated: true, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: { ...tx.amount, value: '0.01' } } };
         case 'wrong-issuer':
@@ -187,6 +200,22 @@ export function createLedgerSimulator(initial: Partial<Pick<LedgerSimulator, 'in
       }
     },
   };
+  /**
+   * What rippled (API v2, the SDK's default) answers for a validated transaction: the hash, the validated ledger's
+   * index and hash, and the transaction itself under `tx_json`, its instructed amount as `DeliverMax`.
+   */
+  function validatedShape(tx: SimulatedTransaction): Record<string, unknown> {
+    const { Amount: instructed, TxnSignature: _signature, SigningPubKey: _key, ...fields } = (tx.transaction ?? {}) as Record<string, unknown>;
+    const ledgerIndex = tx.validatedIn ?? Math.max(1, highest);
+    return {
+      hash: tx.hash,
+      validated: true,
+      ledger_index: ledgerIndex,
+      ...(simulator.lookupOmitsLedgerHash ? {} : { ledger_hash: ledgerHashOf(ledgerIndex) }),
+      tx_json: { ...fields, ...(instructed !== undefined ? { DeliverMax: instructed } : {}) },
+    };
+  }
+
   return simulator;
 }
 

@@ -204,6 +204,13 @@ describe('P12 boundaries — who may hold the resolution store', () => {
     // ASSURE-01: the read-only trace — one execution's verified state through the
     // reader it is handed (a type import only); it binds and records nothing.
     'src/enterprise/evidence/trace-builder.ts',
+    // PAY-05: the settlement basis and the refund reconciliation read one
+    // execution's verified resolution through the read-only reader they are
+    // handed (types, and the store's error classification); a completed
+    // resolution is a settlement *basis*, never settlement. Neither binds nor
+    // records anything, and P12 imports nothing from PAY-05.
+    'src/enterprise/payment-settlement/basis.ts',
+    'src/enterprise/payment-settlement/refund-service.ts',
   ]);
 
   it('no other production module imports it — no Kernel, grant, P7, emergency, P8, identity or adapter module', () => {

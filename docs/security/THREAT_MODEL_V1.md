@@ -672,6 +672,45 @@ The PAY-04 post-merge hardening closes the one money-moving residual the merged 
 | Protocol vocabulary or protocol logic entering the core; MPP coupled to a rail | **BLOCKED** (the repository's own sources) | Structural scans (SEC-INV-245, M39, M40) |
 | A forged challenge proposing terms the host's trusted configuration accepts | **ACCEPTED** — by protocol design | A client cannot verify a merchant's challenge binding; PAY-04 binds, it does not authenticate. The governed path, ceilings, approvals and counterparty bounds still apply |
 
+### 7.31 Settlement, receipts, refunds & payment obligations (added by PAY-05)
+
+PAY-05 defines funds settlement for governed payments: a payment is `settled` only after an explicit verification in which a trusted, read-only finality authority proved from the rail that exactly that payment's funds transfer is final, with bounded evidence recorded once; receipts are derived from settlements; a CORE-04 payment obligation is verified only by the exact payment's settlement through CORE-04's own recorder and an independent source; refunds are new governed payments within a CORE-07-anchored refundable balance (`docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md`). Everything is embedder-composed. The finality authority, the payment-obligation registry and the refund counterparty mapping are trusted composition; payers, merchants, requesters and every rail answer are not.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| T1 A fake or mistaken provider success (P11 completed) taken as settlement | **BLOCKED** | Completion is a basis, never settlement: the payment is awaiting-finality until a trusted authority proves finality; no receipt, discharge or refund exists before (SEC-INV-250) |
+| T2 A forged or altered receipt | **BLOCKED** (correlation against the canonical settlement) | Verification recomputes the digest and re-derives the receipt from the verified settlement; a self-consistent forgery fails correlation. Not authenticity: receipts are unsigned (SEC-INV-255) |
+| T3 Provider reference substitution — evidence of another transfer | **BLOCKED** | The evidence handle must equal the handle P11 / P12 recorded; the XRPL authority locates by the interlock record of this execution only (SEC-INV-252) |
+| T4 Amount or asset substitution in finality evidence | **BLOCKED** | Exact comparison with the canonical amount and asset; the XRPL proof reads instructed and delivered amounts from the ledger (SEC-INV-252) |
+| T5 Source or destination substitution in finality evidence | **BLOCKED** | Exact comparison with the governed source account and destination; the XRPL proof reads Account, Destination and DestinationTag from the ledger (SEC-INV-252) |
+| T6 A compromised finality authority asserting false finality | **ACCEPTED** — trust boundary, mitigated | Read-only port, trusted selection, exact correlation, bounded evidence, no signing / submission / authority capability; refunds stay governed by the requester's authority (spec §5) |
+| T7 The finality authority unavailable, timing out or answering garbage | **BLOCKED** — fail-closed (availability lost) | Nothing is written and nothing changes; never settled, never a negative (SEC-INV-251) |
+| T8 Conflicting final observations for one execution | **BLOCKED** | The first recorded settlement stands; the other is a conflict — never latest, first-by-time, highest position or newest instant (SEC-INV-254) |
+| T9 A duplicate settlement write or a second receipt | **BLOCKED** | Derived identity, BEGIN IMMEDIATE, append-only; the same proof is idempotent and the authority is not asked again; receipts are derived, never stored twice (SEC-INV-254, SEC-INV-255) |
+| T10 A settlement store rolled back, lost or written behind the service | **BLOCKED** (availability only) | A stale or lost store reads awaiting-finality until re-verified; a row whose P11 / P12 basis no longer verifies is never believed (SEC-INV-254, SEC-INV-261) |
+| T11 A receipt store rolled back | **BLOCKED** (no store exists) | Receipts are pure derivations without a local instant: the restored settlement derives the identical receipt (SEC-INV-255) |
+| T12 The same receipt replayed against its obligation | **BLOCKED** | Idempotent by receipt reference; no second report (SEC-INV-256) |
+| T13 A receipt used for the wrong obligation, or a payment matching only by amount | **BLOCKED** | The satisfying business reference is derived from the obligation instance; payment X satisfies obligation Y only if made for Y (SEC-INV-256) |
+| T14 A caller self-reporting payment to verify its own obligation | **BLOCKED** | CORE-04 classifies sources; a self-reported source reaches discharged only, and a later self-report never blocks the independent discharge (SEC-INV-256) |
+| T15 A refund of an unsettled payment | **BLOCKED** | The refund service reads the canonical settlement itself; no caller-supplied original is trusted (SEC-INV-257) |
+| T16 A settlement treated as authority to refund | **BLOCKED** | A refund is a new governed payment decided for the requester by the Kernel; a requester without authority is denied (SEC-INV-257) |
+| T17 Over-refund beyond the settled original | **BLOCKED** | Exact same-asset accounting; cumulative reservations never exceed the original (SEC-INV-258) |
+| T18 Concurrent refunds exceeding the remaining balance | **BLOCKED** | One BEGIN IMMEDIATE decision per original inside one CORE-07 transition, across connections (SEC-INV-258) |
+| T19 An uncertain refund restoring refundable balance | **BLOCKED** | Released only on a definitive canonical fact that the refund moved nothing (SEC-INV-259) |
+| T20 A rollback or loss of the refund accounting recreating refundable balance | **BLOCKED** while the witness is outside that restore domain | Always anchored at the CORE-07 witness; older, lost, forked or pending history refused at open; no reservation without the witness (SEC-INV-260) |
+| T21 The refund accounting and the witness restored as one snapshot | **ACCEPTED** — deployment prohibition | Identical to CORE-07's same-snapshot assumption |
+| T22 Settlement verification causing an automatic retry or resubmission | **BLOCKED** | Settlement observes only; no outcome reaches the rail again (SEC-INV-253) |
+| T23 P7 capacity settlement or P11 success confused with funds settlement | **BLOCKED** | One meaning of settled; P7 and P11 name no PAY-05 identifier and nothing reads them as settlement (SEC-INV-250, SEC-INV-262) |
+| T24 Rail-specific settlement vocabulary leaking into the generic core | **BLOCKED** (the repository's own sources) | Structural scans of the contract, the edge and the core (SEC-INV-262) |
+| T25 A raw provider body or secret retained as settlement evidence | **BLOCKED** | Closed, bounded, normalized evidence; secret-shaped and secret-named content refused (SEC-INV-252) |
+| T26 A database writer forging a settlement row together with P11, P12 and the Governance Store | **RESIDUAL** — integrity, not authenticity | Unkeyed digests, as P11 / P12; a consistent rewrite of all of them is not detected (spec §21) |
+| T27 A stale, unbound or mismatched P12 resolution releasing refund balance | **BLOCKED** | Refund release reads P12 through the settlement basis's own validator: bound to the attempt, to the P11 observation on record now, to its binding, with a consistent handle; anything else is `basis-unavailable` and the reservation stays counted (SEC-INV-259; RREL-1 – RREL-6) |
+| T28 A refund-ledger row rewritten under a cached, witnessed head (digest strings and key columns kept) | **BLOCKED** | Every read recomputes every entry digest from content and the chain from genesis; CORE-07 freshness and local integrity are separate layers and neither substitutes for the other (SEC-INV-260; LEDGER-TAMPER-1 – 5) |
+| T29 An invalid refund request stranding refundable balance behind a reservation | **BLOCKED** | The refund is compiled (pure) before anything is reserved; a refused envelope or binding throws with nothing reserved or governed (SEC-INV-257; COMP-1 – COMP-4) |
+| T30 A payment-obligation registry outage read as "not a payment obligation" | **BLOCKED** | Only a successful `undefined` is the negative fact; a throw, a rejection or an out-of-contract answer is `basis-unavailable`, nothing written, explicitly retryable (SEC-INV-256; OBREG-1 – OBREG-5) |
+| T31 Evidence availability or answer shape changing the canonical settlement or receipt | **BLOCKED** | No optional field enters finality evidence conditionally; the XRPL authority requires the validated header's hash and close time or answers `not-final`, so reconstruction after store loss is byte-identical (SEC-INV-255, SEC-INV-261; DET-1 – DET-6) |
+| T32 An impossible calendar instant recorded as finality evidence | **BLOCKED** | Finality instants are validated for date existence, not only shape (SEC-INV-252; TIME-1 – TIME-9) |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.

@@ -80,7 +80,8 @@ disagree. There is no fourth value, no confidence score and no inference.
 
 **Certainty is not settlement.** `confirmed-completed` means the execution provider confirmed that
 the effect it was asked to perform completed. It says nothing about irrevocable funds, bank
-settlement, ledger finality, receipt verification or obligation discharge (P15).
+settlement, ledger finality, receipt verification or obligation discharge (P15 — delivered as PAY-05,
+which reads `confirmed-completed` as a settlement *basis* only: `docs/payments/PAY-05-SETTLEMENT-AND-RECEIPTS.md`).
 
 **Certainty is not authorization.** No path that allows, denies, issues, reserves, admits or
 routes reads this store. A past success is never permission for another action.

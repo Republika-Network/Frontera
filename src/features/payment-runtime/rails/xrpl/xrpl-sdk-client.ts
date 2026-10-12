@@ -52,9 +52,10 @@ export function createXrplSdkClient(configuration: XrplRlusdRailConfiguration): 
       const response = await read({ command: 'ledger', ledger_index: index }, timeoutMs);
       const result = response.result;
       if (result === null || typeof result !== 'object') return undefined;
-      const { ledger_index, ledger, validated } = result as { readonly ledger_index?: unknown; readonly ledger?: unknown; readonly validated?: unknown };
+      const { ledger_index, ledger_hash, ledger, validated } = result as { readonly ledger_index?: unknown; readonly ledger_hash?: unknown; readonly ledger?: unknown; readonly validated?: unknown };
       const close_time = ledger !== null && typeof ledger === 'object' ? (ledger as { readonly close_time?: unknown }).close_time : undefined;
-      return { ledger_index, close_time, validated };
+      // The validated ledger's own hash, as rippled states it for every `ledger` answer (PAY-05 finality evidence).
+      return { ledger_index, ledger_hash, close_time, validated };
     },
     async autofill(transaction: XrplPaymentTransaction): Promise<unknown> {
       // A copy: the SDK fills the object it is handed.
