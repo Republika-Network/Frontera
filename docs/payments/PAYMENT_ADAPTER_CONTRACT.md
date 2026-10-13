@@ -80,6 +80,12 @@ turns these rules into a reusable rail conformance suite.
 The first real rail, XRPL / RLUSD (PAY-02), satisfies every rule above:
 `docs/payments/XRPL_RLUSD_RAIL.md`.
 
+The second rail, Lightning / BTC (PAY-06), satisfies every rule above with
+the contract unchanged — `executionId` binds its one durable reservation, at
+most one node send per `execute()`, `unconfirmed` for every timeout, disconnect
+and in-flight payment, the payment hash as `externalReference`, node
+credentials in its own composition only: `docs/payments/PAY-06-LIGHTNING-RAIL.md`.
+
 ## A protocol adapter is not a rail adapter (PAY-04)
 
 A *payment protocol adapter* (`PaymentProtocolAdapter`, `domain/payment-protocol.ts`;
