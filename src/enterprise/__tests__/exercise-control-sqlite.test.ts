@@ -327,8 +327,13 @@ describe('SQLite exercise-control ledger — the reservation instant is sampled 
 
   it('a real write-lock wait: the reservation instant is taken after the lock is acquired, so the rolling window starts then', async () => {
     const path = freshPath();
-    // The wall clock, read by both the "assessment" here and the ledger.
-    const now = (): string => new Date().toISOString();
+    // A real clock, read by both the "assessment" here and the ledger: wall-clock
+    // shaped, but advanced by the monotonic clock. The host's wall clock may
+    // step backwards (NTP or hypervisor time sync — observed on WSL2), which
+    // would make the measured wait negative and say nothing about the ledger.
+    const wallOrigin = Date.now();
+    const monotonicOrigin = performance.now();
+    const now = (): string => new Date(wallOrigin + (performance.now() - monotonicOrigin)).toISOString();
     const ledger = await createSqliteExerciseControlLedger(path, { now, busyTimeoutMs: 10_000 });
     const holdMs = 600;
     // Another connection, on another thread, holds the write lock.

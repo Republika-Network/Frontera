@@ -192,6 +192,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'approval-runtime': 'approval runtime: not reached by the qualified scenarios',
       'evidence-source-runtime': 'evidence sources outside the trace',
       'external-agent-handshake': 'agent handshake',
+      'trade-runtime': 'TRADE: a separate governed-action vertical (delegated OfferCreate), not a payment layer; no qualified payment run executes it, nothing in CORE imports it, and it is held to its own boundary tests (trade-vertical-structure.test.ts)',
       'verifiable-export-package': 'export packaging',
     },
   },
