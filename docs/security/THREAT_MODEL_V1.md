@@ -711,6 +711,118 @@ PAY-05 defines funds settlement for governed payments: a payment is `settled` on
 | T31 Evidence availability or answer shape changing the canonical settlement or receipt | **BLOCKED** | No optional field enters finality evidence conditionally; the XRPL authority requires the validated header's hash and close time or answers `not-final`, so reconstruction after store loss is byte-identical (SEC-INV-255, SEC-INV-261; DET-1 – DET-6) |
 | T32 An impossible calendar instant recorded as finality evidence | **BLOCKED** | Finality instants are validated for date existence, not only shape (SEC-INV-252; TIME-1 – TIME-9) |
 
+### 7.32 Lightning rail, BOLT11 invoices, node uncertainty & preimage finality (added by PAY-06)
+
+PAY-06 adds Frontera's second, structurally different payment rail: one governed BTC payment becomes at most one logical Lightning payment for one verified BOLT11 invoice, through an LND node composed by the embedder. The invoice is hostile input; the node is trusted to route and to report, never to decide; the CORE layers do not know Lightning exists. Specification: `docs/payments/PAY-06-LIGHTNING-RAIL.md`; decision record: `docs/architecture/ADR-LIGHTNING-RAIL.md`.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| T1 A forged invoice (wrong signer, altered fields) | **BLOCKED** | Strict BOLT11 decode with the signature verified — the payee recovered with the stated recovery id (or the `n` field, low-S) and cross-checked by a second implementation — and the payee must equal the governed payee (SEC-INV-268) |
+| T2 An expired invoice paid | **BLOCKED** | Expiry checked with a safety margin before the node is consulted and again immediately before the send; no automatic refresh (SEC-INV-268) |
+| T3 An invoice for another network | **BLOCKED** | The invoice prefix must equal the configured network (SEC-INV-268) |
+| T4 Invoice amount differing from the governed amount | **BLOCKED** | Exact millisatoshi equality, both ways; amountless invoices refused (SEC-INV-267) |
+| T5 An invoice of another payee substituted for the governed one | **BLOCKED** | The governed destination binds payee and payment hash; the recovered payee must equal it; a flipped recovery id recovers another key and is refused (SEC-INV-268) |
+| T6 One payment hash paid under two governed executions | **BLOCKED** | The durable interlock holds one reservation per payment hash, ever, across processes; the node's own duplicate refusal is defence in depth only (SEC-INV-264) |
+| T7 One execution rebound to another invoice | **BLOCKED** | One reservation per execution; a different invoice for it is a conflict — the first binding stands, nothing is sent (SEC-INV-264) |
+| T8 A routing fee above the trusted cap | **BLOCKED** | The cap is trusted configuration, computed exactly, carried to the node as its hard limit before the send; a node answer reporting a higher fee is never success (SEC-INV-266) |
+| T9 The node claiming success it did not achieve | **BLOCKED** (cryptographically for completion; delivered amount and fee are node-reported) | Completion requires the preimage of the governed payment hash (only the payee can release it); amount and fee are checked exactly against the reservation (SEC-INV-269) |
+| T10 A preimage that does not hash to the payment hash | **BLOCKED** | Decoded to exactly 32 bytes and SHA-256 compared; malformed → not final; mismatched → contradicted; never settled (SEC-INV-269) |
+| T11 An RPC timeout after the node accepted the payment read as failure | **BLOCKED** | Timeout, disconnect and in-flight are unconfirmed; only a terminal node failure with nothing in flight is not-completed; P12 reads the same payment hash later (SEC-INV-265) |
+| T12 A Host crash after the node send causing a second send | **BLOCKED** | The reservation is durable before the send; a restarted Host finds it and never sends again for that execution (SEC-INV-263) |
+| T13 A rollback or stale restore of the Lightning interlock reopening send eligibility | **BLOCKED** while the witness is outside that restore domain | Always anchored at the CORE-07 witness (slot `payment-initiation-reservations`); older, lost, forked or pending history refused at open; no reservation — so no send — without the witness (SEC-INV-272) |
+| T14 The witness rolled back alone | **BLOCKED** | A running interlock refuses the next reservation; a restart is refused as a fork (SEC-INV-272) |
+| T15 Concurrent duplicate sends across processes | **BLOCKED** | One BEGIN IMMEDIATE decision inside one CORE-07 transition per reservation; exactly one Host reaches the node (SEC-INV-263, SEC-INV-264) |
+| T16 Node credential leakage | **BLOCKED** | The macaroon and pinned certificate live in the LND adapter's closure only; never in a result, error, log, health answer, reservation, P11, P12, settlement or receipt; never sent in plaintext to a hostname (T35, T36) (SEC-INV-271) |
+| T17 Route or channel detail leaked into settlement evidence or receipts | **BLOCKED** | Evidence is a closed fact set (hash, payee, invoice digest, amount, fee, cap, network, preimage commitment); no route, hop, channel or attempt field exists (SEC-INV-269) |
+| T18 The node's internal route attempts mistaken for a Frontera retry | **BLOCKED** | One `sendPayment` per execution, from one call site; the node's multi-attempt routing of one payment hash is one logical payment bounded by the cap and timeout the call carries (SEC-INV-263) |
+| T19 A P11 timeout mapped to confirmed-not-completed (capacity released, payment possibly moved) | **BLOCKED** | See T11; P7 releases only on a definitive node failure or a P12 resolution (SEC-INV-265) |
+| T20 The P12 Lightning resolution authority sending a payment | **BLOCKED** | It holds a `LightningNodeReader` (no send method) and, in the reference composition, a node-enforced read-only macaroon (SEC-INV-270) |
+| T21 The finality authority sending a payment | **BLOCKED** | As T20 (SEC-INV-270) |
+| T22 Optional node answer fields or ordering changing settlement identity or the receipt | **BLOCKED** | Facts only from immutable proof and the reservation; no node timestamp, attempt order or optional field; reconstruction after store loss is byte-identical (SEC-INV-269) |
+| T23 A node on the wrong network | **BLOCKED** | The node's reported network must equal the configured one before any send and on every P12 or finality read — together with its identity (T31) (SEC-INV-273, SEC-INV-275; PAYER-11) |
+| T24 Malformed or unsupported feature bits | **BLOCKED** | Non-minimal feature fields refused; an unknown required (even) bit refused; feature dependencies enforced transitively (see T34) (SEC-INV-268) |
+| T25 Rounding in BTC ↔ msat conversion | **BLOCKED** | Text and BigInt only; sub-millisatoshi values refused, never rounded (SEC-INV-267) |
+| T26 Mainnet enabled by accident | **BLOCKED** | No default network; `mainnet` requires `allowMainnet: true` stated beside it (SEC-INV-273) |
+| T27 A compromised payer node or node operator | **ACCEPTED** — trust boundary, mitigated | The node is trusted to route and report; narrowed by the fee cap it is handed, the read-only credential for authorities, the preimage check and exact comparisons (spec §17). This includes a compromised node reporting another node's identity key: the payer binding (T31) compares the node's own `getinfo` report, so it defeats composition against another honest node, not a lying one (spec §21) |
+| T28 Another client of the same node re-paying a payment hash after a definitive failure | **RESIDUAL** — deployment requirement | LND permits a new payment for a failed hash; the node (or at least the paying macaroon) must be dedicated to Frontera (spec §21) |
+| T29 The interlock and the witness restored as one snapshot | **ACCEPTED** — deployment prohibition | Identical to CORE-07's same-snapshot assumption |
+| T30 A crash after the reservation and before the send leaving the execution forever uncertain | **RESIDUAL** — availability | The node does not know the payment and absence is never evidence; an operator resolution through P12 closes it (spec §21) |
+| T31 Payer-node substitution: the P12 or finality reader composed against another node on the same network, whose own payment of the same invoice succeeded | **BLOCKED** | The reservation binds the payer node identity verified before the send; P12 and finality read status only after the node proves that identity on the reservation's network — another node yields unresolved / `not-final`, never `confirmed-completed` or `final` (SEC-INV-275; `pay06-lightning-governed.test.ts` PAYER-2, PAYER-4; regtest R7 with a real second node) |
+| T32 Same-network, different-node status attribution of a failure (capacity released, or settlement contradicted, while the payer's own payment is still in flight) | **BLOCKED** | As T31: an identity mismatch is the absence of evidence — never `confirmed-not-completed`, never `contradicted` (SEC-INV-275; PAYER-3, PAYER-5; regtest R7: carol's real `FAILED` for alice's held hash) |
+| T33 Tampering with the recorded payer identity | **BLOCKED** | `payerNodeId` is part of the entry's canonical content, digest and chain, and of the CORE-07 witnessed state: rewritten with digests kept → integrity refusal; entry re-hashed → chain refusal; whole chain re-hashed → freshness refusal; a payer-less (v1) entry or file → refused, never adopted (SEC-INV-275, SEC-INV-272; PAYER-9, PAYER-10) |
+| T34 An invoice offering `payment_secret` without `var_onion_optin` (or `basic_mpp` without either) | **BLOCKED** | Feature dependencies enforced on every edge, so transitively: `basic_mpp → payment_secret → var_onion_optin`, a feature present when either bit of its pair is set; refused before the node is consulted (SEC-INV-268; FEAT-1 … FEAT-12 on signed invoices) |
+| T35 Plaintext `http://localhost` redirected by a modified hosts file, NSS or DNS configuration | **BLOCKED** | Plain `http:` is accepted only for a literal loopback IP decided from the URL alone; `localhost` (any case) and every other hostname are refused at configuration, before any request or connection exists (SEC-INV-271; HTTP-4, HTTP-5, HTTP-10) |
+| T36 Macaroon disclosure through hostname resolution | **BLOCKED** | No plaintext request is ever made to a hostname (T35); over `https:` the macaroon is written only after the TLS handshake matched the pinned certificate, so a resolver-chosen host without the node's key receives none (SEC-INV-271; HTTP-9, HTTP-10 canary) |
+| T37 A rail recomposed against another payer node sending an execution again | **BLOCKED** | The reservation is checked before anything else and owns its payer for good: the execution is answered `unconfirmed` from it with zero sends, and the reservation is never re-bound (SEC-INV-263, SEC-INV-275; PAYER-8) |
+
+### 7.33 Multi-rail qualification (added by PAY-07)
+
+PAY-07 adds no production code and no effect path: one canonical conformance suite, one shared governed world and two rail edges qualify XRPL / RLUSD and Lightning / BTC against a byte-identical CORE (`docs/payments/PAY-07-MULTI-RAIL-QUALIFICATION.md`). The threats are to the qualification itself — a proof that passes for the wrong reason.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| Q1 The canonical suite accidentally contains XRPL-specific logic | **BLOCKED** | The suite imports nothing; its code names no XRPL word, rail id or asset; it never branches on the implementation it is told (SEC-INV-276) |
+| Q2 The canonical suite accidentally contains Lightning-specific logic | **BLOCKED** | As Q1 — one vocabulary scan for both rails; one harness shape, no discriminant (SEC-INV-276) |
+| Q3 A rail bypasses governed execution in qualification | **BLOCKED** | The shared world reaches a rail only through PAY-01's bridge and never calls a rail or the orchestrator directly; both rails pass MRC-01 / MRC-12 through the governed path (SEC-INV-278) |
+| Q4 MPP omitted from the representative flow | **BLOCKED** | One protocol entry point (prepareAndGovern) for present and replay; the suite requires protocol mpp and one governed intent (SEC-INV-278) |
+| Q5 The CORE manifest excludes a relevant generic source file | **BLOCKED** | The shared path's runtime import closure (and its workspace dependencies) must lie inside the manifest; every directory beside a CORE root is classified (SEC-INV-277) |
+| Q6 CRLF line endings change the CORE manifest digest | **BLOCKED** | Only CRLF pairs are normalized — core.autocrlf's checkout transformation reversed; a lone CR or any other byte changes the digest (SEC-INV-277) |
+| Q7 One rail gets a special policy, ceiling relationship or governance | **BLOCKED** | One shared world composes governance identically for every rail and names no rail; reports must be equivalent case by case (SEC-INV-276, SEC-INV-279) |
+| Q8 A denied or over-ceiling payment still reaches the rail | **BLOCKED** | Zero external effects and zero rail-port instructions on both rails; the suite fails a harness that moves money on either (SEC-INV-279) |
+| Q9 P12 reconciliation resends a payment | **BLOCKED** | Effects are counted after every P12 call, before and after a restart; one effect in total (SEC-INV-280) |
+| Q10 ASSURE-01 trace verification skipped for a rail | **BLOCKED** | The verdict is the existing verifier's over the composition root's six reads, asserted per scenario per rail (SEC-INV-281) |
+| Q11 A success accepted without PAY-05 finality | **BLOCKED** | P11 completion must read awaiting-finality with no receipt; settlement only through the rail's finality authority (SEC-INV-276) |
+| Q12 Reports claim parity while assertions differ per rail | **BLOCKED** | One closed case list iterated by the suite; parity compares verdicts, effect counts and lifecycle signatures case by case under one CORE digest (SEC-INV-276, SEC-INV-277) |
+| Q13 XRPL vocabulary in a CORE layer — CORE-07's closed slot list names `'xrpl-submission-reservations'` (PAY-03) | **RESIDUAL** — classified | An opaque identifier with no XRPL behaviour; PAY-06 chose the neutral `'payment-initiation-reservations'`. Renaming migrates witness state persisted by PAY-03 deployments; pinned as the only rail word in CORE (SEC-INV-282) |
+| Q14 Qualification on deterministic simulators, not live rails | **ACCEPTED** — scope | The rails, interlocks, authorities and CORE are the real code; the provider below each is PAY-03's ledger simulator / PAY-06's node simulator. Live evidence is PAY-03's Testnet and PAY-06's regtest qualification, reused, not re-run |
+
+### 7.34 x402 protocol adapter (added by PAY-08)
+
+PAY-08 adds x402 v2 as a second protocol at PAY-04's boundary, executable only as `exact` on Bitcoin Lightning (`lnbtc`) through PAY-06's governed rail, with the `PAYMENT-SIGNATURE` built after PAY-05 settlement (`docs/payments/PAY-08-X402-PROTOCOL-ADAPTER.md`). Every merchant field is untrusted; the threats are to authority, binding, money exactness and evidence.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| X1 Forged PaymentRequired | **BLOCKED** (as authority) — **RESIDUAL** (authenticity) | A forged requirement can only propose terms: it is parsed closed, mapped only through trusted configuration, bound to the trusted request and the invoice's signed description hash, and then governed (SEC-INV-283, SEC-INV-287). Merchant authenticity is not established — by protocol design |
+| X2 Wrong x402 version | **BLOCKED** | `x402Version` must be the integer 2, read first; v1 header names are not read (`x402-messages.test.ts` PR-2) |
+| X3 Malicious `accepts` ordering | **BLOCKED** | Trusted mapping priority, never index; permutations yield one answer; conflicting duplicates refused (SEC-INV-284) |
+| X4 Amount mutation | **BLOCKED** | Same invoice: the binding refuses (invoice amount); new invoice under the same operation: `business-operation-conflict`; no `govern()` (SEC-INV-289) |
+| X5 `payTo` mutation | **BLOCKED** | The invoice payee must equal `payTo`; the destination is payee + payment hash; another payee is another operation's terms (SEC-INV-289) |
+| X6 Network mutation | **BLOCKED** | Another network has no mapping (unsupported) or a different BOLT11 currency (refused) (SEC-INV-290) |
+| X7 Asset mutation | **BLOCKED** | Exact `(scheme, network, asset)` mapping; an unmapped asset is not executable; no scale is guessed (SEC-INV-284, SEC-INV-288) |
+| X8 Resource replay (A → B) | **BLOCKED** | `resource.url` must equal the trusted request URL exactly; the request hash commits to the URL (SEC-INV-287) |
+| X9 Method replay (GET → POST) | **BLOCKED** | The request hash commits to the method; PAY-04's binding commits to it in the semantic digest (SEC-INV-287) |
+| X10 Body replay | **BLOCKED** | The request hash commits to the body SHA-256 from PAY-04's RFC 9530 digest (SEC-INV-287) |
+| X11 Business-operation rollback | **BLOCKED** | PAY-04R: a stale restore is refused at open by the CORE-07 witness; an unavailable witness refuses every presentation (SEC-INV-289; PAY-04 SEC-INV-246 … 249) |
+| X12 Requirement reuse across operations | **BLOCKED** | One instrument (network + payment hash) belongs to one business operation, CORE-07-anchored: `challenge-conflict` (SEC-INV-289) |
+| X13 Unsupported scheme | **BLOCKED** | Only `exact` can be mapped; others are skipped or refused (SEC-INV-290) |
+| X14 Unsupported payment flow | **BLOCKED** | `escrow` and unknown flows never execute; a flow must be enabled by the mapping and declared by the binding (SEC-INV-290) |
+| X15 Extension abuse | **BLOCKED** | ≤ 8 extensions, ≤ 4 KiB each, ≤ 6 KiB total, exact `{ info, schema }` shape; never interpreted for policy; the server's echoed exactly, client additions only additive (SEC-INV-283, SEC-INV-296) |
+| X16 Atomic-unit rounding | **BLOCKED** | Text-only conversion under trusted scale, P9-validated; no float, no rounding (SEC-INV-288) |
+| X17 Merchant timeout abuse | **BLOCKED** | A requirement above the mapping's maximum timeout is not used; for lnbtc the timeout must equal the invoice expiry (SEC-INV-284) |
+| X18 Facilitator verify treated as authority | **BLOCKED** — not applicable | The paying side calls no facilitator; nothing a facilitator says reaches governance (SEC-INV-285) |
+| X19 Facilitator verify moves money | **BLOCKED** — not applicable | No verify path exists; the only money-moving call is PAY-06's send under a grant (SEC-INV-285) |
+| X20 Settle retried after ambiguity | **BLOCKED** | No settle client and no retry; an unconfirmed payment is P12's, and re-presenting replays it (SEC-INV-285) |
+| X21 HTTP 200 treated as financial settlement | **BLOCKED** | PAY-05's state is unchanged by any merchant response (SEC-INV-292) |
+| X22 PAYMENT-RESPONSE trusted as finality | **BLOCKED** | Read as evidence, compared with the governed terms, never written (SEC-INV-292) |
+| X23 Signer credential leakage | **BLOCKED** — not applicable | No signer, key or wallet secret exists in PAY-08; the preimage is canary-tested absent from durable state (SEC-INV-293) |
+| X24 Facilitator credential leakage | **BLOCKED** — not applicable | No facilitator credential exists (SEC-INV-285) |
+| X25 SSRF through `resource.url` | **BLOCKED** | PAY-08 never fetches anything; the URL is only compared (SEC-INV-285, SEC-INV-287) |
+| X26 Redirect leaks credentials | **BLOCKED** — not applicable | No outbound request, so no redirect; the embedder's HTTP layer owns its egress |
+| X27 x402 reaches a rail without governance | **BLOCKED** | The edge holds no rail or adapter; the only path is `prepareAndGovern` → `govern()` → grant → PAY-01's bridge (SEC-INV-285; NO_BYPASS unchanged) |
+| X28 Raw merchant error enters evidence | **BLOCKED** | `error` and display metadata are validated then dropped; canary-tested absent from every store and trace (SEC-INV-293) |
+| X29 Malformed base64 / header DoS | **BLOCKED** | Length bounded before decoding, canonical base64, fatal UTF-8, bounded hand-written JSON, bounded fields (SEC-INV-283) |
+| X30 MPP semantics regressed | **BLOCKED** | PAY-04's port, ingress and MPP adapter are unchanged; their suites pass; MPP and x402 compile the same payment identically (SEC-INV-294) |
+| X31 A PaymentPayload released before governance or settlement | **BLOCKED** | Built only after PAY-05 `settled` for the same request, destination and amount, with a verified preimage (SEC-INV-291) |
+| X32 Upfront: paid, then the merchant does not serve | **ACCEPTED** — scope | Inherent in the lnbtc method; the spec defines no refund; a refund is a new governed payment (PAY-05) |
+| X33 Invoice-text substitution under one payment hash | **BLOCKED** | Two validly signed invoices may share payment hash, payee, amount and network and differ in the signed description hash; PAY-06's invoice source answers an execution only with the exact text PAY-04 recorded for the governed request that execution derives from (committed decision + write-ahead claim), and PAY-04 refuses a second text for one instrument before governance; a decoding-cache eviction or a restart withholds, never substitutes (SEC-INV-295) |
+| X34 Malicious extension merge overwrite | **BLOCKED** | Client additions merge closed into the server's extensions: new names and new `info` members only; changing, retyping or restating a server `info` member, or a different `schema`, is refused (SEC-INV-296) |
+| X35 Runtime extension tree amplification | **BLOCKED** | Every extension tree is copied closed and bounded — depth, member and element count (from key count and array length, before any member is read), cumulative size — before anything serializes it; shared or cyclic objects, accessors, symbol keys and odd prototypes refuse (SEC-INV-296) |
+| X36 `settlement_pending` with no transaction | **BLOCKED** | A `SettlementResponse` with `errorReason: settlement_pending` and an empty `transaction` is not well formed: unreadable, never compared (SEC-INV-292) |
+| X37 Failed or pending response naming another transaction | **BLOCKED** | Any non-empty `transaction` — on success, failure or `settlement_pending` — must equal the governed payment hash, else `mismatch: transaction`; still never settlement (SEC-INV-292) |
+| X38 Invalid default flow configuration | **BLOCKED** | A binding whose default flow is not one of its own declared flows — or that declares a flow twice — is a composition error, never a silently skipped offer (SEC-INV-290) |
+| X39 Normal-history exhaustion of invoice identity memory causes permanent payment refusal | **BLOCKED** | No historical invoice identity is kept: the decoding cache is bounded and evicts, and the execution binding lives only while a presentation is in flight; 120 sequential settled operations through an 8-entry cache, then a fresh one, all pay (SEC-INV-295) |
+| X40 Premature release of an execution's invoice binding enables substitution | **BLOCKED** | The in-flight entry is released only when the ingress call (inside which the rail runs) returns; a released or absent entry makes the source answer `undefined` — a refused execution, never another text; unconfirmed and failed executions replay from the record without a lookup or a send (SEC-INV-295) |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.

@@ -598,3 +598,24 @@ ceremony), `authority-state-freshness-structure.test.ts`, and the three
 inverted residual tests in `revocation-state-integrity.test.ts`,
 `obligation-discharge-authenticity.test.ts` and `approval-authenticity.test.ts`.
 The non-vacuity pass (M1–M18) is recorded in the Master Plan's CORE-07 entry.
+
+
+### 2.20 A fourth operational slot: payment initiation reservations (PAY-06)
+
+PAY-06's durable Lightning payment interlock is anchored in its own slot,
+`payment-initiation-reservations`. Operational safety state, not authority: the
+append-only, hash-chained history that binds each governed execution to the one
+rail-level payment it may initiate (one reservation per execution, one per
+payment identity — for Lightning, the payment hash — and records the rail-level
+payer it was initiated from, so every reservation field, the payer included,
+is in the witnessed head). Its rollback or loss would
+make a payment already initiated look new, or a paid payment hash look free —
+**initiable twice** — the PAY-04 defect class again, closed by the same
+boundary, reused unchanged: the checkpoint is the history's own head; the store
+uses `genesisStoreId`, `establish`, `transition` (one per reservation,
+acknowledged only when durable and witnessed), `observe` and `probe` (before
+every reservation, so before every send); it has no unanchored durable mode and
+no enrollment path; it recomputes every entry digest and the chain on every
+read and decision (freshness is not integrity). The slot name is rail-neutral:
+this module names no Lightning concept (`pay06-lightning-structure.test.ts`).
+`AUTHORITY_STORE_KINDS` is unchanged. `docs/payments/PAY-06-LIGHTNING-RAIL.md` §12.

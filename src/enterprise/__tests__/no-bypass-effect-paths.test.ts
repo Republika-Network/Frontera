@@ -421,6 +421,8 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     'src/enterprise/authority-state-freshness/http-transport.ts',
     // PAY-03: `node:https` (and `node:http` to loopback) — the external XRPL transaction signer transport (EP-070).
     'src/enterprise/xrpl-payment-rail/signer-http-transport.ts',
+    // PAY-06: `node:https` (and `node:http` to loopback; `isIP` from `node:net`) — the LND REST node adapter (EP-071).
+    'src/enterprise/lightning-payment-rail/lnd-rest-node.ts',
   ];
 
   it('the detection patterns match a real client import or call and not a mention of one', () => {
@@ -443,7 +445,7 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     );
   });
 
-  it('exactly six production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057), the web control plane’s Host client (EP-067), the XRPL rail’s SDK client (EP-069) and the external XRPL signer transport (EP-070)', () => {
+  it('exactly seven production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057), the web control plane’s Host client (EP-067), the XRPL rail’s SDK client (EP-069), the external XRPL signer transport (EP-070) and the LND REST node adapter (EP-071)', () => {
     const transport = 'src/enterprise/execution-adapters/generic-http/node-https-transport.ts';
     const signerTransport = 'src/enterprise/external-authority-signer/http-transport.ts';
     const witnessTransport = 'src/enterprise/authority-state-freshness/http-transport.ts';
@@ -453,13 +455,22 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     const xrplClient = 'src/features/payment-runtime/rails/xrpl/xrpl-sdk-client.ts';
     // PAY-03: the external, customer-controlled XRPL transaction signer — a signing request, never a submission.
     const xrplSignerTransport = 'src/enterprise/xrpl-payment-rail/signer-http-transport.ts';
+    // PAY-06: the LND REST node adapter — the Lightning rail's one send and its read-only status reads.
+    const lightningNode = 'src/enterprise/lightning-payment-rail/lnd-rest-node.ts';
     const constructsXrplClient = (file: string): boolean => /from\s+['"]xrpl['"]/.test(valueCode(file)) && /\bnew\s+Client\s*\(/.test(codeOf(file));
     const importsClient = (file: string): boolean => /from\s+['"]node:(?:https|dns)['"]/.test(valueCode(file)) || constructsXrplClient(file);
     // `fetch(` is counted under src/ only: packages/ holds the customer-side
     // SDK, whose fetch is the caller reaching Frontera, not Frontera reaching a provider.
     const fetches = (file: string): boolean => file.startsWith('src/') && /\bfetch\s*\(/.test(codeOf(file));
     const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && (importsClient(file) || CLIENT_CALL.test(codeOf(file)) || fetches(file)));
-    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient, xrplClient, xrplSignerTransport].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient, xrplClient, xrplSignerTransport, lightningNode].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    const lightning = codeOf(lightningNode);
+    assert.equal([...lightning.matchAll(/\bsend\s*\(/g)].length, 1, 'the LND adapter issues every request from exactly one primitive');
+    assert.equal([...lightning.matchAll(/\/v2\/router\/send/g)].length, 1, 'the one Lightning payment send route, written once');
+    assert.ok(DOC.includes('EP-071') && DOC.includes(lightningNode), 'EP-071 is inventoried');
+    // PAY-06: embedder-composed only — no production source outside the adapter's own file composes it.
+    const lightningFactoryUsers = PRODUCTION_SOURCES.filter((file) => /\bcreateLndRestLightningNode(?:Reader)?\b/.test(codeOf(file)) && file !== lightningNode);
+    assert.deepEqual(lightningFactoryUsers, [], 'no production source composes the LND adapter');
     const xrplSigner = codeOf(xrplSignerTransport);
     assert.equal([...xrplSigner.matchAll(/\bsend\s*\(/g)].length, 1, 'the XRPL signer transport issues its request from exactly one place');
     assert.equal(/command:|submit/.test(xrplSigner), false, 'the XRPL signer transport never submits');
@@ -630,7 +641,7 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Nine of seventy effect paths are under bounded-grant control.'),
+      DOC.includes('Ten of seventy-one effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
@@ -644,7 +655,8 @@ describe('NB — the canonical document keeps its shape', () => {
         'CTRL-03 added EP-067 — the web control plane, a separate operator-run process whose one outbound call reaches the Host operator API, every write of it an existing operator-plane path authorized again by the Host — not bounded-grant controlled, so only the denominator moved, by one. ' +
         'CTRL-04 added EP-068 — the approval verdicts over the operator plane, the HTTP entry onto the CORE-05 approval commands (EP-059), decided by CORE-05 and executing nothing — not bounded-grant controlled, so only the denominator moved, by one. ' +
         'PAY-02 added EP-069 — the XRPL / RLUSD rail\'s submission, like EP-050 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one. ' +
-        'PAY-03 added EP-070 — the XRPL signing request to the external customer-controlled signer, like EP-056 a deployment-gated signing request and not a provider effect, reached only inside EP-069 — so only the denominator moved, by one.',
+        'PAY-03 added EP-070 — the XRPL signing request to the external customer-controlled signer, like EP-056 a deployment-gated signing request and not a provider effect, reached only inside EP-069 — so only the denominator moved, by one. ' +
+        'PAY-06 added EP-071 — the Lightning rail\'s payment send, like EP-069 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one.',
     );
   });
 
@@ -658,7 +670,7 @@ describe('NB — the canonical document keeps its shape', () => {
     const ids = new Set([...DOC.matchAll(/\*\*EP-(\d{3})\*\*/g)].map((match) => match[1]));
     assert.equal(total, ids.size, 'the total must equal the number of inventoried EP rows');
     const pathLocal = rows.find((line) => line.startsWith('| PROVEN — PATH LOCAL'));
-    assert.ok(pathLocal?.includes('**9**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069'));
+    assert.ok(pathLocal?.includes('**10**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069') && pathLocal.includes('EP-071'));
   });
 
   it('inventories the Generic HTTP outbound call as its own effect path, path-local, and without an egress claim', () => {

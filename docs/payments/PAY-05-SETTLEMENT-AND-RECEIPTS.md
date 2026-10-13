@@ -524,6 +524,11 @@ dischargeObligation({ organizationId, obligation: { correlation, obligationType 
   is a bearer secret until settled; recording its digest suffices — its
   `sha256` equals the payment hash) and `lightning.settled-at`, `finalizedAt` =
   the settlement time the node reports. No generic contract changes.
+- **Realized by PAY-06** (`docs/payments/PAY-06-LIGHTNING-RAIL.md` §15) with the
+  port unchanged, as predicted — with two refinements: the evidence records a
+  domain-separated `lightning.preimage-commitment` (the plain SHA-256 of the
+  preimage *is* the payment hash), and `finalizedAt` is omitted, because a payer
+  node's settle time is its local clock, not an instant the network established.
 
 ## 17. Composition, backup and health
 

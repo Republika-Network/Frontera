@@ -72,10 +72,14 @@ const PAYMENT_VERTICAL = 'payment-runtime';
 const TRADE_VERTICAL = 'trade-runtime';
 const VERTICALS: ReadonlySet<string> = new Set([PAYMENT_VERTICAL, TRADE_VERTICAL]);
 
-/** Generic CORE: everything that is not a vertical or one of the payment vertical's two composition edges. */
+/**
+ * Generic CORE: everything that is not a vertical or one of the payment vertical's composition edges. PAY-08 added one:
+ * the x402 composition edge (`src/enterprise/x402-payment-protocol/`), a protocol edge beside the ingress that composes
+ * it — held to its own structure test (`pay08-x402-structure.test.ts`).
+ */
 const CORE = [
   ...['src/kernel', 'src/runtime', 'src/kernel-host', 'src/control-plane-web', 'src/index.ts'].flatMap((root) => walk(root)),
-  ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/')),
+  ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/') && !file.startsWith('src/enterprise/x402-payment-protocol/')),
   ...readdirSync('src/features')
     .filter((name) => !VERTICALS.has(name))
     .flatMap((name) => walk(join('src/features', name))),

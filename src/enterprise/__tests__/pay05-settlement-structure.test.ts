@@ -187,7 +187,7 @@ describe('PAY-05 structure — no custody, exact money', () => {
 
   it('CORE-07 gains exactly one protocol- and rail-neutral slot for refund accounting', () => {
     const checkpoint = readFileSync('src/enterprise/authority-state-freshness/checkpoint.ts', 'utf8');
-    assert.match(checkpoint, /'payment-refund-state'\] as const/);
+    assert.match(checkpoint, /'payment-refund-state'(?:, '[a-z-]+')*\] as const/, 'PAY-05’s slot, followed only by later milestones’ slots (PAY-06: payment-initiation-reservations)');
     for (const file of walk('src/enterprise/authority-state-freshness')) {
       for (const specifier of importsOf(file)) assert.equal(/payment/.test(specifier), false, `${file} imports '${specifier}'`);
     }

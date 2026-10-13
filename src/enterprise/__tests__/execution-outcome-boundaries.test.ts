@@ -141,6 +141,9 @@ describe('P11 boundaries — who may hold it', () => {
     'src/enterprise/payment-settlement/basis.ts',
     'src/enterprise/payment-settlement/refund-service.ts',
     'src/enterprise/payment-settlement/validation.ts',
+    // PAY-06: the Lightning payment interlock reuses P11's identifier and instant
+    // predicates verbatim (pure functions; it never reads or writes P11).
+    'src/enterprise/lightning-payment-rail/sqlite-lightning-payment-interlock.ts',
   ]);
 
   it('no other production module imports the execution outcome store', () => {
