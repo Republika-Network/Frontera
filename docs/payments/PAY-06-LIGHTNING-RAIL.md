@@ -195,7 +195,10 @@ reservation (`unconfirmed`, `lightning-execution-previously-initiated`) and
 sends nothing.
 The description and description hash are merchant metadata and never
 authority; route hints are routing data the node reads from the invoice, never
-identity, authority or evidence.
+identity, authority or evidence. *(PAY-08: the decoder also returns the signed
+description hash as `descriptionHash` when the invoice carries one — the value
+x402's `lnbtc` binding requires to equal its request hash. Additive; the rail
+never reads it.)*
 
 ## 7. Money and asset
 

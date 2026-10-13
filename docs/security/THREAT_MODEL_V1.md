@@ -776,6 +776,45 @@ PAY-07 adds no production code and no effect path: one canonical conformance sui
 | Q13 XRPL vocabulary in a CORE layer — CORE-07's closed slot list names `'xrpl-submission-reservations'` (PAY-03) | **RESIDUAL** — classified | An opaque identifier with no XRPL behaviour; PAY-06 chose the neutral `'payment-initiation-reservations'`. Renaming migrates witness state persisted by PAY-03 deployments; pinned as the only rail word in CORE (SEC-INV-282) |
 | Q14 Qualification on deterministic simulators, not live rails | **ACCEPTED** — scope | The rails, interlocks, authorities and CORE are the real code; the provider below each is PAY-03's ledger simulator / PAY-06's node simulator. Live evidence is PAY-03's Testnet and PAY-06's regtest qualification, reused, not re-run |
 
+### 7.34 x402 protocol adapter (added by PAY-08)
+
+PAY-08 adds x402 v2 as a second protocol at PAY-04's boundary, executable only as `exact` on Bitcoin Lightning (`lnbtc`) through PAY-06's governed rail, with the `PAYMENT-SIGNATURE` built after PAY-05 settlement (`docs/payments/PAY-08-X402-PROTOCOL-ADAPTER.md`). Every merchant field is untrusted; the threats are to authority, binding, money exactness and evidence.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| X1 Forged PaymentRequired | **BLOCKED** (as authority) — **RESIDUAL** (authenticity) | A forged requirement can only propose terms: it is parsed closed, mapped only through trusted configuration, bound to the trusted request and the invoice's signed description hash, and then governed (SEC-INV-283, SEC-INV-287). Merchant authenticity is not established — by protocol design |
+| X2 Wrong x402 version | **BLOCKED** | `x402Version` must be the integer 2, read first; v1 header names are not read (`x402-messages.test.ts` PR-2) |
+| X3 Malicious `accepts` ordering | **BLOCKED** | Trusted mapping priority, never index; permutations yield one answer; conflicting duplicates refused (SEC-INV-284) |
+| X4 Amount mutation | **BLOCKED** | Same invoice: the binding refuses (invoice amount); new invoice under the same operation: `business-operation-conflict`; no `govern()` (SEC-INV-289) |
+| X5 `payTo` mutation | **BLOCKED** | The invoice payee must equal `payTo`; the destination is payee + payment hash; another payee is another operation's terms (SEC-INV-289) |
+| X6 Network mutation | **BLOCKED** | Another network has no mapping (unsupported) or a different BOLT11 currency (refused) (SEC-INV-290) |
+| X7 Asset mutation | **BLOCKED** | Exact `(scheme, network, asset)` mapping; an unmapped asset is not executable; no scale is guessed (SEC-INV-284, SEC-INV-288) |
+| X8 Resource replay (A → B) | **BLOCKED** | `resource.url` must equal the trusted request URL exactly; the request hash commits to the URL (SEC-INV-287) |
+| X9 Method replay (GET → POST) | **BLOCKED** | The request hash commits to the method; PAY-04's binding commits to it in the semantic digest (SEC-INV-287) |
+| X10 Body replay | **BLOCKED** | The request hash commits to the body SHA-256 from PAY-04's RFC 9530 digest (SEC-INV-287) |
+| X11 Business-operation rollback | **BLOCKED** | PAY-04R: a stale restore is refused at open by the CORE-07 witness; an unavailable witness refuses every presentation (SEC-INV-289; PAY-04 SEC-INV-246 … 249) |
+| X12 Requirement reuse across operations | **BLOCKED** | One instrument (network + payment hash) belongs to one business operation, CORE-07-anchored: `challenge-conflict` (SEC-INV-289) |
+| X13 Unsupported scheme | **BLOCKED** | Only `exact` can be mapped; others are skipped or refused (SEC-INV-290) |
+| X14 Unsupported payment flow | **BLOCKED** | `escrow` and unknown flows never execute; a flow must be enabled by the mapping and declared by the binding (SEC-INV-290) |
+| X15 Extension abuse | **BLOCKED** | ≤ 8 extensions, ≤ 4 KiB each, ≤ 6 KiB total, exact `{ info, schema }` shape; never interpreted for policy; echoed exactly, never overwritten (SEC-INV-283) |
+| X16 Atomic-unit rounding | **BLOCKED** | Text-only conversion under trusted scale, P9-validated; no float, no rounding (SEC-INV-288) |
+| X17 Merchant timeout abuse | **BLOCKED** | A requirement above the mapping's maximum timeout is not used; for lnbtc the timeout must equal the invoice expiry (SEC-INV-284) |
+| X18 Facilitator verify treated as authority | **BLOCKED** — not applicable | The paying side calls no facilitator; nothing a facilitator says reaches governance (SEC-INV-285) |
+| X19 Facilitator verify moves money | **BLOCKED** — not applicable | No verify path exists; the only money-moving call is PAY-06's send under a grant (SEC-INV-285) |
+| X20 Settle retried after ambiguity | **BLOCKED** | No settle client and no retry; an unconfirmed payment is P12's, and re-presenting replays it (SEC-INV-285) |
+| X21 HTTP 200 treated as financial settlement | **BLOCKED** | PAY-05's state is unchanged by any merchant response (SEC-INV-292) |
+| X22 PAYMENT-RESPONSE trusted as finality | **BLOCKED** | Read as evidence, compared with the governed terms, never written (SEC-INV-292) |
+| X23 Signer credential leakage | **BLOCKED** — not applicable | No signer, key or wallet secret exists in PAY-08; the preimage is canary-tested absent from durable state (SEC-INV-293) |
+| X24 Facilitator credential leakage | **BLOCKED** — not applicable | No facilitator credential exists (SEC-INV-285) |
+| X25 SSRF through `resource.url` | **BLOCKED** | PAY-08 never fetches anything; the URL is only compared (SEC-INV-285, SEC-INV-287) |
+| X26 Redirect leaks credentials | **BLOCKED** — not applicable | No outbound request, so no redirect; the embedder's HTTP layer owns its egress |
+| X27 x402 reaches a rail without governance | **BLOCKED** | The edge holds no rail or adapter; the only path is `prepareAndGovern` → `govern()` → grant → PAY-01's bridge (SEC-INV-285; NO_BYPASS unchanged) |
+| X28 Raw merchant error enters evidence | **BLOCKED** | `error` and display metadata are validated then dropped; canary-tested absent from every store and trace (SEC-INV-293) |
+| X29 Malformed base64 / header DoS | **BLOCKED** | Length bounded before decoding, canonical base64, fatal UTF-8, bounded hand-written JSON, bounded fields (SEC-INV-283) |
+| X30 MPP semantics regressed | **BLOCKED** | PAY-04's port, ingress and MPP adapter are unchanged; their suites pass; MPP and x402 compile the same payment identically (SEC-INV-294) |
+| X31 A PaymentPayload released before governance or settlement | **BLOCKED** | Built only after PAY-05 `settled` for the same request, destination and amount, with a verified preimage (SEC-INV-291) |
+| X32 Upfront: paid, then the merchant does not serve | **ACCEPTED** — scope | Inherent in the lnbtc method; the spec defines no refund; a refund is a new governed payment (PAY-05) |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.

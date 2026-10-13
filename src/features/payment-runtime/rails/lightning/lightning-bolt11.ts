@@ -61,10 +61,13 @@ import { verifyBolt11Signature } from './lightning-signature.js';
  *
  * ## What is not read
  *
- * The description text, the description hash's value, route-hint contents,
- * fallback addresses, the payment secret and metadata are never returned:
- * none of them is payment authority, identity or evidence, and the node reads
- * them from the invoice itself.
+ * The description text, route-hint contents, fallback addresses, the payment
+ * secret and metadata are never returned: none of them is payment authority,
+ * identity or evidence, and the node reads them from the invoice itself.
+ *
+ * The description **hash** (`h`) is returned as `descriptionHash` when the
+ * invoice carries one (PAY-08): a signed, public 32-byte commitment a protocol
+ * binds a request to. The rail itself never reads it.
  */
 
 export const LIGHTNING_NETWORKS = ['mainnet', 'testnet', 'signet', 'regtest'] as const;
@@ -143,6 +146,8 @@ export interface Bolt11Invoice {
   readonly expirySeconds: number;
   /** 32 bytes, lowercase hex. */
   readonly paymentHash: string;
+  /** The `h` field's 32 bytes, lowercase hex — present exactly when the invoice commits to its description by hash (absent for an inline `d`). Covered by the signature. */
+  readonly descriptionHash?: string;
   /** The payee node: 33-byte compressed key, lowercase hex — from `n` or recovered from the signature. */
   readonly payee: string;
   readonly payeeSource: 'n-field' | 'recovered';
@@ -236,6 +241,7 @@ function parse(text: string, maximumLength: number): Parsed {
 
   const seen = new Set<number>();
   let paymentHash: string | undefined;
+  let descriptionHash: string | undefined;
   let paymentSecret = false;
   let description = 0;
   let explicitPayee: Uint8Array | undefined;
@@ -292,6 +298,7 @@ function parse(text: string, maximumLength: number): Parsed {
       case TAG.h: {
         const bytes = wordsToBytes(field, 'allowed');
         if (bytes === undefined || bytes.length !== 32) refuse('bolt11-field-length-invalid');
+        descriptionHash = hex(bytes as Uint8Array);
         description += 1;
         break;
       }
@@ -357,6 +364,7 @@ function parse(text: string, maximumLength: number): Parsed {
       timestamp,
       expirySeconds,
       paymentHash,
+      ...(descriptionHash !== undefined ? { descriptionHash } : {}),
       minFinalCltvExpiryDelta,
       requiredFeatures: Object.freeze(requiredFeatures),
       routeHintCount,
