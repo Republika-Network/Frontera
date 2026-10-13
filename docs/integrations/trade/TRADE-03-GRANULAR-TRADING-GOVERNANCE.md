@@ -20,18 +20,22 @@
   - the projection of reliable evidence onto CORE-04 fact readings, bound to
     the proposal digest, the governed amount and asset, and the Kernel's own
     query.
-- **Integrated through the unchanged Governance Core on the shipped Host
-  (test-only composition):** a fake trusted provider plays the role a
-  reviewed composition edge would.
+- **Composed through one approved edge (K1, §31).**
+  `src/enterprise/trade-risk-context/` is a CORE-04 trusted-context provider
+  with an in-process ingress. It is the single entry in
+  `TRADE_COMPOSITION_EDGES`. The edge:
+  - compiles the intent itself, for the bound customer identity;
+  - attests a proposal at most once;
+  - reads every source fresh through trusted ports;
+  - binds **every** field of the compiled intent to the assessed proposal
+    (§32).
+- **Qualified through the unchanged Governance Core on the shipped Host.**
   - Every trading fact is a **material fact** of the trading Governance
-    Profile. Policy binds each fact to the request and adds a
-    defence-in-depth absence rule.
-  - 34 Host tests prove the end-to-end behaviour of approval (CORE-05),
-    emergency control, P9, P10, P7, replay, substitution, cross-organization
-    isolation and fail-closed context.
-- **Not composed in production.** `TRADE_COMPOSITION_EDGES` stays `[]`. No
-  production module imports TRADE. A production CORE-04 edge is an
-  architecture approval item (§29).
+    Profile.
+  - 36 Host tests drive the real edge. Only its source ports are fakes.
+  - They prove execution, substitution refusal for every bound field, replay,
+    cross-principal and cross-organization isolation, fail-closed context,
+    CORE-05, emergency control, P9 and P10.
 - **Deferred:**
   - aggregate exposure and active-order enforcement (snapshot-advisory only;
     no atomic reservation exists);
@@ -40,13 +44,15 @@
 - **New CORE findings (characterized, not changed):**
   - the policy layer is non-blocking for absent facts (§5);
   - the digest parameter alone does not bind the governed amount (§16.2);
-  - **P7's 64-byte amount-unit bound rejects P9 asset ids of 40-hex-digit
-    issued currencies** (§8.3). Such trades are decided, then withheld at
-    exercise.
-- No signing, submission, wallet, key, network client, grant path, approval
-  engine, exposure store or CORE change.
+  - P7's 64-byte amount-unit bound rejected P9 asset ids of 40-hex-digit
+    issued currencies (§8.3). **Fixed by K2 (§33):** the bound is now 128, as
+    in P9. This is a one-constant CORE change, and those trades now execute.
+- No signing, submission, wallet, key, network client, HTTP route, grant path,
+  approval engine or exposure store.
+- The only CORE change is the K2 constant.
 
-**Verdict: CONDITIONAL** (§30).
+**Verdict: CONDITIONAL** (§36). The architecture is complete. Production
+trusted sources and execution (TRADE-04/07) remain.
 
 ## 2. Baseline and branch
 
@@ -232,10 +238,9 @@ ceiling; the exact amount is pinned by the digest and by the amount binding
   (`EXERCISE_CONTROL_POLICY_INVALID`), with zero adapter calls. This is
   pinned on the Host.
 
-It fails closed, but it makes hex-coded tokens such as RLUSD's real code
-unexecutable on the governed path. Resolution needs approval (§29, item 2).
-The Host qualification world uses a three-character issued code from the
-fixture issuer for this reason.
+It failed closed, but it made hex-coded tokens such as RLUSD's real code
+unexecutable on the governed path. The exact id is 93 bytes. **Resolved by
+K2 (§33).** The Host now executes a hex-coded trade.
 
 ## 9. Exact rational price control
 
@@ -391,10 +396,11 @@ remains TRADE-04's.
 | `trade.risk.assessedProposal` | proposal digest | deny unless `parameter tradeProposalDigest` equals it |
 | `trade.risk.assessedAmount` | `TakerGets` canonical decimal | deny unless `amount` equals it |
 | `trade.risk.assessedAsset` | P9 asset id of `TakerGets` | deny unless `currency` equals it |
+| `trade.risk.assessedNetwork` / `assessedDelegate` / `assessedBaseAsset` / `assessedQuoteAsset` / `assessedSide` / `assessedQuantity` (K1) | the compiled intent's parameter | deny unless the request's parameter equals it |
 | `trade.risk.profile` | `<profileId>@<version>` | deny unless it equals the configured literal |
 | `trade.risk.approvalRequired` | boolean | `require_approval` when `true` |
 | `trade.delegation.offercreate` | proposal digest | deny unless `tradeProposalDigest` equals it |
-| (all six) | | defence in depth: deny if any is absent (`not_exists`) |
+| (all twelve) | | defence in depth: deny if any is absent (`not_exists`) |
 
 Each reading has `observedAt` set to the query instant, and `maxAgeSeconds`
 set to the whole seconds until the earliest freshness bound inside the
@@ -433,19 +439,19 @@ The analysis was done before integration and is proven on the Host.
   other-organization readings, and a failed provider. These are proven both
   with the absence rule and on a Host whose policy has no absence-sensitive
   rule, where the boundary's own codes are returned.
-- **Remaining, for TRADE-04.** CORE does not bind the other informational
-  parameters (`tradeDelegateAccount`, `tradeSide`, `tradeQuantity`, base and
-  quote asset, network) to the digest. The grant binds them exactly. The
-  TRADE-04 executor **must** derive the transaction solely from the proposal
-  whose digest the grant names, and must refuse when any granted parameter,
-  amount or resource differs from that derivation.
+- **K1 closes the remaining parameters.** Every one of the seven parameters
+  now has a fact and a binding rule (§32). Proven: each substitution is
+  denied.
+- **TRADE-04 must still** derive the transaction only from the admitted
+  proposal whose digest the grant names, and must refuse any mismatch. This is
+  defence in depth at the execution boundary.
 
 ### 16.3 Query shape constraint
 
-A CORE-04 query carries no governed parameters. A production provider must
-therefore know the pending proposal out of band: a trusted trade ingress
-receives the proposal, compiles it, and keeps it for its own query. That is
-part of the edge proposal in §29.
+A CORE-04 query carries no governed parameters and no request identity.
+K1's ingress therefore keeps the admitted proposal keyed by organization,
+Kernel actor and owner resource, which are exactly the fields the query
+carries. Policy then binds the rest (§31, §32).
 
 ## 17. Governance Profile integration
 
@@ -711,7 +717,11 @@ fake sources:
 
 ## 29. Architecture approvals required
 
-None was implemented. Each is a narrowly scoped proposal.
+> **Update.** Items 1 (K1) and 2 (K2) were approved and implemented; see
+> §31–§36. Items 3–5 remain open.
+
+At the original TRADE-03 commit, none of these was implemented. Each was a
+narrowly scoped proposal.
 
 1. **TRADE CORE-04 composition edge.**
    - Add `src/enterprise/trade-risk-context/` as a Host-composed
@@ -746,19 +756,19 @@ None was implemented. Each is a narrowly scoped proposal.
 5. **Real market-data source and XRPL transport.** These go through
    TRADE-04's shared-transport ADR, with a NO_BYPASS row.
 
-## 30. Production-readiness limitations
+## 30. Production-readiness limitations (original TRADE-03 commit)
 
-**Verdict: CONDITIONAL.**
+**Verdict at `1827a07`: CONDITIONAL.** It is superseded by §36.
 
 The trading-risk engine is functionally qualified. Its integration into the
 Governance Core is demonstrated through existing semantics, and fails closed,
 on the shipped Host. It is **not** production-ready:
 
-- The provider is test-only (approval §29.1).
+- ~~The provider is test-only~~ — resolved by K1 (§31).
 - Every market, exposure, order and delegation fact in qualification is
   simulated.
 - Aggregate exposure and active orders are advisory.
-- Hex-coded issued tokens are unexecutable through P7 (§8.3).
+- ~~Hex-coded issued tokens are unexecutable through P7~~ — resolved by K2 (§33).
 - No pair emergency scope exists.
 - Approval completion was not re-exercised for trading.
 - There is no transport, signer or executor (TRADE-04).
@@ -797,3 +807,320 @@ flowchart TB
   AO --> DL[XLS-75 delegation reliance]
   DL --> OUT{All 16 present?<br/>any VIOLATED → PROHIBITED<br/>any UNAVAILABLE → WITHHELD<br/>else SATISFIED → ELIGIBLE / APPROVAL_REQUIRED}
 ```
+
+---
+
+# Architectural completion — K1 and K2
+
+Approved after `1827a07`: K1, trusted context composition, and K2, P7 asset
+identifier compatibility. Nothing else was authorized and nothing else was
+built. TRADE-04 and TRADE-07 were not started.
+
+## 31. K1 — the trusted context composition edge
+
+**Location.** `src/enterprise/trade-risk-context/`, three files:
+
+| File | Contents |
+| --- | --- |
+| `trade-risk-context.ts` | `createTradeRiskContext` → `{ provider, admitProposal, pendingCount }` |
+| `trade-risk-policy.ts` | `tradeRiskPolicyRules`, `tradeRiskTrustedContextSources` (deployment data) |
+| `index.ts` | barrel |
+
+It is the **only** entry in `TRADE_COMPOSITION_EDGES`, and nothing in
+production imports it. A deployment hands `provider` to the Host's existing
+`contextProvider` input, so there is no Host change and no new HTTP route; the
+API freeze is unchanged.
+
+**What it is.** It implements CORE-04's `ContextResolverPort` and nothing
+else. It imports only:
+
+- the trade barrel;
+- CORE-04 types and the observation digest;
+- the customer-identity contract;
+- policy-rule data types.
+
+It decides, grants, signs, submits, connects and executes nothing.
+`trade03-risk-context-structure.test.ts` enforces this, with negative
+fixtures.
+
+### 31.1 Trust model
+
+1. **Ingress: `admitProposal(identity, rawProposal)`.**
+   - **Caller.** Trusted in-process code, i.e. the deployment's trading
+     gateway. This is the documented pattern for `governedActionOrchestrator`.
+     The gateway passes a `BoundCustomerIdentity` from the Host's customer
+     identity admission.
+   - **Compilation.** The edge validates the proposal and compiles the
+     `GovernedActionIntent` **itself**, for that principal. A proposal for
+     another organization or principal is refused, and so is an owner or
+     network outside the profile.
+   - **Binding.** It keeps one **one-shot binding** per
+     `(organization, Kernel actor, owner resource)`. A second admission into
+     an occupied slot is refused (`BINDING_PENDING`). Bindings expire after
+     `bindingSeconds` (≤ 300) and are capped at 1 024. The applicant
+     submits the returned intent.
+2. **Provider: `provider.resolveContext(query)`.**
+   - **Query fields.** It reads only the Kernel's query: organization, actor,
+     action, owner resource and instant. None of these is chosen by the
+     applicant.
+   - **One-shot.** It takes the binding **before any await**, so two
+     evaluations can never both use it.
+   - **Re-verification.** It recompiles the stored proposal and requires the
+     identical stored intent.
+   - **Fresh reads.** It reads every source now through the trusted ports:
+     market, exposure and active orders (each required exactly when the
+     profile enforces it), and delegation (always required).
+   - **Assessment.** It runs `assessTradingRisk` at the Kernel's instant and
+     projects readings only when the risk evidence is reliable `SATISFIED`
+     **and** the TRADE-02 delegation reliance holds. It returns both sets of
+     readings or neither. Any exception yields no reading.
+3. **Policy: the edge's rule data.**
+   - Twelve material facts.
+   - Nine binding rules: seven parameters, amount and currency.
+   - A delegation binding, a profile-version pin, the absence belt, and the
+     review rule.
+4. **CORE-04 admission.** The readings are attributed to two registered,
+   authoritative, organization-scoped sources:
+   `tradeRiskTrustedContextSources`.
+
+**Authentication versus integrity.** Who submitted is established by customer
+identity admission. Who assessed is the in-process edge, using trusted ports.
+Digests (evidence, snapshots, provenance) are integrity and correlation only;
+they never authenticate.
+
+### 31.2 Fail closed
+
+| Condition | Result |
+| --- | --- |
+| Profile admits simulated sources without the in-code acknowledgement | composition refused |
+| Enforced control without its port, or no delegation port | composition refused |
+| Profile of another organization or action, invalid profile | composition refused |
+| Trusted-context sources configured but no provider | **Host refuses to start** (`no context provider is composed`) |
+| No admission, an expired binding, or another actor's or owner's binding | no reading → unresolved → denied |
+| A port throws, or a reading is stale, unavailable or conflicting | no reading → denied |
+| Risk `VIOLATED` or `UNAVAILABLE`, or delegation not reliable | no reading → denied |
+
+**Simulation stays in tests.** `TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT` is
+referenced by no production file but its own definition, which the structure
+test pins. It is passed in code and never read from configuration. Every
+evidence record states `simulatedFacts`.
+
+## 32. Proposal-to-intent binding proof
+
+`compileTradeProposal(P, binding, identity)` yields an intent `I`. Each field
+of `I` is bound as follows. Every row is proven on the shipped Host by a
+substitution that is refused with zero adapter calls.
+
+| Intent field | Bound by | Refusal when substituted |
+| --- | --- | --- |
+| `action` | CORE-04 query = binding's action (provider) | no reading |
+| `resource` (network + **owner**) | query `resourceScope` = binding slot (provider) | no reading (`unresolved`) |
+| organization | query `organizationId` + bound identity (provider); CORE-04 source scoping | no reading |
+| principal / actor | query `actorId` = admitting actor (provider) | no reading (agent B cannot use or consume A's binding) |
+| `amount.value` | fact `assessedAmount` = I's value (policy) | `TRADE_RISK_AMOUNT_NOT_ASSESSED` |
+| `amount.currency` | fact `assessedAsset` (policy) | `TRADE_RISK_ASSET_NOT_ASSESSED` |
+| `tradeProposalDigest` | facts `assessedProposal` and `delegation.offercreate` (policy) | `TRADE_RISK_PROPOSAL_NOT_ASSESSED` |
+| `tradeNetwork` | fact `assessedNetwork` | `TRADE_INTENT_NETWORK_NOT_ASSESSED` |
+| `tradeDelegateAccount` | fact `assessedDelegate` | `TRADE_INTENT_DELEGATE_NOT_ASSESSED` |
+| `tradeBaseAsset` / `tradeQuoteAsset` | facts `assessedBaseAsset` / `assessedQuoteAsset` | `…_BASE_ASSET_…` / `…_QUOTE_ASSET_NOT_ASSESSED` |
+| `tradeSide` | fact `assessedSide` | `TRADE_INTENT_SIDE_NOT_ASSESSED` |
+| `tradeQuantity` | fact `assessedQuantity` | `TRADE_INTENT_QUANTITY_NOT_ASSESSED` |
+| `expectedGovernanceProfile` | profile resolution and envelope pin (CORE-03) | rejected |
+| `idempotencyKey` | the one-shot binding | a fresh key finds no binding → denied; an identical retry is a Governance Store replay that never re-runs the Kernel |
+| `correlationId` | not economic (audit correlation only) | — |
+
+**Proposal fields that are not intent fields** are bound **through the
+digest**: `takerPays`, flags, expiration, requested validity, references,
+principal and request id. A changed proposal compiles to another digest, so
+changed flags, changed `takerPays` or a changed validity cannot reuse an
+assessment. All three are proven.
+
+**Every reading value is taken from the compiled intent itself**
+(`tradingRiskContextReadings` recompiles), so a reading can never disagree
+with compilation.
+
+**Execution boundary (TRADE-04).** The executor must still derive the
+transaction only from the admitted proposal whose digest the grant names, as
+defence in depth.
+
+## 33. K2 — P7 asset identifier compatibility
+
+**Decision: widen.** `EXERCISE_CONTROL_UNIT_MAXIMUM_BYTES` goes from 64 to
+**128**, matching P9's asset-id bound (`MONETARY_ASSET_ID_PATTERN`, at most
+128 ASCII characters). This is a one-constant change in
+`src/features/exercise-control-runtime/domain/exercise-control-limits.ts`.
+
+**Audit findings:**
+
+| Area | Finding |
+| --- | --- |
+| Validators | P7 is the only layer on the P10→P7 path that bounds a unit more tightly than P9. Kernel-authority constraints, the financial-authority resolver, grant ceilings and P11/P12 use P9 or have no bound. |
+| Contracts | Reservation requests and stored records re-validate units only through the same predicate. |
+| SQLite | `unit TEXT`: no CHECK, no length, not indexed. Schema `aoc.exercise-control-ledger.schema.v1` is unchanged, and no migration is needed. |
+| Digests and signed records | Units are serialized as `JSON.stringify(unit)`, with no length tag. Historical rows (all ≤ 64 bytes) recompute and verify unchanged. |
+| Rails | XRPL, Lightning, x402 and MPP do not reference P7. All rail fixture units are ≤ 64 bytes. x402's 128-character asset bound is the wire asset, not the governed unit. |
+| PAY-07 CORE manifest | The digest is recomputed live (no pinned constant), and the structure and qualification suites pass. Its historical value in the PAY-07 doc remains true for `b1825bd`. The CORE source set has deliberately changed with this commit. |
+| Release manifest, API freeze | Unaffected: the constant is not in an exported barrel, and no route changed. |
+| Safety | The unit stays opaque text compared exactly. Control characters, lone surrogates and surrounding whitespace are still refused. A unit that is not P9 can never match an attempt. Asset-identity validation is untouched, and so is TRADE-01's asset format. |
+
+**Caveats:**
+
+- **Rollback.** A binary rolled back to the 64-byte bound refuses a stored
+  reservation whose unit exceeds 64 bytes, as corrupt. This fails closed.
+- **Next limit.** The P10 bucket `scopeKey` (≤ 512 bytes) embeds the currency.
+  With a 128-byte currency, about 314 bytes remain for organization and
+  entity ids. Exceeding it fails closed (`EXERCISE_CONTROL_POLICY_INVALID`).
+
+**Tests:**
+
+- Unit bound: 64, 65, 93 (the real asset id), 128 and 129 bytes, plus a
+  multibyte case (129+ bytes refused).
+- Character rules are unchanged.
+- A 93-byte unit is reserved, summed exactly, released, and refuses a
+  one-character-different unit, on **both** the in-memory and SQLite ledgers.
+- On the Host, a hex-coded trade **executes**. Above the limits, it is still
+  refused on its merits.
+
+## 34. New security tests (K1/K2)
+
+**`trade03-governed-risk-host.test.ts` (36 tests on the shipped Host,
+through the real edge):**
+
+- A trade executes.
+- The grant is capped at ≤ 10 s by fact freshness.
+- A hex-coded (93-byte) trade executes.
+- P10 withholds an order the risk layer allows.
+- Substituting any of these is refused with its own reason code: amount,
+  monetary asset, delegate, side, base asset, quote asset, quantity, network,
+  digest.
+- A changed owner is refused.
+- Changed flags, `takerPays` or validity cannot reuse an assessment.
+- An identical retry replays; a fresh idempotency key is denied.
+- Cross-principal use is denied (and does not consume A's binding).
+- Cross-organization and cross-principal admission is refused, and so is an
+  out-of-scope owner.
+- A second admission into an occupied slot is refused.
+- Asserted context is refused for every fact class and every reserved key.
+- These are each denied: no admission, a stale market, a failing market, an
+  unavailable or failing delegation, a risk violation, an expired binding, a
+  profile-version mismatch.
+- A Host with no provider refuses to start.
+- The **gate-only** Host returns the boundary's own codes for:
+  missing → `UNRESOLVED`; stale → `STALE`; conflicting → `CONFLICTED`;
+  unregistered source → `SOURCE_NOT_AUTHORIZED`; tampered provenance →
+  `PROVENANCE_INVALID`; another organization → `SOURCE_NOT_AUTHORIZED`;
+  no admission → `UNRESOLVED`.
+- CORE-05 approval withholds.
+- Emergency stops on the owner account, organization and desk withhold, and
+  release restores.
+- A review under an active stop is not executed.
+- Composition refusals.
+
+**`trade03-risk-context-structure.test.ts` (16 tests):**
+
+- the import allowlist;
+- no engine, effect, rail or PAY reach;
+- no production importer;
+- the simulation acknowledgement is confined;
+- negative fixtures for every scan.
+
+**Structural changes, as approved:**
+
+- `TRADE_COMPOSITION_EDGES = ['src/enterprise/trade-risk-context']`;
+- the TRADE-01 "nothing imports TRADE" test excludes exactly that path;
+- PAY-07's manifest classifies `trade-risk-context` as outside CORE, with a
+  reason.
+
+No security test was weakened.
+
+**No new submission or signing path.** The TRADE, PAY-02/03/04/07/08 and
+NO_BYPASS structure suites pass unchanged in substance. The edge structure
+test forbids `sign(`, `submit(`, network, custody and adapter references.
+
+## 35. Updated enforcement matrix
+
+| Control | Status | Remaining dependency |
+| --- | --- | --- |
+| P9 registry, P10 per-order ceiling, owner scope and network | ENFORCED_END_TO_END | — |
+| CORE-04 material-fact fail-closed; grant capped by freshness | ENFORCED_END_TO_END | — |
+| Proposal-to-intent binding (all fields), one-shot replay control, cross-principal and cross-organization isolation | ENFORCED_END_TO_END (shipped edge and Host) | — |
+| Applicant cannot supply facts, sources, profile or assessment | ENFORCED_END_TO_END | — |
+| Emergency stop: owner, organization, desk | ENFORCED_END_TO_END | — |
+| CORE-05 approval gate for review triggers | ENFORCED_END_TO_END (gate); triggers computed from simulated sources | real sources |
+| P7 for full-length XRPL asset ids (K2) | ENFORCED_END_TO_END | — |
+| Pair, issuer, side, flags, delegate scope, quantity, owner-given, exact price bounds and band | SIMULATED_WITH_TRUSTED_FIXTURES: real edge and evaluation, fixture sources | none for the rules themselves |
+| Reference price, deviation, notional | SIMULATED_WITH_TRUSTED_FIXTURES | production market source |
+| XLS-75 delegation | SIMULATED_WITH_TRUSTED_FIXTURES (TRADE-02 assessor over a fake read) | reviewed XRPL transport (TRADE-04) |
+| Evidence sealing and reliance | PURE_PRECONDITION_TESTED; also used live by the edge | — |
+| Aggregate exposure, active orders | DEFERRED (snapshot-advisory) | TRADE-07 atomic reservation and live inventory |
+| Pair-specific emergency stop | BLOCKED (no CORE scope) | CORE scope change, not requested |
+
+## 36. TRADE-04 readiness and remaining blockers
+
+**Verdict: CONDITIONAL.**
+
+- **Complete:**
+  - the trading-risk governance architecture;
+  - the approved composition edge;
+  - the full proposal-to-intent binding;
+  - fail-closed trusted context;
+  - P7 compatibility.
+- **Not live:**
+  - no production market, exposure or order source is configured;
+  - XLS-75 reads need TRADE-04's reviewed transport;
+  - every qualification fact is simulated.
+- **Open for TRADE-04:**
+  - the pre-sign delegation re-read;
+  - an executor that derives the transaction from the admitted proposal whose
+    digest the grant names;
+  - protected delegated signing;
+  - governed OfferCancel.
+- **Open for TRADE-07:**
+  - an atomic exposure and active-order reservation, with release on cancel or
+    fill.
+- **Edge limitation:** one pending binding per (actor, owner), so a desk
+  submits orders for one owner serially.
+
+## 37. K1/K2 validation results
+
+All runs were executed sequentially.
+
+**Focused and structural:** 1 444 / 1 444. The run covered:
+- TRADE-01/02/03 and the edge;
+- P7, both domain and SQLite;
+- CORE-04/05, emergency control and P10;
+- PAY-02/03/04/05/06/07/08 structure;
+- NO_BYPASS and security invariants;
+- the monetary, policy-pack and context runtimes.
+
+**Static checks:** typecheck, build, lint and release coherence pass. The API
+freeze shows no route drift.
+
+**Root suite:** 10 968 tests, of which 10 955 pass, **0 fail**, 9 are skipped
+and 4 are todo.
+
+**Workspace suites:** 1 103 / 1 103. The earlier TRADE-03 report gave 226 for
+the workspaces; that figure came from a truncated listing, and the true total
+then was also 1 103.
+
+**Isolated protocol-tarball validation** (vendored `aoc-protocol-0.2.0-rc.1`):
+
+| Run | Battery | Result |
+| --- | --- | --- |
+| 1 | official, full | `test` failed (1 of 10 968), every other step passed |
+| 2 | diagnostic: build and test, full output kept | 1 failure, identified below |
+| 3 | diagnostic: build and test, failure reason printed | 0 failures |
+| 4 | official, full | **all 14 steps PASS** |
+
+The failure identified in run 2 was PAY-08 x402 `LIFE-5 / LIFE-6 / LIFE-10`
+("120 sequential operations…"): operation 58 returned `execution_failed`.
+
+- **Not reproduced elsewhere.** It passes 3/3 when run alone and 2/2 under
+  deliberate concurrent Host load locally, and it passed in the full local
+  root suite and in isolated runs 3 and 4.
+- **Root cause not established.** The run that would have printed the reason
+  passed.
+- **Unlikely to be related, by analysis.** The test runs in its own process.
+  Its units are at most 64 bytes, so P7's behaviour is unchanged for them.
+  No PAY-08 or TRADE code is on its path.
+- **Status:** an intermittent failure, recorded, not dismissed.

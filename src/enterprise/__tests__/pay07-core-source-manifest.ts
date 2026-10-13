@@ -131,6 +131,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'xrpl-payment-rail': 'rail-specific: the PAY-03 XRPL composition edge (external signer, interlock, P12 and finality authorities)',
       'lightning-payment-rail': 'rail-specific: the PAY-06 Lightning composition edge (LND adapter, interlock, P12 and finality authorities)',
       'x402-payment-protocol': 'protocol-and-rail-specific: the PAY-08 x402 composition edge (the lnbtc binding over Lightning, presentation, post-settlement proof); not executed by the qualified runs',
+      'trade-risk-context': 'vertical-specific: the TRADE-03 composition edge (a CORE-04 trusted-context provider over the trade vertical); not on the governed payment path',
       __tests__: 'test-only code, including the PAY-07 shared world, rail edges and this manifest',
       host: 'Host composition edge: composes configured modules (the shipped Host composes the PAY-03 XRPL rail); not executed by either qualified run',
       composition: 'Host composition root: the composition edge where rail-specific composition belongs; the qualified runs compose the same generic stores directly',

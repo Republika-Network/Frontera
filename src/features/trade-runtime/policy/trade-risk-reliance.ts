@@ -1,9 +1,9 @@
-import { tradeAssetToken, tradeDecimalQuantity, tradeMonetaryAssetId } from '../domain/trade-asset.js';
+import { tradeAssetToken } from '../domain/trade-asset.js';
 import { checkTradeDelegationReliance, type TradeDelegationPolicy } from '../domain/trade-delegation-assessment.js';
 import { isTradeInstant } from '../domain/trade-delegation.js';
 import { isPlainRecord, isTradeIdentifier } from '../domain/trade-grammar.js';
 import { validateTradeProposal } from '../domain/trade-proposal.js';
-import { tradeResourceOf } from '../domain/trade-governance.js';
+import { TRADE_PARAMETER_DIMENSION_IDS, compileTradeProposal, createTradeGovernanceBinding, tradeResourceOf, type TradeGovernedActionIntent } from '../domain/trade-governance.js';
 import {
   TRADING_RISK_ASSESSMENT_DIGEST_DOMAIN,
   TRADING_RISK_ASSESSMENT_SCHEMA,
@@ -225,10 +225,45 @@ export const TRADE_RISK_FACT_CLASSES = Object.freeze({
   assessedProposal: 'trade.risk.assessedProposal',
   assessedAmount: 'trade.risk.assessedAmount',
   assessedAsset: 'trade.risk.assessedAsset',
+  assessedNetwork: 'trade.risk.assessedNetwork',
+  assessedDelegate: 'trade.risk.assessedDelegate',
+  assessedBaseAsset: 'trade.risk.assessedBaseAsset',
+  assessedQuoteAsset: 'trade.risk.assessedQuoteAsset',
+  assessedSide: 'trade.risk.assessedSide',
+  assessedQuantity: 'trade.risk.assessedQuantity',
   profile: 'trade.risk.profile',
   approvalRequired: 'trade.risk.approvalRequired',
   delegation: 'trade.delegation.offercreate',
 } as const);
+
+/**
+ * K1 — the full intent binding: each TRADE-01 parameter dimension of the
+ * compiled intent, and the fact class that attests its assessed value. With
+ * the governed amount and asset, and the Kernel's own action, resource
+ * (network + owner) and organization in the query, every field of the
+ * compiled `GovernedActionIntent` but the request identity (idempotency key,
+ * correlation id) is bound to the assessed proposal; the digest binds every
+ * proposal field (flags, `takerPays`, expiration, requested validity …) in
+ * turn.
+ */
+export const TRADE_INTENT_BINDING_FACTS: Readonly<Record<(typeof TRADE_PARAMETER_DIMENSION_IDS)[keyof typeof TRADE_PARAMETER_DIMENSION_IDS], string>> = Object.freeze({
+  [TRADE_PARAMETER_DIMENSION_IDS.proposalDigest]: TRADE_RISK_FACT_CLASSES.assessedProposal,
+  [TRADE_PARAMETER_DIMENSION_IDS.network]: TRADE_RISK_FACT_CLASSES.assessedNetwork,
+  [TRADE_PARAMETER_DIMENSION_IDS.delegateAccount]: TRADE_RISK_FACT_CLASSES.assessedDelegate,
+  [TRADE_PARAMETER_DIMENSION_IDS.baseAsset]: TRADE_RISK_FACT_CLASSES.assessedBaseAsset,
+  [TRADE_PARAMETER_DIMENSION_IDS.quoteAsset]: TRADE_RISK_FACT_CLASSES.assessedQuoteAsset,
+  [TRADE_PARAMETER_DIMENSION_IDS.side]: TRADE_RISK_FACT_CLASSES.assessedSide,
+  [TRADE_PARAMETER_DIMENSION_IDS.quantity]: TRADE_RISK_FACT_CLASSES.assessedQuantity,
+});
+
+/** The intent the proposal compiles to under the profile's action — the one source of every bound value. `undefined` if it does not compile. */
+function compiledIntentOf(proposal: unknown, action: string, organizationId: string, principalId: string): TradeGovernedActionIntent | undefined {
+  try {
+    return compileTradeProposal(proposal, createTradeGovernanceBinding({ action }), { organizationId, principalId }).intent;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface TradeContextReading {
   readonly key: string;
@@ -277,20 +312,24 @@ export function tradingRiskContextReadings(evidence: unknown, expected: TradingR
   const validation = validateTradeProposal(expected.proposal);
   const parsedProfile = parseTradingRiskProfile(expected.profile);
   if (!validation.valid || !parsedProfile.valid) return Object.freeze({ projected: false as const, code: RR.EXPECTATION_INVALID });
-  const { proposal, terms } = validation.accepted;
+  const { proposal } = validation.accepted;
   // The readings answer exactly the request the Kernel is deciding: its action, its owner resource, its organization.
   if (!queryMatches(query, { action: parsedProfile.profile.action, resource: tradeResourceOf(validation.accepted), organizationId: proposal.organizationId })) {
     return Object.freeze({ projected: false as const, code: 'RISK_PROJECTION_QUERY_MISMATCH' as const });
   }
   const maxAgeSeconds = wholeSecondsBetween(Date.parse(expected.at), reliance.validUntilMs);
   if (maxAgeSeconds < 1) return Object.freeze({ projected: false as const, code: RR.STALE });
+  // Every bound value is read from the compiled intent itself, so a reading can never disagree with what compilation produces.
+  const intent = compiledIntentOf(proposal, parsedProfile.profile.action, proposal.organizationId, proposal.principalId);
+  if (intent === undefined || intent.parameters[TRADE_PARAMETER_DIMENSION_IDS.proposalDigest] !== validation.accepted.digest) return Object.freeze({ projected: false as const, code: RR.EXPECTATION_INVALID });
   const base = { observedAt: expected.at, maxAgeSeconds, reference: reliance.evidenceDigest };
+  const parameterReadings = Object.entries(TRADE_INTENT_BINDING_FACTS).map(([dimension, key]) => Object.freeze({ key, value: intent.parameters[dimension] as string, ...base }));
   return Object.freeze({
     projected: true as const,
     readings: Object.freeze([
-      Object.freeze({ key: TRADE_RISK_FACT_CLASSES.assessedProposal, value: validation.accepted.digest, ...base }),
-      Object.freeze({ key: TRADE_RISK_FACT_CLASSES.assessedAmount, value: tradeDecimalQuantity(proposal.takerGets), ...base }),
-      Object.freeze({ key: TRADE_RISK_FACT_CLASSES.assessedAsset, value: tradeMonetaryAssetId(proposal.network, terms.side === 'sell' ? terms.base : terms.quote), ...base }),
+      ...parameterReadings,
+      Object.freeze({ key: TRADE_RISK_FACT_CLASSES.assessedAmount, value: intent.amount.value, ...base }),
+      Object.freeze({ key: TRADE_RISK_FACT_CLASSES.assessedAsset, value: intent.amount.currency, ...base }),
       Object.freeze({ key: TRADE_RISK_FACT_CLASSES.profile, value: tradingRiskProfileReference(parsedProfile.profile), ...base }),
       Object.freeze({ key: TRADE_RISK_FACT_CLASSES.approvalRequired, value: reliance.disposition === 'APPROVAL_REQUIRED', ...base }),
     ]),

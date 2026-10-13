@@ -126,6 +126,7 @@ export type {
 } from './trade-risk-assessment.js';
 
 export {
+  TRADE_INTENT_BINDING_FACTS,
   TRADE_RISK_FACT_CLASSES,
   TRADING_RISK_RELIANCE_REFUSALS,
   checkTradingRiskReliance,

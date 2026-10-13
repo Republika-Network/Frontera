@@ -34,8 +34,13 @@ import { CORE_SOURCE_CLASSIFICATION, CORE_SOURCE_ROOTS, listCoreSources } from '
 
 const TRADE_ROOT = 'src/features/trade-runtime';
 const PAY_ROOTS = ['src/features/payment-runtime', 'src/enterprise/xrpl-payment-rail', 'src/enterprise/payment-protocol-ingress', 'src/enterprise/payment-settlement'];
-/** Approved enterprise composition edges for TRADE. None: TRADE is composed nowhere until an explicit architectural decision adds one here. */
-const TRADE_COMPOSITION_EDGES: readonly string[] = [];
+/**
+ * Approved enterprise composition edges for TRADE. Exactly one, added by the
+ * TRADE-03 K1 architectural approval: the CORE-04 trusted-context provider and
+ * its in-process ingress. It is held to its own structure test
+ * (`trade03-risk-context-structure.test.ts`): no effect, no decision, no grant.
+ */
+const TRADE_COMPOSITION_EDGES: readonly string[] = ['src/enterprise/trade-risk-context'];
 const SKIPPED = new Set(['node_modules', 'dist', 'dist-test', '.next', '.git', 'vendor']);
 
 interface Source {
@@ -131,8 +136,8 @@ describe('TRADE vertical — classification and independence', () => {
     assert.ok(NOT_TRADE.some((source) => source.path === 'src/kernel/index.ts'));
   });
 
-  it('(1) generic CORE — and the packages, scripts and apps — never depend on TRADE; there is no approved TRADE composition edge', () => {
-    assert.deepEqual(TRADE_COMPOSITION_EDGES, []);
+  it('(1) generic CORE — and the packages, scripts and apps — never depend on TRADE; the one approved composition edge is the TRADE-03 trusted-context provider', () => {
+    assert.deepEqual(TRADE_COMPOSITION_EDGES, ['src/enterprise/trade-risk-context']);
     assert.deepEqual(dependsOnTrade(NOT_TRADE), []);
   });
 

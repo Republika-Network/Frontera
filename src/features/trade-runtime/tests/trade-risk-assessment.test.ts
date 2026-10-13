@@ -2,7 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  TRADE_INTENT_BINDING_FACTS,
   TRADE_RISK_FACT_CLASSES,
+  compileTradeProposal,
+  createTradeGovernanceBinding,
   TRADING_RISK_ASSESSMENT_REFUSALS as AR,
   TRADING_RISK_CONTROLS,
   TRADING_RISK_RELIANCE_REFUSALS as RR,
@@ -441,12 +444,18 @@ describe('CORE-04 projection — readings bound to the proposal digest, governed
   const QUERY = { action: 'trade.offer-create', resourceScope: `xrp-ledger-testnet:${OWNER}`, organizationId: ORG };
   const DELEGATION = { proposal: proposal(), at: later(1), policy: DELEGATION_POLICY, action: 'trade.offer-create' };
 
-  it('a reliable record projects exactly five readings — digest, governed amount and asset, profile, review flag — living no longer than its evidence', () => {
+  it('a reliable record projects the full intent binding — seven parameters, governed amount and asset — plus profile and review flag, living no longer than its evidence', () => {
     const projection = tradingRiskContextReadings(evidenceOf(), expectation(), QUERY);
     assert.ok(projection.projected, JSON.stringify(projection));
     if (!projection.projected) return;
     const byKey = new Map(projection.readings.map((reading) => [reading.key, reading]));
-    assert.deepEqual([...byKey.keys()].sort(), [TRADE_RISK_FACT_CLASSES.approvalRequired, TRADE_RISK_FACT_CLASSES.assessedAmount, TRADE_RISK_FACT_CLASSES.assessedAsset, TRADE_RISK_FACT_CLASSES.assessedProposal, TRADE_RISK_FACT_CLASSES.profile].sort());
+    assert.deepEqual([...byKey.keys()].sort(), Object.values(TRADE_RISK_FACT_CLASSES).filter((key) => key !== TRADE_RISK_FACT_CLASSES.delegation).sort());
+    // Each parameter reading equals the compiled intent's parameter exactly.
+    const intent = compileTradeProposal(proposal(), createTradeGovernanceBinding({ action: 'trade.offer-create' }), { organizationId: ORG, principalId: 'agent-mm-01' }).intent;
+    for (const [dimension, key] of Object.entries(TRADE_INTENT_BINDING_FACTS)) assert.equal(byKey.get(key)?.value, intent.parameters[dimension], dimension);
+    assert.equal(byKey.get(TRADE_RISK_FACT_CLASSES.assessedSide)?.value, 'sell');
+    assert.equal(byKey.get(TRADE_RISK_FACT_CLASSES.assessedQuantity)?.value, '100');
+    assert.equal(byKey.get(TRADE_RISK_FACT_CLASSES.assessedDelegate)?.value, DELEGATE);
     assert.equal(byKey.get(TRADE_RISK_FACT_CLASSES.assessedProposal)?.value, accepted().digest);
     assert.equal(byKey.get(TRADE_RISK_FACT_CLASSES.assessedAmount)?.value, '100', 'what the owner gives up (TakerGets), as the compiled intent states it');
     assert.equal(byKey.get(TRADE_RISK_FACT_CLASSES.assessedAsset)?.value, `xrp-ledger-testnet:${RLUSD}/${ISSUER}`);

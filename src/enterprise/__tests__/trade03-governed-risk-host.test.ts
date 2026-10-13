@@ -1,10 +1,9 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { contextObservationProvenanceDigest, type ContextFactObservation, type ContextResolutionQuery } from '../../features/context-resolution-runtime/index.js';
-import type { PolicyCondition } from '../../features/domain-policy-pack-runtime/domain/policy-pack-condition.js';
-import type { PolicyPackRule } from '../../features/domain-policy-pack-runtime/domain/policy-pack-rule.js';
+import { contextObservationProvenanceDigest, type ContextFactObservation, type ContextResolutionQuery, type ContextResolverPort } from '../../features/context-resolution-runtime/index.js';
 import { createActionEnforcementPolicyPackIntegration } from '../../features/domain-policy-pack-runtime/integrations/action-enforcement-policy-pack-integration.js';
+import type { PolicyPackRule } from '../../features/domain-policy-pack-runtime/domain/policy-pack-rule.js';
 import { createPolicyPackRuntimeContext } from '../../features/domain-policy-pack-runtime/runtime/policy-pack-runtime-context.js';
 import { createPolicyPackRuntime } from '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js';
 import {
@@ -13,15 +12,17 @@ import {
   TRADE_PROFILE_PARAMETERS,
   TRADE_RESERVED_CONTEXT_KEYS,
   TRADE_RISK_FACT_CLASSES as F,
-  assessTradingRisk,
+  assessTradeDelegation,
   compileTradeProposal,
   createTradeGovernanceBinding,
+  parseTradeDelegationPolicy,
   sealTradeActiveOrderSnapshot,
   sealTradeExposureSnapshot,
-  tradeDelegationContextReading,
-  tradingRiskContextReadings,
-  type TradeContextReading,
+  tradeDelegateEntryIndex,
+  type TradeDelegationPolicy,
+  type TradeDelegationVerificationRequest,
   type TradeGovernedActionIntent,
+  type TradingRiskAssessmentEvidence,
 } from '../../features/trade-runtime/index.js';
 import {
   DELEGATION_POLICY,
@@ -29,7 +30,8 @@ import {
   ISSUER_B,
   OWNER,
   RLUSD,
-  delegationFor,
+  STRANGER_DELEGATE,
+  STRANGER_OWNER,
   exposureReading,
   grantedObservation,
   market,
@@ -38,93 +40,104 @@ import {
   profileData,
   proposal as fixtureProposal,
 } from '../../features/trade-runtime/tests/trade-risk-fixture.js';
+import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import type { GovernanceConfiguration } from '../governance-profile/index.js';
 import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
-import { ADMIN, AGENT, AGENT_SUBJECT, ORG, OWNER as OWNER_ACTOR, POLICY_WRITER, TRUST_DOMAIN, Workspace, boot, call, governedFile, govern, secureEnv, type Booted, type ContextTable, type Reply } from './core04-host-fixture.js';
+import {
+  TRADE_RISK_ABSENCE_SENSITIVE_RULES,
+  TRADE_RISK_ADMISSION_REFUSALS as AR,
+  TRADE_RISK_MATERIAL_FACTS,
+  TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT,
+  TradeRiskContextConfigurationError,
+  createTradeRiskContext,
+  tradeRiskPolicyRules,
+  tradeRiskTrustedContextSources,
+  type TradeRiskContext,
+  type TradeRiskSourcePorts,
+} from '../trade-risk-context/index.js';
+import { ADMIN, AGENT, AGENT_KEY, AGENT_SUBJECT, ORG, OWNER as OWNER_ACTOR, POLICY_WRITER, TRUST_DOMAIN, Workspace, boot, call, governedFile, secureEnv, type Booted, type Reply } from './core04-host-fixture.js';
 
 /**
- * TRADE-03 — trading-risk prerequisites on the **canonical shipped Host**
- * (`bootEnterpriseHost()`, production profile, SQLite everywhere, signed
- * grants, durable approvals and emergency controls, a real loopback
- * listener), through the **unchanged** governed path:
+ * TRADE-03 (with K1 and K2) — trading-risk governance on the **canonical
+ * shipped Host** (`bootEnterpriseHost()`, production profile, SQLite
+ * everywhere, signed grants, durable approvals and emergency controls, a real
+ * loopback listener), through the **approved composition edge**
+ * `src/enterprise/trade-risk-context/` and the unchanged governed path:
  *
- *   compiled TradeProposal → envelope (P9, CORE-03) → Kernel → Trusted Context
- *   Boundary (material trade facts) → policy pack → CORE-05 → emergency →
- *   P10 / grant → P7 → recording adapter.
+ *   gateway → admitProposal(BoundCustomerIdentity, proposal) → compiled intent
+ *   POST /api/governed-actions (intent) → envelope (P9, CORE-03) → Kernel →
+ *   CORE-04 (edge provider: one-shot binding, fresh trusted reads, assessment,
+ *   projection) → policy (bindings) → CORE-05 → emergency → P10 / grant → P7 →
+ *   recording adapter.
  *
- * What is **test-only composition** here (no production edge exists —
- * `TRADE_COMPOSITION_EDGES` stays empty): the trusted context provider. It
- * plays the role a reviewed TRADE composition edge would: for the Kernel's own
- * query it assesses the pending proposal with `assessTradingRisk` over **fake
- * trusted sources** (TRADE-02's own assessor over a fake ledger read, sealed
- * fixture market / exposure / order snapshots, all marked `simulated`), and
- * projects only a reliable assessment into readings. The policy is data.
- * Nothing reads a ledger or market, signs, submits or executes a trade: the
+ * What is simulated: the **source ports** only — fake trusted market,
+ * exposure and order sources (sealed snapshots marked `simulated`) and a fake
+ * XLS-75 read assessed by TRADE-02's own assessor. The edge, the Host, the
+ * Kernel, policy, approvals, emergency control, P9, P10 and P7 are the shipped
+ * code. This is architectural enforcement, **not** a live-trading
+ * qualification. Nothing reads a ledger or market, signs or submits; the
  * adapter is the fixture's recording adapter and only its call count matters.
  */
 
 const ACTION = 'trade.offer-create';
 const NETWORK = 'xrp-ledger-testnet';
 const RESOURCE = `${NETWORK}:${OWNER}`;
+const STRANGER_RESOURCE = `${NETWORK}:${STRANGER_OWNER}`;
 const PRINCIPAL = 'principal-agent';
+const PRINCIPAL_B = 'principal-agent-b';
+const AGENT_B = 'actor-agent-b';
+const AGENT_B_SUBJECT = { system: 'core04-app', subjectId: 'agent-2' } as const;
+const AGENT_B_KEY = 'FRONTERA_TRADE03_AGENT_B_KEY_SENTINEL_5d27c1';
 const XRP_ID = `${NETWORK}:XRP`;
-/**
- * The Host world's issued token is a three-character code from the fixture
- * issuer. A 40-hex-digit code (`RLUSD`) makes a P9 asset id of 94 bytes, above
- * P7's 64-byte amount-unit bound — see the pinned characterization below.
- */
 const TOKEN = 'USD';
 const TOKEN_RECORD = Object.freeze({ currency: TOKEN, issuer: ISSUER });
 const TOKEN_ID = `${NETWORK}:${TOKEN}/${ISSUER}`;
 const TOKEN_B_ID = `${NETWORK}:${TOKEN}/${ISSUER_B}`;
+/** K2: a 40-hex-digit XRP Ledger currency's asset id — 93 bytes, above the former 64-byte P7 bound. */
 const RLUSD_ID = `${NETWORK}:${RLUSD}/${ISSUER}`;
-const BINDING = createTradeGovernanceBinding({ action: ACTION });
-const IDENTITY = Object.freeze({ organizationId: ORG, principalId: PRINCIPAL });
-const RISK_SOURCE = 'trade-risk-assessor';
-const DELEGATION_SOURCE = 'trade-delegation-verifier';
-const MATERIAL = [F.assessedProposal, F.assessedAmount, F.assessedAsset, F.profile, F.approvalRequired, F.delegation];
+const SOURCE_IDS = Object.freeze({ risk: 'trade-risk-assessor', delegation: 'trade-delegation-verifier' });
 const POLICY_VERSION = 'policy-pack-trade03-v1';
-/** Rules that also deny on an *absent* fact (`not_exists`, and `not_equals` against a literal, which is true on absence). */
-const ABSENCE_SENSITIVE_RULES: ReadonlySet<string> = new Set(['risk-facts-present', 'risk-profile-pinned']);
-
-// ── Trusted configuration: the trading-risk profile in force ─────────────────
+const PROFILE_REFERENCE = 'mm-desk@3';
+const GOVERNANCE_PIN = Object.freeze({ id: 'governed-trading', version: 1 });
+const BINDING = createTradeGovernanceBinding({ action: ACTION });
 
 const NOW = Date.now();
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-/** The fixture pair on the Host's token: deviation ≤ 1000 bps, notional ≤ 5000 XRP, review above 3000 XRP. */
-function hostPair(overrides: Record<string, unknown> = {}, base: Record<string, unknown> = TOKEN_RECORD): Record<string, unknown> {
-  return pairData({
+// ── Trusted configuration ────────────────────────────────────────────────────
+
+/** A pair on the Host: deviation ≤ 1000 bps, notional ≤ 5000 XRP, review above 1500 XRP of notional. */
+const hostPair = (base: Record<string, unknown>, pairId: string): Record<string, unknown> =>
+  pairData({
+    pairId,
     base,
     referenceDeviation: { mode: 'enforce', maxBasisPoints: 1000, rule: 'symmetric' },
     notional: { mode: 'enforce', valuationAsset: { currency: 'XRP' }, maximum: '5000' },
-    approval: { restricted: false, notionalAbove: '3000' },
-    ...overrides,
+    approval: { restricted: false, notionalAbove: '1500' },
   });
-}
 
-/** The fixture profile, for this Host's organization and token, in force around now. */
-function hostProfile(overrides: Record<string, unknown> = {}, pair: Record<string, unknown> = hostPair()): Record<string, unknown> {
-  return profileData({ organizationId: ORG, effectiveFrom: iso(NOW - 86_400_000), expiresAt: iso(NOW + 30 * 86_400_000), pairs: [pair], ...overrides });
-}
-
-// ── The governance configuration a trading deployment declares ──────────────
+const PROFILE = profileData({
+  organizationId: ORG,
+  effectiveFrom: iso(NOW - 86_400_000),
+  expiresAt: iso(NOW + 30 * 86_400_000),
+  ownerAccounts: [OWNER, STRANGER_OWNER],
+  pairs: [hostPair(TOKEN_RECORD, 'usd-xrp'), hostPair({ currency: RLUSD, issuer: ISSUER }, 'rlusd-xrp')],
+});
 
 const GOVERNANCE: GovernanceConfiguration = {
   parameterDimensions: TRADE_PARAMETER_DIMENSIONS,
   actionClasses: [{ id: 'place-order', actions: [ACTION] }],
-  resourceClasses: [{ id: 'trading-account', resources: [RESOURCE] }],
+  resourceClasses: [{ id: 'trading-account', resources: [RESOURCE, STRANGER_RESOURCE] }],
   profiles: [
     {
-      profileId: 'governed-trading',
-      version: 1,
+      profileId: GOVERNANCE_PIN.id,
+      version: GOVERNANCE_PIN.version,
       owner: ORG,
       provenance: { authoredBy: 'operator:trading-desk', approvedBy: 'operator:security' },
       actionClass: 'place-order',
       resourceClass: 'trading-account',
       parameters: TRADE_PROFILE_PARAMETERS,
-      // Every trading-risk prerequisite is a *material* fact: missing, stale, conflicting or untrusted → the Kernel denies before policy runs.
-      materialFacts: MATERIAL,
+      materialFacts: TRADE_RISK_MATERIAL_FACTS,
       relevantPolicies: ['trade03-policy'],
       approval: { approverAction: 'approve-trade', minimumApprovals: 1, requestTtlSeconds: 3600, approvalValiditySeconds: 900 },
     },
@@ -135,45 +148,19 @@ const GOVERNANCE: GovernanceConfiguration = {
 const TRUSTED_CONTEXT = {
   maxFutureSkewSeconds: 0,
   sources: [
-    { sourceId: RISK_SOURCE, kind: 'risk_engine', name: 'Trading-risk assessor (test composition)', trustClass: 'authoritative', organizationId: ORG, attests: MATERIAL.filter((key) => key !== F.delegation).map((factClass) => ({ factClass, maxAgeSeconds: 30 })) },
-    { sourceId: `${RISK_SOURCE}-2`, kind: 'risk_engine', name: 'Second assessor', trustClass: 'authoritative', organizationId: ORG, attests: [{ factClass: F.assessedProposal, maxAgeSeconds: 30 }] },
-    { sourceId: DELEGATION_SOURCE, kind: 'ledger', name: 'XLS-75 delegation verifier (test composition)', trustClass: 'authoritative', organizationId: ORG, attests: [{ factClass: F.delegation, maxAgeSeconds: 10 }] },
+    ...tradeRiskTrustedContextSources({ organizationId: ORG, sourceIds: SOURCE_IDS, riskMaxAgeSeconds: 30, delegationMaxAgeSeconds: 10 }),
+    { sourceId: `${SOURCE_IDS.risk}-2`, kind: 'risk_engine', name: 'Second assessor (conflict tests)', trustClass: 'authoritative', organizationId: ORG, attests: [{ factClass: F.assessedProposal, maxAgeSeconds: 30 }] },
   ],
-} as const;
+};
 
-// ── The organization's policy: data, every rule over admitted facts only ────
-
-const pred = (condition: Record<string, unknown>): PolicyCondition => ({ type: 'predicate', ...condition }) as PolicyCondition;
-const notAssessed = (field: Record<string, unknown>, factClass: string): PolicyCondition => pred({ ...field, operator: 'not_equals', valueFrom: { field: 'contextFact', factClass } });
-
-function rule(id: string, condition: PolicyCondition, effect: PolicyPackRule['effect']): PolicyPackRule {
-  return { id, policyPackVersionId: POLICY_VERSION, name: id, description: id, status: 'active', priority: 100, condition, effect, obligations: [], evidenceRequirements: [], approvalRequirements: [], severity: 'error', sourceIds: ['trade03-source'] };
-}
-
-/**
- * Deny unless the admitted facts name **this** request; never only "deny on
- * violation". Each binding rule compares a request field against an admitted
- * fact (`valueFrom`), and the belt rule denies if any fact is absent — which a
- * material fact already guarantees, so it is defence in depth, not the gate.
- */
-export const TRADE_RULES: readonly PolicyPackRule[] = [
-  rule('risk-assessed-this-proposal', notAssessed({ field: 'parameter', parameterId: D.proposalDigest }, F.assessedProposal), { type: 'deny', reasonCode: 'TRADE_RISK_PROPOSAL_NOT_ASSESSED', reason: 'The admitted risk assessment is for another proposal.' }),
-  rule('risk-assessed-this-amount', notAssessed({ field: 'amount' }, F.assessedAmount), { type: 'deny', reasonCode: 'TRADE_RISK_AMOUNT_NOT_ASSESSED', reason: 'The governed amount differs from the assessed proposal.' }),
-  rule('risk-assessed-this-asset', notAssessed({ field: 'currency' }, F.assessedAsset), { type: 'deny', reasonCode: 'TRADE_RISK_ASSET_NOT_ASSESSED', reason: 'The governed asset differs from the assessed proposal.' }),
-  rule('delegation-verified-for-this-proposal', notAssessed({ field: 'parameter', parameterId: D.proposalDigest }, F.delegation), { type: 'deny', reasonCode: 'TRADE_DELEGATION_NOT_VERIFIED', reason: 'No reliable XLS-75 delegation for this proposal.' }),
-  rule('risk-profile-pinned', pred({ field: 'contextFact', factClass: F.profile, operator: 'not_equals', value: 'mm-desk@3' }), { type: 'deny', reasonCode: 'TRADE_RISK_PROFILE_MISMATCH', reason: 'The assessment relied on another risk profile version.' }),
-  rule('risk-facts-present', { type: 'group', operator: 'any', conditions: MATERIAL.map((factClass) => pred({ field: 'contextFact', factClass, operator: 'not_exists' })) }, { type: 'deny', reasonCode: 'TRADE_RISK_FACT_MISSING', reason: 'A trading-risk fact is missing.' }),
-  rule('risk-review', pred({ field: 'contextFact', factClass: F.approvalRequired, operator: 'equals', value: true }), { type: 'require_approval', reasonCode: 'TRADE_RISK_REVIEW_REQUIRED', reason: 'The order is marked for human review.' }),
-];
-
-function tradePolicy(rules: readonly PolicyPackRule[] = TRADE_RULES) {
+function tradePolicy(rules: readonly PolicyPackRule[]) {
   const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext('2026-01-01T00:00:00.000Z'));
   runtime.registerPolicyPack(POLICY_WRITER, { id: 'trade03-policy', name: 'TRADE-03 trading-risk policy', description: 'Synthetic', kind: 'data_boundary', domain: 'general_enterprise' });
   runtime.registerPolicyPackVersion(POLICY_WRITER, {
     id: POLICY_VERSION,
     policyPackId: 'trade03-policy',
     version: '1.0.0',
-    scope: { resourceScopes: [RESOURCE] },
+    scope: { resourceScopes: [RESOURCE, STRANGER_RESOURCE] },
     rules,
     sources: [{ id: 'trade03-source', type: 'internal_control', title: 'Synthetic', description: 'Synthetic', authority: 'demo_only' }],
     effectiveFrom: '2026-01-01T00:00:00.000Z',
@@ -184,104 +171,91 @@ function tradePolicy(rules: readonly PolicyPackRule[] = TRADE_RULES) {
   return createActionEnforcementPolicyPackIntegration(runtime);
 }
 
-// ── The test-only trusted composition (the role a reviewed edge would play) ─
+const RULES = tradeRiskPolicyRules({ policyPackVersionId: POLICY_VERSION, profileReference: PROFILE_REFERENCE, sourceIds: ['trade03-source'] });
 
-interface Pending {
-  /** The proposal the trusted side received and will assess — never the request body. */
-  readonly proposal: Record<string, unknown>;
-  readonly profile?: Record<string, unknown>;
-  readonly delegation?: 'granted' | 'missing' | 'unavailable';
-  readonly marketAgeSeconds?: number;
-  /** The issued asset the market reference is for (defaults to the Host token). */
-  readonly marketBase?: { readonly currency: string; readonly issuer: string };
-  /** Rewrites readings after projection, to stand in for a broken or hostile provider. */
-  readonly tamper?: (readings: ContextFactObservation[], query: ContextResolutionQuery) => ContextFactObservation[];
-  readonly throws?: boolean;
+// ── Fake trusted source ports (the only simulated part) ─────────────────────
+
+interface World {
+  marketAgeSeconds: number;
+  delegation: 'granted' | 'unavailable' | 'throws';
+  marketThrows: boolean;
 }
 
-interface TradeContext extends ContextTable {
-  pending: Pending | undefined;
-  readonly assessments: string[];
+function freshWorld(): World {
+  return { marketAgeSeconds: 2, delegation: 'granted', marketThrows: false };
 }
 
-function createTradeContext(): TradeContext {
-  const queries: ContextResolutionQuery[] = [];
-  const assessments: string[] = [];
-  const context: TradeContext = {
-    pending: undefined,
-    queries,
-    assessments,
-    set() {
-      throw new Error('The trade composition is driven by `pending`.');
+function fakePorts(world: World): TradeRiskSourcePorts {
+  const policy = parseTradeDelegationPolicy(DELEGATION_POLICY) as TradeDelegationPolicy;
+  return {
+    market: {
+      async read(request) {
+        if (world.marketThrows) throw new Error('market feed down');
+        return request.quotes.map((quote) =>
+          market({ organizationId: ORG, network: request.network as typeof NETWORK, base: request.base, quote, observedAt: iso(Date.parse(request.at) - world.marketAgeSeconds * 1000) }),
+        );
+      },
     },
-    provider: {
-      resolveContext(query) {
-        queries.push(query);
-        const pending = context.pending;
-        if (pending === undefined) return Promise.resolve({ observations: [] });
-        if (pending.throws === true) return Promise.reject(new Error('risk source unavailable'));
-        const at = query.at;
-        const observed = iso(Date.parse(at) - 2000);
-        const profile = pending.profile ?? hostProfile();
-        const proposal = pending.proposal;
-        const delegation =
-          pending.delegation === 'missing'
-            ? undefined
-            : pending.delegation === 'unavailable'
-              ? delegationFor(proposal, { outcome: 'unavailable', failure: 'TRANSPORT_UNAVAILABLE' }, at)
-              : delegationFor(proposal, { outcome: 'observed', observation: grantedObservation({ observedAt: observed }) }, at);
-        const result = assessTradingRisk({
-          proposal,
-          identity: IDENTITY,
-          binding: { action: ACTION },
-          profile,
-          facts: {
-            delegation,
-            marketPrices: [market({ organizationId: ORG, base: { kind: 'issued', ...(pending.marketBase ?? TOKEN_RECORD) }, observedAt: iso(Date.parse(at) - (pending.marketAgeSeconds ?? 2) * 1000) })],
-            exposure: sealTradeExposureSnapshot(exposureReading({ organizationId: ORG, observedAt: observed })),
-            activeOrders: sealTradeActiveOrderSnapshot(ordersReading({ organizationId: ORG, observedAt: observed })),
-          },
-          governanceProfile: { id: 'governed-trading', version: 1 },
-          assessedAt: at,
-        });
-        assessments.push(result.assessed ? `${result.evidence.outcome}/${result.evidence.disposition}` : `REFUSED/${result.refusal}`);
-        const binding = { action: query.action, resourceScope: query.resourceScope, organizationId: query.organizationId ?? '' };
-        const readings: TradeContextReading[] = [];
-        if (result.assessed) {
-          const risk = tradingRiskContextReadings(result.evidence, { proposal, profile, at, governanceProfile: { id: 'governed-trading', version: 1 } }, binding);
-          if (risk.projected) readings.push(...risk.readings);
-        }
-        const delegated = delegation === undefined ? undefined : tradeDelegationContextReading(delegation, { proposal, at, policy: DELEGATION_POLICY, action: ACTION }, binding);
-        if (delegated?.projected === true) readings.push(delegated.reading);
-        let observations = readings
-          .filter((reading) => query.keys.includes(reading.key))
-          .map((reading): ContextFactObservation => {
-            const base = { key: reading.key, value: reading.value, sourceId: reading.key === F.delegation ? DELEGATION_SOURCE : RISK_SOURCE, observedAt: reading.observedAt, reference: reading.reference, organizationId: ORG, maxAgeSeconds: reading.maxAgeSeconds };
-            return { ...base, provenanceDigest: contextObservationProvenanceDigest(base) };
-          });
-        if (pending.tamper !== undefined) observations = pending.tamper(observations, query);
-        return Promise.resolve({ observations });
+    exposure: {
+      async read(request) {
+        return sealTradeExposureSnapshot(exposureReading({ organizationId: ORG, ownerAccount: request.ownerAccount, observedAt: iso(Date.parse(request.at) - 2000) }));
+      },
+    },
+    activeOrders: {
+      async read(request) {
+        return sealTradeActiveOrderSnapshot(ordersReading({ organizationId: ORG, scopeKey: request.scopeKey, observedAt: iso(Date.parse(request.at) - 2000) }));
+      },
+    },
+    delegation: {
+      async verify(request: TradeDelegationVerificationRequest) {
+        if (world.delegation === 'throws') throw new Error('ledger reader down');
+        const read =
+          world.delegation === 'unavailable'
+            ? { outcome: 'unavailable' as const, failure: 'TRANSPORT_UNAVAILABLE' }
+            : {
+                outcome: 'observed' as const,
+                observation: grantedObservation({ owner: request.ownerAccount, delegate: request.delegateAccount, entryIndex: tradeDelegateEntryIndex(request.ownerAccount, request.delegateAccount), observedAt: iso(Date.now() - 1000) }) as never,
+              };
+        return assessTradeDelegation({ request, policy, read, assessedAt: iso(Date.now()) });
       },
     },
   };
-  return context;
 }
 
-/** Re-seals a reading after a change, as a provider that *believes* it is right would. */
+/** A wrapper standing in for a broken or hostile provider (CORE-04 boundary tests only). */
+interface Tamperable {
+  readonly provider: ContextResolverPort;
+  tamper: ((observations: ContextFactObservation[], query: ContextResolutionQuery) => ContextFactObservation[]) | undefined;
+}
+
+function tamperable(inner: ContextResolverPort): Tamperable {
+  const wrapper: Tamperable = {
+    tamper: undefined,
+    provider: {
+      async resolveContext(query) {
+        const output = await inner.resolveContext(query);
+        const change = wrapper.tamper;
+        return change === undefined ? output : { observations: change([...output.observations], query) };
+      },
+    },
+  };
+  return wrapper;
+}
+
 function resealed(observation: ContextFactObservation, change: Partial<ContextFactObservation>): ContextFactObservation {
   const { provenanceDigest: _digest, ...rest } = { ...observation, ...change };
   return { ...rest, provenanceDigest: contextObservationProvenanceDigest({ ...rest, reference: rest.reference ?? '' }) };
 }
 
-// ── Host, authority, requests ────────────────────────────────────────────────
+// ── Hosts ────────────────────────────────────────────────────────────────────
 
-/** P10: per-order ceilings and lifetime limits in each governed asset — the existing authority, which TRADE never widens. */
+/** P10, the owner's existing authority: per-order ceilings and lifetime limits per asset. TRADE never widens them. */
 const CONSTRAINTS = [
   { type: 'max_amount', currency: XRP_ID, value: '2000' },
   { type: 'spending_limit', limitId: 'xrp-lifetime', currency: XRP_ID, maximum: '1000000', window: { kind: 'lifetime' } },
-  { type: 'max_amount', currency: TOKEN_ID, value: '1000' },
+  { type: 'max_amount', currency: TOKEN_ID, value: '500' },
   { type: 'spending_limit', limitId: 'token-lifetime', currency: TOKEN_ID, maximum: '1000000', window: { kind: 'lifetime' } },
-  { type: 'max_amount', currency: TOKEN_B_ID, value: '1000' },
+  { type: 'max_amount', currency: TOKEN_B_ID, value: '500' },
   { type: 'spending_limit', limitId: 'token-b-lifetime', currency: TOKEN_B_ID, maximum: '1000000', window: { kind: 'lifetime' } },
   { type: 'max_amount', currency: RLUSD_ID, value: '1000' },
   { type: 'spending_limit', limitId: 'rlusd-lifetime', currency: RLUSD_ID, maximum: '1000000', window: { kind: 'lifetime' } },
@@ -292,43 +266,37 @@ async function provisionTrading(booted: Booted): Promise<void> {
   assert.ok(service !== undefined);
   const payloads = buildDurableAuthorityPayloads(ORG, TRUST_DOMAIN);
   const operator = DURABLE_FIXTURE_OPERATOR;
+  const resources = [RESOURCE, STRANGER_RESOURCE];
   await service.provisionActor(operator, payloads.issuerActor);
   await service.provisionTrustDomain(operator, payloads.trustDomain);
   await service.provisionRootIssuer(operator, payloads.rootIssuer);
   await service.provisionActor(operator, { ...payloads.ownerActor, actorId: OWNER_ACTOR, displayName: 'Owner', externalSubject: { system: 'core04-app', subjectId: 'owner-1' } });
-  await service.provisionActor(operator, { ...payloads.agentActor, actorId: AGENT, displayName: 'Trading engine', externalSubject: AGENT_SUBJECT });
-  await service.provisionPassport(operator, { ...payloads.passport, passportId: `passport-${AGENT}`, subjectActorId: AGENT });
-  await service.provisionCapabilityToken(operator, { ...payloads.capabilityToken, capabilityTokenId: `cap-${AGENT}`, subjectActorId: AGENT, principalActorId: OWNER_ACTOR, issuerActorId: OWNER_ACTOR, actions: [ACTION], resourceScopes: [RESOURCE] });
-  await service.provisionAuthorityGrant(operator, { ...payloads.authorityGrant, authorityGrantId: 'authority-grant-trading', subjectActorId: OWNER_ACTOR, actions: [ACTION], resourceScopes: [RESOURCE], constraints: CONSTRAINTS as never });
-  await service.provisionDelegationGrant(operator, {
-    ...payloads.delegationGrant,
-    delegationGrantId: 'delegation-trading',
-    delegatorActorId: OWNER_ACTOR,
-    delegateActorId: AGENT,
-    sourceAuthorityGrantId: 'authority-grant-trading',
-    actions: [ACTION],
-    resourceScopes: [RESOURCE],
-  });
+  await service.provisionAuthorityGrant(operator, { ...payloads.authorityGrant, authorityGrantId: 'authority-grant-trading', subjectActorId: OWNER_ACTOR, actions: [ACTION], resourceScopes: resources, constraints: CONSTRAINTS as never });
+  for (const [actorId, subject, label] of [
+    [AGENT, AGENT_SUBJECT, 'a'],
+    [AGENT_B, AGENT_B_SUBJECT, 'b'],
+  ] as const) {
+    await service.provisionActor(operator, { ...payloads.agentActor, actorId, displayName: `Trading engine ${label}`, externalSubject: subject });
+    await service.provisionPassport(operator, { ...payloads.passport, passportId: `passport-${actorId}`, subjectActorId: actorId });
+    await service.provisionCapabilityToken(operator, { ...payloads.capabilityToken, capabilityTokenId: `cap-${actorId}`, subjectActorId: actorId, principalActorId: OWNER_ACTOR, issuerActorId: OWNER_ACTOR, actions: [ACTION], resourceScopes: resources });
+    await service.provisionDelegationGrant(operator, {
+      ...payloads.delegationGrant,
+      delegationGrantId: `delegation-trading-${label}`,
+      delegatorActorId: OWNER_ACTOR,
+      delegateActorId: actorId,
+      sourceAuthorityGrantId: 'authority-grant-trading',
+      actions: [ACTION],
+      resourceScopes: resources,
+    });
+  }
 }
-
-let sequence = 0;
-/** A fresh proposal for this Host's organization and principal; each gets its own idempotency key. */
-function order(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  sequence += 1;
-  return fixtureProposal({ organizationId: ORG, principalId: PRINCIPAL, requestId: `trade03-req-${sequence}`, idempotencyKey: `trade03-offer-${sequence}`, takerGets: { ...TOKEN_RECORD, value: '100' }, ...overrides });
-}
-
-const intentOf = (raw: Record<string, unknown>): TradeGovernedActionIntent => compileTradeProposal(raw, BINDING, IDENTITY, { expectedGovernanceProfile: { id: 'governed-trading', version: 1 } }).intent;
-
-const workspace = new Workspace();
-let booted: Booted;
-let context: TradeContext;
-/** A second Host whose policy has no rule that reacts to an absent fact: the material-fact gate alone. */
-let gateOnly: Booted;
-let gateContext: TradeContext;
 
 function tradingFile(): Record<string, unknown> {
   return governedFile({
+    customerPrincipals: [
+      { principalId: PRINCIPAL, externalSubject: AGENT_SUBJECT, apiKeyEnv: 'FRONTERA_TEST_AGENT_KEY' },
+      { principalId: PRINCIPAL_B, externalSubject: AGENT_B_SUBJECT, apiKeyEnv: 'FRONTERA_TEST_AGENT_B_KEY' },
+    ],
     governance: GOVERNANCE,
     trustedContext: TRUSTED_CONTEXT,
     monetary: {
@@ -344,31 +312,99 @@ function tradingFile(): Record<string, unknown> {
   });
 }
 
-before(async () => {
-  context = createTradeContext();
-  booted = await boot(workspace, secureEnv(workspace.dir(), tradingFile()), { context, policy: tradePolicy() });
+interface TradeHost {
+  readonly booted: Booted;
+  readonly edge: TradeRiskContext;
+  readonly world: World;
+  readonly wrapper: Tamperable;
+  readonly evidence: TradingRiskAssessmentEvidence[];
+}
+
+const workspace = new Workspace();
+
+async function bootTradeHost(rules: readonly PolicyPackRule[], withEdge = true): Promise<TradeHost> {
+  const world = freshWorld();
+  const evidence: TradingRiskAssessmentEvidence[] = [];
+  const edge = createTradeRiskContext({
+    organizationId: ORG,
+    action: ACTION,
+    profile: PROFILE,
+    ports: fakePorts(world),
+    sourceIds: SOURCE_IDS,
+    bindingSeconds: 30,
+    clock: () => iso(Date.now()),
+    simulation: TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT,
+    onAssessment: (record) => evidence.push(record),
+  });
+  const wrapper = tamperable(edge.provider);
+  const env = { ...secureEnv(workspace.dir(), tradingFile()), FRONTERA_TEST_AGENT_B_KEY: AGENT_B_KEY };
+  const booted = await boot(workspace, env, { ...(withEdge ? { context: { provider: wrapper.provider, set() {}, queries: [] } } : {}), policy: tradePolicy(rules) });
   await provisionTrading(booted);
-  gateContext = createTradeContext();
-  gateOnly = await boot(workspace, secureEnv(workspace.dir(), tradingFile()), { context: gateContext, policy: tradePolicy(TRADE_RULES.filter((entry) => !ABSENCE_SENSITIVE_RULES.has(entry.id))) });
-  await provisionTrading(gateOnly);
+  return { booted, edge, world, wrapper, evidence };
+}
+
+let main: TradeHost;
+/** No absence-sensitive policy rule: the material-fact gate alone. */
+let gate: TradeHost;
+
+before(async () => {
+  main = await bootTradeHost(RULES);
+  gate = await bootTradeHost(RULES.filter((entry) => !TRADE_RISK_ABSENCE_SENSITIVE_RULES.has(entry.id)));
 });
 after(() => workspace.cleanup());
 
-/** Governs `raw` (as the trusted side holds it) with `intent` (as the applicant sends it), counting adapter calls. */
-async function submit(pending: Pending, intent: TradeGovernedActionIntent | Record<string, unknown> = intentOf(pending.proposal), host: Booted = booted, table: TradeContext = context): Promise<{ readonly reply: Reply; readonly calls: number }> {
-  table.pending = pending;
-  const before = host.calls.length;
-  const reply = await govern(host.baseUrl, intent as Record<string, unknown>, (intent as { idempotencyKey: string }).idempotencyKey);
-  return { reply, calls: host.calls.length - before };
+// ── Requests ─────────────────────────────────────────────────────────────────
+
+let sequence = 0;
+const nextId = (label: string): string => `trade03-${label}-${(sequence += 1)}`;
+
+function order(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const id = nextId('offer');
+  return fixtureProposal({ organizationId: ORG, principalId: PRINCIPAL, requestId: `${id}-req`, idempotencyKey: id, takerGets: { ...TOKEN_RECORD, value: '100' }, ...overrides });
+}
+const sellToken = (value: string, drops: string, overrides: Record<string, unknown> = {}) => order({ takerGets: { ...TOKEN_RECORD, value }, takerPays: { currency: 'XRP', drops }, ...overrides });
+/** What an applicant could compile on its own — never admitted. */
+const selfCompiled = (raw: Record<string, unknown>): TradeGovernedActionIntent => compileTradeProposal(raw, BINDING, { organizationId: ORG, principalId: PRINCIPAL }, { expectedGovernanceProfile: GOVERNANCE_PIN }).intent;
+
+async function identityOf(host: TradeHost, key: string): Promise<BoundCustomerIdentity> {
+  const admission = host.booted.host.enterprise.customerIdentityAdmission;
+  assert.ok(admission !== undefined);
+  const result = await admission.admit({ authorizationHeader: `Bearer ${key}` });
+  assert.equal(result.status, 'bound', JSON.stringify(result));
+  return (result as { readonly identity: BoundCustomerIdentity }).identity;
+}
+
+async function admit(host: TradeHost, raw: Record<string, unknown>, key = AGENT_KEY): Promise<TradeGovernedActionIntent> {
+  const admission = host.edge.admitProposal(await identityOf(host, key), raw, { expectedGovernanceProfile: GOVERNANCE_PIN });
+  assert.ok(admission.admitted, JSON.stringify(admission));
+  return admission.intent;
+}
+
+async function post(host: TradeHost, intent: TradeGovernedActionIntent | Record<string, unknown>, key = AGENT_KEY): Promise<{ readonly reply: Reply; readonly calls: number }> {
+  const before = host.booted.calls.length;
+  const reply = await call(host.booted.baseUrl, 'POST', '/api/governed-actions', { authorization: `Bearer ${key}`, body: intent });
+  return { reply, calls: host.booted.calls.length - before };
+}
+
+/** Admit through the edge as agent A, then submit — the intent as returned, or as `mutate` rewrites it. */
+async function trade(host: TradeHost, raw: Record<string, unknown>, mutate?: (intent: TradeGovernedActionIntent) => Record<string, unknown>) {
+  const intent = await admit(host, raw);
+  return post(host, mutate === undefined ? intent : mutate(intent));
 }
 
 const codesOf = (reply: Reply): readonly string[] => (reply.body['reasonCodes'] as readonly string[] | undefined) ?? [];
 
-async function committedText(reply: Reply, host: Booted = booted): Promise<string> {
+async function committedText(host: TradeHost, reply: Reply): Promise<string> {
   const decision = reply.body['decision'] as { readonly evaluationId?: string } | undefined;
   if (decision?.evaluationId === undefined) return reply.text;
-  const record = await host.host.enterprise.persistence.getByEvaluationId({ system: false, organizationId: ORG }, decision.evaluationId);
-  return JSON.stringify(record);
+  return JSON.stringify(await host.booted.host.enterprise.persistence.getByEvaluationId({ system: false, organizationId: ORG }, decision.evaluationId));
+}
+
+async function assertPolicyDenied(host: TradeHost, reply: Reply, ruleCode: string): Promise<void> {
+  assert.equal(reply.body['status'], 'denied', reply.text);
+  assert.ok(codesOf(reply).includes('DOMAIN_POLICY_DENIED'), reply.text);
+  const committed = await committedText(host, reply);
+  assert.ok(committed.includes(ruleCode), `the committed decision records ${ruleCode}`);
 }
 
 interface Unsatisfied {
@@ -377,29 +413,12 @@ interface Unsatisfied {
   readonly refusalReasons?: readonly string[];
 }
 
-/** What the Trusted Context Boundary recorded as unsatisfied in the committed decision. */
-async function unsatisfiedOf(reply: Reply, host: Booted = booted): Promise<readonly Unsatisfied[]> {
-  const record = JSON.parse(await committedText(reply, host)) as { readonly evaluation?: { readonly resultPayload?: { readonly context?: { readonly unsatisfiedRequirements?: readonly Unsatisfied[] } } } };
-  return record.evaluation?.resultPayload?.context?.unsatisfiedRequirements ?? [];
-}
-
-/**
- * Denied, and the Trusted Context Boundary itself recorded the material-fact
- * gap. (On the main Host the defence-in-depth policy rule also fires, and a
- * policy denial is the reported reason — the boundary's record is the proof
- * that the material-fact gate held regardless.)
- */
-async function assertBoundaryHeld(reply: Reply, expected: { readonly status: string; readonly key?: string; readonly refusal?: string }, host: Booted = booted): Promise<void> {
+/** Denied, and the Trusted Context Boundary itself recorded the material-fact gap. */
+async function assertBoundaryHeld(host: TradeHost, reply: Reply, expected: { readonly status: string; readonly key?: string }): Promise<void> {
   assert.equal(reply.body['status'], 'denied', reply.text);
-  const gaps = await unsatisfiedOf(reply, host);
-  const match = gaps.some((gap) => gap.status === expected.status && (expected.key === undefined || gap.key === expected.key) && (expected.refusal === undefined || (gap.refusalReasons ?? []).includes(expected.refusal)));
-  assert.ok(match, `expected ${JSON.stringify(expected)} in ${JSON.stringify(gaps)}`);
-}
-
-async function assertPolicyDenied(reply: Reply, ruleCode: string): Promise<void> {
-  assert.equal(reply.body['status'], 'denied', reply.text);
-  assert.ok(codesOf(reply).includes('DOMAIN_POLICY_DENIED'), reply.text);
-  assert.ok((await committedText(reply)).includes(ruleCode), `the committed decision records ${ruleCode}`);
+  const record = JSON.parse(await committedText(host, reply)) as { readonly evaluation?: { readonly resultPayload?: { readonly context?: { readonly unsatisfiedRequirements?: readonly Unsatisfied[] } } } };
+  const gaps = record.evaluation?.resultPayload?.context?.unsatisfiedRequirements ?? [];
+  assert.ok(gaps.some((gap) => gap.status === expected.status && (expected.key === undefined || gap.key === expected.key)), `expected ${JSON.stringify(expected)} in ${JSON.stringify(gaps)}`);
 }
 
 function assertContextDenied(reply: Reply, code: string): void {
@@ -407,302 +426,292 @@ function assertContextDenied(reply: Reply, code: string): void {
   assert.ok(codesOf(reply).includes(code), `${code}: ${reply.text}`);
 }
 
-const admin = (path: string, body: unknown) => call(booted.baseUrl, 'POST', path, { authorization: ADMIN, body });
-const sellToken = (value: string, drops: string, overrides: Record<string, unknown> = {}) => order({ takerGets: { ...TOKEN_RECORD, value }, takerPays: { currency: 'XRP', drops }, ...overrides });
-const buyToken = (drops: string, value: string, overrides: Record<string, unknown> = {}) => order({ takerGets: { currency: 'XRP', drops }, takerPays: { ...TOKEN_RECORD, value }, ...overrides });
+const admin = (path: string, body: unknown) => call(main.booted.baseUrl, 'POST', path, { authorization: ADMIN, body });
 
 // ── Qualification ────────────────────────────────────────────────────────────
 
-describe('TRADE-03 on the shipped Host — scenario A and replay', () => {
-  it('A: an order whose risk prerequisites are all SATISFIED is decided by the unchanged Governance Core and executed once (recording adapter)', async () => {
-    const raw = order();
-    const { reply, calls } = await submit({ proposal: raw });
-    assert.equal(context.assessments.at(-1), 'SATISFIED/ELIGIBLE');
+describe('K1 — a canonical trade progresses through the existing governed path via the edge', () => {
+  it('A: admitted, assessed SATISFIED from trusted ports, decided by the Kernel, executed once (recording adapter)', async () => {
+    const { reply, calls } = await trade(main, order());
     assert.equal(reply.body['status'], 'executed', reply.text);
     assert.equal(calls, 1);
-    assert.ok(JSON.stringify(booted.calls.at(-1)).includes(intentOf(raw).parameters[D.proposalDigest] as string), 'the exercised action carries exactly the assessed proposal digest');
+    const evidence = main.evidence.at(-1);
+    assert.equal(evidence?.outcome, 'SATISFIED');
+    assert.equal(evidence?.disposition, 'ELIGIBLE');
+    assert.equal(evidence?.simulatedFacts, true, 'the fake ports are named as simulated in the evidence');
+    assert.equal(main.edge.pendingCount(), 0, 'the binding was consumed');
   });
 
-  it('A: the grant cannot outlive the trading facts it relied on — context validity caps it far below the Host’s one-hour grant lifetime', async () => {
-    const { reply } = await submit({ proposal: order() });
+  it('A: the grant cannot outlive the trading facts it relied on', async () => {
+    const { reply } = await trade(main, order());
     assert.equal(reply.body['status'], 'executed', reply.text);
-    const record = JSON.parse(await committedText(reply)) as { readonly evaluation: { readonly resultPayload: { readonly context: { readonly validUntil: string }; readonly evaluatedAt: string } } };
+    const record = JSON.parse(await committedText(main, reply)) as { readonly evaluation: { readonly resultPayload: { readonly context: { readonly validUntil: string }; readonly evaluatedAt: string } } };
     const validity = Date.parse(record.evaluation.resultPayload.context.validUntil) - Date.parse(record.evaluation.resultPayload.evaluatedAt);
-    assert.ok(validity > 0 && validity <= 10_000, `the delegation reading bounds validity to ≤ 10 s, got ${validity} ms`);
+    assert.ok(validity > 0 && validity <= 10_000, `bounded by the delegation reading (≤ 10 s), got ${validity} ms`);
   });
 
-  it('replay: the same request again is the same outcome and no second adapter call', async () => {
-    const raw = order();
-    const intent = intentOf(raw);
-    const first = await submit({ proposal: raw }, intent);
-    assert.equal(first.reply.body['status'], 'executed', first.reply.text);
-    const second = await submit({ proposal: raw }, intent);
-    assert.equal(second.calls, 0, second.reply.text);
-    assert.equal(second.reply.body['executionId'], first.reply.body['executionId'], second.reply.text);
+  it('K2: a 40-hex-digit currency (93-byte asset id) is no longer withheld at the P7 boundary — it executes', async () => {
+    assert.equal(Buffer.byteLength(RLUSD_ID, 'utf8'), 93);
+    const { reply, calls } = await trade(main, order({ takerGets: { currency: RLUSD, issuer: ISSUER, value: '100' } }));
+    assert.equal(reply.body['status'], 'executed', reply.text);
+    assert.equal(calls, 1);
+  });
+
+  it('K2: the hex-currency asset is still held to P10 on its merits — above its ceiling it is withheld by financial authority', async () => {
+    const { reply, calls } = await trade(main, order({ takerGets: { currency: RLUSD, issuer: ISSUER, value: '1000.5' }, takerPays: { currency: 'XRP', drops: '2001000000' } }));
+    assert.equal(main.evidence.at(-1)?.outcome, 'VIOLATED', 'the risk layer refuses first here (base quantity > 1000)');
+    assert.equal(reply.body['status'], 'denied', reply.text);
+    assert.equal(calls, 0);
+  });
+
+  it('D: a risk-SATISFIED order above the owner’s P10 ceiling is withheld by the existing financial authority', async () => {
+    const within = await trade(main, sellToken('480', '960000000'));
+    assert.equal(within.reply.body['status'], 'executed', within.reply.text);
+    const over = await trade(main, sellToken('600', '1200000000'));
+    assert.equal(main.evidence.at(-1)?.outcome, 'SATISFIED');
+    assert.equal(over.reply.body['status'], 'withheld', over.reply.text);
+    assert.ok(codesOf(over.reply).includes('FINANCIAL_AUTHORITY_CEILING_EXCEEDED'), over.reply.text);
+    assert.equal(over.calls, 0);
   });
 });
 
-describe('TRADE-03 on the shipped Host — risk violations and unavailability never reach authority (B, C, E, H, I, J)', () => {
-  const cases: readonly [string, () => Pending, string][] = [
-    ['B wrong issuer (a registered asset, an unapproved issuer)', () => ({ proposal: sellToken('100', '200000000', { takerGets: { currency: TOKEN, issuer: ISSUER_B, value: '100' } }), marketBase: { currency: TOKEN, issuer: ISSUER_B } }), 'VIOLATED/PROHIBITED'],
-    ['E sell below the price floor', () => ({ proposal: sellToken('100', '180000000') }), 'VIOLATED/PROHIBITED'],
-    ['F buy above the price ceiling', () => ({ proposal: buyToken('220000000', '100') }), 'VIOLATED/PROHIBITED'],
-    ['G limit 2.25 against reference 2 (1250 bps > 1000)', () => ({ proposal: sellToken('100', '225000000') }), 'VIOLATED/PROHIBITED'],
-    ['H stale market reference', () => ({ proposal: order(), marketAgeSeconds: 120 }), 'UNAVAILABLE/WITHHELD'],
-    ['I missing delegation evidence', () => ({ proposal: order(), delegation: 'missing' }), 'UNAVAILABLE/WITHHELD'],
-    ['J delegation reader unavailable', () => ({ proposal: order(), delegation: 'unavailable' }), 'UNAVAILABLE/WITHHELD'],
-    ['profile suspended (a policy-level trading halt)', () => ({ proposal: order(), profile: hostProfile({ status: 'suspended' }) }), 'VIOLATED/PROHIBITED'],
+describe('K1 — proposal-to-intent binding: every compiled field is bound (no substitution)', () => {
+  const substitutions: readonly [string, (intent: TradeGovernedActionIntent) => Record<string, unknown>, string][] = [
+    ['amount', (intent) => ({ ...intent, amount: { ...intent.amount, value: '99' } }), 'TRADE_RISK_AMOUNT_NOT_ASSESSED'],
+    ['monetary asset', (intent) => ({ ...intent, amount: { ...intent.amount, currency: TOKEN_B_ID } }), 'TRADE_RISK_ASSET_NOT_ASSESSED'],
+    ['delegate', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.delegateAccount]: STRANGER_DELEGATE } }), 'TRADE_INTENT_DELEGATE_NOT_ASSESSED'],
+    ['side', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.side]: 'buy' } }), 'TRADE_INTENT_SIDE_NOT_ASSESSED'],
+    ['base asset', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.baseAsset]: `${TOKEN}.${ISSUER_B}` } }), 'TRADE_INTENT_BASE_ASSET_NOT_ASSESSED'],
+    ['quote asset', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.quoteAsset]: `${TOKEN}.${ISSUER_B}` } }), 'TRADE_INTENT_QUOTE_ASSET_NOT_ASSESSED'],
+    ['quantity', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.quantity]: '1' } }), 'TRADE_INTENT_QUANTITY_NOT_ASSESSED'],
+    ['network', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.network]: 'xrp-ledger-devnet' } }), 'TRADE_INTENT_NETWORK_NOT_ASSESSED'],
+    ['proposal digest', (intent) => ({ ...intent, parameters: { ...intent.parameters, [D.proposalDigest]: `sha256:${'b'.repeat(64)}` } }), 'TRADE_RISK_PROPOSAL_NOT_ASSESSED'],
   ];
-  for (const [label, pending, assessed] of cases) {
-    it(`${label}: no reading is admitted, the material facts are unresolved, zero adapter calls`, async () => {
-      const { reply, calls } = await submit(pending());
-      assert.equal(context.assessments.at(-1), assessed);
-      await assertBoundaryHeld(reply, { status: 'unresolved', key: F.assessedProposal });
+  for (const [label, mutate, code] of substitutions) {
+    it(`a changed ${label} is refused (${code}), zero adapter calls`, async () => {
+      const { reply, calls } = await trade(main, order(), mutate);
+      await assertPolicyDenied(main, reply, code);
       assert.equal(calls, 0);
     });
   }
 
-  it('C: a pair the registry does not know is refused by the unchanged envelope (P9) before any decision', async () => {
-    const { reply, calls } = await submit({ proposal: order({ takerGets: { currency: 'EUR', issuer: ISSUER, value: '100' } }) });
-    assert.equal(reply.body['status'], 'rejected', reply.text);
+  it('a changed owner (another classified owner resource) finds no binding for it: unresolved, denied — and A’s binding expires unused', async () => {
+    const { reply, calls } = await trade(main, order(), (intent) => ({ ...intent, resource: STRANGER_RESOURCE }));
+    await assertBoundaryHeld(main, reply, { status: 'unresolved', key: F.assessedProposal });
     assert.equal(calls, 0);
-  });
-});
-
-describe('TRADE-03 on the shipped Host — existing authority stays authoritative (D)', () => {
-  it('D: a risk-SATISFIED order above the P10 authority ceiling is withheld by the existing financial authority — TRADE never widens it', async () => {
-    // Buy 1000 for 2100 XRP: the risk profile allows 2500 XRP given; the owner's authority allows 2000 XRP per order.
-    const { reply, calls } = await submit({ proposal: buyToken('2100000000', '1000') });
-    assert.equal(context.assessments.at(-1), 'SATISFIED/ELIGIBLE');
-    assert.equal(reply.body['decision'] !== undefined && (reply.body['decision'] as Record<string, unknown>)['status'], 'allowed', reply.text);
-    assert.equal(reply.body['status'], 'withheld', reply.text);
-    assert.ok(codesOf(reply).includes('FINANCIAL_AUTHORITY_CEILING_EXCEEDED'), reply.text);
-    assert.equal(calls, 0);
+    // Consume the binding the substituted request did not reach.
+    assert.equal((await post(main, { ...selfCompiled(order()), idempotencyKey: nextId('drain') })).reply.body['status'], 'denied');
   });
 
-  it('characterization: a 40-hex-digit issued currency makes a P9 asset id longer than P7’s 64-byte unit bound — decided, then withheld at exercise, fail-closed', async () => {
-    const hexPair = hostPair({}, { currency: RLUSD, issuer: ISSUER });
-    const raw = order({ takerGets: { currency: RLUSD, issuer: ISSUER, value: '100' } });
-    const { reply, calls } = await submit({ proposal: raw, profile: hostProfile({}, hexPair), marketBase: { currency: RLUSD, issuer: ISSUER } });
-    assert.equal(context.assessments.at(-1), 'SATISFIED/ELIGIBLE');
-    assert.ok(Buffer.byteLength(RLUSD_ID, 'utf8') > 64, RLUSD_ID);
-    assert.equal(reply.body['status'], 'withheld', reply.text);
-    assert.equal(reply.body['withheldBy'], 'exercise', reply.text);
-    assert.deepEqual(codesOf(reply), ['EXERCISE_CONTROL_POLICY_INVALID']);
-    assert.equal(calls, 0);
-  });
-});
-
-describe('TRADE-03 on the shipped Host — the digest binding cannot be substituted, replayed or self-asserted (P, Q, R, SEC-TRADE03-06/09/23)', () => {
-  it('P: an assessed proposal’s digest beside a different amount is denied by the amount binding', async () => {
-    const raw = order();
-    const intent = intentOf(raw);
-    const { reply, calls } = await submit({ proposal: raw }, { ...intent, amount: { ...intent.amount, value: '99' } });
-    await assertPolicyDenied(reply, 'TRADE_RISK_AMOUNT_NOT_ASSESSED');
-    assert.equal(calls, 0);
-  });
-
-  it('P: an assessed proposal’s digest beside a different governed asset is denied by the asset binding', async () => {
-    const raw = order();
-    const intent = intentOf(raw);
-    const { reply, calls } = await submit({ proposal: raw }, { ...intent, amount: { ...intent.amount, currency: TOKEN_B_ID } });
-    await assertPolicyDenied(reply, 'TRADE_RISK_ASSET_NOT_ASSESSED');
-    assert.equal(calls, 0);
-  });
-
-  it('P: a request whose digest names another proposal than the one assessed is denied by the digest bindings', async () => {
-    const assessed = order();
-    const other = sellToken('100', '200000001');
-    const { reply, calls } = await submit({ proposal: assessed }, intentOf(other));
-    assert.equal(reply.body['status'], 'denied', reply.text);
-    const committed = await committedText(reply);
-    assert.ok(committed.includes('TRADE_RISK_PROPOSAL_NOT_ASSESSED') || committed.includes('TRADE_DELEGATION_NOT_VERIFIED'), committed);
-    assert.equal(calls, 0);
-  });
-
-  it('replay of an executed proposal under a fresh idempotency key is a different request whose digest has no assessment: denied', async () => {
-    const executed = order();
-    assert.equal((await submit({ proposal: executed })).reply.body['status'], 'executed');
-    const replayed = { ...intentOf(executed), idempotencyKey: `trade03-replay-${sequence}` };
-    const { reply, calls } = await submit({ proposal: order() }, replayed);
-    assert.equal(reply.body['status'], 'denied', reply.text);
-    assert.equal(calls, 0);
-  });
-
-  it('Q: readings scoped to another organization are refused by the Trusted Context Boundary', async () => {
-    const { reply, calls } = await submit({ proposal: order(), tamper: (readings) => readings.map((reading) => resealed(reading, { organizationId: 'org-rival' })) });
-    await assertBoundaryHeld(reply, { status: 'unresolved', refusal: 'organization_mismatch' });
-    assert.equal(calls, 0);
-  });
-
-  it('Q: a proposal of another organization never compiles for this identity', () => {
-    assert.throws(() => intentOf(order({ organizationId: 'org-rival' })), /ORGANIZATION_MISMATCH/);
-  });
-
-  it('R: an assessment under another risk-profile version is denied by the pinned profile rule', async () => {
-    const { reply, calls } = await submit({ proposal: order(), profile: hostProfile({ profileVersion: 2 }) });
-    await assertPolicyDenied(reply, 'TRADE_RISK_PROFILE_MISMATCH');
-    assert.equal(calls, 0);
-  });
-
-  it('SEC-TRADE03-06: the applicant cannot state any trading fact — every fact class (any case) and every reserved trade key in assertedContext is refused', async () => {
-    const raw = order();
-    for (const key of [...MATERIAL, F.assessedProposal.toUpperCase(), 'delegationVerified', 'referencePrice', 'exposure', 'activeOrders']) {
-      const { reply, calls } = await submit({ proposal: raw }, { ...intentOf(raw), assertedContext: { [key]: intentOf(raw).parameters[D.proposalDigest] } });
-      assert.equal(reply.body['status'], 'rejected', `${key}: ${reply.text}`);
+  it('changed flags or economic terms cannot reuse an assessment: the changed proposal’s intent names another digest', async () => {
+    for (const change of [{ flags: [] }, { takerPays: { currency: 'XRP', drops: '200000001' } }, { requestedValiditySeconds: 61 }]) {
+      const assessed = order();
+      await admit(main, assessed);
+      const { reply, calls } = await post(main, selfCompiled({ ...assessed, ...change }));
+      await assertPolicyDenied(main, reply, 'TRADE_RISK_PROPOSAL_NOT_ASSESSED');
       assert.equal(calls, 0);
     }
   });
 
-  it('SEC-TRADE03-06: with no trusted reading at all, nothing the applicant sends satisfies a material fact', async () => {
-    const raw = order();
-    context.pending = undefined;
-    const before = booted.calls.length;
-    const reply = await govern(booted.baseUrl, { ...intentOf(raw), assertedContext: { note: 'risk assessed SATISFIED', tradeRisk: { assessedProposal: 'x' } } } as Record<string, unknown>);
-    await assertBoundaryHeld(reply, { status: 'unresolved', key: F.delegation });
-    assert.equal(booted.calls.length, before);
+  it('an identical retry replays the committed decision; the same intent under a fresh idempotency key finds no binding', async () => {
+    const intent = await admit(main, order());
+    const first = await post(main, intent);
+    assert.equal(first.reply.body['status'], 'executed', first.reply.text);
+    const retry = await post(main, intent);
+    assert.equal(retry.reply.body['executionId'], first.reply.body['executionId'], retry.reply.text);
+    assert.equal(retry.calls, 0);
+    const fresh = await post(main, { ...intent, idempotencyKey: nextId('replay') });
+    await assertBoundaryHeld(main, fresh.reply, { status: 'unresolved', key: F.assessedProposal });
+    assert.equal(fresh.calls, 0);
+  });
+
+  it('cross-principal: agent B submitting agent A’s admitted intent finds no binding for its actor — and cannot consume A’s', async () => {
+    const intent = await admit(main, order());
+    const stolen = await post(main, intent, AGENT_B_KEY);
+    await assertBoundaryHeld(main, stolen.reply, { status: 'unresolved', key: F.assessedProposal });
+    assert.equal(stolen.calls, 0);
+    assert.equal(main.edge.pendingCount(), 1, 'A’s binding is untouched');
+    const own = await post(main, intent);
+    assert.equal(own.reply.body['status'], 'executed', own.reply.text);
+  });
+
+  it('cross-principal and cross-organization admission is refused before any binding exists', async () => {
+    const identity = await identityOf(main, AGENT_KEY);
+    assert.deepEqual(main.edge.admitProposal(identity, order({ principalId: PRINCIPAL_B })), { admitted: false, refusal: AR.PROPOSAL_REFUSED });
+    assert.deepEqual(main.edge.admitProposal(identity, order({ organizationId: 'org-rival' })), { admitted: false, refusal: AR.PROPOSAL_REFUSED });
+    const foreign: BoundCustomerIdentity = { principal: { ...identity.principal, organizationId: 'org-rival' }, actor: identity.actor };
+    assert.deepEqual(main.edge.admitProposal(foreign, order({ organizationId: 'org-rival' })), { admitted: false, refusal: AR.ORGANIZATION_MISMATCH });
+    assert.deepEqual(main.edge.admitProposal({ principal: identity.principal, actor: { actorId: '' } }, order()), { admitted: false, refusal: AR.IDENTITY_INVALID });
+    assert.deepEqual(main.edge.admitProposal(identity, order({ ownerAccount: 'rhub8VRN55s94qWKDv6jmDy1pUykJzF3wq' })), { admitted: false, refusal: AR.NOT_IN_PROFILE_SCOPE });
+    assert.equal(main.edge.pendingCount(), 0);
+  });
+
+  it('one binding per (actor, owner): a second admission waits until the first is consumed', async () => {
+    const identity = await identityOf(main, AGENT_KEY);
+    const first = await admit(main, order());
+    assert.deepEqual(main.edge.admitProposal(identity, order()), { admitted: false, refusal: AR.BINDING_PENDING });
+    assert.equal((await post(main, first)).reply.body['status'], 'executed');
+    assert.equal((await trade(main, order())).reply.body['status'], 'executed');
+  });
+
+  it('SEC-TRADE03-06: the applicant cannot state a trading fact — every fact class and reserved trade key in assertedContext is refused', async () => {
+    for (const key of [...TRADE_RISK_MATERIAL_FACTS, F.assessedProposal.toUpperCase(), 'delegationVerified', 'referencePrice', 'exposure']) {
+      const intent = await admit(main, order());
+      const { reply, calls } = await post(main, { ...intent, assertedContext: { [key]: 'SATISFIED' } });
+      assert.equal(reply.body['status'], 'rejected', `${key}: ${reply.text}`);
+      assert.equal(calls, 0);
+      // A rejected envelope never reaches the Kernel, so the binding is still pending: the clean intent uses it.
+      assert.equal((await post(main, intent)).reply.body['status'], 'executed');
+    }
   });
 });
 
-describe('TRADE-03 on the shipped Host — material trading facts fail closed at the boundary (SEC-TRADE03-04/05)', () => {
-  it('a provider that fails yields no context: denied, never allowed', async () => {
-    const { reply, calls } = await submit({ proposal: order(), throws: true });
-    assert.equal(reply.body['status'], 'denied', reply.text);
+describe('K1 — missing, stale, unavailable or mismatched trusted context fails closed', () => {
+  it('no admission at all: a self-compiled trade intent has no binding — denied', async () => {
+    const { reply, calls } = await post(main, selfCompiled(order()));
+    await assertBoundaryHeld(main, reply, { status: 'unresolved', key: F.assessedProposal });
     assert.equal(calls, 0);
   });
 
-  it('each material fact alone, when missing, is recorded unresolved and denies', async () => {
-    for (const key of MATERIAL) {
-      const { reply, calls } = await submit({ proposal: order(), tamper: (readings) => readings.filter((reading) => reading.key !== key) });
-      await assertBoundaryHeld(reply, { status: 'unresolved', key });
-      assert.equal(calls, 0, key);
+  const unavailable: readonly [string, (world: World) => void][] = [
+    ['stale market reference', (world) => (world.marketAgeSeconds = 120)],
+    ['market source failing', (world) => (world.marketThrows = true)],
+    ['delegation reader unavailable', (world) => (world.delegation = 'unavailable')],
+    ['delegation reader failing', (world) => (world.delegation = 'throws')],
+  ];
+  for (const [label, breakIt] of unavailable) {
+    it(`${label}: no reading, denied, zero adapter calls`, async () => {
+      breakIt(main.world);
+      try {
+        const { reply, calls } = await trade(main, order());
+        await assertBoundaryHeld(main, reply, { status: 'unresolved' });
+        assert.equal(calls, 0);
+      } finally {
+        Object.assign(main.world, freshWorld());
+      }
+    });
+  }
+
+  it('a risk violation (price floor) yields no reading', async () => {
+    const { reply, calls } = await trade(main, sellToken('100', '180000000'));
+    assert.equal(main.evidence.at(-1)?.outcome, 'VIOLATED');
+    await assertBoundaryHeld(main, reply, { status: 'unresolved', key: F.assessedProposal });
+    assert.equal(calls, 0);
+  });
+
+  it('an expired binding is never attested', async () => {
+    const shifted = createTradeRiskContext({ organizationId: ORG, action: ACTION, profile: PROFILE, ports: fakePorts(freshWorld()), sourceIds: SOURCE_IDS, bindingSeconds: 1, clock: () => iso(Date.now() - 5000), simulation: TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT });
+    const identity = await identityOf(main, AGENT_KEY);
+    assert.ok(shifted.admitProposal(identity, order()).admitted);
+    const output = await shifted.provider.resolveContext({ keys: [...TRADE_RISK_MATERIAL_FACTS].sort(), actorId: identity.actor.actorId, trustDomainId: TRUST_DOMAIN, action: ACTION, resourceScope: RESOURCE, organizationId: ORG, at: iso(Date.now()) });
+    assert.deepEqual(output.observations, []);
+  });
+
+  it('invalid profile version: a reading for another profile version is denied by the pinned profile rule', async () => {
+    main.wrapper.tamper = (observations) => observations.map((observation) => (observation.key === F.profile ? resealed(observation, { value: 'mm-desk@2' }) : observation));
+    try {
+      const { reply, calls } = await trade(main, order());
+      await assertPolicyDenied(main, reply, 'TRADE_RISK_PROFILE_MISMATCH');
+      assert.equal(calls, 0);
+    } finally {
+      main.wrapper.tamper = undefined;
     }
   });
 
-  it('stale, conflicting, unregistered-source and tampered readings are each recorded and deny', async () => {
-    const stale = await submit({ proposal: order(), tamper: (readings) => readings.map((reading) => resealed(reading, { observedAt: iso(Date.parse(reading.observedAt) - 60_000) })) });
-    await assertBoundaryHeld(stale.reply, { status: 'stale' });
-    const conflicting = await submit({
-      proposal: order(),
-      tamper: (readings) => {
-        const original = readings.find((reading) => reading.key === F.assessedProposal);
-        assert.ok(original !== undefined);
-        return [...readings, resealed(original, { sourceId: `${RISK_SOURCE}-2`, value: `sha256:${'0'.repeat(64)}` })];
-      },
-    });
-    await assertBoundaryHeld(conflicting.reply, { status: 'conflicted', key: F.assessedProposal });
-    const untrusted = await submit({ proposal: order(), tamper: (readings) => readings.map((reading) => resealed(reading, { sourceId: 'trading-engine' })) });
-    await assertBoundaryHeld(untrusted.reply, { status: 'unresolved', refusal: 'source_untrusted' });
-    const tampered = await submit({ proposal: order(), tamper: (readings) => readings.map((reading) => (reading.key === F.approvalRequired ? { ...reading, maxAgeSeconds: 29 } : reading)) });
-    await assertBoundaryHeld(tampered.reply, { status: 'unresolved', key: F.approvalRequired, refusal: 'provenance_invalid' });
-    assert.equal(stale.calls + conflicting.calls + untrusted.calls + tampered.calls, 0);
+  it('a Host with the trading sources configured but no provider composed refuses to start at all', async () => {
+    await assert.rejects(bootTradeHost(RULES, false), /no context provider is composed/);
   });
 });
 
-describe('TRADE-03 — the material-fact gate alone, with no defence-in-depth policy rule, denies with the Trusted Context Boundary’s own codes', () => {
-  const gate = (pending: Pending, intent?: TradeGovernedActionIntent) => submit(pending, intent ?? intentOf(pending.proposal), gateOnly, gateContext);
-
-  it('control: a satisfied order executes on this Host too', async () => {
-    const { reply, calls } = await gate({ proposal: order() });
+describe('K1 — the material-fact gate alone (no absence-sensitive policy rule) denies with the boundary’s own codes', () => {
+  it('control: a satisfied trade executes on this Host too', async () => {
+    const { reply, calls } = await trade(gate, order());
     assert.equal(reply.body['status'], 'executed', reply.text);
     assert.equal(calls, 1);
   });
 
-  it('missing → UNRESOLVED, stale → STALE, conflicting → CONFLICTED, unregistered source → SOURCE_NOT_AUTHORIZED, tampered → PROVENANCE_INVALID, other organization → SOURCE_NOT_AUTHORIZED', async () => {
-    const cases: readonly [Pending, string][] = [
-      [{ proposal: order(), delegation: 'missing' }, 'CONTEXT_REQUIRED_FACT_UNRESOLVED'],
-      [{ proposal: sellToken('100', '180000000') }, 'CONTEXT_REQUIRED_FACT_UNRESOLVED'],
-      [{ proposal: order(), tamper: (readings) => readings.map((reading) => resealed(reading, { observedAt: iso(Date.parse(reading.observedAt) - 60_000) })) }, 'CONTEXT_REQUIRED_FACT_STALE'],
-      [
-        {
-          proposal: order(),
-          tamper: (readings) => {
-            const original = readings.find((reading) => reading.key === F.assessedProposal) as ContextFactObservation;
-            return [...readings, resealed(original, { sourceId: `${RISK_SOURCE}-2`, value: `sha256:${'0'.repeat(64)}` })];
-          },
-        },
-        'CONTEXT_REQUIRED_FACT_CONFLICTED',
-      ],
-      [{ proposal: order(), tamper: (readings) => readings.map((reading) => resealed(reading, { sourceId: 'trading-engine' })) }, 'CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED'],
-      [{ proposal: order(), tamper: (readings) => readings.map((reading) => ({ ...reading, maxAgeSeconds: 29 })) }, 'CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID'],
-      [{ proposal: order(), tamper: (readings) => readings.map((reading) => resealed(reading, { organizationId: 'org-rival' })) }, 'CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED'],
-    ];
-    for (const [pending, code] of cases) {
-      const { reply, calls } = await gate(pending);
-      assertContextDenied(reply, code);
-      assert.equal(calls, 0, code);
-    }
+  const hostile: readonly [string, (observations: ContextFactObservation[]) => ContextFactObservation[], string][] = [
+    ['missing', (observations) => observations.filter((observation) => observation.key !== F.assessedSide), 'CONTEXT_REQUIRED_FACT_UNRESOLVED'],
+    ['stale', (observations) => observations.map((observation) => resealed(observation, { observedAt: iso(Date.parse(observation.observedAt) - 60_000) })), 'CONTEXT_REQUIRED_FACT_STALE'],
+    ['conflicting', (observations) => [...observations, resealed(observations.find((observation) => observation.key === F.assessedProposal) as ContextFactObservation, { sourceId: `${SOURCE_IDS.risk}-2`, value: `sha256:${'0'.repeat(64)}` })], 'CONTEXT_REQUIRED_FACT_CONFLICTED'],
+    ['unregistered source', (observations) => observations.map((observation) => resealed(observation, { sourceId: 'trading-engine' })), 'CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED'],
+    ['tampered provenance', (observations) => observations.map((observation) => ({ ...observation, maxAgeSeconds: 1 })), 'CONTEXT_REQUIRED_FACT_PROVENANCE_INVALID'],
+    ['another organization', (observations) => observations.map((observation) => resealed(observation, { organizationId: 'org-rival' })), 'CONTEXT_REQUIRED_FACT_SOURCE_NOT_AUTHORIZED'],
+  ];
+  for (const [label, tamper, code] of hostile) {
+    it(`${label} → ${code}`, async () => {
+      gate.wrapper.tamper = tamper;
+      try {
+        const { reply, calls } = await trade(gate, order());
+        assertContextDenied(reply, code);
+        assert.equal(calls, 0);
+      } finally {
+        gate.wrapper.tamper = undefined;
+      }
+    });
+  }
+
+  it('no admission → CONTEXT_REQUIRED_FACT_UNRESOLVED', async () => {
+    const { reply, calls } = await post(gate, selfCompiled(order()));
+    assertContextDenied(reply, 'CONTEXT_REQUIRED_FACT_UNRESOLVED');
+    assert.equal(calls, 0);
   });
 });
 
-describe('TRADE-03 on the shipped Host — CORE-05 approvals and emergency control are reused, never bypassed (N, O, SEC-TRADE03-16/17)', () => {
-  it('N: an order marked for review is withheld by the existing CORE-05 approval gate, with zero adapter calls', async () => {
-    const { reply, calls } = await submit({ proposal: order(), profile: hostProfile({}, hostPair({ approval: { restricted: true } })) });
-    assert.equal(context.assessments.at(-1), 'SATISFIED/APPROVAL_REQUIRED');
+describe('K1 — CORE-05 approvals and emergency control remain authoritative', () => {
+  it('N: an order above the review threshold is withheld by the existing approval gate', async () => {
+    const { reply, calls } = await trade(main, sellToken('800', '1600000000'));
+    assert.equal(main.evidence.at(-1)?.disposition, 'APPROVAL_REQUIRED');
     assert.equal(reply.body['status'], 'withheld', reply.text);
     assert.equal(reply.body['withheldBy'], 'approval', reply.text);
     assert.equal(calls, 0);
   });
 
-  it('N: notional above the review threshold (3000 XRP) goes to approval; within it, it does not', async () => {
-    const above = await submit({ proposal: sellToken('1000', '2000000000'), profile: hostProfile({}, hostPair({ approval: { restricted: false, notionalAbove: '1999' } })) });
-    assert.equal(context.assessments.at(-1), 'SATISFIED/APPROVAL_REQUIRED');
-    assert.equal(above.reply.body['withheldBy'], 'approval', above.reply.text);
-    assert.equal(above.calls, 0);
-  });
-
-  it('approval never lifts a prohibition: a restricted pair with a violated price is denied, never sent for approval', async () => {
-    const { reply, calls } = await submit({ proposal: sellToken('100', '180000000'), profile: hostProfile({}, hostPair({ approval: { restricted: true } })) });
-    assert.equal(context.assessments.at(-1), 'VIOLATED/PROHIBITED');
-    await assertBoundaryHeld(reply, { status: 'unresolved', key: F.assessedProposal });
-    assert.equal(calls, 0);
-  });
-
-  it('O: an emergency stop on the owner account withholds a fully satisfied order; release restores it', async () => {
-    const stop = await admin('/api/admin/emergency-controls/activate', { scope: 'resource', value: RESOURCE });
-    assert.equal(stop.status, 200, stop.text);
-    try {
-      const { reply, calls } = await submit({ proposal: order() });
-      assert.equal(context.assessments.at(-1), 'SATISFIED/ELIGIBLE');
-      assert.equal(reply.body['status'], 'withheld', reply.text);
-      assert.equal(reply.body['withheldBy'], 'emergency-control', reply.text);
-      assert.equal(calls, 0);
-    } finally {
-      const release = await admin('/api/admin/emergency-controls/release', { scope: 'resource', value: RESOURCE });
-      assert.equal(release.status, 200, release.text);
-    }
-    assert.equal((await submit({ proposal: order() })).reply.body['status'], 'executed');
-  });
-
-  it('O: an organization-wide stop and a trading-desk (agent actor) stop withhold trading; a stop on another owner account does not apply', async () => {
-    const otherOwner = `${NETWORK}:rG8uoRH9uA6AJ6NRj8P4cJG1HNfYcnMPrt`;
-    assert.equal((await admin('/api/admin/emergency-controls/activate', { scope: 'resource', value: otherOwner })).status, 200);
-    try {
-      assert.equal((await submit({ proposal: order() })).reply.body['status'], 'executed', 'a stop on another owner account does not halt this one');
-    } finally {
-      await admin('/api/admin/emergency-controls/release', { scope: 'resource', value: otherOwner });
-    }
-    for (const scope of [{ scope: 'organization', value: ORG }, { scope: 'actor', value: AGENT }]) {
-      const activated = await admin('/api/admin/emergency-controls/activate', scope);
-      assert.equal(activated.status, 200, activated.text);
+  it('O: an emergency stop on the owner account, the organization or the desk withholds a satisfied trade; release restores it', async () => {
+    for (const scope of [{ scope: 'resource', value: RESOURCE }, { scope: 'organization', value: ORG }, { scope: 'actor', value: AGENT }]) {
+      const stop = await admin('/api/admin/emergency-controls/activate', scope);
+      assert.equal(stop.status, 200, stop.text);
       try {
-        const { reply, calls } = await submit({ proposal: order() });
+        const { reply, calls } = await trade(main, order());
+        assert.equal(main.evidence.at(-1)?.outcome, 'SATISFIED');
         assert.equal(reply.body['withheldBy'], 'emergency-control', `${scope.scope}: ${reply.text}`);
         assert.equal(calls, 0);
       } finally {
-        await admin('/api/admin/emergency-controls/release', scope);
+        assert.equal((await admin('/api/admin/emergency-controls/release', scope)).status, 200);
       }
     }
+    assert.equal((await trade(main, order())).reply.body['status'], 'executed');
   });
 
   it('SEC-TRADE03-17: an order marked for review under an active stop is not executed', async () => {
     assert.equal((await admin('/api/admin/emergency-controls/activate', { scope: 'resource', value: RESOURCE })).status, 200);
     try {
-      const { reply, calls } = await submit({ proposal: order(), profile: hostProfile({}, hostPair({ approval: { restricted: true } })) });
+      const { reply, calls } = await trade(main, sellToken('800', '1600000000'));
       assert.equal(reply.body['status'], 'withheld', reply.text);
       assert.equal(calls, 0);
     } finally {
       await admin('/api/admin/emergency-controls/release', { scope: 'resource', value: RESOURCE });
     }
+  });
+});
+
+describe('K1 — composition refuses anything it cannot serve safely', () => {
+  const base = { organizationId: ORG, action: ACTION, profile: PROFILE, ports: fakePorts(freshWorld()), sourceIds: SOURCE_IDS, bindingSeconds: 30, clock: () => iso(Date.now()) };
+  const ack = { simulation: TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT };
+
+  it('a profile that admits simulated sources needs the explicit acknowledgement; an operational-only one does not', () => {
+    assert.throws(() => createTradeRiskContext(base), TradeRiskContextConfigurationError);
+    assert.doesNotThrow(() => createTradeRiskContext({ ...base, ...ack }));
+    assert.doesNotThrow(() => createTradeRiskContext({ ...base, profile: { ...PROFILE, factProvenance: 'operational-only' } }));
+  });
+
+  it('an enforced control without its port, a missing delegation port, another organization’s profile, or a bad window is refused', () => {
+    const { market: _market, ...noMarket } = fakePorts(freshWorld());
+    assert.throws(() => createTradeRiskContext({ ...base, ...ack, ports: noMarket }), TradeRiskContextConfigurationError);
+    assert.throws(() => createTradeRiskContext({ ...base, ...ack, ports: { ...fakePorts(freshWorld()), delegation: undefined as never } }), TradeRiskContextConfigurationError);
+    assert.throws(() => createTradeRiskContext({ ...base, ...ack, organizationId: 'org-rival' }), TradeRiskContextConfigurationError);
+    assert.throws(() => createTradeRiskContext({ ...base, ...ack, bindingSeconds: 301 }), TradeRiskContextConfigurationError);
+    assert.throws(() => createTradeRiskContext({ ...base, ...ack, sourceIds: { risk: 'same', delegation: 'same' } }), TradeRiskContextConfigurationError);
+    assert.throws(() => createTradeRiskContext({ ...base, ...ack, profile: { ...PROFILE, profileVersion: 0 } }), TradeRiskContextConfigurationError);
   });
 });
