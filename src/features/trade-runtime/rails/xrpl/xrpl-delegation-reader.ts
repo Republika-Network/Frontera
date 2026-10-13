@@ -66,6 +66,7 @@ export const XRPL_DELEGATION_READ_FAILURES = Object.freeze({
   VALIDATED_LEDGER_TOO_OLD: 'DELEGATION_READ_VALIDATED_LEDGER_TOO_OLD',
   NOT_VALIDATED: 'DELEGATION_READ_NOT_VALIDATED',
   LEDGER_REGRESSED: 'DELEGATION_READ_LEDGER_REGRESSED',
+  LEDGER_HASH_CONFLICT: 'DELEGATION_READ_LEDGER_HASH_CONFLICT',
   ENTRY_MISMATCH: 'DELEGATION_READ_ENTRY_MISMATCH',
   LEDGER_ERROR: 'DELEGATION_READ_LEDGER_ERROR',
 } as const);
@@ -125,6 +126,7 @@ function isLedgerHash(value: unknown): value is string {
 
 interface ValidatedLedger {
   readonly index: number;
+  readonly hash: string;
   readonly ageSeconds: number;
 }
 
@@ -141,8 +143,9 @@ function readServerInfo(result: unknown, networkId: number): ValidatedLedger | X
   if (!isPlainRecord(validated)) return XRPL_DELEGATION_READ_FAILURES.RESPONSE_MALFORMED;
   const index = field(validated, 'seq');
   const age = field(validated, 'age');
-  if (!isLedgerIndex(index) || !isLedgerHash(field(validated, 'hash')) || typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0) return XRPL_DELEGATION_READ_FAILURES.RESPONSE_MALFORMED;
-  return { index, ageSeconds: age };
+  const hash = field(validated, 'hash');
+  if (!isLedgerIndex(index) || !isLedgerHash(hash) || typeof age !== 'number' || !Number.isSafeInteger(age) || age < 0) return XRPL_DELEGATION_READ_FAILURES.RESPONSE_MALFORMED;
+  return { index, hash, ageSeconds: age };
 }
 
 type EntryRead =
@@ -160,6 +163,9 @@ function readDelegateEntry(result: unknown, owner: string, delegate: string, ent
     if (error !== 'entryNotFound') return XRPL_DELEGATION_READ_FAILURES.LEDGER_ERROR;
     if (field(result, 'validated') !== true) return XRPL_DELEGATION_READ_FAILURES.NOT_VALIDATED;
     if (!isLedgerIndex(ledgerIndex) || !isLedgerHash(ledgerHash)) return XRPL_DELEGATION_READ_FAILURES.RESPONSE_MALFORMED;
+    // rippled 3.4.1 names the key it looked up; when it does, it must be this pair's key.
+    const lookedUp = field(result, 'index');
+    if (lookedUp !== undefined && lookedUp !== entryIndex) return XRPL_DELEGATION_READ_FAILURES.ENTRY_MISMATCH;
     return { state: 'absent', ledgerIndex, ledgerHash };
   }
   if (field(result, 'validated') !== true) return XRPL_DELEGATION_READ_FAILURES.NOT_VALIDATED;
@@ -241,6 +247,8 @@ export function createXrplDelegationReader(options: XrplDelegationReaderOptions)
     if (typeof entry === 'string') return unavailable(entry);
     // The entry read must come from the validated ledger just reported, or a later one — never an earlier one (a lagging or different node).
     if (entry.ledgerIndex < validated.index) return unavailable(XRPL_DELEGATION_READ_FAILURES.LEDGER_REGRESSED);
+    // One ledger index has one validated hash: two different ones mean two different chains (a fork, or two nodes answering).
+    if (entry.ledgerIndex === validated.index && entry.ledgerHash !== validated.hash) return unavailable(XRPL_DELEGATION_READ_FAILURES.LEDGER_HASH_CONFLICT);
 
     const base = {
       schema: TRADE_DELEGATION_OBSERVATION_SCHEMA,

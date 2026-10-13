@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 /**
  * TRADE-02 — the XRPL delegation reader is read-only, enforced structurally:
  *
- * - the rail is exactly the reader and its barrel;
+ * - the rail is exactly the reader, the verifier composing it, and their barrel;
  * - the port it reaches the ledger through has exactly two methods,
  *   `serverInfo` and `ledgerEntryDelegate`, and the reader calls each once;
  * - every `ledger_entry` it asks is at the `validated` ledger;
@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 
 const RAIL = 'src/features/trade-runtime/rails/xrpl';
 const READER = `${RAIL}/xrpl-delegation-reader.ts`;
+const VERIFIER = `${RAIL}/xrpl-delegation-verifier.ts`;
 
 function walk(dir: string): readonly string[] {
   if (!existsSync(dir)) return [];
@@ -35,8 +36,19 @@ const codeOf = (file: string): string =>
     .replace(/^\s*\/\/.*$/gm, ' ');
 
 describe('TRADE-02 — the XRPL delegation reader is read-only', () => {
-  it('the rail is exactly the reader and its barrel', () => {
-    assert.deepEqual(walk(RAIL).map((file) => file.slice(RAIL.length + 1)).sort(), ['index.ts', 'xrpl-delegation-reader.ts']);
+  it('the rail is exactly the reader, the verifier and their barrel', () => {
+    assert.deepEqual(walk(RAIL).map((file) => file.slice(RAIL.length + 1)).sort(), ['index.ts', 'xrpl-delegation-reader.ts', 'xrpl-delegation-verifier.ts']);
+  });
+
+  it('TRADE-02-SEC-15/16/18: the verifier reaches the ledger only through the reader it creates, holds no cache, and accepts no observation from outside', () => {
+    const code = codeOf(VERIFIER);
+    assert.equal(/\bport\.\w+/.test(code), false, 'never calls the port itself');
+    assert.equal([...code.matchAll(/createXrplDelegationReader\(/g)].length, 1);
+    assert.equal([...code.matchAll(/\breader\.observe\(/g)].length, 1);
+    assert.equal(/new\s+(?:Weak)?(?:Map|Set)\b|\bcache|\blast\w*\s*=|\bprevious\w*\s*=/i.test(code), false, 'no remembered answer');
+    const api = /export interface XrplDelegationVerifier \{([\s\S]*?)\n\}/.exec(code)?.[1] ?? '';
+    assert.deepEqual([...api.matchAll(/^\s*(\w+)\s*\(/gm)].map((match) => match[1]), ['verify']);
+    assert.match(api, /verify\(request: unknown, pins\?: TradeDelegationPins\)/, 'a request and the execution side’s pins — never an observation, source or bound');
   });
 
   it('the port has exactly two read methods: server_info and a validated Delegate ledger_entry', () => {

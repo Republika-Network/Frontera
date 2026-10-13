@@ -21,6 +21,11 @@ import type { TradeProposal } from './trade-proposal.js';
 /** Domain separation: the digest of a trade proposal can never be mistaken for the digest of anything else hashed in the same way. */
 export const TRADE_PROPOSAL_DIGEST_DOMAIN = 'frontera.trade-proposal-digest.v1';
 
+/** The canonical-JSON serialization above, for any plain data (TRADE-02 hashes delegation evidence with it). Throws `RangeError` on anything that is not canonical data. */
+export function canonicalTradeJson(value: unknown): string {
+  return canonicalJson(value);
+}
+
 function canonicalJson(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'number') {

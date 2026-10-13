@@ -7,3 +7,5 @@ export type {
   XrplDelegationReader,
   XrplDelegationReaderOptions,
 } from './xrpl-delegation-reader.js';
+export { createXrplDelegationVerifier } from './xrpl-delegation-verifier.js';
+export type { XrplDelegationVerifier, XrplDelegationVerifierOptions } from './xrpl-delegation-verifier.js';

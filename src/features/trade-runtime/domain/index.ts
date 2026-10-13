@@ -54,7 +54,7 @@ export type {
   TradeSide,
 } from './trade-proposal.js';
 
-export { TRADE_PROPOSAL_DIGEST_DOMAIN, isTradeProposalDigest, serializeTradeProposal, tradeProposalDigest } from './trade-canonical.js';
+export { TRADE_PROPOSAL_DIGEST_DOMAIN, canonicalTradeJson, isTradeProposalDigest, serializeTradeProposal, tradeProposalDigest } from './trade-canonical.js';
 
 export {
   TRADE_COMPILATION_REFUSALS,
@@ -100,3 +100,35 @@ export type {
   TradeDelegationRequirement,
   TradeDelegationVerification,
 } from './trade-delegation.js';
+
+export {
+  TRADE_DELEGATION_ASSESSMENT_DIGEST_DOMAIN,
+  TRADE_DELEGATION_ASSESSMENT_REASONS,
+  TRADE_DELEGATION_ASSESSMENT_SCHEMA,
+  TRADE_DELEGATION_FACTS_DIGEST_DOMAIN,
+  TRADE_DELEGATION_RELIANCE_REFUSALS,
+  TRADE_DELEGATION_REQUEST_SCHEMA,
+  TRADE_DELEGATION_REQUEST_VIOLATIONS,
+  assessTradeDelegation,
+  checkTradeDelegationReliance,
+  parseTradeDelegationPolicy,
+  parseTradeDelegationRequest,
+  tradeDelegationRequestFor,
+} from './trade-delegation-assessment.js';
+export type {
+  TradeDelegationAssessment,
+  TradeDelegationAssessmentInput,
+  TradeDelegationAssessmentReason,
+  TradeDelegationAssessmentStatus,
+  TradeDelegationLedgerFacts,
+  TradeDelegationPermissionReading,
+  TradeDelegationPins,
+  TradeDelegationPolicy,
+  TradeDelegationReadOutcome,
+  TradeDelegationReliance,
+  TradeDelegationRelianceExpectation,
+  TradeDelegationRelianceRefusal,
+  TradeDelegationRequestParse,
+  TradeDelegationRequestViolationCode,
+  TradeDelegationVerificationRequest,
+} from './trade-delegation-assessment.js';
