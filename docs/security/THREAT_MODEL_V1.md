@@ -755,6 +755,27 @@ PAY-06 adds Frontera's second, structurally different payment rail: one governed
 | T36 Macaroon disclosure through hostname resolution | **BLOCKED** | No plaintext request is ever made to a hostname (T35); over `https:` the macaroon is written only after the TLS handshake matched the pinned certificate, so a resolver-chosen host without the node's key receives none (SEC-INV-271; HTTP-9, HTTP-10 canary) |
 | T37 A rail recomposed against another payer node sending an execution again | **BLOCKED** | The reservation is checked before anything else and owns its payer for good: the execution is answered `unconfirmed` from it with zero sends, and the reservation is never re-bound (SEC-INV-263, SEC-INV-275; PAYER-8) |
 
+### 7.33 Multi-rail qualification (added by PAY-07)
+
+PAY-07 adds no production code and no effect path: one canonical conformance suite, one shared governed world and two rail edges qualify XRPL / RLUSD and Lightning / BTC against a byte-identical CORE (`docs/payments/PAY-07-MULTI-RAIL-QUALIFICATION.md`). The threats are to the qualification itself — a proof that passes for the wrong reason.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| Q1 The canonical suite accidentally contains XRPL-specific logic | **BLOCKED** | The suite imports nothing; its code names no XRPL word, rail id or asset; it never branches on the implementation it is told (SEC-INV-276) |
+| Q2 The canonical suite accidentally contains Lightning-specific logic | **BLOCKED** | As Q1 — one vocabulary scan for both rails; one harness shape, no discriminant (SEC-INV-276) |
+| Q3 A rail bypasses governed execution in qualification | **BLOCKED** | The shared world reaches a rail only through PAY-01's bridge and never calls a rail or the orchestrator directly; both rails pass MRC-01 / MRC-12 through the governed path (SEC-INV-278) |
+| Q4 MPP omitted from the representative flow | **BLOCKED** | One protocol entry point (prepareAndGovern) for present and replay; the suite requires protocol mpp and one governed intent (SEC-INV-278) |
+| Q5 The CORE manifest excludes a relevant generic source file | **BLOCKED** | The shared path's runtime import closure (and its workspace dependencies) must lie inside the manifest; every directory beside a CORE root is classified (SEC-INV-277) |
+| Q6 CRLF line endings change the CORE manifest digest | **BLOCKED** | Only CRLF pairs are normalized — core.autocrlf's checkout transformation reversed; a lone CR or any other byte changes the digest (SEC-INV-277) |
+| Q7 One rail gets a special policy, ceiling relationship or governance | **BLOCKED** | One shared world composes governance identically for every rail and names no rail; reports must be equivalent case by case (SEC-INV-276, SEC-INV-279) |
+| Q8 A denied or over-ceiling payment still reaches the rail | **BLOCKED** | Zero external effects and zero rail-port instructions on both rails; the suite fails a harness that moves money on either (SEC-INV-279) |
+| Q9 P12 reconciliation resends a payment | **BLOCKED** | Effects are counted after every P12 call, before and after a restart; one effect in total (SEC-INV-280) |
+| Q10 ASSURE-01 trace verification skipped for a rail | **BLOCKED** | The verdict is the existing verifier's over the composition root's six reads, asserted per scenario per rail (SEC-INV-281) |
+| Q11 A success accepted without PAY-05 finality | **BLOCKED** | P11 completion must read awaiting-finality with no receipt; settlement only through the rail's finality authority (SEC-INV-276) |
+| Q12 Reports claim parity while assertions differ per rail | **BLOCKED** | One closed case list iterated by the suite; parity compares verdicts, effect counts and lifecycle signatures case by case under one CORE digest (SEC-INV-276, SEC-INV-277) |
+| Q13 XRPL vocabulary in a CORE layer — CORE-07's closed slot list names `'xrpl-submission-reservations'` (PAY-03) | **RESIDUAL** — classified | An opaque identifier with no XRPL behaviour; PAY-06 chose the neutral `'payment-initiation-reservations'`. Renaming migrates witness state persisted by PAY-03 deployments; pinned as the only rail word in CORE (SEC-INV-282) |
+| Q14 Qualification on deterministic simulators, not live rails | **ACCEPTED** — scope | The rails, interlocks, authorities and CORE are the real code; the provider below each is PAY-03's ledger simulator / PAY-06's node simulator. Live evidence is PAY-03's Testnet and PAY-06's regtest qualification, reused, not re-run |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.
