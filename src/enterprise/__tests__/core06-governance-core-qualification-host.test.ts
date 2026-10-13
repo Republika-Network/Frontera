@@ -584,7 +584,17 @@ describe('CORE-06 §11 — exercise-time guarantees over a genuine issued grant 
     const { grant } = await strand(settle(), nearlyStale);
     const remaining = Date.parse(grant.expiresAt) - Date.now();
     assert.ok(remaining <= 6_000, `the grant is capped at the context's validity (${remaining} ms left)`);
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining) + 250));
+    // Wait until the Host's own clock — the in-process wall clock the exercise
+    // gate reads — is past the expiry, not for a fixed monotonic interval: the
+    // host's wall clock may step backwards (NTP or hypervisor time sync —
+    // observed on WSL2), and then a fixed sleep ends before the gate's "now"
+    // reaches the expiry. Bounded, so a clock that never gets there fails here.
+    const expiry = Date.parse(grant.expiresAt);
+    const giveUpAt = performance.now() + Math.max(0, remaining) + 15_000;
+    while (Date.now() < expiry + 250) {
+      assert.ok(performance.now() < giveUpAt, 'the wall clock never reached the grant expiry');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const outcome = await noEffect('T7', () => ace().exercise(settleAttempt(grant, 'exec-core06-t7')));
     assert.ok(outcome.status === 'withheld' && outcome.assessment.reasonCodes.includes(E.GRANT_EXERCISE_EXPIRED), JSON.stringify(outcome));
   });

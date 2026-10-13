@@ -115,12 +115,17 @@ describe('Trade runtime boundaries (TRADE-01)', () => {
     }
   });
 
-  it('does not name the XRP Ledger by the four-letter token PAY-04 pins in its CORE vocabulary test', () => {
-    // pay04-payment-protocol-structure.test.ts ("the core files naming XRPL are
-    // exactly …") counts every src/features module except payment-runtime as
-    // CORE. Recognising TRADE as a vertical there is deferred to architectural
-    // review (TRADE-01 doc §10); until then this module spells the venue
-    // "XRP Ledger" and this assertion keeps that test's exact list intact.
-    for (const file of PRODUCTION_SOURCES) assert.equal(/xrpl/i.test(readFileSync(file, 'utf8')), false, file);
+  it('may name its venue, but never reaches the payment vertical’s XRPL rail, signer or client', () => {
+    // TRADE-02 preflight: TRADE is classified as a vertical in PAY-04's M39
+    // scan, so the venue's name is no longer refused here (it was, as a
+    // placeholder, in TRADE-01). What the name must never lead to is PAY's
+    // rail: its SDK client, its Payment-only signer or its composition edge.
+    // The wider boundary is `src/enterprise/__tests__/trade-vertical-structure.test.ts`.
+    for (const file of PRODUCTION_SOURCES) {
+      const code = codeOf(file);
+      for (const pattern of [/payment-runtime|xrpl-payment-rail|rails\/xrpl/, /createXrplSdkClient|createXrplRlusdRail|createExternalXrplSigner|sign-xrpl-payment|EXTERNAL_XRPL_SIGNER/]) {
+        assert.equal(pattern.test(code), false, `${file}: ${String(pattern)}`);
+      }
+    }
   });
 });

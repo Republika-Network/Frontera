@@ -16,6 +16,14 @@ import { MPP_RESERVED_CONTEXT_KEYS } from '../../features/payment-runtime/protoc
  *   any enterprise module but the PAY-04 edge — and PAY-04 introduced no rail
  *   vocabulary into the core either (the set of core files naming XRPL is
  *   exactly PAY-03's Host composition, unchanged);
+ * - **verticals are scanned as verticals, not excused**: generic CORE is
+ *   every module that is neither the payment vertical, nor the trade vertical
+ *   (TRADE), nor one of PAY's composition edges. TRADE is classified out of
+ *   CORE only so that it may name its venue; it is scanned on its own for
+ *   payment-protocol vocabulary and composes nothing PAY-04 owns. Its SDK,
+ *   signing, submission and custody boundaries live in
+ *   `trade-vertical-structure.test.ts` and PAY-02's repository-wide SDK
+ *   importer list, which this classification does not touch;
  * - **no CORE reserved key**: the built-in reserved-context list carries no
  *   protocol word; protocol words reach the registry only as trusted
  *   configuration (L-7);
@@ -54,15 +62,28 @@ function codeOf(file: string): string {
     .replace(/^\s*\/\/.*$/gm, ' ');
 }
 
-/** Generic CORE: everything that is not the payment vertical or one of its two composition edges. */
+/**
+ * The feature modules that are verticals over the core rather than part of
+ * it. Exactly these two, pinned by `the scan sets partition the feature
+ * modules` below: a new feature module is CORE by default, and making it a
+ * vertical is an architectural decision recorded here, explicitly.
+ */
+const PAYMENT_VERTICAL = 'payment-runtime';
+const TRADE_VERTICAL = 'trade-runtime';
+const VERTICALS: ReadonlySet<string> = new Set([PAYMENT_VERTICAL, TRADE_VERTICAL]);
+
+/** Generic CORE: everything that is not a vertical or one of the payment vertical's two composition edges. */
 const CORE = [
   ...['src/kernel', 'src/runtime', 'src/kernel-host', 'src/control-plane-web', 'src/index.ts'].flatMap((root) => walk(root)),
   ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/')),
   ...readdirSync('src/features')
-    .filter((name) => name !== 'payment-runtime')
+    .filter((name) => !VERTICALS.has(name))
     .flatMap((name) => walk(join('src/features', name))),
   ...walk('packages'),
 ];
+
+/** The trade vertical (TRADE): out of CORE, never out of scanning. */
+const TRADE = walk(join('src/features', TRADE_VERTICAL));
 
 const PROTOCOL_VOCABULARY: readonly RegExp[] = [/\bmpp/i, /mpp[A-Z_]/, /\bx402\b|x402/i, /bolt11/i, /payment-required/i, /httpauth-payment/i, /payment-intent-charge/i, /Payment-Authorization/i];
 
@@ -75,6 +96,24 @@ describe('PAY-04 M39 — no payment-protocol vocabulary in CORE', () => {
 
   it('no core file names a payment protocol — in code or prose', () => {
     for (const file of CORE) {
+      const text = readFileSync(file, 'utf8');
+      for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
+    }
+  });
+
+  it('the scan sets partition the feature modules: every feature is CORE or one of exactly two named verticals, and TRADE is never CORE', () => {
+    assert.deepEqual([...VERTICALS].filter((name) => existsSync(join('src/features', name))).sort(), [PAYMENT_VERTICAL, TRADE_VERTICAL]);
+    for (const name of readdirSync('src/features')) {
+      const scanned = walk(join('src/features', name));
+      if (scanned.length === 0) continue;
+      assert.equal(scanned.every((file) => CORE.includes(file)), !VERTICALS.has(name), `src/features/${name}`);
+    }
+    assert.ok(TRADE.length >= 7, `found ${TRADE.length} trade sources`);
+    for (const file of TRADE) assert.equal(CORE.includes(file), false, `${file} is TRADE, not CORE`);
+  });
+
+  it('the trade vertical is scanned on its own: it names no payment protocol either — in code or prose', () => {
+    for (const file of TRADE) {
       const text = readFileSync(file, 'utf8');
       for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
     }
@@ -223,7 +262,7 @@ describe('PAY-04 — NO_BYPASS: the edge reaches execution only through the gove
   });
 
   it('nothing outside the edge composes the ingress: no route, no Host module, no package export', () => {
-    for (const file of [...CORE, ...walk('scripts'), ...walk('apps')]) assert.equal(/payment-protocol-ingress|createPaymentProtocolIngress/.test(readFileSync(file, 'utf8')), false, file);
+    for (const file of [...CORE, ...TRADE, ...walk('scripts'), ...walk('apps')]) assert.equal(/payment-protocol-ingress|createPaymentProtocolIngress/.test(readFileSync(file, 'utf8')), false, file);
     assert.equal(/payment-protocol-ingress/.test(readFileSync('package.json', 'utf8')), false);
   });
 });
