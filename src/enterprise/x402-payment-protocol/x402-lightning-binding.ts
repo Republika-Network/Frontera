@@ -52,6 +52,31 @@ import {
  * `interpret` reads only that memo: an invoice that was not prepared, or did
  * not verify, is refused. The memo also serves the rail as its trusted invoice
  * source — only invoices that verified, by payment hash and payee, ever.
+ *
+ * ## One payment hash, one invoice text
+ *
+ * The rail asks for an invoice by payment hash and payee only; the binding
+ * verified one exact invoice **text** (its signature, signed description
+ * hash, payee, amount, network, expiry). Two validly signed texts may share a
+ * payment hash, payee, amount and network and differ in what they commit to.
+ * So the memo tracks, per (payee, payment hash) — exactly what the rail asks
+ * by — the identity (SHA-256) of the one text it has verified, and a second,
+ * different text makes that pair **ambiguous**: from then on neither text is
+ * a reading for `interpret` nor an invoice for the rail. Never first-, last-
+ * or latest-wins. Only the payee's own key can sign a second text for its
+ * pair; another node reusing the payment hash is another pair, and can neither
+ * be substituted for this one nor poison it. The identity record is not
+ * evicted with the readings (so cache pressure can never turn an ambiguous
+ * pair, or a pair whose governed text was evicted, back into a fresh one); it
+ * is bounded separately, and once full the memo refuses every new pair rather
+ * than forget an old one.
+ *
+ * The memo is process memory, never authority: it is a pure verification
+ * cache and the rail's invoice source, and it can only withhold. A restart
+ * starts it empty — a payment governed before the restart is never resumed
+ * through it, and a re-presentation is verified again, while PAY-04's
+ * one-instrument-one-operation record and PAY-06's durable payment-hash
+ * interlock still hold across the restart.
  */
 
 /** The concrete `lnbtc` networks the pinned binding defines, and the BOLT11 currency each must carry. */
@@ -78,47 +103,70 @@ const EMPTY_SHA256 = createHash('sha256').update(new Uint8Array(0)).digest('hex'
 export interface X402LightningInvoiceVerifier {
   /** Verifies one invoice text with PAY-06's strict decoder and remembers the reading. Never throws. */
   verify(invoice: unknown): Promise<void>;
-  /** The verified reading of exactly this text, when `verify` established one. */
+  /** The verified reading of exactly this text, when `verify` established one and no other text shares its payment hash. */
   verified(invoice: string): Bolt11Invoice | undefined;
-  /** A trusted Lightning invoice source over the verified invoices — by payment hash **and** payee, nothing else. */
+  /** A trusted Lightning invoice source over the verified invoices — by payment hash **and** payee, and only the one text verified for that hash. */
   readonly invoices: LightningInvoiceSource;
 }
 
-export function createX402LightningInvoiceVerifier(options: { readonly maximumEntries?: number; readonly maximumLength?: number } = {}): X402LightningInvoiceVerifier {
+/** A (payee, payment hash) pair's state: the identity of its one verified text, or ambiguous for the process lifetime. */
+const AMBIGUOUS = Symbol('ambiguous');
+
+export function createX402LightningInvoiceVerifier(options: { readonly maximumEntries?: number; readonly maximumLength?: number; readonly maximumPaymentHashes?: number } = {}): X402LightningInvoiceVerifier {
   const maximumEntries = options.maximumEntries ?? 256;
   const maximumLength = options.maximumLength ?? BOLT11_ABSOLUTE_MAXIMUM_LENGTH;
+  const maximumPaymentHashes = options.maximumPaymentHashes ?? 16_384;
   if (!Number.isSafeInteger(maximumEntries) || maximumEntries <= 0 || maximumEntries > 4_096) throw new TypeError('maximumEntries must be between 1 and 4096.');
   if (!Number.isSafeInteger(maximumLength) || maximumLength <= 0 || maximumLength > BOLT11_ABSOLUTE_MAXIMUM_LENGTH) throw new TypeError('maximumLength is outside the BOLT11 bound.');
+  if (!Number.isSafeInteger(maximumPaymentHashes) || maximumPaymentHashes < maximumEntries || maximumPaymentHashes > 262_144) throw new TypeError('maximumPaymentHashes (payee and payment-hash pairs) must be between maximumEntries and 262144.');
+  /** Text → reading (or `null`: did not verify). Bounded; evicted oldest first. */
   const readings = new Map<string, Bolt11Invoice | null>();
-  const byPaymentHash = new Map<string, string>();
+  /** `<payee>:<payment hash>` → SHA-256 of its one verified text, or AMBIGUOUS. Never evicted. */
+  const identities = new Map<string, string | typeof AMBIGUOUS>();
+  const pairOf = (invoice: Bolt11Invoice): string => `${invoice.payee}:${invoice.paymentHash}`;
 
-  const remember = (text: string, reading: Bolt11Invoice | null): void => {
-    if (readings.size >= maximumEntries) {
-      const oldest = readings.keys().next().value as string;
-      const evicted = readings.get(oldest);
-      readings.delete(oldest);
-      if (evicted !== null && evicted !== undefined && byPaymentHash.get(evicted.paymentHash) === oldest) byPaymentHash.delete(evicted.paymentHash);
+  /** Records `text` as verified for its pair; `false` when the pair is (or now becomes) ambiguous, or the record is full. */
+  const claim = (text: string, invoice: Bolt11Invoice): boolean => {
+    const identity = sha256Hex(text);
+    const pair = pairOf(invoice);
+    const known = identities.get(pair);
+    if (known === undefined) {
+      if (identities.size >= maximumPaymentHashes) return false;
+      identities.set(pair, identity);
+      return true;
     }
-    readings.set(text, reading);
-    if (reading !== null && !byPaymentHash.has(reading.paymentHash)) byPaymentHash.set(reading.paymentHash, text);
+    if (known === identity) return true;
+    identities.set(pair, AMBIGUOUS);
+    return false;
+  };
+
+  /** The reading of exactly this text, when its pair is still uniquely this text's. */
+  const unique = (text: string): Bolt11Invoice | undefined => {
+    const reading = readings.get(text);
+    if (reading === null || reading === undefined) return undefined;
+    return identities.get(pairOf(reading)) === sha256Hex(text) ? reading : undefined;
   };
 
   return Object.freeze({
     async verify(invoice: unknown): Promise<void> {
       if (typeof invoice !== 'string' || invoice.length === 0 || invoice.length > maximumLength || readings.has(invoice)) return;
       const decoded = await decodeBolt11Invoice(invoice, maximumLength);
-      remember(invoice, decoded.valid ? decoded.invoice : null);
+      // A second text for a known pair poisons the pair; it is not cached as a reading of its own.
+      if (decoded.valid && !claim(invoice, decoded.invoice)) return;
+      if (readings.size >= maximumEntries) readings.delete(readings.keys().next().value as string);
+      readings.set(invoice, decoded.valid ? decoded.invoice : null);
     },
     verified(invoice: string): Bolt11Invoice | undefined {
-      const reading = readings.get(invoice);
-      return reading === null ? undefined : reading;
+      return unique(invoice);
     },
     invoices: Object.freeze({
       async invoiceFor(query: LightningDestination & { readonly executionId: string }): Promise<string | undefined> {
-        const text = byPaymentHash.get(query.paymentHash);
-        if (text === undefined) return undefined;
-        const reading = readings.get(text);
-        return reading !== null && reading !== undefined && reading.payee === query.payee && reading.paymentHash === query.paymentHash ? text : undefined;
+        for (const [text, reading] of readings) {
+          if (reading === null || reading.paymentHash !== query.paymentHash || reading.payee !== query.payee) continue;
+          // Exactly one text can hold the pair's identity; any other (or an ambiguous pair) is withheld.
+          return unique(text) !== undefined ? text : undefined;
+        }
+        return undefined;
       },
     }),
   });

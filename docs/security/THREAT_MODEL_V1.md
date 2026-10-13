@@ -796,7 +796,7 @@ PAY-08 adds x402 v2 as a second protocol at PAY-04's boundary, executable only a
 | X12 Requirement reuse across operations | **BLOCKED** | One instrument (network + payment hash) belongs to one business operation, CORE-07-anchored: `challenge-conflict` (SEC-INV-289) |
 | X13 Unsupported scheme | **BLOCKED** | Only `exact` can be mapped; others are skipped or refused (SEC-INV-290) |
 | X14 Unsupported payment flow | **BLOCKED** | `escrow` and unknown flows never execute; a flow must be enabled by the mapping and declared by the binding (SEC-INV-290) |
-| X15 Extension abuse | **BLOCKED** | ≤ 8 extensions, ≤ 4 KiB each, ≤ 6 KiB total, exact `{ info, schema }` shape; never interpreted for policy; echoed exactly, never overwritten (SEC-INV-283) |
+| X15 Extension abuse | **BLOCKED** | ≤ 8 extensions, ≤ 4 KiB each, ≤ 6 KiB total, exact `{ info, schema }` shape; never interpreted for policy; the server's echoed exactly, client additions only additive (SEC-INV-283, SEC-INV-296) |
 | X16 Atomic-unit rounding | **BLOCKED** | Text-only conversion under trusted scale, P9-validated; no float, no rounding (SEC-INV-288) |
 | X17 Merchant timeout abuse | **BLOCKED** | A requirement above the mapping's maximum timeout is not used; for lnbtc the timeout must equal the invoice expiry (SEC-INV-284) |
 | X18 Facilitator verify treated as authority | **BLOCKED** — not applicable | The paying side calls no facilitator; nothing a facilitator says reaches governance (SEC-INV-285) |
@@ -814,6 +814,12 @@ PAY-08 adds x402 v2 as a second protocol at PAY-04's boundary, executable only a
 | X30 MPP semantics regressed | **BLOCKED** | PAY-04's port, ingress and MPP adapter are unchanged; their suites pass; MPP and x402 compile the same payment identically (SEC-INV-294) |
 | X31 A PaymentPayload released before governance or settlement | **BLOCKED** | Built only after PAY-05 `settled` for the same request, destination and amount, with a verified preimage (SEC-INV-291) |
 | X32 Upfront: paid, then the merchant does not serve | **ACCEPTED** — scope | Inherent in the lnbtc method; the spec defines no refund; a refund is a new governed payment (PAY-05) |
+| X33 Invoice-text substitution under one payment hash | **BLOCKED** | Two validly signed invoices may share payment hash, payee, amount and network and differ in the signed description hash; the invoice memo keeps one text identity per (payee, payment hash), and a second text makes the pair ambiguous for the process lifetime — refused at interpretation (nothing governed) and withheld from the rail (PAY-06 refuses `invoice-unavailable` before any node call); cache eviction never clears it (SEC-INV-295) |
+| X34 Malicious extension merge overwrite | **BLOCKED** | Client additions merge closed into the server's extensions: new names and new `info` members only; changing, retyping or restating a server `info` member, or a different `schema`, is refused (SEC-INV-296) |
+| X35 Runtime extension tree amplification | **BLOCKED** | Every extension tree is copied closed and bounded — depth, member and element count (from key count and array length, before any member is read), cumulative size — before anything serializes it; shared or cyclic objects, accessors, symbol keys and odd prototypes refuse (SEC-INV-296) |
+| X36 `settlement_pending` with no transaction | **BLOCKED** | A `SettlementResponse` with `errorReason: settlement_pending` and an empty `transaction` is not well formed: unreadable, never compared (SEC-INV-292) |
+| X37 Failed or pending response naming another transaction | **BLOCKED** | Any non-empty `transaction` — on success, failure or `settlement_pending` — must equal the governed payment hash, else `mismatch: transaction`; still never settlement (SEC-INV-292) |
+| X38 Invalid default flow configuration | **BLOCKED** | A binding whose default flow is not one of its own declared flows — or that declares a flow twice — is a composition error, never a silently skipped offer (SEC-INV-290) |
 
 ## 8. Accepted risks (v1)
 

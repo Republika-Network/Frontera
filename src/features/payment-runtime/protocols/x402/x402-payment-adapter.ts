@@ -208,7 +208,10 @@ function snapshotBindings(raw: unknown): ReadonlyMap<string, ComposedBinding & {
     if (typeof bindingId !== 'string' || !BINDING_ID.test(bindingId)) throw new PaymentConfigurationError('An x402 binding id is malformed.');
     if (out.has(bindingId)) throw new PaymentConfigurationError(`x402 binding '${bindingId}' is declared more than once.`);
     if (!Array.isArray(paymentFlows) || paymentFlows.length === 0 || !paymentFlows.every((flow) => EXECUTABLE_FLOWS.includes(flow))) throw new PaymentConfigurationError(`x402 binding '${bindingId}' declares flows Frontera cannot execute.`);
+    if (new Set(paymentFlows).size !== paymentFlows.length) throw new PaymentConfigurationError(`x402 binding '${bindingId}' declares a flow more than once.`);
     if (!isFlow(defaultPaymentFlow)) throw new PaymentConfigurationError(`x402 binding '${bindingId}' has no default flow.`);
+    // A requirement that omits `extra.paymentFlow` resolves to the default: it must be a flow this binding itself interprets.
+    if (!paymentFlows.includes(defaultPaymentFlow)) throw new PaymentConfigurationError(`x402 binding '${bindingId}' defaults to a flow it does not declare.`);
     if (typeof supports !== 'function' || typeof interpret !== 'function' || (prepare !== undefined && typeof prepare !== 'function')) throw new PaymentConfigurationError(`x402 binding '${bindingId}' is incomplete.`);
     out.set(
       bindingId,
@@ -243,6 +246,7 @@ function snapshotMappings(raw: unknown, bindings: ReturnType<typeof snapshotBind
       if (binding === undefined) throw new PaymentConfigurationError('An x402 mapping names no composed binding.');
       if (!binding.supports({ scheme, network, asset })) throw new PaymentConfigurationError(`x402 binding '${binding.bindingId}' does not support ${scheme} / ${network} / ${asset}.`);
       if (!Array.isArray(paymentFlows) || paymentFlows.length === 0 || !paymentFlows.every((flow) => binding.paymentFlows.includes(flow))) throw new PaymentConfigurationError('An x402 mapping enables a flow its binding cannot interpret.');
+      if (new Set(paymentFlows).size !== paymentFlows.length) throw new PaymentConfigurationError('An x402 mapping enables a flow more than once.');
       if (typeof maximumTimeoutSeconds !== 'number' || !Number.isSafeInteger(maximumTimeoutSeconds) || maximumTimeoutSeconds <= 0 || maximumTimeoutSeconds > X402_MESSAGE_LIMITS.maxTimeoutSeconds) throw new PaymentConfigurationError('An x402 mapping timeout maximum is malformed.');
       if (rail !== undefined && !isPaymentRailId(rail)) throw new PaymentConfigurationError('An x402 mapping rail is not a PAY-01 rail id.');
       const key = JSON.stringify([scheme, network, asset]);

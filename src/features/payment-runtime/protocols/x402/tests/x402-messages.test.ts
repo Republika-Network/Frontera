@@ -5,6 +5,7 @@ import {
   X402JsonNumber,
   X402_CODEC_LIMITS,
   canonicalX402Requirements,
+  copyX402Json,
   decodeX402Base64,
   decodeX402PaymentRequiredHeader,
   decodeX402PaymentSignatureHeader,
@@ -261,7 +262,7 @@ describe('PAY-08 — PAYMENT-SIGNATURE encoding and extension echo (PP-7)', () =
     return read.value as never;
   })();
 
-  it('echoes `accepted` exactly and the server’s extensions unchanged; adds new client names only', () => {
+  it('echoes `accepted` exactly and the server’s extensions unchanged; adds a new client extension name', () => {
     assert.ok(accepted !== undefined);
     const client = parseX402Json('{"client-note":{"info":{"n":"1"},"schema":{"type":"object"}}}');
     assert.ok(client.valid);
@@ -291,5 +292,234 @@ describe('PAY-08 — PAYMENT-SIGNATURE encoding and extension echo (PP-7)', () =
     assert.equal(encodeX402PaymentSignatureHeader({ accepted, payload: { preimage: 7 } as never }).valid, false);
     assert.equal(encodeX402PaymentSignatureHeader({ accepted, payload: {} }).valid, false);
     assert.equal(encodeX402PaymentSignatureHeader({ accepted, payload: { 'bad key': 'x' } }).valid, false);
+  });
+});
+
+describe('PAY-08 hardening — client extension additions merge into the server’s, never over them (EXT-MERGE)', () => {
+  const accepted = parsed(carrierOf(paymentRequired([requirement()]))).accepts[0];
+  const json = (text: string) => {
+    const read = parseX402Json(text);
+    assert.ok(read.valid, read.valid ? '' : read.violation);
+    return read.value;
+  };
+  const SERVER = json('{"bazaar":{"info":{"category":"reports","limits":{"rows":100},"tags":["a","b"]},"schema":{"type":"object","properties":{"category":{"type":"string"}}}}}');
+  const encode = (client: unknown, server: unknown = SERVER) => encodeX402PaymentSignatureHeader({ accepted: accepted as never, payload: { preimage: 'ab'.repeat(32) }, ...(server !== undefined ? { serverExtensions: server as never } : {}), ...(client !== undefined ? { clientExtensions: client as never } : {}) });
+  const echoed = (client: unknown, server: unknown = SERVER): Record<string, string | undefined> => {
+    const encoded = encode(client, server);
+    assert.ok(encoded.valid, encoded.valid ? '' : encoded.violation);
+    const decoded = decodeX402PaymentSignatureHeader(encoded.value);
+    assert.ok(decoded.valid, decoded.valid ? '' : decoded.violation);
+    const extensions = decoded.value.extensions ?? {};
+    return Object.fromEntries(Object.keys(extensions).map((name) => [name, serializeX402Json(extensions[name])]));
+  };
+  const violation = (client: unknown, server: unknown = SERVER): string => {
+    const encoded = encode(client, server);
+    assert.equal(encoded.valid, false, 'expected a refusal');
+    return encoded.valid ? '' : encoded.violation;
+  };
+  const SERVER_BAZAAR = '{"info":{"category":"reports","limits":{"rows":100},"tags":["a","b"]},"schema":{"properties":{"category":{"type":"string"}},"type":"object"}}';
+
+  it('EXT-MERGE-1 the server’s extension alone is echoed unchanged', () => {
+    assert.deepEqual(echoed(undefined), { bazaar: SERVER_BAZAAR });
+  });
+
+  it('EXT-MERGE-2 a new extension name is added whole', () => {
+    assert.deepEqual(echoed(json('{"trace":{"info":{"id":"t-1"},"schema":{"type":"object"}}}')), { bazaar: SERVER_BAZAAR, trace: '{"info":{"id":"t-1"},"schema":{"type":"object"}}' });
+    assert.match(violation(json('{"trace":{"info":{"id":"t-1"}}}')), /extension-missing-schema/, 'a new extension is a whole extension');
+  });
+
+  it('EXT-MERGE-3 a new info member under a server extension is appended (schema optional, never replaced)', () => {
+    assert.deepEqual(echoed(json('{"bazaar":{"info":{"region":"eu"}}}')), { bazaar: '{"info":{"category":"reports","limits":{"rows":100},"region":"eu","tags":["a","b"]},"schema":{"properties":{"category":{"type":"string"}},"type":"object"}}' });
+  });
+
+  it('EXT-MERGE-4 restating a server info member — even with the same value — is refused as an overwrite (fail closed: it adds nothing)', () => {
+    assert.equal(violation(json('{"bazaar":{"info":{"category":"reports"}}}')), 'extension-overwrite');
+    assert.equal(violation(json('{"bazaar":{"info":{"tags":["a","b"]}}}')), 'extension-overwrite');
+  });
+
+  it('EXT-MERGE-5 changing a server info member is refused', () => {
+    assert.equal(violation(json('{"bazaar":{"info":{"category":"free"}}}')), 'extension-overwrite');
+    assert.equal(violation(json('{"bazaar":{"info":{"tags":["a"]}}}')), 'extension-overwrite');
+    assert.equal(violation(json('{"bazaar":{"info":{"category":null}}}')), 'extension-overwrite');
+  });
+
+  it('EXT-MERGE-6 a client that omits server members — or the whole server extension — never deletes them', () => {
+    assert.deepEqual(echoed(json('{"bazaar":{"info":{}}}')), { bazaar: SERVER_BAZAAR });
+    assert.equal(echoed(json('{"trace":{"info":{},"schema":{}}}'))['bazaar'], SERVER_BAZAAR);
+  });
+
+  it('EXT-MERGE-7 the server’s schema is never changed: repeated identically it is accepted, any other schema refused', () => {
+    assert.deepEqual(echoed(json('{"bazaar":{"info":{"region":"eu"},"schema":{"properties":{"category":{"type":"string"}},"type":"object"}}}'))['bazaar'], '{"info":{"category":"reports","limits":{"rows":100},"region":"eu","tags":["a","b"]},"schema":{"properties":{"category":{"type":"string"}},"type":"object"}}');
+    assert.equal(violation(json('{"bazaar":{"info":{"region":"eu"},"schema":{"type":"object"}}}')), 'extension-schema-overwrite');
+    assert.equal(violation(json('{"bazaar":{"info":{},"schema":{}}}')), 'extension-schema-overwrite');
+    assert.match(violation(json('{"bazaar":{"info":{},"other":1}}')), /extension-unknown-member/, 'nothing outside the extension shape');
+    assert.match(violation(json('{"bazaar":{"schema":{"type":"object"}}}')), /extension-missing-info/);
+    assert.equal(violation(json('{"bazaar":{"info":"x"}}')), 'extension-invalid');
+  });
+
+  it('EXT-MERGE-8 nested info merges additively, within bounds; retyping or changing a nested server member is refused', () => {
+    assert.equal(echoed(json('{"bazaar":{"info":{"limits":{"page":2,"window":{"from":1}}}}}'))['bazaar'], '{"info":{"category":"reports","limits":{"page":2,"rows":100,"window":{"from":1}},"tags":["a","b"]},"schema":{"properties":{"category":{"type":"string"}},"type":"object"}}');
+    assert.equal(violation(json('{"bazaar":{"info":{"limits":{"rows":5}}}}')), 'extension-overwrite');
+    assert.equal(violation(json('{"bazaar":{"info":{"limits":"none"}}}')), 'extension-overwrite');
+    assert.equal(violation(json('{"bazaar":{"info":{"tags":{"0":"c"}}}}')), 'extension-overwrite');
+  });
+
+  it('EXT-MERGE-9 client additions with accessors, odd prototypes or symbol keys are refused — and no getter runs', () => {
+    let ran = false;
+    const getter = { bazaar: { info: { get region() { ran = true; return 'eu'; } } } };
+    assert.equal(violation(getter), 'extensions-json-value');
+    assert.equal(violation({ bazaar: { info: Object.assign(Object.create({ inherited: 'x' }) as object, { region: 'eu' }) } }), 'extensions-json-value');
+    assert.equal(violation({ bazaar: { info: new (class Info { region = 'eu'; })() } }), 'extensions-json-value');
+    assert.equal(violation({ bazaar: { info: { [Symbol('s')]: 'x' } } }), 'extensions-json-value');
+    assert.equal(violation({ bazaar: { info: { n: 1.5 } } }), 'extensions-json-value', 'a JavaScript number is never a JSON number here');
+    assert.equal(violation(JSON.parse('{"bazaar":{"info":{"__proto__":{"authorized":true}}}}') as unknown), 'extensions-json-forbidden-member');
+    assert.equal(ran, false);
+    assert.equal(({} as { authorized?: unknown }).authorized, undefined);
+  });
+});
+
+describe('PAY-08 hardening — runtime extension trees are bounded before they are serialized (EXT-BOUND)', () => {
+  const accepted = parsed(carrierOf(paymentRequired([requirement()]))).accepts[0];
+  const encode = (client: unknown, server?: unknown) => encodeX402PaymentSignatureHeader({ accepted: accepted as never, payload: { preimage: 'ab'.repeat(32) }, ...(server !== undefined ? { serverExtensions: server as never } : {}), clientExtensions: client as never });
+  const violation = (client: unknown, server?: unknown): string => {
+    const encoded = encode(client, server);
+    assert.equal(encoded.valid, false, 'expected a refusal');
+    return encoded.valid ? '' : encoded.violation;
+  };
+  /** A null-prototype record, as runtime code builds one (and as the codec's own objects are). */
+  const bare = (entries: Record<string, unknown>): Record<string, unknown> => Object.assign(Object.create(null) as Record<string, unknown>, entries);
+  /** Counts every introspection a reader makes of `target`. */
+  const counted = (target: object) => {
+    const calls = { count: 0 };
+    const proxy = new Proxy(target, {
+      getOwnPropertyDescriptor: (inner, key) => {
+        calls.count += 1;
+        return Reflect.getOwnPropertyDescriptor(inner, key);
+      },
+      get: (inner, key, receiver) => {
+        calls.count += 1;
+        return Reflect.get(inner, key, receiver) as unknown;
+      },
+    });
+    return { proxy, calls };
+  };
+  const extension = (info: unknown) => bare({ wide: bare({ info, schema: bare({}) }) });
+
+  it('EXT-BOUND-1 a small runtime-built extension (plain objects) passes', () => {
+    const encoded = encode({ trace: { info: { id: 't-1', on: true, none: null, items: ['a', 'b'] }, schema: { type: 'object' } } });
+    assert.ok(encoded.valid, encoded.valid ? '' : encoded.violation);
+  });
+
+  it('EXT-BOUND-2 nesting beyond the depth bound is refused as too deep, before anything serializes it', () => {
+    let deep: Record<string, unknown> = bare({ leaf: 'x' });
+    for (let level = 0; level < 10_000; level += 1) deep = bare({ next: deep });
+    assert.equal(violation(extension(deep)), 'extensions-json-too-deep');
+  });
+
+  it('EXT-BOUND-3 a very wide object is refused from its key count — no member of it is ever read', () => {
+    const wide = bare({});
+    for (let index = 0; index < 5_000; index += 1) wide[`k${String(index)}`] = 'v';
+    const { proxy, calls } = counted(wide);
+    assert.equal(violation(extension(proxy)), 'extensions-json-too-many-members');
+    assert.equal(calls.count, 0, 'refused from ownKeys alone');
+  });
+
+  it('EXT-BOUND-4 a large array is refused from its length — no element is ever read', () => {
+    const items = new Array<string>(100_000).fill('x');
+    const { proxy, calls } = counted(items);
+    assert.equal(violation(extension(bare({ items: proxy }))), 'extensions-json-too-many-members');
+    assert.ok(calls.count <= 1, `only the length was read (${String(calls.count)})`);
+    const sparse: unknown[] = [];
+    sparse.length = 4_000_000_000;
+    assert.equal(violation(extension(bare({ items: sparse }))), 'extensions-json-too-many-members');
+  });
+
+  it('EXT-BOUND-5 a shared subtree is refused, never duplicated — even small, and even an amplifying chain', () => {
+    const shared = bare({ x: '1' });
+    assert.equal(violation(extension(bare({ a: shared, b: shared }))), 'extensions-json-shared-reference');
+    let chain: Record<string, unknown> = bare({ v: 'x' });
+    for (let level = 0; level < 10; level += 1) chain = bare({ a: chain, b: chain });
+    const started = process.hrtime.bigint();
+    assert.equal(violation(extension(chain)), 'extensions-json-shared-reference');
+    assert.ok(process.hrtime.bigint() - started < 1_000_000_000n, 'refused without expanding 2^10 copies');
+  });
+
+  it('EXT-BOUND-6 a cycle is refused', () => {
+    const cycle = bare({});
+    cycle['self'] = cycle;
+    assert.equal(violation(extension(cycle)), 'extensions-json-shared-reference');
+    const list: unknown[] = [];
+    list.push(list);
+    assert.equal(violation(extension(bare({ list }))), 'extensions-json-shared-reference');
+  });
+
+  it('EXT-BOUND-7 a getter is refused without being run', () => {
+    let ran = false;
+    const info = bare({});
+    Object.defineProperty(info, 'secret', { enumerable: true, get: () => { ran = true; return 'x'; } });
+    assert.equal(violation(extension(info)), 'extensions-json-value');
+    assert.equal(ran, false);
+  });
+
+  it('EXT-BOUND-8 a Proxy that throws on introspection is a closed refusal, never a throw', () => {
+    const hostile = new Proxy(bare({}), {
+      ownKeys: () => {
+        throw new Error('trap');
+      },
+      getPrototypeOf: () => null,
+    });
+    assert.doesNotThrow(() => encode(extension(hostile)));
+    assert.equal(violation(extension(hostile)), 'extensions-json-value');
+    const lying = new Proxy(bare({}), {
+      getPrototypeOf: () => {
+        throw new Error('trap');
+      },
+    });
+    assert.equal(violation(extension(lying)), 'extensions-json-value');
+  });
+
+  it('EXT-BOUND-9 a small server extension and a small client addition merge', () => {
+    const server = parseX402Json('{"bazaar":{"info":{"category":"reports"},"schema":{"type":"object"}}}');
+    assert.ok(server.valid);
+    const encoded = encode({ bazaar: { info: { region: 'eu' } }, trace: { info: { id: 't-1' }, schema: {} } }, server.value);
+    assert.ok(encoded.valid, encoded.valid ? '' : encoded.violation);
+  });
+
+  it('EXT-BOUND-10 a merged result over the total byte bound is refused, though each side is within its own', () => {
+    const server = parseX402Json(JSON.stringify({ bazaar: { info: { blob: 'x'.repeat(3_000) }, schema: { type: 'object' } } }));
+    assert.ok(server.valid);
+    assert.equal(violation({ trace: { info: { blob: 'y'.repeat(3_500) }, schema: {} } }, server.value), 'extensions-oversized');
+    assert.equal(violation({ bazaar: { info: { more: 'y'.repeat(1_500) } } }, server.value), 'extension-oversized', 'one merged extension over its own bound');
+  });
+
+  it('values the strict parser produced pass the bounded copy unchanged: nested info and schema, arrays, booleans, null, numbers as source text', () => {
+    const text = '{"bazaar":{"info":{"a":[1,-2,3.5e10,true,false,null,{"b":"c"}],"n":0.000001},"schema":{"type":"object","properties":{"a":{"type":"array","maxItems":7}}}}}';
+    const read = parseX402Json(text);
+    assert.ok(read.valid);
+    const copied = copyX402Json(read.value, { maxDepth: 15, maxNodes: 512, maxBytes: 6_144 });
+    assert.ok(copied.valid);
+    assert.equal(serializeX402Json(copied.value), serializeX402Json(read.value));
+    const encoded = encodeX402PaymentSignatureHeader({ accepted: accepted as never, payload: { preimage: 'ab'.repeat(32) }, serverExtensions: read.value as never });
+    assert.ok(encoded.valid, encoded.valid ? '' : encoded.violation);
+  });
+
+  it('the byte estimate is a lower bound of the serialization: a parsed tree just under the bound is never refused by it', () => {
+    const value = 'x'.repeat(4_000);
+    const read = parseX402Json(JSON.stringify({ a: { info: { t: true, f: false, z: null, s: value }, schema: {} } }));
+    assert.ok(read.valid);
+    const serialized = serializeX402Json(read.value) as string;
+    assert.ok(copyX402Json(read.value, { maxDepth: 15, maxNodes: 512, maxBytes: serialized.length }).valid);
+    assert.equal(copyX402Json(read.value, { maxDepth: 15, maxNodes: 512, maxBytes: 4_000 }).valid, false);
+  });
+});
+
+describe('PAY-08 hardening — SettlementResponse transaction rules (RESP)', () => {
+  const response = (json: Record<string, unknown>) => readX402PaymentResponseCarrier({ status: 402, headers: [['PAYMENT-RESPONSE', b64({ network: 'eip155:84532', ...json })]] });
+
+  it('RESP-7 settlement_pending requires a transaction; a failure without one is well formed', () => {
+    assert.deepEqual(response({ success: false, errorReason: 'settlement_pending', transaction: '' }), { valid: false, violation: 'settlement-response-pending-without-transaction' });
+    assert.equal(response({ success: false, errorReason: 'settlement_pending', transaction: '0xabc' }).valid, true);
+    assert.equal(response({ success: false, errorReason: 'insufficient_funds', transaction: '' }).valid, true);
+    assert.equal(response({ success: false, transaction: '' }).valid, true);
   });
 });

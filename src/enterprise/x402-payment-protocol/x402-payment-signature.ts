@@ -25,7 +25,7 @@ import { X402_LNBTC_NETWORKS, x402LightningBindingId } from './x402-lightning-bi
  * payment hash (the governed destination) → the trusted proof source (the payer node, read-only):
  *                                          the preimage, checked SHA-256 → payment hash
  *   → PaymentPayload { x402Version 2, accepted = the governed requirement, payload { preimage },
- *                      extensions = the server's, unchanged (+ new client names only) }
+ *                      extensions = the server's, unchanged (+ additive client info only) }
  *   → base64 → an X402PaymentSignature (redacted everywhere but `reveal()`)
  * ```
  *
@@ -52,7 +52,7 @@ export const X402_PAYMENT_SIGNATURE_REFUSALS = [
   'proof-unavailable',
   /** The proof does not verify against the governed payment hash. */
   'proof-invalid',
-  /** A client extension would overwrite one the server sent. */
+  /** A client extension would overwrite, retype or restate server-provided extension info, or change its schema. */
   'extension-overwrite',
   /** The payload could not be encoded within bounds. */
   'encoding-failed',
@@ -123,7 +123,12 @@ export interface X402PaymentSignatureRequest {
   readonly requestId: string;
   /** The governed execution id the governed result carried. */
   readonly executionId: string;
-  /** Client extension additions — new names only. */
+  /**
+   * Client extension additions: a new extension name (`info` and `schema`), or
+   * new `info` members under a server extension (its `schema`, if repeated,
+   * identical). Never a change to what the server sent. Copied closed and
+   * bounded before use.
+   */
   readonly clientExtensions?: X402JsonObject;
 }
 
@@ -219,7 +224,7 @@ export function createX402PaymentSignatureBuilder(options: X402PaymentSignatureB
         ...(reading.extensions !== undefined ? { serverExtensions: reading.extensions } : {}),
         ...(request.clientExtensions !== undefined ? { clientExtensions: request.clientExtensions } : {}),
       });
-      if (!encoded.valid) return refuse(encoded.violation === 'extension-overwrite' ? 'extension-overwrite' : 'encoding-failed');
+      if (!encoded.valid) return refuse(encoded.violation === 'extension-overwrite' || encoded.violation === 'extension-schema-overwrite' ? 'extension-overwrite' : 'encoding-failed');
       return Object.freeze({ outcome: 'built', signature: new X402PaymentSignature(encoded.value) });
     },
   });

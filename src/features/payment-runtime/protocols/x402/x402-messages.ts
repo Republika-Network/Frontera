@@ -1,5 +1,7 @@
 import {
   X402JsonNumber,
+  X402_CODEC_LIMITS,
+  copyX402Json,
   decodeX402JsonHeader,
   encodeX402JsonHeader,
   isX402JsonObject,
@@ -251,12 +253,30 @@ export function readX402Requirements(value: X402Json | undefined, where = 'requi
   return Object.freeze({ scheme, network, amount, asset, payTo, maxTimeoutSeconds, ...(extra !== undefined ? { extra } : {}) });
 }
 
-function readExtensions(value: X402Json | undefined): X402JsonObject {
+/**
+ * An extensions tree, copied closed and bounded **before** anything walks it
+ * whole (`copyX402Json`). A tree the strict parser produced is always within
+ * these budgets; one built at runtime (a caller's client extensions) is held
+ * to them before it is ever serialized. One level is kept for the enclosing
+ * document, so an encoded payload stays within the parser's depth.
+ */
+function boundedExtensionsTree(value: unknown): X402Json {
+  const copied = copyX402Json(value, { maxDepth: X402_CODEC_LIMITS.maxJsonDepth - 1, maxNodes: X402_CODEC_LIMITS.maxJsonMembers, maxBytes: X402_MESSAGE_LIMITS.maxExtensionsBytes });
+  if (!copied.valid) return violate(copied.violation === 'json-too-large' ? 'extensions-oversized' : `extensions-${copied.violation}`);
+  return copied.value;
+}
+
+function extensionName(name: string): void {
+  if (name.length > X402_MESSAGE_LIMITS.maxExtensionNameLength || !EXTENSION_NAME.test(name)) violate('extension-name-invalid');
+}
+
+function readExtensions(raw: unknown): X402JsonObject {
+  const value = boundedExtensionsTree(raw);
   if (!isX402JsonObject(value)) return violate('extensions-not-object');
   const names = Object.keys(value);
   if (names.length > X402_MESSAGE_LIMITS.maxExtensions) violate('extensions-too-many');
   for (const name of names) {
-    if (name.length > X402_MESSAGE_LIMITS.maxExtensionNameLength || !EXTENSION_NAME.test(name)) violate('extension-name-invalid');
+    extensionName(name);
     const extension = members(value[name], EXTENSION_KEYS, EXTENSION_KEYS, 'extension');
     if (!isX402JsonObject(extension.get('info')) || !isX402JsonObject(extension.get('schema'))) violate('extension-invalid');
     const text = serializeX402Json(value[name]);
@@ -265,6 +285,72 @@ function readExtensions(value: X402Json | undefined): X402JsonObject {
   const total = serializeX402Json(value);
   if (total === undefined || total.length > X402_MESSAGE_LIMITS.maxExtensionsBytes) violate('extensions-oversized');
   return value;
+}
+
+/**
+ * `info` with a client's additions: every server member kept exactly; a
+ * client member under a new name appended; a client object under a server
+ * object merged the same way, one level down. Anything else — a different
+ * value, a different kind, or the very same leaf value restated — would
+ * overwrite what the server stated, and is refused (`extension-overwrite`).
+ */
+function withAdditions(server: X402JsonObject, client: X402JsonObject): X402JsonObject {
+  const merged = Object.create(null) as Record<string, X402Json>;
+  for (const key of Object.keys(server)) merged[key] = server[key] as X402Json;
+  for (const key of Object.keys(client)) {
+    const added = client[key] as X402Json;
+    if (!Object.prototype.hasOwnProperty.call(server, key)) {
+      merged[key] = added;
+      continue;
+    }
+    const stated = server[key] as X402Json;
+    if (!isX402JsonObject(stated) || !isX402JsonObject(added)) return violate('extension-overwrite');
+    merged[key] = withAdditions(stated, added);
+  }
+  return Object.freeze(merged);
+}
+
+/**
+ * The echoed extensions (spec §5.1.2 / §5.2): every extension the server sent,
+ * with its `schema` and every `info` member exactly as sent; plus the client's
+ * additions. A client entry under a **new** name is a whole extension
+ * (`info` and `schema`). Under a **server** name it carries `info` additions
+ * (and, optionally, the server's `schema` repeated identically): new `info`
+ * members are appended, nested objects merged additively, and nothing the
+ * server stated may be deleted, replaced, retyped or restated. A different
+ * `schema` is refused (`extension-schema-overwrite`).
+ */
+function echoedExtensions(serverRaw: unknown, clientRaw: unknown): X402JsonObject {
+  const server = serverRaw !== undefined ? readExtensions(serverRaw) : (Object.freeze(Object.create(null)) as X402JsonObject);
+  const merged = Object.create(null) as Record<string, X402Json>;
+  for (const name of Object.keys(server)) merged[name] = server[name] as X402Json;
+  if (clientRaw !== undefined) {
+    const client = boundedExtensionsTree(clientRaw);
+    if (!isX402JsonObject(client)) return violate('extensions-not-object');
+    const names = Object.keys(client);
+    if (names.length > X402_MESSAGE_LIMITS.maxExtensions) violate('extensions-too-many');
+    for (const name of names) {
+      extensionName(name);
+      if (!Object.prototype.hasOwnProperty.call(server, name)) {
+        const extension = members(client[name], EXTENSION_KEYS, EXTENSION_KEYS, 'extension');
+        if (!isX402JsonObject(extension.get('info')) || !isX402JsonObject(extension.get('schema'))) violate('extension-invalid');
+        merged[name] = client[name] as X402Json;
+        continue;
+      }
+      const stated = members(server[name], EXTENSION_KEYS, EXTENSION_KEYS, 'extension');
+      const added = members(client[name], EXTENSION_KEYS, ['info'], 'extension');
+      const statedInfo = stated.get('info');
+      const addedInfo = added.get('info');
+      if (!isX402JsonObject(statedInfo) || !isX402JsonObject(addedInfo)) return violate('extension-invalid');
+      if (added.has('schema') && serializeX402Json(added.get('schema')) !== serializeX402Json(stated.get('schema'))) violate('extension-schema-overwrite');
+      const extension = Object.create(null) as Record<string, X402Json>;
+      extension['info'] = withAdditions(statedInfo, addedInfo);
+      extension['schema'] = stated.get('schema') as X402Json;
+      merged[name] = Object.freeze(extension);
+    }
+  }
+  // The merged whole is held to every extension bound again.
+  return readExtensions(Object.freeze(merged));
 }
 
 /** A decoded `PaymentRequired` JSON value, read closed. */
@@ -437,9 +523,15 @@ export function decodeX402PaymentSignatureHeader(value: unknown): X402Parse<X402
 /**
  * The `PAYMENT-SIGNATURE` header value for an accepted requirement, a scheme
  * payload and the server's extensions — pure: no proof is obtained, checked or
- * kept here. Extension echo follows spec §5.1.2 exactly: every extension the
- * server sent is carried unchanged; a client addition may only introduce a
- * **new** name — overwriting or deleting the server's is refused, never merged.
+ * kept here. Extension echo follows the pinned spec (§5.1.2 / §5.2): the
+ * client MUST echo every extension the server sent, MUST preserve all of the
+ * server's information, MAY append its own, and MUST NOT delete or overwrite
+ * the server's. So a client addition may introduce a new extension name **or**
+ * new `info` members under a server extension (`echoedExtensions`); it can
+ * never change the server's `schema` or any `info` member the server stated.
+ * Every extension tree is copied closed and bounded before it is serialized.
+ * The header is read back with the resource server's own reader before it is
+ * returned: what is built is exactly what a reader accepts.
  */
 export function encodeX402PaymentSignatureHeader(input: {
   readonly accepted: X402PaymentRequirements;
@@ -449,27 +541,16 @@ export function encodeX402PaymentSignatureHeader(input: {
 }): X402Parse<string> {
   return caught(() => {
     const payload = readPayloadObject(plainCopy(input.payload));
-    const extensions = Object.create(null) as Record<string, X402Json>;
-    if (input.serverExtensions !== undefined) {
-      const server = readExtensions(input.serverExtensions);
-      for (const name of Object.keys(server)) extensions[name] = server[name] as X402Json;
-    }
-    if (input.clientExtensions !== undefined) {
-      const client = readExtensions(input.clientExtensions);
-      for (const name of Object.keys(client)) {
-        if (Object.prototype.hasOwnProperty.call(extensions, name)) violate('extension-overwrite');
-        extensions[name] = client[name] as X402Json;
-      }
-    }
-    if (Object.keys(extensions).length > 0) readExtensions(Object.freeze(extensions));
+    const extensions = input.serverExtensions !== undefined || input.clientExtensions !== undefined ? echoedExtensions(input.serverExtensions, input.clientExtensions) : undefined;
     const document = Object.create(null) as Record<string, X402Json>;
     document['x402Version'] = new X402JsonNumber(String(X402_VERSION));
     document['accepted'] = requirementObject(input.accepted);
     document['payload'] = payload as unknown as X402JsonObject;
-    if (Object.keys(extensions).length > 0) document['extensions'] = Object.freeze(extensions);
+    if (extensions !== undefined && Object.keys(extensions).length > 0) document['extensions'] = extensions;
     const header = encodeX402JsonHeader(document);
-    if (header === undefined || header.length > 16_384) violate('payment-signature-oversized');
-    return header as string;
+    if (header === undefined || header.length > 16_384) return violate('payment-signature-oversized');
+    if (!decodeX402PaymentSignatureHeader(header).valid) violate('payment-signature-unreadable');
+    return header;
   });
 }
 
@@ -515,7 +596,7 @@ export interface X402SettlementResponse {
   readonly success: boolean;
   readonly errorReason?: string;
   readonly payer?: string;
-  /** Empty when nothing was broadcast. */
+  /** Empty when nothing was broadcast; never empty for `settlement_pending`. */
   readonly transaction: string;
   readonly network: string;
   readonly amount?: string;
@@ -543,6 +624,8 @@ export function readX402SettlementResponse(value: X402Json): X402Parse<X402Settl
     if (amount !== undefined && !isX402AtomicAmount(amount)) violate('settlement-response-amount-invalid');
     if (fields.has('extensions')) readExtensions(fields.get('extensions'));
     if (success && errorReason !== undefined) violate('settlement-response-inconsistent');
+    // A pending settlement names the transaction it is waiting on: `transaction` may be empty only when nothing was broadcast.
+    if (errorReason === 'settlement_pending' && transaction === '') violate('settlement-response-pending-without-transaction');
     return Object.freeze({
       success,
       ...(errorReason !== undefined ? { errorReason } : {}),

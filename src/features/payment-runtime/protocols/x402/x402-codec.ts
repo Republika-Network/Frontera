@@ -418,6 +418,115 @@ function serialize(value: unknown, depth: number): string {
   throw new JsonRefusal('json-value');
 }
 
+/** Budgets for `copyX402Json`. */
+export interface X402JsonCopyLimits {
+  /** Nesting, the root being depth 1 (as the parser counts). */
+  readonly maxDepth: number;
+  /** Object members plus array elements, across the whole tree. */
+  readonly maxNodes: number;
+  /** A lower bound of the canonical serialization's length, accumulated as the tree is read. */
+  readonly maxBytes: number;
+}
+
+/**
+ * A runtime-built value → a codec tree, copied closed and **bounded before it
+ * is expanded**: every budget is checked as each node is read — an array's
+ * length and an object's key count before any element or member is touched —
+ * so a deep, wide or amplifying graph is refused after reading at most the
+ * budget, never serialized first and measured afterwards.
+ *
+ * Only the codec's own kinds are copied: `null`, booleans, strings,
+ * `X402JsonNumber`s, plain arrays (`Array.prototype`, no holes, no extra
+ * properties) and plain objects (`Object.prototype` or `null` prototype).
+ * Members are read from own **data** descriptors only — a getter never runs —
+ * and a symbol key, an accessor, any other prototype, a JavaScript number, a
+ * function or a reserved member name (`__proto__`, `constructor`,
+ * `prototype`) refuses. An object or array met twice — a cycle or a shared
+ * subtree — refuses: a shared subtree is never silently duplicated. A Proxy
+ * is read only through these same introspections; whatever a trap throws is a
+ * closed refusal. Total: never throws.
+ */
+export function copyX402Json(value: unknown, limits: X402JsonCopyLimits): X402JsonDecode {
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  let bytes = 0;
+
+  const spend = (count: number): void => {
+    bytes += count;
+    if (bytes > limits.maxBytes) refuse('json-too-large');
+  };
+  const reserve = (count: number): void => {
+    if (count > limits.maxNodes - nodes) refuse('json-too-many-members');
+  };
+  const dataOf = (owner: object, key: string): unknown => {
+    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+    if (descriptor === undefined || !('value' in descriptor)) return refuse('json-value');
+    return descriptor.value as unknown;
+  };
+
+  const copy = (item: unknown, depth: number): X402Json => {
+    if (depth > limits.maxDepth) refuse('json-too-deep');
+    if (item === null) {
+      spend(4);
+      return null;
+    }
+    if (item === true || item === false) {
+      spend(item ? 4 : 5);
+      return item;
+    }
+    if (typeof item === 'string') {
+      if (item.length > X402_CODEC_LIMITS.maxJsonStringLength) refuse('json-string-too-long');
+      spend(item.length + 2);
+      return item;
+    }
+    if (typeof item !== 'object') return refuse('json-value');
+    const object = item as object;
+    if (seen.has(object)) refuse('json-shared-reference');
+    seen.add(object);
+    const prototype = Object.getPrototypeOf(object) as unknown;
+    if (prototype === X402JsonNumber.prototype) {
+      const keys = Reflect.ownKeys(object);
+      const text = keys.length === 1 && keys[0] === 'text' ? dataOf(object, 'text') : undefined;
+      if (typeof text !== 'string' || text.length > X402_CODEC_LIMITS.maxJsonNumberLength || NUMBER.exec(text)?.[0] !== text) return refuse('json-value');
+      spend(text.length);
+      return new X402JsonNumber(text);
+    }
+    if (Array.isArray(object)) {
+      if (prototype !== Array.prototype) return refuse('json-value');
+      const length = dataOf(object, 'length');
+      if (typeof length !== 'number' || !Number.isSafeInteger(length)) return refuse('json-value');
+      reserve(length);
+      if (Reflect.ownKeys(object).length !== length + 1) refuse('json-value');
+      spend(2 + Math.max(0, length - 1));
+      const items: X402Json[] = [];
+      for (let index = 0; index < length; index += 1) {
+        nodes += 1;
+        items.push(copy(dataOf(object, String(index)), depth + 1));
+      }
+      return Object.freeze(items);
+    }
+    if (prototype !== null && prototype !== Object.prototype) return refuse('json-value');
+    const keys = Reflect.ownKeys(object);
+    reserve(keys.length);
+    spend(2 + Math.max(0, keys.length - 1));
+    const record = Object.create(null) as Record<string, X402Json>;
+    for (const key of keys) {
+      if (typeof key !== 'string') return refuse('json-value');
+      if (FORBIDDEN_KEYS.includes(key)) refuse('json-forbidden-member');
+      nodes += 1;
+      spend(key.length + 3);
+      Object.defineProperty(record, key, { value: copy(dataOf(object, key), depth + 1), enumerable: true, writable: false, configurable: false });
+    }
+    return Object.freeze(record);
+  };
+
+  try {
+    return { valid: true, value: copy(value, 1) };
+  } catch (error) {
+    return { valid: false, violation: error instanceof JsonRefusal ? error.violation : 'json-value' };
+  }
+}
+
 /**
  * A non-negative JSON integer in canonical spelling (`0`, or no leading zero;
  * no sign, fraction or exponent) not above `maximum`, as a number — computed

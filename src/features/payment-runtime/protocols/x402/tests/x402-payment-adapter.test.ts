@@ -46,6 +46,56 @@ describe('PAY-08 — composition', () => {
   });
 });
 
+describe('PAY-08 hardening — a binding’s default flow is one of its own flows (FLOW-CFG)', () => {
+  const compose = (binding: { readonly paymentFlows: readonly string[]; readonly defaultPaymentFlow: string }, mappingFlows: readonly string[] = ['upfront']) => () =>
+    createX402PaymentProtocolAdapter({
+      mappings: [{ ...MAPPING_A, paymentFlows: mappingFlows as never }],
+      bindings: [{ ...testBinding(), paymentFlows: binding.paymentFlows as never, defaultPaymentFlow: binding.defaultPaymentFlow as never }],
+      resolveRequest: () => undefined,
+      assets: ASSETS,
+    });
+
+  it('FLOW-CFG-1 flows [upfront], default upfront: valid', () => {
+    assert.doesNotThrow(compose({ paymentFlows: ['upfront'], defaultPaymentFlow: 'upfront' }));
+  });
+
+  it('FLOW-CFG-2 flows [upfront], default authorization: a configuration error, not a silently skipped offer', () => {
+    assert.throws(compose({ paymentFlows: ['upfront'], defaultPaymentFlow: 'authorization' }), PaymentConfigurationError);
+  });
+
+  it('FLOW-CFG-3 flows [authorization, upfront], default authorization: valid', () => {
+    assert.doesNotThrow(compose({ paymentFlows: ['authorization', 'upfront'], defaultPaymentFlow: 'authorization' }, ['authorization', 'upfront']));
+  });
+
+  it('FLOW-CFG-4 a flow declared twice — by a binding or a mapping — is refused', () => {
+    assert.throws(compose({ paymentFlows: ['upfront', 'upfront'], defaultPaymentFlow: 'upfront' }), PaymentConfigurationError);
+    assert.throws(compose({ paymentFlows: ['authorization', 'upfront'], defaultPaymentFlow: 'upfront' }, ['upfront', 'upfront']), PaymentConfigurationError);
+  });
+
+  it('FLOW-CFG-5 a default that is an x402 flow but not one the binding declares is refused (escrow included)', () => {
+    assert.throws(compose({ paymentFlows: ['authorization'], defaultPaymentFlow: 'upfront' }, ['authorization']), PaymentConfigurationError);
+    assert.throws(compose({ paymentFlows: ['upfront'], defaultPaymentFlow: 'escrow' }), PaymentConfigurationError);
+    assert.throws(compose({ paymentFlows: ['upfront'], defaultPaymentFlow: 'unknown' }), PaymentConfigurationError);
+  });
+
+  it('FLOW-CFG-6 a mapping’s flows are still a subset of its binding’s', () => {
+    assert.throws(compose({ paymentFlows: ['upfront'], defaultPaymentFlow: 'upfront' }, ['authorization']), PaymentConfigurationError);
+    assert.doesNotThrow(compose({ paymentFlows: ['authorization', 'upfront'], defaultPaymentFlow: 'upfront' }, ['upfront']));
+  });
+
+  it('a requirement omitting extra.paymentFlow resolves to the binding’s (declared) default', () => {
+    const adapter = createX402PaymentProtocolAdapter({
+      mappings: [{ ...MAPPING_A, paymentFlows: ['upfront'] }],
+      bindings: [{ ...testBinding(), paymentFlows: ['upfront'], defaultPaymentFlow: 'upfront' }],
+      resolveRequest: ({ target }) => (target === TARGET ? { url: RESOURCE_URL, fields: {} } : undefined),
+      assets: ASSETS,
+    });
+    const answer = readPaymentProtocolInterpretation(adapter.interpret(carrierOf(paymentRequired([requirement()])), CONTEXT), { assets: ASSETS });
+    assert.ok(answer?.interpreted, answer?.interpreted ? '' : answer?.refusal);
+    assert.equal(answer.challenge.fields['payment-flow'], 'upfront');
+  });
+});
+
 describe('PAY-08 — interpretation into PAY-01 terms', () => {
   it('produces exact terms, a binding-made destination, the trusted rail and closed evidence', () => {
     const answer = interpret([requirement()]);
@@ -259,6 +309,11 @@ describe('PAY-08 — canonicalization (CAN)', () => {
     assert.notEqual(evidence([requirement({ amount: '1251' })]), base);
     assert.notEqual(evidence([requirement({ payTo: 'merchant-b' })]), base);
     assert.equal(refusalOf(interpret([requirement()], { overrides: { resource: { url: `${RESOURCE_URL}&x=1` } } })), 'request-binding-mismatch', 'another resource does not even bind');
+  });
+
+  it('CAN-7 / CAN-8 the requirement identity itself carries amount and payTo: offers differing only there are two requirements — ambiguous, never collapsed into the first', () => {
+    for (const order of [[requirement(), requirement({ payTo: 'merchant-b' })], [requirement({ payTo: 'merchant-b' }), requirement()]]) assert.equal(refusalOf(interpret(order)), 'challenge-ambiguous');
+    for (const order of [[requirement(), requirement({ amount: '1251' })], [requirement({ amount: '1251' }), requirement()]]) assert.equal(refusalOf(interpret(order)), 'challenge-ambiguous');
   });
 
   it('CAN-10 an extension change changes the challenge evidence (never the business terms)', () => {

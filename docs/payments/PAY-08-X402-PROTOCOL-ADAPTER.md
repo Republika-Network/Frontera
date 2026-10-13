@@ -194,6 +194,8 @@ governance (`pay08-x402-governed-payment.test.ts`).
 for each accepts[] entry:
   trusted mapping matched EXACTLY on (scheme, network, asset)      none → skipped (unsupported)
   flow = extra.paymentFlow ?? the binding's mechanism default      unknown / not enabled / escrow → skipped
+                                                                   (the default must be one of the binding's own
+                                                                   declared flows — else composition fails)
   maxTimeoutSeconds ≤ mapping.maximumTimeoutSeconds                above → skipped
   binding.interpret(...)                                           its closed refusal, or usable
 choose: the usable offers of the FIRST mapping in configuration order;
@@ -266,6 +268,41 @@ memo; an invoice that was not prepared or did not verify is refused. The same
 memo is the rail's trusted invoice source (`verifier.invoices`): it returns an
 invoice only for a verified reading with exactly the governed payment hash
 **and** payee, so it can withhold a payment, never redirect one.
+
+*One payment hash, one invoice text* (hardening, SEC-INV-295). The rail asks
+for an invoice by payment hash and payee only, but what the binding verified
+is one exact invoice **text** — its signature, its signed description hash
+(the request binding), payee, amount, network and expiry. Two validly signed
+texts can share payment hash, payee, amount and network and differ in the
+description hash. So the memo keeps, per **(payee, payment hash)** — exactly
+what the rail asks by — the SHA-256 identity of the one text it verified (only
+the payee's own key can sign a second text for its pair; another node reusing
+the payment hash is another pair, never served for this payee and unable to
+poison it):
+
+```text
+unseen      + A          → unique(A)
+unique(A)   + A          → unique(A)          (exact replay keeps working)
+unique(A)   + B, B ≠ A   → ambiguous          (B is not cached as a reading)
+ambiguous   + anything   → ambiguous          (for the process lifetime)
+```
+
+An ambiguous pair is neither a reading for `interpret` (refused
+`normalization-failed`, before PAY-04's store or `govern()`) nor an invoice for
+the rail (withheld: PAY-06 refuses `invoice-unavailable` before any node
+call) — never first-, last- or latest-wins, whichever text was governed. The
+identity record is **not** evicted with the bounded readings
+(`maximumEntries`, default 256): eviction can neither clear an ambiguity nor
+let a substitute take over the pair of an evicted (perhaps governed, in
+flight) text. It is bounded separately (`maximumPaymentHashes`, counting
+pairs: default 16 384, at most 262 144, never below `maximumEntries`); once
+full, the memo refuses every new pair instead of forgetting an old one, and the
+deployment recomposes. The memo is process memory and never authority — a pure
+verification cache and invoice source that can only withhold. A restart starts
+it empty: a payment governed before the restart is never resumed through it
+(P12 resolves an uncertain one), a re-presentation is verified again, and
+PAY-04's one-instrument-one-operation record and PAY-06's durable
+payment-hash interlock still hold across the restart.
 
 *PAY-06's one change.* The decoder now also returns `descriptionHash` (the
 signed `h` field, lowercase hex) when the invoice carries one. Additive and
@@ -352,9 +389,41 @@ proof), Frontera holds no key, seed or wallet secret, and no wallet SDK is
 imported. Building twice yields the same value — a deterministic proof of one
 payment, not a second one.
 
-**Extension echo** (spec §5.1.2) is exact: every server extension is carried
-unchanged; a client addition may only add a new name — an overwrite is
-`extension-overwrite`, never merged; nothing is spread.
+**Extension echo** (spec §5.1.2 / §5.2; hardening, SEC-INV-296). The pinned
+spec: the client MUST echo the server's extensions, MUST preserve all
+server-provided information, MAY append its own, and MUST NOT delete or
+overwrite the server's. So a client addition (`clientExtensions`) is either
+
+- a **new extension name** — a whole extension, `{ info, schema }`; or
+- **new `info` members under a server extension** — `{ info }` (the server's
+  `schema` may be repeated, and then must be identical). Nested objects merge
+  additively, one level at a time.
+
+The result keeps the server's `schema` and every server `info` member exactly;
+changing, retyping or deleting one, or a different `schema`
+(`extension-schema-overwrite`), is refused as `extension-overwrite`.
+Restating a server member with the very same value is refused too
+(fail-closed: it adds nothing, and "client contributes only members the server
+did not state" stays checkable). The merge is a closed copy — nothing is
+spread — and the merged whole is held to every extension bound again. Client
+additions change only the `PaymentPayload`: never the governed requirement,
+the semantic digest or PAY-04's recorded challenge (whose `extensions` field
+remains the server's, exactly).
+
+**Bounded before serialized** (hardening, SEC-INV-296). A caller's
+`clientExtensions` is runtime data, not parser output. Every extension tree is
+therefore first copied by `copyX402Json` under explicit budgets — depth (15,
+one level kept for the enclosing document), members plus elements (512,
+checked from an object's key count and an array's length **before** any member
+is read) and a running lower bound of the serialized size (6 KiB) — and only
+then measured and serialized. The copy reads own data descriptors only (no
+getter runs), accepts only plain objects (`Object.prototype` or `null`),
+plain arrays without holes, strings, booleans, `null` and `X402JsonNumber`,
+and refuses a shared or cyclic object (one `WeakSet`), a symbol key, any other
+prototype, a JavaScript number and a reserved member name; a Proxy trap that
+throws is a closed refusal. Parser output always fits these budgets and passes
+unchanged. The built header is then read back with the resource server's own
+reader before it is returned.
 
 **`PAYMENT-SIGNATURE` handling.** The value is bearer proof. It is returned
 inside `X402PaymentSignature`, whose `toString`, `toJSON` and `inspect` render
@@ -385,7 +454,13 @@ composition, and never retry an ambiguous settle — none exists today.
 `readX402PaymentResponseEvidence(carrier, context)` reads exactly one
 `PAYMENT-RESPONSE` field and compares it with the governed terms: network,
 transaction = the payment hash, `payer` absent (lnbtc forbids it), `amount`
-absent or equal. It answers `evidence` (`serverReportsSuccess`, `consistent`,
+absent or equal. The transaction rule (hardening, SEC-INV-292): the pinned
+`SettlementResponse` always carries `transaction`, empty when nothing was
+broadcast — but **never empty for `errorReason: settlement_pending`**, which
+the parser refuses (`settlement-response-pending-without-transaction`), so it
+is `unreadable`. Any non-empty `transaction` claims to identify a payment and
+must be the governed payment hash whatever `success` says (success, failure or
+pending); a success must name it; an empty one on a failure claims nothing. It answers `evidence` (`serverReportsSuccess`, `consistent`,
 `mismatch?`, a bounded `errorReason` token) or `unreadable`. It **writes
 nothing**: a merchant's `success: true` and an HTTP 200 leave PAY-05's state
 exactly where it was (tested: still `awaiting-finality` until
@@ -495,16 +570,21 @@ client or proxy; Host composition; a new rail; Stripe (PAY-09).
 8. **Testnet-shaped qualification**: the end-to-end proof runs on PAY-06's
    deterministic node simulator with a test-only reference merchant; no live
    x402 merchant, testnet node or mainnet was exercised by PAY-08.
+9. **The invoice memo is per process.** A payment-hash collision is detected
+   only among the texts one memo has verified; a restart forgets it (the
+   durable PAY-04 instrument record and PAY-06 interlock still hold), and a
+   saturated identity record refuses new x402 Lightning payments until the
+   deployment recomposes.
 
 ## 24. Test map
 
 | matrix | file |
 | --- | --- |
-| PR-1 … PR-20, header decoding, official vectors, CAN-1 / CAN-3 / CAN-4, PP-7 / PP-8 (encoder) | `protocols/x402/tests/x402-messages.test.ts` |
-| SEL-1 … SEL-10, AMT-1 … AMT-10, flows, timeout, CAN-2 / CAN-5 … CAN-10, composition | `protocols/x402/tests/x402-payment-adapter.test.ts` |
+| PR-1 … PR-20, header decoding, official vectors, CAN-1 / CAN-3 / CAN-4, PP-7 / PP-8 (encoder), EXT-MERGE-1 … EXT-MERGE-9, EXT-BOUND-1 … EXT-BOUND-10, RESP-7 (parser) | `protocols/x402/tests/x402-messages.test.ts` |
+| SEL-1 … SEL-10, AMT-1 … AMT-10, flows, FLOW-CFG-1 … FLOW-CFG-6, timeout, CAN-2 / CAN-5 … CAN-10, composition | `protocols/x402/tests/x402-payment-adapter.test.ts` |
 | adapter purity, network neutrality, no MPP / rail coupling | `protocols/x402/tests/x402-protocol-boundaries.test.ts` |
-| lnbtc spec vectors (request hashes, invoice, binding), client checks, time, headers, verifier, PP-7 / PP-9 … PP-12 (builder) | `src/enterprise/__tests__/pay08-x402-lightning-binding.test.ts` |
-| exit proof, paid round trip, denial, over-ceiling, BOP-X1 … BOP-X12, resource / method / body replay, P12, HTTP-200 / PAYMENT-RESPONSE trust, secret canaries, PP-1 … PP-6 | `src/enterprise/__tests__/pay08-x402-governed-payment.test.ts` (world: `pay08-x402-world.ts`) |
+| lnbtc spec vectors (request hashes, invoice, binding), client checks, time, headers, verifier, INV-COLL-1 … INV-COLL-8, PP-7 / PP-9 … PP-12 (builder), RESP-1 … RESP-7 | `src/enterprise/__tests__/pay08-x402-lightning-binding.test.ts` |
+| exit proof, paid round trip, denial, over-ceiling, BOP-X1 … BOP-X12, resource / method / body replay, P12, HTTP-200 / PAYMENT-RESPONSE trust, RESP-8 / RESP-9, INV-COLL-5 (governed stack), extension echo (governed stack), secret canaries, PP-1 … PP-6 | `src/enterprise/__tests__/pay08-x402-governed-payment.test.ts` (world: `pay08-x402-world.ts`) |
 | CORE purity, edge boundaries, ordering, MPP ↔ x402 conformance | `src/enterprise/__tests__/pay08-x402-structure.test.ts` |
 | PAY-04, PAY-06, PAY-07 regression | the unchanged suites (structural allow-lists extended by one classified entry each) |
 

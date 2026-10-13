@@ -4,7 +4,7 @@ import { inspect } from 'node:util';
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { X402_HTTP_HEADERS, decodeX402PaymentSignatureHeader, parseX402Json } from '../../features/payment-runtime/protocols/x402/index.js';
+import { X402_HTTP_HEADERS, canonicalX402Requirements, decodeX402PaymentSignatureHeader, parseX402Json, serializeX402Json } from '../../features/payment-runtime/protocols/x402/index.js';
 import { lightningDestinationOf, preimageMatchesPaymentHash } from '../../features/payment-runtime/rails/lightning/index.js';
 import { testPreimage } from '../../features/payment-runtime/rails/lightning/tests/lightning-test-fixtures.js';
 import type { GovernedActionResult } from '../governed-action/index.js';
@@ -519,6 +519,88 @@ describe('PAY-08 — the PaymentPayload is bound to the governed terms (PP)', ()
       assert.equal((await world.buildSignature({ requestId: second.requestId, executionId: second.executionId as string })).outcome, 'built');
       assert.equal(PROTECTED_GET.target, TARGET);
       assert.equal(CONFIGURATION.network, 'testnet');
+    });
+  });
+});
+
+describe('PAY-08 hardening — the paid invoice is the governed invoice (INV-COLL, governed stack)', () => {
+  it('INV-COLL-5 a PaymentRequired whose invoice shares a payment hash with one already verified is refused before governance: no intent, no rail instruction, no send', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      // Invoice A: the same payment hash, payee, amount and network — committed to another resource.
+      const elsewhere: AgentRequest = { method: 'GET', url: `${RESOURCE_URL}&edition=a` };
+      const requirementA = await server.requirementFor(elsewhere, 'pay08-collide');
+      await world.adapter.prepare(carrierOf({ status: 402, headers: [['PAYMENT-REQUIRED', b64Json(server.paymentRequiredJson(elsewhere, [requirementA]))]] }));
+      // Invoice B: valid on its own, for the governed resource.
+      const requirementB = await server.requirementFor(GET, 'pay08-collide');
+      assert.notEqual((requirementA['extra'] as Record<string, unknown>)['invoice'], (requirementB['extra'] as Record<string, unknown>)['invoice']);
+      const outcome = await world.present({ carrier: { status: 402, headers: [['PAYMENT-REQUIRED', b64Json(server.paymentRequiredJson(GET, [requirementB]))]] } });
+      assert.equal(refusal(outcome), 'normalization-failed');
+      assert.equal(world.governedIntents.length, 0, 'nothing reached govern()');
+      assert.equal(world.railInstructions.length, 0, 'no PAY-01 instruction');
+      assert.equal(world.effects(), 0, 'zero sends');
+      // The business-operation store is untouched: a fresh, unambiguous challenge under the same operation governs and pays once.
+      const fresh = governed(await world.present({ carrier: carrierOf(await server.respond(GET)) }));
+      assert.equal(fresh.status, 'executed');
+      assert.equal(world.effects(), 1);
+      assert.equal(world.railInstructions.length, 1);
+    });
+  });
+});
+
+describe('PAY-08 hardening — PAYMENT-RESPONSE is evidence only (RESP)', () => {
+  it('RESP-8 / RESP-9 success, failure and pending responses — consistent or not — never settle, and write nothing to P11, P12 or PAY-05', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      const result = governed(await world.present({ carrier: carrierOf(await server.respond(GET)) }));
+      const executionId = result.executionId as string;
+      const context = await world.contexts().readByGovernedRequestId('org-datasys', result.requestId);
+      assert.ok(context !== undefined);
+      const paymentHash = testPreimage('pay08-invoice-1-25000').paymentHash;
+      const before = durableBytes(world);
+      const responses = [
+        [200, { success: true, transaction: paymentHash, network: LNBTC_TESTNET }],
+        [200, { success: true, transaction: 'e'.repeat(64), network: LNBTC_TESTNET }],
+        [402, { success: false, errorReason: 'settlement_pending', transaction: paymentHash, network: LNBTC_TESTNET }],
+        [402, { success: false, errorReason: 'settlement_pending', transaction: '', network: LNBTC_TESTNET }],
+        [402, { success: false, errorReason: 'insufficient_funds', transaction: 'e'.repeat(64), network: LNBTC_TESTNET }],
+      ] as const;
+      for (const [status, response] of responses) readX402PaymentResponseEvidence({ status, headers: [['PAYMENT-RESPONSE', b64Json(response)]] }, context);
+      assert.equal(durableBytes(world), before, 'RESP-9 no store byte changed');
+      const read = await world.readSettlement(executionId);
+      assert.equal(read.outcome === 'status' && read.state, 'awaiting-finality', 'RESP-8 HTTP 200 is not PAY-05 settlement');
+    });
+  });
+});
+
+describe('PAY-08 hardening — PaymentPayload extensions echo the server and add only client info (EXT-MERGE, governed stack)', () => {
+  it('the built PAYMENT-SIGNATURE carries the exact accepted requirement, the validated preimage, every server extension unchanged and the client’s additive info', async () => {
+    const serverExtensions = { bazaar: { info: { category: 'reports', limits: { rows: 100 } }, schema: { type: 'object', properties: { category: { type: 'string' } } } } };
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node, extensions: serverExtensions });
+      const result = governed(await world.present({ carrier: carrierOf(await server.respond(GET)) }));
+      await world.verifySettlement(result.executionId as string);
+      const additions = parseX402Json('{"bazaar":{"info":{"client":"frontera","limits":{"page":2}}},"trace":{"info":{"id":"t-1"},"schema":{"type":"object"}}}');
+      assert.ok(additions.valid);
+      const built = await world.buildSignature({ requestId: result.requestId, executionId: result.executionId as string, clientExtensions: additions.value as never });
+      assert.ok(built.outcome === 'built', JSON.stringify(built));
+      const payload = decodeX402PaymentSignatureHeader(built.signature.reveal());
+      assert.ok(payload.valid);
+      assert.equal(serializeX402Json(payload.value.extensions?.['bazaar']), '{"info":{"category":"reports","client":"frontera","limits":{"page":2,"rows":100}},"schema":{"properties":{"category":{"type":"string"}},"type":"object"}}');
+      assert.equal(serializeX402Json(payload.value.extensions?.['trace']), '{"info":{"id":"t-1"},"schema":{"type":"object"}}');
+      assert.ok(preimageMatchesPaymentHash(payload.value.payload['preimage'] as string, testPreimage('pay08-invoice-1-25000').paymentHash));
+      const context = await world.contexts().readByGovernedRequestId('org-datasys', result.requestId);
+      assert.ok(context !== undefined);
+      assert.equal(canonicalX402Requirements(payload.value.accepted), context.challenge.fields['requirement'], 'accepted is exactly the governed requirement');
+      // The merchant serves the resource for it; the governed record's server extensions are unchanged by the client's additions.
+      assert.equal((await server.respond({ ...GET, headers: { 'payment-signature': built.signature.reveal() } })).status, 200);
+      const sent = parseX402Json(JSON.stringify(serverExtensions));
+      assert.ok(sent.valid);
+      assert.equal(context.challenge.fields['extensions'], serializeX402Json(sent.value));
+      const overwrite = parseX402Json('{"bazaar":{"info":{"category":"free"}}}');
+      assert.ok(overwrite.valid);
+      assert.deepEqual(await world.buildSignature({ requestId: result.requestId, executionId: result.executionId as string, clientExtensions: overwrite.value as never }), { outcome: 'refused', refusal: 'extension-overwrite' });
+      assert.equal(world.effects(), 1);
     });
   });
 });

@@ -76,6 +76,17 @@ chosen: an asynchronous port (a PAY-04 contract change for every protocol) or
 trusting structural decoding until the rail re-verifies (governance would run
 on unverified payee data).
 
+*Amended by the PAY-08 hardening pass.* The rail's query (payment hash, payee)
+does not name an invoice text, and two signed texts can share both while
+committing to different request bindings. The memo therefore keeps one text
+identity per (payee, payment hash), and a second text makes the pair **ambiguous** for
+the process lifetime — refused at interpretation, withheld from the rail;
+never first-, last- or latest-wins. The identity record is bounded separately
+from the readings and never evicted (full → new hashes refused). Chosen over an
+execution-scoped invoice source because the binding cannot know the execution
+id at interpretation and PAY-06's query is fixed; the fail-closed state machine
+needs no PAY-04, PAY-06 or store change.
+
 **D7 — The resource is the request, exactly.** A trusted resolver maps PAY-04's
 opaque `target` to the URL (and bound header values) the network layer sent;
 `resource.url` must be byte-identical; the scheme's request hash is recomputed
@@ -93,12 +104,18 @@ builds `PAYMENT-SIGNATURE` from PAY-04's verified context (the exact governed
 requirement), PAY-05's `readSettlement` (`settled`, same request, destination
 and amount), and the preimage from PAY-06's read-only node reader, verified
 against the governed payment hash. No key, no signature, no wallet SDK. The
-value is returned redacted except through `reveal()`. Extension echo is exact:
-server extensions unchanged; client names only added, never overwriting.
-
+value is returned redacted except through `reveal()`. Extension echo follows
+the pinned spec: every server extension unchanged (its `schema` and every
+`info` member); a client may add a new extension name or new `info` members
+under a server extension, never change, delete or restate the server's
+(*amended by the PAY-08 hardening pass*, which corrected an over-strict "new
+names only" rule). Every extension tree is copied closed and bounded before it
+is serialized, so a runtime-built tree cannot amplify work.
 **D10 — No facilitator, no outbound HTTP.** The paying side never calls
 `/verify` or `/settle` and makes no request; `PAYMENT-RESPONSE` and HTTP 200
-are evidence read against the governed terms, never PAY-05 settlement.
+are evidence read against the governed terms, never PAY-05 settlement. A
+`settlement_pending` response must name a transaction, and any non-empty
+transaction must be the governed payment's (hardening pass).
 
 **D11 — One additive rail-side field.** PAY-06's decoder returns the signed
 description hash (`descriptionHash`) when present. Nothing else in a rail

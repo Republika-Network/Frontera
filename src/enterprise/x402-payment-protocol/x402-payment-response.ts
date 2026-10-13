@@ -16,9 +16,16 @@ import type { VerifiedPaymentProtocolContext } from '../payment-protocol-ingress
  * | check | rule (`exact` on `lnbtc`) |
  * | --- | --- |
  * | `network` | equals the governed requirement's network |
- * | `transaction` | equals the governed payment hash, lower case |
+ * | `transaction` | on success, and whenever non-empty (failure and `settlement_pending` too), equals the governed payment hash, lower case |
  * | `payer` | absent (the binding forbids it: Lightning has no stable payer) |
  * | `amount` | absent, or equal to the governed atomic amount |
+ *
+ * A non-empty `transaction` claims to identify a payment, so it is held to
+ * the governed one on success, failure and `settlement_pending` alike; an
+ * empty one (nothing broadcast) is consistent only on a failure, because it
+ * claims nothing — a success must name the governed payment.
+ * A `settlement_pending` response without a transaction is not well formed
+ * and never reaches this comparison (`unreadable`).
  *
  * The merchant's `errorReason` is kept only as a bounded token
  * (`^[a-z0-9_]+$`, at most 128 characters), for the caller's diagnosis.
@@ -52,7 +59,7 @@ export function readX402PaymentResponseEvidence(carrier: unknown, context: Verif
   const mismatch: X402PaymentResponseMismatch | undefined =
     response.network !== network
       ? 'network'
-      : response.success && response.transaction !== destination.paymentHash
+      : (response.success || response.transaction !== '') && response.transaction !== destination.paymentHash
         ? 'transaction'
         : response.payer !== undefined
           ? 'payer'

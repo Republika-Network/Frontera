@@ -47,6 +47,7 @@ export type { X402Parse, X402PaymentPayload, X402PaymentRequired, X402PaymentReq
 export {
   X402JsonNumber,
   X402_CODEC_LIMITS,
+  copyX402Json,
   decodeX402Base64,
   decodeX402JsonHeader,
   decodeX402Utf8,
@@ -58,4 +59,4 @@ export {
   serializeX402Json,
   x402IntegerOf,
 } from './x402-codec.js';
-export type { X402Json, X402JsonDecode, X402JsonObject } from './x402-codec.js';
+export type { X402Json, X402JsonCopyLimits, X402JsonDecode, X402JsonObject } from './x402-codec.js';

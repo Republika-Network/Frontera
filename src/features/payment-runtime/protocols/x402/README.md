@@ -15,7 +15,7 @@ version 2 at `x402-foundation/x402` `f8f83309706b14cc696962f0a002eeeb66c3dc26`
 | file | what it owns |
 | --- | --- |
 | `x402-codec.ts` | Canonical padded base64, fatal UTF-8, strict bounded JSON (duplicate members refused, numbers kept as source text), canonical serialization — pure, total, no dependency, no Node API. |
-| `x402-messages.ts` | x402 v2 `PaymentRequired`, `PaymentRequirements`, `ResourceInfo`, extensions, `PaymentPayload`, `SettlementResponse`, read closed; the HTTP carrier (`402` + exactly one `PAYMENT-REQUIRED`); the `PAYMENT-SIGNATURE` encoder with exact extension echo. |
+| `x402-messages.ts` | x402 v2 `PaymentRequired`, `PaymentRequirements`, `ResourceInfo`, extensions, `PaymentPayload`, `SettlementResponse`, read closed; the HTTP carrier (`402` + exactly one `PAYMENT-REQUIRED`); the `PAYMENT-SIGNATURE` encoder with exact server extension echo and additive client info, every extension tree bounded before it is serialized. |
 | `x402-payment-adapter.ts` | `createX402PaymentProtocolAdapter`: trusted request (exact resource URL), trusted execution mappings, payment-flow resolution, timeout bound, exact atomic → decimal, trusted network bindings, deterministic selection → `PaymentProtocolTerms` + challenge evidence. |
 
 This directory names no network. A network is understood only through a

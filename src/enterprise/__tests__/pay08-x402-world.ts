@@ -16,7 +16,7 @@ import {
   type PaymentRail,
 } from '../../features/payment-runtime/index.js';
 import { MPP_RESERVED_CONTEXT_KEYS } from '../../features/payment-runtime/protocols/mpp/index.js';
-import { X402_RESERVED_CONTEXT_KEYS, createX402PaymentProtocolAdapter, decodeX402PaymentSignatureHeader, type X402PaymentProtocolAdapter } from '../../features/payment-runtime/protocols/x402/index.js';
+import { X402_RESERVED_CONTEXT_KEYS, createX402PaymentProtocolAdapter, decodeX402PaymentSignatureHeader, type X402JsonObject, type X402PaymentProtocolAdapter } from '../../features/payment-runtime/protocols/x402/index.js';
 import { createLightningRail, decodeBolt11Invoice, readOnlyLightningNode } from '../../features/payment-runtime/rails/lightning/index.js';
 import { TEST_NOW_MS, TEST_NOW_SECONDS, buildInvoice, createSimulatedLightningNode, testPreimage, testRailConfiguration, type SimulatedLightningNode } from '../../features/payment-runtime/rails/lightning/tests/lightning-test-fixtures.js';
 import { createAuthorityEventProjector, createInMemoryAuthorityEventStreamStore, type AuthorityEventProjector } from '../authority-event-stream/index.js';
@@ -317,7 +317,7 @@ export interface X402World {
   verifySettlement(executionId: string): ReturnType<ReturnType<typeof createPaymentSettlementService>['verifySettlement']>;
   readSettlement(executionId: string): ReturnType<ReturnType<typeof createPaymentSettlementService>['readSettlement']>;
   receipt(executionId: string): ReturnType<ReturnType<typeof createPaymentSettlementService>['receipt']>;
-  buildSignature(request: { readonly requestId: string; readonly executionId: string; readonly clientExtensions?: never }): Promise<X402PaymentSignatureResult>;
+  buildSignature(request: { readonly requestId: string; readonly executionId: string; readonly clientExtensions?: X402JsonObject }): Promise<X402PaymentSignatureResult>;
   reconcile(executionId: string): Promise<unknown>;
   trace(requestId: string): Promise<{ readonly verified: boolean; readonly path?: string; readonly finalState?: string; readonly failed: readonly string[]; readonly json: string }>;
   operations(): DurablePaymentBusinessOperationStore;
