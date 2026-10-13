@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { EXTERNAL_XRPL_SIGNER_OPERATION, EXTERNAL_XRPL_SIGNER_PATHS, parsePreparedXrplPayment } from '../xrpl-payment-rail/signer-protocol.js';
+import { CORE_SOURCE_CLASSIFICATION, CORE_SOURCE_ROOTS, listCoreSources } from './pay07-core-source-manifest.js';
 
 /**
  * TRADE — the trade vertical's place in the architecture, enforced
@@ -93,7 +94,7 @@ const dependsOnPay: Scan = (sources) =>
   );
 
 /** (3) TRADE may import itself, three generic primitives through their barrels, and the hash function. Nothing that decides. */
-const TRADE_IMPORTS = /^(?:\.\/|\.\.\/domain\/|\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|governed-parameter-runtime)\/index\.js$|crypto$)/;
+const TRADE_IMPORTS = /^(?:\.\/|\.\.\/domain\/|\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|governed-parameter-runtime)\/index\.js$|node:crypto$)/;
 const GOVERNANCE_ENGINE = [/\bevaluate\s*\(|\bdecide\s*\(|PolicyPack|policy-condition-evaluator/, /issueFromDecision|createGrantIssuanceService|BoundedGrant|\.exercise\s*\(/, /GovernedActionOrchestrator|createGovernedActionOrchestrator|\.govern\s*\(/, /ExecutionAdapter|executionAdapter/];
 const secondGovernanceEngine: Scan = (sources) =>
   sources.flatMap((source) => [
@@ -145,6 +146,26 @@ describe('TRADE vertical — classification and independence', () => {
 
   it('(3) TRADE is no second governance engine: it imports only generic primitives and decides, grants, orchestrates and executes nothing', () => {
     assert.deepEqual(secondGovernanceEngine(TRADE), []);
+  });
+});
+
+describe('TRADE vertical — PAY-07 classifies it outside the qualified CORE, deliberately', () => {
+  const features = CORE_SOURCE_CLASSIFICATION['src/features'];
+  /** PAY-07's drift rule, applied to a listing: what is neither in scope nor outside with a reason. */
+  const unclassified = (present: readonly string[]): readonly string[] => present.filter((name) => !(features?.scope.includes(name) ?? false) && !Object.hasOwn(features?.outside ?? {}, name));
+
+  it('trade-runtime is classified outside, by name and with a reason — not in scope, and under no CORE root', () => {
+    assert.ok(features !== undefined);
+    assert.equal(features.scope.includes('trade-runtime'), false);
+    assert.match(features.outside['trade-runtime'] ?? '', /governed-action vertical/);
+    assert.equal(CORE_SOURCE_ROOTS.some((root) => root.root === TRADE_ROOT || root.root.startsWith(`${TRADE_ROOT}/`)), false);
+    assert.deepEqual(listCoreSources().filter((file) => file.startsWith(`${TRADE_ROOT}/`)), [], 'no TRADE source is in the qualified CORE manifest');
+  });
+
+  it('the classification is exact, not a wildcard: every real feature directory is classified, and an unknown one still fails the drift rule', () => {
+    assert.deepEqual(unclassified(readdirSync('src/features')), []);
+    assert.deepEqual(unclassified(['trade-runtime', 'trade-runtime-next', 'some-new-feature']), ['trade-runtime-next', 'some-new-feature']);
+    for (const name of Object.keys(features?.outside ?? {})) assert.equal(/[*?]/.test(name), false, name);
   });
 });
 

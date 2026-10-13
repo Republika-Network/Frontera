@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 
 import { TRADE_NETWORKS, checkTradeAccountAddress, isTradeNetwork, tradeAccountIdOf } from './trade-grammar.js';
 import type { TradeNetwork } from './trade-grammar.js';

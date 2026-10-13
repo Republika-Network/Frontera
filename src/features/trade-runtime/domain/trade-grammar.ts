@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 
 import { isRecordableProviderRef } from '../../execution-runtime/index.js';
 import { isGovernedParameterToken } from '../../governed-parameter-runtime/index.js';

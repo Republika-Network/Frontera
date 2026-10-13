@@ -299,8 +299,8 @@ Enforced by `trade-runtime-boundaries.test.ts`, over production sources with com
 
 | Boundary | Rule |
 |---|---|
-| Imports | Only `./`, `../domain/`, `execution-runtime`, `monetary-runtime`, `governed-parameter-runtime` index, and `crypto` |
-| `crypto` | `createHash` only (digest and address checksum). No key, signature or randomness |
+| Imports | Only `./`, `../domain/`, `execution-runtime`, `monetary-runtime`, `governed-parameter-runtime` index, and `node:crypto` |
+| `node:crypto` | `createHash` only (digest and address checksum). No key, signature or randomness |
 | Ledger SDK and network | No ledger SDK or codec import (SDK, binary codec and related packages), no `new Client(`, no submit or autofill, no `fetch`/HTTP/socket/`fs` |
 | Custody | No signing, key derivation, wallet or seed handling |
 | Execution | No adapter, grant issuance or exercise, policy evaluation or orchestrator; no second governed-action path |

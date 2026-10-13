@@ -53,7 +53,7 @@ describe('Trade runtime boundaries (TRADE-01)', () => {
   });
 
   it('imports only itself, the generic primitives it composes, and the hash function — never the enterprise layer, the Kernel, a store, another vertical or Node I/O', () => {
-    const allowed = /^(?:\.\/|\.\.\/domain\/|\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|governed-parameter-runtime)\/index\.js$|crypto$)/;
+    const allowed = /^(?:\.\/|\.\.\/domain\/|\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|governed-parameter-runtime)\/index\.js$|node:crypto$)/;
     for (const file of PRODUCTION_SOURCES) {
       // TRADE-02: the XRPL rail reads the domain through its barrel, and nothing else of TRADE.
       const railDomain = (specifier: string): boolean => file.startsWith(`${ROOT}/rails/xrpl/`) && specifier === '../../domain/index.js';
@@ -62,9 +62,18 @@ describe('Trade runtime boundaries (TRADE-01)', () => {
   });
 
   it('uses the hash function and nothing else from crypto: no key, signature or randomness', () => {
+    // `node:crypto`, never bare `'crypto'`: under a freshly resolved @types/node
+    // (the isolated protocol-tarball build) bare `'crypto'` is a re-export that
+    // the repository's `types/node-shims.d.ts` string-only `Hash.update` shadows.
+    let imports = 0;
     for (const file of PRODUCTION_SOURCES) {
-      for (const match of codeOf(file).matchAll(/import\s*\{([^}]*)\}\s*from\s*'crypto'/g)) assert.deepEqual((match[1] ?? '').split(',').map((name) => name.trim()).filter(Boolean), ['createHash'], file);
+      assert.equal(/from\s*'crypto'/.test(codeOf(file)), false, `${file}: import 'node:crypto'`);
+      for (const match of codeOf(file).matchAll(/import\s*\{([^}]*)\}\s*from\s*'node:crypto'/g)) {
+        imports += 1;
+        assert.deepEqual((match[1] ?? '').split(',').map((name) => name.trim()).filter(Boolean), ['createHash'], file);
+      }
     }
+    assert.ok(imports >= 4, `found ${imports} hash imports`);
   });
 
   it('nothing in Frontera imports the trade runtime yet — TRADE-01 has no composition edge', () => {

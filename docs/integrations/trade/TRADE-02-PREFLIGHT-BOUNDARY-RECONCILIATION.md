@@ -57,7 +57,7 @@ repository and to synthetic violations.
 | 1 | Generic CORE independent of TRADE | No production file in `src`, `packages`, `scripts`, `apps` outside TRADE mentions `trade-runtime`. Approved TRADE composition edges: **none** (pinned empty). |
 | 2 | PAY independent of TRADE | `payment-runtime`, `xrpl-payment-rail`, `payment-protocol-ingress`, `payment-settlement` never mention `trade-runtime`. |
 | — | TRADE independent of PAY | TRADE imports no payment vertical, rail, protocol adapter, signer, ingress or settlement. |
-| 3 | No second governance engine | TRADE imports only itself, `execution-runtime` / `monetary-runtime` / `governed-parameter-runtime` barrels and `crypto`; no `evaluate(`, `decide(`, `PolicyPack`, grant issuance or exercise, orchestrator, `govern(`, `ExecutionAdapter`. |
+| 3 | No second governance engine | TRADE imports only itself, `execution-runtime` / `monetary-runtime` / `governed-parameter-runtime` barrels and `node:crypto`; no `evaluate(`, `decide(`, `PolicyPack`, grant issuance or exercise, orchestrator, `govern(`, `ExecutionAdapter`. |
 | 4 | Cannot sign | No `sign(`, `multisign(`, `signTransaction`, signer protocol or transport. |
 | 5 | Cannot submit | No `.submit(`, `submitAndWait`, `autofill(`, `command: 'submit'`, `new Client(`, `fetch`, WebSocket, `connect(`, Node network modules. |
 | 6 | No seeds or keys | No `Wallet`, `fromSeed`/`fromSecret`/`fromMnemonic`/`fromEntropy`, `deriveKeypair`, key generation, `privateKey`/`seed`/`mnemonic`/`secret` bindings, `ripple-keypairs`, `secret-numbers`. |
