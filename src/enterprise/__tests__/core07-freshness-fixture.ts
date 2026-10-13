@@ -150,7 +150,9 @@ export async function witnessRows(databasePath: string): Promise<readonly Record
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(databasePath, { readonly: true });
   try {
-    return db.prepare('SELECT state_kind, organization_id, store_id, committed_sequence, committed_digest, pending_sequence, pending_digest FROM witness_bindings ORDER BY state_kind').all() as Record<string, unknown>[];
+    return db
+      .prepare('SELECT state_kind, organization_id, namespace, store_id, committed_sequence, committed_digest, pending_sequence, pending_digest FROM witness_bindings_v2 ORDER BY state_kind, organization_id, namespace')
+      .all() as Record<string, unknown>[];
   } finally {
     db.close();
   }

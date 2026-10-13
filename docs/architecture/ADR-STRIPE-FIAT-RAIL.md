@@ -70,9 +70,11 @@ with parity to XRPL and Lightning.
 
 - A fiat rail is governed by the same CORE as two crypto rails, measured
   byte-identical (PAY-07 manifest).
-- One payment-initiation interlock per organization: Stripe and Lightning
-  cannot both be composed for one organization until CORE-07 gains per-rail
-  slots or a multi-rail interlock exists (fail closed meanwhile).
+- ~~One payment-initiation interlock per organization~~ — closed by the
+  multi-rail hardening: CORE-07 v2 namespaces `payment-initiation-reservations`
+  generically, and each rail's interlock anchors under its configured rail id
+  (`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`). Stripe and Lightning compose in
+  one organization with isolated freshness.
 - No real Stripe test-mode run yet (no credentials); live mode, other
   currencies, refunds, disputes, async payment methods and cross-region
   Connect are future, separately qualified work.

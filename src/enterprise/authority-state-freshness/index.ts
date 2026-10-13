@@ -14,17 +14,23 @@
 export {
   AUTHORITY_STATE_CHECKPOINT_FORMAT,
   AUTHORITY_STATE_KINDS,
+  AUTHORITY_STATE_NAMESPACE_MAX,
+  AUTHORITY_STATE_NAMESPACED_CHECKPOINT_FORMAT,
   AUTHORITY_STORE_KINDS,
+  NAMESPACED_AUTHORITY_STATE_KINDS,
   approvalStateCheckpoint,
+  authorityStateBindingProblem,
   authorityStateCheckpointProblem,
   isAuthorityStateKind,
+  isAuthorityStateNamespace,
   isAuthorityStoreKind,
+  isNamespacedAuthorityStateKind,
   obligationDischargeStateCheckpoint,
   revocationStateCheckpoint,
   sameCheckpoint,
   serializeAuthorityStateCheckpoint,
 } from './checkpoint.js';
-export type { AuthorityStateBinding, AuthorityStateCheckpoint, AuthorityStateHead, AuthorityStateKind, AuthorityStoreKind } from './checkpoint.js';
+export type { AuthorityStateBinding, AuthorityStateCheckpoint, AuthorityStateHead, AuthorityStateKind, AuthorityStateSlot, AuthorityStoreKind } from './checkpoint.js';
 
 export { AUTHORITY_STATE_FRESHNESS_ERROR_CODES, AuthorityStateFreshnessError, isAuthorityStateFreshnessError, isRetryableAuthorityStateFreshnessFailure } from './errors.js';
 export type { AuthorityStateFreshnessErrorCode } from './errors.js';
@@ -33,6 +39,7 @@ export {
   AUTHORITY_STATE_WITNESS_OPERATIONS,
   AUTHORITY_STATE_WITNESS_PATHS,
   AUTHORITY_STATE_WITNESS_PROTOCOL,
+  AUTHORITY_STATE_WITNESS_PROTOCOL_V1,
   AUTHORITY_STATE_WITNESS_RECEIPT_DOMAIN,
   parseWitnessRequest,
   parseWitnessResponse,

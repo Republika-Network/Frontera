@@ -1,5 +1,5 @@
 import {
-  isAuthorityStateKind,
+  authorityStateBindingProblem,
   isBoundedIdentifier,
   isStateDigest,
   isStateSequence,
@@ -9,7 +9,15 @@ import {
 } from './checkpoint.js';
 
 /**
- * The Frontera authority-state witness protocol, v1 (CORE-07).
+ * The Frontera authority-state witness protocol, v2 (CORE-07; v2 since the
+ * PAY-09 multi-rail hardening).
+ *
+ * v2 differs from v1 in exactly one thing: a binding — in every request,
+ * checkpoint and receipt — names the `namespace` of a namespaced state kind
+ * (`checkpoint.ts`). An un-namespaced binding has the same fields as in v1. The
+ * protocol id, the receipt signing domain and the paths all changed with it, so
+ * nothing a v1 party says or signs can be read as v2, and a v1 witness is
+ * refused at the handshake rather than silently ignoring a namespace.
  *
  * A **structured** protocol for one job: holding, outside an authority store's
  * restore domain, the newest checkpoint of that store's authenticated state,
@@ -42,22 +50,25 @@ import {
  * a chain behind a server that speaks this protocol; CORE depends on none.
  */
 
-export const AUTHORITY_STATE_WITNESS_PROTOCOL = 'frontera.authority-state-witness.v1';
+export const AUTHORITY_STATE_WITNESS_PROTOCOL = 'frontera.authority-state-witness.v2';
+
+/** The previous protocol: a slot of `(stateKind, organizationId)` only. Named so the reference witness can migrate a v1 database — never spoken. */
+export const AUTHORITY_STATE_WITNESS_PROTOCOL_V1 = 'frontera.authority-state-witness.v1';
 
 export const AUTHORITY_STATE_WITNESS_OPERATIONS = ['identity', 'read', 'enroll', 'prepare', 'finalize'] as const;
 export type AuthorityStateWitnessOperation = (typeof AUTHORITY_STATE_WITNESS_OPERATIONS)[number];
 
 /** One fixed path per operation. Nothing a caller supplies is ever part of a path. */
 export const AUTHORITY_STATE_WITNESS_PATHS: Readonly<Record<AuthorityStateWitnessOperation, string>> = Object.freeze({
-  identity: '/v1/identity',
-  read: '/v1/checkpoint/read',
-  enroll: '/v1/checkpoint/enroll',
-  prepare: '/v1/checkpoint/prepare',
-  finalize: '/v1/checkpoint/finalize',
+  identity: '/v2/identity',
+  read: '/v2/checkpoint/read',
+  enroll: '/v2/checkpoint/enroll',
+  prepare: '/v2/checkpoint/prepare',
+  finalize: '/v2/checkpoint/finalize',
 });
 
 /** The signing domain of a witness receipt. Distinct from every authority-artifact domain, so a receipt can never be read as authority and no authority signature as a receipt. */
-export const AUTHORITY_STATE_WITNESS_RECEIPT_DOMAIN = 'frontera:authority-state-witness:receipt:v1';
+export const AUTHORITY_STATE_WITNESS_RECEIPT_DOMAIN = 'frontera:authority-state-witness:receipt:v2';
 
 export const AUTHORITY_STATE_ENROLLMENTS = ['genesis', 'baseline'] as const;
 export type AuthorityStateEnrollment = (typeof AUTHORITY_STATE_ENROLLMENTS)[number];
@@ -91,7 +102,7 @@ export interface WitnessReceipt {
   readonly operation: AuthorityStateWitnessOperation;
   readonly challenge: string;
   readonly outcome: WitnessReceiptOutcome;
-  /** Every operation but `identity`: the binding the answer is about. */
+  /** Every operation but `identity`: the binding the answer is about — its namespace included, so an answer about one namespace never answers another. */
   readonly binding?: AuthorityStateBinding;
   /** Every operation but `identity`: the witnessed state **after** the operation. */
   readonly state?: WitnessBindingState;
@@ -111,7 +122,8 @@ export type WitnessRequest =
 const quote = (value: string): string => JSON.stringify(value);
 
 function canonicalBinding(binding: AuthorityStateBinding): string {
-  return `{"organizationId":${quote(binding.organizationId)},"stateKind":${quote(binding.stateKind)}}`;
+  const namespace = binding.namespace !== undefined ? `"namespace":${quote(binding.namespace)},` : '';
+  return `{${namespace}"organizationId":${quote(binding.organizationId)},"stateKind":${quote(binding.stateKind)}}`;
 }
 
 function canonicalHead(head: AuthorityStateHead): string {
@@ -157,8 +169,12 @@ export function witnessReceiptSigningBytes(receipt: WitnessReceipt): Buffer {
 
 // ── request bodies ──────────────────────────────────────────────────────────
 
+function bindingBody(binding: AuthorityStateBinding): Record<string, unknown> {
+  return { stateKind: binding.stateKind, organizationId: binding.organizationId, ...(binding.namespace !== undefined ? { namespace: binding.namespace } : {}) };
+}
+
 function checkpointBody(checkpoint: AuthorityStateCheckpoint): Record<string, unknown> {
-  return { stateKind: checkpoint.stateKind, organizationId: checkpoint.organizationId, storeId: checkpoint.storeId, sequence: checkpoint.sequence, stateDigest: checkpoint.stateDigest };
+  return { ...bindingBody(checkpoint), storeId: checkpoint.storeId, sequence: checkpoint.sequence, stateDigest: checkpoint.stateDigest };
 }
 
 export function witnessRequestBody(request: WitnessRequest): Record<string, unknown> {
@@ -167,7 +183,7 @@ export function witnessRequestBody(request: WitnessRequest): Record<string, unkn
     case 'identity':
       return base;
     case 'read':
-      return { ...base, binding: { stateKind: request.binding.stateKind, organizationId: request.binding.organizationId } };
+      return { ...base, binding: bindingBody(request.binding) };
     case 'enroll':
       return { ...base, enrollment: request.enrollment, checkpoint: checkpointBody(request.checkpoint) };
     case 'prepare':
@@ -190,10 +206,23 @@ export function hasExactKeys(value: unknown, keys: readonly string[]): value is 
   return own.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
+/**
+ * The binding fields of `value` — exactly `stateKind`, `organizationId` and,
+ * for a namespaced kind only, `namespace` — or `undefined`. A namespaced kind
+ * without its namespace, or a namespace on a kind that has none, is refused,
+ * never defaulted.
+ */
+function bindingFields(value: Readonly<Record<string, unknown>>): AuthorityStateBinding | undefined {
+  const candidate = { stateKind: value.stateKind, organizationId: value.organizationId, ...(Object.prototype.hasOwnProperty.call(value, 'namespace') ? { namespace: value.namespace } : {}) } as AuthorityStateBinding;
+  if (authorityStateBindingProblem(candidate) !== undefined) return undefined;
+  return candidate.namespace !== undefined
+    ? { stateKind: candidate.stateKind, organizationId: candidate.organizationId, namespace: candidate.namespace }
+    : { stateKind: candidate.stateKind, organizationId: candidate.organizationId };
+}
+
 export function parseBinding(value: unknown): AuthorityStateBinding | undefined {
-  if (!hasExactKeys(value, ['stateKind', 'organizationId'])) return undefined;
-  if (!isAuthorityStateKind(value.stateKind) || !isBoundedIdentifier(value.organizationId)) return undefined;
-  return { stateKind: value.stateKind, organizationId: value.organizationId };
+  if (!hasExactKeys(value, ['stateKind', 'organizationId']) && !hasExactKeys(value, ['stateKind', 'organizationId', 'namespace'])) return undefined;
+  return bindingFields(value);
 }
 
 function parseHead(value: unknown): AuthorityStateHead | undefined {
@@ -203,10 +232,12 @@ function parseHead(value: unknown): AuthorityStateHead | undefined {
 }
 
 export function parseCheckpoint(value: unknown): AuthorityStateCheckpoint | undefined {
-  if (!hasExactKeys(value, ['stateKind', 'organizationId', 'storeId', 'sequence', 'stateDigest'])) return undefined;
-  if (!isAuthorityStateKind(value.stateKind) || !isBoundedIdentifier(value.organizationId) || !isBoundedIdentifier(value.storeId)) return undefined;
+  const keys = ['stateKind', 'organizationId', 'storeId', 'sequence', 'stateDigest'];
+  if (!hasExactKeys(value, keys) && !hasExactKeys(value, [...keys, 'namespace'])) return undefined;
+  const binding = bindingFields(value);
+  if (binding === undefined || !isBoundedIdentifier(value.storeId)) return undefined;
   if (!isStateSequence(value.sequence) || !isStateDigest(value.stateDigest)) return undefined;
-  return { stateKind: value.stateKind, organizationId: value.organizationId, storeId: value.storeId, sequence: value.sequence, stateDigest: value.stateDigest };
+  return { ...binding, storeId: value.storeId, sequence: value.sequence, stateDigest: value.stateDigest };
 }
 
 function parseState(value: unknown): WitnessBindingState | undefined {
@@ -258,7 +289,7 @@ export function parseWitnessRequest(operation: AuthorityStateWitnessOperation, b
       const proposed = parseCheckpoint(body.proposed);
       if (expected === undefined || proposed === undefined) return undefined;
       // One transition of one store: same binding, same store, the next position.
-      if (expected.stateKind !== proposed.stateKind || expected.organizationId !== proposed.organizationId || expected.storeId !== proposed.storeId) return undefined;
+      if (expected.stateKind !== proposed.stateKind || expected.organizationId !== proposed.organizationId || expected.namespace !== proposed.namespace || expected.storeId !== proposed.storeId) return undefined;
       if (proposed.sequence !== expected.sequence + 1) return undefined;
       return { operation, challenge, expected, proposed };
     }

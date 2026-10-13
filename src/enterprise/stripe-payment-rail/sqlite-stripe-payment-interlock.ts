@@ -17,7 +17,7 @@ import {
   type StripePaymentReservationInput,
   type StripePaymentReservationRecord,
 } from '../../features/payment-runtime/rails/stripe/index.js';
-import type { AuthorityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { isAuthorityStateNamespace, type AuthorityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
 import { AuthorityStateFreshnessError, isAuthorityStateFreshnessError, type AuthorityStateFreshnessErrorCode } from '../authority-state-freshness/errors.js';
 import {
   isAuthorityStateFreshnessBoundary,
@@ -64,14 +64,16 @@ import { isCanonicalOutcomeInstant, isOpaqueExecutionIdentifier } from '../execu
  *
  * ## The CORE-07 slot
  *
- * The rail-neutral operational slot `payment-initiation-reservations` (PAY-06):
+ * The rail-neutral operational kind `payment-initiation-reservations` (PAY-06):
  * "the append-only history that binds each governed execution to the one
- * rail-level payment it may initiate". PAY-09 adds no slot and changes no CORE
- * byte. A witness keeps **one** store per slot per organization, so one
- * organization composes one payment-initiation interlock — a Stripe interlock
- * opened where a Lightning interlock already holds the slot is refused at
- * genesis (fail closed, `pay09-stripe-interlock.test.ts`). That is a residual,
- * not a safety gap.
+ * rail-level payment it may initiate". PAY-09 adds no state kind. The kind is
+ * **namespaced** (CORE-07, PAY-09 multi-rail hardening): this store anchors in
+ * the slot `(payment-initiation-reservations, organization, scope.railId)` —
+ * the namespace is the configured, trusted rail id, never anything from a
+ * payment request or from Stripe — so a Stripe interlock and a Lightning
+ * interlock of one organization each hold their own slot, and neither can take,
+ * replace or roll back the other's (`pay09-multi-rail-coexistence.test.ts`).
+ * CORE names no Stripe concept: to it the namespace is an opaque token.
  *
  * ## Integrity: always from genesis
  *
@@ -274,6 +276,8 @@ export async function createSqliteStripePaymentInterlock(dbPath: string, options
   if (typeof scope?.railId !== 'string' || scope.railId.length === 0 || scope.railId.length > 128 || !(STRIPE_MODES as readonly unknown[]).includes(scope.mode) || !isStripeAccountId(scope.platformAccountId)) {
     throw unavailable('The Stripe payment interlock requires its rail id, mode and platform account scope.');
   }
+  // The rail id is the CORE-07 namespace of this store's slot: it must be a canonical namespace token, or the interlock is not opened.
+  if (!isAuthorityStateNamespace(scope.railId)) throw unavailable('The Stripe payment interlock rail id must be a canonical freshness namespace (lowercase words joined by hyphens, at most 64 characters).');
   const busyTimeoutMs = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs <= 0 || busyTimeoutMs > MAXIMUM_BUSY_TIMEOUT_MS) throw unavailable(`The Stripe payment interlock busy timeout must be an integer from 1 to ${MAXIMUM_BUSY_TIMEOUT_MS}.`);
   const now = options.now;
@@ -412,7 +416,7 @@ export async function createSqliteStripePaymentInterlock(dbPath: string, options
 
   function checkpointOf(head: Head): AuthorityStateCheckpoint {
     if (anchor === undefined) throw unavailable('The Stripe payment interlock is not anchored.');
-    return { stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId, storeId: anchor.storeId, sequence: head.sequence, stateDigest: head.digest };
+    return { stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId, namespace: scope.railId, storeId: anchor.storeId, sequence: head.sequence, stateDigest: head.digest };
   }
 
   /** Local, synchronous: refuses when the history is older than, or forked from, what the witness established. */
@@ -669,7 +673,7 @@ export async function createSqliteStripePaymentInterlock(dbPath: string, options
       if ((countEntries.get() as { n: unknown }).n !== 0) throw corrupt('entries exist with no anchor');
       // Genesis: enrolled at the witness before it is committed here. A witness that holds this slot beyond genesis refuses
       // the empty file — a lost interlock, or a stale restore of a never-used backup, never silently starts over.
-      const storeId = await boundary.genesisStoreId(PAYMENT_INITIATION_STATE_KIND, {
+      const storeId = await boundary.genesisStoreId({ stateKind: PAYMENT_INITIATION_STATE_KIND, namespace: scope.railId }, {
         newStoreId: () => `stripe-payment-interlock:${randomUUID()}`,
         genesisDigest: (id) => genesisDigest(id, organizationId, scope.railId, scope.mode, scope.platformAccountId),
       });

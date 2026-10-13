@@ -24,7 +24,7 @@ import { testRailConfiguration as lightningConfiguration } from '../../features/
 import { createSqliteLightningPaymentInterlock } from '../lightning-payment-rail/sqlite-lightning-payment-interlock.js';
 import { PAYMENT_INITIATION_STATE_KIND, STRIPE_INTERLOCK_SCHEMA_VERSION, createSqliteStripePaymentInterlock, type DurableStripePaymentInterlock } from '../stripe-payment-rail/sqlite-stripe-payment-interlock.js';
 import { canonicalSerialize } from '../governance-store/canonical-json.js';
-import { ScriptedWitnessTransport, WITNESS_TOKEN, boundaryFor, closeAllWitnesses, connect, startWitness } from './core07-freshness-fixture.js';
+import { ScriptedWitnessTransport, WITNESS_TOKEN, boundaryFor, closeAllWitnesses, connect, startWitness, witnessRows } from './core07-freshness-fixture.js';
 
 /**
  * PAY-09 — the durable Stripe payment interlock (SIL-1 … SIL-12): one
@@ -328,13 +328,22 @@ describe('PAY-09 interlock — restart, crash, rollback (SIL-6 … SIL-12)', () 
     await assert.rejects(createSqliteStripePaymentInterlock(path, { scope: SCOPE, now, freshness: undefined as never }), /never opened without its freshness boundary/);
   });
 
-  it('SIL-12 the CORE-07 slot is the rail-neutral payment-initiation-reservations — and one organization holds ONE such store: Stripe beside an enrolled Lightning interlock is refused (fail closed)', async () => {
+  it('SIL-12 the CORE-07 slot is the rail-neutral payment-initiation-reservations, namespaced by the configured rail id: Stripe beside a Lightning interlock of the SAME organization opens in its own slot; a second Stripe store under the same rail id is still refused', async () => {
     assert.equal(PAYMENT_INITIATION_STATE_KIND, 'payment-initiation-reservations');
     const witness = await startWitness();
     const lightning = lightningConfiguration();
     const ln = await createSqliteLightningPaymentInterlock(join(dir(), 'lightning.sqlite'), { scope: { railId: lightning.railId, network: lightning.network }, now: () => new Date().toISOString(), freshness: { boundary: await boundaryFor(witness, ORG) } });
+    const stripe = await open(join(dir(), 'stripe.sqlite'), await boundaryFor(witness, ORG));
+    assert.equal((await stripe.health()).status, 'healthy', 'the second rail of one organization is not refused (the pre-hardening SIL-12 residual is closed)');
+    assert.equal((await ln.health()).status, 'healthy');
+    const slots = (await witnessRows(witness.databasePath)).map((row) => `${String(row['state_kind'])}|${String(row['organization_id'])}|${String(row['namespace'])}`);
+    assert.deepEqual(slots, [`payment-initiation-reservations|${ORG}|${lightning.railId}`, `payment-initiation-reservations|${ORG}|${SCOPE.railId}`]);
+    // The slot now holds history (an empty file at genesis would adopt the deterministic genesis — CORE-07's crash recovery).
+    assert.deepEqual(await stripe.reserve(reservation('exec-sil-12')), { outcome: 'reserved' });
+    await stripe.close();
     await ln.close();
-    await assert.rejects(open(join(dir(), 'stripe.sqlite'), await boundaryFor(witness, ORG)), (error: { code?: string }) => typeof error.code === 'string' && error.code.startsWith('AUTHORITY_FRESHNESS_'), 'never a second store under one slot');
+    // One slot per rail: another Stripe store under the SAME rail id is a substitution, never a second store.
+    await assert.rejects(open(join(dir(), 'stripe-second.sqlite'), await boundaryFor(witness, ORG)), (error: { code?: string }) => typeof error.code === 'string' && error.code.startsWith('AUTHORITY_FRESHNESS_'), 'never a second store under one slot');
     // Another organization's slot is its own.
     await (await open(join(dir(), 'stripe-other-org.sqlite'), await boundaryFor(witness, 'org-pay09-other'))).close();
   });

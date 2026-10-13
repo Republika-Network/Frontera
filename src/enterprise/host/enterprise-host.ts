@@ -371,7 +371,7 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
         });
       // CORE-07: a store whose freshness failed is named by kind and closed code — never a digest or path.
       for (const store of report.authorityFreshness?.stores ?? []) {
-        if (store.status !== 'ready' && store.status !== 'unavailable') failing.push(`authority-freshness:${store.stateKind} (${store.reason ?? store.status})`);
+        if (store.status !== 'ready' && store.status !== 'unavailable') failing.push(`authority-freshness:${store.stateKind}${store.namespace !== undefined ? `[${store.namespace}]` : ''} (${store.reason ?? store.status})`);
       }
       throw new EnterpriseHostConfigurationError(
         'HOST_NOT_HEALTHY',

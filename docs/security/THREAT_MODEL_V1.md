@@ -259,7 +259,7 @@ Scoped to the three durable authority stores (bounded-grant revocation state, ob
 | **Rollback of obligation state** | **BLOCKED** | as above. (Its effect was already bounded: a prefix can only remove satisfaction — it withholds, never permits) |
 | **Rollback of approval state** (an approved prefix before a revocation or rejection) | **BLOCKED** | as above — the case where a prefix *is* more permissive than its whole |
 | **Same-sequence fork** (a writer that bypassed the witness commits a different genuine successor) | **BLOCKED** | refused at startup and by every in-process witness (sequence + digest) |
-| **Store / kind / organization substitution** (a different genuine store swapped in; a receipt about another slot) | **BLOCKED** | witness slot `(stateKind, organizationId)` records the store id; receipts bind the binding asked about |
+| **Store / kind / organization substitution** (a different genuine store swapped in; a receipt about another slot) | **BLOCKED** | witness slot `(stateKind, organizationId)` (plus the namespace of a namespaced kind since v2, §7.36) records the store id; receipts bind the binding asked about |
 | **Pending-transition crash** (after prepare, before local commit) | **FAIL-CLOSED** | `pending-recovery`: indistinguishable from "committed, then rolled back"; never auto-abandoned; needs trusted operational recovery (PROD-02) |
 | **Crash after local commit, before finalize** | **BLOCKED (recovered)** | the local head exactly matches the witness's pending successor and is finalized at the next start |
 | **Concurrent writers** planning the same successor | **BLOCKED** | compare-and-advance at the witness: one prepare wins; the loser writes nothing it planned and re-plans (bounded) |
@@ -859,6 +859,24 @@ PAY-09 adds Frontera's first fiat rail: one governed USD payment becomes at most
 | S28 Full Stripe response persisted | **BLOCKED** | Only bounded facts and ids are stored or reported; no raw JSON anywhere (SEC-INV-303) |
 | S29 P12 mutates | **BLOCKED** | Read-only reader; structural and counted (SEC-INV-301) |
 | S30 PAY-07 suite weakened for Stripe | **BLOCKED** | The canonical suite is unchanged and branch-free; Stripe passes 16 / 16 with parity; the one world fix is asset-keyed (SEC-INV-308) |
+
+### 7.36 Multi-rail freshness composition (added by the PAY-09 multi-rail hardening)
+
+PAY-06's Lightning and PAY-09's Stripe interlocks both anchor under CORE-07's `payment-initiation-reservations`; with a `(stateKind, organizationId)` slot only one could exist per organization. CORE-07 v2 gives the kind a generic, closed namespace dimension (`docs/architecture/ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`). The same-snapshot assumption is unchanged: an interlock and the witness restored together to one earlier consistent moment are indistinguishable from the present.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| C1 Cross-rail CORE-07 slot collision | **BLOCKED** | Reproduced before the fix (both orders refused at genesis). `payment-initiation-reservations` is a namespaced kind; each interlock anchors under its configured rail id, so Lightning, Stripe and XRPL of one organization each hold their own slot (SEC-INV-309) |
+| C2 Namespace substitution | **BLOCKED** | A store presented in another namespace — relabelled checkpoint, misconfigured rail id, or the file itself — is a binding mismatch, a genesis conflict or a schema refusal; neither slot moves (SEC-INV-310) |
+| C3 Stale store in one rail corrupting another | **BLOCKED** | A stale restore or a same-sequence fork of one rail's interlock is refused at open; the other rail's witnessed binding is byte-identical and it keeps executing and restarting (SEC-INV-311) |
+| C4 Witness response for one scope replayed to another | **BLOCKED** | The namespace is in the binding of every request and in the signed, domain-separated receipt bytes (v2 domain); a receipt about A answering B is a binding mismatch, and one relabelled to B no longer verifies (SEC-INV-310) |
+| C5 Witness migration drops a legacy binding | **BLOCKED** | The reference witness migrates v1 → v2 in one immediate transaction: every row copied with its exact store id, sequences and digests and verified; the v1 table kept and frozen; nothing dropped; any failure leaves the database exactly v1 (SEC-INV-312) |
+| C6 Default namespace collides with a scoped namespace | **BLOCKED** | Namespaces are per kind and closed: a namespaced kind always names one, every other kind never does; the un-namespaced storage key `''` is not a namespace, is refused by the parser and by SQL `CHECK` (SEC-INV-309, SEC-INV-312) |
+| C7 Rail-controlled or untrusted namespace | **BLOCKED** | The namespace is the interlock's configured, validated rail id (`scope.railId`), never a request, provider or node value; a non-canonical value refuses the interlock before any file or slot exists (SEC-INV-309) |
+| C8 Same organization's second rail denied forever | **BLOCKED** | Both orders open and execute; a pre-hardening (un-namespaced) interlock is refused until the explicit operator rescope, never forever and never silently (SEC-INV-309, SEC-INV-312) |
+| C9 Pending transition in one scope poisons another | **BLOCKED** | Pending state, sticky failures, floors and queues are per slot; a prepared-but-uncommitted transition refuses only its own namespace; witness outage on one rail's path refuses only that rail (SEC-INV-311) |
+| C10 Merge resolution drops the TRADE structural classification | **BLOCKED** | The PAY-09 branch merges current `main` (TRADE-00 … TRADE-02) by merge, not rebase; the CORE manifest classifies both `trade-runtime` and `stripe-payment-rail` outside CORE, and an unclassified directory still fails drift (mutation M-C8 killed) |
+| C11 Out-of-band reconfirmation of a failed Stripe PaymentIntent | **ACCEPTED** — trust assumption | Frontera's one confirmation failed (`requires_payment_method` + error → `confirmed-not-completed`); Frontera never reconfirms, never rewrites that P11 observation, never settles or receipts it — but an actor holding the platform's Stripe write authority could confirm the object later. Provider-authority trust, like PAY-09 R9; no automatic cancellation (another mutation, with its own ambiguity). Regression: `pay09-stripe-governed.test.ts` › “OUT-OF-BAND RECONFIRMATION (C11, trust assumption)” |
 
 ## 8. Accepted risks (v1)
 

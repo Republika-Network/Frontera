@@ -471,9 +471,17 @@ P11 (PaymentIntent id, opaque) → P12 (retrieve the bound PaymentIntent) → PA
 - **What PAY-09 adds below the boundary:** one Stripe money model (a
   PaymentIntent destination charge, automatic capture, off-session card), test
   mode only, USD only; an SDK-free HTTPS adapter (EP-072; pinned
-  `2026-09-30.endive`); a durable interlock in the existing rail-neutral
-  CORE-07 slot; read-only P12 and finality authorities bound to the platform
-  account; optional webhook signals that can only hint P12.
+  `2026-09-30.endive`); a durable interlock under the rail-neutral CORE-07
+  kind `payment-initiation-reservations`, in its own namespaced slot (its rail
+  id); read-only P12 and finality authorities bound to the platform account;
+  optional webhook signals that can only hint P12.
+- **Multi-rail composition (PAY-09 hardening):** one organization composes
+  XRPL, Lightning and Stripe together. CORE-07 v2 namespaces the
+  payment-initiation kind generically (CORE names no rail); each rail's
+  interlock keeps its own freshness slot, rollback, fork, pending and outage
+  semantics, and none can take or disturb another's
+  (`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`; `pay07-multi-rail-coexistence.test.ts`,
+  `pay09-multi-rail-coexistence.test.ts`).
 - **What "settled" means here:** processor-confirmed, not irreversible —
   refunds and disputes remain post-settlement reversals (not modelled).
 - **Qualification:** the PAY-07 canonical suite passes unchanged against

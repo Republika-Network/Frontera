@@ -366,6 +366,44 @@ describe('PAY-09 governed — replay and uncertainty', () => {
     await resolutions.close();
     await sw.interlock.close();
   });
+
+  it('OUT-OF-BAND RECONFIRMATION (C11, trust assumption): after Frontera recorded confirmed-not-completed, an actor with Stripe write authority makes the SAME PaymentIntent succeed — Frontera never reconfirms it, never rewrites the P11 observation, never settles or receipts it', async () => {
+    const sw = await stripeWorld();
+    sw.stripe.confirmBehaviour = 'decline';
+    const intent = intentFor();
+    const result = await govern(sw, intent);
+    assert.equal(result.status, 'execution_failed', show(result));
+    const executionId = result.executionId!;
+    const initial = observed(await sw.outcomes.read({ organizationId: ORG }, executionId));
+    assert.equal(initial?.certainty, 'confirmed-not-completed');
+    const pi = sw.stripe.intents()[0]!.id;
+    assert.equal(sw.stripe.intent(pi)?.status, 'requires_payment_method', 'Stripe would accept a new confirmation of this object');
+    // Outside Frontera: someone with the platform's Stripe write authority attaches a method and confirms it again.
+    sw.stripe.settle(pi);
+    assert.equal(sw.stripe.intent(pi)?.status, 'succeeded');
+    // 1. The P11 observation is immutable: Frontera's one confirmation attempt failed, and that record never changes.
+    assert.deepEqual(observed(await sw.outcomes.read({ organizationId: ORG }, executionId)), initial);
+    // 2. P12 does not rewrite P11: a definitive initial observation is never "resolved" again — whatever Stripe now says.
+    const resolutions = await createSqliteExecutionResolutionStore(sw.paths.resolutions, { now: () => NOW });
+    const service = reconciliation(sw, resolutions, sw.stripe, CONFIGURATION);
+    await service.adoptResolutionAuthority({ organizationId: ORG, executionId, authorityId: STRIPE_RESOLUTION_AUTHORITY_ID }).catch(() => undefined);
+    const reconciled = await service.reconcile({ organizationId: ORG, executionId }).catch((error: unknown) => ({ outcome: `refused:${String((error as { code?: unknown }).code ?? error)}` }));
+    assert.notEqual((reconciled as { outcome: string }).outcome, 'resolved', JSON.stringify(reconciled));
+    assert.equal(observed(await sw.outcomes.read({ organizationId: ORG }, executionId))?.certainty, 'confirmed-not-completed');
+    // 3. Nothing settles or receipts on the strength of the out-of-band success.
+    const settlement = settlementService(sw, resolutions);
+    assert.deepEqual(await settlement.readSettlement({ organizationId: ORG, executionId }), { outcome: 'status', state: 'not-settleable' });
+    assert.equal(await settlement.receipt({ organizationId: ORG, executionId }), undefined);
+    // 4. The exact governed request again: no second PaymentIntent, and Frontera never confirms the failed one again.
+    sw.stripe.confirmBehaviour = 'succeed';
+    const replay = await govern(sw, intent);
+    assert.equal(replay.executionId, executionId);
+    assert.equal(replay.status, 'execution_failed', 'the replay answers the recorded P11 outcome, not what Stripe now says');
+    assert.equal(sw.stripe.calls.create, 1);
+    assert.equal(sw.stripe.calls.confirmReceived, 1, "Frontera's one confirmation; the success came from outside it");
+    await resolutions.close();
+    await sw.interlock.close();
+  });
 });
 
 describe('PAY-09 P12 matrix (P12-S1 … P12-S12) — read-only resolution of the bound PaymentIntent', () => {

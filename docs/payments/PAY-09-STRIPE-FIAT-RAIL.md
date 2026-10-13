@@ -5,7 +5,8 @@
 > execution, and confirmed once — under the unchanged PAY-01 rail port, P11,
 > P12 and PAY-05.**
 
-Status: IMPLEMENTED (test-mode, simulator-qualified). Former P14 Stripe half,
+Status: IMPLEMENTED (test-mode, simulator-qualified; multi-rail hardened — one
+organization composes Stripe beside Lightning and XRPL, §10.1). Former P14 Stripe half,
 deliberately pulled forward; defined from the current architecture, not from
 P14's scope. Decision record: `docs/architecture/ADR-STRIPE-FIAT-RAIL.md`.
 
@@ -14,6 +15,7 @@ P14's scope. Decision record: `docs/architecture/ADR-STRIPE-FIAT-RAIL.md`.
 | `src/features/payment-runtime/rails/stripe/` | The rail (pure): configuration, exact money, identifiers, destination, the external Stripe port, the shared status classification, the idempotency key, the interlock port, `createStripeRail` |
 | `src/enterprise/stripe-payment-rail/` | Composition edge: the HTTPS adapter (the one outbound site, NO_BYPASS EP-072), the durable CORE-07-anchored interlock, the P12 resolution authority, the PAY-05 finality authority, the webhook signal boundary |
 | `src/enterprise/__tests__/pay09-*.test.ts`, `pay07-stripe-edge.ts` | Governed exit proofs, interlock, HTTPS wire, webhooks, structure; the PAY-07 canonical suite run against Stripe |
+| `src/enterprise/authority-state-freshness/` (CORE-07 v2), `pay07-multi-rail-coexistence.test.ts`, `pay09-multi-rail-coexistence.test.ts`, `authority-state-freshness-namespaces.test.ts` | Multi-rail hardening: namespaced CORE-07 slots, same-organization coexistence of every qualified rail (`docs/architecture/ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`) |
 
 ## 1. What is qualified — exactly
 
@@ -51,9 +53,15 @@ subscriptions, bank debits or any asynchronous payment method; disputes.
 | CORE-07 | the existing rail-neutral slot `payment-initiation-reservations` | none |
 | PAY-07 conformance suite | run unchanged against Stripe — 16 / 16, parity with XRPL and Lightning | none (one asset-keyed fix in the shared *world*: §19) |
 
-No generic field, vocabulary word, slot or contract was added. No CORE byte
-changed: the PAY-07 CORE source manifest digest is identical across the three
-rails' runs (`pay07-multi-rail-qualification.test.ts`).
+No generic field, vocabulary word, state kind or payment contract was added.
+As first built, no CORE byte changed. The **multi-rail hardening changes CORE
+on purpose, in CORE-07 only** (six files under
+`src/enterprise/authority-state-freshness/`: the generic namespace dimension,
+protocol v2, the reference witness's v2 storage and migration): the PAY-07
+CORE source manifest moves from `sha256:aecf58de…aaa1c60b` (`main @ 919c175`)
+to `sha256:c5246efd…b67ef87b`, still 564 files, and is identical across the
+three rails' runs (`pay07-multi-rail-qualification.test.ts`). No payment,
+P11, P12, PAY-05 or ASSURE-01 CORE file changed.
 
 ## 3. Why destination charges
 
@@ -302,20 +310,39 @@ confirmation was sent.
 
 ### 10.1 CORE-07
 
-The reservation history is anchored in the existing rail-neutral slot
+The reservation history is anchored under the existing rail-neutral kind
 **`payment-initiation-reservations`** (PAY-06): "the append-only history that
 binds each governed execution to the one rail-level payment it may initiate".
 Every write is a witnessed transition; every read holds the head against the
 witness; an unreachable witness refuses before anything is created (`SIL-9`).
-No slot was added and no CORE byte changed.
+PAY-09 adds no state kind.
 
-**Residual (R1):** the witness keeps one store per `(slot, organization)`. One
-organization therefore composes **one** payment-initiation interlock: a
-Stripe interlock opened where a Lightning interlock already holds the slot is
-refused at genesis, and vice versa (`SIL-12`) — fail closed, never shared.
-Running both rails for one organization needs either a per-rail slot (a CORE-07
-change) or one multi-rail interlock store; PAY-09 does neither (it would
-change CORE or PAY-06's persisted shape).
+**Multi-rail hardening (R1 closed).** As first built, the witness kept one
+store per `(kind, organization)`, so a Stripe interlock opened where a
+Lightning interlock already held the kind was refused at genesis, and vice
+versa — reproduced on the merged tree, both orders, as
+`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED` from `genesisStoreId`. Fail closed, but
+not a multi-rail architecture. CORE-07 now has a **generic, closed namespace
+dimension** (protocol v2): `payment-initiation-reservations` is a *namespaced*
+kind, and each interlock anchors in `(payment-initiation-reservations,
+organization, <its configured rail id>)` — `stripe-usd` here, `lightning-btc`
+for PAY-06. CORE gives the namespace no meaning and names no rail; the
+namespace is the trusted, validated configuration rail id, never anything from
+a request or from Stripe, and a non-canonical rail id refuses the interlock at
+open. Every other kind's slot is byte-for-byte unchanged.
+`docs/architecture/ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`.
+
+Proved for one organization, one witness, one state directory: both open in
+either order and both execute (`COEX-1 … COEX-4`, XRPL composed alongside);
+advancing one leaves the other's witnessed checkpoint byte-identical
+(`COEX-5`, `COEX-6`); a stale restore or a same-sequence fork of one is
+refused while the other keeps executing (`COEX-7 … COEX-10`); either store
+presented in the other's namespace — relabelled checkpoint, misconfigured rail
+id, or the file itself — is refused (`COEX-11`, `COEX-12`); witness outage at
+open refuses both, and on one rail's path refuses only that rail before any
+effect (`COEX-13`, `COEX-14`); a prepared-but-uncommitted transition refuses
+only its own rail; both restart in either order (`COEX-15`, `COEX-16`). A
+second Stripe store under the **same** rail id is still refused (`SIL-12`).
 
 ### 10.2 Backup / restore
 
@@ -368,6 +395,24 @@ PaymentIntent's own `livemode` is checked.
 | `requires_confirmation` / `requires_payment_method` without an error | `unconfirmed` | `unconfirmed` |
 | `requires_capture` | `unconfirmed` (automatic capture only; never captured) | `unconfirmed` |
 | a timeout, reset, 5xx, unreadable or inconsistent answer | `unconfirmed` | `unconfirmed` |
+
+**Frontera never reconfirms a failed PaymentIntent (trust assumption, C11).**
+`requires_payment_method` with a `last_payment_error` is Frontera's *one*
+confirmation attempt failing, recorded as `confirmed-not-completed`. Stripe
+itself would accept a new confirmation of that same object (with a new
+payment method); Frontera never sends one — the execution is reserved and
+bound, the rail answers every replay from the record, and nothing in PAY-09
+confirms twice. An actor **outside** Frontera holding the platform's Stripe
+write authority could still confirm it later. If that happens, Frontera's P11
+observation stays `confirmed-not-completed` (P11 is immutable; P12 resolves
+only `unconfirmed` initial observations and never rewrites a definitive one),
+nothing settles or receipts on the strength of it, and the money that moved is
+outside the governed record — reconciled operationally, like any out-of-band
+use of the key (R9, R13). Frontera does **not** cancel failed PaymentIntents
+automatically: a cancellation is another Stripe mutation with its own
+ambiguity windows, and it would not stop a key holder from creating a new
+object anyway. Regression: `OUT-OF-BAND RECONFIRMATION (C11)` in
+`pay09-stripe-governed.test.ts`.
 
 **SCA.** Off-session with `error_on_requires_action=true`: a payment that
 needs the customer fails deterministically (`authentication_required` →
@@ -477,8 +522,11 @@ Passport billing.
 | `stripe-rail.test.ts` | CFG-1 … CFG-10, DEST-1 … DEST-6, the P11 table, SCA, ambiguity, not-sent, creation and interlock failures, replay, Stripe-key pruning, concurrency, idempotency keys, log hygiene, readiness |
 | `stripe-rail-boundaries.test.ts` | dependency boundary, the one confirmation and its order, no retry vocabulary, no network / SDK, no card data, no client secret, no credential, no float |
 | `pay09-stripe-https-client.test.ts` | the wire: key boundary, fixed origin, exact create / confirm forms, closed copy (no `client_secret`), 402 PaymentIntent, closed errors, redirect, size, not-sent vs unknown, a full rail run over loopback |
-| `pay09-stripe-interlock.test.ts` | SIL-1 … SIL-12: uniqueness, tamper, triggers, file hygiene, four-Host race, restart, crash windows, stale restore, witness outage, scope, the slot residual |
-| `pay09-stripe-governed.test.ts` | success → PAY-05 → receipt; denial; over-ceiling; revoked before effect; replay; crash after request → restart → P12; processing; requires_action; definitive failure; P12-S1 … S12; FIN-S1 … S8; account substitution |
+| `pay09-stripe-interlock.test.ts` | SIL-1 … SIL-12: uniqueness, tamper, triggers, file hygiene, four-Host race, restart, crash windows, stale restore, witness outage, scope; SIL-12 — Stripe beside Lightning of the same organization, each in its own namespaced slot, and a second store under the same rail id refused |
+| `pay09-stripe-governed.test.ts` | success → PAY-05 → receipt; denial; over-ceiling; revoked before effect; replay; crash after request → restart → P12; processing; requires_action; definitive failure; out-of-band reconfirmation (C11); P12-S1 … S12; FIN-S1 … S8; account substitution |
+| `pay09-multi-rail-coexistence.test.ts` | COEX-5, COEX-6, COEX-9 … COEX-14, pending isolation, namespace provenance — Lightning and Stripe interlocks of one organization at one witness |
+| `pay07-multi-rail-coexistence.test.ts` | the PAY-07 coexistence extension: COEX-1 … COEX-4, COEX-7, COEX-8, COEX-15, COEX-16 over the XRPL, Lightning and Stripe edges in one organization (the canonical suite is unchanged) |
+| `authority-state-freshness-namespaces.test.ts` | CORE-07 v2: NS-1 … NS-3, LEGACY-1 … LEGACY-4, SCOPE-1 … SCOPE-6, MIG-1 … MIG-4, RESCOPE-1 … RESCOPE-3 |
 | `pay09-stripe-webhook.test.ts` | WH-1 … WH-10 |
 | `pay09-stripe-structure.test.ts` | CORE and generic-port purity, no Stripe in CORE, EP-072 inventory, PCI and secret structural proofs |
 | `pay07-multi-rail-qualification.test.ts` | the canonical suite run against XRPL, Lightning **and Stripe**: 16 / 16 each, identical verdicts, effect counts and generic lifecycles, identical CORE manifest digest, deterministic reports |
@@ -538,11 +586,36 @@ with both guards removed (rows M-S11 and M-S13) and caught. M-S1's first form
 was caught only by the type checker; its re-run with a type-preserving cast
 was caught by three suites.
 
+### 21.1 Multi-rail hardening mutations (M-C1 … M-C9)
+
+Applied to the built tree (M-C9 to the TypeScript its structural test reads),
+the targeted suites run with `--test-force-exit`, and each file restored and
+checked byte for byte by SHA-256. All killed.
+
+| # | Mutation | Failing tests (count) / examples |
+| --- | --- | --- |
+| M-C1 | remove the namespace from the witness key | 27 — e.g. COEX-1, COEX-10, COEX-11, COEX-12, COEX-13, COEX-14 |
+| M-C2a | witness ignores the namespace when reading a binding | 26 — e.g. COEX-1, COEX-10, COEX-11, COEX-12, COEX-13, COEX-14 |
+| M-C2b | client ignores the namespace when matching a receipt's binding | 1 — SCOPE-2 (C4) |
+| M-C3 | Stripe anchors under Lightning's namespace | 20 — e.g. COEX-1, COEX-10, COEX-11, COEX-12, COEX-13, COEX-14 |
+| M-C4 | a stale Stripe interlock accepted after rollback | 2 — COEX-7, SIL-8 |
+| M-C5 | a stale Lightning interlock accepted after rollback | 2 — COEX-8, IL-9 |
+| M-C6 | the namespace omitted from the canonical (signed) receipt binding | 2 — SCOPE-2, SCOPE-3 |
+| M-C7 | a namespaced read falls back to the legacy un-namespaced slot | 2 — MIG-1 / LEGACY-3, RESCOPE-1 |
+| M-C8 | merge resolution drops the `trade-runtime` classification | 3 — PAY-07 drift, TRADE "classified outside", TRADE "classification is exact" |
+| M-C9 | the namespace taken from payment input instead of `scope.railId` | 1 — namespace provenance (structural) |
+
+A first M-C1 run did not terminate: under the mutation, the coexistence
+harness's second edge refused to open (the mutation was detected), but the
+already-opened XRPL edge's signer process was left running and held the test
+process open. The harness now closes the edges it opened before rethrowing,
+and the run was repeated: killed.
+
 ## 22. Residuals
 
 | # | Residual |
 | --- | --- |
-| R1 | One payment-initiation interlock per organization (CORE-07 slot): Stripe and Lightning cannot both be composed for one organization (fail closed) — §10.1 |
+| R1 | **Closed** by the multi-rail hardening: payment-initiation slots are namespaced by rail id; Stripe and Lightning coexist in one organization — §10.1 |
 | R2 | No real Stripe test-mode run (no credentials) — simulator and loopback wire qualification only — §20 |
 | R3 | Live mode not qualified; no live flag exists |
 | R4 | `settled` = processor-confirmed; refunds, disputes and reversals remain possible after settlement and are not modelled — §15 |
@@ -554,6 +627,9 @@ was caught by three suites.
 | R10 | Embedder-composed only: the shipped Host neither composes the Stripe rail nor backs up its interlock |
 | R11 | Card only; asynchronous payment methods (bank debits) and their `processing → failed` reversals are not qualified |
 | R12 | `PaymentExecutionRequest.notAfter` is not consumed (as on XRPL and Lightning — PAY-07 R3) |
+| R13 | Out-of-band reconfirmation (C11, ACCEPTED / TRUST): a failed PaymentIntent can be confirmed again by an actor holding the platform's Stripe write authority; Frontera never does, and never rewrites its P11 `confirmed-not-completed` — §12 |
+| R14 | Same-snapshot restore (CORE-07's stated assumption): an interlock and the witness restored together to one earlier consistent moment cannot be told apart from the present — the witness database must never share the interlock's restore domain |
+| R15 | A Lightning interlock anchored before the hardening (a v1-witness, un-namespaced slot) is refused until the operator rescopes its slot (`rescopeLegacyAuthorityStateBinding`) — never adopted silently |
 
 ## 23. Re-run
 
@@ -562,4 +638,5 @@ npm run build
 node --test dist/src/features/payment-runtime/rails/stripe/tests/*.test.js
 node --test dist/src/enterprise/__tests__/pay09-*.test.js
 node --test dist/src/enterprise/__tests__/pay07-multi-rail-*.test.js
+node --test dist/src/enterprise/__tests__/authority-state-freshness-*.test.js
 ```

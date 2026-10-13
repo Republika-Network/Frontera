@@ -1,6 +1,6 @@
 import { createPublicKey, randomBytes, verify, type KeyObject } from 'node:crypto';
 
-import { authorityStateCheckpointProblem, isBoundedIdentifier, sameBinding, sameHead, type AuthorityStateBinding, type AuthorityStateCheckpoint } from './checkpoint.js';
+import { authorityStateBindingProblem, authorityStateCheckpointProblem, bindingOf, isBoundedIdentifier, sameBinding, sameHead, type AuthorityStateBinding, type AuthorityStateCheckpoint } from './checkpoint.js';
 import { AuthorityStateFreshnessError, isRetryableAuthorityStateFreshnessFailure, type AuthorityStateFreshnessErrorCode } from './errors.js';
 import {
   AUTHORITY_STATE_WITNESS_OPERATIONS,
@@ -225,7 +225,7 @@ export async function establishAuthorityStateWitness(options: AuthorityStateWitn
     if (receipt.challenge !== request.challenge) fail('AUTHORITY_FRESHNESS_WITNESS_UNAUTHENTIC', 'The authority-state witness receipt answers a different challenge (a replayed or misrouted answer).');
     if (request.operation !== 'identity') {
       const asked = request.operation === 'read' ? request.binding : request.operation === 'prepare' ? request.proposed : request.checkpoint;
-      if (receipt.binding === undefined || !sameBinding(receipt.binding, asked)) fail('AUTHORITY_FRESHNESS_BINDING_MISMATCH', 'The authority-state witness receipt is about another organization or state kind.');
+      if (receipt.binding === undefined || !sameBinding(receipt.binding, asked)) fail('AUTHORITY_FRESHNESS_BINDING_MISMATCH', 'The authority-state witness receipt is about another organization, state kind or namespace.');
       const problem = appliedStateProblem(request, receipt);
       if (problem !== undefined) fail('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE', `The authority-state witness receipt ${problem}.`);
     }
@@ -301,7 +301,9 @@ export async function establishAuthorityStateWitness(options: AuthorityStateWitn
   const anchor: AuthorityStateFreshnessAnchor = Object.freeze({
     witnessId: pinned.witnessId,
     async read(binding: AuthorityStateBinding) {
-      return (await call({ operation: 'read', challenge: challenge(), binding: { stateKind: binding.stateKind, organizationId: binding.organizationId } })).state as WitnessBindingState;
+      const problem = authorityStateBindingProblem(binding);
+      if (problem !== undefined) throw configuration(`The read binding ${problem}.`);
+      return (await call({ operation: 'read', challenge: challenge(), binding: bindingOf(binding) })).state as WitnessBindingState;
     },
     async enroll(enrollment: AuthorityStateEnrollment, checkpoint: AuthorityStateCheckpoint) {
       checkpointOrFail(checkpoint, 'enrolled');
