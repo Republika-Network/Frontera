@@ -362,7 +362,7 @@ PaymentIntent  (§2, unchanged)
   `(organization, principal, businessOperationId)`, so a refreshed challenge
   replays the same governed request and never pays twice, while changed terms
   conflict.
-- **Not here:** credential emission toward the merchant, x402 (PAY-08),
+- **Not here:** credential emission toward the merchant, x402 (PAY-08 — delivered at this port, §14),
   settlement (PAY-05, §12 — a protocol payment settles exactly like a direct one), any retry.
 
 ## 12. PAY-05 — settlement, receipts, refunds and payment obligations
@@ -421,3 +421,30 @@ P11 → P12 (Lightning resolution authority, read-only) → PAY-05 (preimage fin
   msat money, the LND node adapter (credentials confined to it), the routing-fee
   cap, the one-send interlock, the conservative uncertainty mapping, and the
   read-only P12 and finality authorities. Embedder-composed only.
+
+## 14. PAY-08 — x402, the second protocol at the PAY-04 boundary
+
+x402 v2 (pinned to `x402-foundation/x402` `f8f8330`) enters through PAY-04's
+port and ingress **unchanged**, with Frontera as the paying side. Full detail:
+`docs/payments/PAY-08-X402-PROTOCOL-ADAPTER.md`; decision record:
+`docs/architecture/ADR-X402-PROTOCOL-ADAPTER.md`.
+
+```
+merchant 402 + PAYMENT-REQUIRED  (untrusted)
+   ↓ x402 adapter (protocols/x402: strict v2, trusted mappings, exact amounts, trusted bindings, deterministic selection)
+PaymentProtocolTerms { destination: lightning-invoice:<payee>:<hash>, amount: <BTC>, rail: 'lightning-btc' }
+   ⋮ PAY-04 ingress → PaymentIntent → compile → governed path → grant → claim     (unchanged)
+Lightning rail (PAY-06) — the ONE send → P11 → P12 → PAY-05 settled → receipt
+   ↓ only then: PAYMENT-SIGNATURE { accepted: the governed requirement, payload: { preimage } }   (x402 edge)
+```
+
+- **What PAY-01 provides unchanged:** the `PaymentIntent`, its validator and
+  compiler; the destination is PAY-06's governed Lightning destination; the
+  rail preference is trusted configuration.
+- **What PAY-08 adds:** a protocol adapter and its edge — no rail, no field,
+  no store, no effect path. Executable only as `exact` on Bitcoin Lightning
+  (`lnbtc`, `upfront`), because that method is a client-submitted payment the
+  existing rail already performs; x402 on XRPL (facilitator-submitted signed
+  transactions), EVM and Solana parse but are not executable.
+- **What stays the rail's:** P11 certainty, P12 resolution, PAY-05 finality —
+  a merchant's `PAYMENT-RESPONSE` or HTTP 200 is evidence, never settlement.

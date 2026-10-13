@@ -129,6 +129,12 @@ amount, or any undeclared key (`authorized`, `ceiling`, `grant`, `source`,
 The port is protocol-neutral by construction: an x402 adapter (PAY-08) would
 implement the same `interpret` over its own carrier and produce the same
 `PaymentProtocolTerms` — no change to PAY-01, the ingress or CORE.
+*Delivered by PAY-08* (`PAY-08-X402-PROTOCOL-ADAPTER.md`): the x402 v2 adapter
+implements exactly this port, composed into this ingress unchanged; for the
+same payment, MPP and x402 compile to the same governed intent and governed
+request (`pay08-x402-structure.test.ts`). The x402 challenge identity is the
+payment instrument (`x402:2:<network>:<payment hash>`), so §8.4's
+one-challenge-one-operation rule and its CORE-07 anchor apply as written.
 
 ## 5. The MPP adapter
 
@@ -624,7 +630,7 @@ operation and its latest challenge by the trusted governed request id only.
 
 ## 14. Not in PAY-04 — and residual risks
 
-Not implemented: x402 (PAY-08), Lightning (PAY-06), settlement / receipts
+Not implemented: x402 (PAY-08 — since delivered, at this port), Lightning (PAY-06), settlement / receipts
 (PAY-05), Stripe (PAY-09), multi-rail qualification (PAY-07), MPP credential
 construction or emission (proof of payment toward the merchant), merchant
 authentication, any retry or resubmission, an HTTP route, Host composition of
