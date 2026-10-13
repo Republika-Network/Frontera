@@ -46,6 +46,7 @@ PaymentRail      (host-composed)    ── behind createPaymentRailExecutionAdap
 rail-specific implementation        ── PAY-02: XRPL / RLUSD (rails/xrpl, §9)
    ⋮ production Host composition       ── PAY-03: xrplPaymentRail (§10)
                                     ── PAY-06: Lightning / BTC (rails/lightning, §13)
+                                    ── PAY-09: Stripe / USD fiat (rails/stripe, §15)
 ```
 
 ## 2. The payment intent
@@ -448,3 +449,34 @@ Lightning rail (PAY-06) — the ONE send → P11 → P12 → PAY-05 settled → 
   transactions), EVM and Solana parse but are not executable.
 - **What stays the rail's:** P11 certainty, P12 resolution, PAY-05 finality —
   a merchant's `PAYMENT-RESPONSE` or HTTP 200 is evidence, never settlement.
+
+## 15. PAY-09 — the Stripe / USD fiat rail
+
+Frontera's first fiat rail, under PAY-01's rail port **unchanged**. Full
+detail: `docs/payments/PAY-09-STRIPE-FIAT-RAIL.md`; decision record:
+`docs/architecture/ADR-STRIPE-FIAT-RAIL.md`.
+
+```
+PaymentIntent { source: governed account, destination: stripe-connected-account:acct_…, amount: <USD> }
+   ⋮ governed path decides, grants, reserves P7, claims                                    (unchanged)
+Stripe rail (rails/stripe) — exact cents · trusted funding source · allowlisted connected account
+   ↓ RESERVE (CORE-07) → create PaymentIntent (confirm=false: cannot charge) → BIND (CORE-07) → confirm ONCE
+P11 (PaymentIntent id, opaque) → P12 (retrieve the bound PaymentIntent) → PAY-05 settled (processor-confirmed) → receipt
+```
+
+- **What PAY-01 provides unchanged:** the `PaymentIntent`, its validator and
+  compiler, the bridge, the three-way result. The destination is a
+  host-vocabulary kind whose reference is the connected account id itself;
+  Customer and PaymentMethod ids are rail configuration, never authority.
+- **What PAY-09 adds below the boundary:** one Stripe money model (a
+  PaymentIntent destination charge, automatic capture, off-session card), test
+  mode only, USD only; an SDK-free HTTPS adapter (EP-072; pinned
+  `2026-09-30.endive`); a durable interlock in the existing rail-neutral
+  CORE-07 slot; read-only P12 and finality authorities bound to the platform
+  account; optional webhook signals that can only hint P12.
+- **What "settled" means here:** processor-confirmed, not irreversible —
+  refunds and disputes remain post-settlement reversals (not modelled).
+- **Qualification:** the PAY-07 canonical suite passes unchanged against
+  Stripe beside XRPL and Lightning (16 / 16, parity, one CORE digest). No real
+  Stripe test-mode run was possible (no credentials); simulator and loopback
+  wire qualification only.

@@ -191,12 +191,12 @@ describe('PAY-07 structure — the CORE source manifest (criterion 2; CORE-1 …
   });
 
   it('CORE-5: rail sources are outside CORE — changing one cannot change the CORE digest', () => {
-    const rails = [...walk('src/features/payment-runtime/rails', true), ...walk('src/enterprise/xrpl-payment-rail', true), ...walk('src/enterprise/lightning-payment-rail', true)];
+    const rails = [...walk('src/features/payment-runtime/rails', true), ...walk('src/enterprise/xrpl-payment-rail', true), ...walk('src/enterprise/lightning-payment-rail', true), ...walk('src/enterprise/stripe-payment-rail', true)];
     assert.ok(rails.length > 20);
     for (const file of rails) assert.equal(paths.includes(file), false, file);
     const touched = buildCoreSourceManifest('.', { read: (path) => (/rails\/|payment-rail\//.test(path) ? Buffer.from('mutated') : readFileSync(path)) });
     assert.equal(touched.digest, manifest.digest);
-    for (const path of paths) assert.equal(/\/rails\/|xrpl|lightning|\/tests\/|__tests__|\.test\.ts$|\/fixtures\//.test(path), false, path);
+    for (const path of paths) assert.equal(/\/rails\/|xrpl|lightning|stripe|\/tests\/|__tests__|\.test\.ts$|\/fixtures\//.test(path), false, path);
   });
 
   it('M7 / Q5: every file the shared governed payment path executes is in the manifest — the runtime import closure is covered, and dropping the orchestrator’s root is detected', () => {

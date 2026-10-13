@@ -216,8 +216,11 @@ describe('CORE-02 / TD-5 — the authority key is never a passport key', () => {
   });
 
   it('the Enterprise Host composes no Agent Passport signer — the HMAC test signer lives only in the standalone passport app', () => {
+    // PAY-09: the Stripe webhook signal boundary computes one HMAC-SHA256 to VERIFY an inbound `Stripe-Signature` —
+    // a verifier, not a signer: it signs nothing and holds no passport or authority key. It is the one sanctioned use.
+    const WEBHOOK_VERIFIER = 'src/enterprise/stripe-payment-rail/stripe-webhook-signals.ts';
     for (const file of sourceFiles('src/enterprise')) {
-      const code = codeOf(file);
+      const code = file.split('\\').join('/') === WEBHOOK_VERIFIER ? codeOf(file).replace(/createHmac\('sha256', key\)|import \{ createHmac, timingSafeEqual \} from 'node:crypto';/g, '') : codeOf(file);
       assert.equal(/createTestSigner|AgentPassportSignerPort|createHmac/.test(code), false, `${file} must not compose a passport (or any HMAC) signer`);
     }
     // The one place it is used is the separate Next.js app, which this Host does not compose.

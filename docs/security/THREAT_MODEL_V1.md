@@ -823,6 +823,43 @@ PAY-08 adds x402 v2 as a second protocol at PAY-04's boundary, executable only a
 | X39 Normal-history exhaustion of invoice identity memory causes permanent payment refusal | **BLOCKED** | No historical invoice identity is kept: the decoding cache is bounded and evicts, and the execution binding lives only while a presentation is in flight; 120 sequential settled operations through an 8-entry cache, then a fresh one, all pay (SEC-INV-295) |
 | X40 Premature release of an execution's invoice binding enables substitution | **BLOCKED** | The in-flight entry is released only when the ingress call (inside which the rail runs) returns; a released or absent entry makes the source answer `undefined` — a refused execution, never another text; unconfirmed and failed executions replay from the record without a lookup or a send (SEC-INV-295) |
 
+### 7.35 Stripe / USD fiat rail (added by PAY-09)
+
+PAY-09 adds Frontera's first fiat rail: one governed USD payment becomes at most one Stripe PaymentIntent destination charge — created unable to charge, durably bound, confirmed once — through an SDK-free HTTPS adapter composed by the embedder, test mode only. Stripe is trusted to process and to report, never to decide; the CORE layers do not know Stripe exists. Specification: `docs/payments/PAY-09-STRIPE-FIAT-RAIL.md`; decision record: `docs/architecture/ADR-STRIPE-FIAT-RAIL.md`.
+
+| Threat | Disposition | Notes |
+|---|---|---|
+| S1 Secret key leakage | **BLOCKED** (within Frontera) | The key lives in the adapter's closure and the `Authorization` header only; never in configuration, request, P11, P12, settlement, receipt, trace, interlock, logs, errors or health; Stripe's error messages (which can echo a key) are never propagated — canary-tested (SEC-INV-303). Key custody outside Frontera is the deployment's |
+| S2 `client_secret` leakage | **BLOCKED** | Never read: the adapter's closed copy omits it, an answer carrying it is unreadable, the id grammar refuses `_secret_`; `confirmation_method=manual` means a client secret could not confirm anyway (SEC-INV-303) |
+| S3 Raw card data accepted | **BLOCKED** | Funding sources are exactly `{accountId, customerId, paymentMethodId}` by shape; no card vocabulary in production code; the interlock file is scanned for card numbers (SEC-INV-303) |
+| S4 Amount minor-unit rounding | **BLOCKED** | Text and `BigInt` only; sub-cent refused, never rounded; no float anywhere (SEC-INV-306) |
+| S5 Unsupported currency scale | **BLOCKED** | USD only, scale 2 from trusted configuration; never inferred from Stripe (SEC-INV-306) |
+| S6 Destination substitution | **BLOCKED** | The governed destination is the connected account id itself, allowlisted; the creation answer and every later read must name it (SEC-INV-302) |
+| S7 Stripe account substitution | **BLOCKED** | The credential's account is verified before every reservation and recorded; the interlock file is anchored to it; P12 / finality trust only a reader proving it — another account seeing the same object id proves nothing (SEC-INV-302) |
+| S8 Duplicate PaymentIntent | **BLOCKED** | One reservation per execution before any creation; the create key is deterministic; a recorded execution is never created again (SEC-INV-298) |
+| S9 Duplicate confirmation | **BLOCKED** | One binding per execution before the one confirmation; one call site; a recorded execution is never confirmed again; four racing Hosts confirm once (SEC-INV-298) |
+| S10 Process crash before the request | **BLOCKED** (no effect) / **RESIDUAL** (resolution) | Reservation (and binding) are durable before the confirmation; a restart never creates or confirms for the execution; P12 stays unresolved until an operator resolution (SEC-INV-297) |
+| S11 Crash after the request | **BLOCKED** | The binding precedes the confirmation, so P12 retrieves the exact PaymentIntent; no second confirmation (SEC-INV-298, SEC-INV-300) |
+| S12 Timeout interpreted as failure | **BLOCKED** | Timeouts, resets and 5xx are `unconfirmed`; only a connection that never opened is "not sent" (SEC-INV-300) |
+| S13 `processing` interpreted as success | **BLOCKED** | `processing` is unconfirmed / unresolved / not final (SEC-INV-300) |
+| S14 `requires_action` retried | **BLOCKED** | Off-session with `error_on_requires_action`; a `requires_action` is unconfirmed and never confirmed again; no interactive flow (SEC-INV-300) |
+| S15 Stale local interlock | **BLOCKED** | Anchored at CORE-07: a stale restore or a lost file is refused at open (SEC-INV-297). Restoring interlock and witness as one snapshot remains CORE-07's deployment prohibition |
+| S16 Stripe idempotency retention relied on | **BLOCKED** | The interlock is the guarantee; keys are defence in depth; replay after key pruning adds no effect (SEC-INV-299) |
+| S17 Wrong PaymentIntent resolves the execution | **BLOCKED** | P12 / finality retrieve the bound id only; the P11 handle must equal it; metadata of another execution is absence of evidence (SEC-INV-302) |
+| S18 Webhook forgery | **BLOCKED** | `v1` HMAC-SHA256 over the raw bytes, constant time, before parsing (SEC-INV-307) |
+| S19 Webhook duplicate | **BLOCKED** | Event ids deduplicated; a duplicate yields nothing new; the hint is idempotent anyway (SEC-INV-307) |
+| S20 Webhook ordering | **BLOCKED** | Signals carry no status; P12 always retrieves the current PaymentIntent (SEC-INV-307) |
+| S21 Webhook causes a money effect | **BLOCKED** | The module holds no Stripe client and writes nothing (SEC-INV-301, SEC-INV-307) |
+| S22 PaymentIntent metadata trusted as authority | **BLOCKED** | Metadata is bounded correlation, compared only; authority is the grant; identity is the bound id (SEC-INV-302) |
+| S23 Stripe success overclaimed as irreversible finality | **BLOCKED** (as a claim) | `settled` = processor-confirmed, stated in the evidence (SEC-INV-304) |
+| S24 Refund / dispute ignored as impossible | **ACCEPTED** — documented residual | Post-settlement reversals are possible and not modelled; the platform bears disputes for destination charges (SEC-INV-304) |
+| S25 Accidental live-mode execution | **BLOCKED** | Refused at configuration, key, account and object (SEC-INV-305) |
+| S26 Connect destination mismatch | **BLOCKED** | Creation must restate `transfer_data.destination`; any other destination, `transfer_data.amount`, `on_behalf_of` or application fee is never completed and contradicts finality (SEC-INV-302) |
+| S27 Malformed external response | **BLOCKED** | Closed copy of 18 fields; ids prefix-checked; unknown statuses, floats and huge numbers unreadable → unconfirmed / unresolved (SEC-INV-300) |
+| S28 Full Stripe response persisted | **BLOCKED** | Only bounded facts and ids are stored or reported; no raw JSON anywhere (SEC-INV-303) |
+| S29 P12 mutates | **BLOCKED** | Read-only reader; structural and counted (SEC-INV-301) |
+| S30 PAY-07 suite weakened for Stripe | **BLOCKED** | The canonical suite is unchanged and branch-free; Stripe passes 16 / 16 with parity; the one world fix is asset-keyed (SEC-INV-308) |
+
 ## 8. Accepted risks (v1)
 
 1. **Auth off by default** — local-dev ergonomics; production posture documented and loudly flagged.
