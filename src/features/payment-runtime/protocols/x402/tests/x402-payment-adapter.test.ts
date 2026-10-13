@@ -91,7 +91,8 @@ describe('PAY-08 hardening — a binding’s default flow is one of its own flow
       assets: ASSETS,
     });
     const answer = readPaymentProtocolInterpretation(adapter.interpret(carrierOf(paymentRequired([requirement()])), CONTEXT), { assets: ASSETS });
-    assert.ok(answer?.interpreted, answer?.interpreted ? '' : answer?.refusal);
+    assert.ok(answer !== undefined);
+    assert.ok(answer.interpreted, refusalOf(answer));
     assert.equal(answer.challenge.fields['payment-flow'], 'upfront');
   });
 });
