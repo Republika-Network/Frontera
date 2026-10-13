@@ -101,6 +101,17 @@ export function isTradeAccountAddress(value: unknown): value is string {
   return checkTradeAccountAddress(value) === 'valid';
 }
 
+/**
+ * The 20-byte account id a valid classic address encodes, as a fresh copy, or
+ * `undefined` for anything `checkTradeAccountAddress` does not call `valid`
+ * (reserved accounts included). Ledger keys are computed over these bytes.
+ */
+export function tradeAccountIdOf(value: unknown): Uint8Array | undefined {
+  if (checkTradeAccountAddress(value) !== 'valid') return undefined;
+  const bytes = decodeBase58(value as string);
+  return bytes === undefined ? undefined : Uint8Array.from(bytes.subarray(1, 21));
+}
+
 // ── Currency codes ───────────────────────────────────────────────────────────
 
 /** A three-character currency code. Deliberately narrower than the ledger: ASCII letters and digits only, so every accepted code is also a governed token. Case-sensitive, as on the ledger. */

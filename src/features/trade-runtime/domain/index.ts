@@ -6,6 +6,7 @@ export {
   isTradeNetwork,
   isTradeReference,
   parseTradeCurrencyCode,
+  tradeAccountIdOf,
 } from './trade-grammar.js';
 export type { TradeAccountCheck, TradeCurrencyParse, TradeNetwork } from './trade-grammar.js';
 
@@ -75,3 +76,27 @@ export type {
   TradeGovernanceBinding,
   TradeGovernedActionIntent,
 } from './trade-governance.js';
+
+export {
+  TRADE_DELEGATION_EVIDENCE_SCHEMA,
+  TRADE_DELEGATION_MAXIMUM_AGE_SECONDS,
+  TRADE_DELEGATION_MAXIMUM_PERMISSIONS,
+  TRADE_DELEGATION_OBSERVATION_SCHEMA,
+  TRADE_DELEGATION_REFUSAL_CODES,
+  TRADE_DELEGATION_REQUIRED_PERMISSION,
+  TRADE_DELEGATION_TOLERATED_PERMISSIONS,
+  canonicalTradeDelegationPermission,
+  isTradeInstant,
+  parseTradeDelegationObservation,
+  tradeDelegateEntryIndex,
+  verifyTradeDelegation,
+} from './trade-delegation.js';
+export type {
+  TradeDelegationAbsentObservation,
+  TradeDelegationEvidence,
+  TradeDelegationGrantedObservation,
+  TradeDelegationObservation,
+  TradeDelegationRefusalCode,
+  TradeDelegationRequirement,
+  TradeDelegationVerification,
+} from './trade-delegation.js';

@@ -98,7 +98,7 @@ const GOVERNANCE_ENGINE = [/\bevaluate\s*\(|\bdecide\s*\(|PolicyPack|policy-cond
 const secondGovernanceEngine: Scan = (sources) =>
   sources.flatMap((source) => [
     ...importsOf(source.text)
-      .filter((specifier) => !TRADE_IMPORTS.test(specifier))
+      .filter((specifier) => !TRADE_IMPORTS.test(specifier) && !(source.path.startsWith(`${TRADE_ROOT}/rails/xrpl/`) && specifier === '../../domain/index.js'))
       .map((specifier) => `${source.path} imports '${specifier}'`),
     ...GOVERNANCE_ENGINE.filter((pattern) => pattern.test(codeOf(source.text))).map((pattern) => `${source.path}: ${String(pattern)}`),
   ]);

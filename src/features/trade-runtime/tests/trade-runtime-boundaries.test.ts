@@ -55,7 +55,9 @@ describe('Trade runtime boundaries (TRADE-01)', () => {
   it('imports only itself, the generic primitives it composes, and the hash function — never the enterprise layer, the Kernel, a store, another vertical or Node I/O', () => {
     const allowed = /^(?:\.\/|\.\.\/domain\/|\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|governed-parameter-runtime)\/index\.js$|crypto$)/;
     for (const file of PRODUCTION_SOURCES) {
-      for (const specifier of importsOf(file)) assert.ok(allowed.test(specifier), `${file} imports '${specifier}'`);
+      // TRADE-02: the XRPL rail reads the domain through its barrel, and nothing else of TRADE.
+      const railDomain = (specifier: string): boolean => file.startsWith(`${ROOT}/rails/xrpl/`) && specifier === '../../domain/index.js';
+      for (const specifier of importsOf(file)) assert.ok(allowed.test(specifier) || railDomain(specifier), `${file} imports '${specifier}'`);
     }
   });
 
