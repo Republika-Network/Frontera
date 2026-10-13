@@ -1344,7 +1344,7 @@ the map, marked historical.
 
 | Field | Content |
 |---|---|
-| Status | IMPLEMENTED — `src/features/payment-runtime/protocols/x402/` (adapter), `src/enterprise/x402-payment-protocol/` (composition edge); `docs/payments/PAY-08-X402-PROTOCOL-ADAPTER.md`; `ADR-X402-PROTOCOL-ADAPTER.md`; SEC-INV-283 … 296; threat model §7.34 (X1 … X38, including the pre-merge hardening pass). Previously PLANNED |
+| Status | IMPLEMENTED — `src/features/payment-runtime/protocols/x402/` (adapter), `src/enterprise/x402-payment-protocol/` (composition edge); `docs/payments/PAY-08-X402-PROTOCOL-ADAPTER.md`; `ADR-X402-PROTOCOL-ADAPTER.md`; SEC-INV-283 … 296; threat model §7.34 (X1 … X40, including the two pre-merge hardening passes). Previously PLANNED |
 | Depends on | PAY-04 (the protocol adapter boundary) — delivered; PAY-06 (the rail the executable binding pays through) and PAY-05 (settlement before the proof) — delivered |
 | Upstream pin | `x402-foundation/x402` @ `f8f83309706b14cc696962f0a002eeeb66c3dc26` — x402 v2: `x402-specification-v2.md`, `transports-v2/http.md`, `schemes/exact/scheme_exact.md`, `scheme_exact_lnbtc.md` (executed), `scheme_exact_xrpl.md` / `scheme_exact_evm.md` (audited, not executable) |
 | Role | The governed **paying side** (client). Not a resource server, facilitator, signer, wallet, custody layer, rail or settlement engine |

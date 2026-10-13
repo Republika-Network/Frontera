@@ -46,6 +46,7 @@ import {
   X402_LNBTC_ATOMIC_SCALE,
   X402_LNBTC_NETWORKS,
   createX402LightningBinding,
+  createX402LightningExecutionInvoices,
   createX402LightningInvoiceVerifier,
   createX402PaymentSignatureBuilder,
   createX402Presentation,
@@ -289,6 +290,8 @@ export interface X402WorldOptions {
   /** Trusted request fields the network layer can attest (bound headers). */
   readonly fields?: Readonly<Record<string, string | null>>;
   readonly ceiling?: string;
+  /** The decoding cache's window (default 256). */
+  readonly verifierEntries?: number;
 }
 
 export interface Presentation {
@@ -308,6 +311,8 @@ export interface X402World {
   readonly governedIntents: unknown[];
   /** Every PAY-01 instruction the rail bridge issued. */
   readonly railInstructions: PaymentExecutionRequest[];
+  /** Every invoice lookup PAY-06's rail made, with the exact text it was given (or `undefined`). */
+  readonly invoiceLookups: { readonly executionId: string; readonly paymentHash: string; readonly served: string | undefined }[];
   present(presentation: Presentation): Promise<PaymentProtocolIngressResult>;
   /** The raw presentation call, for hostile-request tests. */
   presentRaw(identity: BoundCustomerIdentity, request: unknown): Promise<PaymentProtocolIngressResult>;
@@ -342,7 +347,7 @@ export async function openX402World(options: X402WorldOptions = {}): Promise<X40
   };
   const witness = await startWitness();
   const node = await createSimulatedLightningNode({ network: 'testnet' });
-  const verifier = createX402LightningInvoiceVerifier();
+  const verifier = createX402LightningInvoiceVerifier(options.verifierEntries !== undefined ? { maximumEntries: options.verifierEntries } : {});
   const adapter = createX402PaymentProtocolAdapter({
     mappings: [{ scheme: 'exact', network: LNBTC_TESTNET, asset: 'BTC', unit: BTC, atomicScale: X402_LNBTC_ATOMIC_SCALE, bindingId: x402LightningBindingId('testnet'), paymentFlows: ['upfront'], maximumTimeoutSeconds: 3_600, rail: CONFIGURATION.railId }],
     bindings: [createX402LightningBinding({ network: 'testnet', verifier })],
@@ -356,6 +361,22 @@ export async function openX402World(options: X402WorldOptions = {}): Promise<X40
   const eventStream = createInMemoryAuthorityEventStreamStore({ now: () => NOW });
   const governedIntents: unknown[] = [];
   const railInstructions: PaymentExecutionRequest[] = [];
+  const invoiceLookups: { executionId: string; paymentHash: string; served: string | undefined }[] = [];
+  // One per process, like the verifier: it reads through to whichever stores are composed now.
+  // eslint-disable-next-line prefer-const
+  let current: Composed;
+  const executionInvoices = createX402LightningExecutionInvoices({
+    organizationId: ORG,
+    contexts: { readByGovernedRequestId: (organizationId, requestId) => createPaymentProtocolContextReader(current.operations).readByGovernedRequestId(organizationId, requestId) },
+    decisions: { getByRequestId: (context, requestId) => current.world.rawStore.getByRequestId(context, requestId) },
+  });
+  const observedInvoices = {
+    async invoiceFor(query: Parameters<typeof executionInvoices.invoices.invoiceFor>[0]) {
+      const served = await executionInvoices.invoices.invoiceFor(query);
+      invoiceLookups.push({ executionId: query.executionId, paymentHash: query.paymentHash, served });
+      return served;
+    },
+  };
   let generation = 0;
   let history = 0;
 
@@ -379,7 +400,7 @@ export async function openX402World(options: X402WorldOptions = {}): Promise<X40
     const settlements = await createSqlitePaymentSettlementStore(paths.settlements, { now: () => NOW });
     const interlock = await createSqliteLightningPaymentInterlock(paths.interlock, { scope: { railId: CONFIGURATION.railId, network: CONFIGURATION.network }, now: () => new Date().toISOString(), freshness: { boundary: await boundaryFor(witness, ORG) } });
     const projector = createAuthorityEventProjector({ organizationId: ORG, store: eventStream, grants: grantStore });
-    const rail = createLightningRail({ configuration: CONFIGURATION, node, invoices: verifier.invoices, interlock, now: () => TEST_NOW_MS });
+    const rail = createLightningRail({ configuration: CONFIGURATION, node, invoices: observedInvoices, interlock, now: () => TEST_NOW_MS });
     const observedRail: PaymentRail = {
       railId: rail.railId,
       execute: (request) => {
@@ -407,11 +428,11 @@ export async function openX402World(options: X402WorldOptions = {}): Promise<X40
       },
     };
     const ingress = createPaymentProtocolIngress({ orchestrator, store: operations, adapters: [adapter], binding: BINDING, monetary: MONETARY, governance: GOVERNANCE, now: ingressClock });
-    const { present } = createX402Presentation({ adapter, ingress });
+    const { present } = createX402Presentation({ adapter, ingress, invoices: executionInvoices });
     return { world, projector, outcomes, resolutions, settlements, operations, interlock, present };
   }
 
-  let current = await compose();
+  current = await compose();
 
   const settlementService = () => {
     const authority = createLightningFinalityAuthority({ configuration: CONFIGURATION, node: readOnlyLightningNode(node), interlock: current.interlock });
@@ -448,6 +469,7 @@ export async function openX402World(options: X402WorldOptions = {}): Promise<X40
     adapter,
     governedIntents,
     railInstructions,
+    invoiceLookups,
     present: (presentation) =>
       current.present(presentation.identity ?? IDENTITY, {
         businessOperationId: presentation.businessOperationId ?? 'pay08-checkout-1',

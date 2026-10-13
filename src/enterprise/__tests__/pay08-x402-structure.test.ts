@@ -86,7 +86,7 @@ describe('PAY-08 — the x402 edge is a protocol edge, not an execution path', (
   const sources = walk(EDGE);
 
   it('has the expected production sources', () => {
-    assert.deepEqual(sources.map((file) => file.slice(EDGE.length + 1)).sort(), ['index.ts', 'x402-lightning-binding.ts', 'x402-payment-response.ts', 'x402-payment-signature.ts', 'x402-presentation.ts']);
+    assert.deepEqual(sources.map((file) => file.slice(EDGE.length + 1)).sort(), ['index.ts', 'x402-lightning-binding.ts', 'x402-lightning-execution-invoices.ts', 'x402-payment-response.ts', 'x402-payment-signature.ts', 'x402-presentation.ts']);
   });
 
   it('imports only the x402 adapter, PAY-06’s barrel, PAY-04 / PAY-05 read surfaces, the bound identity type and node:crypto', () => {
@@ -96,6 +96,12 @@ describe('PAY-08 — the x402 edge is a protocol edge, not an execution path', (
       '../payment-protocol-ingress/index.js',
       '../payment-settlement/index.js',
       '../customer-identity/index.js',
+      // The execution binding (lifecycle hardening): the orchestrator's own identity reader and execution-id
+      // derivation — pure functions PAY-04's ingress and PAY-05's refunds already use — and the Governance
+      // Store's record type for its read-only `getByRequestId`.
+      '../governed-action/kernel-request.js',
+      '../governed-action/identifiers.js',
+      '../governance-store/index.js',
       'node:crypto',
     ]);
     for (const file of sources) for (const specifier of importsOf(file)) assert.ok(allowed.has(specifier) || /^\.\/x402-[a-z-]+\.js$/.test(specifier), `${file} imports '${specifier}'`);
@@ -117,6 +123,17 @@ describe('PAY-08 — the x402 edge is a protocol edge, not an execution path', (
         assert.equal(pattern.test(code), false, `${file}: ${String(pattern)}`);
       }
     }
+  });
+
+  it('the rail’s invoice source is bound to the execution: it reads the committed decision and PAY-04’s record, keeps only what is in flight, and holds no invoice history', () => {
+    const code = codeOf(join(EDGE, 'x402-lightning-execution-invoices.ts'));
+    assert.match(code, /deriveGovernedActionExecutionId\(\{ requestId, decisionId: record\.evaluation\.decisionId \}\) !== query\.executionId/, 'the execution PAY-06 runs must derive from the request’s committed decision');
+    assert.match(code, /executionAttemptReferenceId\(query\.executionId\)/, 'and be claimed on its record');
+    assert.match(code, /decisions\.getByRequestId\(/);
+    assert.match(code, /contexts\.readByGovernedRequestId\(/);
+    assert.doesNotMatch(code, /append\w*\(|\.set\(paymentHash|maximumPaymentHashes|AMBIGUOUS/, 'reads only; no identity map');
+    const binding = codeOf(join(EDGE, 'x402-lightning-binding.ts'));
+    assert.doesNotMatch(binding, /identities|maximumPaymentHashes|invoiceFor/, 'the decoding cache is not an invoice source and keeps no identity history');
   });
 
   it('presents through the existing ingress: preparation first, then exactly one prepareAndGovern', () => {

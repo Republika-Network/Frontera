@@ -19,6 +19,8 @@ export {
   x402LightningHttpRequestHash,
 } from './x402-lightning-binding.js';
 export type { X402LightningBindingOptions, X402LightningInvoiceVerifier } from './x402-lightning-binding.js';
+export { createX402LightningExecutionInvoices } from './x402-lightning-execution-invoices.js';
+export type { X402GovernedRequestRecordReader, X402LightningExecutionInvoices, X402LightningExecutionInvoicesOptions } from './x402-lightning-execution-invoices.js';
 export { X402PaymentSignature, X402_PAYMENT_SIGNATURE_REFUSALS, createX402PaymentSignatureBuilder, lightningNodeProofSource } from './x402-payment-signature.js';
 export type { X402LightningProofSource, X402PaymentSignatureBuilderOptions, X402PaymentSignatureRefusal, X402PaymentSignatureRequest, X402PaymentSignatureResult } from './x402-payment-signature.js';
 export { readX402PaymentResponseEvidence } from './x402-payment-response.js';

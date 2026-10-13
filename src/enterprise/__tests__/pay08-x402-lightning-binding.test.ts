@@ -7,17 +7,23 @@ import { parseX402Json, readX402PaymentRequiredCarrier, type X402BindingRequest,
 import { SPEC_LNBTC_VECTOR } from '../../features/payment-runtime/protocols/x402/tests/x402-spec-vectors.js';
 import { decodeBolt11Invoice } from '../../features/payment-runtime/rails/lightning/index.js';
 import { buildInvoice, testNodeKey, testPreimage, TEST_NOW_SECONDS } from '../../features/payment-runtime/rails/lightning/tests/lightning-test-fixtures.js';
-import type { VerifiedPaymentProtocolContext } from '../payment-protocol-ingress/index.js';
+import type { GovernanceRecord } from '../governance-store/index.js';
+import { deriveGovernedActionExecutionId, executionAttemptReferenceId } from '../governed-action/identifiers.js';
+import { boundScopeOf } from '../governed-action/kernel-request.js';
+import { derivePaymentBusinessOperationRequestId, type VerifiedPaymentProtocolContext } from '../payment-protocol-ingress/index.js';
 import {
   X402_LNBTC_NETWORKS,
   createX402LightningBinding,
+  createX402LightningExecutionInvoices,
   createX402LightningInvoiceVerifier,
   createX402PaymentSignatureBuilder,
   readX402PaymentResponseEvidence,
   x402LightningBindingId,
   x402LightningHttpRequestHash,
+  type X402LightningExecutionInvoices,
   type X402LightningProofSource,
 } from '../x402-payment-protocol/index.js';
+import { IDENTITY, ORG } from './governed-action-support.js';
 import { merchantBindingText } from './pay08-x402-world.js';
 
 /**
@@ -189,37 +195,35 @@ describe('PAY-08 — lnbtc client-side checks', () => {
     assert.equal(x402LightningHttpRequestHash({ ...request, fields: { accept: 'ünicode' } }, ['accept']), undefined);
   });
 
-  it('the verifier serves the rail only verified invoices, by payment hash and payee', async () => {
-    const verifier = createX402LightningInvoiceVerifier();
+  it('the verifier is a cache of exact texts: a reading is the decoding of exactly that text, and the cache is bounded', async () => {
+    const verifier = createX402LightningInvoiceVerifier({ maximumEntries: 1 });
     await verifier.verify(SPEC_LNBTC_VECTOR.requirement.extra.invoice);
-    const query = { payee: SPEC_LNBTC_VECTOR.requirement.payTo, paymentHash: SPEC_LNBTC_VECTOR.paymentHash, executionId: 'e' };
-    assert.equal(await verifier.invoices.invoiceFor(query), SPEC_LNBTC_VECTOR.requirement.extra.invoice);
-    assert.equal(await verifier.invoices.invoiceFor({ ...query, payee: `02${'7'.repeat(64)}` }), undefined, 'another payee: withheld, never redirected');
-    assert.equal(await verifier.invoices.invoiceFor({ ...query, paymentHash: 'f'.repeat(64) }), undefined);
+    assert.equal(verifier.verified(SPEC_LNBTC_VECTOR.requirement.extra.invoice)?.paymentHash, SPEC_LNBTC_VECTOR.paymentHash);
+    assert.equal(verifier.verified(SPEC_LNBTC_VECTOR.requirement.extra.invoice.toUpperCase()), undefined, 'another spelling is another text');
+    assert.equal('invoices' in verifier, false, 'the cache is not the rail’s invoice source');
+    assert.throws(() => createX402LightningInvoiceVerifier({ maximumEntries: 0 }), TypeError);
   });
 });
 
-describe('PAY-08 — one payment hash, one invoice text (INV-COLL)', () => {
+describe('PAY-08 — the rail’s invoice is the governed execution’s (LIFE, execution binding)', () => {
   const URL_A = 'https://merchant.example/article/A';
   const URL_B = 'https://merchant.example/article/B';
   const hashOf = (url: string) => x402LightningHttpRequestHash({ url, method: 'GET', bodyBearing: false, fields: {} }, []) as string;
+  const bound = boundScopeOf(IDENTITY, ORG);
+  assert.ok(bound !== undefined);
+  const scope = bound;
+  const requestIdOf = (businessOperationId: string) => derivePaymentBusinessOperationRequestId({ organizationId: ORG, principalId: scope.principalId, businessOperationId });
 
   /** A validly signed testnet invoice committing to `url`'s http:1 request hash, for `label`'s payment hash. */
-  async function invoiceFor(label: string, url: string, options: { readonly amountMsat?: bigint; readonly payeeKeyLabel?: string } = {}): Promise<string> {
+  async function signedInvoice(label: string, url: string, options: { readonly payeeKeyLabel?: string } = {}): Promise<string> {
     const { paymentHash } = testPreimage(label);
-    return buildInvoice({ network: 'testnet', amountMsat: options.amountMsat ?? 25_000n, paymentHash, payeeKeyLabel: options.payeeKeyLabel ?? 'payee-node', description: merchantBindingText({ method: 'GET', url }, []), descriptionHash: true, expirySeconds: 300, timestamp: TEST_NOW_SECONDS });
+    return buildInvoice({ network: 'testnet', amountMsat: 25_000n, paymentHash, payeeKeyLabel: options.payeeKeyLabel ?? 'payee-node', description: merchantBindingText({ method: 'GET', url }, []), descriptionHash: true, expirySeconds: 300, timestamp: TEST_NOW_SECONDS });
   }
 
-  async function requirementWith(invoice: string, url: string): Promise<X402PaymentRequirements> {
-    const decoded = await decodeBolt11Invoice(invoice);
-    assert.ok(decoded.valid);
-    return requirementOf({ scheme: 'exact', network: TESTNET, amount: '25000', asset: 'BTC', payTo: decoded.invoice.payee, maxTimeoutSeconds: 300, extra: { paymentFlow: 'upfront', requestHash: hashOf(url), requestBindingProfile: 'http:1', requestBindingParams: { headers: [] }, invoice } }, url);
-  }
-
-  /** A and B: same payment hash, payee, amount and network; different signed description hash (A commits to article A, B to article B). */
+  /** A and B: same payment hash, payee, amount and network; different signed description hash. */
   async function collidingPair(label = 'pay08-collision') {
-    const a = await invoiceFor(label, URL_A);
-    const b = await invoiceFor(label, URL_B);
+    const a = await signedInvoice(label, URL_A);
+    const b = await signedInvoice(label, URL_B);
     const [readA, readB] = await Promise.all([decodeBolt11Invoice(a), decodeBolt11Invoice(b)]);
     assert.ok(readA.valid && readB.valid);
     assert.notEqual(a, b);
@@ -228,167 +232,213 @@ describe('PAY-08 — one payment hash, one invoice text (INV-COLL)', () => {
     assert.equal(readA.invoice.amountMsat, readB.invoice.amountMsat);
     assert.equal(readA.invoice.network, readB.invoice.network);
     assert.notEqual(readA.invoice.descriptionHash, readB.invoice.descriptionHash);
-    assert.equal(readA.invoice.descriptionHash, hashOf(URL_A), 'the fixture commits to the http:1 hash of article A');
     return { a, b, paymentHash: readA.invoice.paymentHash, payee: readA.invoice.payee };
   }
 
-  const query = (pair: { readonly paymentHash: string; readonly payee: string }) => ({ paymentHash: pair.paymentHash, payee: pair.payee, executionId: 'exe-1' });
+  /**
+   * The two durable reads the source composes, in memory: PAY-04's verified context per governed request
+   * (the exact recorded requirement) and the Governance Store's committed decision with its write-ahead claim.
+   */
+  function durableWorld() {
+    const contexts = new Map<string, VerifiedPaymentProtocolContext>();
+    const records = new Map<string, { decisionId: string; claimed: string[] }>();
+    const reads = { contexts: 0, decisions: 0 };
+    return {
+      reads,
+      /** Records operation `businessOperationId` with `invoice` and commits its decision; `claim` appends the write-ahead execution claim (or `claimFor`, another execution's). */
+      govern(businessOperationId: string, invoice: string, destination: { readonly payee: string; readonly paymentHash: string }, options: { readonly claim?: boolean; readonly claimFor?: string } = {}) {
+        const requestId = requestIdOf(businessOperationId);
+        const requirement = JSON.stringify({ amount: '25000', asset: 'BTC', extra: { invoice, paymentFlow: 'upfront' }, maxTimeoutSeconds: 300, network: TESTNET, payTo: destination.payee, scheme: 'exact' });
+        contexts.set(requestId, {
+          organizationId: ORG,
+          principalId: scope.principalId,
+          businessOperationId,
+          requestId,
+          businessSemanticDigest: 'd',
+          terms: { action: 'pay', source: { accountId: 'a' }, destination: { kind: 'lightning-invoice', reference: `${destination.payee}:${destination.paymentHash}` }, amount: { value: '0.00000025', unit: 'net:BTC' }, purpose: 'vendor-payment', binding: { target: 't', method: 'GET' } },
+          challenge: { protocolId: 'x402', key: `x402:2:${TESTNET}:${destination.paymentHash}`, fields: { binding: x402LightningBindingId('testnet'), instrument: `${TESTNET}:${destination.paymentHash}`, requirement, network: TESTNET, amount: '25000' }, sequence: 1, digest: 'x' },
+        } as unknown as VerifiedPaymentProtocolContext);
+        const decisionId = `dec-${businessOperationId}`;
+        const executionId = deriveGovernedActionExecutionId({ requestId, decisionId });
+        records.set(requestId, { decisionId, claimed: options.claim === false ? [] : [options.claimFor ?? executionId] });
+        return { requestId, executionId };
+      },
+      source(): X402LightningExecutionInvoices {
+        return createX402LightningExecutionInvoices({
+          organizationId: ORG,
+          contexts: {
+            readByGovernedRequestId: async (_organizationId, requestId) => {
+              reads.contexts += 1;
+              return contexts.get(requestId);
+            },
+          },
+          decisions: {
+            getByRequestId: async (_context, requestId) => {
+              reads.decisions += 1;
+              const record = records.get(requestId);
+              if (record === undefined) return null;
+              return {
+                request: { organizationId: ORG },
+                evaluation: { decisionId: record.decisionId },
+                references: record.claimed.map((executionId) => ({ referenceId: executionAttemptReferenceId(executionId), externalId: executionId })),
+              } as unknown as GovernanceRecord;
+            },
+          },
+        });
+      },
+    };
+  }
 
-  it('INV-COLL-1 a verified invoice is the one the rail is given, exactly', async () => {
-    const { a, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    await verifier.verify(a);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), a);
-    assert.equal(verifier.verified(a)?.paymentHash, pair.paymentHash);
-  });
+  /** Asks the rail's question while `businessOperationId`'s presentation is in flight. */
+  const askDuring = (source: X402LightningExecutionInvoices, businessOperationId: string, query: { readonly executionId: string; readonly payee: string; readonly paymentHash: string }) =>
+    source.during(IDENTITY, businessOperationId, () => source.invoices.invoiceFor(query));
 
-  it('INV-COLL-2 verifying the same text again keeps it the hash’s one invoice', async () => {
-    const { a, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    await verifier.verify(a);
-    await verifier.verify(a);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), a);
-  });
-
-  it('INV-COLL-3 a second, different, validly signed text for the same payment hash makes the hash ambiguous: the rail gets nothing', async () => {
-    const { a, b, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    await verifier.verify(a);
-    await verifier.verify(b);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), undefined, 'never first-wins');
-    assert.equal(verifier.verified(a), undefined, 'A is no longer a reading either');
-    assert.equal(verifier.verified(b), undefined, 'never latest-wins');
-    // Order does not matter.
-    const reversed = createX402LightningInvoiceVerifier();
-    await reversed.verify(b);
-    await reversed.verify(a);
-    assert.equal(await reversed.invoices.invoiceFor(query(pair)), undefined);
-  });
-
-  it('INV-COLL-4 B verifies on its own — but after A, the rail is never handed A for B (nor B)', async () => {
-    const { a, b, ...pair } = await collidingPair();
-    const alone = createX402LightningInvoiceVerifier();
-    const bindingAlone = createX402LightningBinding({ network: 'testnet', verifier: alone });
-    const requirementB = await requirementWith(b, URL_B);
-    await bindingAlone.prepare?.(requirementB);
-    assert.equal(bindingAlone.interpret(bindingRequest(requirementB, { url: URL_B, atSeconds: TEST_NOW_SECONDS })).usable, true, 'B is a valid invoice for article B');
-    assert.equal(await alone.invoices.invoiceFor(query(pair)), b);
-
-    const shared = createX402LightningInvoiceVerifier();
-    await shared.verify(a);
-    await shared.verify(b);
-    const served = await shared.invoices.invoiceFor(query(pair));
-    assert.notEqual(served, a, 'the signed description hash is part of what is paid for');
-    assert.equal(served, undefined);
-  });
-
-  it('INV-COLL-5 a PaymentRequired carrying B after A was cached is refused at interpretation: nothing to govern, nothing to send', async () => {
-    const { a, b, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    const binding = createX402LightningBinding({ network: 'testnet', verifier });
-    const requirementA = await requirementWith(a, URL_A);
-    const requirementB = await requirementWith(b, URL_B);
-    // A arrives first (for article A — a request this agent may never govern), then B for article B.
-    await binding.prepare?.(requirementA);
-    await binding.prepare?.(requirementB);
-    assert.deepEqual(binding.interpret(bindingRequest(requirementB, { url: URL_B, atSeconds: TEST_NOW_SECONDS })), { usable: false, refusal: 'normalization-failed' });
-    assert.deepEqual(binding.interpret(bindingRequest(requirementA, { url: URL_A, atSeconds: TEST_NOW_SECONDS })), { usable: false, refusal: 'normalization-failed' });
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), undefined);
-  });
-
-  it('INV-COLL-5 B governed first, A seen before the rail asks: the rail is withheld every invoice for the hash', async () => {
-    const { a, b, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    const binding = createX402LightningBinding({ network: 'testnet', verifier });
-    const requirementB = await requirementWith(b, URL_B);
-    await binding.prepare?.(requirementB);
-    assert.equal(binding.interpret(bindingRequest(requirementB, { url: URL_B, atSeconds: TEST_NOW_SECONDS })).usable, true);
-    await verifier.verify(a);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), undefined, 'PAY-06 refuses invoice-unavailable before any node call');
-  });
-
-  it('INV-COLL-6 the same text presented again (exact replay) still verifies and is still served', async () => {
-    const { a, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    const binding = createX402LightningBinding({ network: 'testnet', verifier });
-    const requirementA = await requirementWith(a, URL_A);
-    for (let round = 0; round < 3; round += 1) {
-      await binding.prepare?.(requirementA);
-      assert.equal(binding.interpret(bindingRequest(requirementA, { url: URL_A, atSeconds: TEST_NOW_SECONDS })).usable, true);
-      assert.equal(await verifier.invoices.invoiceFor(query(pair)), a);
+  it('LIFE-1 a small decoding cache and 100 sequential distinct valid invoices: every one verifies and the rail is given each exact text — nothing is exhausted', async () => {
+    const verifier = createX402LightningInvoiceVerifier({ maximumEntries: 8 });
+    const durable = durableWorld();
+    const source = durable.source();
+    const payee = await testNodeKey('payee-node');
+    for (let index = 1; index <= 100; index += 1) {
+      const label = `pay08-life1-${String(index)}`;
+      const invoice = await signedInvoice(label, URL_A);
+      await verifier.verify(invoice);
+      const reading = verifier.verified(invoice);
+      assert.ok(reading !== undefined, `invoice ${String(index)} verifies`);
+      const { executionId } = durable.govern(`op-life1-${String(index)}`, invoice, { payee, paymentHash: reading.paymentHash });
+      assert.equal(await askDuring(source, `op-life1-${String(index)}`, { executionId, payee, paymentHash: reading.paymentHash }), invoice, `invoice ${String(index)} is served exactly`);
     }
+    assert.equal(verifier.verified(await signedInvoice('pay08-life1-1', URL_A)), undefined, 'the first reading rolled out of the cache — and nothing depended on it');
   });
 
-  it('INV-COLL-7 cache pressure never clears a collision, nor lets a substitute take an evicted text’s hash', async () => {
+  it('LIFE-2 A and B share (payee, payment hash) and differ in text: the execution governed for A is given A, and never B', async () => {
     const { a, b, ...pair } = await collidingPair();
-    const fillers = await Promise.all(['pay08-filler-1', 'pay08-filler-2', 'pay08-filler-3'].map((label) => invoiceFor(label, URL_A)));
-    // Ambiguity survives eviction of both readings.
-    const verifier = createX402LightningInvoiceVerifier({ maximumEntries: 2 });
+    const durable = durableWorld();
+    const { executionId } = durable.govern('op-life2', a, pair);
+    const verifier = createX402LightningInvoiceVerifier();
+    await verifier.verify(b);
     await verifier.verify(a);
     await verifier.verify(b);
-    for (const filler of fillers) await verifier.verify(filler);
-    assert.equal(verifier.verified(fillers[2] as string)?.amountMsat, 25_000n, 'the memo is still working');
+    const source = durable.source();
+    assert.equal(await askDuring(source, 'op-life2', { executionId, ...pair }), a);
+    assert.equal(await askDuring(source, 'op-life2', { executionId, ...pair, payee: `02${'7'.repeat(64)}` }), undefined, 'another payee: withheld, never redirected');
+    assert.equal(await askDuring(source, 'op-life2', { executionId, ...pair, paymentHash: 'f'.repeat(64) }), undefined, 'another payment hash: withheld');
+  });
+
+  it('LIFE-3 the decoding cache evicts A’s reading under pressure: the execution still gets exactly A from the record, never B', async () => {
+    const { a, b, ...pair } = await collidingPair();
+    const verifier = createX402LightningInvoiceVerifier({ maximumEntries: 1 });
     await verifier.verify(a);
     await verifier.verify(b);
-    assert.equal(verifier.verified(a), undefined);
-    assert.equal(verifier.verified(b), undefined);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), undefined);
-
-    // A evicted (perhaps governed and on its way to the rail): B may not take the hash over.
-    const pressured = createX402LightningInvoiceVerifier({ maximumEntries: 2 });
-    await pressured.verify(a);
-    for (const filler of fillers) await pressured.verify(filler);
-    assert.equal(pressured.verified(a), undefined, 'A’s reading was evicted');
-    await pressured.verify(b);
-    assert.equal(pressured.verified(b), undefined, 'the hash is not fresh just because A was evicted');
-    assert.equal(await pressured.invoices.invoiceFor(query(pair)), undefined);
+    assert.equal(verifier.verified(a), undefined, 'A’s reading is gone');
+    const durable = durableWorld();
+    const { executionId } = durable.govern('op-life3', a, pair);
+    assert.equal(await askDuring(durable.source(), 'op-life3', { executionId, ...pair }), a);
   });
 
-  it('INV-COLL-7 the identity record is bounded: once full, a new payment hash is refused, never an old one forgotten', async () => {
-    const { a, ...pair } = await collidingPair();
-    const other = await invoiceFor('pay08-filler-1', URL_A);
-    const verifier = createX402LightningInvoiceVerifier({ maximumEntries: 1, maximumPaymentHashes: 1 });
-    await verifier.verify(a);
-    await verifier.verify(other);
-    assert.equal(verifier.verified(other), undefined, 'refused, not remembered');
-    assert.equal(verifier.verified(a)?.paymentHash, pair.paymentHash);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), a);
-    assert.throws(() => createX402LightningInvoiceVerifier({ maximumEntries: 8, maximumPaymentHashes: 4 }), TypeError);
-    assert.throws(() => createX402LightningInvoiceVerifier({ maximumPaymentHashes: 262_145 }), TypeError);
-  });
-
-  it('INV-COLL-8 a recomposed memo starts empty and serves nothing it has not verified itself (conservative restart)', async () => {
+  it('LIFE-4 a recomposed source (restart) holds nothing in flight: a lookup outside a presentation fails closed; within one it recovers exactly A from the record — never B', async () => {
     const { a, b, ...pair } = await collidingPair();
-    const before = createX402LightningInvoiceVerifier();
-    await before.verify(a);
-    assert.equal(await before.invoices.invoiceFor(query(pair)), a);
-    const after = createX402LightningInvoiceVerifier();
-    assert.equal(await after.invoices.invoiceFor(query(pair)), undefined, 'nothing carried over: a payment is never resumed through the memo');
-    await after.verify(b);
-    await after.verify(a);
-    assert.equal(await after.invoices.invoiceFor(query(pair)), undefined, 'the same collision is detected again from scratch');
+    const durable = durableWorld();
+    const governedA = durable.govern('op-life4-a', a, pair);
+    const before = durable.source();
+    assert.equal(await askDuring(before, 'op-life4-a', { executionId: governedA.executionId, ...pair }), a);
+    const after = durable.source();
+    assert.equal(await after.invoices.invoiceFor({ executionId: governedA.executionId, ...pair }), undefined, 'nothing in flight after a restart');
+    // Another operation's presentation in flight (with B under the same pair) is never A's execution's.
+    durable.govern('op-life4-b', b, pair);
+    assert.equal(await askDuring(after, 'op-life4-b', { executionId: governedA.executionId, ...pair }), undefined, 'A’s execution is never handed B');
+    assert.equal(await askDuring(after, 'op-life4-a', { executionId: governedA.executionId, ...pair }), a, 'exact A, from durable state');
   });
 
-  it('another node reusing the payment hash is another (payee, hash) pair: it is never served for this payee, and cannot poison it', async () => {
+  it('LIFE-4 an execution whose write-ahead claim is not on record is not served, even for its own request', async () => {
     const { a, ...pair } = await collidingPair();
-    const foreign = await invoiceFor('pay08-collision', URL_A, { payeeKeyLabel: 'other-payee-node' });
-    const decoded = await decodeBolt11Invoice(foreign);
-    assert.ok(decoded.valid);
-    assert.equal(decoded.invoice.paymentHash, pair.paymentHash);
-    assert.notEqual(decoded.invoice.payee, pair.payee);
-    const verifier = createX402LightningInvoiceVerifier();
-    await verifier.verify(a);
-    await verifier.verify(foreign);
-    assert.equal(await verifier.invoices.invoiceFor(query(pair)), a, 'this payee’s one text, exactly');
-    assert.equal(await verifier.invoices.invoiceFor({ ...query(pair), payee: decoded.invoice.payee }), foreign, 'and the other payee’s, never crossed');
+    const durable = durableWorld();
+    const { executionId } = durable.govern('op-life4-unclaimed', a, pair, { claim: false });
+    assert.equal(await askDuring(durable.source(), 'op-life4-unclaimed', { executionId, ...pair }), undefined);
   });
 
-  it('the rail is served only for the payee of the verified text — and only that text', async () => {
+  it('LIFE-4 a claim reference on a request’s record does not lend its invoice to an execution that request’s decision does not derive', async () => {
     const { a, ...pair } = await collidingPair();
-    const verifier = createX402LightningInvoiceVerifier();
-    await verifier.verify(a);
-    assert.equal(await verifier.invoices.invoiceFor({ ...query(pair), payee: `02${'7'.repeat(64)}` }), undefined);
-    assert.equal(await verifier.invoices.invoiceFor({ ...query(pair), paymentHash: 'f'.repeat(64) }), undefined);
+    const durable = durableWorld();
+    const borrowed = 'aoc.exec:borrowed-execution';
+    durable.govern('op-life4-borrowed', a, pair, { claimFor: borrowed });
+    assert.equal(await askDuring(durable.source(), 'op-life4-borrowed', { executionId: borrowed, ...pair }), undefined);
+  });
+
+  it('LIFE-5 nothing outlives the presentation: once it returns, its execution’s binding is released from memory (the durable record remains)', async () => {
+    const { a, ...pair } = await collidingPair();
+    const durable = durableWorld();
+    const source = durable.source();
+    const { executionId } = durable.govern('op-life5', a, pair);
+    assert.equal(await askDuring(source, 'op-life5', { executionId, ...pair }), a);
+    assert.equal(await source.invoices.invoiceFor({ executionId, ...pair }), undefined, 'released when the presentation settled');
+    // A throwing presentation releases too.
+    await assert.rejects(source.during(IDENTITY, 'op-life5', async () => { throw new Error('ingress failed'); }));
+    assert.equal(await source.invoices.invoiceFor({ executionId, ...pair }), undefined);
+  });
+
+  it('LIFE-10 after 5 000 historical executions, a fresh operation’s invoice is served — memory holds only what is in flight', async () => {
+    const durable = durableWorld();
+    const source = durable.source();
+    const payee = await testNodeKey('payee-node');
+    for (let index = 0; index < 5_000; index += 1) {
+      const paymentHash = createHash('sha256').update(`life10-${String(index)}`).digest('hex');
+      const invoice = `lntb-life10-${String(index)}`;
+      const { executionId } = durable.govern(`op-life10-${String(index)}`, invoice, { payee, paymentHash });
+      assert.equal(await askDuring(source, `op-life10-${String(index)}`, { executionId, payee, paymentHash }), invoice);
+    }
+    const fresh = await signedInvoice('pay08-life10-fresh', URL_A);
+    const reading = await decodeBolt11Invoice(fresh);
+    assert.ok(reading.valid);
+    const { executionId } = durable.govern('op-life10-fresh', fresh, { payee, paymentHash: reading.invoice.paymentHash });
+    const reads = { ...durable.reads };
+    assert.equal(await askDuring(source, 'op-life10-fresh', { executionId, payee, paymentHash: reading.invoice.paymentHash }), fresh);
+    assert.equal(durable.reads.decisions - reads.decisions, 1, 'one in-flight request consulted, not the history');
+  });
+
+  it('LIFE-11 the same payment hash reused by another operation: each execution is bound to its own operation’s exact text — no inheritance either way', async () => {
+    const { a, b, ...pair } = await collidingPair();
+    const durable = durableWorld();
+    const first = durable.govern('op-life11-first', a, pair);
+    const second = durable.govern('op-life11-second', b, pair);
+    const source = durable.source();
+    // Both in flight at once — the worst case for a lookup by (payee, hash).
+    const both = await source.during(IDENTITY, 'op-life11-first', () =>
+      source.during(IDENTITY, 'op-life11-second', async () => [await source.invoices.invoiceFor({ executionId: first.executionId, ...pair }), await source.invoices.invoiceFor({ executionId: second.executionId, ...pair })]),
+    );
+    assert.deepEqual(both, [a, b]);
+    assert.equal(await askDuring(source, 'op-life11-second', { executionId: first.executionId, ...pair }), undefined, 'the first execution never inherits the second operation’s text');
+  });
+
+  it('LIFE-12 two concurrent presentations with distinct invoices: each execution is given its own exact text', async () => {
+    const one = await signedInvoice('pay08-life12-one', URL_A);
+    const two = await signedInvoice('pay08-life12-two', URL_B);
+    const [readOne, readTwo] = await Promise.all([decodeBolt11Invoice(one), decodeBolt11Invoice(two)]);
+    assert.ok(readOne.valid && readTwo.valid);
+    const durable = durableWorld();
+    const source = durable.source();
+    const g1 = durable.govern('op-life12-one', one, readOne.invoice);
+    const g2 = durable.govern('op-life12-two', two, readTwo.invoice);
+    const [served1, served2] = await Promise.all([
+      askDuring(source, 'op-life12-one', { executionId: g1.executionId, payee: readOne.invoice.payee, paymentHash: readOne.invoice.paymentHash }),
+      askDuring(source, 'op-life12-two', { executionId: g2.executionId, payee: readTwo.invoice.payee, paymentHash: readTwo.invoice.paymentHash }),
+    ]);
+    assert.equal(served1, one);
+    assert.equal(served2, two);
+  });
+
+  it('a record that does not re-read, or names another destination, binding or network, is withheld — and a throwing read fails closed', async () => {
+    const { a, ...pair } = await collidingPair();
+    const durable = durableWorld();
+    const { executionId } = durable.govern('op-closed', a, pair);
+    const broken = createX402LightningExecutionInvoices({
+      organizationId: ORG,
+      contexts: { readByGovernedRequestId: async () => { throw new Error('store down'); } },
+      decisions: { getByRequestId: async () => ({ request: { organizationId: ORG }, evaluation: { decisionId: 'dec-op-closed' }, references: [{ referenceId: executionAttemptReferenceId(executionId), externalId: executionId }] }) as unknown as GovernanceRecord },
+    });
+    assert.equal(await askDuring(broken, 'op-closed', { executionId, ...pair }), undefined);
+    const otherOrganization = createX402LightningExecutionInvoices({ organizationId: 'org-other', contexts: { readByGovernedRequestId: async () => undefined }, decisions: { getByRequestId: async () => null } });
+    assert.equal(await askDuring(otherOrganization, 'op-closed', { executionId, ...pair }), undefined, 'an identity of another organization holds nothing');
+    assert.throws(() => createX402LightningExecutionInvoices({ organizationId: ORG } as never), TypeError);
   });
 });
 

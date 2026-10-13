@@ -264,45 +264,57 @@ signatures asynchronously. A decoding is a pure function of the invoice text,
 so the edge's `createX402Presentation` awaits `adapter.prepare(carrier)` —
 which lets the binding run PAY-06's decoder on every mapped candidate — and
 only then calls the existing `ingress.prepareAndGovern`. `interpret` reads the
-memo; an invoice that was not prepared or did not verify is refused. The same
-memo is the rail's trusted invoice source (`verifier.invoices`): it returns an
-invoice only for a verified reading with exactly the governed payment hash
-**and** payee, so it can withhold a payment, never redirect one.
+memo; an invoice that was not prepared or did not verify is refused. The memo
+is a **decoding cache** and nothing else: a bounded map from exact text to its
+decoding (`maximumEntries`, default 256), evicted oldest first. A miss costs a
+re-decode on the next presentation; it never refuses another payment and
+never chooses an invoice for the rail.
 
-*One payment hash, one invoice text* (hardening, SEC-INV-295). The rail asks
-for an invoice by payment hash and payee only, but what the binding verified
-is one exact invoice **text** — its signature, its signed description hash
-(the request binding), payee, amount, network and expiry. Two validly signed
-texts can share payment hash, payee, amount and network and differ in the
-description hash. So the memo keeps, per **(payee, payment hash)** — exactly
-what the rail asks by — the SHA-256 identity of the one text it verified (only
-the payee's own key can sign a second text for its pair; another node reusing
-the payment hash is another pair, never served for this payee and unable to
-poison it):
+*The rail's invoice is the execution's* (lifecycle hardening, SEC-INV-295).
+PAY-06 asks `invoiceFor({ executionId, payee, paymentHash })`. The source,
+`createX402LightningExecutionInvoices`, answers from durable state only:
 
 ```text
-unseen      + A          → unique(A)
-unique(A)   + A          → unique(A)          (exact replay keeps working)
-unique(A)   + B, B ≠ A   → ambiguous          (B is not cached as a reading)
-ambiguous   + anything   → ambiguous          (for the process lifetime)
+executionId E (PAY-06)
+  → a presentation in flight whose governed request R is derived exactly as
+    PAY-04 derives it (the orchestrator's identity reader + PAY-04's
+    business-operation derivation), held only for the one ingress call
+  → the Governance Store's committed decision for R: E = derive(R, decision),
+    and E's write-ahead execution claim is on R's record
+  → PAY-04's CORE-07-anchored record for R: x402, an lnbtc binding, destination
+    exactly (payee, paymentHash), instrument <network>:<paymentHash>,
+    a requirement that re-reads closed
+  → that requirement's extra.invoice — the exact text interpreted, bound to the
+    request, recorded before governance, governed
 ```
 
-An ambiguous pair is neither a reading for `interpret` (refused
-`normalization-failed`, before PAY-04's store or `govern()`) nor an invoice for
-the rail (withheld: PAY-06 refuses `invoice-unavailable` before any node
-call) — never first-, last- or latest-wins, whichever text was governed. The
-identity record is **not** evicted with the bounded readings
-(`maximumEntries`, default 256): eviction can neither clear an ambiguity nor
-let a substitute take over the pair of an evicted (perhaps governed, in
-flight) text. It is bounded separately (`maximumPaymentHashes`, counting
-pairs: default 16 384, at most 262 144, never below `maximumEntries`); once
-full, the memo refuses every new pair instead of forgetting an old one, and the
-deployment recomposes. The memo is process memory and never authority — a pure
-verification cache and invoice source that can only withhold. A restart starts
-it empty: a payment governed before the restart is never resumed through it
-(P12 resolves an uncertain one), a re-presentation is verified again, and
-PAY-04's one-instrument-one-operation record and PAY-06's durable
-payment-hash interlock still hold across the restart.
+Anything else is `undefined`, which PAY-06 refuses (`invoice-unavailable`)
+before any node call. PAY-04 binds each x402 instrument to one operation with
+one exact requirement — another text under the same instrument, in the same
+operation or another, is a conflict refused before `govern()` — so the text
+read is the only one that could ever have been governed for that payment hash.
+Two texts sharing (payee, payment hash) and differing in the signed description
+hash can therefore never be swapped: not after cache eviction, not across
+operations, not after a restart.
+
+*Lifecycle, not history.* The first hardening pass kept a per-(payee, payment
+hash) identity map for the process lifetime; every normal invoice has a fresh
+payment hash, so ordinary traffic filled it and then refused every new payment
+(reproduced: with a 4-pair bound, the fifth valid, collision-free invoice was
+refused). That map is gone, and raising its bound was rejected — it only
+postpones the same failure. What process memory now holds is bounded by
+**concurrency**, never by history: a counted entry per governed request while
+its presentation runs. The rail runs inside that call, so that is exactly the
+window in which PAY-06 asks; when the call returns the entry is released. The
+durable binding is never retired — it is PAY-04's record of the operation:
+
+| lifecycle point | what happens |
+| --- | --- |
+| send succeeded, PAY-05 settled | a re-presentation replays from the governance record: no rail instruction, no lookup, no send |
+| unconfirmed (P11) | replays stay unconfirmed with no lookup; P12 resolves by the node's payment status, never through this source; no second send |
+| definitively not completed | replays answer the same outcome with no lookup and no send |
+| restart | nothing in flight: a lookup outside a presentation fails closed; a re-presentation of an attempted execution replays from the record |
+| decided, never claimed (crash between) | not served until a presentation re-enters and the orchestrator claims; then the exact recorded text |
 
 *PAY-06's one change.* The decoder now also returns `descriptionHash` (the
 signed `h` field, lowercase hex) when the invoice carries one. Additive and
@@ -570,11 +582,11 @@ client or proxy; Host composition; a new rail; Stripe (PAY-09).
 8. **Testnet-shaped qualification**: the end-to-end proof runs on PAY-06's
    deterministic node simulator with a test-only reference merchant; no live
    x402 merchant, testnet node or mainnet was exercised by PAY-08.
-9. **The invoice memo is per process.** A payment-hash collision is detected
-   only among the texts one memo has verified; a restart forgets it (the
-   durable PAY-04 instrument record and PAY-06 interlock still hold), and a
-   saturated identity record refuses new x402 Lightning payments until the
-   deployment recomposes.
+9. **The execution source needs the presentation.** The rail is served an
+   x402 invoice only while the presentation that governs it is in flight; a
+   rail call made any other way (none exists in PAY-08's composition) is
+   refused, never served another text. Memory is bounded by concurrent
+   presentations, not by history.
 
 ## 24. Test map
 
@@ -583,8 +595,8 @@ client or proxy; Host composition; a new rail; Stripe (PAY-09).
 | PR-1 … PR-20, header decoding, official vectors, CAN-1 / CAN-3 / CAN-4, PP-7 / PP-8 (encoder), EXT-MERGE-1 … EXT-MERGE-9, EXT-BOUND-1 … EXT-BOUND-10, RESP-7 (parser) | `protocols/x402/tests/x402-messages.test.ts` |
 | SEL-1 … SEL-10, AMT-1 … AMT-10, flows, FLOW-CFG-1 … FLOW-CFG-6, timeout, CAN-2 / CAN-5 … CAN-10, composition | `protocols/x402/tests/x402-payment-adapter.test.ts` |
 | adapter purity, network neutrality, no MPP / rail coupling | `protocols/x402/tests/x402-protocol-boundaries.test.ts` |
-| lnbtc spec vectors (request hashes, invoice, binding), client checks, time, headers, verifier, INV-COLL-1 … INV-COLL-8, PP-7 / PP-9 … PP-12 (builder), RESP-1 … RESP-7 | `src/enterprise/__tests__/pay08-x402-lightning-binding.test.ts` |
-| exit proof, paid round trip, denial, over-ceiling, BOP-X1 … BOP-X12, resource / method / body replay, P12, HTTP-200 / PAYMENT-RESPONSE trust, RESP-8 / RESP-9, INV-COLL-5 (governed stack), extension echo (governed stack), secret canaries, PP-1 … PP-6 | `src/enterprise/__tests__/pay08-x402-governed-payment.test.ts` (world: `pay08-x402-world.ts`) |
+| lnbtc spec vectors (request hashes, invoice, binding), client checks, time, headers, decoding cache, LIFE-1 … LIFE-5 / LIFE-10 … LIFE-12 (execution binding), PP-7 / PP-9 … PP-12 (builder), RESP-1 … RESP-7 | `src/enterprise/__tests__/pay08-x402-lightning-binding.test.ts` |
+| exit proof, paid round trip, denial, over-ceiling, BOP-X1 … BOP-X12, resource / method / body replay, P12, HTTP-200 / PAYMENT-RESPONSE trust, RESP-8 / RESP-9, LIFE-2 … LIFE-12 (governed stack, 120 sequential settled operations), extension echo (governed stack), secret canaries, PP-1 … PP-6 | `src/enterprise/__tests__/pay08-x402-governed-payment.test.ts` (world: `pay08-x402-world.ts`) |
 | CORE purity, edge boundaries, ordering, MPP ↔ x402 conformance | `src/enterprise/__tests__/pay08-x402-structure.test.ts` |
 | PAY-04, PAY-06, PAY-07 regression | the unchanged suites (structural allow-lists extended by one classified entry each) |
 

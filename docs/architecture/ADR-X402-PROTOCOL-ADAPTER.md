@@ -76,16 +76,21 @@ chosen: an asynchronous port (a PAY-04 contract change for every protocol) or
 trusting structural decoding until the rail re-verifies (governance would run
 on unverified payee data).
 
-*Amended by the PAY-08 hardening pass.* The rail's query (payment hash, payee)
-does not name an invoice text, and two signed texts can share both while
-committing to different request bindings. The memo therefore keeps one text
-identity per (payee, payment hash), and a second text makes the pair **ambiguous** for
-the process lifetime — refused at interpretation, withheld from the rail;
-never first-, last- or latest-wins. The identity record is bounded separately
-from the readings and never evicted (full → new hashes refused). Chosen over an
-execution-scoped invoice source because the binding cannot know the execution
-id at interpretation and PAY-06's query is fixed; the fail-closed state machine
-needs no PAY-04, PAY-06 or store change.
+*Amended by the PAY-08 hardening passes.* The rail's query names no invoice
+text, and two signed texts can share (payee, payment hash) while committing to
+different request bindings. The first pass kept a process-lifetime identity map
+per pair; it exhausted under normal traffic (every invoice is a new hash) and
+was replaced. Decision now: the memo is only a bounded decoding cache, and the
+rail's invoice source is **execution-bound** — it uses PAY-06's `executionId`,
+proving it derives from the committed decision of a governed request whose
+presentation is in flight and is claimed on that request's record, and returns
+exactly the `extra.invoice` PAY-04 durably recorded for that request. Chosen
+because the execution identity and the durable record already exist: no
+PAY-04, PAY-06, P11, P12 or store change, no new durable state, and process
+memory bounded by concurrency rather than history. Rejected: raising the map's
+bound (postpones exhaustion), lifecycle retirement of the map (needs a terminal
+signal per payment and still keeps history), and a new invoice-binding store
+(duplicates PAY-04's record).
 
 **D7 — The resource is the request, exactly.** A trusted resolver maps PAY-04's
 opaque `target` to the URL (and bound header values) the network layer sent;

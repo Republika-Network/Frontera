@@ -523,27 +523,157 @@ describe('PAY-08 — the PaymentPayload is bound to the governed terms (PP)', ()
   });
 });
 
-describe('PAY-08 hardening — the paid invoice is the governed invoice (INV-COLL, governed stack)', () => {
-  it('INV-COLL-5 a PaymentRequired whose invoice shares a payment hash with one already verified is refused before governance: no intent, no rail instruction, no send', async () => {
+describe('PAY-08 lifecycle hardening — the rail pays the governed execution’s exact invoice, and history exhausts nothing (LIFE, governed stack)', () => {
+  const invoiceOf = (requirement: Record<string, unknown>): string => (requirement['extra'] as Record<string, unknown>)['invoice'] as string;
+  const paymentRequiredCarrier = (server: ReturnType<typeof createReferenceX402Server>, request: AgentRequest, requirement: Record<string, unknown>) => ({ status: 402, headers: [['PAYMENT-REQUIRED', b64Json(server.paymentRequiredJson(request, [requirement]))]] as [string, string][] });
+
+  it('LIFE-2 A and B share (payee, payment hash): A cached for another resource, B governed — the rail is given exactly B, once; A under a new operation is refused before governance', async () => {
     await withWorld(async (world) => {
       const server = createReferenceX402Server({ node: world.node });
-      // Invoice A: the same payment hash, payee, amount and network — committed to another resource.
       const elsewhere: AgentRequest = { method: 'GET', url: `${RESOURCE_URL}&edition=a` };
       const requirementA = await server.requirementFor(elsewhere, 'pay08-collide');
-      await world.adapter.prepare(carrierOf({ status: 402, headers: [['PAYMENT-REQUIRED', b64Json(server.paymentRequiredJson(elsewhere, [requirementA]))]] }));
-      // Invoice B: valid on its own, for the governed resource.
+      await world.adapter.prepare(paymentRequiredCarrier(server, elsewhere, requirementA));
       const requirementB = await server.requirementFor(GET, 'pay08-collide');
-      assert.notEqual((requirementA['extra'] as Record<string, unknown>)['invoice'], (requirementB['extra'] as Record<string, unknown>)['invoice']);
-      const outcome = await world.present({ carrier: { status: 402, headers: [['PAYMENT-REQUIRED', b64Json(server.paymentRequiredJson(GET, [requirementB]))]] } });
-      assert.equal(refusal(outcome), 'normalization-failed');
-      assert.equal(world.governedIntents.length, 0, 'nothing reached govern()');
-      assert.equal(world.railInstructions.length, 0, 'no PAY-01 instruction');
-      assert.equal(world.effects(), 0, 'zero sends');
-      // The business-operation store is untouched: a fresh, unambiguous challenge under the same operation governs and pays once.
-      const fresh = governed(await world.present({ carrier: carrierOf(await server.respond(GET)) }));
-      assert.equal(fresh.status, 'executed');
+      assert.notEqual(invoiceOf(requirementA), invoiceOf(requirementB));
+      const result = governed(await world.present({ carrier: paymentRequiredCarrier(server, GET, requirementB) }));
+      assert.equal(result.status, 'executed');
+      assert.deepEqual(world.invoiceLookups.map((lookup) => lookup.served), [invoiceOf(requirementB)], 'exactly B, the governed text');
+      assert.equal(world.invoiceLookups[0]?.executionId, result.executionId);
       assert.equal(world.effects(), 1);
-      assert.equal(world.railInstructions.length, 1);
+      // The governed instrument under another operation: one instrument, one operation — refused before govern().
+      const intents = world.governedIntents.length;
+      assert.equal(refusal(await world.present({ carrier: paymentRequiredCarrier(server, GET, requirementB), businessOperationId: 'pay08-checkout-other' })), 'challenge-conflict');
+      assert.equal(world.governedIntents.length, intents);
+      assert.equal(world.effects(), 1);
+    });
+  });
+
+  it('LIFE-3 a cache miss is a re-decode, not a refusal and not a substitution: with a one-entry decoding window, A is prepared, evicted, re-prepared and paid exactly', async () => {
+    await withWorld(
+      async (world) => {
+        const server = createReferenceX402Server({ node: world.node });
+        const requirementA = await server.requirementFor(GET, 'pay08-life3-a');
+        await world.adapter.prepare(paymentRequiredCarrier(server, GET, requirementA));
+        for (const label of ['pay08-life3-x', 'pay08-life3-y']) await world.adapter.prepare(paymentRequiredCarrier(server, GET, await server.requirementFor(GET, label)));
+        const result = governed(await world.present({ carrier: paymentRequiredCarrier(server, GET, requirementA) }));
+        assert.equal(result.status, 'executed');
+        assert.deepEqual(world.invoiceLookups.map((lookup) => lookup.served), [invoiceOf(requirementA)]);
+        assert.equal(world.effects(), 1);
+      },
+      { verifierEntries: 1 },
+    );
+  });
+
+  it('LIFE-4 / LIFE-9 restart after settlement: the exact replay is answered from the record — no rail instruction, no invoice lookup, no send', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      const carrier = carrierOf(await server.respond(GET));
+      const first = governed(await world.present({ carrier }));
+      assert.equal((await world.verifySettlement(first.executionId as string)).outcome, 'settled');
+      const counts = { lookups: world.invoiceLookups.length, instructions: world.railInstructions.length, effects: world.effects() };
+      await world.restart();
+      const replay = governed(await world.present({ carrier }));
+      assert.equal(replay.requestId, first.requestId);
+      assert.equal('replayed' in replay && replay.replayed, true);
+      assert.deepEqual({ lookups: world.invoiceLookups.length, instructions: world.railInstructions.length, effects: world.effects() }, counts);
+    });
+  });
+
+  it('LIFE-5 / LIFE-6 / LIFE-10 120 sequential operations through an 8-entry decoding window: every one governs, is given its own exact invoice, sends once and settles — then a fresh one still does', async () => {
+    await withWorld(
+      async (world) => {
+        const server = createReferenceX402Server({ node: world.node });
+        const total = 120;
+        for (let index = 1; index <= total; index += 1) {
+          const response = await server.respond(GET);
+          const requirement = JSON.parse(Buffer.from(response.headers[0]?.[1] ?? '', 'base64').toString('utf8')) as { accepts: Record<string, unknown>[] };
+          const result = governed(await world.present({ carrier: carrierOf(response), businessOperationId: `pay08-life6-${String(index)}` }));
+          assert.equal(result.status, 'executed', `operation ${String(index)}`);
+          assert.equal(world.invoiceLookups.at(-1)?.served, invoiceOf(requirement.accepts[0] as Record<string, unknown>), `operation ${String(index)} is given its own invoice`);
+          assert.equal((await world.verifySettlement(result.executionId as string)).outcome, 'settled');
+        }
+        assert.equal(world.effects(), total, 'one send per operation, never more');
+        assert.equal(world.invoiceLookups.length, total);
+        const fresh = governed(await world.present({ carrier: carrierOf(await server.respond(GET)), businessOperationId: 'pay08-life10-fresh' }));
+        assert.equal(fresh.status, 'executed', 'history exhausted nothing');
+        assert.equal(world.effects(), total + 1);
+      },
+      { verifierEntries: 8 },
+    );
+  });
+
+  it('LIFE-7 unconfirmed: the binding is the durable record, so nothing is retired early; replays never look up or send; P12 resolves with no second send', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      world.node.behaviour = 'hold';
+      const carrier = carrierOf(await server.respond(GET));
+      const result = governed(await world.present({ carrier }));
+      assert.equal(result.status, 'execution_unconfirmed');
+      assert.equal(world.invoiceLookups.length, 1);
+      assert.equal(governed(await world.present({ carrier })).status, 'execution_unconfirmed');
+      await world.restart();
+      assert.equal(governed(await world.present({ carrier })).status, 'execution_unconfirmed');
+      assert.equal(world.invoiceLookups.length, 1, 'no second lookup');
+      world.node.settleHeld(testPreimage('pay08-invoice-1-25000').paymentHash);
+      assert.equal(((await world.reconcile(result.executionId as string)) as { readonly outcome: string }).outcome, 'resolved');
+      assert.equal((await world.verifySettlement(result.executionId as string)).outcome, 'settled');
+      assert.equal(world.effects(), 1);
+    });
+  });
+
+  it('LIFE-8 definitive not-completed: the replay remains no-send, before and after a restart', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      world.node.behaviour = 'fail';
+      const carrier = carrierOf(await server.respond(GET));
+      const result = governed(await world.present({ carrier }));
+      assert.notEqual(result.status, 'executed');
+      assert.notEqual(result.status, 'execution_unconfirmed');
+      world.node.behaviour = 'succeed';
+      const replay = governed(await world.present({ carrier }));
+      assert.equal(replay.requestId, result.requestId);
+      assert.equal(replay.status, result.status);
+      await world.restart();
+      assert.equal(governed(await world.present({ carrier })).status, result.status);
+      assert.equal(world.effects(), 1);
+      assert.equal(world.invoiceLookups.length, 1);
+    });
+  });
+
+  it('LIFE-11 the same payment hash reused by a new operation after the first completed: refused before governance — the new operation never inherits the old text', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      const requirementA = await server.requirementFor(GET, 'pay08-life11');
+      const first = governed(await world.present({ carrier: paymentRequiredCarrier(server, GET, requirementA) }));
+      assert.equal((await world.verifySettlement(first.executionId as string)).outcome, 'settled');
+      // The merchant reissues for the same resource, payee and payment hash: a different, fully valid text.
+      const reissuer = createReferenceX402Server({ node: world.node, maxTimeoutSeconds: 900 });
+      const requirementB = await reissuer.requirementFor(GET, 'pay08-life11');
+      assert.notEqual(invoiceOf(requirementB), invoiceOf(requirementA));
+      const intents = world.governedIntents.length;
+      assert.equal(refusal(await world.present({ carrier: paymentRequiredCarrier(reissuer, GET, requirementB), businessOperationId: 'pay08-life11-second' })), 'challenge-conflict');
+      assert.equal(world.governedIntents.length, intents);
+      assert.equal(world.effects(), 1);
+      assert.equal(world.invoiceLookups.length, 1);
+    });
+  });
+
+  it('LIFE-12 two concurrent operations with distinct invoices: each execution is given its own exact text, one send each', async () => {
+    await withWorld(async (world) => {
+      const server = createReferenceX402Server({ node: world.node });
+      const one = await server.requirementFor(GET, 'pay08-life12-one');
+      const two = await server.requirementFor(GET, 'pay08-life12-two');
+      const [first, second] = await Promise.all([
+        world.present({ carrier: paymentRequiredCarrier(server, GET, one), businessOperationId: 'pay08-life12-one' }),
+        world.present({ carrier: paymentRequiredCarrier(server, GET, two), businessOperationId: 'pay08-life12-two' }),
+      ]);
+      const [r1, r2] = [governed(first), governed(second)];
+      assert.equal(r1.status, 'executed');
+      assert.equal(r2.status, 'executed');
+      const servedTo = new Map(world.invoiceLookups.map((lookup) => [lookup.executionId, lookup.served]));
+      assert.equal(servedTo.get(r1.executionId as string), invoiceOf(one));
+      assert.equal(servedTo.get(r2.executionId as string), invoiceOf(two));
+      assert.equal(world.effects(), 2);
     });
   });
 });
