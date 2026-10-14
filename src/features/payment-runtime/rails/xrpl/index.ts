@@ -38,3 +38,6 @@ export type { XrplRailLogger, XrplRailReadiness, XrplRlusdRail, XrplRlusdRailOpt
 export { XRPL_FINALITY_CONTRADICTIONS, readXrplFinalLedger, readXrplPaymentFinality } from './xrpl-finality.js';
 export type { XrplExpectedSettlement, XrplFinalLedger, XrplFinalityContradiction, XrplFinalityReading } from './xrpl-finality.js';
 export { createXrplSdkClient } from './xrpl-sdk-client.js';
+// TRADE-04C (G2): the reservation-gated client over the same one submit request. Composed only by the governed trade executor's Host composition.
+export { XrplReservedSubmissionRefusedError, createXrplReservedSubmissionClient, createXrplReservedSubmissionConfiguration, xrplSubmissionClaimOf } from './xrpl-sdk-client.js';
+export type { XrplReservedSubmissionAuthority, XrplReservedSubmissionClient, XrplReservedSubmissionConfiguration, XrplSubmissionClaim } from './xrpl-sdk-client.js';
