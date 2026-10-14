@@ -5,6 +5,7 @@ import {
   EXERCISE_CONTROL_MAXIMUM_LIMITS,
   EXERCISE_CONTROL_MAXIMUM_ROLLING_SECONDS,
   EXERCISE_CONTROL_REASON_CODES as R,
+  EXERCISE_CONTROL_UNIT_MAXIMUM_BYTES,
   addExerciseDecimals,
   compareExerciseDecimals,
   exerciseControlPolicyDigest,
@@ -135,6 +136,21 @@ describe('Exercise control — §8 the closed limit contract', () => {
     assert.equal(snapshotExerciseControlLimits(Array.from({ length: EXERCISE_CONTROL_MAXIMUM_LIMITS }, (_, index) => valid({ limitId: `limit-${index}` })))?.length, 32);
     assert.ok(snapshotExerciseControlLimits([valid({ scopeKey: 'x'.repeat(512) })]) !== undefined);
     assert.ok(snapshotExerciseControlLimits([valid({ window: { kind: 'rolling', seconds: EXERCISE_CONTROL_MAXIMUM_ROLLING_SECONDS } })]) !== undefined);
+  });
+
+  it('K2: an amount unit may be any P9 asset id — 64, 65, 93 (a 40-hex-digit XRP Ledger currency) and 128 bytes are accepted; 129 bytes is refused', () => {
+    const unitOf = (bytes: number): string => `u${'x'.repeat(bytes - 1)}`;
+    for (const bytes of [64, 65, 128]) assert.ok(snapshotExerciseControlLimits([amount('spend', 's', '10', unitOf(bytes))]) !== undefined, `${bytes} bytes`);
+    const xrplAsset = 'xrp-ledger-testnet:524C555344000000000000000000000000000000/rvYAfWj5gh67oV6fW32ZzP3Aw4Eubs59B';
+    assert.equal(Buffer.byteLength(xrplAsset, 'utf8'), 93);
+    assert.ok(snapshotExerciseControlLimits([amount('spend', 's', '10', xrplAsset)]) !== undefined, 'the TRADE-01 asset id for a hex currency');
+    assert.equal(EXERCISE_CONTROL_UNIT_MAXIMUM_BYTES, 128);
+    assert.equal(snapshotExerciseControlLimits([amount('spend', 's', '10', unitOf(129))]), undefined, '129 bytes');
+    // The bound is UTF-8 bytes, not characters: 65 two-byte characters are 130 bytes.
+    assert.equal(snapshotExerciseControlLimits([amount('spend', 's', '10', 'é'.repeat(65))]), undefined);
+    assert.ok(snapshotExerciseControlLimits([amount('spend', 's', '10', 'é'.repeat(64))]) !== undefined);
+    // Widening changes length only: the character rules still refuse.
+    for (const unit of [' USD', 'USD ', 'US\u0000D', '\uD800', '']) assert.equal(snapshotExerciseControlLimits([amount('spend', 's', '10', unit)]), undefined, JSON.stringify(unit));
   });
 
   it('a getter is refused rather than run, and a throwing Proxy throws — which the gate reads as invalid', () => {

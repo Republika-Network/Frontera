@@ -116,6 +116,13 @@ type ExerciseControlWindow = { kind: 'lifetime' } | { kind: 'rolling'; seconds: 
 - `scopeKey` — opaque host data, ≤ 512 UTF-8 bytes, no control characters, no
   surrounding whitespace. The runtime never parses it and invents no grouping:
   the host policy chooses buckets.
+- `unit` (amount limits) — ≤ 128 UTF-8 bytes, no control characters, no
+  surrounding whitespace; compared exactly with the attempt's unit. 128
+  matches P9's asset-id bound, so any registered asset can carry a limit. It
+  was 64 until TRADE-03 K2, which found a 93-byte XRP Ledger asset id refused
+  here. Historical records are unaffected. A binary rolled back to the 64-byte
+  bound would refuse a stored reservation whose unit exceeds 64 bytes, which
+  fails closed.
 - ≤ 32 limits per exercise; a duplicate `(limitId, scopeKey)` is refused.
 - Exactly these keys: an extra key (an adapter hint, a URL) is refused.
 - The policy's answer is read once into a frozen snapshot; a throw, a promise, an

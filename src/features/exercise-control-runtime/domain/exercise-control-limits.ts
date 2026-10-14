@@ -46,8 +46,18 @@ export const EXERCISE_CONTROL_LIMIT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0
 /** A bucket key is opaque host data, bounded by its UTF-8 size. */
 export const EXERCISE_CONTROL_SCOPE_KEY_MAXIMUM_BYTES = 512;
 
-/** An amount unit is compared exactly against the attempt's unit, bounded by its UTF-8 size. */
-export const EXERCISE_CONTROL_UNIT_MAXIMUM_BYTES = 64;
+/**
+ * An amount unit is compared exactly against the attempt's unit, bounded by its UTF-8 size.
+ *
+ * 128 — P9's asset-id bound (`MONETARY_ASSET_ID_PATTERN`, at most 128 ASCII
+ * characters). An attempt's unit is always a P9 asset id, so a tighter bound
+ * here could only refuse a limit in a legitimate asset: TRADE-03 K2 found a
+ * 93-byte XRP Ledger asset id (`<network>:<40-hex currency>/<issuer>`) refused
+ * this way, withholding every governed exercise in that asset. Widening admits
+ * no new identity: the unit is still opaque text compared exactly, and a unit
+ * that is not a P9 id can never equal an attempt's.
+ */
+export const EXERCISE_CONTROL_UNIT_MAXIMUM_BYTES = 128;
 
 export const EXERCISE_CONTROL_METRICS = ['count', 'amount'] as const;
 export type ExerciseControlMetric = (typeof EXERCISE_CONTROL_METRICS)[number];

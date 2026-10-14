@@ -76,10 +76,14 @@ describe('Trade runtime boundaries (TRADE-01)', () => {
     assert.ok(imports >= 4, `found ${imports} hash imports`);
   });
 
-  it('nothing in Frontera imports the trade runtime yet — TRADE-01 has no composition edge', () => {
+  it('nothing in Frontera imports the trade runtime but its one approved composition edge (TRADE-03 K1)', () => {
+    // The approved edge: the CORE-04 trusted-context provider. Held to `trade03-risk-context-structure.test.ts`.
+    const APPROVED_EDGE = 'src/enterprise/trade-risk-context/';
     const roots = ['src/kernel', 'src/runtime', 'src/enterprise', 'src/kernel-host', 'src/control-plane-web'];
     const features = readdirSync('src/features').filter((name) => name !== 'trade-runtime').map((name) => join('src/features', name));
-    for (const file of [...roots, ...features].flatMap((root) => walk(root, false))) {
+    const files = [...roots, ...features].flatMap((root) => walk(root, false));
+    assert.ok(files.some((file) => file.startsWith(APPROVED_EDGE)), 'the edge exists and is scanned');
+    for (const file of files.filter((path) => !path.startsWith(APPROVED_EDGE))) {
       assert.equal(/trade-runtime/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the trade vertical`);
     }
   });
