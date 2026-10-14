@@ -154,7 +154,7 @@ responsibility, with the supporting Frontera control named.
 | PILOT-7 | An operator credential is stolen | **ACCEPTED** | bearer secrets, no MFA (PROD-04); bounded by the role split, quorum, audit attribution and removal from the configuration |
 | PILOT-8 | Unauthorized organization bootstrap | **BLOCKED** | bootstrap needs an organization administrator; a conflicting second bootstrap is refused, a replay writes nothing |
 | PILOT-9 | An operator acts on another organization | **BLOCKED** | one organization per Host, never taken from a request; a request naming one is refused |
-| PILOT-10 | A misconfigured Governance Profile | **MITIGATED** | profiles are validated at boot; promotion is digest-bound and attributed; `approvalPolicy` must name a profile that declares how it is approved |
+| PILOT-10 | A misconfigured Governance Profile | **MITIGATED** | profiles are validated at boot; promotion is digest-bound and attributed; `approvalPolicy` must name a profile every declared version of which declares how it is approved (PILOT-29), and needs an operator who can approve (PILOT-27) |
 | PILOT-11 | Authority over-provisioned to an agent | **MITIGATED** | the readiness gate fails an agent with an unbounded active lineage (`PR-11`); the provisioner's judgement remains |
 | PILOT-12 | Emergency release abused | **MITIGATED** | release is an organization-administrator permission, attributed and recorded; a responder can stop, never release |
 | PILOT-13 | An unconfirmed action manually sent again | **BLOCKED** | no route sends anything again; the same request answers from the record; the operator records a resolution that performs nothing |
@@ -170,6 +170,13 @@ responsibility, with the supporting Frontera control named.
 | PILOT-23 | An unsupported upgrade | **MITIGATED** | the configuration check refuses an unknown schema; no downgrade is offered; the upgrade runbook stops on any refusal |
 | PILOT-24 | No rollback or restore practice | **BLOCKED** | `pilot-ready` requires a verified backup and a restore of that backup (`PR-15`, `PR-16`) |
 | PILOT-25 | Offboarding leaves live authority | **BLOCKED** | the offboarding runbook revokes every identity; the gate shows no pilot agent left (`PR-10`) |
+| PILOT-26 | Readiness false positive through split agent state (a credential on one agent, authority on another) | **BLOCKED** | `PR-11` counts authority only on an agent whose identity and credential are both active — the agents `PR-10` counts; no union across agents (independent review P1-1) |
+| PILOT-27 | Human approval configured with no operator able to approve | **BLOCKED** | `approvalPolicy` boots only when a configured operator role can reach `approval.approve` (the canonical role policy); refused by `config-check` and the launcher (P1-2) |
+| PILOT-28 | An incomplete backup accepted as complete | **BLOCKED** | `PR-15` judges coverage with PROD-02's own validators against this deployment's store requirements, never the manifest's `complete` flag; every declared store file checksummed twice (P1-3) |
+| PILOT-29 | Approval policy and profile version disagree (a review nothing can approve) | **BLOCKED** | every declared version of a profile `approvalPolicy` rules must declare `approval`; under the operator-promoted lifecycle any promotable version stays approvable (P1-4) |
+| PILOT-30 | Policy decision identifiers reused across a restart | **BLOCKED** | the compiled approval policy runs on the live clock with `${prefix}-${randomUUID()}` identifiers; two boots never share one (P2-1) |
+| PILOT-31 | Unbounded memory retention in the compiled approval policy under sustained traffic | **BLOCKED** | each evaluation runs on its own freshly compiled, frozen runtime and is dropped with everything it recorded; nothing is retained between evaluations (P2-2) |
+| PILOT-32 | Readiness acknowledged by someone other than the pilot owner | **MITIGATED** | `PR-18` requires an entry with role `pilot-owner`; the gate checks form and binding and cannot authenticate the person (an unsigned file, like the record) (P2-3) |
 
 Residuals this pilot carries, beyond the table:
 

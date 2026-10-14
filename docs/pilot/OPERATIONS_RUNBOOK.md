@@ -553,8 +553,11 @@ again once the witness is back. The readiness gate reports the outage as
 One read-only command answers: is the Host ready, which required dependency
 is not, is an emergency stop active, are the witness and the signer healthy,
 are the stores accessible and intact, what release is running — and, at the
-pilot level, whether the organization, an agent with bounded authority, a
-verified backup, a qualified restore and the acknowledgement exist. It runs
+pilot level, whether the organization, one agent that holds both an active
+credential and bounded authority, a backup covering every store this
+deployment requires (judged by PROD-02's store registry, never by the
+backup's own claim), a qualified restore and the pilot owner's
+acknowledgement exist. It runs
 in the Host's own image, configuration and network namespace, authenticates
 with the observer credential, verifies the administrator's, and prints no
 credential:
@@ -575,7 +578,10 @@ What each check means and the qualification record: PILOT_READINESS.md §5.
 At the pilot level the gate needs the evidence: an **extracted** backup set
 (`tar -C "$EVIDENCE_IN" -xf "$BACKUP_FILE"`, as §5.3 extracts it to verify it),
 the restore report the restore wrote on the state volume, and the pilot
-owner's acknowledgement (PILOT_READINESS.md §5.4). Mount a directory holding
+owner's acknowledgement (PILOT_READINESS.md §5.4; an entry with role
+`pilot-owner`). The kit's tool always runs `--preflight`, which supplies this
+deployment's store requirements that the backup's coverage is judged against
+(PILOT_READINESS.md §5.6). Mount a directory holding
 them read-only, and a private directory for the record:
 
 <!-- ref: needs the pilot's own evidence directory and a restored deployment; the same gate with the same evidence is qualified by the PROD-03 clean-room drill -->

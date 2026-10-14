@@ -128,7 +128,7 @@ Three cumulative levels, never one boolean:
 | --- | --- |
 | `deployment-ready` | the Host is safe to accept governed executions: identified release, secure configuration and posture, durable intact storage, witness and signer healthy, live, ready and healthy, no global or organization stop, diagnostics answering, no integrity or freshness failure |
 | `organization-ready` | … and the organization is bootstrapped, a verified organization administrator exists, the required profiles are active, the approval path (when configured) and activity and evidence are readable |
-| `pilot-ready` | … and an agent holds an active credential and bounded standing authority, a verified cold backup of this deployment and release exists, a restore of it is qualified, the pilot owner's acknowledgement exists for this release, and a verified operator can revoke and stop |
+| `pilot-ready` | … and **one and the same** agent holds an active identity, an active credential and bounded standing authority, a cold backup of this deployment and release exists that covers every store PROD-02's registry requires of this deployment, a restore of it is qualified, the **pilot owner's** acknowledgement exists for this release, and a verified operator can revoke and stop |
 | `not-ready` | the deployment level fails |
 
 A check that cannot be evaluated fails: an unreachable Host, an unreadable
@@ -143,6 +143,17 @@ Readiness and individual authority are different things. Revoking an agent's
 authority leaves the deployment and organization levels unchanged; only the
 pilot level reports that no agent holds authority (`PR-11`).
 
+`PR-10` and `PR-11` are about the same agents: those whose identity and
+credential are both active — the agents that can authenticate a governed
+request today. `PR-11` needs one of **them** to hold active standing
+authority. Authority held by an agent whose credential (or identity) is
+revoked never stands in for it: a credential on one agent and authority on
+another is `NO_STANDING_AUTHORITY`, because no agent can submit an authorized
+request. In the other direction the check is broad and fails closed: an
+unbounded active lineage on **any** agent whose identity is active —
+credential or not — is `AUTHORITY_UNBOUNDED`, since that agent is one
+credential issuance away from acting.
+
 ### 5.2 Checklist
 
 | Check | Level | Evaluates | Fails with (examples) |
@@ -156,15 +167,15 @@ pilot level reports that no agent holds authority (`PR-11`).
 | PR-07 organization | organization | the organization view; an active trust domain and root issuer | `ORGANIZATION_NOT_BOOTSTRAPPED` |
 | PR-08 operators | organization | every given operator credential authenticates; one is an organization administrator | `ADMINISTRATOR_NOT_VERIFIED`, `OPERATOR_CREDENTIAL_INVALID` |
 | PR-09 governance-profile | organization | each `--require-profile` (or at least one profile) has an active version | `PROFILE_NOT_ACTIVE` |
-| PR-10 pilot-agent | pilot | an active agent with an active credential | `NO_PILOT_AGENT` |
-| PR-11 bounded-authority | pilot | an agent holds standing authority, and every active lineage carries P10 constraints or typed bounds | `NO_STANDING_AUTHORITY`, `AUTHORITY_UNBOUNDED` |
+| PR-10 pilot-agent | pilot | an agent whose identity and credential are both active | `NO_PILOT_AGENT` |
+| PR-11 bounded-authority | pilot | one of **those** agents holds active standing authority; every active lineage of every identity-active agent carries P10 constraints or typed bounds | `NO_STANDING_AUTHORITY`, `AUTHORITY_UNBOUNDED` |
 | PR-12 approval-path | organization | the approval inbox readable, when approvals are composed | `APPROVALS_NOT_CONFIGURED`, `APPROVAL_INBOX_UNREADABLE` |
 | PR-13 emergency-controls | deployment | the stop list readable; no `global` or `organization` stop active (narrower stops are reported, not blocking) | `EMERGENCY_STOP_ACTIVE` |
 | PR-14 activity-evidence | organization | activity, metrics and the latest decision's trace readable | `ACTIVITY_UNREADABLE`, `EVIDENCE_UNREADABLE` |
-| PR-15 backup | pilot | `--backup <set>`: every checksum, complete coverage of this organization, cold, no secret flag and no held credential in any file, this release, younger than `--backup-max-age-hours` (default 168) | `BACKUP_CHECKSUM_MISMATCH`, `BACKUP_STALE`, `BACKUP_CONTAINS_CREDENTIAL` |
+| PR-15 backup | pilot | `--backup <set>` (§5.6): the store inventory and coverage judged by PROD-02's own validators against **this** deployment's store requirements (needs `--preflight`), never by the manifest's `complete` flag; exactly the declared store files, each matching the manifest's checksum and a `checksums.sha256` entry; this organization, cold, no secret flag and no held credential in any file, this release, younger than `--backup-max-age-hours` (default 168) | `BACKUP_INCOMPLETE`, `BACKUP_COVERAGE_NOT_VERIFIABLE`, `BACKUP_MANIFEST_INVALID`, `BACKUP_STORE_FILE_MISSING`, `BACKUP_CHECKSUM_MISSING`, `BACKUP_CHECKSUM_MISMATCH`, `BACKUP_UNEXPECTED_FILE`, `BACKUP_STALE`, `BACKUP_CONTAINS_CREDENTIAL` |
 | PR-16 restore-drill | pilot | `--restore-report <file>`: a completed, verified, complete `restore:v1` of **that** backup | `RESTORE_OF_ANOTHER_BACKUP`, `RESTORE_DRILL_NOT_EVIDENCED` |
 | PR-17 diagnostics | deployment | the operator health view answers with its operations section | `DIAGNOSTICS_UNREADABLE` |
-| PR-18 acknowledgement | pilot | `--acknowledgement <file>` (§5.4) for this organization and release | `ACKNOWLEDGEMENT_STALE`, `ACKNOWLEDGEMENT_INCOMPLETE` |
+| PR-18 acknowledgement | pilot | `--acknowledgement <file>` (§5.4) by the **pilot owner**, for this organization and release | `ACKNOWLEDGEMENT_NOT_BY_PILOT_OWNER`, `ACKNOWLEDGEMENT_STALE`, `ACKNOWLEDGEMENT_INCOMPLETE` |
 | PR-19 revocation-path | pilot | a verified operator holds `authority.revoke`, `agent-credential.revoke` and `emergency.stop` | `REVOCATION_PATH_NOT_OPERABLE` |
 | PR-20 integrity-freshness | deployment | persistence connected; no required module unhealthy; no anchored store regressed, forked, pending recovery or unbound | `REQUIRED_MODULE_UNHEALTHY`, `FRESHNESS_FORKED` |
 
@@ -223,6 +234,16 @@ SECURITY_POSTURE.md (including the software-custody acceptance of its §4), and
 `known-limits` is README.md §"Known limits of the pilot". An acknowledgement
 names one release: a new release needs a new one.
 
+Only the **pilot owner's** entry satisfies `PR-18`: at least one entry must
+have `"role": "pilot-owner"`, a name and a valid `acknowledgedAt`; others may
+co-sign, and their entries are recorded but never sufficient
+(`ACKNOWLEDGEMENT_NOT_BY_PILOT_OWNER`). `pilot-owner` is an operational role —
+the person accountable for the pilot on the organization's side
+(SHARED_RESPONSIBILITY.md) — not an operator-plane role: holding
+`organization-administrator`, `approver` or any other operator role does not
+make anyone the pilot owner, and the gate does not accept those role names in
+its place.
+
 ### 5.5 The gate and the go-live decision
 
 `pilot-ready` is necessary for **READY** (§2), not sufficient: the platform,
@@ -231,3 +252,22 @@ A gate result below `pilot-ready` is always **NOT READY**, except that
 **READY WITH ACCEPTED DEGRADATION** may rest on a gate run that accepted a
 named optional module (`--accept-degraded`). Record the gate's JSON report in
 the go-live record (§3).
+
+### 5.6 What a verified backup means
+
+`PR-15` and `restore:v1` share one reading of a backup set: PROD-02's store
+registry (`scripts/portability/store-registry.mjs`), whose pure validators
+check the manifest's store inventory (closed store names, registry filenames,
+no duplicates) and its coverage. Coverage is judged two ways and never by
+the manifest's own `coverage.complete`: every store the backup's recorded
+deployment requires under this build's conditions, and every store **this**
+deployment requires — derived by the preflight from the Host's own
+environment and governed-action file, exactly as `backup:v1` and
+`restore:v1` derive it. A backup that omits a required store fails
+(`BACKUP_INCOMPLETE`, naming the stores) whatever its manifest says, including
+a manifest that records the store as not required or misdescribes the source
+deployment. Without `--preflight` the deployment's requirements are unknown
+and the check fails (`BACKUP_COVERAGE_NOT_VERIFIABLE`). The gate reads and
+hashes files only: it opens no store, restores nothing and never touches the
+witness. SQLite integrity and signed heads are verified by `restore:v1`,
+which `PR-16` evidences.

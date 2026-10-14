@@ -1,7 +1,7 @@
 {
  "format": "frontera.prod03.mutation-evidence.v1",
- "baseline": "the PROD-03 working tree on main @ 6adfe4564ddcb20beb5205a7dfa7f5c8651728a8, in a native-Linux LF tree (git archive of the baseline with core.autocrlf=false, overlaid with the branch's files normalized to LF)",
- "runner": "scripted, outside the repository: apply edits (each find verified to occur exactly once) -> tsc -b for a TypeScript mutation -> node --test <kill set> -> killed when the kill set exits non-zero -> restore original bytes -> SHA-256 compare -> rebuild after a TypeScript mutation; afterwards every mutated file compared byte for byte with the branch; the clean-room drill's kill set ran with FRONTERA_PILOT_DRILL=1 semantics (it was not yet opt-in when the campaign ran; it is now skipped inside the parallel root suite and run by npm run qualify:pilot)",
+ "baseline": "PR #188 after the independent-review hardening: d3aeb7524f0ec7af40a727129e34ec67fed41467 plus the hardening change, in a native-Linux LF tree (git archive of d3aeb75 with core.autocrlf=false, overlaid with the changed files normalized to LF). The original campaign (M-PILOT-1 … 25, on main @ 6adfe45 + PROD-03) was re-run on the hardened code; M-PILOT-12 and M-PILOT-23 retargeted to the rewritten lines",
+ "runner": "scripted, outside the repository: apply edits (each find verified to occur exactly once) -> tsc -b for a TypeScript mutation -> node --test <kill set> -> killed when the kill set exits non-zero -> restore original bytes -> SHA-256 compare -> rebuild after a TypeScript mutation; afterwards every mutated file compared byte for byte with the branch; no mutation in this campaign uses the multi-process drill as its kill set (M-PILOT-12, formerly killed by the drill, is now killed by the readiness and hardening suites); the hardened drill itself is run by npm run qualify:pilot",
  "killSets": {
   "GATE": [
    "tests/pilot/prod03-readiness-gate.test.mjs",
@@ -19,14 +19,27 @@
   ],
   "WITNESS": [
    "dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js"
+  ],
+  "HARD_MJS": [
+   "tests/pilot/prod03-independent-review-hardening.test.mjs"
+  ],
+  "HARD_TS": [
+   "dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js"
+  ],
+  "PROD02": [
+   "tests/portability-backup-restore.contract.test.mjs",
+   "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
   ]
  },
  "totals": {
-  "defined": 25,
-  "counted": 25,
-  "killed": 25,
+  "defined": 39,
+  "counted": 39,
+  "killed": 39,
   "survived": 0,
-  "notApplied": 0
+  "notApplied": 0,
+  "survivedOnFirstRunThenKilled": [
+   "M-PILOT-39"
+  ]
  },
  "srcTreeIdenticalAfterCampaign": true,
  "mutations": [
@@ -39,7 +52,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 71 # fail 2"
+   "evidence": "# pass 73 # fail 2"
   },
   {
    "id": "M-PILOT-2",
@@ -50,7 +63,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-3",
@@ -61,7 +74,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-4",
@@ -72,7 +85,7 @@
     "tests/pilot-operations-docs.structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 27 # fail 1"
+   "evidence": "# pass 29 # fail 1"
   },
   {
    "id": "M-PILOT-5",
@@ -83,7 +96,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 71 # fail 2"
+   "evidence": "# pass 73 # fail 2"
   },
   {
    "id": "M-PILOT-6",
@@ -94,7 +107,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-7",
@@ -105,7 +118,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-8",
@@ -116,7 +129,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-9",
@@ -127,7 +140,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 70 # fail 3"
+   "evidence": "# pass 72 # fail 3"
   },
   {
    "id": "M-PILOT-10",
@@ -138,7 +151,7 @@
     "tests/pilot-operations-docs.structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 27 # fail 1"
+   "evidence": "# pass 29 # fail 1"
   },
   {
    "id": "M-PILOT-11",
@@ -149,17 +162,19 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-12",
    "title": "offboarding leaves the gate counting revoked agents",
    "file": "scripts/pilot/lib-pilot-readiness.mjs",
    "killSet": [
-    "tests/pilot/prod03-clean-room-drill.test.mjs"
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs",
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 15 # fail 1"
+   "evidence": "# pass 75 # fail 0; # pass 32 # fail 1"
   },
   {
    "id": "M-PILOT-13",
@@ -170,7 +185,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 62 # fail 11"
+   "evidence": "# pass 64 # fail 11"
   },
   {
    "id": "M-PILOT-14",
@@ -181,13 +196,14 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-15",
    "title": "approvalPolicy compiles a non-restrictive effect",
    "file": "src/enterprise/host/approval-policy.ts",
    "killSet": [
+    "tsc -b",
     "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
    ],
    "status": "KILLED",
@@ -198,6 +214,7 @@
    "title": "two policy sources are composed silently",
    "file": "src/enterprise/host/enterprise-host.ts",
    "killSet": [
+    "tsc -b",
     "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
    ],
    "status": "KILLED",
@@ -208,6 +225,7 @@
    "title": "a revocation the witness refused surfaces as a generic failure",
    "file": "src/enterprise/authority-administration/service.ts",
    "killSet": [
+    "tsc -b",
     "dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js"
    ],
    "status": "KILLED",
@@ -218,6 +236,7 @@
    "title": "a freshness integrity failure is reported as an outage",
    "file": "src/enterprise/authority-administration/service.ts",
    "killSet": [
+    "tsc -b",
     "dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js"
    ],
    "status": "KILLED",
@@ -232,7 +251,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 51 # fail 22"
+   "evidence": "# pass 53 # fail 22"
   },
   {
    "id": "M-PILOT-20",
@@ -243,7 +262,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 71 # fail 2"
+   "evidence": "# pass 73 # fail 2"
   },
   {
    "id": "M-PILOT-21",
@@ -254,7 +273,7 @@
     "tests/pilot-operations-docs.structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 27 # fail 1"
+   "evidence": "# pass 29 # fail 1"
   },
   {
    "id": "M-PILOT-22",
@@ -265,13 +284,14 @@
     "tests/pilot-operations-docs.structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 26 # fail 2"
+   "evidence": "# pass 28 # fail 2"
   },
   {
    "id": "M-PILOT-23",
    "title": "approvalPolicy accepts a profile that declares no approval",
    "file": "src/enterprise/host/approval-policy.ts",
    "killSet": [
+    "tsc -b",
     "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
    ],
    "status": "KILLED",
@@ -286,7 +306,7 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
   },
   {
    "id": "M-PILOT-25",
@@ -297,7 +317,154 @@
     "tests/pilot/prod03-pilot-structure.test.mjs"
    ],
    "status": "KILLED",
-   "evidence": "# pass 72 # fail 1"
+   "evidence": "# pass 74 # fail 1"
+  },
+  {
+   "id": "M-PILOT-26",
+   "title": "PR-11 counts authority held by a credential-inactive agent",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 31 # fail 2"
+  },
+  {
+   "id": "M-PILOT-27",
+   "title": "approvalPolicy accepts operators none of whom can reach approval.approve",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "tsc -b",
+    "dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 20 # fail 7"
+  },
+  {
+   "id": "M-PILOT-28",
+   "title": "PR-15 trusts coverage.complete instead of the canonical store coverage",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 30 # fail 3"
+  },
+  {
+   "id": "M-PILOT-29",
+   "title": "approvalPolicy accepts a ruled profile id with one version lacking approval",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "tsc -b",
+    "dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 25 # fail 2"
+  },
+  {
+   "id": "M-PILOT-30",
+   "title": "the live approval runtime runs on the fixed COMPILED_AT clock",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "tsc -b",
+    "dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 25 # fail 2"
+  },
+  {
+   "id": "M-PILOT-31",
+   "title": "approval runtime ids restart deterministically on every boot",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "tsc -b",
+    "dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 24 # fail 3"
+  },
+  {
+   "id": "M-PILOT-32",
+   "title": "the approval runtime is shared and retains every evaluation for the Host lifetime",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "tsc -b",
+    "dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 26 # fail 1"
+  },
+  {
+   "id": "M-PILOT-33",
+   "title": "an acknowledgement by a non-owner role passes PR-18",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 29 # fail 4"
+  },
+  {
+   "id": "M-PILOT-34",
+   "title": "PR-15 judges coverage only against the backup's own record, not this deployment",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 31 # fail 2"
+  },
+  {
+   "id": "M-PILOT-35",
+   "title": "PR-15 skips the manifest's own store checksum",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 32 # fail 1"
+  },
+  {
+   "id": "M-PILOT-36",
+   "title": "PR-15 accepts an undeclared file among the stores",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 32 # fail 1"
+  },
+  {
+   "id": "M-PILOT-37",
+   "title": "PR-15 passes without this deployment's store requirements",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 32 # fail 1"
+  },
+  {
+   "id": "M-PILOT-38",
+   "title": "PR-15 requires no checksums.sha256 entry for a store",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-independent-review-hardening.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 32 # fail 1"
+  },
+  {
+   "id": "M-PILOT-39",
+   "title": "restore:v1 stops using the shared coverage validator (two readings of a complete backup)",
+   "file": "scripts/portability/restore-enterprise-v1.mjs",
+   "killSet": [
+    "tests/portability-backup-restore.contract.test.mjs",
+    "dist/src/enterprise/__tests__/prod02-backup-integrity-host.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 63 # fail 10",
+   "note": "first run SURVIVED with the kill set tests/portability-backup-restore.contract.test.mjs alone (# pass 20 # fail 0): that file has no forged-complete manifest case; restore's refusal of one lives in prod02-backup-integrity-host.test.ts, added to the kill set and re-run: killed"
   }
  ]
 }

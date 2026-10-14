@@ -31,6 +31,14 @@ outside it. Name each one:
 | **Signer / custody operator** | under external custody, the custody service and its key; under software custody, whoever controls `.env` and the Host process |
 | **Payment or provider operator** | only when a payment rail is composed (not in the qualified pilot): the rail's own accounts, credentials, node or processor, under that rail's runbooks (`docs/payments/`) |
 
+Within the pilot organization one person is the **pilot owner**: accountable
+for the pilot, the one who records the go-live decision
+([`PILOT_READINESS.md`](PILOT_READINESS.md) §3) and acknowledges this matrix,
+the security posture and the known limits for each release (§5.4 there; the
+readiness gate's `PR-18` accepts no other role). It is an operational role,
+not an operator-plane role: holding `organization-administrator` or any other
+operator role does not make anyone the pilot owner.
+
 ## Platform and network
 
 | Responsibility | Frontera | Pilot organization | Shared | Notes |
@@ -69,6 +77,7 @@ outside it. Name each one:
 | Host readiness semantics (`/live`, `/ready`, `/health`) | ✔ | | | OPERATIONS_RUNBOOK.md §9 |
 | The readiness gate's checks and their fail-closed evaluation | ✔ | | | PILOT_READINESS.md §5 |
 | Running the readiness gate, keeping its record, renewing it after a material change | | ✔ | | OPERATIONS_RUNBOOK.md §9.1 |
+| Acknowledging shared responsibility, security posture and known limits for each release | | ✔ | | The pilot owner, in person (PILOT_READINESS.md §5.4); the gate checks form and binding, not who wrote the file |
 | Clock synchronization (NTP) of the Host, witness and signer machines | | ✔ | | grants, approvals, credentials and evidence carry validity windows and timestamps |
 | Acting on readiness (traffic decisions, restarts on `/live` failure) | | ✔ | | The image health check reports `/ready`; Compose restarts a stopped container (`restart: unless-stopped`) |
 | Module health and criticality | ✔ | | | Required modules fail readiness; optional ones degrade |

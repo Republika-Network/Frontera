@@ -92,8 +92,25 @@ validates it, with the rest of the configuration, before anything starts.
 reads from the file: per Governance Profile, "a decision governed by this
 profile requires human approval". It can only send an otherwise allowed
 decision to the approval workflow; it cannot allow, deny or shape authority.
-The profile it names must declare how it is approved (`approval`), and the
-deployment must have operators. Any other policy (conditions on amounts,
+Two things are checked before anything starts (`config-check` and the
+launcher refuse otherwise), so that nothing it sends to review is
+unresolvable from the first request:
+
+- **every declared version** of the profile it names declares how it is
+  approved (`approval`, CORE-05). Under the operator-promoted lifecycle the
+  catalog may hold several versions of one profile, and a steward can promote
+  any of them; a version without `approval` would turn "requires approval"
+  into a review nothing can approve. Versions may declare different approval
+  terms — each review is bound to the version in force when it was opened,
+  and a review opened under one version is superseded (never executed) once
+  another is promoted;
+- at least one configured operator's role can reach `approval.approve` —
+  `approver` or `organization-administrator` (the operator-plane role policy,
+  §1). That is necessary, not sufficient: an approval
+  counts only when its operator also holds Kernel-Authority standing for the
+  profile's approver action (§8.1).
+
+Any other policy (conditions on amounts,
 facts, risk) is in-process composition by an embedder
 (`docs/enterprise/AOC_ENTERPRISE_HOST.md`), outside the qualified pilot.
 
@@ -589,9 +606,11 @@ open; it is a known limit (SECURITY_POSTURE.md §9), qualified by the drill.
 
 ## 12. Pilot readiness
 
-When the organization, its profiles, an agent with bounded authority, a
-verified backup, a qualified restore and the pilot owner's acknowledgement
-exist, the readiness gate reaches `pilot-ready`. How to run it with the
+When the organization, its profiles, an agent that holds both an active
+credential and bounded standing authority (the same agent), a backup that
+covers every store this deployment requires, a qualified restore of it and
+the **pilot owner's** acknowledgement exist, the readiness gate reaches
+`pilot-ready`. How to run it with the
 evidence, what each check means and how the qualification record works:
 OPERATIONS_RUNBOOK.md §9.1 and PILOT_READINESS.md §5.
 
