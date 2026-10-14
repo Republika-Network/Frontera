@@ -38,8 +38,10 @@ export const QUALIFICATION_SUITES = Object.freeze([
   'tests/pilot/prod03-signer-outage-drill.test.mjs',
   'tests/pilot/prod03-readiness-gate.test.mjs',
   'tests/pilot/prod03-pilot-structure.test.mjs',
+  'tests/pilot/prod03-independent-review-hardening.test.mjs',
   'dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js',
   'dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js',
+  'dist/src/enterprise/__tests__/prod03-independent-review-hardening.test.js',
 ]);
 
 const REMEDIATION = Object.freeze({

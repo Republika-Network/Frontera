@@ -1,9 +1,12 @@
+import { randomUUID } from 'node:crypto';
+
 import type { PolicyPackRule } from '../../features/domain-policy-pack-runtime/domain/policy-pack-rule.js';
 import { createActionEnforcementPolicyPackIntegration } from '../../features/domain-policy-pack-runtime/integrations/action-enforcement-policy-pack-integration.js';
-import { createPolicyPackRuntimeContext } from '../../features/domain-policy-pack-runtime/runtime/policy-pack-runtime-context.js';
-import { createPolicyPackRuntime } from '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js';
+import type { PolicyPackRuntimeContext } from '../../features/domain-policy-pack-runtime/runtime/policy-pack-runtime-context.js';
+import { createPolicyPackRuntime, type PolicyPackRuntime } from '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js';
 import type { PolicyPackProvider } from '../../kernel/index.js';
 import type { GovernanceConfiguration } from '../governance-profile/index.js';
+import { operatorMay, type OperatorRoleOrLegacy } from '../operator-control/roles.js';
 
 /**
  * PROD-03 — the governed-action file's `approvalPolicy`: the one piece of
@@ -78,13 +81,38 @@ function closed(value: Record<string, unknown>, allowed: readonly string[], wher
   }
 }
 
+/** What the section is validated against: the file's profiles and the operator-plane roles it configures. */
+export interface ApprovalPolicyParseContext {
+  readonly governance: GovernanceConfiguration | undefined;
+  /**
+   * Every operator-plane role the file configures: each CTRL-02 operator's
+   * role, and the CTRL-01 legacy administrator class when `administrators`
+   * is declared. Judged by the canonical role policy (`operatorMay`), never a
+   * role list of its own.
+   */
+  readonly operatorRoles: readonly OperatorRoleOrLegacy[];
+}
+
 /**
- * Validates the section against the profiles the file declares. Every rule
- * names a declared profile that declares `approval` (otherwise the decision
- * would wait for an approval nothing can give), and the Host must have
- * operators (otherwise no human can act on it).
+ * Validates the section against the profiles and operators the file declares,
+ * so that nothing it sends to review is unresolvable from the start:
+ *
+ * - every rule names a declared profile, and EVERY declared version of that
+ *   profile declares `approval` (CORE-05). One version per profile under the
+ *   static lifecycle; under the operator-promoted lifecycle the catalog may
+ *   hold several, any of which a steward can promote, and the rule matches
+ *   the profile id — so a version without `approval` would turn "requires
+ *   approval" into a review nothing can ever approve. Versions may declare
+ *   different approval terms: CORE-05 binds each approval request to the
+ *   effective version's own requirement (a request opened under one version
+ *   is superseded, never reinterpreted, after another is promoted).
+ * - at least one configured operator's role can reach `approval.approve`.
+ *   Necessary, not sufficient: whether an approval COUNTS stays CORE-05's
+ *   decision (Kernel-Authority standing for the approver action, quorum,
+ *   segregation of duties). This check only refuses a deployment that is
+ *   operationally deadlocked before its first request.
  */
-export function parseApprovalPolicySection(value: unknown, context: { readonly governance: GovernanceConfiguration | undefined; readonly operatorCount: number }): EnterpriseHostApprovalPolicy {
+export function parseApprovalPolicySection(value: unknown, context: ApprovalPolicyParseContext): EnterpriseHostApprovalPolicy {
   if (!isRecord(value)) problem('approvalPolicy must be an object.');
   closed(value, ['policyId', 'rules'], 'approvalPolicy');
   const policyId = value['policyId'];
@@ -92,13 +120,18 @@ export function parseApprovalPolicySection(value: unknown, context: { readonly g
   const rules = value['rules'];
   if (!Array.isArray(rules) || rules.length === 0) problem('approvalPolicy.rules must be a non-empty array; omit approvalPolicy to declare no approval requirement.');
   if (rules.length > MAX_APPROVAL_POLICY_RULES) problem(`approvalPolicy.rules may hold at most ${MAX_APPROVAL_POLICY_RULES} rules.`);
-  if (context.operatorCount === 0) problem('approvalPolicy needs operators: an approval is decided by an identified operator on the operator plane, and without one no decision it sends to review could ever be approved.');
+  if (!context.operatorRoles.some((role) => operatorMay(role, 'approval.approve'))) {
+    problem(
+      'approvalPolicy requires an operator with approval.approve (role approver or organization-administrator): an approval is decided by an identified operator on the operator plane, and no configured operator can decide one, so no decision it sends to review could ever be approved.',
+    );
+  }
 
-  const approvalProfiles = new Set<string>();
+  // Per profile id, every declared version that does NOT declare how it is approved.
   const declaredProfiles = new Set<string>();
+  const versionsWithoutApproval = new Map<string, number[]>();
   for (const profile of context.governance?.profiles ?? []) {
     declaredProfiles.add(profile.profileId);
-    if (profile.approval !== undefined) approvalProfiles.add(profile.profileId);
+    if (profile.approval === undefined) versionsWithoutApproval.set(profile.profileId, [...(versionsWithoutApproval.get(profile.profileId) ?? []), profile.version]);
   }
 
   const ruleIds = new Set<string>();
@@ -113,8 +146,11 @@ export function parseApprovalPolicySection(value: unknown, context: { readonly g
     ruleIds.add(ruleId);
     if (typeof governanceProfile !== 'string' || governanceProfile.length === 0) problem(`${where}.governanceProfile must name a Governance Profile id.`);
     if (!declaredProfiles.has(governanceProfile)) problem(`${where}.governanceProfile '${governanceProfile}' is not a profile declared in governance.profiles.`);
-    if (!approvalProfiles.has(governanceProfile)) {
-      problem(`${where}.governanceProfile '${governanceProfile}' declares no 'approval': a decision sent to review under it could never be approved. Declare how it is approved on the profile (CORE-05) first.`);
+    const unapprovable = versionsWithoutApproval.get(governanceProfile) ?? [];
+    if (unapprovable.length > 0) {
+      problem(
+        `${where}.governanceProfile '${governanceProfile}' version ${unapprovable.join(', ')} declares no 'approval': a decision sent to review under it could never be approved. Every declared version of a profile this policy rules must declare how it is approved (CORE-05).`,
+      );
     }
     if (profiles.has(governanceProfile)) problem(`${where}.governanceProfile '${governanceProfile}' is named by two rules; one rule per profile.`);
     profiles.add(governanceProfile);
@@ -124,8 +160,29 @@ export function parseApprovalPolicySection(value: unknown, context: { readonly g
   return Object.freeze({ policyId, rules: Object.freeze(parsed) });
 }
 
-/** A fixed instant: the compiled pack is configuration, effective from boot, and its records must not depend on the wall clock. */
+/**
+ * The compiled pack's version metadata instant: the pack is configuration,
+ * effective from boot, and its version record must not depend on the wall
+ * clock. Only `effectiveFrom` uses it — never an evaluation, decision, proof
+ * or event, which carry the live clock below.
+ */
 const COMPILED_AT = '1970-01-01T00:00:00.000Z';
+
+/**
+ * The live runtime context every compiled runtime runs on: the wall clock
+ * and `${prefix}-${randomUUID()}` identifiers — the Host's own convention
+ * (the Kernel's real clock and id generator; the durable Kernel-Authority
+ * providers). Identifiers are therefore never reissued after a restart. The
+ * policy-pack runtime itself stays clock- and randomness-free by design (its
+ * README §Determinism): the live context is injected here, by the Host that
+ * composes it.
+ */
+export function liveApprovalPolicyContext(): PolicyPackRuntimeContext {
+  return {
+    clock: { now: () => new Date().toISOString() },
+    ids: { nextId: (prefix: string) => `${prefix}-${randomUUID()}` },
+  };
+}
 
 /** The pack's compiled rules: one `require_approval` per declared rule, matched on the effective profile's id. */
 export function approvalPolicyRules(policy: EnterpriseHostApprovalPolicy, policyPackVersionId: string): readonly PolicyPackRule[] {
@@ -152,11 +209,12 @@ export function approvalPolicyRules(policy: EnterpriseHostApprovalPolicy, policy
 }
 
 /**
- * Compiles the section into a frozen policy-pack runtime, scoped to the
- * Host's trust domain, and returns it as the Kernel's policy provider.
+ * One frozen policy-pack runtime holding exactly the compiled pack, scoped to
+ * the Host's trust domain: registered, activated and frozen by the
+ * configuration writer (NB-008), on `context`.
  */
-export function createApprovalPolicyPackProvider(policy: EnterpriseHostApprovalPolicy, trustDomainId: string): PolicyPackProvider {
-  const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext(COMPILED_AT));
+export function compileApprovalPolicyRuntime(policy: EnterpriseHostApprovalPolicy, trustDomainId: string, context: PolicyPackRuntimeContext): PolicyPackRuntime {
+  const runtime = createPolicyPackRuntime(context);
   const versionId = `${policy.policyId}@1`;
   runtime.registerPolicyPack(APPROVAL_POLICY_WRITER, {
     id: policy.policyId,
@@ -178,5 +236,28 @@ export function createApprovalPolicyPackProvider(policy: EnterpriseHostApprovalP
   });
   runtime.activatePolicyPackVersion(APPROVAL_POLICY_WRITER, versionId);
   runtime.freeze(APPROVAL_POLICY_WRITER);
-  return createActionEnforcementPolicyPackIntegration(runtime);
+  return runtime;
+}
+
+/**
+ * The Kernel's policy provider for the section.
+ *
+ * The Kernel needs one thing from a provider: `evaluatePolicyForEnforcement`
+ * (`PolicyPackProvider`). A policy-pack runtime, however, keeps every
+ * evaluation, decision, proof and ledger event it produces in memory, for
+ * its lifetime — an audit trail for an embedder that reads it, and an
+ * unbounded heap for a Host that never does (its durable record of every
+ * decision is the governance store and ASSURE evidence). So each evaluation
+ * runs on its own freshly compiled, frozen runtime — the same engine, rules,
+ * writer and Kernel mapping — which is dropped with everything it recorded
+ * once the result is returned. Nothing is retained between evaluations.
+ * The section is compiled once here, at boot, so a pack the runtime would
+ * refuse stops the Host before it serves anything.
+ */
+export function createApprovalPolicyPackProvider(policy: EnterpriseHostApprovalPolicy, trustDomainId: string, context: PolicyPackRuntimeContext = liveApprovalPolicyContext()): PolicyPackProvider {
+  compileApprovalPolicyRuntime(policy, trustDomainId, context);
+  return Object.freeze({
+    evaluatePolicyForEnforcement: (input: Parameters<PolicyPackProvider['evaluatePolicyForEnforcement']>[0]) =>
+      createActionEnforcementPolicyPackIntegration(compileApprovalPolicyRuntime(policy, trustDomainId, context)).evaluatePolicyForEnforcement(input),
+  });
 }

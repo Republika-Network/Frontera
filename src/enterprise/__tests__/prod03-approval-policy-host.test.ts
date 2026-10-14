@@ -154,7 +154,7 @@ describe('PROD-03 approvalPolicy — configuration is closed and fails before an
   }
 
   it('refuses without operators: nobody could ever approve', () => {
-    assert.throws(() => parseApprovalPolicySection(POLICY, { governance: GOVERNANCE as never, operatorCount: 0 }), /needs operators/);
+    assert.throws(() => parseApprovalPolicySection(POLICY, { governance: GOVERNANCE as never, operatorRoles: [] }), /approvalPolicy requires an operator with approval\.approve/);
   });
 
   it('refuses two policy sources: the file approvalPolicy and an embedder policyPackProvider (HOST_POLICY_SOURCE_AMBIGUOUS), before any store opens', async () => {
@@ -168,7 +168,7 @@ describe('PROD-03 approvalPolicy — configuration is closed and fails before an
 
 describe('PROD-03 approvalPolicy — the compiled policy can only require approval', () => {
   it('compiles each rule to one require_approval on the profile id, written by the configuration writer, and nothing else', () => {
-    const parsed = parseApprovalPolicySection(POLICY, { governance: GOVERNANCE as never, operatorCount: 1 });
+    const parsed = parseApprovalPolicySection(POLICY, { governance: GOVERNANCE as never, operatorRoles: ['approver'] });
     const rules = approvalPolicyRules(parsed, 'v');
     assert.equal(rules.length, 1);
     for (const rule of rules) {
@@ -180,7 +180,7 @@ describe('PROD-03 approvalPolicy — the compiled policy can only require approv
   });
 
   it('evaluates: the ruled profile → requires approval; any other profile, or none → not applicable (never allowed, never denied by this pack)', () => {
-    const provider = createApprovalPolicyPackProvider(parseApprovalPolicySection(POLICY, { governance: GOVERNANCE as never, operatorCount: 1 }), 'trust-domain-pilot');
+    const provider = createApprovalPolicyPackProvider(parseApprovalPolicySection(POLICY, { governance: GOVERNANCE as never, operatorRoles: ['approver'] }), 'trust-domain-pilot');
     const base = { trustDomainId: 'trust-domain-pilot', actorId: 'actor-a', action: 'deploy-release', resourceScope: PROD, riskLevel: 'medium' as const, requestedAt: '2026-10-13T00:00:00.000Z' };
     assert.equal(provider.evaluatePolicyForEnforcement({ ...base, governanceProfile: 'release-production' }).type, 'policy_requires_approval');
     assert.equal(provider.evaluatePolicyForEnforcement({ ...base, governanceProfile: 'release-critical' }).type, 'policy_not_applicable');

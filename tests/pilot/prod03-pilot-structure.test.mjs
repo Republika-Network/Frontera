@@ -35,6 +35,10 @@ const TOOLING = readdirSync(join(ROOT, 'scripts/pilot')).map((name) => `scripts/
 describe('PROD-03 founder-free proof — the drill uses supported surfaces only', () => {
   const drillSources = [...PILOT_TESTS.filter((file) => /drill/.test(file)), ...FIXTURES];
 
+  it('the drill never imports the gate\'s unit-test support (a seeded fixture deployment is not a supported surface)', () => {
+    for (const file of drillSources) assert.equal(/support\//.test([...code(file).matchAll(/(?:from|import\()\s*[`'"]([^`'"]+)[`'"]/g)].map((match) => match[1]).join(' ')), false, file);
+  });
+
   it('measures the real drill sources', () => {
     assert.ok(drillSources.includes('tests/pilot/prod03-clean-room-drill.test.mjs'));
     assert.ok(drillSources.includes('tests/pilot/fixtures/drill-lib.mjs'));
@@ -86,7 +90,9 @@ describe('PROD-03 tooling boundary — scripts/pilot reads; it cannot write auth
     for (const file of TOOLING) {
       const source = code(file);
       const imports = [...source.matchAll(/from '([^']+)'/g)].map((match) => match[1]);
-      for (const specifier of imports) assert.match(specifier, /^(node:(crypto|fs|os|path|test|url)|\.\/lib-pilot-readiness\.mjs|\.\.\/deploy\/host-preflight\.mjs)$/, `${file} imports ${specifier}`);
+      for (const specifier of imports) assert.match(specifier, /^(node:(crypto|fs|os|path|test|url)|\.\/lib-pilot-readiness\.mjs|\.\.\/deploy\/host-preflight\.mjs|\.\.\/portability\/store-registry\.mjs)$/, `${file} imports ${specifier}`);
+      // PROD-02's registry: only its pure manifest validators (PR-15), never the loader that imports built stores.
+      if (/store-registry\.mjs/.test(source)) assert.equal(/loadRegistryModules|STORE_DEFINITIONS\.\S*\.open/.test(source), false, `${file} opens stores through the registry`);
       for (const pattern of [/better-sqlite3/, /node:sqlite/, /node:https?['"]/, /createEnterprise|bootEnterpriseHost/, /execute\(/, /method:\s*'(POST|PUT|PATCH|DELETE)'/]) assert.equal(pattern.test(source), false, `${file}: ${pattern}`);
     }
   });
@@ -168,10 +174,10 @@ describe('PROD-03 ties — the checklist, threat model, runbook, Compose tool an
     }
   });
 
-  it('the pilot threat model names PILOT-1 … PILOT-25, each with a closed disposition; every BLOCKED one is in THREAT_MODEL_V1 §7.37 with evidence', () => {
+  it('the pilot threat model names PILOT-1 … PILOT-32, each with a closed disposition; every BLOCKED one is in THREAT_MODEL_V1 §7.37 with evidence', () => {
     const posture = read('docs/pilot/SECURITY_POSTURE.md');
     const rows = [...posture.matchAll(/^\| (PILOT-\d+) \| [^|]+ \| \*\*([A-Z]+)\*\* \|/gm)].map((match) => ({ id: match[1], disposition: match[2] }));
-    assert.deepEqual(rows.map((row) => row.id), Array.from({ length: 25 }, (_, index) => `PILOT-${index + 1}`));
+    assert.deepEqual(rows.map((row) => row.id), Array.from({ length: 32 }, (_, index) => `PILOT-${index + 1}`));
     for (const row of rows) assert.ok(['BLOCKED', 'MITIGATED', 'ACCEPTED', 'DEPLOYMENT'].includes(row.disposition), row.id);
     const section = read('docs/security/THREAT_MODEL_V1.md').split('### 7.37')[1]?.split('\n## ')[0] ?? '';
     for (const row of rows.filter((entry) => entry.disposition === 'BLOCKED')) assert.match(section, new RegExp(`^\\| ${row.id} [^|]*\\| \\*\\*BLOCKED\\*\\* \\|`, 'm'), `${row.id} is BLOCKED in the pilot model and must be in THREAT_MODEL_V1 §7.37`);

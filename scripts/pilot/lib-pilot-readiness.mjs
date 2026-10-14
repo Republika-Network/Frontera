@@ -14,8 +14,10 @@
 // Three cumulative levels, never one boolean:
 //   deployment-ready   the Host is safe to accept governed executions
 //   organization-ready … and the organization is bootstrapped, operable and governed
-//   pilot-ready        … and an agent holds bounded authority, and the pilot's
-//                         backup, restore drill and acknowledgement are evidenced
+//   pilot-ready        … and one agent with an active credential holds bounded
+//                         standing authority, and the pilot's backup (judged by
+//                         PROD-02's store registry), restore drill and the pilot
+//                         owner's acknowledgement are evidenced
 // A check that cannot be evaluated fails. Nothing here can make a Host ready:
 // `/ready` and `/health` are the Host's own answers, and the gate only reads
 // them. The qualification record it can write is operational evidence bound
@@ -23,8 +25,11 @@
 // signature (see docs/pilot/PILOT_READINESS.md §5).
 
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
+
+// PROD-02's one reading of a backup's store inventory and coverage (pure; opens nothing) — the same validators restore:v1 runs.
+import { BackupManifestError, assessBackupCoverage, validateManifestStoreEntries } from '../portability/store-registry.mjs';
 
 export const READINESS_FORMAT = 'frontera.pilot-readiness.v1';
 export const RECORD_FORMAT = 'frontera.pilot-qualification-record.v1';
@@ -32,6 +37,14 @@ export const ACKNOWLEDGEMENT_FORMAT = 'frontera.pilot-acknowledgement.v1';
 export const LEVELS = Object.freeze(['deployment', 'organization', 'pilot']);
 export const RESULTS = Object.freeze({ none: 'not-ready', deployment: 'deployment-ready', organization: 'organization-ready', pilot: 'pilot-ready' });
 export const REQUIRED_ACKNOWLEDGED_DOCUMENTS = Object.freeze(['shared-responsibility', 'security-posture', 'known-limits']);
+/**
+ * The one role whose acknowledgement satisfies PR-18: the pilot owner — the
+ * person accountable for the pilot on the organization's side
+ * (docs/pilot/SHARED_RESPONSIBILITY.md). An operational role, not an
+ * operator-plane role: no CTRL operator role (organization-administrator,
+ * approver, observer, …) is the pilot owner by holding it.
+ */
+export const ACKNOWLEDGING_ROLE = 'pilot-owner';
 export const DEFAULT_BACKUP_MAX_AGE_HOURS = 168;
 export const DEFAULT_RECORD_VALIDITY_DAYS = 30;
 export const MAX_RECORD_VALIDITY_DAYS = 90;
@@ -49,14 +62,14 @@ export const CHECKS = Object.freeze([
   { id: 'PR-08', name: 'operators', level: 'organization', title: 'Organization administrator and operator credentials valid', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §3' },
   { id: 'PR-09', name: 'governance-profile', level: 'organization', title: 'Required Governance Profile active', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §5' },
   { id: 'PR-10', name: 'pilot-agent', level: 'pilot', title: 'Pilot agent onboarded with an active credential', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §6' },
-  { id: 'PR-11', name: 'bounded-authority', level: 'pilot', title: 'Agent authority exists and every lineage is bounded', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §7' },
+  { id: 'PR-11', name: 'bounded-authority', level: 'pilot', title: 'That same agent holds standing authority, and every active lineage is bounded', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §7' },
   { id: 'PR-12', name: 'approval-path', level: 'organization', title: 'Approval path usable (when approvals are configured)', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §8' },
   { id: 'PR-13', name: 'emergency-controls', level: 'deployment', title: 'Emergency controls readable; no global or organization stop active', remediation: 'docs/pilot/OPERATIONS_RUNBOOK.md §12' },
   { id: 'PR-14', name: 'activity-evidence', level: 'organization', title: 'Activity, metrics and evidence readable', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §10' },
   { id: 'PR-15', name: 'backup', level: 'pilot', title: 'A complete, verified cold backup of this deployment and release', remediation: 'docs/pilot/OPERATIONS_RUNBOOK.md §5' },
   { id: 'PR-16', name: 'restore-drill', level: 'pilot', title: 'A restore of that backup qualified', remediation: 'docs/pilot/OPERATIONS_RUNBOOK.md §6' },
   { id: 'PR-17', name: 'diagnostics', level: 'deployment', title: 'Operator diagnostics answer', remediation: 'docs/pilot/OPERATIONS_RUNBOOK.md §9' },
-  { id: 'PR-18', name: 'acknowledgement', level: 'pilot', title: 'Shared responsibility, security posture and known limits acknowledged for this release', remediation: 'docs/pilot/PILOT_READINESS.md §5.4' },
+  { id: 'PR-18', name: 'acknowledgement', level: 'pilot', title: 'Shared responsibility, security posture and known limits acknowledged by the pilot owner for this release', remediation: 'docs/pilot/PILOT_READINESS.md §5.4' },
   { id: 'PR-19', name: 'revocation-path', level: 'pilot', title: 'Revocation and emergency stop operable by a verified operator', remediation: 'docs/pilot/ONBOARDING_RUNBOOK.md §11' },
   { id: 'PR-20', name: 'integrity-freshness', level: 'deployment', title: 'No blocking integrity or freshness condition', remediation: 'docs/pilot/INCIDENT_TRIAGE.md §2' },
 ]);
@@ -155,44 +168,104 @@ function filesUnder(root) {
   return out;
 }
 
+/** sha256 hex of a file, or undefined when it cannot be read. */
+function fileDigest(path) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Verifies a backup set produced by `backup:v1`: every checksum, a complete
- * coverage of this deployment's organization, cold consistency, no secret
- * included (by the manifest's own flags and by searching every file for the
- * credentials this gate holds), the running release, and its age.
+ * Verifies a backup set produced by `backup:v1`, never by its own claim of
+ * completeness:
+ *
+ * 1. the manifest's store inventory, by PROD-02's own validator (closed store
+ *    names, registry filenames, no duplicates);
+ * 2. coverage, by PROD-02's own assessment (`assessBackupCoverage`, the one
+ *    restore:v1 runs): every store the backup's recorded deployment requires
+ *    under THIS build's registry conditions, and every store THIS deployment
+ *    requires (`deploymentRequirements`, derived by the preflight exactly as
+ *    backup and restore derive it), is included; `coverage.complete` is one
+ *    input, never the answer. Without the deployment's requirements coverage
+ *    cannot be judged, and the check fails;
+ * 3. artifacts: `stores/` holds exactly the declared store files; each matches
+ *    the manifest's own checksum AND has a matching `checksums.sha256` entry;
+ *    every other `checksums.sha256` entry verifies;
+ * 4. cold consistency, organization and release binding, no secret (by the
+ *    manifest's flags and by searching every file for the credentials this
+ *    gate holds), and age.
+ *
+ * Read-only: files are read and hashed; no store is opened, nothing restored.
+ * SQLite integrity and signed heads are restore:v1's (PR-16 evidences it).
  */
-export function verifyBackupSet(path, { organizationId, commit, now, maxAgeHours, heldSecrets }) {
+export function verifyBackupSet(path, { organizationId, commit, now, maxAgeHours, heldSecrets, deploymentRequirements }) {
   let dir = resolve(path);
   if (!existsSync(join(dir, 'backup-manifest.json')) && existsSync(join(dir, 'frontera-backup', 'backup-manifest.json'))) dir = join(dir, 'frontera-backup');
   const manifestFile = readJsonFile(join(dir, 'backup-manifest.json'));
   if (manifestFile === undefined) return fail('BACKUP_MANIFEST_UNREADABLE');
   const manifest = manifestFile.value;
+  if (manifest?.backupFormat !== 'aoc.enterprise.backup.v1') return fail('BACKUP_FORMAT_UNSUPPORTED');
+
+  // 1-2. Inventory and coverage: PROD-02's validators, verbatim.
+  let coverage;
+  try {
+    validateManifestStoreEntries(manifest);
+    if (manifest.coverage?.deployment?.organizationId !== organizationId) return fail('BACKUP_OTHER_ORGANIZATION');
+    if (!isRecord(deploymentRequirements)) return fail('BACKUP_COVERAGE_NOT_VERIFIABLE', 'run with --preflight in the Host environment: coverage is judged against this deployment\'s own store requirements');
+    coverage = assessBackupCoverage(manifest, deploymentRequirements);
+  } catch (error) {
+    if (error instanceof BackupManifestError) return fail('BACKUP_MANIFEST_INVALID');
+    throw error;
+  }
+  if (!coverage.complete) {
+    const missing = [...new Set([...(coverage.missingForSource ?? []), ...(coverage.missingForTarget ?? []), ...manifest.coverage?.stores?.filter((entry) => entry?.required === true && entry?.included !== true).map((entry) => entry.name) ?? []])].sort();
+    return fail('BACKUP_INCOMPLETE', missing.length > 0 ? `missing required store(s): ${missing.join(', ')}` : coverage.model === 'legacy' ? 'no PROD-02 coverage record' : 'recorded as incomplete');
+  }
+
+  // 3. Artifacts.
   let checksums;
   try {
     checksums = readFileSync(join(dir, 'checksums.sha256'), 'utf8');
   } catch {
     return fail('BACKUP_CHECKSUMS_UNREADABLE');
   }
-  let verifiedFiles = 0;
+  const listed = new Map();
   for (const line of checksums.split('\n')) {
     if (line.trim() === '') continue;
     const match = /^([0-9a-f]{64}) [ *](.+)$/.exec(line);
     if (match === null) return fail('BACKUP_CHECKSUMS_MALFORMED');
     const file = resolve(dir, match[2]);
     if (!file.startsWith(`${dir}${sep}`)) return fail('BACKUP_CHECKSUMS_MALFORMED');
-    let digest;
-    try {
-      digest = createHash('sha256').update(readFileSync(file)).digest('hex');
-    } catch {
-      return fail('BACKUP_FILE_MISSING');
-    }
-    if (digest !== match[1]) return fail('BACKUP_CHECKSUM_MISMATCH');
-    verifiedFiles += 1;
+    listed.set(file, match[1]);
   }
-  if (verifiedFiles === 0) return fail('BACKUP_CHECKSUMS_MALFORMED');
-  if (manifest?.backupFormat !== 'aoc.enterprise.backup.v1') return fail('BACKUP_FORMAT_UNSUPPORTED');
-  if (manifest?.coverage?.complete !== true) return fail('BACKUP_INCOMPLETE');
-  if (manifest?.coverage?.deployment?.organizationId !== organizationId) return fail('BACKUP_OTHER_ORGANIZATION');
+  const storesDir = join(dir, 'stores');
+  let present;
+  try {
+    if (lstatSync(storesDir).isSymbolicLink()) return fail('BACKUP_STORES_DIRECTORY_INVALID');
+    present = new Set(readdirSync(storesDir));
+  } catch {
+    return fail('BACKUP_STORES_DIRECTORY_INVALID');
+  }
+  const declared = new Set(manifest.stores.map((entry) => entry.filename));
+  if ([...present].some((file) => !declared.has(file))) return fail('BACKUP_UNEXPECTED_FILE');
+  for (const entry of manifest.stores) {
+    const file = join(storesDir, entry.filename);
+    if (!present.has(entry.filename) || lstatSync(file).isSymbolicLink()) return fail('BACKUP_STORE_FILE_MISSING', entry.name);
+    const digest = fileDigest(file);
+    if (digest === undefined) return fail('BACKUP_STORE_FILE_MISSING', entry.name);
+    if (`sha256:${digest}` !== entry.checksum) return fail('BACKUP_CHECKSUM_MISMATCH', entry.name);
+    if (!listed.has(file)) return fail('BACKUP_CHECKSUM_MISSING', entry.name);
+    if (listed.get(file) !== digest) return fail('BACKUP_CHECKSUM_MISMATCH', entry.name);
+  }
+  for (const [file, expected] of listed) {
+    const digest = fileDigest(file);
+    if (digest === undefined) return fail('BACKUP_FILE_MISSING');
+    if (digest !== expected) return fail('BACKUP_CHECKSUM_MISMATCH');
+  }
+
+  // 4. Consistency, secrets, release, age.
   if (manifest?.consistency?.mode !== 'cold-attested') return fail('BACKUP_NOT_COLD');
   const flags = [manifest?.authority?.signer?.privateKeyIncluded, manifest?.authority?.signer?.signerCredentialIncluded, manifest?.authority?.freshness?.witnessStateIncluded, manifest?.authority?.freshness?.witnessCredentialIncluded, manifest?.configuration?.secretValuesIncluded];
   if (flags.some((flag) => flag !== false)) return fail('BACKUP_SECRET_FLAG_SET');
@@ -205,7 +278,10 @@ export function verifyBackupSet(path, { organizationId, commit, now, maxAgeHours
   if (Number.isNaN(createdAt)) return fail('BACKUP_TIMESTAMP_INVALID');
   if (now.getTime() - createdAt > maxAgeHours * 3600_000) return fail('BACKUP_STALE', `created ${manifest.createdAt}`);
   if (createdAt - now.getTime() > 300_000) return fail('BACKUP_TIMESTAMP_INVALID');
-  return { ...pass(`backup ${manifest.backupId} (${verifiedFiles} files verified, created ${manifest.createdAt})`), evidence: { backupId: manifest.backupId, createdAt: manifest.createdAt, manifestDigest: manifestFile.digest } };
+  return {
+    ...pass(`backup ${manifest.backupId}: ${manifest.stores.length} required store(s) covered (PROD-02 registry), ${listed.size} checksums verified, created ${manifest.createdAt}`),
+    evidence: { backupId: manifest.backupId, createdAt: manifest.createdAt, manifestDigest: manifestFile.digest, stores: manifest.stores.map((entry) => entry.name) },
+  };
 }
 
 /** A `restore:v1` report, bound to the verified backup. */
@@ -232,10 +308,13 @@ export function verifyAcknowledgement(path, { organizationId, commit }) {
   if (ack.release?.commit !== commit) return fail('ACKNOWLEDGEMENT_STALE', 'acknowledged for another release');
   const people = Array.isArray(ack.acknowledgedBy) ? ack.acknowledgedBy.filter((entry) => isRecord(entry) && typeof entry.name === 'string' && entry.name.trim() !== '' && typeof entry.role === 'string' && entry.role.trim() !== '' && !Number.isNaN(Date.parse(entry.acknowledgedAt ?? ''))) : [];
   if (people.length === 0) return fail('ACKNOWLEDGEMENT_UNSIGNED');
+  // Only the pilot owner's acknowledgement counts; others may co-sign.
+  const owners = people.filter((entry) => entry.role === ACKNOWLEDGING_ROLE);
+  if (owners.length === 0) return fail('ACKNOWLEDGEMENT_NOT_BY_PILOT_OWNER', `role ${ACKNOWLEDGING_ROLE} required`);
   const documents = Array.isArray(ack.documents) ? ack.documents : [];
   const missing = REQUIRED_ACKNOWLEDGED_DOCUMENTS.filter((document) => !documents.includes(document));
   if (missing.length > 0) return fail('ACKNOWLEDGEMENT_INCOMPLETE', `not acknowledged: ${missing.join(', ')}`);
-  return { ...pass(`${people.length} acknowledgement(s) for this release`), evidence: { digest: file.digest, people: people.length } };
+  return { ...pass(`acknowledged by the pilot owner for this release (${people.length} signatory(ies))`), evidence: { digest: file.digest, people: people.length, pilotOwners: owners.length } };
 }
 
 // -- the record ------------------------------------------------------------------------------
@@ -455,15 +534,20 @@ export async function evaluatePilotReadiness(options) {
     return pass('activity, metrics and the latest decision\'s trace readable');
   });
 
-  // Pilot level.
+  // Pilot level. PR-10 and PR-11 are correlated: both are about the SAME
+  // agents — those whose actor is active and whose credential is active, i.e.
+  // agents that can authenticate a governed request today. PR-11 needs one of
+  // them to hold standing authority; authority held by an agent that cannot
+  // authenticate never stands in for it (no union across agents).
   let agents = [];
+  let pilotCapable = [];
   await guarded('PR-10', async () => {
     const reply = await get('/api/admin/agents');
     if (reply.status !== 200 || !Array.isArray(reply.body?.agents)) return fail('INVENTORY_UNREADABLE', `HTTP ${reply.status}`);
     agents = reply.body.agents;
-    const ready_ = agents.filter((agent) => agent.onboarding?.actor === 'active' && agent.onboarding?.credential === 'active');
-    if (ready_.length === 0) return fail('NO_PILOT_AGENT');
-    return pass(`${ready_.length} agent(s) with an active credential`);
+    pilotCapable = agents.filter((agent) => agent.onboarding?.actor === 'active' && agent.onboarding?.credential === 'active');
+    if (pilotCapable.length === 0) return fail('NO_PILOT_AGENT');
+    return pass(`${pilotCapable.length} agent(s) with an active identity and an active credential`);
   });
 
   await guarded('PR-11', async () => {
@@ -474,9 +558,7 @@ export async function evaluatePilotReadiness(options) {
     };
     const bounded = (terms) => (Array.isArray(terms?.constraints) && terms.constraints.length > 0) || (Array.isArray(terms?.parameterBounds) && terms.parameterBounds.length > 0);
     // An agent holds standing authority through each ACTIVE delegation or authority grant naming it; every such lineage must be bounded.
-    let holders = 0;
-    const unbounded = [];
-    for (const agent of agents.filter((candidate) => candidate.onboarding?.actor === 'active')) {
+    const lineagesOf = async (agent) => {
       const lineages = [];
       for (const ref of agent.authority?.delegationGrants ?? []) {
         if (ref.status !== 'active') continue;
@@ -489,26 +571,45 @@ export async function evaluatePilotReadiness(options) {
         if (ref.status !== 'active') continue;
         lineages.push(bounded((await entity('authority-grant', ref.entityId)).terms));
       }
-      if (lineages.length === 0) continue;
-      holders += 1;
+      return lineages;
+    };
+    // Fail closed on breadth: an unbounded active lineage on ANY actor-active agent refuses — including one whose
+    // credential is revoked, which is one credential issuance away from acting.
+    const unbounded = [];
+    const capable = new Set(pilotCapable.map((agent) => agent.actorId));
+    let holders = 0;
+    for (const agent of agents.filter((candidate) => candidate.onboarding?.actor === 'active')) {
+      const lineages = await lineagesOf(agent);
       if (lineages.some((isBounded) => !isBounded)) unbounded.push(agent.actorId);
+      else if (lineages.length > 0 && capable.has(agent.actorId)) holders += 1;
     }
     if (unbounded.length > 0) return fail('AUTHORITY_UNBOUNDED', unbounded.join(','));
-    if (holders === 0) return fail('NO_STANDING_AUTHORITY');
-    return pass(`${holders} agent(s) hold standing authority; every active lineage carries P10 constraints or typed parameter bounds`);
+    if (holders === 0) return fail('NO_STANDING_AUTHORITY', pilotCapable.length === 0 ? 'no agent with an active credential' : 'no agent with an active credential holds active standing authority');
+    return pass(`${holders} agent(s) with an active credential hold standing authority; every active lineage carries P10 constraints or typed parameter bounds`);
   });
 
   // Evidence inputs, then the record.
   const heldSecrets = [options.credential, ...(options.operatorCredentials ?? [])].filter((value) => typeof value === 'string');
   const fresh = {};
+  // An evidence verifier that throws is that check failing, never the gate.
+  const evaluated = (verify) => {
+    try {
+      return verify();
+    } catch (error) {
+      return fail('CHECK_NOT_EVALUATED', TOKEN(error?.code ?? 'ERROR'));
+    }
+  };
   if (options.backupPath !== undefined) {
-    fresh['PR-15'] = organizationId === undefined || identity === undefined ? fail('BACKUP_NOT_VERIFIABLE', 'organization or release unknown') : verifyBackupSet(options.backupPath, { organizationId, commit: identity.commit, now, maxAgeHours: options.backupMaxAgeHours ?? DEFAULT_BACKUP_MAX_AGE_HOURS, heldSecrets });
+    fresh['PR-15'] =
+      organizationId === undefined || identity === undefined
+        ? fail('BACKUP_NOT_VERIFIABLE', 'organization or release unknown')
+        : evaluated(() => verifyBackupSet(options.backupPath, { organizationId, commit: identity.commit, now, maxAgeHours: options.backupMaxAgeHours ?? DEFAULT_BACKUP_MAX_AGE_HOURS, heldSecrets, deploymentRequirements: preflight?.failed === true ? undefined : preflight?.deploymentRequirements }));
   }
   if (options.restoreReportPath !== undefined) {
-    fresh['PR-16'] = verifyRestoreReport(options.restoreReportPath, { backup: fresh['PR-15']?.evidence });
+    fresh['PR-16'] = evaluated(() => verifyRestoreReport(options.restoreReportPath, { backup: fresh['PR-15']?.evidence }));
   }
   if (options.acknowledgementPath !== undefined) {
-    fresh['PR-18'] = organizationId === undefined || identity === undefined ? fail('ACKNOWLEDGEMENT_NOT_VERIFIABLE') : verifyAcknowledgement(options.acknowledgementPath, { organizationId, commit: identity.commit });
+    fresh['PR-18'] = organizationId === undefined || identity === undefined ? fail('ACKNOWLEDGEMENT_NOT_VERIFIABLE') : evaluated(() => verifyAcknowledgement(options.acknowledgementPath, { organizationId, commit: identity.commit }));
   }
 
   const signer = isRecord(healthBody?.authoritySigner) ? { custody: healthBody.authoritySigner.custody, keyId: healthBody.authoritySigner.keyId, algorithm: healthBody.authoritySigner.algorithm } : null;

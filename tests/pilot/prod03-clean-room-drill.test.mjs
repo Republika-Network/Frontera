@@ -21,7 +21,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -230,6 +230,23 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     assert.match(preflight.stdout, /PASS release-identity\s+\S+\+[0-9a-f]{12} \(build=release\)/);
     assertNoSecretIn(preflight.stdout + preflight.stderr, 'the preflight output');
 
+    // approvalPolicy is refused before anything starts when it could never be resolved: no configured operator can
+    // reach approval.approve, or a catalog version of a ruled profile declares no CORE-05 approval (independent review P1-2, P1-4).
+    const refusedAtPreflight = (name, file, pattern) => {
+      const path = join(state.configDir, `${name}.json`);
+      writeJson(path, file);
+      const result = runCli(join(state.stage, 'scripts/check-host-configuration.mjs'), [], envFor({ AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: path }), { cwd: state.stage });
+      assert.equal(result.status, 1, `${name}: ${result.stdout}${result.stderr}`);
+      assert.match(result.stdout, pattern, name);
+      assertNoSecretIn(result.stdout + result.stderr, `the ${name} preflight output`);
+      return /\[([A-Z_]+)\]/.exec(result.stdout)?.[1] ?? 'refused';
+    };
+    const template = referencePilotFile();
+    const noApprover = refusedAtPreflight('no-approver', { ...template, operators: template.operators.filter((operator) => operator.role !== 'approver' && operator.role !== 'organization-administrator') }, /approvalPolicy requires an operator with approval\.approve/);
+    const production = template.governance.profiles.find((profile) => profile.profileId === 'deploy-production');
+    const { approval: _withoutApproval, ...productionV2 } = { ...production, version: 2 };
+    const unapprovableVersion = refusedAtPreflight('unapprovable-version', { ...template, governance: { ...template.governance, profiles: [...template.governance.profiles, productionV2] } }, /deploy-production' version 2 declares no 'approval'/);
+
     await startWitness();
     await startTarget();
     await startHost();
@@ -245,7 +262,7 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     assert.equal(report.levels.organization, 'not-ready');
     assert.equal(check(report, 'PR-07').reason, 'ORGANIZATION_NOT_BOOTSTRAPPED', report.raw);
     assertNoSecretIn(report.raw, 'the readiness report');
-    drill.phases.A = { preflight: 'PASS', live: 200, ready: 200, release: version.release, readiness: report.result, organizationLevel: report.levels.organization };
+    drill.phases.A = { preflight: 'PASS', refusedAtPreflight: { noApprovalCapableOperator: noApprover, rulingProfileVersionWithoutApproval: unapprovableVersion }, live: 200, ready: 200, release: version.release, readiness: report.result, organizationLevel: report.levels.organization };
   });
 
   it('Phase B — organization: an organization administrator bootstraps (replay safe, conflict refused, wrong role/credential/tenant refused), a steward promotes the profiles, approver standing provisioned; organization-ready', async () => {
@@ -306,6 +323,7 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     state.issuedCredentials.push(state.agentCredential);
     state.agentCredentialId = issued.body.credential.credentialId;
     state.firstCredentialId = state.agentCredentialId;
+    state.firstCredential = state.agentCredential;
     // One-time: the replay does not reveal it again.
     const replay = expectStatus(await api('POST', `/api/admin/agents/${AGENT}/credentials`, 'provisioner', { idempotencyKey: 'release-agent-credential-1' }), 200, 'replay');
     assert.equal(replay.body.outcome, 'replayed');
@@ -387,6 +405,15 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     const inbox = expectStatus(await api('GET', '/api/admin/approvals?view=pending', 'approver'), 200, 'inbox').body.approvals;
     const entry = inbox.find((candidate) => candidate.requestId === pending.body.requestId);
     assert.ok(entry !== undefined, 'the request is in the approver inbox');
+    // The effective profile version carries the CORE-05 requirement the review is judged by.
+    const requirement = expectStatus(await api('GET', `/api/admin/approvals/${encodeURIComponent(entry.approvalRequestId)}`, 'observer'), 200, 'detail').body;
+    assert.equal(requirement.quorum?.minimumApprovals, 1, JSON.stringify(requirement).slice(0, 400));
+    // Only a role with approval.approve reaches the command: an observer and a responder are refused, nothing recorded.
+    for (const role of ['observer', 'responder']) {
+      const refused = await api('POST', `/api/admin/approvals/${encodeURIComponent(entry.approvalRequestId)}/approve`, role, { subjectDigest: requirement.subjectDigest });
+      assert.equal(refused.status, 403, `${role}: ${refused.text}`);
+    }
+    assert.equal((await govern(production)).body.withheldBy, 'approval', 'refused approvals count for nothing');
 
     // The human approves through the web console: the canonical subject, one confirmation.
     const approver = new Browser(state.consoleOrigin, 'approver');
@@ -418,7 +445,7 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     assert.equal(await effects(), 2, 'rejected: zero effect');
     state.requests.approved = pending.body.requestId;
     state.requests.rejected = pending2.body.requestId;
-    drill.phases.E = { pending: 'withheld by approval, 0 effects', approvedVia: 'web console', resumed: 'executed once', rejected: 'never executed', effects: 2 };
+    drill.phases.E = { pending: 'withheld by approval, 0 effects', effectiveRequirement: 'CORE-05 quorum 1 (deploy-production@1)', unauthorizedApprovers: 'observer 403, responder 403', approvedVia: 'web console (approver)', resumed: 'executed once', rejected: 'never executed', effects: 2 };
   });
 
   it('Phase F — emergency: a responder stops everything (withheld, zero effect, the gate reports it), cannot release it; an administrator releases (a permitting operation) and execution returns', async () => {
@@ -556,11 +583,40 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     assert.equal(view.authority.delegationGrants.find((ref) => ref.entityId === 'delegation-release-agent').status, 'revoked', 'revocation survives the restore');
     assert.equal((await govern(deploy(STAGING, 1, 'old-after-restore'), state.oldCredential)).status, 401);
 
-    state.acknowledgement = join(state.configDir, 'acknowledgement.json');
-    writeJson(state.acknowledgement, { schema: 'frontera.pilot-acknowledgement.v1', organizationId: ORGANIZATION_ID, release: { commit: drill.release.commit }, documents: ['shared-responsibility', 'security-posture', 'known-limits'], acknowledgedBy: [{ name: 'Pilot owner (drill)', role: 'pilot-owner', acknowledgedAt: new Date().toISOString() }] });
+    const restoreReport = join(state.stateDir, 'restore-report.json');
+    const acknowledgement = (name, people) => {
+      const path = join(state.configDir, `${name}.json`);
+      writeJson(path, { schema: 'frontera.pilot-acknowledgement.v1', organizationId: ORGANIZATION_ID, release: { commit: drill.release.commit }, documents: ['shared-responsibility', 'security-posture', 'known-limits'], acknowledgedBy: people.map((role) => ({ name: `${role} (drill)`, role, acknowledgedAt: new Date().toISOString() })) });
+      return path;
+    };
+    // The pilot owner's acknowledgement, not anyone's (independent review P2-3).
+    const byObserver = readiness(['--preflight', '--backup', state.finalBackup, '--restore-report', restoreReport, '--acknowledgement', acknowledgement('acknowledgement-observer', ['observer', 'contractor'])]);
+    assert.equal(check(byObserver, 'PR-18').reason, 'ACKNOWLEDGEMENT_NOT_BY_PILOT_OWNER', byObserver.raw);
+    assert.notEqual(byObserver.result, 'pilot-ready');
+    // PR-15 judges the backup by PROD-02's registry against THIS deployment, not by the manifest's claim: a consistent
+    // forgery of the real backup that omits a required store, records it as not required, lies about the source
+    // deployment and still says complete is refused (independent review P1-3).
+    const forgedBackup = join(state.backupDir, 'forged-incomplete');
+    cpSync(state.finalBackup, forgedBackup, { recursive: true });
+    const forgedManifest = JSON.parse(readFileSync(join(forgedBackup, 'backup-manifest.json'), 'utf8'));
+    const dropped = forgedManifest.stores.find((store) => store.name === 'approvals');
+    forgedManifest.stores = forgedManifest.stores.filter((store) => store.name !== 'approvals');
+    Object.assign(forgedManifest.coverage.stores.find((store) => store.name === 'approvals'), { required: false, included: false, present: false, status: 'not-configured' });
+    forgedManifest.coverage.deployment.approvalsDeclared = false;
+    unlinkSync(join(forgedBackup, 'stores', dropped.filename));
+    writeJson(join(forgedBackup, 'backup-manifest.json'), forgedManifest);
+    const listed = readFileSync(join(forgedBackup, 'checksums.sha256'), 'utf8').split('\n').filter((line) => line.trim() !== '' && !line.endsWith(`stores/${dropped.filename}`));
+    writeFileSync(join(forgedBackup, 'checksums.sha256'), `${listed.map((line) => { const file = line.slice(66); return `${createHash('sha256').update(readFileSync(join(forgedBackup, file))).digest('hex')}  ${file}`; }).join('\n')}\n`);
+    assert.equal(forgedManifest.coverage.complete, true, 'the forgery claims completeness');
+    const forged = readiness(['--preflight', '--backup', forgedBackup]);
+    assert.equal(check(forged, 'PR-15').reason, 'BACKUP_INCOMPLETE', forged.raw);
+    assert.match(check(forged, 'PR-15').detail, /approvals/);
+
+    state.acknowledgement = acknowledgement('acknowledgement', ['pilot-owner', 'organization-administrator']);
     state.record = join(state.configDir, 'qualification-record.json');
-    const gate = readiness(['--preflight', '--require-profile', 'deploy-staging', '--require-profile', 'deploy-production', '--require-approvals', '--backup', state.finalBackup, '--restore-report', join(state.stateDir, 'restore-report.json'), '--acknowledgement', state.acknowledgement, '--write-record', state.record]);
+    const gate = readiness(['--preflight', '--require-profile', 'deploy-staging', '--require-profile', 'deploy-production', '--require-approvals', '--backup', state.finalBackup, '--restore-report', restoreReport, '--acknowledgement', state.acknowledgement, '--write-record', state.record]);
     assert.equal(gate.result, 'pilot-ready', gate.raw);
+    assert.match(check(gate, 'PR-15').detail, /required store\(s\) covered \(PROD-02 registry\)/, gate.raw);
     assert.equal(gate.exitStatus, 0);
     assert.equal(statSync(state.record).mode & 0o777, 0o600, 'the record is private');
     // The record satisfies only the historical checks, and only while the deployment is unchanged.
@@ -569,7 +625,7 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     assert.equal(check(fromRecord, 'PR-16').source, 'qualification-record');
     assert.equal(fromRecord.record.status, 'valid');
     assert.equal((await govern(deploy(STAGING, 1, 'after-restore'))).body.status, 'executed');
-    drill.phases.I = { restore: 'restored', traces: 'identical digests, verified', replayedEffects: 0, readiness: gate.result, record: 'written (0600), re-used valid' };
+    drill.phases.I = { restore: 'restored', traces: 'identical digests, verified', replayedEffects: 0, acknowledgementByObserver: 'PR-18 ACKNOWLEDGEMENT_NOT_BY_PILOT_OWNER', forgedIncompleteBackup: `PR-15 BACKUP_INCOMPLETE (${dropped.filename} omitted, coverage.complete=true)`, backup: check(gate, 'PR-15').detail, readiness: gate.result, record: 'written (0600), re-used valid' };
   });
 
   it('Stale restore — the early backup restored into a fresh directory against the surviving witness: refused before any authority is served, with a value-free reason; the live deployment is unaffected', async () => {
@@ -830,8 +886,20 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
 
   it('Phase K — offboarding: credential and authority revoked, identity revoked; final evidence exported and verified; final backup; the agent can no longer act; everything stops cleanly', async () => {
     const before = await effects();
-    expectStatus(await api('POST', `/api/admin/authority/entities/delegation-grant/delegation-release-agent-v2/revoke`, 'responder', { reason: 'pilot offboarding' }), 200, 'revoke delegation');
+    // Same-agent readiness (independent review P1-1), on the real deployment, in the order offboarding happens to take:
+    // the first agent keeps an active credential but loses its last active lineage; the second keeps its bounded
+    // delegation but loses its credential. Credential and authority now live on DIFFERENT agents: no agent can submit
+    // an authorized request, and the gate must not add the two halves together.
+    assert.equal(check(readiness(['--preflight']), 'PR-11').status, 'pass', 'before the split, an agent with a credential holds bounded authority');
+    expectStatus(await api('POST', '/api/admin/authority/entities/delegation-grant/delegation-release-agent-2/revoke', 'responder', { reason: 'pilot offboarding' }), 200, 'revoke the shadowed delegation');
     expectStatus(await api('POST', `/api/admin/agents/${AGENT_2}/credentials/${state.agentCredentialId}/revoke`, 'provisioner', { reason: 'pilot offboarding' }), 200, 'revoke credential');
+    const split = readiness(['--preflight']);
+    assert.equal(check(split, 'PR-10').status, 'pass', `${AGENT} still authenticates: ${split.raw}`);
+    assert.equal(check(split, 'PR-11').reason, 'NO_STANDING_AUTHORITY', `authority and credential on different agents: ${split.raw}`);
+    assert.equal((await govern(deploy(STAGING, 1, 'split-first'), state.firstCredential)).body.status, 'denied', 'the credential-holding agent has no authority');
+    assert.equal((await govern(deploy(STAGING, 1, 'split-second'))).status, 401, 'the authority-holding agent cannot authenticate');
+    assert.equal(await effects(), before, 'split: zero effect');
+    expectStatus(await api('POST', `/api/admin/authority/entities/delegation-grant/delegation-release-agent-v2/revoke`, 'responder', { reason: 'pilot offboarding' }), 200, 'revoke delegation');
     expectStatus(await api('POST', `/api/admin/authority/entities/actor/${AGENT_2}/revoke`, 'responder', { reason: 'pilot offboarding' }), 200, 'revoke actor');
     // Every agent identity the pilot created is offboarded, including the one whose authority was revoked in Phase G.
     expectStatus(await api('POST', `/api/admin/agents/${AGENT}/credentials/${state.firstCredentialId}/revoke`, 'provisioner', { reason: 'pilot offboarding' }), 200, 'revoke first credential');
@@ -862,7 +930,7 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
     const allowed = state.issuedCredentials;
     for (const text of transcript) assertNoSecretIn(text, 'an HTTP response', allowed);
     for (const proc of [state.host, state.witness, state.target, state.console]) assertNoSecretIn(proc.lines.join('\n'), `${proc.name} output`);
-    drill.phases.K = { revoked: ['delegation', 'credential', 'actor'], agent: '401, 0 effect', evidenceExported: Object.keys(state.requests).length, finalBackup: 'cold, complete', shutdown: 'all processes exit 0' };
+    drill.phases.K = { sameAgentReadiness: 'credential on one agent, bounded authority on another: PR-10 pass, PR-11 NO_STANDING_AUTHORITY; both requests refused, 0 effect', revoked: ['delegation', 'credential', 'actor'], agent: '401, 0 effect', evidenceExported: Object.keys(state.requests).length, finalBackup: 'cold, complete', shutdown: 'all processes exit 0' };
     drill.effects.total = await (async () => {
       const proc = startProcess('target-final', join(FIXTURES, 'reference-target.mjs'), { PATH: process.env.PATH, FRONTERA_DRILL_TARGET_PORT: String(state.targetPort), FRONTERA_DRILL_TARGET_LOG: join(ws.root, 'target-effects.jsonl') });
       await waitForLine(proc, /reference-target listening/);

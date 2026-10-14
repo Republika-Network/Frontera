@@ -5,17 +5,17 @@
 // every check's failure class, fail-closed on anything unreadable, the
 // cumulative levels, the record's binding and expiry, the evidence verifiers'
 // refusals, and — structurally and on the wire — that the gate only reads.
-import { describe, it } from 'node:test';
+import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CHECKS, assessRecord, buildQualificationRecord, evaluatePilotReadiness, fingerprintDigest } from '../../scripts/pilot/lib-pilot-readiness.mjs';
+import { copyBackup, createRealBackup, forgeBackup, reboundBackup } from './support/real-backup.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const COMMIT = 'a'.repeat(40);
@@ -68,31 +68,19 @@ function stubReader(responses, calls = []) {
   };
 }
 
-const PREFLIGHT_OK = async () => ({ ok: true, checks: ['release-identity', 'placeholders', 'configuration', 'storage'].map((id) => ({ id, status: 'pass', detail: 'ok' })) });
-
 const scratch = mkdtempSync(join(tmpdir(), 'frontera-prod03-gate-'));
 process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 
-function backupSet(name, manifestOverrides = {}, { extraFile } = {}) {
-  const dir = join(scratch, name, 'frontera-backup');
-  mkdirSync(join(dir, 'stores'), { recursive: true });
-  writeFileSync(join(dir, 'stores', 'kernel-authority.sqlite'), extraFile ?? 'SQLite format 3\u0000 synthetic');
-  const manifest = {
-    backupFormat: 'aoc.enterprise.backup.v1',
-    backupId: `backup-${name}`,
-    createdAt: '2026-10-13T10:00:00.000Z',
-    source: { commit: COMMIT },
-    coverage: { complete: true, deployment: { organizationId: ORG } },
-    consistency: { mode: 'cold-attested' },
-    authority: { signer: { privateKeyIncluded: false, signerCredentialIncluded: false }, freshness: { witnessStateIncluded: false, witnessCredentialIncluded: false } },
-    configuration: { secretValuesIncluded: false },
-    ...manifestOverrides,
-  };
-  writeFileSync(join(dir, 'backup-manifest.json'), JSON.stringify(manifest));
-  const sum = (file) => createHash('sha256').update(readFileSync(join(dir, file))).digest('hex');
-  writeFileSync(join(dir, 'checksums.sha256'), ['backup-manifest.json', 'stores/kernel-authority.sqlite'].map((file) => `${sum(file)}  ${file}`).join('\n') + '\n');
-  return dir;
-}
+/** A real backup:v1 set of the PROD-02 fixture deployment (tests/pilot/fixtures/real-backup.mjs), and its store requirements. */
+let real;
+/** The real backup, re-bound to this stub deployment (organization, release, a creation time before NOW): complete and consistent. */
+let good;
+
+/** The preflight's answer in the Host's environment: every check passes, and PROD-02's canonical store requirements. */
+const PREFLIGHT_OK = async () => ({ ok: true, checks: ['release-identity', 'placeholders', 'configuration', 'storage'].map((id) => ({ id, status: 'pass', detail: 'ok' })), deploymentRequirements: real.requirements });
+
+/** A consistent forgery of the good backup (manifest and checksums rewritten to agree with `edit`). */
+const backupSet = (name, edit) => forgeBackup(good, join(scratch, name, 'frontera-backup'), edit);
 
 function restoreReport(name, overrides = {}) {
   const path = join(scratch, `${name}-restore-report.json`);
@@ -106,7 +94,12 @@ function acknowledgement(name, overrides = {}) {
   return path;
 }
 
-const GOOD = { backupPath: backupSet('good'), restoreReportPath: restoreReport('good'), acknowledgementPath: acknowledgement('good') };
+let GOOD;
+before(async () => {
+  real = await createRealBackup(join(scratch, 'real'));
+  good = reboundBackup(real.dir, join(scratch, 'good', 'frontera-backup'), { organizationId: ORG, commit: COMMIT, backupId: 'backup-good', createdAt: '2026-10-13T10:00:00.000Z' });
+  GOOD = { backupPath: good, restoreReportPath: restoreReport('good'), acknowledgementPath: acknowledgement('good') };
+});
 
 async function gate(responses = healthyHost(), options = {}) {
   const calls = [];
@@ -231,15 +224,16 @@ describe('PROD-03 readiness gate — every required dependency fails closed (M-P
 
 describe('PROD-03 readiness gate — evidence of the historical drills', () => {
   const verify = async (options) => (await gate(healthyHost(), options)).check;
+  // The canonical-coverage and artifact cases (P1-3) are in prod03-independent-review-hardening.test.mjs.
   const backupCases = [
-    ['checksum mismatch', () => { const dir = backupSet('tampered'); writeFileSync(join(dir, 'stores', 'kernel-authority.sqlite'), 'changed'); return dir; }, 'BACKUP_CHECKSUM_MISMATCH'],
-    ['incomplete coverage', () => backupSet('incomplete', { coverage: { complete: false, deployment: { organizationId: ORG } } }), 'BACKUP_INCOMPLETE'],
-    ['another organization', () => backupSet('foreign', { coverage: { complete: true, deployment: { organizationId: 'org-other' } } }), 'BACKUP_OTHER_ORGANIZATION'],
-    ['live, not cold', () => backupSet('live', { consistency: { mode: 'live-per-file' } }), 'BACKUP_NOT_COLD'],
-    ['a secret flag set (M-PILOT-8)', () => backupSet('flagged', { configuration: { secretValuesIncluded: true } }), 'BACKUP_SECRET_FLAG_SET'],
-    ['a held credential inside a file (M-PILOT-8)', () => backupSet('leaky', {}, { extraFile: `rows ... ${ADMIN_SECRET} ...` }), 'BACKUP_CONTAINS_CREDENTIAL'],
-    ['another release', () => backupSet('old-release', { source: { commit: 'b'.repeat(40) } }), 'BACKUP_RELEASE_MISMATCH'],
-    ['stale', () => backupSet('stale', { createdAt: '2026-09-01T00:00:00.000Z' }), 'BACKUP_STALE'],
+    ['checksum mismatch', () => { const dir = copyBackup(good, join(scratch, 'tampered', 'frontera-backup')); writeFileSync(join(dir, 'stores', 'kernel-authority.sqlite'), 'changed'); return dir; }, 'BACKUP_CHECKSUM_MISMATCH'],
+    ['recorded as incomplete', () => backupSet('incomplete', (dir, manifest) => (manifest.coverage.complete = false)), 'BACKUP_INCOMPLETE'],
+    ['another organization', () => backupSet('foreign', (dir, manifest) => (manifest.coverage.deployment.organizationId = 'org-other')), 'BACKUP_OTHER_ORGANIZATION'],
+    ['live, not cold', () => backupSet('live', (dir, manifest) => (manifest.consistency.mode = 'live-per-file')), 'BACKUP_NOT_COLD'],
+    ['a secret flag set (M-PILOT-8)', () => backupSet('flagged', (dir, manifest) => (manifest.configuration.secretValuesIncluded = true)), 'BACKUP_SECRET_FLAG_SET'],
+    ['a held credential inside a file (M-PILOT-8)', () => backupSet('leaky', (dir) => writeFileSync(join(dir, 'metadata', 'verification-summary.json'), `rows ... ${ADMIN_SECRET} ...`)), 'BACKUP_CONTAINS_CREDENTIAL'],
+    ['another release', () => backupSet('old-release', (dir, manifest) => (manifest.source.commit = 'b'.repeat(40))), 'BACKUP_RELEASE_MISMATCH'],
+    ['stale', () => backupSet('stale', (dir, manifest) => (manifest.createdAt = '2026-09-01T00:00:00.000Z')), 'BACKUP_STALE'],
   ];
   for (const [name, make, reason] of backupCases) {
     it(`a backup refused: ${name}`, async () => {
@@ -354,7 +348,12 @@ describe('PROD-03 readiness gate — read-only, value-free (M-PILOT-3, M-PILOT-9
       assert.equal(/better-sqlite3|node:sqlite|new Database\(|dist\/src|\/revoke|\/activate|\/release|\/approve|\/resolution|\/credentials/.test(source.replace(/\/\/.*$/gm, '')), false);
     }
     const imports = [...lib.matchAll(/from '([^']+)'/g)].map((match) => match[1]).sort();
-    assert.deepEqual(imports, ['node:crypto', 'node:fs', 'node:path']);
+    assert.deepEqual(imports, ['../portability/store-registry.mjs', 'node:crypto', 'node:fs', 'node:path']);
+    // From PROD-02's registry, only its pure manifest validators — never the module loader that imports built stores.
+    assert.match(lib, /import \{ BackupManifestError, assessBackupCoverage, validateManifestStoreEntries \} from '\.\.\/portability\/store-registry\.mjs';/);
+    assert.equal(/loadRegistryModules/.test(lib), false);
+    const registry = readFileSync(join(ROOT, 'scripts/portability/store-registry.mjs'), 'utf8');
+    assert.deepEqual([...registry.matchAll(/^import .* from '([^']+)';$/gm)].map((match) => match[1]).sort(), ['node:crypto', 'node:fs', 'node:path'], 'the registry module is pure at import time');
     const cliImports = [...cli.matchAll(/from '([^']+)'/g)].map((match) => match[1]).sort();
     assert.deepEqual(cliImports, ['../deploy/host-preflight.mjs', './lib-pilot-readiness.mjs', 'node:fs']);
   });

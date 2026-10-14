@@ -8,7 +8,7 @@ import {
   type EnterpriseConfiguration,
   type EnterpriseOperator,
 } from '../configuration/enterprise-configuration.js';
-import { OPERATOR_ROLES, isOperatorRole } from '../operator-control/roles.js';
+import { LEGACY_ADMINISTRATOR_ROLE, OPERATOR_ROLES, isOperatorRole, type OperatorRoleOrLegacy } from '../operator-control/roles.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
 import { GovernedActionConfigurationError } from '../governed-action/errors.js';
@@ -366,11 +366,13 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   }
 
   // PROD-03: declared approval requirements, validated against the profiles
-  // above — each names a declared profile that declares how it is approved.
+  // above (every version of a ruled profile declares how it is approved) and
+  // the operator plane (some configured role can reach approval.approve).
   let approvalPolicy: EnterpriseHostApprovalPolicy | undefined;
   if (parsed.approvalPolicy !== undefined) {
+    const operatorRoles: readonly OperatorRoleOrLegacy[] = [...operators.map((operator) => operator.role).filter(isOperatorRole), ...(administrators.length > 0 ? [LEGACY_ADMINISTRATOR_ROLE] : [])];
     try {
-      approvalPolicy = parseApprovalPolicySection(parsed.approvalPolicy, { governance, operatorCount: operators.length });
+      approvalPolicy = parseApprovalPolicySection(parsed.approvalPolicy, { governance, operatorRoles });
     } catch (error) {
       if (error instanceof ApprovalPolicyConfigurationProblem) invalid(error.message);
       throw error;
