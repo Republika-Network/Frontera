@@ -97,7 +97,8 @@ describe('TRADE-04B A — protocol grammar: identity', () => {
     const inherited = Object.create({ protocol: DELEGATED_OFFER_SIGNER_PROTOCOL }) as Record<string, unknown>;
     Object.assign(inherited, (({ protocol: _p, ...rest }) => rest)(identity()));
     assert.equal(parseDelegatedOfferSignerIdentity(inherited), undefined);
-    assert.equal(parseDelegatedOfferSignerIdentity(JSON.parse(JSON.stringify(identity()).replace('{', '{"__proto__":{"x":1},'))), undefined);
+    // An own `__proto__` key on the outer object, as JSON.parse creates it from the wire.
+    assert.equal(parseDelegatedOfferSignerIdentity(JSON.parse(`{"__proto__":{"x":1},${JSON.stringify(identity()).slice(1)}`)), undefined);
     assert.equal(parseDelegatedOfferSignerIdentity(identity({ operations: { 0: DELEGATED_OFFER_SIGNER_OPERATION, length: 1 } })), undefined);
     const sparse = identity();
     (sparse['operations'] as unknown[]).push(undefined);
