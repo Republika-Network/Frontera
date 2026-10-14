@@ -70,7 +70,11 @@ const BOUNDS = [
   { dimension: 'deploymentStrategy', kind: 'exact', type: 'token', value: 'rolling' },
 ];
 
-const ws = workspace();
+// A multi-process drill: run on its own (npm run qualify:pilot, CI job pilot-operations), never inside the
+// parallel root suite, where its load would only perturb other suites' timing.
+const PROCESS_DRILL_SKIP = process.env.FRONTERA_PILOT_DRILL === '1' ? false : 'multi-process drill: npm run qualify:pilot (or FRONTERA_PILOT_DRILL=1)';
+/** Created in `before`: a skipped drill leaves nothing behind. */
+let ws;
 const drill = { schema: 'frontera.pilot-drill-evidence.v1', phases: {}, effects: {} };
 const state = {};
 let keySequence = 0;
@@ -183,8 +187,9 @@ function assertNoSecretIn(text, where, except = []) {
 
 // ---------------------------------------------------------------------------------------------------
 
-describe('PROD-03 clean-room pilot drill — a real organization, no founder, supported surfaces only', { concurrency: false }, () => {
+describe('PROD-03 clean-room pilot drill — a real organization, no founder, supported surfaces only', { concurrency: false, skip: PROCESS_DRILL_SKIP }, () => {
   before(async () => {
+    ws = workspace();
     const { commit, source } = drillCommit();
     drill.release = { commit, commitSource: source };
     state.stage = stageRelease(ws.root, commit);
@@ -201,7 +206,7 @@ describe('PROD-03 clean-room pilot drill — a real organization, no founder, su
   after(async () => {
     await killAll();
     if (process.env.FRONTERA_PILOT_DRILL_EVIDENCE !== undefined) writeJson(process.env.FRONTERA_PILOT_DRILL_EVIDENCE, drill);
-    ws.cleanup();
+    ws?.cleanup();
   });
 
   it('Phase A — deploy: secrets from the generator, configuration from the reference template, preflight PASS, witness + target + Host started; live, ready, deployment-ready, organization not yet onboarded', async () => {

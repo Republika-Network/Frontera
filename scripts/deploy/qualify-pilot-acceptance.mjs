@@ -411,7 +411,7 @@ async function qualify() {
       // The minimal kit example declares no Governance Profile: the organization level names exactly that.
       check(/FAIL PR-09 governance-profile\s+\[PROFILE_NOT_ACTIVE\]/.test(gated.stdout), 'the missing profile is not named');
       check(/RESULT: DEPLOYMENT-READY/.test(gated.stdout), 'the result is not deployment-ready');
-      record('O16', 'the readiness gate runs as the kit\'s tool: deployment-ready; the organization level names what is missing; nothing but GET', true);
+      record('O16', 'the readiness gate runs as the kit\'s tool: deployment-ready; the organization level names what is missing', true);
     } catch (error) {
       record('O16', 'readiness gate', false, error.message);
     }

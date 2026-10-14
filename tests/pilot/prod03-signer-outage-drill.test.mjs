@@ -35,7 +35,11 @@ import {
   workspace,
 } from './fixtures/drill-lib.mjs';
 
-const ws = workspace('frontera-prod03-signer-');
+// A multi-process drill: run on its own (npm run qualify:pilot, CI job pilot-operations), never inside the
+// parallel root suite, where its load would only perturb other suites' timing.
+const PROCESS_DRILL_SKIP = process.env.FRONTERA_PILOT_DRILL === '1' ? false : 'multi-process drill: npm run qualify:pilot (or FRONTERA_PILOT_DRILL=1)';
+/** Created in `before`: a skipped drill leaves nothing behind. */
+let ws;
 const state = {};
 const TD = 'trust-domain-pilot';
 const ISSUER = 'actor-pilot-org';
@@ -62,8 +66,9 @@ function readiness(env) {
   return JSON.parse(result.stdout);
 }
 
-describe('PROD-03 signer drill — external custody: the gate sees a signer outage, nothing is signed or performed, recovery needs no reset', { concurrency: false }, () => {
+describe('PROD-03 signer drill — external custody: the gate sees a signer outage, nothing is signed or performed, recovery needs no reset', { concurrency: false, skip: PROCESS_DRILL_SKIP }, () => {
   before(async () => {
+    ws = workspace('frontera-prod03-signer-');
     state.stage = stageRelease(ws.root, drillCommit().commit);
     state.stateDir = ws.dir('state');
     state.witnessDir = ws.dir('witness');
@@ -76,7 +81,7 @@ describe('PROD-03 signer drill — external custody: the gate sees a signer outa
   });
   after(async () => {
     await killAll();
-    ws.cleanup();
+    ws?.cleanup();
   });
 
   it('boots under external custody: no private key in the Host environment; the signer and witness are their own processes; PR-05 passes with custody=external', async () => {

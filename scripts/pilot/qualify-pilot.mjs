@@ -61,6 +61,8 @@ async function main() {
   const scratch = mkdtempSync(join(tmpdir(), 'frontera-qualify-pilot-'));
   const drillEvidence = evidenceOut ?? join(scratch, 'drill-evidence.json');
   process.env.FRONTERA_PILOT_DRILL_EVIDENCE = drillEvidence;
+  // The multi-process drills skip themselves inside the parallel root suite; here they run, one file at a time.
+  process.env.FRONTERA_PILOT_DRILL = '1';
   const passed = [];
   const failed = [];
   try {

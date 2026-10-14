@@ -143,8 +143,8 @@ The full pilot life cycle — onboarding, bounded authority, approval, revocatio
 emergency, restart, backup, restore, stale restore, incidents, offboarding and a
 second operator team working from the onboarding runbook alone — runs on real
 processes in the PROD-03 clean-room drill
-(`tests/pilot/prod03-clean-room-drill.test.mjs`, part of `npm test` and
-`npm run qualify:pilot`), which reaches `pilot-ready`.
+(`tests/pilot/prod03-clean-room-drill.test.mjs`, run by `npm run qualify:pilot`
+and the CI job `pilot-operations`), which reaches `pilot-ready`.
 
 The upgrade and rollback blocks are executed with the same release as both
 "previous" and "new" (no second release exists inside one commit): this

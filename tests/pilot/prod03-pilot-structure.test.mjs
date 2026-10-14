@@ -192,6 +192,19 @@ describe('PROD-03 ties — the checklist, threat model, runbook, Compose tool an
     assert.equal(/ports:|depends_on/.test(block), false);
   });
 
+  it('the multi-process drills run on their own — in qualify:pilot and the CI job pilot-operations — never silently nowhere', () => {
+    for (const file of ['tests/pilot/prod03-clean-room-drill.test.mjs', 'tests/pilot/prod03-signer-outage-drill.test.mjs']) {
+      const source = code(file);
+      assert.match(source, /const PROCESS_DRILL_SKIP = process\.env\.FRONTERA_PILOT_DRILL === '1' \? false : '/, file);
+      assert.match(source, /\{ concurrency: false, skip: PROCESS_DRILL_SKIP \}/, file);
+    }
+    assert.match(code('scripts/pilot/qualify-pilot.mjs'), /process\.env\.FRONTERA_PILOT_DRILL = '1';/);
+    const ci = read('.github/workflows/ci.yml');
+    const job = ci.slice(ci.indexOf('  pilot-operations:'));
+    assert.ok(ci.includes('  pilot-operations:'), 'CI has the pilot-operations job');
+    assert.match(job, /- run: npm ci\n\s+- run: npm run build\n\s+- run: npm run qualify:pilot/);
+  });
+
   it('the npm scripts the documents name exist and point at the tooling', () => {
     const scripts = JSON.parse(read('package.json')).scripts;
     assert.equal(scripts['pilot:readiness'], 'node scripts/pilot/pilot-readiness.mjs');

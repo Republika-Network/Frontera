@@ -1,7 +1,7 @@
 {
  "format": "frontera.prod03.mutation-evidence.v1",
  "baseline": "the PROD-03 working tree on main @ 6adfe4564ddcb20beb5205a7dfa7f5c8651728a8, in a native-Linux LF tree (git archive of the baseline with core.autocrlf=false, overlaid with the branch's files normalized to LF)",
- "runner": "scripted, outside the repository: apply edits (each find verified to occur exactly once) -> tsc -b for a TypeScript mutation -> node --test <kill set> -> killed when the kill set exits non-zero -> restore original bytes -> SHA-256 compare -> rebuild after a TypeScript mutation; afterwards every mutated file compared byte for byte with the branch",
+ "runner": "scripted, outside the repository: apply edits (each find verified to occur exactly once) -> tsc -b for a TypeScript mutation -> node --test <kill set> -> killed when the kill set exits non-zero -> restore original bytes -> SHA-256 compare -> rebuild after a TypeScript mutation; afterwards every mutated file compared byte for byte with the branch; the clean-room drill's kill set ran with FRONTERA_PILOT_DRILL=1 semantics (it was not yet opt-in when the campaign ran; it is now skipped inside the parallel root suite and run by npm run qualify:pilot)",
  "killSets": {
   "GATE": [
    "tests/pilot/prod03-readiness-gate.test.mjs",

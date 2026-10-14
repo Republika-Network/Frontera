@@ -205,6 +205,8 @@ Liveness is lifecycle only; readiness requires health not `unhealthy`; **safe to
 | K offboarding | delegation, credentials and every agent identity revoked; the agent 401, zero effect; gate organization-ready, `PR-10 NO_PILOT_AGENT`; every trace exported (0700/0600) and verified; final cold backup; every process stops with exit 0; **no secret in any HTTP response (other than its one reveal) or any process output** |
 | signer drill | external custody, no private key in the Host's environment, `PR-05` custody=external; one externally signed action; the signer stopped → nothing new signed or performed, `/live` 200, `/health` signer unavailable, gate `PR-05 SIGNER_UNAVAILABLE`; the signer back on its own key → execution resumes, `PR-05` passes |
 
+**Where the drills run.** The two multi-process drills run on their own: `npm run qualify:pilot` and the CI job `pilot-operations` (the six PROD-03 suites, one file at a time). Inside the parallel root suite of `npm test` they skip themselves unless `FRONTERA_PILOT_DRILL=1`: measured on the final tree, with them in the parallel run 3 of 7 full runs had one timing failure in a pre-existing timeout-sensitive suite (PAY-08 `LIFE-3`; CORE-07's enrollment ceremony, a 2 000 ms witness timeout), and without them 2 of 2 were clean. The readiness gate, structure, `approvalPolicy` and witness-outage suites stay in the root suite.
+
 Observed (drill evidence, not an SLA): the clean-room drill takes about 45 s on one machine (four processes, about 30 Host starts and stops, four backups, three restores); the signer drill about 8 s; `npm run qualify:pilot` (all six PROD-03 suites, 119 tests) about 90 s.
 
 ## 13. Structural proofs
