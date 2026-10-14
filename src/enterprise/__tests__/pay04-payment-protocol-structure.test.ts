@@ -87,10 +87,15 @@ const NOT_CORE: ReadonlySet<string> = new Set([...VERTICALS, XRPL_TRANSPORT]);
  * Generic CORE: everything that is not a vertical or one of the payment vertical's composition edges. PAY-08 added one:
  * the x402 composition edge (`src/enterprise/x402-payment-protocol/`), a protocol edge beside the ingress that composes
  * it — held to its own structure test (`pay08-x402-structure.test.ts`).
+ *
+ * TRADE-04B: the delegated OfferCreate signer edge (`src/enterprise/xrpl-trade-rail/`) is XRPL-specific by construction,
+ * like PAY-03's `xrpl-payment-rail`, so it is out of CORE — and, like TRADE and the transport, never out of scanning:
+ * it is scanned on its own below (and held to `trade04b-protected-signer-structure.test.ts`).
  */
+const TRADE_SIGNER_EDGE = 'src/enterprise/xrpl-trade-rail';
 const CORE = [
   ...['src/kernel', 'src/runtime', 'src/kernel-host', 'src/control-plane-web', 'src/index.ts'].flatMap((root) => walk(root)),
-  ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/') && !file.startsWith('src/enterprise/x402-payment-protocol/')),
+  ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/') && !file.startsWith('src/enterprise/x402-payment-protocol/') && !file.startsWith(`${TRADE_SIGNER_EDGE}/`)),
   ...readdirSync('src/features')
     .filter((name) => !NOT_CORE.has(name))
     .flatMap((name) => walk(join('src/features', name))),
@@ -134,6 +139,16 @@ describe('PAY-04 M39 — no payment-protocol vocabulary in CORE', () => {
 
   it('the trade vertical is scanned on its own: it names no payment protocol either — in code or prose', () => {
     for (const file of TRADE) {
+      const text = readFileSync(file, 'utf8');
+      for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
+    }
+  });
+
+  it('the TRADE-04B delegated signer edge is scanned on its own: it names no payment protocol — in code or prose', () => {
+    const edge = walk(TRADE_SIGNER_EDGE);
+    assert.ok(edge.length >= 5, `found ${edge.length} signer-edge sources`);
+    for (const file of edge) {
+      assert.equal(CORE.includes(file), false, `${file} is the trade signer edge, not CORE`);
       const text = readFileSync(file, 'utf8');
       for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
     }

@@ -7,8 +7,10 @@ import assert from 'node:assert/strict';
  * What the XRPL / RLUSD rail is allowed to be, enforced structurally (PAY-02,
  * X21, §43–§45):
  *
- * - the XRPL SDK is imported by three named rail files and the rail's own
- *   tests — nowhere else in the repository: not Frontera's core, not PAY-01's
+ * - the XRPL SDK is imported by named files only — two rail files, the shared
+ *   transport's one codec file (TRADE-04B, G3: the PAY-02 codec's SDK import
+ *   moved there by substitution), the two reference signer processes — and by
+ *   tests; nowhere else in the repository: not Frontera's core, not PAY-01's
  *   domain or services, not an app, a package or a script;
  * - exactly one production source opens an XRPL connection and issues the
  *   `submit` request, and exactly one place in the rail calls it;
@@ -61,6 +63,23 @@ const isRailTestOrSmoke = (file: string): boolean => file.startsWith(`${RAIL_DIR
  * imports it (`pay03-xrpl-production-structure.test.ts`).
  */
 const REFERENCE_SIGNER = 'src/enterprise/xrpl-payment-rail/reference/reference-xrpl-signer-service.ts';
+/**
+ * TRADE-04B (G3): the shared transport's codec file. The PAY-02 codec's SDK
+ * import moved here by substitution — `xrpl-codec.ts` left this list and this
+ * file joined it. Decode, re-encode, hash and verify only; held to
+ * `xrpl-transport-boundaries.test.ts`.
+ */
+const SHARED_SIGNATURE = 'src/features/xrpl-transport/xrpl-signature.ts';
+/**
+ * TRADE-04B: the reference delegated OfferCreate signer — like PAY-03's, a
+ * separate custody process (`scripts/run-reference-xrpl-offer-signer.mjs`),
+ * never composed into the Host, holding its own disposable Testnet delegate
+ * keys (`trade04b-protected-signer-structure.test.ts`).
+ */
+const TRADE_REFERENCE_SIGNER = 'src/enterprise/xrpl-trade-rail/reference/reference-delegated-offer-signer.ts';
+/** TRADE-04B qualification fixtures that build negative signing vectors with the SDK. A test fixture, never composed. */
+const TRADE04B_FIXTURE = 'src/enterprise/__tests__/trade04b-xrpl-fixture.ts';
+const isReferenceSigner = (file: string): boolean => file === REFERENCE_SIGNER || file === TRADE_REFERENCE_SIGNER;
 /** PAY-03 qualification tests that start the reference signer or build fixtures with the SDK. Tests, never composed. */
 const isPay03Test = (file: string): boolean => /^src\/enterprise\/__tests__\/pay03-[a-z0-9-]+\.(?:test\.)?ts$/.test(file);
 const REPOSITORY_CODE = ['src', 'packages', 'apps', 'scripts', 'tests'].flatMap((root) => walk(root, isCode, true));
@@ -75,11 +94,12 @@ describe('PAY-02 — XRPL SDK import boundary (X21, §44)', () => {
     for (const miss of ['the xrpl SDK', "'xrpl-rlusd'", "from './xrpl-config.js'", `assert.equal(RAIL.test("import { Client } from 'xrpl'"), true);`]) assert.equal(XRPL_SDK_IMPORT.test(miss), false, miss);
   });
 
-  it('only three rail files, the reference signer and tests import the SDK, repository-wide', () => {
+  it('only two rail files, the shared codec file, the two reference signers and tests import the SDK, repository-wide', () => {
     const importers = REPOSITORY_CODE.filter((file) => XRPL_SDK_IMPORT.test(readFileSync(file, 'utf8')));
-    const production = importers.filter((file) => !isRailTestOrSmoke(file) && !isPay03Test(file));
-    assert.deepEqual(production.sort(), [`${RAIL_DIR}/xrpl-address.ts`, `${RAIL_DIR}/xrpl-codec.ts`, `${RAIL_DIR}/xrpl-sdk-client.ts`, REFERENCE_SIGNER].sort());
-    for (const file of importers) assert.ok(file.startsWith(`${RAIL_DIR}/`) || file === SMOKE || file === REFERENCE_SIGNER || isPay03Test(file), `${file} imports the XRPL SDK outside the rail`);
+    const production = importers.filter((file) => !isRailTestOrSmoke(file) && !isPay03Test(file) && file !== TRADE04B_FIXTURE);
+    assert.deepEqual(production.sort(), [`${RAIL_DIR}/xrpl-address.ts`, `${RAIL_DIR}/xrpl-sdk-client.ts`, SHARED_SIGNATURE, REFERENCE_SIGNER, TRADE_REFERENCE_SIGNER].sort());
+    for (const file of importers) assert.ok(file.startsWith(`${RAIL_DIR}/`) || file === SMOKE || file === SHARED_SIGNATURE || isReferenceSigner(file) || isPay03Test(file) || file === TRADE04B_FIXTURE, `${file} imports the XRPL SDK outside the rail`);
+    assert.equal(XRPL_SDK_IMPORT.test(readFileSync(`${RAIL_DIR}/xrpl-codec.ts`, 'utf8')), false, 'G3: the PAY-02 codec reaches the SDK only through the shared codec file');
   });
 
   it('PAY-01’s contract (domain, services, barrel) neither imports the rail nor names it', () => {
@@ -94,7 +114,8 @@ describe('PAY-02 — XRPL SDK import boundary (X21, §44)', () => {
 
   it('the rail imports only itself, PAY-01’s domain, the generic runtimes it reads and the shared XRPL transport — never the enterprise layer, the Kernel or a store', () => {
     // TRADE-04A: `xrpl-transport` is pure and transaction-neutral (no SDK, no network, no business type) and is held to its own boundary test.
-    const allowed = /^(?:\.\/[a-z-]+\.js|\.\.\/\.\.\/domain\/index\.js|\.\.\/\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|xrpl-transport)\/index\.js|xrpl)$/;
+    // TRADE-04B (G3): and the shared transport's codec file, imported by path (it is not on the transport's barrel).
+    const allowed = /^(?:\.\/[a-z-]+\.js|\.\.\/\.\.\/domain\/index\.js|\.\.\/\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|xrpl-transport)\/index\.js|\.\.\/\.\.\/\.\.\/xrpl-transport\/xrpl-signature\.js|xrpl)$/;
     for (const file of RAIL_PRODUCTION) {
       for (const match of codeOf(file).matchAll(/\bfrom\s+'([^']+)'/g)) assert.ok(allowed.test(match[1] ?? ''), `${file} imports '${match[1]}'`);
     }
@@ -157,7 +178,8 @@ describe('PAY-02 — signing and custody boundary (§17, §18, §45)', () => {
   it('no production source anywhere derives, holds or uses an XRPL key: Wallet, seeds, keypairs and mnemonics live only in the rail’s tests', () => {
     const custody = /\bWallet\b|fromSeed|fromSecret|fromMnemonic|fromEntropy|deriveKeypair|generateSeed|ripple-keypairs|secret-numbers/;
     const sites = REPOSITORY_CODE.filter((file) => XRPL_SDK_IMPORT.test(readFileSync(file, 'utf8')) && custody.test(codeOf(file)));
-    for (const file of sites) assert.ok(isRailTestOrSmoke(file) || isPay03Test(file) || file === REFERENCE_SIGNER, `${file} holds XRPL key material outside the test fixtures and the reference signer process`);
+    for (const file of sites) assert.ok(isRailTestOrSmoke(file) || isPay03Test(file) || file === TRADE04B_FIXTURE || isReferenceSigner(file), `${file} holds XRPL key material outside the test fixtures and the reference signer processes`);
+    assert.equal(sites.includes(SHARED_SIGNATURE), false, 'the shared codec file holds no key');
     for (const file of RAIL_PRODUCTION) assert.equal(custody.test(codeOf(file)), false, file);
   });
 

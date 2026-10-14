@@ -326,5 +326,40 @@ is in TRADE-04A.
 |---|---|---|
 | G1 | Shared account-scoped interlock (schema v2 migration, §9.3) | Not requested in 04A; needs explicit approval and its own qualification |
 | G2 | Moving or reconstructing the one submit site for a second transaction type (§7) | Not requested in 04A |
-| G3 | Moving `signedByPinnedKey` (adds an SDK importer by substitution, §6) | TRADE-04B |
+| G3 | Moving `signedByPinnedKey` (adds an SDK importer by substitution, §6) | TRADE-04B — **implemented** under the user's narrow authorization (§12) |
 | G4 | First Trade sequence domain composition: new CORE-07 slot, EP id, Host wiring of `assertXrplSequenceOwnership` | TRADE-04C |
+
+## 12. Addendum — G3 implemented (TRADE-04B)
+
+Recorded by TRADE-04B (`docs/integrations/trade/TRADE-04B-PROTECTED-DELEGATED-SIGNER.md` §7, §21);
+the TRADE-04A text above is left as it was decided.
+
+- **What moved, by substitution.** `src/features/xrpl-transport/xrpl-signature.ts` is the one
+  transport file that imports the SDK — exactly `decode`, `encode`, `encodeForSigning`, `hashes`,
+  `verifySignature` and the `Transaction` type, pinned verbatim. It exports six total,
+  synchronous questions about bytes: `isXrplSignedBlob`, `decodeXrplSignedBlob`,
+  `xrplSingleSigningEncoding`, `isCanonicalXrplSignedBlob`, `xrplSignedBlobHash` and
+  `signedByPinnedKey` (moved verbatim but for its parameter name). It signs nothing, holds no
+  key, opens nothing, names no transaction type, and is **not** on the transport's barrel, so
+  consumers of the pure transport do not load the SDK.
+- **Payment unchanged.** The PAY-02 codec no longer imports the SDK; it reaches these
+  primitives through that file and re-exports `signedByPinnedKey` as the same function object.
+  `signedPaymentMatches` — Payment's own field-set closure — is unchanged in meaning; the
+  pre-move implementations are frozen in
+  `src/features/payment-runtime/rails/xrpl/tests/xrpl-codec-signature-preservation.test.ts` and
+  compared with the shipped ones over real signed Payments (both key algorithms), every single-field
+  tamper, foreign keys, multisigned blobs, transplanted signatures, malformed input and a
+  throwing prepared payment. The Payment parser, signer protocol and signer service are untouched.
+- **Importer list.** PAY-02's repository-wide SDK-importer list swapped `xrpl-codec.ts` for
+  `xrpl-signature.ts`. Separately, and by its own approval, TRADE-04B added one reference
+  process importer (`src/enterprise/xrpl-trade-rail/reference/reference-delegated-offer-signer.ts`),
+  beside PAY-03's. Production importers: five.
+- **Structural tests, same meaning.** `xrpl-transport-boundaries.test.ts` keeps every rule for
+  every other transport file; the signature file is held to the same rules with one narrowing —
+  it may *verify* (`encodeForSigning`, `verifySignature`), never sign — and its import statement
+  and exports are pinned; negative fixtures prove the exception is exact.
+- **Each closed type keeps its own closure.** The delegated OfferCreate verifier
+  (`src/enterprise/xrpl-trade-rail/delegated-offer-verification.ts`) applies §6's list on top of
+  these primitives, plus a canonical-serialization check.
+
+G1, G2 and G4 remain unapproved and unimplemented.

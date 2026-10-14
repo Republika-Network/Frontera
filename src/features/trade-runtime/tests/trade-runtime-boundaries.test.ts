@@ -76,14 +76,16 @@ describe('Trade runtime boundaries (TRADE-01)', () => {
     assert.ok(imports >= 4, `found ${imports} hash imports`);
   });
 
-  it('nothing in Frontera imports the trade runtime but its one approved composition edge (TRADE-03 K1)', () => {
-    // The approved edge: the CORE-04 trusted-context provider. Held to `trade03-risk-context-structure.test.ts`.
-    const APPROVED_EDGE = 'src/enterprise/trade-risk-context/';
+  it('nothing in Frontera imports the trade runtime but its approved composition edges (TRADE-03 K1, TRADE-04B)', () => {
+    // The approved edges: the CORE-04 trusted-context provider (`trade03-risk-context-structure.test.ts`) and the
+    // TRADE-04B delegated OfferCreate signer edge, which reads TRADE-01's grammar (`trade04b-protected-signer-structure.test.ts`).
+    const APPROVED_EDGES = ['src/enterprise/trade-risk-context/', 'src/enterprise/xrpl-trade-rail/'];
+    const onEdge = (path: string): boolean => APPROVED_EDGES.some((edge) => path.startsWith(edge));
     const roots = ['src/kernel', 'src/runtime', 'src/enterprise', 'src/kernel-host', 'src/control-plane-web'];
     const features = readdirSync('src/features').filter((name) => name !== 'trade-runtime').map((name) => join('src/features', name));
     const files = [...roots, ...features].flatMap((root) => walk(root, false));
-    assert.ok(files.some((file) => file.startsWith(APPROVED_EDGE)), 'the edge exists and is scanned');
-    for (const file of files.filter((path) => !path.startsWith(APPROVED_EDGE))) {
+    for (const edge of APPROVED_EDGES) assert.ok(files.some((file) => file.startsWith(edge)), `the edge ${edge} exists and is scanned`);
+    for (const file of files.filter((path) => !onEdge(path))) {
       assert.equal(/trade-runtime/.test(readFileSync(file, 'utf8')), false, `${file} must not depend on the trade vertical`);
     }
   });
