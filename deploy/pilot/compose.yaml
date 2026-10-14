@@ -71,6 +71,10 @@ x-frontera-host: &frontera-host
     # (opt-in; see docs/payments/). Listed so that,
     # if one is configured, its safety state lives on the state volume.
     AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH: /var/lib/frontera/xrpl-submission-interlock.sqlite
+    # TRADE-04C: the governed trade executor's own sequence interlock. Opened only
+    # when governed-actions.json configures governed trade execution, which this kit
+    # does not. Listed so that, if configured, it lives on the state volume.
+    AOC_ENTERPRISE_XRPL_TRADE_INTERLOCK_SQLITE_PATH: /var/lib/frontera/xrpl-trade-sequence-interlock.sqlite
   volumes:
     - frontera-state:/var/lib/frontera
     # `z`: SELinux relabel (shared by the Host and config-check); no effect elsewhere.

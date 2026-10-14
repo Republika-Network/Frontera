@@ -119,6 +119,8 @@ describe('TRADE-04A shared XRPL transport — boundaries', () => {
       'index.ts',
       'xrpl-ledger-grammar.ts',
       'xrpl-network-identity.ts',
+      // TRADE-04C: the transaction-neutral restart quarantine (pure; a decision over ledger close times).
+      'xrpl-restart-quarantine.ts',
       'xrpl-sequence-safety.ts',
       'xrpl-signature.ts',
       'xrpl-submission-reading.ts',
@@ -149,6 +151,9 @@ describe('TRADE-04A shared XRPL transport — boundaries', () => {
       'XRPL_LEDGER_INDEX_MAXIMUM',
       'XRPL_MAINNET_NETWORK_ID',
       'XRPL_NETWORK_IDENTITIES',
+      'XRPL_SHARED_HISTORICAL_MAX_LAST_LEDGER_OFFSET',
+      'XRPL_SHARED_RESTART_ANCHOR_SLACK_SECONDS',
+      'XRPL_SHARED_RESTART_QUARANTINE_LEDGERS',
       'XRPL_VALIDATED_READER_LIMITS',
       'XRPL_VALIDATED_READ_FAILURES',
       'XrplSequenceOwnershipError',
@@ -156,6 +161,7 @@ describe('TRADE-04A shared XRPL transport — boundaries', () => {
       'assertXrplSequenceOwnership',
       'bindXrplValidatedAnswer',
       'checkXrplNetworkIdentity',
+      'createXrplRestartQuarantine',
       'createXrplValidatedLedgerReader',
       'isPermittedXrplNetworkId',
       'isXrplEngineResult',
@@ -205,11 +211,19 @@ describe('TRADE-04A shared XRPL transport — boundaries', () => {
     const production = ['src', 'packages', 'scripts', 'apps'].flatMap((root) => walk(root, false)).filter((path) => !path.startsWith(`${ROOT}/`));
     const importers = production.filter((path) => importsOf(readFileSync(path, 'utf8')).some((specifier) => /xrpl-transport\//.test(specifier)));
     assert.deepEqual(importers.sort(), [
+      // TRADE-04C: the Host's cross-domain ownership check, and the governed trade executor edge (reader, quarantine, inclusion reading, blocking rule).
+      'src/enterprise/host/enterprise-host.ts',
       'src/enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.ts',
+      'src/enterprise/xrpl-trade-execution/host-composition.ts',
+      'src/enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.ts',
+      'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts',
+      'src/enterprise/xrpl-trade-execution/trade-resolution-authority.ts',
       'src/enterprise/xrpl-trade-rail/delegated-offer-protocol.ts',
       'src/enterprise/xrpl-trade-rail/delegated-offer-verification.ts',
       'src/features/payment-runtime/rails/xrpl/xrpl-codec.ts',
       'src/features/payment-runtime/rails/xrpl/xrpl-result-normalizer.ts',
+      // TRADE-04C (G2): the SDK client, for the reserved submission client's network rule and blob-derived claim.
+      'src/features/payment-runtime/rails/xrpl/xrpl-sdk-client.ts',
     ]);
   });
 

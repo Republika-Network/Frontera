@@ -1,4 +1,5 @@
 import type { ExecutionAdapter, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
+import { XrplSequenceOwnershipError, assertXrplSequenceOwnership, type XrplSequenceDomain } from '../../features/xrpl-transport/index.js';
 import type { ContextProvider, PolicyPackProvider } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import type { AocEnterprise, CreateEnterpriseOptions } from '../composition/composition-root.js';
@@ -7,6 +8,8 @@ import type { ExecutionResolutionAuthority } from '../execution-reconciliation/a
 import { OPERATOR_ATTESTATION_AUTHORITY_ID, createOperatorAttestationAuthority } from '../execution-reconciliation/operator-attestation.js';
 import type { ComposedXrplPaymentRail, XrplLedgerClientFactory } from '../xrpl-payment-rail/host-composition.js';
 import { xrplKeyMaterialVariables } from '../xrpl-payment-rail/host-configuration.js';
+import type { ComposeXrplTradeExecutionOptions, ComposedXrplTradeExecution } from '../xrpl-trade-execution/host-composition.js';
+import { xrplTradeKeyMaterialVariables } from '../xrpl-trade-execution/host-configuration.js';
 import type { EnterpriseHealthPosture } from '../health/health-check.js';
 import { createEnterpriseLogger, type EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { createEnterpriseServer, type EnterpriseServer } from './enterprise-server.js';
@@ -101,6 +104,24 @@ export interface BootEnterpriseHostOptions {
    * interlock and the resolver are always the Host's own.
    */
   readonly xrplLedgerClient?: XrplLedgerClientFactory;
+  /**
+   * TRADE-04C — trusted in-process composition for the governed trade
+   * executor, used only when the governed-action file configures
+   * `xrplTradeExecution`:
+   *
+   * - `attested` (required then): the TRADE-03 trade risk context's
+   *   attested-proposal source — the same edge the embedder passes as
+   *   `contextProvider`. Without it the Host refuses to start.
+   * - `ledgerClient`: a ledger capability factory for offline qualification
+   *   (default the official SDK client; an injected one is recorded in every
+   *   reservation's evidence as `injected-ledger-client`).
+   * - `simulation`: the in-code acknowledgement that lets offline
+   *   qualification execute on simulated-source facts. Never configuration.
+   *
+   * The launcher passes none, so a started process configured for trade
+   * execution refuses until an embedder composes the trade risk context.
+   */
+  readonly xrplTradeExecution?: Pick<ComposeXrplTradeExecutionOptions, 'attested' | 'ledgerClient' | 'simulation' | 'onTrace'>;
   readonly logger?: EnterpriseLogger;
 }
 
@@ -116,7 +137,7 @@ export interface EnterpriseHost {
   close(): Promise<void>;
 }
 
-function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions, xrpl?: ComposedXrplPaymentRail): CreateEnterpriseOptions {
+function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions, xrpl?: ComposedXrplPaymentRail, trade?: ComposedXrplTradeExecution): CreateEnterpriseOptions {
   const governed = host.governedActions;
   const base: CreateEnterpriseOptions = {
     configuration: host.configuration,
@@ -126,7 +147,8 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
   if (governed === undefined) return base;
 
   // PAY-03: the composed XRPL rail joins the same trusted registry, reachable only through its configured route.
-  const extra = [...(options.executionAdapters ?? []), ...(xrpl !== undefined ? [xrpl.adapter] : [])];
+  // TRADE-04C: and so does the governed trade executor, reachable only through the trade action's route.
+  const extra = [...(options.executionAdapters ?? []), ...(xrpl !== undefined ? [xrpl.adapter] : []), ...(trade !== undefined ? [trade.adapter] : [])];
   const known = new Set([...extra.map((adapter) => adapter.adapterId), ...governed.genericHttpAdapters.map((adapter) => adapter.adapterId)]);
   for (const [action, adapterId] of governed.routes) {
     if (!known.has(adapterId)) {
@@ -186,22 +208,28 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
     // is bound to it before its claim — so an unconfirmed XRPL payment is
     // resolved from the ledger, under P12's unchanged rules (one binding, one
     // resolution, provider truth first). Nothing here can execute.
-    ...executionReconciliationOf(host, xrpl),
-    ...(xrpl !== undefined ? { modules: xrpl.modules } : {}),
+    ...executionReconciliationOf(host, xrpl, trade),
+    ...(xrpl !== undefined || trade !== undefined ? { modules: [...(xrpl?.modules ?? []), ...(trade?.modules ?? [])] } : {}),
   };
 }
 
-function executionReconciliationOf(host: EnterpriseHostConfiguration, xrpl: ComposedXrplPaymentRail | undefined): Pick<CreateEnterpriseOptions, 'executionReconciliation'> {
+function executionReconciliationOf(host: EnterpriseHostConfiguration, xrpl: ComposedXrplPaymentRail | undefined, trade?: ComposedXrplTradeExecution): Pick<CreateEnterpriseOptions, 'executionReconciliation'> {
   const operators = (host.configuration.administration?.operators?.length ?? 0) > 0;
-  if (!operators && xrpl === undefined) return {};
-  const authorities: ExecutionResolutionAuthority[] = [...(operators ? [createOperatorAttestationAuthority()] : []), ...(xrpl !== undefined ? [xrpl.authority] : [])];
+  if (!operators && xrpl === undefined && trade === undefined) return {};
+  const authorities: ExecutionResolutionAuthority[] = [...(operators ? [createOperatorAttestationAuthority()] : []), ...(xrpl !== undefined ? [xrpl.authority] : []), ...(trade !== undefined ? [trade.authority] : [])];
   // Synchronous and total over the trusted action; there is no fallback inside P12.
-  // Without an operator plane, every other action binds to the XRPL authority, which
+  // Without an operator plane, every other action binds to an XRPL authority, which
   // holds no interlock record for it and therefore only ever answers `unresolved`.
-  const fallback = operators ? OPERATOR_ATTESTATION_AUTHORITY_ID : xrpl!.authorityId;
-  const selectAuthority = (context: { readonly action: string }): string => (xrpl !== undefined && context.action === xrpl.paymentAction ? xrpl.authorityId : fallback);
+  const fallback = operators ? OPERATOR_ATTESTATION_AUTHORITY_ID : (xrpl?.authorityId ?? trade!.authorityId);
+  const selectAuthority = (context: { readonly action: string }): string => {
+    if (xrpl !== undefined && context.action === xrpl.paymentAction) return xrpl.authorityId;
+    // TRADE-04C: every execution of the trade action is bound to the read-only trade ledger authority before its claim.
+    if (trade !== undefined && context.action === trade.tradeAction) return trade.authorityId;
+    return fallback;
+  };
   return { executionReconciliation: { enabled: true, authorities, selectAuthority } };
 }
+
 
 /**
  * PAY-03: the Host requests XRPL signatures; it never holds an XRPL key. With
@@ -211,14 +239,45 @@ function executionReconciliationOf(host: EnterpriseHostConfiguration, xrpl: Comp
  * configuration map and the real process environment.
  */
 function assertProcessHoldsNoXrplKey(host: EnterpriseHostConfiguration, env: Readonly<Record<string, string | undefined>>): void {
-  if (host.governedActions?.xrplPaymentRail === undefined) return;
-  const present = [...new Set([...xrplKeyMaterialVariables(env), ...xrplKeyMaterialVariables(process.env)])];
+  const payment = host.governedActions?.xrplPaymentRail !== undefined;
+  const trade = host.governedActions?.xrplTradeExecution !== undefined;
+  if (!payment && !trade) return;
+  // TRADE-04C: with the trade executor, also the reference offer signer's configuration and any owner/delegate key variable.
+  const scan = (source: Readonly<Record<string, string | undefined>>): readonly string[] => [...(payment ? xrplKeyMaterialVariables(source) : []), ...(trade ? xrplTradeKeyMaterialVariables(source) : [])];
+  const present = [...new Set([...scan(env), ...scan(process.env)])].sort();
   if (present.length === 0) return;
   throw new EnterpriseHostConfigurationError(
     'HOST_ENVIRONMENT_INVALID',
-    `The XRPL payment rail is configured and this process environment carries ${present.join(', ')}. The Host only requests XRPL signatures from the external signer; XRPL key material and the signer's own configuration belong to the signer's process, never this one.`,
+    `An XRPL submission domain is configured and this process environment carries ${present.join(', ')}. The Host only requests XRPL signatures from the external signer; XRPL key material and the signer's own configuration belong to the signer's process, never this one.`,
   );
 }
+
+/**
+ * TRADE-04A rule, enforced at boot (TRADE-04C, G4): every (network, account)
+ * whose `Sequence` an XRPL submission domain consumes belongs to exactly one
+ * domain — Payment source accounts, trade **owner** accounts (never the
+ * delegates). Run over every configured domain, from configuration alone,
+ * before any interlock is opened or any signer contacted. Shared-account
+ * coordination is gate G1 and is not implemented: an overlap refuses the Host.
+ */
+function assertXrplDomainsDisjoint(host: EnterpriseHostConfiguration): void {
+  const governed = host.governedActions;
+  const domains: XrplSequenceDomain[] = [];
+  const payment = governed?.xrplPaymentRail;
+  if (payment !== undefined) domains.push({ domainId: payment.rail.railId, networkId: payment.rail.networkId, sequenceAccounts: payment.rail.sourceAccounts.map((mapping) => mapping.address) });
+  const trade = governed?.xrplTradeExecution;
+  if (trade !== undefined) domains.push({ domainId: trade.executor.adapterId, networkId: TRADE_NETWORK_IDS[trade.executor.network] ?? -1, sequenceAccounts: trade.executor.pairs.map((pair) => pair.ownerAccount) });
+  if (domains.length === 0) return;
+  try {
+    assertXrplSequenceOwnership(domains, { allowMainnet: payment?.rail.network === 'mainnet' });
+  } catch (error) {
+    const code = error instanceof XrplSequenceOwnershipError ? error.code : 'XRPL_SEQUENCE_DOMAIN_INVALID';
+    throw new EnterpriseHostConfigurationError('HOST_XRPL_SEQUENCE_OWNERSHIP_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: the configured XRPL submission domains do not own disjoint sequence accounts (${code}). One account's Sequence is never consumed by two interlocks; nothing was opened.`);
+  }
+}
+
+/** TRADE-01's network ids, restated as data the Host can check without loading the trade vertical. Pinned equal to TRADE_NETWORKS by test. */
+const TRADE_NETWORK_IDS: Readonly<Record<string, number>> = Object.freeze({ 'xrp-ledger-testnet': 1, 'xrp-ledger-devnet': 2 });
 
 /** Posture a secure-profile Host must have composed. Checked against the composed objects, after composition, before listen. */
 function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly string[] {
@@ -301,6 +360,8 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
   try {
     assertProcessHoldsNoAuthorityKey(host);
     assertProcessHoldsNoXrplKey(host, options.env ?? process.env);
+    // TRADE-04C: before either interlock is opened.
+    assertXrplDomainsDisjoint(host);
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
     throw error;
@@ -327,11 +388,36 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
       throw error;
     }
   }
+  // TRADE-04C (G4): only an explicitly configured executor is composed, after the ownership check, with its own interlock and CORE-07 slot.
+  let trade: ComposedXrplTradeExecution | undefined;
+  const tradeConfiguration = host.governedActions?.xrplTradeExecution;
+  if (tradeConfiguration !== undefined) {
+    try {
+      const { composeXrplTradeExecution } = await import('../xrpl-trade-execution/host-composition.js');
+      const { buildAuthorityStateFreshnessBoundary } = await import('../composition/composition-root.js');
+      trade = await composeXrplTradeExecution({
+        configuration: tradeConfiguration,
+        freshness: await buildAuthorityStateFreshnessBoundary(host.configuration),
+        interlockPath: host.configuration.xrplTradeInterlock?.sqlitePath ?? '.data/xrpl-trade-sequence-interlock.sqlite',
+        busyTimeoutMs: host.configuration.persistence.busyTimeoutMs,
+        attested: options.xrplTradeExecution?.attested,
+        logger,
+        ...(options.xrplTradeExecution?.ledgerClient !== undefined ? { ledgerClient: options.xrplTradeExecution.ledgerClient } : {}),
+        ...(options.xrplTradeExecution?.simulation !== undefined ? { simulation: options.xrplTradeExecution.simulation } : {}),
+        ...(options.xrplTradeExecution?.onTrace !== undefined ? { onTrace: options.xrplTradeExecution.onTrace } : {}),
+      });
+    } catch (error) {
+      logger.error('enterprise.host.refused', { phase: 'xrpl_trade_execution', errorCode: refusalCode(error) });
+      await xrpl?.close();
+      throw error;
+    }
+  }
   let server: EnterpriseServer;
   try {
-    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }, xrpl));
+    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }, xrpl, trade));
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'composition', errorCode: refusalCode(error) });
+    await trade?.close();
     await xrpl?.close();
     throw error;
   }
@@ -410,6 +496,7 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'health_gate', errorCode: refusalCode(error) });
     await server.close().catch(() => {});
+    await trade?.close();
     await xrpl?.close();
     throw error;
   }

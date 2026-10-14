@@ -66,9 +66,14 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
 
 /**
  * The closed set of anchored state. Nothing else is anchored, and nothing else
- * can be named. Beyond the authority stores, three operational safety states —
+ * can be named. Beyond the authority stores, five operational safety states —
  * never authority, and never enrolled by the authority ceremony:
  *
+ * - `trade-sequence-reservations` (TRADE-04C, gate G4): the append-only
+ *   reservation history of the governed trade executor's own sequence
+ *   interlock (disjoint owner accounts only), whose rollback could let a
+ *   restarted Host sign and submit a second order on an owner's `Sequence`
+ *   while an earlier one is still live;
  * - `xrpl-submission-reservations` (PAY-03): the append-only reservation
  *   history of the XRPL submission interlock, whose rollback could let a
  *   restarted Host reuse a source account's `Sequence` while an earlier
@@ -89,7 +94,7 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
  * nothing else about them: each store lives in its own payment composition
  * edge, outside CORE, and maps itself onto a checkpoint.
  */
-export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations'] as const;
+export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations'] as const;
 
 export type AuthorityStateKind = (typeof AUTHORITY_STATE_KINDS)[number];
 

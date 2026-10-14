@@ -36,8 +36,8 @@ const codeOf = (file: string): string =>
     .replace(/^\s*\/\/.*$/gm, ' ');
 
 describe('TRADE-02 — the XRPL delegation reader is read-only', () => {
-  it('the rail is exactly the reader, the verifier and their barrel', () => {
-    assert.deepEqual(walk(RAIL).map((file) => file.slice(RAIL.length + 1)).sort(), ['index.ts', 'xrpl-delegation-reader.ts', 'xrpl-delegation-verifier.ts']);
+  it('the rail is exactly the reader, the verifier, the TRADE-04C account-root readings and their barrel', () => {
+    assert.deepEqual(walk(RAIL).map((file) => file.slice(RAIL.length + 1)).sort(), ['index.ts', 'xrpl-account-authority.ts', 'xrpl-delegation-reader.ts', 'xrpl-delegation-verifier.ts']);
   });
 
   it('TRADE-02-SEC-15/16/18: the verifier reaches the ledger only through the reader it creates, holds no cache, and accepts no observation from outside', () => {
@@ -94,12 +94,16 @@ describe('TRADE-02 — the XRPL delegation reader is read-only', () => {
     assert.equal(/catch\s*\(\s*\w+\s*\)/.test(code), false, 'no caught error value is inspected or forwarded');
   });
 
-  it('nothing composes the rail yet: the TRADE barrel does not export it, and no production module outside the rail imports it', () => {
+  it('the TRADE barrel does not export the rail, and no production module outside it imports it but the TRADE-04C executor edge (its one composition)', () => {
     assert.equal(/rails\//.test(codeOf('src/features/trade-runtime/index.ts')), false);
     assert.equal(/rails\//.test(codeOf('src/features/trade-runtime/domain/index.ts')), false);
     const production = (dir: string): readonly string[] => walk(dir);
     for (const file of ['src', 'packages', 'scripts', 'apps'].flatMap(production)) {
       if (file.startsWith(`${RAIL}/`)) continue;
+      // TRADE-04C: the governed executor composes the verifier over the shared transport's validated reader (gate G4).
+      if (file === 'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts') continue;
+      // Test-only fixtures (never production) may compose the verifier against a fake ledger.
+      if (file.startsWith('src/enterprise/__tests__/')) continue;
       assert.equal(/trade-runtime\/rails|xrpl-delegation-reader/.test(readFileSync(file, 'utf8')), false, file);
     }
   });

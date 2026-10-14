@@ -169,7 +169,9 @@ describe('TRADE-04B — the edge is what it says (SEC-TRADE04B-01, -12, -13, -16
 
 describe('TRADE-04B — no new path to the signer, and Payment unchanged (SEC-TRADE04B-15, -21, -22; F)', () => {
   it('SEC-TRADE04B-21 / F: nothing outside the edge reaches it but its launcher and its benchmark — no Host module, route, configuration, composition or package export', () => {
-    assert.deepEqual([...edgeImporters(PRODUCTION)].sort(), [BENCH, LAUNCHER].sort());
+    // TRADE-04C: plus exactly the governed executor edge — its Host configuration (pin validation), its composition (the one place the
+    // client is built, below the bounded grant) and the executor (the port's one caller). Still no Host module, route or export.
+    assert.deepEqual([...edgeImporters(PRODUCTION)].sort(), [BENCH, LAUNCHER, 'src/enterprise/xrpl-trade-execution/host-composition.ts', 'src/enterprise/xrpl-trade-execution/host-configuration.ts', 'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts'].sort());
     const launcher = codeOf(readFileSync(LAUNCHER, 'utf8'));
     assert.deepEqual([...launcher.matchAll(/from '([^']+)'/g)].map((match) => match[1]), ['../dist/src/enterprise/xrpl-trade-rail/reference/reference-delegated-offer-signer.js']);
     for (const entry of ['src/index.ts', 'src/enterprise/index.ts', 'src/runtime/index.ts', 'src/kernel/index.ts', 'src/kernel-host/index.ts', 'src/enterprise/host/enterprise-host.ts', 'src/enterprise/host/host-configuration.ts']) {

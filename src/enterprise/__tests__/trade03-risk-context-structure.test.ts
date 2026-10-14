@@ -97,7 +97,13 @@ describe('TRADE-03 K1 — the trade-risk-context edge is a CORE-04 provider and 
 
   it('is composed by no production module: a deployment hands its provider to the Host as `contextProvider`', () => {
     const importers = PRODUCTION.filter((source) => !source.path.startsWith(`${EDGE}/`) && /trade-risk-context/.test(source.text)).map((source) => source.path);
-    assert.deepEqual(importers, []);
+    // TRADE-04C: the governed executor edge names the attested-proposal *types* only — it never constructs the edge, and nothing else reaches it.
+    assert.deepEqual(importers.sort(), ['src/enterprise/xrpl-trade-execution/host-composition.ts', 'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts']);
+    for (const path of importers) {
+      const text = PRODUCTION.find((source) => source.path === path)!.text;
+      for (const line of text.split('\n').filter((entry) => /trade-risk-context/.test(entry) && /\bfrom\b/.test(entry))) assert.match(line, /^import type \{/, `${path}: ${line}`);
+      assert.equal(/createTradeRiskContext/.test(text), false, path);
+    }
   });
 
   it('the simulation acknowledgement is used by no production file but its definition', () => {

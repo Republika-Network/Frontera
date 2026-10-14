@@ -293,6 +293,18 @@ export interface EnterpriseConfiguration {
     readonly sqlitePath: string;
   };
   /**
+   * TRADE-04C (G4) — the governed trade executor's own durable owner-account
+   * `Sequence` interlock: every delegated OfferCreate signed for an execution,
+   * reserved before its one submission. Opened only when the governed-action
+   * file configures `xrplTradeExecution`, and then only under `sqlite`
+   * persistence and the external CORE-07 witness. Its own file — never the
+   * Payment interlock's (gate G1 is not implemented). Optional in the type;
+   * the loader always sets it.
+   */
+  readonly xrplTradeInterlock?: {
+    readonly sqlitePath: string;
+  };
+  /**
    * CTRL-02 — the control-plane store: operator-issued agent credentials
    * (verifiers only, never secrets) and the Governance Profile lifecycle.
    * Opened only when CTRL-02 operators are configured; the SQLite file under
@@ -893,6 +905,9 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     xrplInterlock: {
       sqlitePath: env.AOC_ENTERPRISE_XRPL_INTERLOCK_SQLITE_PATH ?? '.data/xrpl-submission-interlock.sqlite',
+    },
+    xrplTradeInterlock: {
+      sqlitePath: env.AOC_ENTERPRISE_XRPL_TRADE_INTERLOCK_SQLITE_PATH ?? '.data/xrpl-trade-sequence-interlock.sqlite',
     },
     controlPlane: {
       sqlitePath: env.AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH ?? '.data/control-plane.sqlite',

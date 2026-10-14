@@ -82,7 +82,7 @@ describe('Payment runtime boundaries (PAY-01)', () => {
     }
   });
 
-  it('nothing in Frontera core imports the payment runtime — except the PAY-03, PAY-04, PAY-05, PAY-06, PAY-08 and PAY-09 composition edges', () => {
+  it('nothing in Frontera core imports the payment runtime — except the PAY-03, PAY-04, PAY-05, PAY-06, PAY-08 and PAY-09 composition edges, and TRADE-04C’s G2 client use', () => {
     // PAY-03: the shipped Host composes the XRPL rail from configuration. PAY-04:
     // an embedder composes the payment protocol ingress beside the governed-action
     // orchestrator. PAY-05: an embedder composes settlement, receipts, the
@@ -94,7 +94,9 @@ describe('Payment runtime boundaries (PAY-01)', () => {
     // webhook signals the same way. Each composition lives
     // in one directory at the enterprise edge; the Kernel, the runtimes, the
     // stores and every other enterprise module stay payment-free.
-    const COMPOSITION_EDGES = [join('src/enterprise', 'xrpl-payment-rail'), join('src/enterprise', 'payment-protocol-ingress'), join('src/enterprise', 'payment-settlement'), join('src/enterprise', 'lightning-payment-rail'), join('src/enterprise', 'x402-payment-protocol'), join('src/enterprise', 'stripe-payment-rail')];
+    // TRADE-04C (G2): the governed trade executor edge reaches the XRPL rail barrel only for the reservation-gated
+    // submission client over the one submit request (and its claim types) — never the Payment rail, its signer or its interlock.
+    const COMPOSITION_EDGES = [join('src/enterprise', 'xrpl-payment-rail'), join('src/enterprise', 'payment-protocol-ingress'), join('src/enterprise', 'payment-settlement'), join('src/enterprise', 'lightning-payment-rail'), join('src/enterprise', 'x402-payment-protocol'), join('src/enterprise', 'stripe-payment-rail'), join('src/enterprise', 'xrpl-trade-execution')];
     const atEdge = (path: string): boolean => COMPOSITION_EDGES.some((edge) => path.startsWith(`${edge}/`));
     const roots = ['src/kernel', 'src/runtime', 'src/enterprise', 'src/kernel-host', 'src/control-plane-web'];
     const features = readdirSync('src/features').filter((name) => name !== 'payment-runtime').map((name) => join('src/features', name));

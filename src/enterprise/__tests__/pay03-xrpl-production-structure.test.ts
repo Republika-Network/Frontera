@@ -65,7 +65,8 @@ describe('PAY-03 structure — composition', () => {
     assert.match(composition, /createPaymentRailExecutionAdapter\(\{ rail, binding: createPaymentGovernanceBinding/);
     assert.equal(/\.execute\s*\(/.test(composition), false, 'composition never executes anything');
     const host = codeOf('src/enterprise/host/enterprise-host.ts');
-    assert.match(host, /const extra = \[\.\.\.\(options\.executionAdapters \?\? \[\]\), \.\.\.\(xrpl !== undefined \? \[xrpl\.adapter\] : \[\]\)\]/);
+    // TRADE-04C: the governed trade executor joins the same registry, after the XRPL rail — adapters only, nothing else.
+    assert.match(host, /const extra = \[\.\.\.\(options\.executionAdapters \?\? \[\]\), \.\.\.\(xrpl !== undefined \? \[xrpl\.adapter\] : \[\]\), \.\.\.\(trade !== undefined \? \[trade\.adapter\] : \[\]\)\]/);
   });
 
   it('no HTTP route, admin endpoint or SDK reaches the XRPL composition: the node adapter and the operator plane import none of it', () => {

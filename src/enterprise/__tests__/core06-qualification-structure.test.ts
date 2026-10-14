@@ -278,14 +278,18 @@ describe('CORE-06 §20 — the deterministic Governance Core is independent of I
 describe('CORE-06 §23 — the canonical Host cannot be handed a Kernel, store, signer or grant authority', () => {
   const host = read('src/enterprise/host/enterprise-host.ts');
 
-  it('BootEnterpriseHostOptions accepts exactly: env, executionAdapters, contextProvider, policyPackProvider, xrplLedgerClient, logger', () => {
+  it('BootEnterpriseHostOptions accepts exactly: env, executionAdapters, contextProvider, policyPackProvider, xrplLedgerClient, xrplTradeExecution, logger', () => {
     const body = /export interface BootEnterpriseHostOptions \{([\s\S]*?)\n\}/.exec(host)?.[1] ?? '';
     const members = [...body.matchAll(/^\s*readonly (\w+)\??:/gm)].map((match) => match[1]).sort();
     // PAY-03: `xrplLedgerClient` is a provider-transport seam like `executionAdapters` — a ledger client
     // factory only. The rail, the external signer, the interlock and the resolver stay the Host's own;
     // no Kernel, store, signer or grant authority can be handed in through it.
-    assert.deepEqual(members, ['contextProvider', 'env', 'executionAdapters', 'logger', 'policyPackProvider', 'xrplLedgerClient']);
+    // TRADE-04C: `xrplTradeExecution` is the trade executor's in-process seam — the TRADE-03 attested-proposal source (like
+    // `contextProvider`, trusted in-process code), a ledger client factory (like `xrplLedgerClient`), an in-code simulation
+    // acknowledgement and a trace observer. The executor, signer client, interlock and resolver stay the Host's own.
+    assert.deepEqual(members, ['contextProvider', 'env', 'executionAdapters', 'logger', 'policyPackProvider', 'xrplLedgerClient', 'xrplTradeExecution']);
     assert.match(body, /readonly xrplLedgerClient\?: XrplLedgerClientFactory;/);
+    assert.match(body, /readonly xrplTradeExecution\?: Pick<ComposeXrplTradeExecutionOptions, 'attested' \| 'ledgerClient' \| 'simulation' \| 'onTrace'>;/);
   });
 
   it('the Host composes its own Kernel, stores and signer: it forwards no kernel, provider set, store or signer to the composition root', () => {

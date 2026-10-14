@@ -49,7 +49,13 @@ const PAY_ROOTS = ['src/features/payment-runtime', 'src/enterprise/xrpl-payment-
  *
  * TRADE itself still signs, submits and holds nothing (below).
  */
-const TRADE_COMPOSITION_EDGES: readonly string[] = ['src/enterprise/trade-risk-context', 'src/enterprise/xrpl-trade-rail'];
+/*
+ * - TRADE-04C (gates G2, G4): the governed delegated OfferCreate executor edge — the execution adapter, its
+ *   durable trade sequence interlock, the P12 trade resolution authority, evidence, and the Host configuration and
+ *   composition (`trade04c-governed-executor-structure.test.ts`): reached only from the Host's boot, below the
+ *   bounded grant, through the existing adapter registry.
+ */
+const TRADE_COMPOSITION_EDGES: readonly string[] = ['src/enterprise/trade-risk-context', 'src/enterprise/xrpl-trade-rail', 'src/enterprise/xrpl-trade-execution'];
 const SKIPPED = new Set(['node_modules', 'dist', 'dist-test', '.next', '.git', 'vendor']);
 
 interface Source {
@@ -145,8 +151,8 @@ describe('TRADE vertical — classification and independence', () => {
     assert.ok(NOT_TRADE.some((source) => source.path === 'src/kernel/index.ts'));
   });
 
-  it('(1) generic CORE — and the packages, scripts and apps — never depend on TRADE; the approved composition edges are the TRADE-03 trusted-context provider and the TRADE-04B delegated signer edge', () => {
-    assert.deepEqual(TRADE_COMPOSITION_EDGES, ['src/enterprise/trade-risk-context', 'src/enterprise/xrpl-trade-rail']);
+  it('(1) generic CORE — and the packages, scripts and apps — never depend on TRADE; the approved composition edges are the TRADE-03 trusted-context provider, the TRADE-04B delegated signer edge and the TRADE-04C governed executor edge', () => {
+    assert.deepEqual(TRADE_COMPOSITION_EDGES, ['src/enterprise/trade-risk-context', 'src/enterprise/xrpl-trade-rail', 'src/enterprise/xrpl-trade-execution']);
     assert.deepEqual(dependsOnTrade(NOT_TRADE), []);
   });
 

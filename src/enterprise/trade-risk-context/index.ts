@@ -6,6 +6,8 @@
  */
 export {
   TRADE_RISK_ADMISSION_REFUSALS,
+  TRADE_RISK_MAXIMUM_ATTESTATIONS,
+  TRADE_RISK_MAXIMUM_ATTESTATION_SECONDS,
   TRADE_RISK_MATERIAL_FACTS,
   TRADE_RISK_MAXIMUM_BINDING_SECONDS,
   TRADE_RISK_MAXIMUM_PENDING_BINDINGS,
@@ -22,6 +24,8 @@ export type {
   TradeRiskContext,
   TradeRiskContextOptions,
   TradeRiskSourcePorts,
+  TradeAttestedProposal,
+  TradeAttestedProposalSource,
 } from './trade-risk-context.js';
 export { TRADE_RISK_ABSENCE_SENSITIVE_RULES, tradeRiskPolicyRules, tradeRiskTrustedContextSources } from './trade-risk-policy.js';
 export type { TradeRiskPolicyOptions, TradeRiskSourceDeclarationOptions } from './trade-risk-policy.js';

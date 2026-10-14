@@ -121,8 +121,10 @@ describe('TRADE-04A — Payment preservation (SEC-TRADE04A-12)', () => {
         .filter((name) => name !== '__esModule' && name !== 'default')
         .sort(),
       [
+        // TRADE-04C (G2) added exactly the reserved submission client's four names; every baseline name is unchanged.
         'RIPPLE_EPOCH_UNIX_SECONDS', 'XRPL_DESTINATION_KINDS', 'XRPL_FINALITY_CONTRADICTIONS', 'XRPL_HISTORICAL_MAX_LAST_LEDGER_OFFSET', 'XRPL_INTERLOCK_SETTLEMENTS', 'XRPL_ISSUED_VALUE_LIMITS', 'XRPL_NETWORK_IDS', 'XRPL_RAIL_DETAILS', 'XRPL_RAIL_LIMITS', 'XRPL_RESTART_ANCHOR_SLACK_SECONDS', 'XRPL_RESTART_QUARANTINE_LEDGERS', 'XRPL_RESTART_QUARANTINE_MARGIN', 'XRPL_RLUSD_RAIL_ID', 'XrplRailConfigurationError', 'XrplSubmissionNotAttemptedError', 'buildXrplPayment', 'canonicalDecimalOfLedgerValue', 'createXrplRlusdRail', 'createXrplRlusdRailConfiguration', 'createXrplSdkClient', 'isXrplClassicAddress', 'isXrplCurrencyCode', 'isXrplRlusdRailConfiguration', 'isXrplSigningPublicKey', 'isXrplTransactionHash', 'parseXrplDestination', 'readAutofill', 'readLedgerHeader', 'readLedgerIndex', 'readLookup', 'readNetworkId', 'readSubmission', 'readXrplFinalLedger', 'readXrplPaymentFinality', 'signedByPinnedKey', 'signedPaymentMatches', 'xrplIssuedValueOf',
-      ],
+        'XrplReservedSubmissionRefusedError', 'createXrplReservedSubmissionClient', 'createXrplReservedSubmissionConfiguration', 'xrplSubmissionClaimOf',
+      ].sort(),
     );
     assert.equal(paymentRail.isXrplTransactionHash, transport.isXrplTransactionHash);
     assert.equal(paymentRail.isXrplSigningPublicKey, transport.isXrplSigningPublicKey);
