@@ -300,6 +300,20 @@ export function describeExerciseControlLedgerContract(name: string, open: (now: 
         assert.deepEqual(eur.outcome === 'refused' ? [...eur.reasonCodes] : [], [R.EXERCISE_CONTROL_UNIT_MISMATCH]);
       }));
 
+    it('K2. a full-length asset id (93 bytes: an XRP Ledger 40-hex-digit currency) is reserved, summed exactly, read back and still refuses a different unit', () =>
+      withLedger(async (ledger) => {
+        const unit = 'xrp-ledger-testnet:524C555344000000000000000000000000000000/rvYAfWj5gh67oV6fW32ZzP3Aw4Eubs59B';
+        const limits = [amount('spend', 'grant:hex', '100', unit)];
+        const first = reservation({ executionId: nextId('hex'), limits, amount: { value: '60', unit } });
+        assert.equal((await ledger.reserve(first)).outcome, 'reserved');
+        assert.equal((await reserve(ledger, { limits, amount: { value: '40', unit } })).outcome, 'reserved', 'exactly full');
+        assert.equal((await reserve(ledger, { limits, amount: { value: '0.000001', unit } })).outcome, 'refused');
+        const other = await reserve(ledger, { limits: [amount('spend', 'grant:hex', '100', `${unit.slice(0, -1)}C`)], amount: { value: '1', unit: `${unit.slice(0, -1)}C` } });
+        assert.deepEqual(other.outcome === 'refused' ? [...other.reasonCodes] : [], [R.EXERCISE_CONTROL_UNIT_MISMATCH], 'one character different is another asset');
+        await ledger.release({ reservationId: first.reservationId, reason: 'execution-failed', recordedAt: at(1) });
+        assert.equal((await reserve(ledger, { limits, amount: { value: '60', unit } })).outcome, 'reserved', 'released capacity returns');
+      }));
+
     it('15. release restores amount capacity', () =>
       withLedger(async (ledger) => {
         const limits = [amount('spend', 'grant:rel', '100', 'USD')];
