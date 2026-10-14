@@ -271,17 +271,24 @@ SEC-TRADE04A-05 alongside the PAY-02 suite.
 | 3–4 Same 48 files after change | identical command | 1014 · 1014 pass · 0 fail |
 | 5 Static | `npm run typecheck`, `npm run build`, `npm run lint`, `npm run check:release-coherence` | all exit 0 |
 | 6 Distribution | `npm run validate:publishability`; `AOC_PROTOCOL_TARBALL=vendor/aoc-protocol-0.2.0-rc.1.tgz npm run protocol:tarball:validate` | both exit 0 |
-| 7 Root | `npm run test:root` | 11056 · 11041 pass · 2 fail · 9 skipped · 4 todo — both failures followed up below |
+| 7 Root (before the M39 fix) | `npm run test:root` | 11056 · 11041 pass · 2 fail · 9 skipped · 4 todo — both followed up below |
+| 7 Root (on the committed HEAD) | `npm run build && npm run test:root` | 11057 · 11043 pass · 1 fail (launcher, below) · 9 skipped · 4 todo |
 | 7 Workspaces | `npm run test:workspaces` | 226 · 226 pass · 0 fail |
 
 Root failures: (1) **PAY-04 M39** — a real finding: the scan treats every new
 feature directory as CORE by default; `xrpl-transport` was classified out of
 CORE explicitly and is scanned on its own (fixed; 106/106 above). (2)
-`tests/external-authority-signer-launcher.test.mjs` — a 65 s timeout waiting
-for a spawned Host's posture line in a CORE-02 authority-signer launch (no XRPL
-code on the path) during an 18-minute run on WSL `/mnt/c`; rerun alone it passes
-2/2. Classified timing-sensitive under load, not caused by TRADE-04A; not
-re-proven by a second full run.
+`tests/external-authority-signer-launcher.test.mjs` — the spawned production
+Host prints nothing within the test's 60 s deadline. It failed in both full runs
+on WSL `/mnt/c` and passes 2/2 when run alone. TRADE-04A code **is** on this
+path: the Host statically loads the Payment rail barrel (through
+`xrpl-payment-rail/host-configuration.ts`) and therefore the seven
+`xrpl-transport` modules. Measured on an idle machine, three runs: loading the
+whole Enterprise boot graph takes 37.3 s, 50.5 s and 43.0 s; loading
+`xrpl-transport` takes 0.20–0.27 s of that (about 0.5%). The 60 s deadline is
+already marginal before TRADE-04A on this filesystem, and under full-suite
+concurrency it is exceeded. Classified as environmental timing (module-load I/O
+on `/mnt/c`), with that evidence; to be confirmed green in CI.
 
 Preservation proof: `trade04a-payment-preservation.test.ts` (frozen baseline
 implementations vs. current exports, and the Payment barrel's export set pinned
