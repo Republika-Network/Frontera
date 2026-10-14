@@ -73,6 +73,17 @@ const TRADE_VERTICAL = 'trade-runtime';
 const VERTICALS: ReadonlySet<string> = new Set([PAYMENT_VERTICAL, TRADE_VERTICAL]);
 
 /**
+ * TRADE-04A: XRPL rail infrastructure shared below both verticals — the pure,
+ * transaction-neutral `xrpl-transport`. It is XRPL-specific by construction,
+ * so it is classified out of CORE (CORE names no rail) exactly as TRADE is:
+ * out of CORE, never out of scanning. It is scanned on its own below for
+ * payment-protocol vocabulary, and held to `xrpl-transport-boundaries.test.ts`
+ * (a leaf: no SDK, no network, no business vocabulary).
+ */
+const XRPL_TRANSPORT = 'xrpl-transport';
+const NOT_CORE: ReadonlySet<string> = new Set([...VERTICALS, XRPL_TRANSPORT]);
+
+/**
  * Generic CORE: everything that is not a vertical or one of the payment vertical's composition edges. PAY-08 added one:
  * the x402 composition edge (`src/enterprise/x402-payment-protocol/`), a protocol edge beside the ingress that composes
  * it — held to its own structure test (`pay08-x402-structure.test.ts`).
@@ -81,13 +92,15 @@ const CORE = [
   ...['src/kernel', 'src/runtime', 'src/kernel-host', 'src/control-plane-web', 'src/index.ts'].flatMap((root) => walk(root)),
   ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/') && !file.startsWith('src/enterprise/x402-payment-protocol/')),
   ...readdirSync('src/features')
-    .filter((name) => !VERTICALS.has(name))
+    .filter((name) => !NOT_CORE.has(name))
     .flatMap((name) => walk(join('src/features', name))),
   ...walk('packages'),
 ];
 
 /** The trade vertical (TRADE): out of CORE, never out of scanning. */
 const TRADE = walk(join('src/features', TRADE_VERTICAL));
+/** The shared XRPL transport (TRADE-04A): out of CORE, never out of scanning. */
+const TRANSPORT = walk(join('src/features', XRPL_TRANSPORT));
 
 const PROTOCOL_VOCABULARY: readonly RegExp[] = [/\bmpp/i, /mpp[A-Z_]/, /\bx402\b|x402/i, /bolt11/i, /payment-required/i, /httpauth-payment/i, /payment-intent-charge/i, /Payment-Authorization/i];
 
@@ -105,19 +118,29 @@ describe('PAY-04 M39 — no payment-protocol vocabulary in CORE', () => {
     }
   });
 
-  it('the scan sets partition the feature modules: every feature is CORE or one of exactly two named verticals, and TRADE is never CORE', () => {
+  it('the scan sets partition the feature modules: every feature is CORE, one of exactly two named verticals, or the one named XRPL transport; TRADE and the transport are never CORE', () => {
     assert.deepEqual([...VERTICALS].filter((name) => existsSync(join('src/features', name))).sort(), [PAYMENT_VERTICAL, TRADE_VERTICAL]);
+    assert.deepEqual([...NOT_CORE].sort(), [PAYMENT_VERTICAL, TRADE_VERTICAL, XRPL_TRANSPORT]);
     for (const name of readdirSync('src/features')) {
       const scanned = walk(join('src/features', name));
       if (scanned.length === 0) continue;
-      assert.equal(scanned.every((file) => CORE.includes(file)), !VERTICALS.has(name), `src/features/${name}`);
+      assert.equal(scanned.every((file) => CORE.includes(file)), !NOT_CORE.has(name), `src/features/${name}`);
     }
+    assert.ok(TRANSPORT.length >= 6, `found ${TRANSPORT.length} transport sources`);
+    for (const file of TRANSPORT) assert.equal(CORE.includes(file), false, `${file} is the XRPL transport, not CORE`);
     assert.ok(TRADE.length >= 7, `found ${TRADE.length} trade sources`);
     for (const file of TRADE) assert.equal(CORE.includes(file), false, `${file} is TRADE, not CORE`);
   });
 
   it('the trade vertical is scanned on its own: it names no payment protocol either — in code or prose', () => {
     for (const file of TRADE) {
+      const text = readFileSync(file, 'utf8');
+      for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
+    }
+  });
+
+  it('the XRPL transport is scanned on its own: it names no payment protocol — in code or prose', () => {
+    for (const file of TRANSPORT) {
       const text = readFileSync(file, 'utf8');
       for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
     }

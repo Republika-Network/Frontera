@@ -1,3 +1,4 @@
+import { isXrplEngineResult, readXrplLedgerHeader, readXrplLedgerIndex, readXrplNetworkId, readXrplSubmission, type XrplSubmissionReading } from '../../../xrpl-transport/index.js';
 import { canonicalDecimalOfLedgerValue } from './xrpl-amount.js';
 
 /**
@@ -30,28 +31,21 @@ import { canonicalDecimalOfLedgerValue } from './xrpl-amount.js';
  * a shape this file cannot read — is not final.
  */
 
-const ENGINE_RESULT = /^(?:tes|tec|tef|tel|tem|ter)[A-Z_]{1,48}$/;
-
-export type XrplSubmissionReading =
-  /** `tem…`: malformed, never applied, never can be. */
-  | { readonly kind: 'malformed'; readonly engineResult: string }
-  /** Anything else readable: provisional. Wait for a validated result. */
-  | { readonly kind: 'provisional'; readonly engineResult: string }
-  | { readonly kind: 'unreadable' };
+/*
+ * The transaction-neutral readings — a `submit` answer, a validated ledger
+ * index and header, a server's `network_id` — live in the shared XRPL
+ * transport (TRADE-04A) and are re-exported here under their PAY-02 / PAY-03
+ * names, unchanged. What a validated result means for a payment
+ * (`readLookup`, `readAutofill`) stays here.
+ */
+export type { XrplSubmissionReading };
 
 function recordOf(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Readonly<Record<string, unknown>>) : undefined;
 }
 
 /** Reads a raw `submit` result for the transaction with `hash`. */
-export function readSubmission(raw: unknown, hash: string): XrplSubmissionReading {
-  const result = recordOf(raw);
-  const engineResult = result?.['engine_result'];
-  if (result === undefined || typeof engineResult !== 'string' || !ENGINE_RESULT.test(engineResult)) return { kind: 'unreadable' };
-  const echoed = recordOf(result['tx_json'])?.['hash'];
-  if (echoed !== undefined && echoed !== hash) return { kind: 'unreadable' };
-  return engineResult.startsWith('tem') ? { kind: 'malformed', engineResult } : { kind: 'provisional', engineResult };
-}
+export const readSubmission: (raw: unknown, hash: string) => XrplSubmissionReading = readXrplSubmission;
 
 export interface XrplExpectedPayment {
   readonly hash: string;
@@ -91,31 +85,20 @@ export function readLookup(raw: unknown, expected: XrplExpectedPayment): XrplLoo
   if (result['validated'] !== true) return result['validated'] === false || result['validated'] === undefined ? { kind: 'pending' } : { kind: 'unreadable' };
   const meta = recordOf(result['meta']);
   const engineResult = meta?.['TransactionResult'];
-  if (meta === undefined || typeof engineResult !== 'string' || !ENGINE_RESULT.test(engineResult)) return { kind: 'unreadable' };
+  if (meta === undefined || !isXrplEngineResult(engineResult)) return { kind: 'unreadable' };
   if (engineResult === 'tesSUCCESS') return deliveredMatches(meta['delivered_amount'], expected) ? { kind: 'validated-success' } : { kind: 'validated-delivered-mismatch' };
   if (engineResult.startsWith('tec')) return { kind: 'validated-failure', engineResult };
   return { kind: 'validated-unrecognized' };
 }
 
 /** The validated ledger index a client answered, or `undefined`. */
-export function readLedgerIndex(raw: unknown): number | undefined {
-  return typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
-}
+export const readLedgerIndex: (raw: unknown) => number | undefined = readXrplLedgerIndex;
 
 /** PAY-03: a **validated** ledger's index and consensus close time (seconds since the Ripple epoch), or `undefined` when it is not validated or either fact is absent or malformed. */
-export function readLedgerHeader(raw: unknown): { readonly index: number; readonly closeTime: number } | undefined {
-  const header = recordOf(raw);
-  const index = readLedgerIndex(header?.['ledger_index']);
-  const closeTime = header?.['close_time'];
-  if (header?.['validated'] !== true || index === undefined || typeof closeTime !== 'number' || !Number.isSafeInteger(closeTime) || closeTime < 0) return undefined;
-  return { index, closeTime };
-}
+export const readLedgerHeader: (raw: unknown) => { readonly index: number; readonly closeTime: number } | undefined = readXrplLedgerHeader;
 
 /** The `network_id` a raw `server_info` result reports, or `undefined` when absent or malformed. */
-export function readNetworkId(raw: unknown): number | undefined {
-  const networkId = recordOf(recordOf(raw)?.['info'])?.['network_id'];
-  return typeof networkId === 'number' && Number.isSafeInteger(networkId) && networkId >= 0 ? networkId : undefined;
-}
+export const readNetworkId: (raw: unknown) => number | undefined = readXrplNetworkId;
 
 /**
  * The autofilled payment, checked: every field the rail set is unchanged, the
