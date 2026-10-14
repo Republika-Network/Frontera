@@ -91,8 +91,8 @@ describe('TRADE-04A — no new execution or submission path (SEC-TRADE04A-01, -0
   });
 
   it('SEC-TRADE04A-14: the NO_BYPASS inventory still enumerates every effect path — TRADE-04A adds none and says so', () => {
-    assert.match(NO_BYPASS, /Seventy-one production-capable effect paths/);
-    assert.match(NO_BYPASS, /\*TRADE-04A changed neither number: ten of seventy-one\.\*/);
+    assert.match(NO_BYPASS, /Seventy-two production-capable effect paths/);
+    assert.match(NO_BYPASS, /\*TRADE-04A changed neither number: eleven of seventy-two\.\*/);
     const transport = walk(TRANSPORT).map(read);
     for (const source of transport) assert.equal(/from\s+['"](?:node:)?(?:https?|net|tls|dns|dgram|http2)['"]|\bfetch\s*\(|WebSocket|\bnew\s+Client\s*\(/.test(codeOf(source.text)), false, source.path);
   });

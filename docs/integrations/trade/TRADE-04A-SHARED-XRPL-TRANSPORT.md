@@ -39,7 +39,7 @@ behind an approval gate or a later milestone.
 | Worktree | `/mnt/c/Users/Usuario/source/Republika-Network/Frontera-trade-04a` |
 | Branch | `feat/trade-04a-shared-xrpl-transport` |
 | Baseline | `d04b8b61` — `feat(trade-03): granular trading governance and trusted CORE-04 composition (#186)` |
-| `origin/main` | identical to the baseline at start (no commits ahead) |
+| `origin/main` | identical to the baseline at start; before delivery, PAY-09 (#185, `6adfe45`) was merged into this branch (clean merge; the NO_BYPASS counts this record pins moved to eleven of seventy-two) |
 | Present | PAY-02, PAY-03, PAY-05, PAY-06, PAY-07, PAY-08, TRADE-00 … TRADE-03 |
 | Pre-existing TRADE-04A work | none (no `xrpl-transport`, no shared-transport ADR) |
 

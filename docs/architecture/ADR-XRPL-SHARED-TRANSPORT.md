@@ -318,7 +318,7 @@ is in TRADE-04A.
   dedicated owner accounts.
 - The transport is outside the PAY-07 qualified CORE (classified in
   `pay07-core-source-manifest.ts`), like the rails it serves.
-- NO_BYPASS: no number changed (ten of seventy-one).
+- NO_BYPASS: no number changed (eleven of seventy-two after PAY-09, merged from `main`; ten of seventy-one at the baseline).
 
 ## 11. Approval gates
 
