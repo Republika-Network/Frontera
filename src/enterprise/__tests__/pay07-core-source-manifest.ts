@@ -133,6 +133,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'stripe-payment-rail': 'rail-specific: the PAY-09 Stripe composition edge (HTTPS adapter, interlock, P12 and finality authorities, webhook signals)',
       'x402-payment-protocol': 'protocol-and-rail-specific: the PAY-08 x402 composition edge (the lnbtc binding over Lightning, presentation, post-settlement proof); not executed by the qualified runs',
       'trade-risk-context': 'vertical-specific: the TRADE-03 composition edge (a CORE-04 trusted-context provider over the trade vertical); not on the governed payment path',
+      'xrpl-trade-rail': 'vertical-and-rail-specific: the TRADE-04B delegated OfferCreate signer edge (closed signer protocol, Host-side verification, EP-073 transport, client, reference signer process); composed nowhere, not on the governed payment path',
       __tests__: 'test-only code, including the PAY-07 shared world, rail edges and this manifest',
       host: 'Host composition edge: composes configured modules (the shipped Host composes the PAY-03 XRPL rail); not executed by either qualified run',
       composition: 'Host composition root: the composition edge where rail-specific composition belongs; the qualified runs compose the same generic stores directly',
