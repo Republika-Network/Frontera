@@ -14,11 +14,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { EXECUTED_BLOCKS, EXECUTED_DOCUMENTS, executableBlocks } from '../scripts/deploy/qualify-pilot-acceptance.mjs';
+import { DRILL_EXECUTED_BLOCKS, DRILL_RUNBOOK, drillBlocks } from './pilot/fixtures/drill-lib.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const read = (path) => readFileSync(join(ROOT, path), 'utf8').replace(/\r\n/g, '\n');
 
-const PILOT_DOCS = ['README.md', 'PILOT_READINESS.md', 'SHARED_RESPONSIBILITY.md', 'OPERATIONS_RUNBOOK.md', 'INCIDENT_TRIAGE.md', 'PILOT_ACCEPTANCE.md'];
+const PILOT_DOCS = ['README.md', 'ONBOARDING_RUNBOOK.md', 'PILOT_READINESS.md', 'SECURITY_POSTURE.md', 'SHARED_RESPONSIBILITY.md', 'OPERATIONS_RUNBOOK.md', 'INCIDENT_TRIAGE.md', 'PILOT_ACCEPTANCE.md'];
 const DOCS = Object.fromEntries(PILOT_DOCS.map((name) => [name, read(`docs/pilot/${name}`)]));
 const COMPOSE = read('deploy/pilot/compose.yaml');
 const PKG = JSON.parse(read('package.json'));
@@ -88,12 +89,16 @@ describe('PROD-03-04 pilot operations documentation', () => {
     assert.ok(read('README.md').includes('docs/pilot/README.md'), 'the repository README indexes it');
   });
 
-  it('every command block is executed by the acceptance qualification or explicitly marked as reference', () => {
+  it('every command block is executed by the acceptance qualification or the PROD-03 drill, or explicitly marked as reference', () => {
     assert.ok(BLOCKS.length > 0);
     for (const block of BLOCKS) {
-      assert.match(block.marker, /^<!-- (exec: [a-z0-9-]+|ref: .{10,}) -->$/, `${block.name}: unmarked block:\n${block.body}`);
+      assert.match(block.marker, /^<!-- (exec: [a-z0-9-]+|drill: [a-z0-9-]+|ref: .{10,}) -->$/, `${block.name}: unmarked block:\n${block.body}`);
       if (block.marker.startsWith('<!-- exec:')) assert.ok(EXECUTED_DOCUMENTS.includes(`docs/pilot/${block.name}`), `${block.name} is not a document the qualification executes`);
+      if (block.marker.startsWith('<!-- drill:')) assert.equal(`docs/pilot/${block.name}`, DRILL_RUNBOOK, `${block.name} is not the document the PROD-03 drill executes`);
     }
+    const drill = [...drillBlocks(read(DRILL_RUNBOOK)).keys()];
+    assert.deepEqual([...drill].sort(), [...DRILL_EXECUTED_BLOCKS].sort(), 'the onboarding runbook carries exactly the blocks the clean-room drill executes');
+    assert.equal(BLOCKS.filter((block) => block.marker.startsWith('<!-- drill:')).length, drill.length, 'every drill marker parses as an executable block');
     const ids = EXECUTED_DOCUMENTS.flatMap((document) => [...executableBlocks(read(document)).keys()]);
     assert.equal(new Set(ids).size, ids.length, 'exec ids are unique');
     assert.deepEqual([...ids].sort(), [...EXECUTED_BLOCKS].sort(), 'the documents carry exactly the blocks the qualification executes');
@@ -179,10 +184,10 @@ describe('PROD-03-04 pilot operations documentation', () => {
     assert.match(readiness, /Human acceptance never overrides a failed `\/ready`/);
   });
 
-  it('acceptance lists A1–A17, O1–O15 and the three statuses, and never lets acceptance override readiness', () => {
+  it('acceptance lists A1–A17, O1–O16 and the three statuses, and never lets acceptance override readiness', () => {
     const acceptance = DOCS['PILOT_ACCEPTANCE.md'];
     for (let n = 1; n <= 17; n += 1) assert.match(acceptance, new RegExp(`^\\| A${n} \\|`, 'm'), `A${n}`);
-    for (let n = 1; n <= 15; n += 1) assert.match(acceptance, new RegExp(`^\\| O${n} \\|`, 'm'), `O${n}`);
+    for (let n = 1; n <= 16; n += 1) assert.match(acceptance, new RegExp(`^\\| O${n} \\|`, 'm'), `O${n}`);
     for (const status of ['**ACCEPTED**', '**ACCEPTED WITH DOCUMENTED LIMITATIONS**', '**NOT ACCEPTED**']) assert.ok(acceptance.includes(status), status);
     assert.match(acceptance, /`\/ready` is not 200/);
     assert.match(acceptance, /"schema": "frontera\.pilot-acceptance-evidence\.v1"/);

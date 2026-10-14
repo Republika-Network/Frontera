@@ -155,6 +155,34 @@ function isAuthoritySigningUnavailable(error: unknown): error is Error & { reado
   return error instanceof Error && error.name === 'AuthoritySigningUnavailableError';
 }
 
+/**
+ * PROD-03: CORE-07 refused the revocation's witness transition. Recognized by
+ * its stable error name and closed code, like the signer's, so the
+ * administration layer imports nothing from the freshness boundary.
+ *
+ * `AUTHORITY_FRESHNESS_UNAVAILABLE` and `AUTHORITY_FRESHNESS_CONFLICT` are
+ * raised before the local write (the witness did not prepare the transition):
+ * nothing was recorded, and the operator submits the same revocation again
+ * once the witness is reachable. Every other freshness code is an integrity
+ * condition (rollback, fork, pending recovery, a foreign binding): never
+ * reported as an outage.
+ */
+function freshnessFailureOf(error: unknown): string | undefined {
+  if (!(error instanceof Error) || error.name !== 'AuthorityStateFreshnessError') return undefined;
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === 'string' && /^AUTHORITY_FRESHNESS_[A-Z_]{2,48}$/.test(code) ? code : 'AUTHORITY_FRESHNESS_UNKNOWN';
+}
+
+function witnessDidNotPrepare(failure: string): EnterpriseHttpError {
+  return new EnterpriseHttpError(
+    503,
+    'AUTHORITY_STATE_UNAVAILABLE',
+    'The authority-state witness did not accept this transition, so nothing was recorded: the grant remains exercisable. Submit the same revocation again when the witness is reachable; to halt execution now, declare an emergency stop (it does not depend on the witness).',
+    undefined,
+    { failure, recorded: false },
+  );
+}
+
 function signerUnavailable(reason: unknown): EnterpriseHttpError {
   const failure = typeof reason === 'string' && /^[A-Z][A-Z_]{2,63}$/.test(reason) ? reason : 'AUTHORITY_SIGNER_UNAVAILABLE';
   return new EnterpriseHttpError(
@@ -226,6 +254,9 @@ export function createAuthorityAdministrationService(dependencies: AuthorityAdmi
     // operator is told so in as many words — never a success, never a generic
     // fault that could be read as "probably done".
     if (isAuthoritySigningUnavailable(error)) throw signerUnavailable(error.reason);
+    const freshness = freshnessFailureOf(error);
+    if (freshness === 'AUTHORITY_FRESHNESS_UNAVAILABLE' || freshness === 'AUTHORITY_FRESHNESS_CONFLICT') throw witnessDidNotPrepare(freshness);
+    if (freshness !== undefined) throw integrityFailed(freshness);
     throw error;
   }
 

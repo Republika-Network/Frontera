@@ -160,6 +160,18 @@ with your own; the schema is in `docs/enterprise/AOC_ENTERPRISE_HOST.md`
 an inline secret is refused. The Generic HTTP adapter reaches only public
 `https://` DNS origins.
 
+`deploy/pilot/governed-actions.reference-pilot.json` (PROD-03) is the canonical
+pilot template: the reference use case (a governed deployment request with
+typed parameters), two Governance Profiles promoted by operators, an
+`approvalPolicy` sending production deployments to a human approver, one
+operator per role, and a Generic HTTP target on a placeholder origin. Copy it
+to `governed-actions.json` to start a full pilot; the onboarding procedure is
+`docs/pilot/ONBOARDING_RUNBOOK.md`. Before committing your configuration
+package, `npm run pilot:scan-config -- governed-actions.json .env.example`
+refuses a file that carries a secret (it prints the line and the kind, never
+the value). Keep `deploy/pilot/.env` out of Git: the repository's
+`.gitignore` excludes every `.env` except the examples.
+
 ## 5. Secret injection
 
 Secrets reach the Host as environment variables, from `deploy/pilot/.env`
@@ -310,7 +322,11 @@ and approval are refused until it returns). A required module failing makes the
 Host `unhealthy` and `/ready` 503. Do not restart on `/ready` failures; restart
 only on `/live` failures. None of the three needs a credential or returns one.
 The operator plane's `GET /api/admin/operations/health` (PROD-03-01) is the
-authenticated, operator-scoped view.
+authenticated, operator-scoped view. The PROD-03 readiness gate
+(`docker compose run --rm -T pilot-readiness`, a tool service like
+`config-check`, read-only) evaluates all of them, with the preflight, into
+`deployment-ready` / `organization-ready` / `pilot-ready` —
+`docs/pilot/PILOT_READINESS.md` §5.
 
 ## 10. Release identity
 

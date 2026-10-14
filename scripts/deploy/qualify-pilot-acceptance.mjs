@@ -1,4 +1,4 @@
-// PROD-03-04 — pilot acceptance qualification (cases O1–O15).
+// PROD-03-04 — pilot acceptance qualification (cases O1–O16; O16 added by PROD-03).
 //
 // Qualifies the pilot OPERATIONS documentation itself: it builds the kit from a
 // clean export of the commit, as PROD-03-03's qualification does, and then
@@ -64,6 +64,7 @@ export const EXECUTED_BLOCKS = [
   'resolution-list', 'resolution-inspect', 'resolution-submit',
   'emergency-activate', 'emergency-release',
   'approvals-list',
+  'readiness-gate',
   'evidence-capture',
 ];
 
@@ -398,6 +399,21 @@ async function qualify() {
     } catch (error) {
       record('O12', 'emergency control', false, error.message);
       return;
+    }
+
+    // ---- O16 the PROD-03 readiness gate, as the kit's tool --------------------------------------
+    try {
+      // The resource stop O12 leaves active is narrower than the organization: it does not block.
+      const gated = doc('readiness-gate');
+      check(gated.status === 0, `the documented readiness gate exited ${gated.status}: ${gated.stdout.slice(-800)}`);
+      check(/-- deployment level: ready/.test(gated.stdout), 'the deployment level is not ready');
+      check(/PASS PR-04 freshness-witness/.test(gated.stdout) && /PASS PR-05 authority-signer/.test(gated.stdout) && /PASS PR-02 secure-configuration/.test(gated.stdout), 'witness, signer or secure configuration not shown as passing');
+      // The minimal kit example declares no Governance Profile: the organization level names exactly that.
+      check(/FAIL PR-09 governance-profile\s+\[PROFILE_NOT_ACTIVE\]/.test(gated.stdout), 'the missing profile is not named');
+      check(/RESULT: DEPLOYMENT-READY/.test(gated.stdout), 'the result is not deployment-ready');
+      record('O16', 'the readiness gate runs as the kit\'s tool: deployment-ready; the organization level names what is missing; nothing but GET', true);
+    } catch (error) {
+      record('O16', 'readiness gate', false, error.message);
     }
 
     // ---- O10 operator resolution commands, O11 capacity / Attention surfacing ---------------------

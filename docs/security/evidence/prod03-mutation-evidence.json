@@ -1,0 +1,303 @@
+{
+ "format": "frontera.prod03.mutation-evidence.v1",
+ "baseline": "the PROD-03 working tree on main @ 6adfe4564ddcb20beb5205a7dfa7f5c8651728a8, in a native-Linux LF tree (git archive of the baseline with core.autocrlf=false, overlaid with the branch's files normalized to LF)",
+ "runner": "scripted, outside the repository: apply edits (each find verified to occur exactly once) -> tsc -b for a TypeScript mutation -> node --test <kill set> -> killed when the kill set exits non-zero -> restore original bytes -> SHA-256 compare -> rebuild after a TypeScript mutation; afterwards every mutated file compared byte for byte with the branch",
+ "killSets": {
+  "GATE": [
+   "tests/pilot/prod03-readiness-gate.test.mjs",
+   "tests/pilot/prod03-pilot-structure.test.mjs"
+  ],
+  "STRUCT": [
+   "tests/pilot/prod03-pilot-structure.test.mjs",
+   "tests/pilot-operations-docs.structure.test.mjs"
+  ],
+  "DRILL": [
+   "tests/pilot/prod03-clean-room-drill.test.mjs"
+  ],
+  "APPROVAL": [
+   "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
+  ],
+  "WITNESS": [
+   "dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js"
+  ]
+ },
+ "totals": {
+  "defined": 25,
+  "counted": 25,
+  "killed": 25,
+  "survived": 0,
+  "notApplied": 0
+ },
+ "srcTreeIdenticalAfterCampaign": true,
+ "mutations": [
+  {
+   "id": "M-PILOT-1",
+   "title": "readiness ignores witness failure",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 71 # fail 2"
+  },
+  {
+   "id": "M-PILOT-2",
+   "title": "readiness ignores signer failure",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-3",
+   "title": "readiness CLI prints the credential it reads",
+   "file": "scripts/pilot/pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-4",
+   "title": "the drill harness writes a store directly",
+   "file": "tests/pilot/fixtures/drill-lib.mjs",
+   "killSet": [
+    "tests/pilot/prod03-pilot-structure.test.mjs",
+    "tests/pilot-operations-docs.structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 27 # fail 1"
+  },
+  {
+   "id": "M-PILOT-5",
+   "title": "readiness ignores an active emergency stop",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 71 # fail 2"
+  },
+  {
+   "id": "M-PILOT-6",
+   "title": "a revoked delegation still counts as standing authority",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-7",
+   "title": "a regressed (stale-restored) store is called ready",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-8",
+   "title": "a backup holding a credential is accepted",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-9",
+   "title": "the diagnostic sends a mutating method",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 70 # fail 3"
+  },
+  {
+   "id": "M-PILOT-10",
+   "title": "the qualification reaches the Host through an internal bypass",
+   "file": "tests/pilot/fixtures/drill-host.mjs",
+   "killSet": [
+    "tests/pilot/prod03-pilot-structure.test.mjs",
+    "tests/pilot-operations-docs.structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 27 # fail 1"
+  },
+  {
+   "id": "M-PILOT-11",
+   "title": "readiness survives an insecure posture",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-12",
+   "title": "offboarding leaves the gate counting revoked agents",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-clean-room-drill.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 15 # fail 1"
+  },
+  {
+   "id": "M-PILOT-13",
+   "title": "a qualification record satisfies a live check",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 62 # fail 11"
+  },
+  {
+   "id": "M-PILOT-14",
+   "title": "a release change does not invalidate the record",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-15",
+   "title": "approvalPolicy compiles a non-restrictive effect",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 14 # fail 5"
+  },
+  {
+   "id": "M-PILOT-16",
+   "title": "two policy sources are composed silently",
+   "file": "src/enterprise/host/enterprise-host.ts",
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 18 # fail 1"
+  },
+  {
+   "id": "M-PILOT-17",
+   "title": "a revocation the witness refused surfaces as a generic failure",
+   "file": "src/enterprise/authority-administration/service.ts",
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 1 # fail 8"
+  },
+  {
+   "id": "M-PILOT-18",
+   "title": "a freshness integrity failure is reported as an outage",
+   "file": "src/enterprise/authority-administration/service.ts",
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod03-witness-outage-revocation.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 4 # fail 5"
+  },
+  {
+   "id": "M-PILOT-19",
+   "title": "readiness levels are not cumulative",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 51 # fail 22"
+  },
+  {
+   "id": "M-PILOT-20",
+   "title": "a missing preflight passes",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 71 # fail 2"
+  },
+  {
+   "id": "M-PILOT-21",
+   "title": "the config scan misses private keys",
+   "file": "scripts/pilot/scan-pilot-config.mjs",
+   "killSet": [
+    "tests/pilot/prod03-pilot-structure.test.mjs",
+    "tests/pilot-operations-docs.structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 27 # fail 1"
+  },
+  {
+   "id": "M-PILOT-22",
+   "title": "a runbook block teaches sending a request again",
+   "file": "docs/pilot/ONBOARDING_RUNBOOK.md",
+   "killSet": [
+    "tests/pilot/prod03-pilot-structure.test.mjs",
+    "tests/pilot-operations-docs.structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 26 # fail 2"
+  },
+  {
+   "id": "M-PILOT-23",
+   "title": "approvalPolicy accepts a profile that declares no approval",
+   "file": "src/enterprise/host/approval-policy.ts",
+   "killSet": [
+    "dist/src/enterprise/__tests__/prod03-approval-policy-host.test.js"
+   ],
+   "status": "KILLED",
+   "evidence": "build ok; # pass 18 # fail 1"
+  },
+  {
+   "id": "M-PILOT-24",
+   "title": "a degraded Host passes without an accepted module",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  },
+  {
+   "id": "M-PILOT-25",
+   "title": "a restore drill of another backup is accepted",
+   "file": "scripts/pilot/lib-pilot-readiness.mjs",
+   "killSet": [
+    "tests/pilot/prod03-readiness-gate.test.mjs",
+    "tests/pilot/prod03-pilot-structure.test.mjs"
+   ],
+   "status": "KILLED",
+   "evidence": "# pass 72 # fail 1"
+  }
+ ]
+}

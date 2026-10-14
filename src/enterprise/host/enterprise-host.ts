@@ -17,6 +17,7 @@ import {
   type EnterpriseHostConfiguration,
 } from './host-configuration.js';
 import { currentReleaseIdentity, type FronteraReleaseIdentity } from './release-identity.js';
+import { createApprovalPolicyPackProvider } from './approval-policy.js';
 
 /**
  * The Enterprise Host bootstrap: the one supported way to start Frontera as a
@@ -116,12 +117,26 @@ export interface EnterpriseHost {
   close(): Promise<void>;
 }
 
+/**
+ * The one policy source this Host composes: the embedder's in-process
+ * provider, or (PROD-03) the governed-action file's `approvalPolicy`, compiled
+ * into the existing policy-pack runtime. Both at once is refused before
+ * composition (`HOST_POLICY_SOURCE_AMBIGUOUS`), so no rule is ever silently
+ * dropped or shadowed.
+ */
+function policyPackProviderOf(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions): PolicyPackProvider | undefined {
+  const declared = host.governedActions?.approvalPolicy;
+  if (declared === undefined) return options.policyPackProvider;
+  return createApprovalPolicyPackProvider(declared, host.governedActions!.trustDomainId);
+}
+
 function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions, xrpl?: ComposedXrplPaymentRail): CreateEnterpriseOptions {
   const governed = host.governedActions;
+  const policyPackProvider = policyPackProviderOf(host, options);
   const base: CreateEnterpriseOptions = {
     configuration: host.configuration,
     ...(options.logger !== undefined ? { logger: options.logger } : {}),
-    ...(options.policyPackProvider !== undefined ? { policyPackProvider: options.policyPackProvider } : {}),
+    ...(policyPackProvider !== undefined ? { policyPackProvider } : {}),
   };
   if (governed === undefined) return base;
 
@@ -220,6 +235,15 @@ function assertProcessHoldsNoXrplKey(host: EnterpriseHostConfiguration, env: Rea
   );
 }
 
+/** PROD-03: the file's `approvalPolicy` and an embedder's `policyPackProvider` are two policy sources; the Host composes one. */
+function assertOnePolicySource(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions): void {
+  if (host.governedActions?.approvalPolicy === undefined || options.policyPackProvider === undefined) return;
+  throw new EnterpriseHostConfigurationError(
+    'HOST_POLICY_SOURCE_AMBIGUOUS',
+    `${GOVERNED_ACTIONS_FILE_VARIABLE} declares approvalPolicy and an in-process policyPackProvider was also composed. One deterministic policy source per Host: express the approval requirement in the embedder's policy, or drop the provider.`,
+  );
+}
+
 /** Posture a secure-profile Host must have composed. Checked against the composed objects, after composition, before listen. */
 function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly string[] {
   const expected: Partial<Record<keyof EnterpriseHealthPosture, string>> = {
@@ -301,6 +325,7 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
   try {
     assertProcessHoldsNoAuthorityKey(host);
     assertProcessHoldsNoXrplKey(host, options.env ?? process.env);
+    assertOnePolicySource(host, options);
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });
     throw error;
