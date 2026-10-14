@@ -1,7 +1,7 @@
 # PROD-03 — Pilot Onboarding & Operational Qualification
 
 - **Milestone:** PROD-03 (FRONTERA-MASTER-PLAN §9 PROD), the last requirement of **PILOT READY** (§11.3).
-- **Baseline:** `main @ 6adfe45` (PAY-09, #185).
+- **Baseline:** `main @ 6adfe45` (PAY-09, #185); `main @ 11db917` (TRADE-04a, #187, which touches none of PROD-03's files and changes no NO_BYPASS count) merged in by merge commit, never rebased.
 - **Branch:** `feat/prod-03-pilot-onboarding-operational-qualification`.
 - **Scope (Master Plan):** runbooks, provisioning path, observability minimum, security posture / shared responsibility, readiness gate. Nothing else: no SSO, billing, mobile, IaC, Kubernetes, INTEL, rails or credit.
 - **Exit decision:** §16 — **PILOT READY achieved**, with the residuals of §15.
