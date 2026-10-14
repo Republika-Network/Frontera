@@ -196,6 +196,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'external-agent-handshake': 'agent handshake',
       'trade-runtime': 'TRADE: a separate governed-action vertical (delegated OfferCreate), not a payment layer; no qualified payment run executes it, nothing in CORE imports it, and it is held to its own boundary tests (trade-vertical-structure.test.ts)',
       'verifiable-export-package': 'export packaging',
+      'xrpl-transport': 'TRADE-04A: the shared, transaction-neutral XRPL transport primitives (grammar, network identity, validated reads, submission reading, sequence safety) below the XRPL rails — rail infrastructure, not a governed-path layer; held to its own boundary test (xrpl-transport-boundaries.test.ts)',
     },
   },
 });

@@ -9,6 +9,7 @@ import {
   type XrplSubmissionRecordInput,
   type XrplSubmissionReservation,
 } from '../../features/payment-runtime/rails/xrpl/index.js';
+import { xrplSequenceWindowBlocks } from '../../features/xrpl-transport/index.js';
 import type { AuthorityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
 import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
 import {
@@ -505,12 +506,15 @@ export async function createSqliteXrplSubmissionInterlock(dbPath: string, option
    * The blocking rule. Only a record whose window is still open can block, so
    * only those are read — and every one of them is fully verified, whatever
    * its state says, before any is believed. A settled record whose window the
-   * ledger has closed cannot affect a new sequence either way.
+   * ledger has closed cannot affect a new sequence either way. The predicate is
+   * the shared, transaction-neutral blocking rule (TRADE-04A,
+   * `xrplSequenceWindowBlocks`); the query's window filter is the same rule's
+   * first clause, so a record it skipped could not have blocked.
    */
   function openBlocking(account: string, sequence: number, validatedLedgerIndex: number): boolean {
     verifyCompleteness();
     const live = (selectLiveByAccount.all(account, validatedLedgerIndex) as Row[]).map(decode);
-    return live.some((record) => record.state !== 'settled' && record.sequence >= sequence);
+    return live.some((record) => xrplSequenceWindowBlocks({ sequence: record.sequence, lastLedgerSequence: record.lastLedgerSequence, open: record.state !== 'settled' }, sequence, validatedLedgerIndex));
   }
 
   function guarded<T>(work: () => T): T {

@@ -92,8 +92,9 @@ describe('PAY-02 — XRPL SDK import boundary (X21, §44)', () => {
     }
   });
 
-  it('the rail imports only itself, PAY-01’s domain and the generic runtimes it reads — never the enterprise layer, the Kernel or a store', () => {
-    const allowed = /^(?:\.\/[a-z-]+\.js|\.\.\/\.\.\/domain\/index\.js|\.\.\/\.\.\/\.\.\/(?:execution-runtime|monetary-runtime)\/index\.js|xrpl)$/;
+  it('the rail imports only itself, PAY-01’s domain, the generic runtimes it reads and the shared XRPL transport — never the enterprise layer, the Kernel or a store', () => {
+    // TRADE-04A: `xrpl-transport` is pure and transaction-neutral (no SDK, no network, no business type) and is held to its own boundary test.
+    const allowed = /^(?:\.\/[a-z-]+\.js|\.\.\/\.\.\/domain\/index\.js|\.\.\/\.\.\/\.\.\/(?:execution-runtime|monetary-runtime|xrpl-transport)\/index\.js|xrpl)$/;
     for (const file of RAIL_PRODUCTION) {
       for (const match of codeOf(file).matchAll(/\bfrom\s+'([^']+)'/g)) assert.ok(allowed.test(match[1] ?? ''), `${file} imports '${match[1]}'`);
     }
