@@ -611,6 +611,33 @@ already-opened XRPL edge's signer process was left running and held the test
 process open. The harness now closes the edges it opened before rethrowing,
 and the run was repeated: killed.
 
+### 21.2 Combined-tree re-run (current `main` through `d04b8b6`, TRADE-03)
+
+After `main` (TRADE-03) was merged in, the merge-sensitive mutations were
+re-applied to the combined built tree, each file restored byte for byte. All
+killed.
+
+| # | Mutation | Failing tests (count) / examples |
+| --- | --- | --- |
+| M-C8 | the manifest drops `trade-runtime` | 3 — PAY-07 drift, TRADE "classified outside", TRADE "classification is exact" |
+| MX-1 | the manifest drops `trade-risk-context` | 1 — PAY-07 drift |
+| MX-2 | the manifest drops `stripe-payment-rail` | 1 — PAY-07 drift |
+| MX-3 | the P7 unit maximum back to 64 bytes | 3 — K2 (65 / 93 bytes) in the domain, in-memory and SQLite ledgers |
+| MX-4 | the witness protocol back to v1 | 5 — MIG-1 / LEGACY-3, RESCOPE-1, … |
+| M-C3 | Stripe anchors under Lightning's namespace | 11 — COEX-5, COEX-6, … |
+| M-C6 | the namespace omitted from the signed receipt binding | 2 — SCOPE-2, SCOPE-3 |
+| M-S5 | `processing` → completed | 9 — PROCESSING, P12-S1, … |
+| M-S17 | the canonical suite compares a rail id to `stripe-usd` | 1 — suite vocabulary |
+
+M-S17 in this form first survived: the suite's vocabulary test named XRPL and
+Lightning words only. It now also refuses Stripe words, the `stripe-usd` rail
+id and the `USD` asset in the suite's code. Separately, the durable-record
+secret-hygiene test scanned raw SQLite bytes for any 13–19 digit run and so
+matched decimal runs inside random SHA-256 hex digests (about one digest in
+twenty-four; the test failed 4 of 30 isolated runs); a digit run adjacent to a
+lowercase hex character no longer counts, and a PAN between quotes or
+punctuation still does (40 of 40 runs pass).
+
 ## 22. Residuals
 
 | # | Residual |

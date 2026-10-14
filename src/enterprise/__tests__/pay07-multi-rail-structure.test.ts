@@ -44,6 +44,8 @@ const importsOf = (file: string): readonly string[] => [...codeOf(file).matchAll
 const XRPL_VOCABULARY = /xrpl|rlusd|\bxrp\b|ledger[_ -]?hash|ledgerHash|offer[_ -]?create|trust[_ -]?set|rippled|lastLedgerSequence|destinationTag/i;
 /** Lightning words, as code (PAY-06's pattern, extended). */
 const LIGHTNING_VOCABULARY = /lightning|bolt\s?11|\bbolt-11\b|preimage|payment[_ -]?hash|paymentHash|\bhtlcs?\b|routing[_ -]?fee|fee[_ -]?limit[_ -]?msat|\bmsat\b|millisatoshi|node[_ -]?pubkey|\blnd\b|\bcln\b|macaroon|payreq|lnbc|lntb/i;
+/** Stripe words, as code (PAY-09). `PaymentIntent` alone is Frontera's own generic term and is not one. */
+const STRIPE_VOCABULARY = /stripe|\bacct_|\bpi_[A-Za-z0-9]|client[_ -]?secret|connected[_ -]?account|destination[_ -]?charge|requires_(?:payment_method|confirmation|action|capture)|\bwhsec_|\b[sr]k_test_/i;
 
 function walk(dir: string, includeTests = false): readonly string[] {
   if (!existsSync(dir)) return [];
@@ -67,11 +69,12 @@ describe('PAY-07 structure — the canonical suite is rail-neutral (Q1, Q2, Q12;
     assert.deepEqual([...importsOf(MANIFEST)].sort(), ['node:crypto', 'node:fs', 'node:path']);
   });
 
-  it('no XRPL or Lightning word, rail id or rail asset appears in the suite’s code', () => {
+  it('no XRPL, Lightning or Stripe word, rail id or rail asset appears in the suite’s code', () => {
     const code = codeOf(SUITE);
     assert.equal(XRPL_VOCABULARY.test(code), false, 'XRPL vocabulary in the suite');
     assert.equal(LIGHTNING_VOCABULARY.test(code), false, 'Lightning vocabulary in the suite');
-    assert.equal(/xrpl-rlusd|lightning-btc|stable:RLUSD|net:BTC|\bBTC\b|RLUSD/.test(code), false, 'a rail id or asset in the suite');
+    assert.equal(STRIPE_VOCABULARY.test(code), false, 'Stripe vocabulary in the suite');
+    assert.equal(/xrpl-rlusd|lightning-btc|stripe-usd|stable:RLUSD|net:BTC|\bBTC\b|\bUSD\b|RLUSD/.test(code), false, 'a rail id or asset in the suite');
   });
 
   it('no branch on the implementation: `implementationId` is only declared and copied, never compared, switched on or indexed by', () => {

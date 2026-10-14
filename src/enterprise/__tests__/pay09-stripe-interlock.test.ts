@@ -189,7 +189,9 @@ describe('PAY-09 interlock — secret hygiene of the durable record', () => {
     }).join('');
     assert.ok(bytes.includes('exec-hygiene'), 'the scan reads the real file');
     for (const forbidden of ['sk_test_', 'rk_test_', 'whsec_', 'client_secret', '_secret_', 'card_number', 'cvc']) assert.equal(bytes.includes(forbidden), false, forbidden);
-    assert.equal(/(?<![0-9])[0-9]{13,19}(?![0-9])/.test(bytes), false, 'no card-number-shaped digit run');
+    // Bounded by non-hex characters: a SHA-256 digest is lowercase hex, and one holds a 13-digit decimal run
+    // by chance about once in twenty-four; a PAN is stored, if ever, between quotes or punctuation.
+    assert.equal(/(?<![0-9a-f])[0-9]{13,19}(?![0-9a-f])/.test(bytes), false, 'no card-number-shaped digit run');
     assert.equal(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[a-z]{2,}/.test(bytes), false, 'no email address');
   });
 });
