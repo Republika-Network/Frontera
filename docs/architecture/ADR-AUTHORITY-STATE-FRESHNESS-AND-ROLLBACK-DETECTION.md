@@ -81,7 +81,7 @@ not Kernel, not payment code, and **not** the external signer module:
 | File | Role |
 |---|---|
 | `checkpoint.ts` | the one checkpoint model and its canonical bytes; mappers from each store's signed head |
-| `protocol.ts` | `frontera.authority-state-witness.v1`: operations, fixed paths, receipt canonical bytes and signing domain, strict parsers |
+| `protocol.ts` | `frontera.authority-state-witness.v2` (v1 until the PAY-09 multi-rail hardening): operations, fixed paths, receipt canonical bytes and signing domain, strict parsers |
 | `transport.ts`, `http-transport.ts` | the transport port and the reference HTTP transport |
 | `witness-client.ts` | `establishAuthorityStateWitness`: pinned identity, per-call challenge, receipt verification, bounded retries, health monitor — the `AuthorityStateFreshnessAnchor` |
 | `session.ts` | `createAuthorityStateFreshnessBoundary`: genesis enrollment, startup reconciliation, the prepare → commit → finalize transition, the in-process floor, the probe |
@@ -122,10 +122,25 @@ signed by the same key — is a substitution, refused
 means one witness namespace per deployment: two deployments serving the same
 organization must not share a witness.
 
+**Amended (PAY-09 multi-rail hardening, protocol v2):** the slot is
+`(stateKind, organizationId, namespace)`, where `namespace` is present
+**exactly** for a namespaced kind (`NAMESPACED_AUTHORITY_STATE_KINDS`, closed:
+`payment-initiation-reservations`) — one organization's Lightning and Stripe
+interlocks each anchor in their own slot — and absent for every other kind,
+whose slot, canonical bytes and witnessed state are unchanged. CORE gives the
+namespace no meaning; the trusted composition chooses it.
+`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`.
+
 No store signature, signing domain, canonical byte format, schema or schema
 version changed: CORE-07 anchors the already-authenticated heads.
 
 ### 2.4 The witness protocol — compare-and-advance only
+
+*(Since the PAY-09 multi-rail hardening the protocol is
+`frontera.authority-state-witness.v2`: the same five operations and semantics,
+with the namespace of a namespaced slot in every binding, checkpoint and
+signed receipt; new receipt domain and `/v2/…` paths; a v1 witness is refused
+at the handshake. `ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md` §2.)*
 
 Five structured operations, one fixed path each, every body parsed with exact
 keys against closed shapes; no put, no arbitrary key, no caller-supplied
@@ -536,6 +551,14 @@ immutable ledger, a trusted timestamping authority, a blockchain or a consensus
 system. Its security claim holds **only** while its database lives outside
 the authority stores' restore domain.
 
+Since the PAY-09 multi-rail hardening it speaks v2 and stores slots in
+`witness_bindings_v2` (`PRIMARY KEY (state_kind, organization_id, namespace)`,
+`''` for an un-namespaced slot). A v1 database is migrated in place, atomically
+and losslessly, on start — every binding copied and verified, the v1 table
+kept and frozen, nothing dropped — and a legacy un-namespaced
+payment-initiation binding is moved into a namespace only by the explicit
+operator rescope (`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md` §4).
+
 ## 4. What this closes, and what it does not
 
 **Closes (within scope):** a restored earlier authentic state of the
@@ -577,6 +600,14 @@ and the persistence provider that composes them, and the secure Host's
 the two strengthened in-process witnesses (now also refusing a different
 state at the same sequence under a running process).
 
+**PAY-09 multi-rail hardening.** The witness protocol is v2. Every
+un-namespaced slot is unchanged for its stores (same slot, same checkpoint
+bytes, same witnessed state; the reference witness migrates its v1 database in
+place). A third-party witness speaking v1 must be upgraded to v2 — a v2 client
+refuses it at the handshake rather than risk it ignoring a namespace. A
+pre-hardening Lightning interlock (anchored un-namespaced) is refused until the
+operator rescopes its slot.
+
 ## 6. Evidence
 
 `src/enterprise/__tests__/authority-state-freshness-grants.test.ts` (G1–G12,
@@ -598,6 +629,9 @@ ceremony), `authority-state-freshness-structure.test.ts`, and the three
 inverted residual tests in `revocation-state-integrity.test.ts`,
 `obligation-discharge-authenticity.test.ts` and `approval-authenticity.test.ts`.
 The non-vacuity pass (M1–M18) is recorded in the Master Plan's CORE-07 entry.
+Namespaced slots (protocol v2): `authority-state-freshness-namespaces.test.ts`,
+`pay07-multi-rail-coexistence.test.ts`, `pay09-multi-rail-coexistence.test.ts`
+(`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md` §8).
 
 
 ### 2.20 A fourth operational slot: payment initiation reservations (PAY-06)
@@ -619,3 +653,12 @@ no enrollment path; it recomputes every entry digest and the chain on every
 read and decision (freshness is not integrity). The slot name is rail-neutral:
 this module names no Lightning concept (`pay06-lightning-structure.test.ts`).
 `AUTHORITY_STORE_KINDS` is unchanged. `docs/payments/PAY-06-LIGHTNING-RAIL.md` §12.
+
+**Namespaced (PAY-09 multi-rail hardening).** Every rail keeps its own
+initiation store, and one organization composes several rails, so this kind is
+the first **namespaced** kind: each interlock anchors in
+`(payment-initiation-reservations, organization, <its configured rail id>)`.
+PAY-09's Stripe interlock and PAY-06's Lightning interlock of one organization
+therefore coexist, each with its own rollback, fork, substitution, pending and
+outage semantics, and none can take or disturb another's slot
+(`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`).

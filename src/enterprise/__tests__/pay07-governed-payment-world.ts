@@ -197,7 +197,11 @@ async function openWorld(edge: PaymentRailEdge, scenario: ConformanceScenario): 
     operations: join(directory, 'business-operations.sqlite'),
   };
   const witness = await startWitness();
-  const assets = createMonetaryAssetRegistry([{ assetId: 'USD', scale: 2 }, edge.asset]);
+  // The world's own USD definition, plus the rail's asset — once, when the rail's asset IS the world's USD (a fiat rail).
+  // Keyed on the asset definition, never on which rail is composed: a conflicting USD scale is refused, not merged.
+  const WORLD_USD = { assetId: 'USD', scale: 2 } as const;
+  if (edge.asset.assetId === WORLD_USD.assetId && edge.asset.scale !== WORLD_USD.scale) throw new Error('pay07: the rail redefines the world USD asset with another scale');
+  const assets = createMonetaryAssetRegistry(edge.asset.assetId === WORLD_USD.assetId ? [WORLD_USD] : [WORLD_USD, edge.asset]);
   const monetary = Object.freeze({ assets, actionClassifier: createFinancialActionClassifier({ financialActions: [PAYMENT_ACTION] }) });
   const opened = await edge.open({ directory, witness, organizationId: ORG, accountId: GOVERNED_ACCOUNT });
 

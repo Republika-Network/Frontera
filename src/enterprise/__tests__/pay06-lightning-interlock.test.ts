@@ -304,10 +304,10 @@ describe('PAY-06 interlock — restart, crash, rollback (IL-7 … IL-12)', () =>
     const path = join(dir(), 'interlock.sqlite');
     await (await open(path, await boundaryFor(witness, ORG))).close();
     const { anchor } = await connect(witness);
-    const witnessed = await anchor.read({ stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId: ORG });
+    const witnessed = await anchor.read({ stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId: ORG, namespace: SCOPE.railId });
     assert.equal(witnessed.status, 'bound');
     if (witnessed.status !== 'bound') return;
-    const expected = { stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId: ORG, storeId: witnessed.storeId, ...witnessed.committed } as const;
+    const expected = { stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId: ORG, namespace: SCOPE.railId, storeId: witnessed.storeId, ...witnessed.committed } as const;
     await anchor.prepare(expected, { ...expected, sequence: expected.sequence + 1, stateDigest: `sha256:${'cd'.repeat(32)}` });
     await assert.rejects(open(path, await boundaryFor(witness, ORG)), freshnessCode('AUTHORITY_FRESHNESS_PENDING_RECOVERY'));
   });

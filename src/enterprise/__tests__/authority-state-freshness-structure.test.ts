@@ -145,6 +145,26 @@ describe('CORE-07 — structure of the freshness boundary', () => {
     }
   });
 
+  it('namespaced slots stay generic: CORE-07 names no rail, provider or protocol — the namespace is an opaque token it never interprets', () => {
+    const RAIL_WORDS = /lightning|stripe|bolt11|paymentintent|invoice|preimage|x402|\bmpp\b|card|\bln\b|\blnd\b/i;
+    for (const file of walk(MODULE).filter((path) => path.endsWith('.ts'))) {
+      assert.equal(RAIL_WORDS.test(code(file)), false, `${file} names no rail or provider concept`);
+    }
+    const checkpoint = code(`${MODULE}/checkpoint.ts`);
+    assert.match(checkpoint, /NAMESPACED_AUTHORITY_STATE_KINDS = \['payment-initiation-reservations'\] as const/, 'the namespaced kinds are a closed list of generic kinds');
+    assert.match(checkpoint, /export interface AuthorityStateBinding \{\s*readonly stateKind: AuthorityStateKind;\s*readonly organizationId: string;\s*readonly namespace\?: string;\s*\}/, 'the binding is closed: no property bag');
+  });
+
+  it('the reference witness keys every slot by kind, organization AND namespace — in the primary key and in every statement that reads or moves a binding', () => {
+    const witness = code(`${MODULE}/reference/reference-witness-service.ts`);
+    assert.match(witness, /PRIMARY KEY \(state_kind, organization_id, namespace\)/);
+    const statements = [...witness.matchAll(/'((?:SELECT|UPDATE)[^']*witness_bindings_v2[^']*)'/g)].map((match) => match[1]!);
+    assert.ok(statements.length >= 3, 'the binding statements were found');
+    for (const statement of statements.filter((entry) => /WHERE/.test(entry))) assert.match(statement, /AND namespace = \?/, statement);
+    assert.match(witness, /selectBinding\.get\(binding\.stateKind, binding\.organizationId, namespaceKey\(binding\)\)/);
+    assert.equal(/DROP TABLE/i.test(witness), false, 'the v1 → v2 migration drops nothing');
+  });
+
   it('the witness transport follows no redirect, takes no caller-supplied path and logs nothing', () => {
     const transport = code(`${MODULE}/http-transport.ts`);
     assert.equal(/headers\.location|\.location\b/.test(transport), false, 'no redirect is followed');

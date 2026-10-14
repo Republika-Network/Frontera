@@ -13,6 +13,7 @@ import {
 import { closeAllWitnesses } from './core07-freshness-fixture.js';
 import { cleanupPay07Directories, createGovernedPaymentHarness } from './pay07-governed-payment-world.js';
 import { LIGHTNING_EDGE } from './pay07-lightning-edge.js';
+import { STRIPE_EDGE } from './pay07-stripe-edge.js';
 import { XRPL_EDGE } from './pay07-xrpl-edge.js';
 
 /**
@@ -40,7 +41,7 @@ after(async () => {
   cleanupPay07Directories();
 });
 
-const reports: { xrpl?: PaymentRailConformanceReport; lightning?: PaymentRailConformanceReport } = {};
+const reports: { xrpl?: PaymentRailConformanceReport; lightning?: PaymentRailConformanceReport; stripe?: PaymentRailConformanceReport } = {};
 const failures = (report: PaymentRailConformanceReport | undefined): string =>
   JSON.stringify((report?.cases ?? []).filter((entry) => !entry.passed).map((entry) => ({ caseId: entry.caseId, phase: entry.phase, reason: entry.reason, effects: entry.externalEffects })));
 
@@ -49,6 +50,8 @@ describe('PAY-07 — the one canonical suite, run against both rails', () => {
     // Each run measures the CORE it executes, independently: the same tree must give the same digest.
     reports.xrpl = await runPaymentRailConformanceSuite(createGovernedPaymentHarness(XRPL_EDGE, buildCoreSourceManifest().digest));
     reports.lightning = await runPaymentRailConformanceSuite(createGovernedPaymentHarness(LIGHTNING_EDGE, buildCoreSourceManifest().digest));
+    // PAY-09: the first fiat rail, through the SAME suite, the SAME world and the SAME assertions — nothing skipped or weakened.
+    reports.stripe = await runPaymentRailConformanceSuite(createGovernedPaymentHarness(STRIPE_EDGE, buildCoreSourceManifest().digest));
   });
 
   it('XRPL / RLUSD (PAY-02 / PAY-03) passes every required case', () => {
@@ -61,9 +64,14 @@ describe('PAY-07 — the one canonical suite, run against both rails', () => {
     assert.equal(reports.lightning?.passed, true, failures(reports.lightning));
   });
 
-  it('both reports ran exactly the closed case set, in order, under the same suite version — no rail skipped a case', () => {
+  it('Stripe / USD (PAY-09) passes every required case', () => {
+    assert.equal(reports.stripe?.implementationId, 'stripe-usd');
+    assert.equal(reports.stripe?.passed, true, failures(reports.stripe));
+  });
+
+  it('every report ran exactly the closed case set, in order, under the same suite version — no rail skipped a case', () => {
     const expected = PAYMENT_RAIL_CONFORMANCE_CASES.map((entry) => entry.caseId);
-    for (const report of [reports.xrpl, reports.lightning]) {
+    for (const report of [reports.xrpl, reports.lightning, reports.stripe]) {
       assert.equal(report?.suiteVersion, PAYMENT_RAIL_CONFORMANCE_SUITE_VERSION);
       assert.deepEqual(report?.cases.map((entry) => entry.caseId), expected);
     }
@@ -74,13 +82,17 @@ describe('PAY-07 — the one canonical suite, run against both rails', () => {
     assert.match(now, /^sha256:[0-9a-f]{64}$/);
     assert.equal(reports.xrpl?.coreManifestDigest, now);
     assert.equal(reports.lightning?.coreManifestDigest, now);
+    assert.equal(reports.stripe?.coreManifestDigest, now);
     assert.equal(reports.xrpl?.coreManifestDigest, reports.lightning?.coreManifestDigest);
+    assert.equal(reports.xrpl?.coreManifestDigest, reports.stripe?.coreManifestDigest);
   });
 
   it('parity: every case has the same verdict, external-effect count and generic lifecycle on both rails', () => {
-    const comparison = comparePaymentRailConformanceReports(reports.xrpl!, reports.lightning!);
-    assert.deepEqual(comparison.differences, []);
-    assert.equal(comparison.equivalent, true);
+    for (const other of [reports.lightning!, reports.stripe!]) {
+      const comparison = comparePaymentRailConformanceReports(reports.xrpl!, other);
+      assert.deepEqual(comparison.differences, [], other.implementationId);
+      assert.equal(comparison.equivalent, true, other.implementationId);
+    }
   });
 
   it('§36 external-effect counts: success 1, uncertain 1 (P12, finality and trace add 0), denied / over-ceiling / revoked 0 — on both rails', () => {
@@ -102,7 +114,7 @@ describe('PAY-07 — the one canonical suite, run against both rails', () => {
       'MRC-15': 1,
       'MRC-16': 0,
     };
-    for (const report of [reports.xrpl!, reports.lightning!]) {
+    for (const report of [reports.xrpl!, reports.lightning!, reports.stripe!]) {
       assert.deepEqual(Object.fromEntries(report.cases.map((entry) => [entry.caseId, entry.externalEffects])), expected, report.implementationId);
     }
   });
@@ -111,9 +123,12 @@ describe('PAY-07 — the one canonical suite, run against both rails', () => {
     for (const caseId of ['MRC-08', 'MRC-09', 'MRC-10']) {
       const x = reports.xrpl!.cases.find((entry) => entry.caseId === caseId);
       const l = reports.lightning!.cases.find((entry) => entry.caseId === caseId);
+      const s = reports.stripe!.cases.find((entry) => entry.caseId === caseId);
       assert.deepEqual(x?.lifecycle, l?.lifecycle, caseId);
+      assert.deepEqual(x?.lifecycle, s?.lifecycle, caseId);
       assert.equal(x?.externalEffects, 0);
       assert.equal(l?.externalEffects, 0);
+      assert.equal(s?.externalEffects, 0);
     }
     assert.equal(reports.xrpl!.cases.find((entry) => entry.caseId === 'MRC-08')?.lifecycle['status'], 'denied');
     assert.equal(reports.xrpl!.cases.find((entry) => entry.caseId === 'MRC-09')?.lifecycle['withheldBy'], 'authority-binding');
@@ -126,18 +141,21 @@ describe('PAY-07 — the one canonical suite, run against both rails', () => {
     const again = {
       xrpl: await runPaymentRailConformanceSuite(createGovernedPaymentHarness(XRPL_EDGE, digest)),
       lightning: await runPaymentRailConformanceSuite(createGovernedPaymentHarness(LIGHTNING_EDGE, digest)),
+      stripe: await runPaymentRailConformanceSuite(createGovernedPaymentHarness(STRIPE_EDGE, digest)),
     };
     assert.equal(canonicalConformanceReportText(again.xrpl), canonicalConformanceReportText(reports.xrpl!));
     assert.equal(canonicalConformanceReportText(again.lightning), canonicalConformanceReportText(reports.lightning!));
+    assert.equal(canonicalConformanceReportText(again.stripe), canonicalConformanceReportText(reports.stripe!));
   });
 
   it('the reports are closed qualification evidence: bounded tokens only, no provider reference, digest or secret, and canonical text is stable', () => {
-    for (const report of [reports.xrpl!, reports.lightning!]) {
+    for (const report of [reports.xrpl!, reports.lightning!, reports.stripe!]) {
       const text = canonicalConformanceReportText(report);
       assert.equal(text, canonicalConformanceReportText(JSON.parse(JSON.stringify(report)) as PaymentRailConformanceReport));
       // No 64-hex value (a transaction hash, a payment hash, a preimage) except the CORE manifest digest itself.
       assert.deepEqual([...text.matchAll(/[0-9a-fA-F]{64}/g)].map((match) => match[0]), [report.coreManifestDigest.slice('sha256:'.length)]);
       assert.equal(/lnbc|lntb|lnbcrt|preimage|macaroon|seed|tx_blob|signed|BEGIN|\/tmp\/|\\\\|[A-Z]:\\|\d{4}-\d{2}-\d{2}T/i.test(text), false, text);
+      assert.equal(/pi_|ch_|acct_|cus_|pm_card|sk_test|client_secret/.test(text), false, text);
       for (const entry of report.cases) for (const value of Object.values(entry.lifecycle)) assert.match(value, /^[A-Za-z0-9.,:=_-]{1,400}$/, `${entry.caseId}: ${value}`);
     }
   });

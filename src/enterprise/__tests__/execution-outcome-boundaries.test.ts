@@ -144,6 +144,9 @@ describe('P11 boundaries — who may hold it', () => {
     // PAY-06: the Lightning payment interlock reuses P11's identifier and instant
     // predicates verbatim (pure functions; it never reads or writes P11).
     'src/enterprise/lightning-payment-rail/sqlite-lightning-payment-interlock.ts',
+    // PAY-09: the Stripe payment interlock reuses the same predicates verbatim
+    // (pure functions; it never reads or writes P11).
+    'src/enterprise/stripe-payment-rail/sqlite-stripe-payment-interlock.ts',
   ]);
 
   it('no other production module imports the execution outcome store', () => {
