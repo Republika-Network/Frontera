@@ -35,12 +35,21 @@ import { CORE_SOURCE_CLASSIFICATION, CORE_SOURCE_ROOTS, listCoreSources } from '
 const TRADE_ROOT = 'src/features/trade-runtime';
 const PAY_ROOTS = ['src/features/payment-runtime', 'src/enterprise/xrpl-payment-rail', 'src/enterprise/payment-protocol-ingress', 'src/enterprise/payment-settlement'];
 /**
- * Approved enterprise composition edges for TRADE. Exactly one, added by the
- * TRADE-03 K1 architectural approval: the CORE-04 trusted-context provider and
- * its in-process ingress. It is held to its own structure test
- * (`trade03-risk-context-structure.test.ts`): no effect, no decision, no grant.
+ * Approved enterprise composition edges for TRADE. Exactly two, each added by
+ * an explicit architectural approval and held to its own structure test:
+ *
+ * - TRADE-03 K1: the CORE-04 trusted-context provider and its in-process
+ *   ingress (`trade03-risk-context-structure.test.ts`): no effect, no
+ *   decision, no grant;
+ * - TRADE-04B: the protected delegated OfferCreate signer edge — the closed
+ *   signer protocol, Host-side signature verification, its HTTP transport
+ *   (EP-073), the Host-side client, and the separate reference signer process
+ *   (`trade04b-protected-signer-structure.test.ts`): it reads TRADE-01's
+ *   grammar only, is composed nowhere, decides nothing and submits nothing.
+ *
+ * TRADE itself still signs, submits and holds nothing (below).
  */
-const TRADE_COMPOSITION_EDGES: readonly string[] = ['src/enterprise/trade-risk-context'];
+const TRADE_COMPOSITION_EDGES: readonly string[] = ['src/enterprise/trade-risk-context', 'src/enterprise/xrpl-trade-rail'];
 const SKIPPED = new Set(['node_modules', 'dist', 'dist-test', '.next', '.git', 'vendor']);
 
 interface Source {
@@ -136,8 +145,8 @@ describe('TRADE vertical — classification and independence', () => {
     assert.ok(NOT_TRADE.some((source) => source.path === 'src/kernel/index.ts'));
   });
 
-  it('(1) generic CORE — and the packages, scripts and apps — never depend on TRADE; the one approved composition edge is the TRADE-03 trusted-context provider', () => {
-    assert.deepEqual(TRADE_COMPOSITION_EDGES, ['src/enterprise/trade-risk-context']);
+  it('(1) generic CORE — and the packages, scripts and apps — never depend on TRADE; the approved composition edges are the TRADE-03 trusted-context provider and the TRADE-04B delegated signer edge', () => {
+    assert.deepEqual(TRADE_COMPOSITION_EDGES, ['src/enterprise/trade-risk-context', 'src/enterprise/xrpl-trade-rail']);
     assert.deepEqual(dependsOnTrade(NOT_TRADE), []);
   });
 

@@ -28,6 +28,9 @@ const TRANSPORT = 'src/features/xrpl-transport';
 const RAIL = 'src/features/payment-runtime/rails/xrpl';
 const EDGE = 'src/enterprise/xrpl-payment-rail';
 const TRADE = 'src/features/trade-runtime';
+/** TRADE-04B: the delegated OfferCreate signer edge and the G3 shared codec file (held to their own tests). */
+const TRADE_EDGE = 'src/enterprise/xrpl-trade-rail';
+const SHARED_SIGNATURE = `${TRANSPORT}/xrpl-signature.ts`;
 const SKIPPED = new Set(['node_modules', 'dist', 'dist-test', '.next', '.git', 'vendor']);
 
 function walk(dir: string, includeTests = false): readonly string[] {
@@ -91,7 +94,8 @@ describe('TRADE-04A — no new execution or submission path (SEC-TRADE04A-01, -0
   });
 
   it('SEC-TRADE04A-14: the NO_BYPASS inventory still enumerates every effect path — TRADE-04A adds none and says so', () => {
-    assert.match(NO_BYPASS, /Seventy-two production-capable effect paths/);
+    // TRADE-04B later added EP-073 (a signing request, denominator only); TRADE-04A's own record of adding none stands.
+    assert.match(NO_BYPASS, /Seventy-three production-capable effect paths/);
     assert.match(NO_BYPASS, /\*TRADE-04A changed neither number: eleven of seventy-two\.\*/);
     const transport = walk(TRANSPORT).map(read);
     for (const source of transport) assert.equal(/from\s+['"](?:node:)?(?:https?|net|tls|dns|dgram|http2)['"]|\bfetch\s*\(|WebSocket|\bnew\s+Client\s*\(/.test(codeOf(source.text)), false, source.path);
@@ -116,14 +120,15 @@ describe('TRADE-04A — Payment closure and boundaries (SEC-TRADE04A-02, -12, -1
   it('SEC-TRADE04A-13: the rail reaches the shared transport only through its barrel, from the codec and the result reader — nothing else of the rail changed its imports', () => {
     for (const file of walk(RAIL)) {
       const transportImports = importsOf(readFileSync(file, 'utf8')).filter((specifier) => /xrpl-transport/.test(specifier));
-      const expected = file.endsWith('/xrpl-codec.ts') || file.endsWith('/xrpl-result-normalizer.ts') ? ['../../../xrpl-transport/index.js'] : [];
+      // TRADE-04B (G3): the codec also reaches the shared codec file, by path, for the SDK calls it no longer makes itself.
+      const expected = file.endsWith('/xrpl-codec.ts') ? ['../../../xrpl-transport/index.js', '../../../xrpl-transport/xrpl-signature.js'] : file.endsWith('/xrpl-result-normalizer.ts') ? ['../../../xrpl-transport/index.js'] : [];
       assert.deepEqual(transportImports, expected, file);
     }
-    assert.deepEqual(sdkImporters(walk(TRANSPORT).map(read)), [], 'the shared transport imports no SDK');
+    assert.deepEqual(sdkImporters(walk(TRANSPORT).map(read)), [SHARED_SIGNATURE], 'the shared transport imports the SDK in exactly one file, its G3 codec file');
     assert.deepEqual(
       [...sdkImporters(PRODUCTION)].sort(),
-      [`${RAIL}/xrpl-address.ts`, `${RAIL}/xrpl-codec.ts`, `${RAIL}/xrpl-sdk-client.ts`, `${EDGE}/reference/reference-xrpl-signer-service.ts`].sort(),
-      'the PAY-02 SDK-importer list is exactly what it was',
+      [`${RAIL}/xrpl-address.ts`, SHARED_SIGNATURE, `${RAIL}/xrpl-sdk-client.ts`, `${EDGE}/reference/reference-xrpl-signer-service.ts`, `${TRADE_EDGE}/reference/reference-delegated-offer-signer.ts`].sort(),
+      'the PAY-02 SDK-importer list, changed only by TRADE-04B: the codec swapped for the shared codec file (G3), and the reference delegated offer signer process',
     );
   });
 
@@ -138,8 +143,13 @@ describe('TRADE-04A — custody, signing, live writes (SEC-TRADE04A-04, -16, -19
   it('SEC-TRADE04A-04: no new signer, wallet or key material anywhere in production source', () => {
     const custody = /\bWallet\b|fromSeed|fromSecret|fromMnemonic|fromEntropy|deriveKeypair|generateSeed|ripple-keypairs|secret-numbers/;
     const holders = PRODUCTION.filter((source) => XRPL_SDK_IMPORT.test(source.text) && custody.test(codeOf(source.text))).map((source) => source.path);
-    assert.deepEqual(holders, [`${EDGE}/reference/reference-xrpl-signer-service.ts`], 'the reference signer process remains the only key holder');
-    assert.equal(walk('src/enterprise').some((path) => /xrpl-trade-rail|delegated-signer|offer-signer/.test(path)), false, 'no TRADE signer or rail edge exists yet');
+    assert.deepEqual(holders.sort(), [`${EDGE}/reference/reference-xrpl-signer-service.ts`, `${TRADE_EDGE}/reference/reference-delegated-offer-signer.ts`].sort(), 'the two reference signer processes remain the only key holders');
+    // TRADE-04B built the TRADE signer edge this tripwire was waiting for: it is exactly these files, held to trade04b-protected-signer-structure.test.ts.
+    assert.deepEqual(
+      walk('src/enterprise').filter((path) => /xrpl-trade-rail|delegated-signer|offer-signer/.test(path)).sort(),
+      ['delegated-offer-protocol.ts', 'delegated-offer-signer-transport.ts', 'delegated-offer-signer.ts', 'delegated-offer-verification.ts', 'index.ts', 'reference/reference-delegated-offer-signer.ts'].map((name) => `${TRADE_EDGE}/${name}`).sort(),
+      'the TRADE signer edge is exactly the TRADE-04B files: no host composition, interlock or submission adapter',
+    );
   });
 
   it('SEC-TRADE04A-16: TRADE-04A tests open no network: no endpoint, no live-ledger flag, no SDK client', () => {
