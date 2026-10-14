@@ -8,13 +8,14 @@ import {
   type EnterpriseConfiguration,
   type EnterpriseOperator,
 } from '../configuration/enterprise-configuration.js';
-import { OPERATOR_ROLES, isOperatorRole } from '../operator-control/roles.js';
+import { LEGACY_ADMINISTRATOR_ROLE, OPERATOR_ROLES, isOperatorRole, type OperatorRoleOrLegacy } from '../operator-control/roles.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
 import { GovernedActionConfigurationError } from '../governed-action/errors.js';
 import { composeGovernedTrust, type ObligationConfiguration, type TrustedContextConfiguration } from '../trusted-context/index.js';
 import type { MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
 import { XrplHostConfigurationProblem, parseXrplPaymentRailSection, type EnterpriseHostXrplPaymentRailConfiguration } from '../xrpl-payment-rail/host-configuration.js';
+import { ApprovalPolicyConfigurationProblem, parseApprovalPolicySection, type EnterpriseHostApprovalPolicy } from './approval-policy.js';
 
 /**
  * The Enterprise Host's configuration: the environment
@@ -57,7 +58,9 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_COMPOSITION_INCOMPLETE'
   | 'HOST_NOT_HEALTHY'
   /** PROD-03-03: `dist/release-identity.json` exists but does not describe this build. */
-  | 'HOST_RELEASE_IDENTITY_INVALID';
+  | 'HOST_RELEASE_IDENTITY_INVALID'
+  /** PROD-03: the governed-action file declares `approvalPolicy` and an embedder also composed a policy provider — one policy source, never two. */
+  | 'HOST_POLICY_SOURCE_AMBIGUOUS';
 
 /** A deployment defect the Host refuses to start with. Messages name variables, fields and codes — never a value. */
 export class EnterpriseHostConfigurationError extends Error {
@@ -121,6 +124,13 @@ export interface EnterpriseHostGovernedActionConfiguration {
    * the existing adapter registry and P12, or the Host refuses.
    */
   readonly xrplPaymentRail?: EnterpriseHostXrplPaymentRailConfiguration;
+  /**
+   * PROD-03 — approval requirements the shipped launcher can compose without
+   * code: per Governance Profile, "a decision governed by it requires human
+   * approval" (`require_approval` only; `host/approval-policy.ts`). Absent: no
+   * policy from the file, as before.
+   */
+  readonly approvalPolicy?: EnterpriseHostApprovalPolicy;
 }
 
 export interface EnterpriseHostConfiguration {
@@ -284,7 +294,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
   closedKeys(
     parsed,
-    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail'],
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail'],
     'the file',
   );
   if (parsed.version !== 1) invalid('version must be 1.');
@@ -353,6 +363,20 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   }
   if (profileLifecycle !== undefined && (governance?.profiles ?? []).length === 0) {
     invalid("profileLifecycle 'operator-promoted' needs governance.profiles: the catalog of versions an operator may promote.");
+  }
+
+  // PROD-03: declared approval requirements, validated against the profiles
+  // above (every version of a ruled profile declares how it is approved) and
+  // the operator plane (some configured role can reach approval.approve).
+  let approvalPolicy: EnterpriseHostApprovalPolicy | undefined;
+  if (parsed.approvalPolicy !== undefined) {
+    const operatorRoles: readonly OperatorRoleOrLegacy[] = [...operators.map((operator) => operator.role).filter(isOperatorRole), ...(administrators.length > 0 ? [LEGACY_ADMINISTRATOR_ROLE] : [])];
+    try {
+      approvalPolicy = parseApprovalPolicySection(parsed.approvalPolicy, { governance, operatorRoles });
+    } catch (error) {
+      if (error instanceof ApprovalPolicyConfigurationProblem) invalid(error.message);
+      throw error;
+    }
   }
 
   // CORE-04: the trusted source registry and the obligation discharge sources,
@@ -432,6 +456,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
       routes,
       ...(profileLifecycle !== undefined ? { profileLifecycle } : {}),
       ...(xrplPaymentRail !== undefined ? { xrplPaymentRail } : {}),
+      ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
     },
     customerKeys: customerPrincipals,
     administrators,

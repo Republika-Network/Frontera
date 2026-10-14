@@ -1,4 +1,4 @@
-# Pilot Incident Triage (PROD-03-04)
+# Pilot Incident Triage (PROD-03)
 
 What to do when a Frontera pilot misbehaves: classify, preserve evidence,
 act within what is allowed, escalate. Conventions and the operator session are
@@ -23,8 +23,10 @@ higher one.
 
 ## 2. Triage matrix
 
-Causes are listed as likely classes, not certainties: several symptoms have
-more than one cause, and the logs decide.
+Start with the readiness gate's diagnostic (OPERATIONS_RUNBOOK.md §9.1,
+`--diagnose`): its first failing check names the dependency and the
+remediation section. Causes are listed as likely classes, not certainties:
+several symptoms have more than one cause, and the logs decide.
 
 | Symptom | Likely class | Immediate action | Forbidden | Escalate? |
 | --- | --- | --- | --- | --- |
@@ -91,7 +93,39 @@ add `.env`, `docker inspect` or `docker compose config` output, a credential
 or a key to the evidence. Store the bundle with the pilot's incident record,
 with the same access control as backups.
 
-## 4. Escalation
+## 4. Which signal shows which incident
+
+Each of these is exercised by the PROD-03 clean-room drill
+(`tests/pilot/prod03-clean-room-drill.test.mjs`) or the signer drill
+(`tests/pilot/prod03-signer-outage-drill.test.mjs`); none needs a debugger or
+access to a store.
+
+| Incident | Shows in | Safe action | Forbidden |
+| --- | --- | --- | --- |
+| Witness unavailable | `/health` `degraded`, `authorityFreshness.witness.state: unavailable`; gate `PR-04 WITNESS_UNAVAILABLE`; an anchored command answers `503` with `recorded: false` | bring the witness back on its own volume; submit the command again | reset, re-enroll or restore the witness |
+| Signer unavailable (external custody) | `/health` `authoritySigner.state: unavailable`; gate `PR-05 SIGNER_UNAVAILABLE`; new requests are not executed | bring the custody service back on its own key; an emergency stop if needed | give the Host a software key to work around it |
+| Target unavailable | the agent's response is not `executed`; `governed_path.execution_outcome` with a failure | wait for the target; the agent sends a new request with a new key when appropriate | resend a request whose outcome is unknown |
+| Target answered nothing (`execution_unconfirmed`) | Attention; `governed_path.unconfirmed_execution_detected` | establish the outcome **at the target** by the execution id; record a resolution (OPERATIONS_RUNBOOK.md §10) | send the request again, or ask the target to act again |
+| A stale or foreign restore | the Host refuses to start: `enterprise.host.refused` with `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED` (or `…_FORK_DETECTED`, `…_BINDING_MISMATCH`); never ready | restore a newer backup of this deployment | resetting the witness; editing a store |
+| A corrupt, missing or unwritable store | the configuration check / preflight fails (`STORAGE_UNAVAILABLE`, `STORAGE_NOT_WRITABLE`) or the Host refuses; gate `PR-03` | restore from backup; fix the volume | repair with `sqlite3`; copy files in |
+| An emergency stop in force | gate `PR-13 EMERGENCY_STOP_ACTIVE`; requests answer `withheld` by `emergency-control` | release only when the reason is gone (an administrator) | — |
+| Live but not ready | `/live` 200, `/ready` 503; gate `PR-06 HOST_NOT_READY` | read `/health`; fix the named module | route traffic to it |
+
+## 5. Operator action or engineering escalation
+
+| The pilot's operators handle | Escalate to engineering (Frontera) |
+| --- | --- |
+| credential issuance, rotation and revocation; agent onboarding and offboarding | a store integrity failure (`AUTHORITY_STATE_INTEGRITY_FAILED`, an integrity check that fails on a store) |
+| authority grants and revocations; approvals | a freshness failure no restore of this deployment explains (`…_FORK_DETECTED`, `…_PENDING_RECOVERY`) |
+| emergency stop and release | a schema or migration refusal on the release that wrote the stores |
+| restart, backup, restore of this deployment's own backup | an unexpected Kernel or invariant failure (`HOST_STARTUP_FAILED` with no configuration cause, a `500` that is not an integrity code) |
+| operator resolution of an unconfirmed execution | a refusal code this documentation does not explain |
+| the readiness gate and its record | anything a runbook would need a store edit, a witness reset or source access to fix |
+
+Never bypass an integrity protection to restore service: an integrity or
+freshness refusal is the system working.
+
+## 6. Escalation
 
 Escalate to the Frontera contact agreed at handoff
 ([`PILOT_READINESS.md`](PILOT_READINESS.md) §4) when:

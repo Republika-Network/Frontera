@@ -539,9 +539,101 @@ docker compose logs --no-color --tail 200 frontera authority-witness
 
 A `degraded` Host is still ready and still serves existing authority. While
 the witness is away, every authority mutation that must be anchored —
-revocation, obligation discharge, approval verdict — is refused with nothing
-written (`AUTHORITY_FRESHNESS_UNAVAILABLE`); submit that operator command
-again once the witness is back. No human acceptance overrides `/ready` 503.
+revocation, obligation discharge, approval verdict — is refused. A bounded-grant
+revocation answers `503 AUTHORITY_STATE_UNAVAILABLE` with
+`failure: AUTHORITY_FRESHNESS_UNAVAILABLE` and `recorded: false` (nothing was
+written; the grant is still exercisable — declare an emergency stop if it must
+not be); an approval verdict answers `503 AUTHORITY_STATE_UNAVAILABLE` and
+must be read back before it is submitted again. Submit the operator command
+again once the witness is back. The readiness gate reports the outage as
+`PR-04 WITNESS_UNAVAILABLE` (§9.1). No human acceptance overrides `/ready` 503.
+
+### 9.1 The readiness gate and diagnostic (PROD-03)
+
+One read-only command answers: is the Host ready, which required dependency
+is not, is an emergency stop active, are the witness and the signer healthy,
+are the stores accessible and intact, what release is running — and, at the
+pilot level, whether the organization, one agent that holds both an active
+credential and bounded authority, a backup covering every store this
+deployment requires (judged by PROD-02's store registry, never by the
+backup's own claim), a qualified restore and the pilot owner's
+acknowledgement exist. It runs
+in the Host's own image, configuration and network namespace, authenticates
+with the observer credential, verifies the administrator's, and prints no
+credential:
+
+<!-- exec: readiness-gate -->
+```bash
+docker compose run --rm -T pilot-readiness --require deployment
+```
+
+It prints one line per check (`PASS` / `FAIL` / `N/A`, the check id, a closed
+reason code and, on a failure, the remediation section) and a result:
+`DEPLOYMENT-READY`, `ORGANIZATION-READY`, `PILOT-READY` or `NOT-READY`. The
+exit status is 0 only when the required level (`--require`) is reached. Add
+`--json` for the machine-readable report, `--require-profile <id>` for each
+profile the pilot runs under, and `--require-approvals` when it uses them.
+What each check means and the qualification record: PILOT_READINESS.md §5.
+
+At the pilot level the gate needs the evidence: an **extracted** backup set
+(`tar -C "$EVIDENCE_IN" -xf "$BACKUP_FILE"`, as §5.3 extracts it to verify it),
+the restore report the restore wrote on the state volume, and the pilot
+owner's acknowledgement (PILOT_READINESS.md §5.4; an entry with role
+`pilot-owner`). The kit's tool always runs `--preflight`, which supplies this
+deployment's store requirements that the backup's coverage is judged against
+(PILOT_READINESS.md §5.6). Mount a directory holding
+them read-only, and a private directory for the record:
+
+<!-- ref: needs the pilot's own evidence directory and a restored deployment; the same gate with the same evidence is qualified by the PROD-03 clean-room drill -->
+```bash
+docker compose run --rm -T -v "$EVIDENCE_IN:/evidence:ro" -v "$RECORD_DIR:/record" pilot-readiness   --backup /evidence/frontera-backup --restore-report /var/lib/frontera/restore-report.json   --acknowledgement /evidence/acknowledgement.json --require-approvals   --write-record /record/qualification-record.json
+```
+
+Run it again after any material change (a new release, a configuration
+change, a restore, a profile promotion): the record it wrote is then reported
+`RECORD_INVALIDATED` until fresh evidence is given.
+
+### 9.2 Observability minimum
+
+What an operator needs to see, and where it is — no monitoring stack is part
+of the pilot; feed these to yours:
+
+| Question | Signal |
+| --- | --- |
+| Is the process alive? | `GET /live` |
+| May traffic be routed to it? | `GET /ready` (200 only when ready and not `unhealthy`) |
+| Which module, store, witness or signer is the problem? | `GET /health` (`modules`, `authorityFreshness`, `authoritySigner`, `persistence`); the readiness gate's failing check |
+| Is it safe to accept governed executions? | the readiness gate's deployment level (§9.1) |
+| Which release? | `GET /version`; the image revision label |
+| Is an emergency stop active? | `GET /api/admin/emergency-controls`; gate `PR-13` |
+| What was decided and executed? | `GET /api/admin/activity/decisions`, `GET /api/admin/operations/executions`, `GET /api/admin/operations/metrics` |
+| What needs an operator? | `GET /api/admin/operations/attention` (unresolved executions) |
+| What happened to one request? | `GET /api/admin/operations/traces/{requestId}`; for an auditor, `GET /api/evidence/traces/{requestId}` and `…/verify` |
+
+The Host writes one structured line per event on stdout (`docker compose logs
+frontera`). The events an operator correlates on, and their fields:
+
+| Event | When | Fields (never a secret, body or header) |
+| --- | --- | --- |
+| `enterprise.host.starting`, `configuration_validated`, `composed`, `health_gate_passed`, `ready` | startup, in order | `phase`, `release`, `build`, `status` |
+| `enterprise.host.refused` | startup refused | `phase`, `errorCode` (closed) |
+| `enterprise.host.shutdown_started`, `shutdown_complete` | graceful stop | `phase` |
+| `enterprise.operator.control` | every operator-plane write (provisioning, credentials, profiles) | `operatorId`, operation, target, status, `organizationId` |
+| `enterprise.admin.authority` | revocations and emergency activation / release | `operatorId`, `operation`, `target`, `status`, `organizationId` |
+| `enterprise.operator.approval` | every approval verdict | `operatorId`, operation, target (the approval request), status |
+| `governed_path.decision`, `governed_path.issuance_withheld` | every committed decision; a decision that received no grant | `requestId`, `evaluationId`, `decisionId`, `status`, `reasonCodes`, `withheldBy` |
+| `governed_path.execution_claimed`, `governed_path.execution_outcome` | the write-ahead claim before the target is called; the recorded outcome | `requestId`, `executionId`, `outcome`, `outcomeRecorded`, `operationalState`, `attentionRequired` |
+| `governed_path.unconfirmed_execution_detected` (warning) | an execution whose outcome is not known — it needs an operator (§10) | `requestId`, `executionId` |
+| `operator_resolution.*` | an operator resolution requested, recorded or refused | `requestId`, `executionId`, `operatorId`, the resolution and its outcome |
+
+The `requestId` a governed request returns is the key that ties the agent's
+response, the activity list, the Attention view, the trace and these log lines
+together. Backups and restores report on the operator's terminal (§5, §6), not
+in the Host log; keep their output with the change record. Retention of logs,
+activity, evidence exports, backups and operator change records is the pilot
+organization's decision, set by its own legal and contractual requirements
+(SHARED_RESPONSIBILITY.md); Frontera deletes none of its durable records on
+its own.
 
 ## 10. Operator resolution of unconfirmed executions
 

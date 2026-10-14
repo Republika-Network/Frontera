@@ -304,6 +304,7 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
   }
 
   // 4. Storage — every store this deployment composes.
+  let requirements;
   if (host === undefined) {
     checks.push(skip('storage', 'configuration did not parse'));
   } else if (host.configuration.persistence.provider !== 'sqlite') {
@@ -315,7 +316,8 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
   } else {
     let required;
     try {
-      required = requiredStoreDefinitions(deriveDeploymentRequirements(env, host.configuration));
+      requirements = deriveDeploymentRequirements(env, host.configuration);
+      required = requiredStoreDefinitions(requirements);
     } catch (error) {
       checks.push(fail('storage', 'CONFIG_INVALID', messageOf(error)));
     }
@@ -375,7 +377,9 @@ export async function runHostPreflight(env, { root = ROOT } = {}) {
     }
   }
 
-  return { ok: checks.every((check) => check.status !== 'fail'), checks, configuration: host };
+  // `deploymentRequirements`: PROD-02's canonical reading of which stores this deployment composes (no secret
+  // resolved) — what the PROD-03 readiness gate judges a backup's coverage against (PR-15).
+  return { ok: checks.every((check) => check.status !== 'fail'), checks, configuration: host, ...(requirements !== undefined ? { deploymentRequirements: requirements } : {}) };
 }
 
 /** Deterministic, value-free report lines. */

@@ -56,3 +56,22 @@ jobs:
         with:
           node-version: '22'
       - run: node scripts/deploy/qualify-pilot-acceptance.mjs --commit "$(git rev-parse HEAD)" --host-build
+
+  pilot-operations:
+    # PROD-03: the pilot qualification — the clean-room pilot drill and the
+    # signer drill on real processes (Host from a staged release, reference
+    # witness, web console, reference target), the readiness gate, the pilot
+    # structure suite and the approvalPolicy / witness-outage suites. The
+    # multi-process drills run here, one file at a time, not inside the
+    # parallel root suite of `validate`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - run: npm run qualify:pilot

@@ -310,6 +310,21 @@ A refused administrative request is also a no-op: nothing is read past the
 refusal point and nothing is written. Error text carries no secret, SQL, file
 path or key material.
 
+### 5.1 Revocation while the authority-state witness is unavailable (PROD-03)
+
+A bounded-grant revocation is a CORE-07 witness transition: the witness must
+prepare it before anything is written locally. When it cannot
+(`AUTHORITY_FRESHNESS_UNAVAILABLE`, or a lost compare-and-advance,
+`AUTHORITY_FRESHNESS_CONFLICT`), `POST /api/admin/authority/grants/{grantId}/revoke`
+answers **`503 AUTHORITY_STATE_UNAVAILABLE`** with `failure` set to that code
+and **`recorded: false`**: nothing was written and the grant is still
+exercisable. Submit the same revocation again when the witness is reachable;
+to halt execution now, declare an emergency stop (it does not depend on the
+witness). Any other freshness code (`…_ROLLBACK_DETECTED`, `…_FORK_DETECTED`,
+`…_PENDING_RECOVERY`, `…_BINDING_MISMATCH`, …) is an integrity condition:
+**`500 AUTHORITY_STATE_INTEGRITY_FAILED`** with the code. Before PROD-03 both
+surfaced as `500 INFRASTRUCTURE_FAILURE`.
+
 ## 6. Audit and correlation
 
 | Question | Where it is answered |

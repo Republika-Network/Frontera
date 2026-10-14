@@ -2,8 +2,8 @@
   "name": "@aoc-enterprise/runtime",
   "version": "1.6.0",
   "generated": {
-    "commit": "f065d38b532df81f66aa1653c4660d7696ad7385",
-    "branch": "feat/prod-03-04-pilot-readiness",
+    "commit": "2b5908205ab2562d4d75f63367563ada363df260",
+    "branch": "feat/prod-03-pilot-onboarding-operational-qualification",
     "node": "v22.23.1"
   },
   "runtimeVersions": {
@@ -134,7 +134,7 @@
       },
       {
         "path": "scripts/portability/restore-enterprise-v1.mjs",
-        "checksum": "sha256:0c5ca69e7a04d0b811a357e4cb7d959f2facf4932c01cadf4ad7948fc938adbb"
+        "checksum": "sha256:ae4b6dc4665ffd5dc307a0ec6eec5a28601a822c325e2e5e828bba39a868fc35"
       },
       {
         "path": "scripts/portability/validate-portability-v1.mjs",

@@ -1,4 +1,4 @@
-# Pilot Acceptance (PROD-03-04)
+# Pilot Acceptance (PROD-03)
 
 What a pilot organization proves before a Frontera pilot is accepted, the
 evidence that proves it, and how the acceptance status is decided. No payment
@@ -137,6 +137,14 @@ A documented command that does not work fails the qualification.
 | O13 | the evidence bundle is private (`700` / `600`), identifies the release, and neither it nor any output contains a secret |
 | O14 | the documents promise no schema downgrade and keep `down -v` out of every command |
 | O15 | the deployment and the documents require no payment rail |
+| O16 | the PROD-03 readiness gate runs as the kit's `pilot-readiness` tool as documented: deployment-ready; the organization level names what is missing (the minimal example declares no Governance Profile: `PR-09`) |
+
+The full pilot life cycle — onboarding, bounded authority, approval, revocation,
+emergency, restart, backup, restore, stale restore, incidents, offboarding and a
+second operator team working from the onboarding runbook alone — runs on real
+processes in the PROD-03 clean-room drill
+(`tests/pilot/prod03-clean-room-drill.test.mjs`, run by `npm run qualify:pilot`
+and the CI job `pilot-operations`), which reaches `pilot-ready`.
 
 The upgrade and rollback blocks are executed with the same release as both
 "previous" and "new" (no second release exists inside one commit): this
