@@ -47,9 +47,12 @@ import type { BoundCustomerIdentity } from '../customer-identity/index.js';
  *    (organization, actor, action, resource — no applicant field), it takes
  *    the binding **at most once** (a second evaluation finds none), recompiles
  *    the stored proposal and checks it still yields the stored intent, reads
- *    every source **now** through the trusted ports, assesses with
- *    `assessTradingRisk`, and returns readings only for a reliable
- *    `SATISFIED` assessment and a reliable `AUTHORIZED` delegation.
+ *    every source **now** through the trusted ports, then reads the trusted
+ *    clock once — the **reliance instant** (F-1): not before the Kernel's
+ *    instant, strictly inside the binding's lifetime — assesses every fact
+ *    against it with `assessTradingRisk`, and returns readings only for a
+ *    reliable `SATISFIED` assessment and a reliable `AUTHORIZED` delegation,
+ *    stated at the Kernel's instant with their windows' absolute ends unchanged.
  * 3. **Policy (`trade-risk-policy.ts`).** Every reading is a material fact;
  *    deny unless each of the request's seven parameters, amount and currency
  *    equals its reading. Together with the query's action, resource and
@@ -136,7 +139,11 @@ export interface TradeRiskContextOptions {
   readonly sourceIds: { readonly risk: string; readonly delegation: string };
   /** How long an admitted proposal waits for its evaluation, 1 … 300 s. */
   readonly bindingSeconds: number;
-  /** The trusted clock, for admission only (assessment uses the Kernel's instant). */
+  /**
+   * The trusted Host clock — the same time authority as the Kernel's. It times admission and, since F-1, the
+   * reliance instant: read once after every source answered, never earlier than the Kernel's evaluation
+   * instant and never past the binding's expiry. Never a source's, a provider's or the trading engine's clock.
+   */
   readonly clock: () => string;
   /** Required exactly when the profile admits simulated sources. */
   readonly simulation?: typeof TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT;
@@ -299,6 +306,16 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
     }
   }
 
+  /** The trusted clock's current instant, exactly as it states it, or `undefined`. Never a source's or the engine's time. */
+  function trustedInstant(): string | undefined {
+    try {
+      const instant: unknown = clock();
+      return isTradeInstant(instant) ? instant : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   function sweep(at: number): void {
     for (const [key, entry] of bindings) if (entry.expiresAtMs <= at) bindings.delete(key);
   }
@@ -383,6 +400,15 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
         : Promise.resolve(undefined),
     ]);
 
+    // F-1 — the reliance instant: the trusted Host clock, read once, AFTER every source answered. Every fact is
+    // assessed against it (a fact observed after it is from the future; age is measured up to it). It may not
+    // precede the Kernel's evaluation instant (a clock regression is refused, never accommodated) and must lie
+    // strictly inside the admission binding's lifetime (collection that outlived the binding authorizes nothing).
+    const relianceAt = trustedInstant();
+    if (relianceAt === undefined) return [];
+    const relianceMs = Date.parse(relianceAt);
+    if (relianceMs < Date.parse(at) || relianceMs >= entry.expiresAtMs) return [];
+
     const result = assessTradingRisk({
       proposal,
       identity: { organizationId: entry.organizationId, principalId: entry.principalId },
@@ -395,7 +421,7 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
         ...(activeOrders !== undefined ? { activeOrders } : {}),
       },
       ...(entry.intent.expectedGovernanceProfile !== undefined ? { governanceProfile: entry.intent.expectedGovernanceProfile } : {}),
-      assessedAt: at,
+      assessedAt: relianceAt,
     });
     if (!result.assessed) return [];
     try {
@@ -406,8 +432,10 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
 
     const queryBinding = { action: query.action, resourceScope: query.resourceScope, organizationId };
     const readings: { readonly reading: TradeContextReading; readonly sourceId: string }[] = [];
-    const risk = tradingRiskContextReadings(result.evidence, { proposal, profile: profileData, at, ...(entry.intent.expectedGovernanceProfile !== undefined ? { governanceProfile: entry.intent.expectedGovernanceProfile } : {}) }, queryBinding);
-    const delegated = delegation === undefined ? undefined : tradeDelegationContextReading(delegation, { proposal, at, policy: profile.delegation, action: binding.action }, queryBinding);
+    // Relied on at `relianceAt`; stated to the Trusted Context Boundary at the Kernel's instant `at` (the instant it
+    // classifies against), each reading's window ending at the same absolute, fact-derived instant as before.
+    const risk = tradingRiskContextReadings(result.evidence, { proposal, profile: profileData, at: relianceAt, readingAt: at, ...(entry.intent.expectedGovernanceProfile !== undefined ? { governanceProfile: entry.intent.expectedGovernanceProfile } : {}) }, queryBinding);
+    const delegated = delegation === undefined ? undefined : tradeDelegationContextReading(delegation, { proposal, at: relianceAt, readingAt: at, policy: profile.delegation, action: binding.action }, queryBinding);
     // Both or neither: a risk assessment without a reliable delegation reading, or the reverse, attests nothing.
     if (!risk.projected || delegated?.projected !== true) return [];
     for (const reading of risk.readings) readings.push({ reading, sourceId: sourceIds.risk });
@@ -421,7 +449,7 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
       actorId: entry.actorId,
       action: entry.intent.action,
       resource: entry.intent.resource,
-      attestedAt: at,
+      attestedAt: relianceAt,
       assessmentDigest: result.evidence.digest,
       simulatedSources: profile.factProvenance === 'simulated-permitted',
     });

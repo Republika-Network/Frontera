@@ -210,25 +210,18 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
   const traces: TradeExecutionTrace[] = [];
   const assessments: TradingRiskAssessmentEvidence[] = [];
   const policy = parseTradeDelegationPolicy(DELEGATION_POLICY) as TradeDelegationPolicy;
-  // TRADE-03's delegation port: TRADE-02's own verifier, reading the same (fake) ledger the executor re-reads.
-  //
-  // FINDING (TRADE-04C §33, F-1): TRADE-03's edge checks delegation reliance at the Kernel's evaluation instant
-  // (`query.at`), while a real verifier stamps its observation *after* that instant — so a real TRADE-02 verifier
-  // composed as-is is always DELEGATION_RELIANCE_FROM_FUTURE (TRADE-03 was qualified with a fake that back-dated
-  // its observation by 1 s). TRADE-03's semantics are unchanged here; this harness gives the governance-side
-  // verifier a clock 5 s behind (inside its 10 s freshness bound) — 1 s, as TRADE-03's own fake used, is not
-  // enough under load: whenever the Kernel instant precedes the read by more than the lag, reliance is refused
-  // again, which is the finding itself. The executor's re-verification uses the true clock.
-  const verifier = createXrplDelegationVerifier({ port: { serverInfo: async () => ledger.serverInfo(), ledgerEntryDelegate: async (request) => ledger.ledgerEntry({ ...request }) }, network: NETWORK, clock: () => iso(Date.now() - 5000), maxValidatedLedgerAgeSeconds: 10, policy });
+  // TRADE-03's delegation port: TRADE-02's own verifier, reading the same (fake) ledger the executor re-reads,
+  // on the true clock — no back-dating (the F-1 correction assesses at the post-collection reliance instant).
+  const verifier = createXrplDelegationVerifier({ port: { serverInfo: async () => ledger.serverInfo(), ledgerEntryDelegate: async (request) => ledger.ledgerEntry({ ...request }) }, network: NETWORK, clock: () => iso(Date.now()), maxValidatedLedgerAgeSeconds: 10, policy });
   const now = Date.now();
   const edge = createTradeRiskContext({
     organizationId: ORG,
     action: ACTION,
     profile: profileData({ organizationId: ORG, effectiveFrom: iso(now - 86_400_000), expiresAt: iso(now + 30 * 86_400_000), ownerAccounts: [pair.owner], delegateAccounts: [pair.delegate.address], pairs: [hostPair] }),
     ports: {
-      market: { read: async (request) => request.quotes.map((quote) => market({ organizationId: ORG, network: request.network as typeof NETWORK, base: request.base, quote, observedAt: iso(Date.parse(request.at) - 2000) })) },
-      exposure: { read: async (request) => sealTradeExposureSnapshot(exposureReading({ organizationId: ORG, ownerAccount: request.ownerAccount, observedAt: iso(Date.parse(request.at) - 2000) })) },
-      activeOrders: { read: async (request) => sealTradeActiveOrderSnapshot(ordersReading({ organizationId: ORG, scopeKey: request.scopeKey, observedAt: iso(Date.parse(request.at) - 2000) })) },
+      market: { read: async (request) => request.quotes.map((quote) => market({ organizationId: ORG, network: request.network as typeof NETWORK, base: request.base, quote, observedAt: iso(Date.now()) })) },
+      exposure: { read: async (request) => sealTradeExposureSnapshot(exposureReading({ organizationId: ORG, ownerAccount: request.ownerAccount, observedAt: iso(Date.now()) })) },
+      activeOrders: { read: async (request) => sealTradeActiveOrderSnapshot(ordersReading({ organizationId: ORG, scopeKey: request.scopeKey, observedAt: iso(Date.now()) })) },
       delegation: { verify: (request) => verifier.verify(request) },
     },
     sourceIds: SOURCE_IDS,

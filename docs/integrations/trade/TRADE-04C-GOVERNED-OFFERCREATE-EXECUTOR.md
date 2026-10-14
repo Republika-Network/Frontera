@@ -130,13 +130,17 @@ passed **in code** (qualification only; never configuration). TRADE-03's advisor
 active-order snapshots and one-pending-binding-per-(actor, owner) limit are unchanged and remain limitations
 (§29).
 
-**Finding F-1 (TRADE-03 composition, not changed here).** TRADE-03's edge checks delegation reliance at the
-Kernel's evaluation instant (`query.at`); a real TRADE-02 verifier stamps its observation *after* that
-instant, so composed as-is it is always `DELEGATION_RELIANCE_FROM_FUTURE`. TRADE-03 was qualified with a fake
-that back-dated its observation by 1 s. The Host scenarios here give the **governance-side** verifier a clock
-5 s behind (1 s is not enough under load — that is the finding). The executor's own re-verification uses the
-true clock and is unaffected. A TRADE-03 follow-up should bound reliance with an explicit, small future-skew
-tolerance or assess at observation time.
+**Finding F-1 — found by TRADE-04C, corrected under explicit authorization.** TRADE-03's edge assessed
+every source fact at the Kernel's evaluation instant (`query.at`, captured before the provider is asked),
+so a real TRADE-02 verifier — or any source honestly stamping its read time — was refused as from the
+future (`DELEGATION_RELIANCE_FROM_FUTURE`, `REFERENCE_FROM_FUTURE`): 22–27 of 40 trials at any latency,
+~100 % on the shipped Host. The first TRADE-04C Host fixture compensated with a 5 s clock lag on the
+governance-side verifier (and TRADE-03's harness with 1–2 s back-dated sources); that workaround was never
+qualified behavior and has been **removed**. The correction (TRADE-03 §38): the edge reads the trusted Host
+clock once after every source answered — the reliance instant — requires `at ≤ relianceAt < binding
+expiry`, and assesses every fact against it with zero future tolerance; CORE-04 readings stay stated at
+`at` with unchanged absolute ends. With honest, real-time sources the shipped-Host Scenarios A–F pass, and
+Scenario A executed 100 of 100 times under concurrent load with exactly one signature and one send each.
 
 ## 7. XLS-75 delegation and key preflight
 
@@ -373,6 +377,7 @@ prevent that cryptographically today.
 | `trade04c-account-authority.test.ts` | 8 | key derivation vs SDK (44 keys), master/regular/disabled/changed key, malformed roots, owner `Sequence` |
 | `trade04c-reserved-submission.test.ts` | 11 | G2 configuration, closed surface, not-connected, blob-derived claim, ordering pins, Payment surface |
 | `trade04c-governed-execution-host.test.ts` | 16 | Scenarios A–F on the shipped Host; boot refusals (overlap, attestation missing, env key material ×3, signer identity, configuration ×9) |
+| `trade03-f1-reliance-time.test.ts` | 27 | F-1 (TRADE-03 §38): honest real-time trials (3 × 200), 2 s delay, binding boundary, stale/future/malformed facts, organization, source, revocation, replay, profile expiry, clock regression, evidence and no-extension, 10 compiled-module mutants |
 | `trade04c-governed-executor-structure.test.ts` | 17 | edge files, imports, reachers, routes, single builders and callers, order, post-submit uncertainty, no effects, bounds, ownership declaration and rule (same/different network, delegates, malformed), negative fixtures |
 | `trade04c-mutation.test.ts` | 23 | §23 |
 
@@ -381,18 +386,21 @@ wrong principal/organization, risk ceiling, stale or missing trusted facts, emer
 **before** the executor; they are exercised on the shipped Host here (B, C) and exhaustively in the
 unchanged CORE-04/CORE-05/P10/TRADE-03 suites, with the executor's zero-signature, zero-send counts asserted.
 
-**Validation, 2026-10-14 (local, WSL2 on `/mnt/c`; no CI run — the branch is not pushed).** Typecheck, build,
-lint and release coherence pass. Full root suite (`npm run test:root`): 11 629 tests, 11 612 pass, **4 fail**,
-9 skipped, 4 todo — `pay03-xrpl-host` (restart case), `pay08-x402-governed-payment` (LIFE, 120 sequential
-operations), `external-authority-signer-launcher` and `host-preflight` (launcher), each of which **passes when
-run alone** (13/13, 30/30, 2/2, 18/18); the launcher timeout under full WSL `/mnt/c` load is a known,
-pre-existing environmental failure (TRADE-04A/04B), and the first full run's failing set was different
-(PAY-07 Lightning MRC-13, PAY-08 witness timeout — both also pass alone). Workspaces: 1 103 / 1 103.
-Publishability: pass. Clean-room consumer: pass. Isolated protocol-tarball validation
-(`AOC_PROTOCOL_TARBALL=vendor/aoc-protocol-0.2.0-rc.1.tgz`): every step passes except `test` — 11 629 tests,
-11 612 pass, 3 fail, 10 skipped, 4 todo; the tool retains only the output tail, so the three are not identified
-here (it first exposed a real typing defect in a TRADE-04C test under the tarball's type definitions, fixed).
-CI must confirm a clean run before merge.
+**Validation after the F-1 correction, 2026-10-14 (local, WSL2 on `/mnt/c`; no CI run — the branch is not
+pushed).** Typecheck, build, lint and release coherence pass. Full root suite: 11 656 tests, 11 643 pass,
+**0 fail**, 9 skipped, 4 todo. Workspaces: 1 103 / 1 103. Isolated protocol-tarball validation
+(`AOC_PROTOCOL_TARBALL=vendor/aoc-protocol-0.2.0-rc.1.tgz`, every child process's complete output captured):
+every step passes, including `test` (11 656 root tests, 11 642 pass, 0 fail, 10 skipped, 4 todo; every
+workspace suite green). Publishability and the clean-room consumer pass.
+
+**Earlier failures, reported as they were.** Before the correction, two full root runs each had failures that
+passed when re-run alone: run 1 — 18 (inventory pins since updated, plus PAY-07 Lightning MRC-13, a PAY-08
+witness timeout and the launcher); run 2 — 4 (PAY-03 restart, PAY-08 LIFE, the launcher, Host preflight);
+the first tarball run exposed a real typing defect (fixed); the second had 3 test failures its validator did
+not name. None recurred in the runs above. That is not proof their causes are gone. One concrete candidate
+cause was measured during the F-1 work: this host's wall clock steps **backwards** by ~0.8–1.3 s about every
+30 s (WSL2 time re-sync) — a plausible, **unproven** cause of timing-sensitive failures (deadlines, witness
+timeouts, PAY-03's close-time quarantine). CI on a stable Linux runner must confirm.
 
 ## 23. Mutation results
 
@@ -549,7 +557,7 @@ shapes), fee behavior under load, real finality and P12 resolution, a backup/res
 | # | Risk / item | Status |
 |---|---|---|
 | R1 | signer bearer credential bypass (§28) | BLOCKS the production claim; recommendation needs approval |
-| R2 | F-1: TRADE-03 reliance at the Kernel instant vs a real verifier | needs a TRADE-03 fix (approval) before a real delegation source |
+| R2 | F-1: TRADE-03 reliance at the Kernel instant vs a real verifier | **corrected** (TRADE-03 §38); residual: a backward-stepping host clock refuses (fail closed) — production hosts must slew, not step |
 | R3 | real-network behavior of `submitReserved` / `ledger_entry` error shapes | TRADE-05 |
 | R4 | fixed fee under load | documented; no escalation by design |
 | R5 | customer direct submissions on the owner account | contractual (§27) |
@@ -567,5 +575,5 @@ Testnet-proven: R1–R3 stand between it and a live pilot.
 
 **CONDITIONAL.** All TRADE-04C acceptance criteria that can be met offline are met (AC-01 … AC-17, AC-19 …
 AC-25); AC-18 holds (no live writes); AC-26 is satisfied as a precondition only (TRADE-05 needs separate
-authorization). Conditions: R1 (signer authorization), R2 (F-1), TRADE-05 live qualification, TRADE-04D
-recovery.
+authorization). Conditions: R1 (signer authorization), TRADE-05 live qualification, TRADE-04D recovery. (R2, F-1,
+is corrected.)
