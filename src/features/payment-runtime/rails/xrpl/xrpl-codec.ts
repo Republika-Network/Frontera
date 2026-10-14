@@ -1,12 +1,13 @@
 import { decode, encodeForSigning, hashes, verifySignature, type Transaction } from 'xrpl';
+import { isXrplSigningPublicKey, isXrplTransactionHash } from '../../../xrpl-transport/index.js';
 import type { XrplPreparedPayment } from './xrpl-client-port.js';
 
-/** An XRPL transaction hash: 64 uppercase hex digits. */
-const TRANSACTION_HASH = /^[0-9A-F]{64}$/;
-
-export function isXrplTransactionHash(value: unknown): value is string {
-  return typeof value === 'string' && TRANSACTION_HASH.test(value);
-}
+/**
+ * The transaction hash and signing public key grammars are transaction-neutral
+ * and live in the shared XRPL transport (TRADE-04A); re-exported here under
+ * their PAY-02 / PAY-03 names, unchanged.
+ */
+export { isXrplSigningPublicKey, isXrplTransactionHash };
 
 /** A signed blob: uppercase hex, bounded. A Payment is a few hundred bytes. */
 const SIGNED_BLOB = /^(?:[0-9A-F]{2}){32,4096}$/;
@@ -42,13 +43,6 @@ export function signedPaymentMatches(prepared: XrplPreparedPayment, signed: { re
   } catch {
     return false;
   }
-}
-
-/** An XRPL signing public key: 33 bytes as uppercase hex — `ED` + 32 bytes (Ed25519) or `02`/`03` + 32 bytes (secp256k1). */
-const SIGNING_PUBLIC_KEY = /^(?:ED|0[23])[0-9A-F]{64}$/;
-
-export function isXrplSigningPublicKey(value: unknown): value is string {
-  return typeof value === 'string' && SIGNING_PUBLIC_KEY.test(value);
 }
 
 /**
