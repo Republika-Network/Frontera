@@ -70,6 +70,7 @@ const importsOf = (text: string): readonly string[] =>
 const EDGE_SOURCES = walk(EDGE).map(read);
 const HOST_SIDE = EDGE_SOURCES.filter((source) => source.path !== REFERENCE);
 const PRODUCTION = ['src', 'packages', 'scripts', 'apps'].flatMap((root) => walk(root)).map(read);
+const DOC_PATH = 'docs/integrations/trade/TRADE-04B-PROTECTED-DELEGATED-SIGNER.md';
 
 type Scan = (sources: readonly Source[]) => readonly string[];
 
@@ -249,7 +250,7 @@ describe('TRADE-04B — no new path to the signer, and Payment unchanged (SEC-TR
   });
 });
 
-describe('TRADE-04B — tests (SEC-TRADE04B-16)', () => {
+describe('TRADE-04B — tests and documentation (SEC-TRADE04B-16; AC-15)', () => {
   it('TRADE-04B tests open no network beyond loopback: no XRPL endpoint, no SDK client, no faucet', () => {
     const self = 'src/enterprise/__tests__/trade04b-protected-signer-structure.test.ts';
     const files = walk('src/enterprise/__tests__', true).filter((path) => /\/trade04b-/.test(path) && path !== self);
@@ -259,6 +260,13 @@ describe('TRADE-04B — tests (SEC-TRADE04B-16)', () => {
       assert.equal(/['"`]wss?:\/\/|\bnew\s+Client\s*\(|fundWallet|faucet|createXrplSdkClient/i.test(code), false, file);
       for (const match of code.matchAll(/\.listen\(\s*\w+\s*,\s*'([^']+)'/g)) assert.equal(match[1], '127.0.0.1', file);
     }
+  });
+
+  it('AC-15: the documentation states that TRADE-04B cannot yet execute governed orders and claims no production readiness', () => {
+    const doc = readFileSync(DOC_PATH, 'utf8');
+    assert.match(doc, /TRADE-04B cannot execute a governed order/);
+    assert.match(doc, /## 30\. Final milestone verdict/);
+    assert.equal(/production[- ]ready(?! )|ready for production/i.test(doc.replace(/not (?:\w+ )?production[- ]ready|no production[- ]readiness/gi, '')), false);
   });
 });
 
