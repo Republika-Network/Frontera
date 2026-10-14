@@ -1,7 +1,7 @@
 # PROD-03 — Pilot Onboarding & Operational Qualification
 
 - **Milestone:** PROD-03 (FRONTERA-MASTER-PLAN §9 PROD), the last requirement of **PILOT READY** (§11.3).
-- **Baseline:** `main @ 6adfe45` (PAY-09, #185); `main @ 11db917` (TRADE-04a, #187, which touches none of PROD-03's files and changes no NO_BYPASS count) merged in by merge commit, never rebased.
+- **Baseline:** `main @ 6adfe45` (PAY-09, #185); `main @ 11db917` (TRADE-04a, #187, which touches none of PROD-03's files and changes no NO_BYPASS count) merged in by merge commit, never rebased; after the independent-review hardening (`8752216`), `main @ d9339a5` (TRADE-04B, #189 — the protected XRPL delegated OfferCreate signer, which touches none of PROD-03's files and adds NO_BYPASS EP-073, a signing request composed by nothing) merged in the same way (`3b0c9e2`).
 - **Branch:** `feat/prod-03-pilot-onboarding-operational-qualification`.
 - **Scope (Master Plan):** runbooks, provisioning path, observability minimum, security posture / shared responsibility, readiness gate. Nothing else: no SSO, billing, mobile, IaC, Kubernetes, INTEL, rails or credit.
 - **Exit decision:** §16 — **PILOT READY achieved**, with the residuals of §15.
@@ -214,7 +214,7 @@ Observed (drill evidence, not an SLA): the clean-room drill takes about 45 s on 
 - **Founder-free / no direct DB** — `prod03-pilot-structure.test.mjs`: the drill sources contain no SQLite, store, service, provisioning or Host-composition reference, no source edit, no git change; only the Host runner imports Host code, from the staged release, through the launcher's entry points; configuration writes are exactly the two supported ones.
 - **Tooling boundary** — `scripts/pilot/*` import only `node:` built-ins, the readiness library and the existing preflight; no driver, store, signer, witness, adapter, mutation route or non-`GET` method.
 - **No founder-only path** — no pilot document asks an operator to ask someone, edit a database or source, or run an internal helper.
-- **NO_BYPASS** — unchanged: eleven of seventy-two effect paths bounded-grant controlled. PROD-03 adds no effect path: the gate reads, `approvalPolicy` composes policy, the drill's adapter lives in `tests/` and is reached only through the Host's trusted registry. `no-bypass-effect-paths.test.ts` passes unchanged.
+- **NO_BYPASS** — unchanged by PROD-03: eleven of seventy-two effect paths bounded-grant controlled at its baseline; eleven of seventy-three on the combined tree, the one addition being TRADE-04B's EP-073, merged from `main`. PROD-03 adds no effect path: the gate reads, `approvalPolicy` composes policy, the drill's adapter lives in `tests/` and is reached only through the Host's trusted registry. `no-bypass-effect-paths.test.ts` passes unchanged.
 - **API freeze** — unchanged, 65 endpoints; no route added.
 
 ## 14. Security invariants and mutations
@@ -306,6 +306,8 @@ Every §11.3 requirement holds: GOVERNANCE CORE STABLE items 1, 2, 4, 5, 7, 8 (C
 ## 17. Validation
 
 **After the independent-review hardening (§18).** The PILOT READY claim was not carried over: the hardened head was re-qualified from scratch — in a fresh native-Linux clone (LF checkout), `npm ci`, typecheck, build, lint, root and workspace tests, every release, publishability, protocol, portability and clean-room gate, `npm run qualify:pilot` (now eight suites, including both hardening suites and the strengthened drill), the Docker deployment (D1–D15) and acceptance (O1–O16) qualifications, and CI on the exact SHA — together with the 39-mutation campaign of §14. A commit cannot name itself: the certified SHA and its exact counts are recorded in PR #188 and its review reply, not here. The table below is the earlier certification of the pre-review head, kept as history.
+
+**After `main @ d9339a5` (TRADE-04B) was merged in.** The hardened head `8752216` is the pre-merge baseline, not the certified head. The merge (`3b0c9e2`) changed no PROD-03 file and no TRADE-04B file (each byte-identical to its parent); the three documents both lines edit (the Master Plan, CORE-06, SECURITY_INVARIANTS) were read in full and keep both sides — TM-7.37-1 … 22 beside TRADE-04B's appended note, SEC-INV-313 … 325 beside the EP-073 count. The combined tree was re-qualified from scratch as above, with TRADE-04B's own suites (protocol, signature, signer client, reference signer, structure, mutation), the shared XRPL transport and signature-preservation suites, and the 39-mutation campaign; the certified SHA and its counts are in PR #188.
 
 **Earlier certification — commit `06f6f0f`** (the branch head with `main @ 11db917` merged in), in a fresh native-Linux clone (LF checkout, 0 CRLF files), Node 22.23.1, `npm ci` from the lockfile:
 
