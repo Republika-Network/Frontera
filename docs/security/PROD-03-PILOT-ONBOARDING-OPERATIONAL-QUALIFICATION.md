@@ -305,7 +305,9 @@ Every §11.3 requirement holds: GOVERNANCE CORE STABLE items 1, 2, 4, 5, 7, 8 (C
 
 ## 17. Validation
 
-**Certified commit `06f6f0f`** (the branch head with `main @ 11db917` merged in), in a fresh native-Linux clone (LF checkout, 0 CRLF files), Node 22.23.1, `npm ci` from the lockfile:
+**After the independent-review hardening (§18).** The PILOT READY claim was not carried over: the hardened head was re-qualified from scratch — in a fresh native-Linux clone (LF checkout), `npm ci`, typecheck, build, lint, root and workspace tests, every release, publishability, protocol, portability and clean-room gate, `npm run qualify:pilot` (now eight suites, including both hardening suites and the strengthened drill), the Docker deployment (D1–D15) and acceptance (O1–O16) qualifications, and CI on the exact SHA — together with the 39-mutation campaign of §14. A commit cannot name itself: the certified SHA and its exact counts are recorded in PR #188 and its review reply, not here. The table below is the earlier certification of the pre-review head, kept as history.
+
+**Earlier certification — commit `06f6f0f`** (the branch head with `main @ 11db917` merged in), in a fresh native-Linux clone (LF checkout, 0 CRLF files), Node 22.23.1, `npm ci` from the lockfile:
 
 | Gate | Result |
 | --- | --- |
@@ -321,7 +323,7 @@ Every §11.3 requirement holds: GOVERNANCE CORE STABLE items 1, 2, 4, 5, 7, 8 (C
 | `check:release-coherence` (manifest + API freeze), `check-release-docs`, `check-sdk-surface` | green — the release manifest matches the build; API freeze **65** endpoints, none added |
 | protocol tarball (`validate-enterprise-against-protocol-tarball.mjs vendor/aoc-protocol-0.2.0-rc.1.tgz`) | every step green except, intermittently, its embedded full test run: **one PAY-08 x402 test** (`X12`, and once `LIFE-3`) answered `execution_failed` instead of `executed` after ~4.5 s under the validator's fresh, lockfile-free install and parallel load — 2 of 4 local runs; the other 2 fully green; CI's `protocol-tarball-consumption` green on every push. PAY-08's test world composes none of the code PROD-03 changed; a pre-existing timing sensitivity, recorded, not fixed here (§15). `protocol:tarball:verify-lock` needs a `build-result.json` from building `@aoc/protocol` from its own source, outside this repository; the lock is verified by `check:protocol-compatibility-lock` |
 | CI on PR #188 (`06f6f0f`) | **all green**: validate, pilot-deployment, pilot-acceptance, **pilot-operations**, protocol-tarball-consumption, publishability, clean-room-consumer, CodeQL |
-| mutations | **25 / 25 killed** (on the delivered code before the merge; the merge touched none of it) |
+| mutations | **25 / 25 killed** at that time (on the delivered code before the merge; the merge touched none of it); after the review: **39 / 39** (§14) |
 
 Before the merge, the working tree's own run (baseline `6adfe45` + this change, the drills then still inside the parallel root suite): root 11 269 tests, 11 256 pass, 0 fail, 9 skipped, 4 todo on a clean run; workspaces 1 103 / 1 103; every gate above green. In that arrangement 3 of 7 full runs had one timing failure in a pre-existing suite (PAY-08 `LIFE-3`; CORE-07's enrollment ceremony) and 2 of 2 runs without the drills were clean — the reason the drills now run on their own (§12.2).
 
