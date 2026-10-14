@@ -273,7 +273,7 @@ SEC-TRADE04A-05 alongside the PAY-02 suite.
 | 6 Distribution | `npm run validate:publishability`; `AOC_PROTOCOL_TARBALL=vendor/aoc-protocol-0.2.0-rc.1.tgz npm run protocol:tarball:validate` | both exit 0 |
 | 7 Root (before the M39 fix) | `npm run test:root` | 11056 · 11041 pass · 2 fail · 9 skipped · 4 todo — both followed up below |
 | 7 Root (on the committed HEAD) | `npm run build && npm run test:root` | 11057 · 11043 pass · 1 fail (launcher, below) · 9 skipped · 4 todo |
-| 7 Workspaces | `npm run test:workspaces` | 226 · 226 pass · 0 fail |
+| 7 Workspaces | `npm run test:workspaces` (verified in CI, PR #187) | 1,103 pass · 0 fail across 34 workspace suites |
 
 Root failures: (1) **PAY-04 M39** — a real finding: the scan treats every new
 feature directory as CORE by default; `xrpl-transport` was classified out of
