@@ -186,9 +186,15 @@ describe('CTRL-02 passport reconciliation — pinned in code', () => {
   });
 
   it('no passport signer, HMAC signer or passport key role exists in the Enterprise runtime; the authority signer stays authority-only', () => {
+    // PAY-09: the Stripe webhook signal boundary computes one HMAC-SHA256 to VERIFY Stripe's `Stripe-Signature`
+    // over an inbound body with the endpoint's `whsec_` secret — it signs nothing, issues nothing and holds no
+    // passport key. It is the one sanctioned `createHmac` use, and may use nothing else on this list.
+    const WEBHOOK_VERIFIER = 'src/enterprise/stripe-payment-rail/stripe-webhook-signals.ts';
     for (const file of ENTERPRISE) {
-      assert.equal(/createTestSigner|AgentPassportSignerPort|createHmac|PASSPORT_SIGNING_KEY|passportSigner/.test(codeOf(file)), false, file);
+      const code = file.split('\\').join('/') === WEBHOOK_VERIFIER ? codeOf(file).replace(/createHmac\('sha256', key\)|import \{ createHmac, timingSafeEqual \} from 'node:crypto';/g, '') : codeOf(file);
+      assert.equal(/createTestSigner|AgentPassportSignerPort|createHmac|PASSPORT_SIGNING_KEY|passportSigner/.test(code), false, file);
     }
+    assert.equal([...codeOf(WEBHOOK_VERIFIER).matchAll(/createHmac\('sha256'/g)].length, 1, 'one HMAC, for verification');
     const signer = codeOf('src/enterprise/authority-authenticity/signer.ts');
     const signerInterface = /export interface AuthorityArtifactSigner[\s\S]*?\n\}/.exec(signer)?.[0] ?? '';
     assert.ok(signerInterface.length > 0);

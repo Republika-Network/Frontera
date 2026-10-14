@@ -91,7 +91,7 @@ export interface EnterpriseAuthorityFreshnessHealth {
   readonly mode: 'external';
   readonly witnessId: string;
   readonly witness: { readonly state: 'ready' | 'unavailable'; readonly reason?: string };
-  readonly stores: readonly { readonly stateKind: string; readonly status: string; readonly reason?: string; readonly sequence: number }[];
+  readonly stores: readonly { readonly stateKind: string; readonly namespace?: string; readonly status: string; readonly reason?: string; readonly sequence: number }[];
 }
 
 /**

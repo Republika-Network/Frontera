@@ -239,6 +239,21 @@ Measured at each rail's provider boundary (`submit` on the PAY-03 ledger simulat
 | — | Revocation never armed | qualification (both rails fail MRC-10) |
 | — | Suite drops the post-P12 effect check | self-test (`M5`) |
 
+### 12.1 Coexistence extension (PAY-09 multi-rail hardening)
+
+The canonical suite composes one rail per world, behind its own witness — so it
+could not see that PAY-06's and PAY-09's interlocks shared one CORE-07 slot and
+could not both exist in one organization. `pay07-multi-rail-coexistence.test.ts`
+adds the missing claim **without changing the canonical suite**: the same
+CORE, one organization, one CORE-07 witness, one state directory, and the
+XRPL, Lightning and Stripe edges composed side by side — opened in either
+order, executed with independent provider effects, each history advancing
+only its own slot, a stale restore of one refused while the other keeps
+executing, and both restarted in either order (COEX-1 … COEX-4, COEX-7,
+COEX-8, COEX-15, COEX-16). It uses only generic edge capabilities. The
+underlying CORE-07 change is generic namespacing
+(`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md`).
+
 ## 13. Residuals
 
 | # | Residual | Classification |

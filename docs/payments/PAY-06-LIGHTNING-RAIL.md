@@ -376,6 +376,13 @@ pending history refused at open; no reservation — so no send — while the
 witness is unreachable. There is no unanchored durable mode. The slot name
 carries no Lightning word: CORE-07 does not learn Lightning exists.
 
+*Since the PAY-09 multi-rail hardening the kind is namespaced (CORE-07 v2):
+this interlock anchors in `(payment-initiation-reservations, organization,
+<configured rail id>)`, so it coexists with other rails' interlocks of the same
+organization; every semantic above is unchanged. A file anchored before the
+hardening is refused until the operator rescopes its witness slot
+(`ADR-AUTHORITY-STATE-NAMESPACED-SLOTS.md` §4.2).*
+
 The payer node identity is part of every entry's canonical content, so of its
 entry digest, the chain and the witnessed state digest: a rewritten
 `payerNodeId` is refused locally (PAYER-9: digest mismatch; PAYER-10a: chain

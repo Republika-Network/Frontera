@@ -1,4 +1,5 @@
 import {
+  authorityStateBindingProblem,
   bindingOf,
   isBoundedIdentifier,
   sameBinding,
@@ -8,6 +9,8 @@ import {
   type AuthorityStateCheckpoint,
   type AuthorityStateHead,
   type AuthorityStateKind,
+  type AuthorityStateSlot,
+  slotLabel,
 } from './checkpoint.js';
 import { AuthorityStateFreshnessError, type AuthorityStateFreshnessErrorCode } from './errors.js';
 import type { WitnessBindingState } from './protocol.js';
@@ -30,7 +33,7 @@ import { isAuthorityStateFreshnessAnchor, type AuthorityStateFreshnessAnchor, ty
  * ## The boundary
  *
  * An external witness (`witness-client.ts`) holds, per `(stateKind,
- * organizationId)` slot, the newest checkpoint of that store's already-signed
+ * organizationId, namespace)` slot (`checkpoint.ts`), the newest checkpoint of that store's already-signed
  * head, and advances it only by compare-and-advance. This file is what a store
  * does with it:
  *
@@ -59,6 +62,11 @@ import { isAuthorityStateFreshnessAnchor, type AuthorityStateFreshnessAnchor, ty
  *    established or committed. A lower sequence is a rollback; the same
  *    sequence with a different digest a fork. No network call on a read.
  *
+ * Every slot is independent: a session, its floor, its sticky failure, its
+ * pending transition and its queue belong to one binding, so a refused or
+ * pending store in one slot — another kind, or another namespace of a
+ * namespaced kind — never touches a store established in another.
+ *
  * There is no fallback. A deployment that composed a witness never silently
  * degrades to the process-only floor: a witness that cannot be reached at
  * startup refuses the store, and one that cannot be reached for a transition
@@ -71,6 +79,8 @@ export type AuthorityStateFreshnessStatusValue = 'ready' | 'unavailable' | 'regr
 
 export interface AuthorityStateFreshnessSessionStatus {
   readonly stateKind: AuthorityStateKind;
+  /** The namespace of a namespaced slot; absent otherwise. */
+  readonly namespace?: string;
   readonly status: AuthorityStateFreshnessStatusValue;
   readonly reason?: AuthorityStateFreshnessErrorCode;
   /** The sequence of the newest checkpoint this process has established or committed. */
@@ -141,8 +151,12 @@ export interface AuthorityStateFreshnessSession {
 export interface AuthorityStateFreshnessBoundary {
   readonly organizationId: string;
   readonly witnessId: string;
-  /** The store id a **new**, empty store must be created under — enrolled at the witness before the caller commits its local genesis. */
-  genesisStoreId(stateKind: AuthorityStateKind, genesis: { readonly newStoreId: () => string; readonly genesisDigest: (storeId: string) => string }): Promise<string>;
+  /**
+   * The store id a **new**, empty store must be created under — enrolled at the
+   * witness before the caller commits its local genesis. `slot` is the state
+   * kind, or the kind and namespace of a namespaced kind.
+   */
+  genesisStoreId(slot: AuthorityStateKind | AuthorityStateSlot, genesis: { readonly newStoreId: () => string; readonly genesisDigest: (storeId: string) => string }): Promise<string>;
   /** Establishes freshness for an opened store's verified head, or throws. `enrollment` only for the explicit ceremony. */
   establish(local: AuthorityStateCheckpoint, readLocal: () => AuthorityStateCheckpoint, options?: { readonly enrollment?: AuthorityStateEnrollmentContext }): Promise<AuthorityStateFreshnessSession>;
   sessions(): readonly AuthorityStateFreshnessSession[];
@@ -214,7 +228,7 @@ const STATUS_FOR_CODE: Partial<Record<AuthorityStateFreshnessErrorCode, Authorit
  * throws the closed refusal. Pure; shared by startup and by the probe.
  */
 function reconcile(local: AuthorityStateCheckpoint, witnessed: WitnessBindingState): 'ready' | 'finalize' {
-  const kind = local.stateKind;
+  const kind = slotLabel(local);
   if (witnessed.status === 'unbound') {
     throw freshness('AUTHORITY_FRESHNESS_UNBOUND_STORE', `The ${kind} store holds authenticated state the freshness witness has no binding for. It is never enrolled automatically; enroll it explicitly (the enrollment ceremony) if this state is known to be current.`);
   }
@@ -349,8 +363,12 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
     return probeInFlight;
   }
 
-  async function genesisStoreId(stateKind: AuthorityStateKind, genesis: { readonly newStoreId: () => string; readonly genesisDigest: (storeId: string) => string }): Promise<string> {
-    const binding: AuthorityStateBinding = { stateKind, organizationId };
+  async function genesisStoreId(slot: AuthorityStateKind | AuthorityStateSlot, genesis: { readonly newStoreId: () => string; readonly genesisDigest: (storeId: string) => string }): Promise<string> {
+    const chosen: AuthorityStateSlot = typeof slot === 'string' ? { stateKind: slot } : slot;
+    const binding: AuthorityStateBinding = bindingOf({ stateKind: chosen.stateKind, organizationId, ...(chosen.namespace !== undefined ? { namespace: chosen.namespace } : {}) });
+    const problem = authorityStateBindingProblem(binding);
+    if (problem !== undefined) throw freshness('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `The genesis slot ${problem}.`);
+    const stateKind = slotLabel(binding);
     // Two rounds at most: a lost enrollment race is re-read once, and then the
     // winner's genesis is adopted.
     for (let round = 0; round < 2; round += 1) {
@@ -377,6 +395,8 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
 
   async function establish(local: AuthorityStateCheckpoint, readLocal: () => AuthorityStateCheckpoint, establishOptions: { readonly enrollment?: AuthorityStateEnrollmentContext } = {}): Promise<AuthorityStateFreshnessSession> {
     if (local.organizationId !== organizationId) throw freshness('AUTHORITY_FRESHNESS_BINDING_MISMATCH', `The ${local.stateKind} store belongs to another organization than this freshness boundary serves.`);
+    const bindingProblem = authorityStateBindingProblem(local);
+    if (bindingProblem !== undefined) throw freshness('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', `The ${local.stateKind} store's slot ${bindingProblem}.`);
     const binding = bindingOf(local);
     const enrollment = establishOptions.enrollment;
     if (enrollment !== undefined && !isAuthorityStateEnrollmentContext(enrollment)) {
@@ -432,7 +452,7 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
 function createSession(anchor: AuthorityStateFreshnessAnchor, established: AuthorityStateCheckpoint, readLocal: () => AuthorityStateCheckpoint): AuthorityStateFreshnessSession {
   const binding = bindingOf(established);
   const { storeId } = established;
-  const kind = established.stateKind;
+  const kind = slotLabel(established);
   /** The newest checkpoint this process has established or committed. Only ever moves forward. */
   let floor: AuthorityStateCheckpoint = established;
   /** A failure that is never cleared in this process: the store refuses every read until an operator acts. */
@@ -634,7 +654,7 @@ function createSession(anchor: AuthorityStateFreshnessAnchor, established: Autho
     const value: AuthorityStateFreshnessStatusValue =
       failure !== undefined ? (STATUS_FOR_CODE[failure.code] ?? 'forked') : unfinalized !== undefined || witnessUnavailable !== undefined ? 'unavailable' : 'ready';
     const reason = failure?.code ?? (unfinalized !== undefined || witnessUnavailable !== undefined ? 'AUTHORITY_FRESHNESS_UNAVAILABLE' : undefined);
-    return Object.freeze({ stateKind: kind, status: value, ...(reason !== undefined ? { reason } : {}), sequence: floor.sequence });
+    return Object.freeze({ stateKind: binding.stateKind, ...(binding.namespace !== undefined ? { namespace: binding.namespace } : {}), status: value, ...(reason !== undefined ? { reason } : {}), sequence: floor.sequence });
   }
 
   return Object.freeze({ binding, storeId, observe, transition, probe, status });

@@ -11,7 +11,7 @@ import {
   type LightningPaymentReservation,
   type LightningPaymentReservationInput,
 } from '../../features/payment-runtime/rails/lightning/index.js';
-import type { AuthorityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { isAuthorityStateNamespace, type AuthorityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
 import { AuthorityStateFreshnessError, isAuthorityStateFreshnessError, type AuthorityStateFreshnessErrorCode } from '../authority-state-freshness/errors.js';
 import {
   isAuthorityStateFreshnessBoundary,
@@ -58,7 +58,16 @@ import { isCanonicalOutcomeInstant, isOpaqueExecutionIdentifier } from '../execu
  * defence in depth, not the guarantee. So the reservation history is anchored
  * at the witness, in the rail-neutral operational slot
  * `payment-initiation-reservations`, and a history older than the witness's is
- * refused at open — before anything is sent, whatever the node says. The
+ * refused at open — before anything is sent, whatever the node says.
+ *
+ * That kind is **namespaced** (CORE-07, since the PAY-09 multi-rail
+ * hardening): this store anchors under the namespace of its configured,
+ * trusted `scope.railId` — never anything from a payment request or the node —
+ * so one organization's Lightning interlock and its other rails' interlocks
+ * each hold their own slot, and none can take, replace or roll back another's.
+ * A file anchored before namespaces (a v1-witness slot) is not adopted
+ * silently: its slot is moved by the explicit operator rescope, or it is
+ * refused. The
  * witness and this file must never be restored as one snapshot (CORE-07's
  * deployment prohibition).
  *
@@ -275,6 +284,8 @@ export async function createSqliteLightningPaymentInterlock(dbPath: string, opti
   if (!isAuthorityStateFreshnessBoundary(boundary)) throw unavailable('The Lightning payment interlock is anchored at the CORE-07 witness and is never opened without its freshness boundary.');
   const scope = options.scope;
   if (typeof scope?.railId !== 'string' || scope.railId.length === 0 || scope.railId.length > 128 || !LIGHTNING_NETWORKS.includes(scope.network)) throw unavailable('The Lightning payment interlock requires its rail id and network scope.');
+  // The rail id is the CORE-07 namespace of this store's slot: it must be a canonical namespace token, or the interlock is not opened.
+  if (!isAuthorityStateNamespace(scope.railId)) throw unavailable('The Lightning payment interlock rail id must be a canonical freshness namespace (lowercase words joined by hyphens, at most 64 characters).');
   const busyTimeoutMs = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs <= 0 || busyTimeoutMs > MAXIMUM_BUSY_TIMEOUT_MS) throw unavailable(`The Lightning payment interlock busy timeout must be an integer from 1 to ${MAXIMUM_BUSY_TIMEOUT_MS}.`);
   const now = options.now;
@@ -378,7 +389,7 @@ export async function createSqliteLightningPaymentInterlock(dbPath: string, opti
 
   function checkpointOf(head: Head): AuthorityStateCheckpoint {
     if (anchor === undefined) throw unavailable('The Lightning payment interlock is not anchored.');
-    return { stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId, storeId: anchor.storeId, sequence: head.sequence, stateDigest: head.digest };
+    return { stateKind: PAYMENT_INITIATION_STATE_KIND, organizationId, namespace: scope.railId, storeId: anchor.storeId, sequence: head.sequence, stateDigest: head.digest };
   }
 
   /** Local, synchronous: refuses when the history is older than, or forked from, what the witness established. */
@@ -558,7 +569,7 @@ export async function createSqliteLightningPaymentInterlock(dbPath: string, opti
       if ((countEntries.get() as { n: unknown }).n !== 0) throw corrupt('reservations exist with no anchor');
       // Genesis: enrolled at the witness before it is committed here. A witness that holds this slot beyond genesis refuses
       // the empty file — a lost interlock, or a stale restore of a never-used backup, never silently starts over.
-      const storeId = await boundary.genesisStoreId(PAYMENT_INITIATION_STATE_KIND, {
+      const storeId = await boundary.genesisStoreId({ stateKind: PAYMENT_INITIATION_STATE_KIND, namespace: scope.railId }, {
         newStoreId: () => `lightning-payment-interlock:${randomUUID()}`,
         genesisDigest: (id) => genesisDigest(id, organizationId, scope.railId, scope.network),
       });

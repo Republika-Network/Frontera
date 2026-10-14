@@ -63,7 +63,7 @@ describe('CORE-07 — the canonical checkpoint', () => {
   });
 
   it('the receipt signing domain is distinct from every authority-artifact domain', () => {
-    assert.match(AUTHORITY_STATE_WITNESS_RECEIPT_DOMAIN, /^frontera:authority-state-witness:receipt:v1$/);
+    assert.match(AUTHORITY_STATE_WITNESS_RECEIPT_DOMAIN, /^frontera:authority-state-witness:receipt:v2$/, 'v2 since the namespaced slot: a v1 receipt can never verify as v2');
     assert.ok(!AUTHORITY_STATE_WITNESS_RECEIPT_DOMAIN.includes('authority-artifact'));
   });
 });
@@ -74,7 +74,8 @@ describe('CORE-07 — strict request parsing (the witness side)', () => {
     assert.ok(parseWitnessRequest('prepare', { protocol: AUTHORITY_STATE_WITNESS_PROTOCOL, challenge, expected: checkpoint(0), proposed: checkpoint(1) }));
     const refused: readonly [string, unknown][] = [
       ['extra key', { protocol: AUTHORITY_STATE_WITNESS_PROTOCOL, challenge, expected: checkpoint(0), proposed: checkpoint(1), path: '/etc' }],
-      ['wrong protocol', { protocol: 'frontera.authority-state-witness.v2', challenge, expected: checkpoint(0), proposed: checkpoint(1) }],
+      ['wrong protocol', { protocol: 'frontera.authority-state-witness.v3', challenge, expected: checkpoint(0), proposed: checkpoint(1) }],
+      ['the previous protocol', { protocol: 'frontera.authority-state-witness.v1', challenge, expected: checkpoint(0), proposed: checkpoint(1) }],
       ['skipped sequence', { protocol: AUTHORITY_STATE_WITNESS_PROTOCOL, challenge, expected: checkpoint(0), proposed: checkpoint(2) }],
       ['store switch', { protocol: AUTHORITY_STATE_WITNESS_PROTOCOL, challenge, expected: checkpoint(0), proposed: checkpoint(1, { storeId: 'store-2' }) }],
       ['kind switch', { protocol: AUTHORITY_STATE_WITNESS_PROTOCOL, challenge, expected: checkpoint(0), proposed: checkpoint(1, { stateKind: 'approval-state' }) }],
@@ -108,8 +109,9 @@ describe('CORE-07 — the reference witness: compare-and-advance, never last-wri
     const events = (db.prepare('SELECT event, sequence FROM witness_history ORDER BY id').all() as { event: string; sequence: number }[]).map((row) => `${row.event}@${row.sequence}`);
     assert.deepEqual(events, ['enrolled-genesis@0', 'prepared@1', 'finalized@1']);
     assert.throws(() => db.prepare('DELETE FROM witness_history').run(), /append-only/);
-    assert.throws(() => db.prepare('DELETE FROM witness_bindings').run(), /never deleted/);
-    assert.throws(() => db.prepare('UPDATE witness_bindings SET committed_sequence = 0').run(), /never moves backwards/);
+    assert.throws(() => db.prepare('DELETE FROM witness_bindings_v2').run(), /never deleted/);
+    assert.throws(() => db.prepare('UPDATE witness_bindings_v2 SET committed_sequence = 0').run(), /never moves backwards/);
+    assert.throws(() => db.prepare(`UPDATE witness_bindings_v2 SET namespace = 'rail-a'`).run(), /never changes slot/);
     db.close();
   });
 
@@ -272,9 +274,12 @@ describe('CORE-07 — anchor authentication: nothing the witness says is believe
 
   it('A5: an unsupported protocol version or a missing operation is refused', async () => {
     const key = witnessKey();
-    const versions = await forgingWitness((body) => ({ body: signReceipt({ ...identityReceipt(body['challenge'] as string), protocol: 'frontera.authority-state-witness.v2' as never }, key.privateKeyPem) }));
-    await assert.rejects(() => connect({ endpoint: versions.endpoint, witnessId: 'witness-core07-test', publicKeyPem: key.publicKeyPem }), refusedWith('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE'));
-    await versions.close();
+    for (const protocol of ['frontera.authority-state-witness.v1', 'frontera.authority-state-witness.v3']) {
+      // v1 included: a pre-namespace witness is refused at the handshake, never spoken to as if it understood a namespace.
+      const versions = await forgingWitness((body) => ({ body: signReceipt({ ...identityReceipt(body['challenge'] as string), protocol: protocol as never }, key.privateKeyPem) }));
+      await assert.rejects(() => connect({ endpoint: versions.endpoint, witnessId: 'witness-core07-test', publicKeyPem: key.publicKeyPem }), refusedWith('AUTHORITY_FRESHNESS_MALFORMED_RESPONSE'), protocol);
+      await versions.close();
+    }
     const partial = await forgingWitness((body) => ({ body: signReceipt({ ...identityReceipt(body['challenge'] as string), operations: ['identity', 'read'] }, key.privateKeyPem) }));
     await assert.rejects(() => connect({ endpoint: partial.endpoint, witnessId: 'witness-core07-test', publicKeyPem: key.publicKeyPem }), refusedWith('AUTHORITY_FRESHNESS_PROTOCOL_UNSUPPORTED'));
     await partial.close();

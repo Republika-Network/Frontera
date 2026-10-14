@@ -368,11 +368,11 @@ describe('NB — the provider egress inventory stays complete', () => {
     );
   });
 
-  it('no module under src/ or packages/ reaches Stripe, and none outside the Pinata adapter reaches Pinata', () => {
+  it('no module under src/ or packages/ reaches the Stripe SDK, and none outside the Pinata adapter reaches Pinata (PAY-09’s governed rail reaches Stripe without an SDK — EP-072, pinned below)', () => {
     for (const file of PRODUCTION_SOURCES) {
       const code = codeOf(file);
       if (file.startsWith('src/') || file.startsWith('packages/')) {
-        assert.equal(STRIPE_SDK.test(code), false, `${file} must not reach Stripe — billing is the Agent Passport Web application's own effect domain`);
+        assert.equal(STRIPE_SDK.test(code), false, `${file} must not reach the Stripe SDK — billing is the Agent Passport Web application's own effect domain; PAY-09's rail uses its own adapter (EP-072)`);
       }
       if (!file.startsWith('packages/pinata-adapter/')) {
         assert.equal(
@@ -423,6 +423,8 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     'src/enterprise/xrpl-payment-rail/signer-http-transport.ts',
     // PAY-06: `node:https` (and `node:http` to loopback; `isIP` from `node:net`) — the LND REST node adapter (EP-071).
     'src/enterprise/lightning-payment-rail/lnd-rest-node.ts',
+    // PAY-09: `node:https` to the fixed Stripe API origin (and `node:http` to a loopback simulator; `isIP` from `node:net`) — the Stripe adapter (EP-072).
+    'src/enterprise/stripe-payment-rail/stripe-https-client.ts',
   ];
 
   it('the detection patterns match a real client import or call and not a mention of one', () => {
@@ -445,7 +447,7 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     );
   });
 
-  it('exactly seven production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057), the web control plane’s Host client (EP-067), the XRPL rail’s SDK client (EP-069), the external XRPL signer transport (EP-070) and the LND REST node adapter (EP-071)', () => {
+  it('exactly eight production sources perform outbound network I/O: the Generic HTTP transport (EP-050), the external authority signer transport (EP-056), the authority-state witness transport (EP-057), the web control plane’s Host client (EP-067), the XRPL rail’s SDK client (EP-069), the external XRPL signer transport (EP-070), the LND REST node adapter (EP-071) and the Stripe adapter (EP-072)', () => {
     const transport = 'src/enterprise/execution-adapters/generic-http/node-https-transport.ts';
     const signerTransport = 'src/enterprise/external-authority-signer/http-transport.ts';
     const witnessTransport = 'src/enterprise/authority-state-freshness/http-transport.ts';
@@ -457,13 +459,23 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     const xrplSignerTransport = 'src/enterprise/xrpl-payment-rail/signer-http-transport.ts';
     // PAY-06: the LND REST node adapter — the Lightning rail's one send and its read-only status reads.
     const lightningNode = 'src/enterprise/lightning-payment-rail/lnd-rest-node.ts';
+    // PAY-09: the Stripe adapter — the Stripe rail's one confirmation, its non-charging creation and read-only reads.
+    const stripeClient = 'src/enterprise/stripe-payment-rail/stripe-https-client.ts';
     const constructsXrplClient = (file: string): boolean => /from\s+['"]xrpl['"]/.test(valueCode(file)) && /\bnew\s+Client\s*\(/.test(codeOf(file));
     const importsClient = (file: string): boolean => /from\s+['"]node:(?:https|dns)['"]/.test(valueCode(file)) || constructsXrplClient(file);
     // `fetch(` is counted under src/ only: packages/ holds the customer-side
     // SDK, whose fetch is the caller reaching Frontera, not Frontera reaching a provider.
     const fetches = (file: string): boolean => file.startsWith('src/') && /\bfetch\s*\(/.test(codeOf(file));
     const sites = PRODUCTION_SOURCES.filter((file) => (file.startsWith('src/') || file.startsWith('packages/')) && (importsClient(file) || CLIENT_CALL.test(codeOf(file)) || fetches(file)));
-    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient, xrplClient, xrplSignerTransport, lightningNode].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    assert.deepEqual(sites.slice().sort(), [transport, signerTransport, witnessTransport, consoleClient, xrplClient, xrplSignerTransport, lightningNode, stripeClient].sort(), 'a new outbound network call site fails the build: add it to the inventory with its own EP id first');
+    const stripe = codeOf(stripeClient);
+    assert.equal([...stripe.matchAll(/\bsend\s*\(/g)].length, 1, 'the Stripe adapter issues every request from exactly one primitive');
+    assert.equal([...stripe.matchAll(/\/confirm`/g)].length, 1, 'the one PaymentIntent confirmation route, written once');
+    assert.equal([...stripe.matchAll(/'confirm', 'false'/g)].length, 1, 'the creation cannot charge');
+    assert.ok(DOC.includes('EP-072') && DOC.includes(stripeClient), 'EP-072 is inventoried');
+    // PAY-09: embedder-composed only — no production source outside the adapter's own file composes it.
+    const stripeFactoryUsers = PRODUCTION_SOURCES.filter((file) => /\bcreateStripeApi(?:Client|Reader)\b/.test(codeOf(file)) && file !== stripeClient);
+    assert.deepEqual(stripeFactoryUsers, [], 'no production source composes the Stripe adapter');
     const lightning = codeOf(lightningNode);
     assert.equal([...lightning.matchAll(/\bsend\s*\(/g)].length, 1, 'the LND adapter issues every request from exactly one primitive');
     assert.equal([...lightning.matchAll(/\/v2\/router\/send/g)].length, 1, 'the one Lightning payment send route, written once');
@@ -641,7 +653,7 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Ten of seventy-one effect paths are under bounded-grant control.'),
+      DOC.includes('Eleven of seventy-two effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
@@ -656,7 +668,8 @@ describe('NB — the canonical document keeps its shape', () => {
         'CTRL-04 added EP-068 — the approval verdicts over the operator plane, the HTTP entry onto the CORE-05 approval commands (EP-059), decided by CORE-05 and executing nothing — not bounded-grant controlled, so only the denominator moved, by one. ' +
         'PAY-02 added EP-069 — the XRPL / RLUSD rail\'s submission, like EP-050 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one. ' +
         'PAY-03 added EP-070 — the XRPL signing request to the external customer-controlled signer, like EP-056 a deployment-gated signing request and not a provider effect, reached only inside EP-069 — so only the denominator moved, by one. ' +
-        'PAY-06 added EP-071 — the Lightning rail\'s payment send, like EP-069 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one.',
+        'PAY-06 added EP-071 — the Lightning rail\'s payment send, like EP-069 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one. ' +
+        'PAY-09 added EP-072 — the Stripe rail\'s PaymentIntent confirmation, like EP-069 and EP-071 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one.',
     );
   });
 
@@ -670,7 +683,7 @@ describe('NB — the canonical document keeps its shape', () => {
     const ids = new Set([...DOC.matchAll(/\*\*EP-(\d{3})\*\*/g)].map((match) => match[1]));
     assert.equal(total, ids.size, 'the total must equal the number of inventoried EP rows');
     const pathLocal = rows.find((line) => line.startsWith('| PROVEN — PATH LOCAL'));
-    assert.ok(pathLocal?.includes('**10**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069') && pathLocal.includes('EP-071'));
+    assert.ok(pathLocal?.includes('**11**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069') && pathLocal.includes('EP-071') && pathLocal.includes('EP-072'));
   });
 
   it('inventories the Generic HTTP outbound call as its own effect path, path-local, and without an egress claim', () => {

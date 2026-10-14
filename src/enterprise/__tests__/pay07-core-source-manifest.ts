@@ -11,8 +11,8 @@ import { join } from 'node:path';
  * Every `.ts` source under a root is included automatically (a new file under
  * a CORE root can never escape the proof); test code (`__tests__/`, `tests/`,
  * `fixtures/`, `*.test.ts`) is not CORE and is skipped. Rail-specific code
- * (`rails/xrpl`, `rails/lightning`, `xrpl-payment-rail`,
- * `lightning-payment-rail`) and the Host composition edge are classified
+ * (`rails/xrpl`, `rails/lightning`, `rails/stripe`, `xrpl-payment-rail`,
+ * `lightning-payment-rail`, `stripe-payment-rail`) and the Host composition edge are classified
  * outside it (`CORE_SOURCE_CLASSIFICATION`), and every directory beside a root
  * must be classified one way or the other — an unclassified new directory
  * fails `pay07-multi-rail-structure.test.ts`.
@@ -130,6 +130,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
     outside: {
       'xrpl-payment-rail': 'rail-specific: the PAY-03 XRPL composition edge (external signer, interlock, P12 and finality authorities)',
       'lightning-payment-rail': 'rail-specific: the PAY-06 Lightning composition edge (LND adapter, interlock, P12 and finality authorities)',
+      'stripe-payment-rail': 'rail-specific: the PAY-09 Stripe composition edge (HTTPS adapter, interlock, P12 and finality authorities, webhook signals)',
       'x402-payment-protocol': 'protocol-and-rail-specific: the PAY-08 x402 composition edge (the lnbtc binding over Lightning, presentation, post-settlement proof); not executed by the qualified runs',
       'trade-risk-context': 'vertical-specific: the TRADE-03 composition edge (a CORE-04 trusted-context provider over the trade vertical); not on the governed payment path',
       __tests__: 'test-only code, including the PAY-07 shared world, rail edges and this manifest',

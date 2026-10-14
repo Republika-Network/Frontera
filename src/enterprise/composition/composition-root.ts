@@ -1329,7 +1329,7 @@ async function withAuthorityFreshnessHealth(report: EnterpriseHealthReport, boun
       mode: 'external',
       witnessId: boundary.witnessId,
       witness: probed.witness === undefined ? { state: 'ready' } : { state: probed.witness.state, ...(probed.witness.reason !== undefined ? { reason: probed.witness.reason } : {}) },
-      stores: probed.stores.map((store) => ({ stateKind: store.stateKind, status: store.status, ...(store.reason !== undefined ? { reason: store.reason } : {}), sequence: store.sequence })),
+      stores: probed.stores.map((store) => ({ stateKind: store.stateKind, ...(store.namespace !== undefined ? { namespace: store.namespace } : {}), status: store.status, ...(store.reason !== undefined ? { reason: store.reason } : {}), sequence: store.sequence })),
     },
   };
 }
