@@ -22,6 +22,9 @@ export const TRADE_EXECUTION_DETAILS = Object.freeze({
   OFFER_EXPIRED: 'trade-offer-already-expired',
   SEQUENCE_IN_FLIGHT: 'trade-sequence-in-flight',
   INTERLOCK_UNAVAILABLE: 'trade-interlock-unavailable',
+  // ── TRADE-04C-S1: the per-order CORE-02 signing capability: nothing signed ──
+  CAPABILITY_REFUSED: 'trade-capability-refused',
+  CAPABILITY_UNAVAILABLE: 'trade-capability-unavailable',
   // ── The protected signer: nothing submitted ──
   SIGNER_UNAVAILABLE: 'trade-signer-unavailable',
   SIGNER_REFUSED: 'trade-signer-refused',

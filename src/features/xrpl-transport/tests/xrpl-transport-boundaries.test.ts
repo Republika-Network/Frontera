@@ -218,6 +218,8 @@ describe('TRADE-04A shared XRPL transport — boundaries', () => {
       'src/enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.ts',
       'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts',
       'src/enterprise/xrpl-trade-execution/trade-resolution-authority.ts',
+      // TRADE-04C-S1: the signer's capability check, for the exact single-signing preimage digest (xrpl-signature.ts: bytes only).
+      'src/enterprise/xrpl-trade-rail/delegated-offer-authorization.ts',
       'src/enterprise/xrpl-trade-rail/delegated-offer-protocol.ts',
       'src/enterprise/xrpl-trade-rail/delegated-offer-verification.ts',
       'src/features/payment-runtime/rails/xrpl/xrpl-codec.ts',

@@ -164,12 +164,14 @@ import {
   AuthorityAuthenticityConfigurationError,
   authorityVerificationKeyFromPrivateKey,
   createAuthorityArtifactVerifier,
+  createDelegatedOfferCapabilityIssuer,
   createSoftwareAuthorityArtifactSigner,
   isSupportedAuthoritySignatureAlgorithm,
   storeSignerCustody,
   type AuthorityArtifactSigner,
   type AuthorityArtifactVerifier,
   type AuthoritySignerCustody,
+  type DelegatedOfferCapabilityIssuerSlot,
   type TrustedVerificationKey,
 } from '../authority-authenticity/index.js';
 import { createHttpExternalAuthoritySignerTransport, establishExternalAuthorityArtifactSigner, type ExternalAuthoritySignerMonitor } from '../external-authority-signer/index.js';
@@ -607,6 +609,17 @@ export interface EnterpriseAuthorityControlledExecutionOptions
    * `docs/enterprise/AOC_AUTHORITY_CONTROLLED_EXECUTION.md`.
    */
   readonly grantStore?: AuthorityControlledExecutionOptions['grantStore'];
+  /**
+   * TRADE-04C-S1 — the governed trade executor's write-once capability-issuer
+   * slot. When present, this root (a) requires the authority signer to offer
+   * the delegated-offer capability operation — under external custody, the
+   * custody service must answer with exactly the five core operations plus
+   * `signDelegatedOfferCapability` — and (b) binds, once, an issuer over the
+   * **authenticated durable** grant store it opened and that signer. A
+   * composition that cannot do both refuses; the Host refuses to serve with an
+   * unbound slot. Composed by the Host alone.
+   */
+  readonly delegatedOfferCapabilities?: DelegatedOfferCapabilityIssuerSlot;
   /**
    * P7 — aggregate / velocity exercise controls, a durable reservation ledger
    * and exercise-time authority-binding revalidation on this path.
@@ -1134,7 +1147,13 @@ interface AuthorityAuthenticityBoundary {
   readonly monitor: ExternalAuthoritySignerMonitor | undefined;
 }
 
-async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration): Promise<AuthorityAuthenticityBoundary> {
+/** TRADE-04C-S1: what the composition needs from the authority signer beyond the five core operations. */
+interface AuthorityAuthenticityRequirements {
+  readonly delegatedOfferCapabilities: boolean;
+}
+const NO_AUTHORITY_REQUIREMENTS: AuthorityAuthenticityRequirements = Object.freeze({ delegatedOfferCapabilities: false });
+
+async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration, requirements: AuthorityAuthenticityRequirements = NO_AUTHORITY_REQUIREMENTS): Promise<AuthorityAuthenticityBoundary> {
   const authenticity = configuration.authorityAuthenticity;
   const { activeSigningKeyId, verificationKeys } = authenticity;
 
@@ -1195,6 +1214,8 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
       timeoutMs: authenticity.externalSigner.timeoutMs,
       maxAttempts: authenticity.externalSigner.maxAttempts,
       probeIntervalMs: authenticity.externalSigner.probeIntervalMs,
+      // TRADE-04C-S1: required only when the trade executor is composed; then the service must offer it, exactly.
+      ...(requirements.delegatedOfferCapabilities ? { extensions: ['signDelegatedOfferCapability'] as const } : {}),
     });
     return { signer, verifier, custody: 'external', monitor };
   }
@@ -1703,7 +1724,9 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // they refuse never reaches the signer. Resolved at most once: every store
   // this root opens shares one boundary.
   let authorityAuthenticityOnce: Promise<AuthorityAuthenticityBoundary> | undefined;
-  const resolveAuthorityAuthenticity = (): Promise<AuthorityAuthenticityBoundary> => (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration));
+  const capabilitySlot = options.authorityControlledExecution?.delegatedOfferCapabilities;
+  const resolveAuthorityAuthenticity = (): Promise<AuthorityAuthenticityBoundary> =>
+    (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration, { delegatedOfferCapabilities: capabilitySlot !== undefined }));
   if (options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite') {
     await resolveAuthorityAuthenticity();
   }
@@ -1893,6 +1916,19 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       : (options.authorityControlledExecution.grantStore ?? (await buildBoundedGrantStore(configuration, resolveAuthorityAuthenticity, resolveAuthorityFreshness)));
   const grantStoreOpenedHere = options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined;
   if (grantStoreOpenedHere) opened.push(() => closeIfClosable(grantStore));
+
+  // TRADE-04C-S1: the delegated-offer capability issuer reads only the authenticated durable store this root opened, and signs only
+  // through this root's authority signer. Anything else — an in-memory or host-supplied store, a signer without the operation — refuses.
+  if (capabilitySlot !== undefined) {
+    if (!grantStoreOpenedHere || !isAuthenticatedDurableBoundedGrantStore(grantStore)) {
+      throw new AuthorityAuthenticityConfigurationError('The delegated-offer capability issuer needs the authenticated durable bounded-grant store this composition opens (persistence sqlite, no host-supplied store).');
+    }
+    const authenticity = await resolveAuthorityAuthenticity();
+    if (typeof authenticity.signer.signDelegatedOfferCapability !== 'function') {
+      throw new AuthorityAuthenticityConfigurationError('The composed authority signer offers no delegated-offer capability operation; the governed trade executor cannot be authorized.');
+    }
+    capabilitySlot.bind(createDelegatedOfferCapabilityIssuer({ grants: grantStore, signer: authenticity.signer, verifier: authenticity.verifier }));
+  }
 
   // The exercise-control ledger (P7), opened **only** when exercise controls
   // are composed and the host supplied no ledger — and then always the durable

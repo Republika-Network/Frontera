@@ -12,6 +12,7 @@ export {
   SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS,
   approvalStateSigningBytes,
   authoritySigningBytes,
+  delegatedOfferCapabilitySigningBytes,
   decodeAuthoritySignatureBytes,
   grantSigningBytes,
   isSupportedAuthoritySignatureAlgorithm,
@@ -39,3 +40,39 @@ export type { AuthorityArtifactSigner, SoftwareAuthorityArtifactSignerOptions } 
 
 export { createAuthorityArtifactVerifier } from './verifier.js';
 export type { AuthorityArtifactVerifier, AuthoritySignatureVerification, TrustedVerificationKey } from './verifier.js';
+
+export {
+  DELEGATED_OFFER_CAPABILITY_FORMAT,
+  DELEGATED_OFFER_CAPABILITY_ISSUANCE_FAILURES,
+  DELEGATED_OFFER_CAPABILITY_LIMITS,
+  DELEGATED_OFFER_CAPABILITY_NETWORKS,
+  DELEGATED_OFFER_CAPABILITY_OPERATION,
+  DELEGATED_OFFER_GRANT_DIMENSIONS,
+  assessDelegatedOfferCapabilityIssuance,
+  isWellFormedDelegatedOfferCapability,
+  parseDelegatedOfferCapability,
+  serializeDelegatedOfferCapability,
+} from './delegated-offer-capability.js';
+export type {
+  DelegatedOfferCapability,
+  DelegatedOfferCapabilityIssuanceContext,
+  DelegatedOfferCapabilityIssuanceFailure,
+  DelegatedOfferCapabilityIssuanceRequest,
+  DelegatedOfferCapabilityNetwork,
+} from './delegated-offer-capability.js';
+
+export {
+  DELEGATED_OFFER_CAPABILITY_ISSUER_FAILURES,
+  DelegatedOfferCapabilityError,
+  createDelegatedOfferCapabilityIssuer,
+  createDelegatedOfferCapabilityIssuerSlot,
+} from './delegated-offer-capability-issuer.js';
+export type {
+  DelegatedOfferCapabilityIssuanceInput,
+  DelegatedOfferCapabilityIssuer,
+  DelegatedOfferCapabilityIssuerFailure,
+  DelegatedOfferCapabilityIssuerOptions,
+  DelegatedOfferCapabilityIssuerSlot,
+  IssuedDelegatedOfferCapability,
+  SignedGrantReader,
+} from './delegated-offer-capability-issuer.js';

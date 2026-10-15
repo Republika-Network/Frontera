@@ -222,18 +222,42 @@ describe('TRADE-04C Scenario F — uncertain execution: one attempt, persistent 
 });
 
 describe('TRADE-04C Scenario E — tampering: a valid signature over a different trade is refused; zero submission', () => {
-  it('the signer signs another TakerPays: content binding refuses it, nothing is reserved or sent, and the signer is MISMATCH thereafter', async () => {
+  it('TRADE-04C-S1: another TakerPays substituted in transit — the signer refuses it against the capability (zero signatures), nothing is reserved or sent', async () => {
     const trade = await bootTradeHost(workspace);
     try {
       trade.signer.tamper = (transaction) => ({ ...transaction, TakerPays: '1' });
       const before = counts(trade);
       const reply = await governTrade(trade, proposalFor(trade, '40'));
       assert.notEqual(reply.body['status'], 'executed', reply.text);
-      assert.equal(trade.signer.signatures(), before.signatures + 1, 'the signer did sign — another trade');
+      assert.equal(trade.signer.signatures(), before.signatures, 'the signer signed nothing: the capability binds the exact signing preimage');
+      assert.equal(trade.signer.lastRefusal(), 'capability-transaction-mismatch');
       assert.equal(trade.ledger.submitCalls.length, before.sends, 'and nothing was sent');
-      assert.equal(trade.traces.at(-1)?.detail, 'trade-signature-rejected');
+      assert.equal(trade.traces.at(-1)?.detail, 'trade-signer-refused');
       assert.equal(await tradeRecord(trade, reply.body['executionId'] as string), undefined, 'nothing reserved');
       trade.signer.tamper = undefined;
+      const after = await governTrade(trade, proposalFor(trade, '41'));
+      assert.equal(after.body['status'], 'executed', 'an honest refusal does not contradict the pin: the next authorized order executes');
+      assert.equal(trade.ledger.submitCalls.length, before.sends + 1);
+    } finally {
+      await trade.signer.close();
+    }
+  });
+
+  it('a compromised signer (it ignores the capability) answers a valid signature over another TakerPays: content binding refuses it, nothing is reserved or sent, and the signer is MISMATCH thereafter', async () => {
+    const trade = await bootTradeHost(workspace);
+    try {
+      trade.signer.forge = (request) => {
+        const capability = JSON.parse((request['authorization'] as { capability: string }).capability) as { capabilityId: string };
+        const signed = trade.pair.delegate.sign({ ...(request['transaction'] as Record<string, unknown>), TakerPays: '1' });
+        return { protocol: request['protocol'], signerId: request['signerId'], requestId: request['requestId'], capabilityId: capability.capabilityId, ownerAccount: request['ownerAccount'], delegateAccount: request['delegateAccount'], signedTransaction: signed.blob, hash: signed.hash };
+      };
+      const before = counts(trade);
+      const reply = await governTrade(trade, proposalFor(trade, '40'));
+      assert.notEqual(reply.body['status'], 'executed', reply.text);
+      assert.equal(trade.ledger.submitCalls.length, before.sends, 'nothing was sent');
+      assert.equal(trade.traces.at(-1)?.detail, 'trade-signature-rejected');
+      assert.equal(await tradeRecord(trade, reply.body['executionId'] as string), undefined, 'nothing reserved');
+      trade.signer.forge = undefined;
       const after = await governTrade(trade, proposalFor(trade, '41'));
       assert.notEqual(after.body['status'], 'executed', 'a signer that contradicted its pin stays refused for this Host’s life');
       assert.equal(trade.ledger.submitCalls.length, before.sends);
@@ -291,7 +315,7 @@ describe('TRADE-04C G4 — Host composition refuses anything it cannot serve saf
     const other = new FakeXrplLedger();
     const stranger = pairWorld(other);
     const { startSignerProxy } = await import('./trade04c-host-fixture.js');
-    const wrongSigner = await startSignerProxy(stranger);
+    const wrongSigner = await startSignerProxy(stranger, workspace.dir());
     try {
       await assert.rejects(bootTradeHost(workspace, { signerEndpoint: wrongSigner.endpoint }), (error: { code?: string }) => error.code === 'XRPL_TRADE_SIGNER_IDENTITY_MISMATCH');
     } finally {

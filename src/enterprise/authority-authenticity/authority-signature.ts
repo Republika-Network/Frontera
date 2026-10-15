@@ -7,6 +7,7 @@ import {
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import { serializeApprovalStateCommitment, type ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import { serializeObligationDischargeStateCommitment, type ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import { serializeDelegatedOfferCapability, type DelegatedOfferCapability } from './delegated-offer-capability.js';
 
 /**
  * The signature envelope for an authority artifact, the closed algorithm
@@ -81,6 +82,8 @@ export const AUTHORITY_SIGNING_DOMAINS = {
   obligationDischargeState: 'frontera:authority-artifact:obligation-discharge-state:v1\n',
   /** CORE-05: the signed head of an approval store — authority-material, because a completed approval resumes a withheld decision into a grant. */
   approvalState: 'frontera:authority-artifact:approval-state:v1\n',
+  /** TRADE-04C-S1: a single-use authorization for one delegated XRPL OfferCreate signature, issued only for a grant this key signed (`delegated-offer-capability.ts`). */
+  delegatedOfferCapability: 'frontera:authority-artifact:xrpl-delegated-offer-capability:v1\n',
 } as const;
 
 export type AuthorityArtifactKind = keyof typeof AUTHORITY_SIGNING_DOMAINS;
@@ -166,6 +169,11 @@ export function approvalStateSigningBytes(state: ApprovalStateCommitment): Buffe
   return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.approvalState}${serializeApprovalStateCommitment(state)}`, 'utf8');
 }
 
+/** The exact bytes a delegated-offer signing capability is signed and verified over (TRADE-04C-S1). Its own domain, so no grant or state signature can stand in for one, nor one for them. */
+export function delegatedOfferCapabilitySigningBytes(capability: DelegatedOfferCapability): Buffer {
+  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.delegatedOfferCapability}${serializeDelegatedOfferCapability(capability)}`, 'utf8');
+}
+
 /** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. */
 export function authoritySigningBytes(
   artifact:
@@ -173,7 +181,8 @@ export function authoritySigningBytes(
     | { readonly kind: 'revocation'; readonly revocation: GrantRevocation; readonly storeId: string }
     | { readonly kind: 'revocationState'; readonly state: RevocationStateCommitment }
     | { readonly kind: 'obligationDischargeState'; readonly state: ObligationDischargeStateCommitment }
-    | { readonly kind: 'approvalState'; readonly state: ApprovalStateCommitment },
+    | { readonly kind: 'approvalState'; readonly state: ApprovalStateCommitment }
+    | { readonly kind: 'delegatedOfferCapability'; readonly capability: DelegatedOfferCapability },
 ): Buffer {
   switch (artifact.kind) {
     case 'grant':
@@ -186,6 +195,8 @@ export function authoritySigningBytes(
       return obligationDischargeStateSigningBytes(artifact.state);
     case 'approvalState':
       return approvalStateSigningBytes(artifact.state);
+    case 'delegatedOfferCapability':
+      return delegatedOfferCapabilitySigningBytes(artifact.capability);
   }
 }
 

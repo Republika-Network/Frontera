@@ -148,7 +148,8 @@ describe('TRADE-04A — custody, signing, live writes (SEC-TRADE04A-04, -16, -19
     // TRADE-04B built the TRADE signer edge this tripwire was waiting for: it is exactly these files, held to trade04b-protected-signer-structure.test.ts.
     assert.deepEqual(
       walk('src/enterprise').filter((path) => /xrpl-trade-rail|delegated-signer|offer-signer/.test(path)).sort(),
-      ['delegated-offer-protocol.ts', 'delegated-offer-signer-transport.ts', 'delegated-offer-signer.ts', 'delegated-offer-verification.ts', 'index.ts', 'reference/reference-delegated-offer-signer.ts'].map((name) => `${TRADE_EDGE}/${name}`).sort(),
+      // TRADE-04C-S1 adds the capability check and the reference signer's consumption ledger (no key, no SDK) — pinned there too.
+      ['delegated-offer-authorization.ts', 'delegated-offer-protocol.ts', 'delegated-offer-signer-transport.ts', 'delegated-offer-signer.ts', 'delegated-offer-verification.ts', 'index.ts', 'reference/reference-capability-ledger.ts', 'reference/reference-delegated-offer-signer.ts'].map((name) => `${TRADE_EDGE}/${name}`).sort(),
       'the TRADE signer edge is exactly the TRADE-04B files: no host composition, interlock or submission adapter',
     );
   });

@@ -8,6 +8,11 @@
   PAY-03 (external XRPL signer pattern), CORE-02 (external signer endpoint rules)
 - Status: implemented locally; not pushed, no PR, not merged. Verdict in §30.
 
+> **TRADE-04C-S1 amendment (2026-10-15):** the protocol is now `frontera.xrpl-delegated-offer-signer.v2`.
+> The `audit` block below is gone; every request carries a CORE-02 delegated-offer signing capability and the
+> canonical proposal, which the signer verifies and consumes durably before signing. v1 is not accepted anywhere.
+> See `TRADE-04C-S1-GRANT-BOUND-SIGNER-AUTHORIZATION.md`; §4, §12 and §15 below describe v1 as it was.
+
 > **TRADE-04B cannot execute a governed order.** It builds a narrowly scoped signing capability
 > and the cryptographic checks around it. Nothing in this milestone submits a transaction,
 > composes the signer into the Host, or connects it to the bounded-grant path. A signed

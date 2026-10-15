@@ -22,7 +22,16 @@ import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.j
 import type { AuthorityArtifactVerifier, AuthoritySignatureVerification } from '../authority-authenticity/verifier.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
-import { EXTERNAL_AUTHORITY_SIGNER_OPERATIONS, EXTERNAL_AUTHORITY_SIGNER_PROTOCOL, hasExactKeys, type ExternalAuthoritySignerOperation, type ExternalAuthoritySigningRequest } from './protocol.js';
+import type { DelegatedOfferCapabilityIssuanceRequest } from '../authority-authenticity/delegated-offer-capability.js';
+import {
+  EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS,
+  EXTERNAL_AUTHORITY_SIGNER_OPERATIONS,
+  EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
+  hasExactKeys,
+  type ExternalAuthoritySignerExtensionOperation,
+  type ExternalAuthoritySignerOperation,
+  type ExternalAuthoritySigningRequest,
+} from './protocol.js';
 import { ExternalAuthoritySignerTransportError, type ExternalAuthoritySignerTransport } from './transport.js';
 
 /**
@@ -124,6 +133,13 @@ export interface ExternalAuthorityArtifactSignerOptions {
   readonly probeIntervalMs?: number;
   /** Milliseconds. Defaults to `Date.now`, which may move backwards: an identity result that appears to be from the future is treated as stale and re-probed. For tests. */
   readonly now?: () => number;
+  /**
+   * TRADE-04C-S1: the extension operations this deployment requires (default
+   * none). The identity must then offer exactly the five core operations plus
+   * these — no fewer, no other — and the signer gains the matching method.
+   * Without it, an identity offering any extension is refused as before.
+   */
+  readonly extensions?: readonly ExternalAuthoritySignerExtensionOperation[];
 }
 
 export const MAXIMUM_EXTERNAL_SIGNER_TIMEOUT_MS = 60_000;
@@ -163,6 +179,8 @@ export interface ExternalAuthoritySignerStatus {
   /** The last signing outcome. Cleared only by a successful, locally verified signature. */
   readonly lastSigning: ExternalAuthoritySignerComponentState;
   readonly operations: Readonly<Record<ExternalAuthoritySignerOperation, ExternalAuthoritySignerOperationCounters>>;
+  /** TRADE-04C-S1: counters for the required extension operations, present only when the deployment requires one. */
+  readonly extensionOperations?: Readonly<Partial<Record<ExternalAuthoritySignerExtensionOperation, ExternalAuthoritySignerOperationCounters>>>;
 }
 
 export interface ExternalAuthoritySignerMonitor {
@@ -215,7 +233,7 @@ function spkiOf(pem: string): Buffer | undefined {
  * Checks one identity answer against the pin. Throws `IdentityRefusal` naming
  * the rule, never echoing the answer.
  */
-function checkIdentity(answer: unknown, pinned: PinnedAuthoritySignerIdentity, pinnedSpki: Buffer): void {
+function checkIdentity(answer: unknown, pinned: PinnedAuthoritySignerIdentity, pinnedSpki: Buffer, extensions: readonly ExternalAuthoritySignerExtensionOperation[]): void {
   if (!hasExactKeys(answer, ['protocol', 'keyId', 'algorithm', 'publicKeyPem', 'artifactVersion', 'operations'])) {
     throw new IdentityRefusal('EXTERNAL_SIGNER_MALFORMED_RESPONSE', 'The external authority signer identity is not the protocol shape (exactly protocol, keyId, algorithm, publicKeyPem, artifactVersion, operations).');
   }
@@ -238,9 +256,15 @@ function checkIdentity(answer: unknown, pinned: PinnedAuthoritySignerIdentity, p
   if (!Array.isArray(operations) || operations.some((operation) => typeof operation !== 'string') || new Set(operations).size !== operations.length) {
     throw new IdentityRefusal('EXTERNAL_SIGNER_MALFORMED_RESPONSE', 'The external authority signer identity lists its operations malformed or duplicated.');
   }
-  const known = new Set<string>(EXTERNAL_AUTHORITY_SIGNER_OPERATIONS);
-  if (operations.some((operation) => !known.has(operation as string)) || EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.some((operation) => !operations.includes(operation))) {
-    throw new IdentityRefusal('EXTERNAL_SIGNER_CAPABILITY_UNSUPPORTED', `The external authority signer must offer exactly the five authority operations (${EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.join(', ')}).`);
+  const required: readonly string[] = [...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS, ...extensions];
+  const known = new Set<string>(required);
+  if (operations.some((operation) => !known.has(operation as string)) || required.some((operation) => !operations.includes(operation))) {
+    throw new IdentityRefusal(
+      'EXTERNAL_SIGNER_CAPABILITY_UNSUPPORTED',
+      extensions.length === 0
+        ? `The external authority signer must offer exactly the five authority operations (${EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.join(', ')}).`
+        : `The external authority signer must offer exactly the five authority operations and the required extensions (${required.join(', ')}).`,
+    );
   }
   if (typeof answer.publicKeyPem !== 'string') {
     throw new IdentityRefusal('EXTERNAL_SIGNER_MALFORMED_RESPONSE', 'The external authority signer identity carries no public key.');
@@ -290,7 +314,7 @@ async function withBoundedAttempts<T>(maxAttempts: number, call: (attempt: numbe
   return { ok: false, reason };
 }
 
-function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { readonly pinnedSpki: Buffer } {
+function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { readonly pinnedSpki: Buffer; readonly extensions: readonly ExternalAuthoritySignerExtensionOperation[] } {
   const { pinned, timeoutMs, maxAttempts } = options;
   if (typeof pinned?.keyId !== 'string' || pinned.keyId.length === 0) throw new AuthorityAuthenticityConfigurationError('The external authority signer has no pinned key id.');
   if (!isSupportedAuthoritySignatureAlgorithm(pinned.algorithm)) throw new AuthorityAuthenticityConfigurationError(`The pinned external authority signer key '${pinned.keyId}' names an algorithm outside the supported registry.`);
@@ -315,7 +339,11 @@ function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { re
   if (typeof options.transport?.identity !== 'function' || typeof options.transport.sign !== 'function') {
     throw new AuthorityAuthenticityConfigurationError('The external authority signer has no transport.');
   }
-  return { pinnedSpki };
+  const extensions = options.extensions ?? [];
+  if (!Array.isArray(extensions) || new Set(extensions).size !== extensions.length || extensions.some((extension) => !(EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS as readonly string[]).includes(extension))) {
+    throw new AuthorityAuthenticityConfigurationError(`The external authority signer extensions must be distinct members of ${EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS.join(', ')}.`);
+  }
+  return { pinnedSpki, extensions: Object.freeze([...extensions]) };
 }
 
 /**
@@ -330,7 +358,7 @@ function validatedOptions(options: ExternalAuthorityArtifactSignerOptions): { re
  * trust-on-first-use, and no "start and see".
  */
 export async function establishExternalAuthorityArtifactSigner(options: ExternalAuthorityArtifactSignerOptions): Promise<ExternalAuthorityArtifactSigner> {
-  const { pinnedSpki } = validatedOptions(options);
+  const { pinnedSpki, extensions } = validatedOptions(options);
   const { transport, pinned, verifier, timeoutMs, maxAttempts } = options;
   const probeIntervalMs = options.probeIntervalMs ?? 0;
   const now = options.now ?? Date.now;
@@ -343,14 +371,14 @@ export async function establishExternalAuthorityArtifactSigner(options: External
     );
   }
   try {
-    checkIdentity(handshake.value, pinned, pinnedSpki);
+    checkIdentity(handshake.value, pinned, pinnedSpki, extensions);
   } catch (error) {
     if (error instanceof IdentityRefusal) throw externalConfigurationError(error.reason, `${error.message} (${error.reason})`);
     throw error;
   }
 
-  const counters = new Map<ExternalAuthoritySignerOperation, { calls: number; attempts: number; succeeded: number; failed: number; retried: number; lastLatencyMs: number | undefined }>(
-    EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.map((operation) => [operation, { calls: 0, attempts: 0, succeeded: 0, failed: 0, retried: 0, lastLatencyMs: undefined }]),
+  const counters = new Map<ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation, { calls: number; attempts: number; succeeded: number; failed: number; retried: number; lastLatencyMs: number | undefined }>(
+    [...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS, ...extensions].map((operation) => [operation, { calls: 0, attempts: 0, succeeded: 0, failed: 0, retried: 0, lastLatencyMs: undefined }]),
   );
   // The two halves of health, each written only by the event that can prove it
   // (see the module comment). `undefined` = no unresolved failure.
@@ -377,6 +405,7 @@ export async function establishExternalAuthorityArtifactSigner(options: External
       identity: component(identityFailure),
       lastSigning: component(signingFailure),
       operations: Object.freeze(operations),
+      ...(extensions.length > 0 ? { extensionOperations: Object.freeze(Object.fromEntries(extensions.map((operation) => [operation, Object.freeze({ ...counters.get(operation)! })]))) } : {}),
     });
   }
 
@@ -424,6 +453,8 @@ export async function establishExternalAuthorityArtifactSigner(options: External
         return verifier.verifyObligationDischargeState(request.state, signature);
       case 'signApprovalState':
         return verifier.verifyApprovalState(request.state, signature);
+      case 'signDelegatedOfferCapability':
+        return verifier.verifyDelegatedOfferCapability(request.capability, signature);
     }
   }
 
@@ -468,6 +499,10 @@ export async function establishExternalAuthorityArtifactSigner(options: External
     signRevocationState: (state: RevocationStateCommitment) => sign({ operation: 'signRevocationState', state }),
     signObligationDischargeState: (state: ObligationDischargeStateCommitment) => sign({ operation: 'signObligationDischargeState', state }),
     signApprovalState: (state: ApprovalStateCommitment) => sign({ operation: 'signApprovalState', state }),
+    // TRADE-04C-S1: present only when the deployment required the extension and the identity proved the service offers it.
+    ...(extensions.includes('signDelegatedOfferCapability')
+      ? { signDelegatedOfferCapability: (request: DelegatedOfferCapabilityIssuanceRequest) => sign({ operation: 'signDelegatedOfferCapability', capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature }) }
+      : {}),
   });
   EXTERNAL_SIGNERS.add(signer);
   registerAuthoritySignerCustody(signer, 'external');
@@ -475,7 +510,7 @@ export async function establishExternalAuthorityArtifactSigner(options: External
   /** One identity attempt. Writes `identity` only: whatever it finds, it never touches a signing failure. */
   async function probeIdentity(): Promise<ExternalAuthoritySignerStatus> {
     try {
-      checkIdentity(await transport.identity({ timeoutMs }), pinned, pinnedSpki);
+      checkIdentity(await transport.identity({ timeoutMs }), pinned, pinnedSpki, extensions);
       identityFailure = undefined;
     } catch (error) {
       identityFailure = error instanceof IdentityRefusal ? error.reason : transportReason(error);

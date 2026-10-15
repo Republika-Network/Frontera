@@ -11,13 +11,17 @@
  * edge of a transport implementation.
  */
 export {
+  EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS,
+  EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS,
   EXTERNAL_AUTHORITY_SIGNER_OPERATIONS,
   EXTERNAL_AUTHORITY_SIGNER_PATHS,
   EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
+  externalAuthoritySignerPath,
   externalSigningRequestBody,
+  isExternalAuthoritySignerExtensionOperation,
   parseExternalSigningRequest,
 } from './protocol.js';
-export type { ExternalAuthoritySignerIdentity, ExternalAuthoritySignerOperation, ExternalAuthoritySigningRequest } from './protocol.js';
+export type { ExternalAuthoritySignerExtensionOperation, ExternalAuthoritySignerIdentity, ExternalAuthoritySignerOperation, ExternalAuthoritySigningRequest } from './protocol.js';
 
 export { ExternalAuthoritySignerTransportError } from './transport.js';
 export type { ExternalAuthoritySignerTransport } from './transport.js';

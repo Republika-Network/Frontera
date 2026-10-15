@@ -1,10 +1,10 @@
-import { checkTradeAccountAddress, isTradeIdentifier, isTradeNetwork, parseTradeAmount, TRADE_MAXIMUM_EXPIRATION, TRADE_OFFER_FLAGS, type TradeNetwork } from '../../features/trade-runtime/index.js';
+import { checkTradeAccountAddress, isTradeIdentifier, isTradeNetwork, parseTradeAmount, validateTradeProposal, TRADE_MAXIMUM_EXPIRATION, TRADE_OFFER_FLAGS, type TradeNetwork, type TradeProposal } from '../../features/trade-runtime/index.js';
 import { isXrplSigningPublicKey, isXrplTransactionHash } from '../../features/xrpl-transport/index.js';
 
 /**
- * TRADE-04B — `frontera.xrpl-delegated-offer-signer.v1`: the closed, versioned
- * protocol between the Frontera Host and an external XRPL **delegated
- * OfferCreate** signer.
+ * TRADE-04B — `frontera.xrpl-delegated-offer-signer` — and, since TRADE-04C-S1,
+ * its **v2**: the closed, versioned protocol between the Frontera Host and an
+ * external XRPL **delegated OfferCreate** signer.
  *
  * Distinct from PAY-03's `frontera.external-xrpl-transaction-signer.v1` in
  * every respect — protocol id, operation, path, request and response — so a
@@ -13,10 +13,11 @@ import { isXrplSigningPublicKey, isXrplTransactionHash } from '../../features/xr
  *
  * ```
  * GET  /v1/identity                     → { protocol, signerId, operations: ['sign-xrpl-delegated-offer'], network,
- *                                           pairs: [{ ownerAccount, delegateAccount, signingPublicKey }] }
+ *                                           pairs: [{ ownerAccount, delegateAccount, signingPublicKey }],
+ *                                           authorization: { trustDomain, organizationId, issuerKeyIds } }
  * POST /v1/sign/xrpl-delegated-offer    ← { protocol, signerId, requestId, network, ownerAccount, delegateAccount,
- *                                           transaction, audit: { executionId, grantRef, grantDigest } }
- *                                       → { protocol, signerId, requestId, ownerAccount, delegateAccount, signedTransaction, hash }
+ *                                           transaction, proposal, authorization: { capability, signature } }
+ *                                       → { protocol, signerId, requestId, capabilityId, ownerAccount, delegateAccount, signedTransaction, hash }
  * ```
  *
  * One operation: sign the one closed shape of unsigned, single-signed,
@@ -24,21 +25,30 @@ import { isXrplSigningPublicKey, isXrplTransactionHash } from '../../features/xr
  * owner. There is no "sign these bytes", no other transaction type, no
  * multisigning, no algorithm choice, no key export and no submission.
  *
- * The signer decides **nothing** about authority. The `audit` block names the
- * execution and the grant the Host is acting under so both sides' records can
- * be correlated; it is never verified by the signer and never treated as
- * authority — whoever can reach the signer with its credential can have any
- * closed, in-bounds OfferCreate signed for a configured pair. That is why
- * access to the signing capability belongs below the bounded grant
- * (TRADE-04C), and why the Host trusts nothing the signer answers: every
- * signed blob is decoded and verified locally before anything relies on it
- * (`delegated-offer-verification.ts`).
+ * **v2 (TRADE-04C-S1) — authorization in the custody boundary.** v1 carried
+ * an unverified `audit` block, so whoever held the bearer credential could
+ * have any closed, in-bounds OfferCreate signed (TRADE-04C R1). v2 replaces it
+ * with `authorization`: a CORE-02 **delegated-offer signing capability** in its
+ * canonical bytes and the authority signature over them, plus the canonical
+ * TRADE-01 `proposal` the grant names. The signer refuses unless the
+ * capability verifies under an authority key it pins, for its pinned trust
+ * domain and organization, unexpired, bound to exactly this transaction's
+ * signing preimage and fields, for a proposal whose digest it names and whose
+ * terms are this transaction's — and unless it was never consumed before
+ * (`delegated-offer-authorization.ts`; consumption is durable in the signer).
+ * The bearer credential remains transport authentication only. v1 is gone:
+ * there is no fallback to a request without a capability.
+ *
+ * The signer still decides nothing about *policy*: it verifies that the
+ * authority already decided, once, for this exact signature. And the Host
+ * still trusts nothing the signer answers: every signed blob is decoded and
+ * verified locally before anything relies on it (`delegated-offer-verification.ts`).
  *
  * Both directions are exact, closed, plain-JSON records: an unknown, missing
  * or extra field, an accessor, a symbol key or a non-plain object is refused,
  * never ignored or repaired.
  */
-export const DELEGATED_OFFER_SIGNER_PROTOCOL = 'frontera.xrpl-delegated-offer-signer.v1';
+export const DELEGATED_OFFER_SIGNER_PROTOCOL = 'frontera.xrpl-delegated-offer-signer.v2';
 export const DELEGATED_OFFER_SIGNER_OPERATION = 'sign-xrpl-delegated-offer';
 export const DELEGATED_OFFER_SIGNER_PATHS = Object.freeze({ identity: '/v1/identity', signDelegatedOffer: '/v1/sign/xrpl-delegated-offer' });
 
@@ -66,7 +76,15 @@ export const DELEGATED_OFFER_ALLOWED_FLAGS = Object.values(TRADE_OFFER_FLAGS).re
 const SIGNER_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 /** A per-request correlation the Host draws fresh: 32 random bytes as lowercase hex. */
 const REQUEST_ID = /^[0-9a-f]{64}$/;
-const GRANT_DIGEST = /^sha256:[0-9a-f]{64}$/;
+/** A capability id: 32 random bytes as lowercase hex. */
+const CAPABILITY_ID = /^[0-9a-f]{64}$/;
+/** An authority signature envelope's fields, as the CORE-02 envelope spells them. */
+const SIGNATURE_ALGORITHM = 'ed25519-v1';
+const BASE64URL = /^[A-Za-z0-9_-]{1,128}$/;
+/** At most this many authority keys a signer pins as capability issuers (rotation overlap). */
+export const DELEGATED_OFFER_SIGNER_MAXIMUM_ISSUER_KEYS = 8;
+/** A capability, in its canonical text, is a few hundred bytes. */
+const CAPABILITY_MAXIMUM_LENGTH = 8_192;
 /** A fee in drops: a positive integer, at most 16 digits (the signer and the Host each cap it far lower). */
 const FEE = /^[1-9][0-9]{0,15}$/;
 /** A signed blob in the response: uppercase hex. A delegated OfferCreate is a few hundred bytes; 4 KiB is a generous ceiling. */
@@ -125,22 +143,44 @@ export interface DelegatedOfferSignerPair {
   readonly signingPublicKey: string;
 }
 
+/**
+ * What a signer pins as the authority it accepts capabilities from: the
+ * deployment's trust domain, the organization it signs for, and the CORE-02
+ * key ids it trusts (public identifiers; the keys themselves are the signer's
+ * configuration). Advertised for comparison and diagnostics — never adopted.
+ */
+export interface DelegatedOfferSignerAuthorization {
+  readonly trustDomain: string;
+  readonly organizationId: string;
+  readonly issuerKeyIds: readonly string[];
+}
+
 export interface DelegatedOfferSignerIdentity {
   readonly protocol: typeof DELEGATED_OFFER_SIGNER_PROTOCOL;
   readonly signerId: string;
   readonly operations: readonly [typeof DELEGATED_OFFER_SIGNER_OPERATION];
   readonly network: DelegatedOfferNetwork;
   readonly pairs: readonly DelegatedOfferSignerPair[];
+  readonly authorization: DelegatedOfferSignerAuthorization;
+}
+
+/** The CORE-02 envelope over a capability, as it travels: exactly the four envelope fields. */
+export interface DelegatedOfferAuthoritySignature {
+  readonly algorithm: typeof SIGNATURE_ALGORITHM;
+  readonly keyId: string;
+  readonly signature: string;
+  readonly artifactVersion: string;
 }
 
 /**
- * Audit references: what the Host says it is acting under. Recorded by both
- * sides for correlation — **never verified by the signer and never authority**.
+ * The authorization a v2 request carries: the capability's **canonical** text
+ * (exactly the bytes after the domain prefix the signature covers — parsed and
+ * verified by the signer, never re-serialized from a JSON object) and the
+ * authority signature over it.
  */
-export interface DelegatedOfferAuditReference {
-  readonly executionId: string;
-  readonly grantRef: string;
-  readonly grantDigest: string;
+export interface DelegatedOfferAuthorization {
+  readonly capability: string;
+  readonly signature: DelegatedOfferAuthoritySignature;
 }
 
 export interface DelegatedOfferSigningRequest {
@@ -151,13 +191,17 @@ export interface DelegatedOfferSigningRequest {
   readonly ownerAccount: string;
   readonly delegateAccount: string;
   readonly transaction: PreparedDelegatedOffer;
-  readonly audit: DelegatedOfferAuditReference;
+  /** The canonical TRADE-01 proposal the grant names (by digest). Re-validated by the signer. */
+  readonly proposal: TradeProposal;
+  readonly authorization: DelegatedOfferAuthorization;
 }
 
 export interface DelegatedOfferSigningResponse {
   readonly protocol: typeof DELEGATED_OFFER_SIGNER_PROTOCOL;
   readonly signerId: string;
   readonly requestId: string;
+  /** The capability this signature consumed. */
+  readonly capabilityId: string;
   readonly ownerAccount: string;
   readonly delegateAccount: string;
   readonly signedTransaction: string;
@@ -290,9 +334,18 @@ export function delegatedOfferPairKey(pair: { readonly ownerAccount: string; rea
   return `${pair.ownerAccount}/${pair.delegateAccount}`;
 }
 
-/** Parses an identity answer. `undefined` for anything that is not exactly one: one operation, a TRADE-01 network, 1…64 distinct pairs. */
+/** Parses a signer's pinned authorization: a trust domain, an organization and 1…8 distinct issuer key ids. */
+export function parseDelegatedOfferSignerAuthorization(raw: unknown): DelegatedOfferSignerAuthorization | undefined {
+  const record = exactRecord(raw, ['trustDomain', 'organizationId', 'issuerKeyIds']);
+  if (record === undefined || !isTradeIdentifier(record['trustDomain']) || !isTradeIdentifier(record['organizationId'])) return undefined;
+  const keyIds = exactArray(record['issuerKeyIds'], DELEGATED_OFFER_SIGNER_MAXIMUM_ISSUER_KEYS);
+  if (keyIds === undefined || keyIds.length === 0 || !keyIds.every(isTradeIdentifier) || new Set(keyIds).size !== keyIds.length) return undefined;
+  return Object.freeze({ trustDomain: record['trustDomain'], organizationId: record['organizationId'], issuerKeyIds: Object.freeze([...(keyIds as string[])]) });
+}
+
+/** Parses an identity answer. `undefined` for anything that is not exactly one: one operation, a TRADE-01 network, 1…64 distinct pairs, a pinned authorization. */
 export function parseDelegatedOfferSignerIdentity(raw: unknown): DelegatedOfferSignerIdentity | undefined {
-  const record = exactRecord(raw, ['protocol', 'signerId', 'operations', 'network', 'pairs']);
+  const record = exactRecord(raw, ['protocol', 'signerId', 'operations', 'network', 'pairs', 'authorization']);
   if (record === undefined || record['protocol'] !== DELEGATED_OFFER_SIGNER_PROTOCOL || !isDelegatedOfferSignerId(record['signerId']) || !isTradeNetwork(record['network'])) return undefined;
   const operations = exactArray(record['operations'], 1);
   if (operations === undefined || operations.length !== 1 || operations[0] !== DELEGATED_OFFER_SIGNER_OPERATION) return undefined;
@@ -306,33 +359,47 @@ export function parseDelegatedOfferSignerIdentity(raw: unknown): DelegatedOfferS
     seen.add(delegatedOfferPairKey(pair));
     pairs.push(pair);
   }
+  const authorization = parseDelegatedOfferSignerAuthorization(record['authorization']);
+  if (authorization === undefined) return undefined;
   return Object.freeze({
     protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
     signerId: record['signerId'],
     operations: Object.freeze([DELEGATED_OFFER_SIGNER_OPERATION] as const),
     network: record['network'],
     pairs: Object.freeze(pairs),
+    authorization,
   });
 }
 
-/** Parses the audit block: recordable references only. */
-export function parseDelegatedOfferAuditReference(raw: unknown): DelegatedOfferAuditReference | undefined {
-  const audit = exactRecord(raw, ['executionId', 'grantRef', 'grantDigest']);
-  if (audit === undefined || !isTradeIdentifier(audit['executionId']) || !isTradeIdentifier(audit['grantRef'])) return undefined;
-  if (typeof audit['grantDigest'] !== 'string' || !GRANT_DIGEST.test(audit['grantDigest'])) return undefined;
-  return Object.freeze({ executionId: audit['executionId'], grantRef: audit['grantRef'], grantDigest: audit['grantDigest'] });
+/**
+ * Parses the authorization block's **shape**: a bounded canonical-capability
+ * string and exactly the four CORE-02 envelope fields. Whether the capability
+ * parses, verifies, is trusted, current and bound to this transaction is
+ * `delegated-offer-authorization.ts`'s — never assumed from shape.
+ */
+export function parseDelegatedOfferAuthorization(raw: unknown): DelegatedOfferAuthorization | undefined {
+  const record = exactRecord(raw, ['capability', 'signature']);
+  if (record === undefined || typeof record['capability'] !== 'string' || record['capability'].length === 0 || record['capability'].length > CAPABILITY_MAXIMUM_LENGTH) return undefined;
+  const envelope = exactRecord(record['signature'], ['algorithm', 'keyId', 'signature', 'artifactVersion']);
+  if (envelope === undefined || envelope['algorithm'] !== SIGNATURE_ALGORITHM || !isTradeIdentifier(envelope['keyId']) || typeof envelope['signature'] !== 'string' || !BASE64URL.test(envelope['signature']) || !isTradeIdentifier(envelope['artifactVersion'])) return undefined;
+  return Object.freeze({
+    capability: record['capability'],
+    signature: Object.freeze({ algorithm: SIGNATURE_ALGORITHM, keyId: envelope['keyId'], signature: envelope['signature'], artifactVersion: envelope['artifactVersion'] }),
+  });
 }
 
-/** Parses a signing request (signer side). The transaction must be for exactly the named owner and delegate. */
+/** Parses a signing request (signer side). The transaction must be for exactly the named owner and delegate; the proposal must be an accepted TRADE-01 proposal; the authorization must have its shape. */
 export function parseDelegatedOfferSigningRequest(raw: unknown): DelegatedOfferSigningRequest | undefined {
-  const record = exactRecord(raw, ['protocol', 'signerId', 'requestId', 'network', 'ownerAccount', 'delegateAccount', 'transaction', 'audit']);
+  const record = exactRecord(raw, ['protocol', 'signerId', 'requestId', 'network', 'ownerAccount', 'delegateAccount', 'transaction', 'proposal', 'authorization']);
   if (record === undefined || record['protocol'] !== DELEGATED_OFFER_SIGNER_PROTOCOL) return undefined;
   if (!isDelegatedOfferSignerId(record['signerId']) || !isDelegatedOfferRequestId(record['requestId']) || !isTradeNetwork(record['network'])) return undefined;
   if (!isDelegatedOfferAccount(record['ownerAccount']) || !isDelegatedOfferAccount(record['delegateAccount'])) return undefined;
   const transaction = parsePreparedDelegatedOffer(record['transaction']);
   if (transaction === undefined || transaction.Account !== record['ownerAccount'] || transaction.Delegate !== record['delegateAccount']) return undefined;
-  const audit = parseDelegatedOfferAuditReference(record['audit']);
-  if (audit === undefined) return undefined;
+  const validation = validateTradeProposal(record['proposal']);
+  if (!validation.valid) return undefined;
+  const authorization = parseDelegatedOfferAuthorization(record['authorization']);
+  if (authorization === undefined) return undefined;
   return Object.freeze({
     protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
     signerId: record['signerId'],
@@ -341,21 +408,24 @@ export function parseDelegatedOfferSigningRequest(raw: unknown): DelegatedOfferS
     ownerAccount: record['ownerAccount'],
     delegateAccount: record['delegateAccount'],
     transaction,
-    audit,
+    proposal: validation.accepted.proposal,
+    authorization,
   });
 }
 
 /** Parses a signing response (Host side). Shape only; the binding and the blob are verified by the caller. */
 export function parseDelegatedOfferSigningResponse(raw: unknown): DelegatedOfferSigningResponse | undefined {
-  const record = exactRecord(raw, ['protocol', 'signerId', 'requestId', 'ownerAccount', 'delegateAccount', 'signedTransaction', 'hash']);
+  const record = exactRecord(raw, ['protocol', 'signerId', 'requestId', 'capabilityId', 'ownerAccount', 'delegateAccount', 'signedTransaction', 'hash']);
   if (record === undefined || record['protocol'] !== DELEGATED_OFFER_SIGNER_PROTOCOL) return undefined;
   if (!isDelegatedOfferSignerId(record['signerId']) || !isDelegatedOfferRequestId(record['requestId'])) return undefined;
+  if (typeof record['capabilityId'] !== 'string' || !CAPABILITY_ID.test(record['capabilityId'])) return undefined;
   if (!isDelegatedOfferAccount(record['ownerAccount']) || !isDelegatedOfferAccount(record['delegateAccount'])) return undefined;
   if (typeof record['signedTransaction'] !== 'string' || !SIGNED_BLOB.test(record['signedTransaction']) || !isXrplTransactionHash(record['hash'])) return undefined;
   return Object.freeze({
     protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
     signerId: record['signerId'],
     requestId: record['requestId'],
+    capabilityId: record['capabilityId'],
     ownerAccount: record['ownerAccount'],
     delegateAccount: record['delegateAccount'],
     signedTransaction: record['signedTransaction'],

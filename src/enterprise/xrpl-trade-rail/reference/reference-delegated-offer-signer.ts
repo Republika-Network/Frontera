@@ -5,6 +5,8 @@ import type { AddressInfo } from 'node:net';
 
 import { ECDSA, Wallet } from 'xrpl';
 
+import { createAuthorityArtifactVerifier, type TrustedVerificationKey } from '../../authority-authenticity/verifier.js';
+import { authorizeDelegatedOffer, type DelegatedOfferAuthorizationFailure } from '../delegated-offer-authorization.js';
 import {
   DELEGATED_OFFER_SIGNER_OPERATION,
   DELEGATED_OFFER_SIGNER_PATHS,
@@ -12,12 +14,15 @@ import {
   delegatedOfferPairKey,
   isDelegatedOfferAccount,
   isDelegatedOfferSignerId,
+  parseDelegatedOfferSignerAuthorization,
   parseDelegatedOfferSigningRequest,
   type DelegatedOfferNetwork,
+  type DelegatedOfferSignerAuthorization,
   type DelegatedOfferSignerIdentity,
   type DelegatedOfferSignerPair,
 } from '../delegated-offer-protocol.js';
 import { verifySignedDelegatedOffer } from '../delegated-offer-verification.js';
+import { openReferenceCapabilityLedger, type ReferenceCapabilityLedger } from './reference-capability-ledger.js';
 
 /**
  * TRADE-04B — the **reference** delegated OfferCreate signer.
@@ -39,10 +44,18 @@ import { verifySignedDelegatedOffer } from '../delegated-offer-verification.js';
  *   the reference holds only delegate keys.
  * - It never connects to XRPL, reads no ledger state and submits nothing: it
  *   imports the SDK's `Wallet` only.
- * - It decides nothing. Its access control is its bearer credential; its
+ * - It decides no policy. Its bearer credential authenticates the channel
+ *   only; **authorization** is a CORE-02 delegated-offer signing capability
+ *   (TRADE-04C-S1) that it verifies before touching a key: signed by an
+ *   authority key it pins, for its pinned trust domain and organization,
+ *   unexpired by its own clock, bound to exactly the transaction's signing
+ *   preimage, owner, delegate, network, `Sequence`, `Fee` and
+ *   `LastLedgerSequence`, and to the proposal whose order it is — and then
+ *   consumed **durably** before signing (`reference-capability-ledger.ts`):
+ *   never twice, across requests, processes and restarts. Its static
  *   restrictions (pair, network, fee ceiling, `LastLedgerSequence` horizon
  *   when a trusted ledger reference is injected, `Expiration` against its
- *   clock) are defence in depth, never governance.
+ *   clock) remain defence in depth.
  * - Plain HTTP, literal loopback only.
  *
  * Never composed into the Host: the Host reaches it only over the protocol,
@@ -70,8 +83,20 @@ export interface ReferenceDelegatedOfferSignerOptions {
    * a ledger position from its clock and never reads the ledger itself.
    */
   readonly ledgerReference?: () => number | undefined;
-  /** Wall clock (ms since the Unix epoch) for the `Expiration` check. Absent, that check is deferred. */
-  readonly clock?: () => number;
+  /** Wall clock (ms since the Unix epoch): capability validity, and the `Expiration` check. Required — a capability's expiry is never deferred. */
+  readonly clock: () => number;
+  /**
+   * TRADE-04C-S1 — the authority this signer accepts capabilities from: the
+   * CORE-02 public keys it pins (1…8, public material only), and the trust
+   * domain and organization a capability must name.
+   */
+  readonly authorization: {
+    readonly issuerKeys: readonly TrustedVerificationKey[];
+    readonly trustDomain: string;
+    readonly organizationId: string;
+  };
+  /** The durable consumption ledger (`openReferenceCapabilityLedger`). */
+  readonly consumption: ReferenceCapabilityLedger;
 }
 
 /** What the service answers for one request: a status and a closed body. */
@@ -107,6 +132,9 @@ function digest(value: string): Buffer {
 
 const refusal = (status: number, error: string): ReferenceSignerAnswer => ({ status, body: { error } });
 
+/** A closed, value-free refusal code per authorization failure: `CAPABILITY_EXPIRED` → `capability-expired`. */
+const authorizationRefusal = (failure: DelegatedOfferAuthorizationFailure): ReferenceSignerAnswer => refusal(422, failure.toLowerCase().replace(/_/g, '-'));
+
 export function createReferenceDelegatedOfferSignerService(options: ReferenceDelegatedOfferSignerOptions): ReferenceDelegatedOfferSignerService {
   if (!isDelegatedOfferSignerId(options?.signerId)) throw new Error('The reference delegated offer signer needs a recordable signer id.');
   if (options.network !== 'xrp-ledger-testnet' && options.network !== 'xrp-ledger-devnet') throw new Error('The reference delegated offer signer serves XRPL Testnet or Devnet only.');
@@ -116,6 +144,16 @@ export function createReferenceDelegatedOfferSignerService(options: ReferenceDel
   const maximumLedgerHorizon = options.maximumLedgerHorizon ?? horizonLimits.default;
   if (!Number.isSafeInteger(maximumLedgerHorizon) || maximumLedgerHorizon < horizonLimits.minimum || maximumLedgerHorizon > horizonLimits.maximum) throw new Error('The reference delegated offer signer ledger horizon is out of bounds.');
   if (!Array.isArray(options.keys) || options.keys.length === 0 || options.keys.length > 64) throw new Error('The reference delegated offer signer needs 1 to 64 delegate keys.');
+  if (typeof options.clock !== 'function') throw new Error('The reference delegated offer signer needs a clock: capability expiry is never deferred.');
+  const issuerKeys = options.authorization?.issuerKeys;
+  if (!Array.isArray(issuerKeys) || issuerKeys.length === 0) throw new Error('The reference delegated offer signer needs the authority keys it accepts capabilities from.');
+  const parsedAuthorization = parseDelegatedOfferSignerAuthorization({ trustDomain: options.authorization.trustDomain, organizationId: options.authorization.organizationId, issuerKeyIds: issuerKeys.map((key) => key?.keyId) });
+  if (parsedAuthorization === undefined) throw new Error('The reference delegated offer signer authorization needs a trust domain, an organization and 1 to 8 distinct issuer key ids.');
+  const authorization: DelegatedOfferSignerAuthorization = parsedAuthorization;
+  // Public material only; a private key, an unsupported algorithm or a duplicate id is refused here (CORE-02's own registry rules).
+  const verifier = createAuthorityArtifactVerifier(issuerKeys);
+  const consumption = options.consumption;
+  for (const method of ['consume', 'markSigned', 'markFailed'] as const) if (typeof consumption?.[method] !== 'function') throw new Error('The reference delegated offer signer needs its durable capability consumption ledger.');
   const maximumFeeDrops = BigInt(options.maximumFeeDrops);
 
   const wallets = new Map<string, { readonly wallet: Wallet; readonly pair: DelegatedOfferSignerPair }>();
@@ -140,6 +178,7 @@ export function createReferenceDelegatedOfferSignerService(options: ReferenceDel
     operations: Object.freeze([DELEGATED_OFFER_SIGNER_OPERATION] as const),
     network: options.network,
     pairs: Object.freeze([...wallets.values()].map((entry) => entry.pair)),
+    authorization,
   });
   const seenRequestIds = new Set<string>();
   let signatures = 0;
@@ -153,18 +192,43 @@ export function createReferenceDelegatedOfferSignerService(options: ReferenceDel
     } catch {
       return refusal(400, 'not-json');
     }
+    // v2 only: a request without a capability (a v1 `audit` request included) is not signable — there is no fallback.
     const request = parseDelegatedOfferSigningRequest(parsed);
     // Exactly the closed delegated OfferCreate, for this signer, network and a held pair — or no key is touched.
     if (request === undefined || request.signerId !== options.signerId) return refusal(422, 'not-signable');
     if (request.network !== options.network) return refusal(422, 'wrong-network');
     const held = wallets.get(delegatedOfferPairKey(request));
     if (held === undefined) return refusal(422, 'pair-not-held');
+    // Authorization: the CORE-02 capability, verified against what this signer pins, for exactly this transaction.
+    const now = options.clock();
+    const authorized = authorizeDelegatedOffer({
+      transaction: request.transaction,
+      proposal: request.proposal,
+      authorization: request.authorization,
+      pin: { network: options.network, pair: held.pair, trustDomain: authorization.trustDomain, organizationId: authorization.organizationId },
+      issuerKeyIds: authorization.issuerKeyIds,
+      verifier,
+      now,
+    });
+    if (!authorized.authorized) return authorizationRefusal(authorized.failure);
+    const capability = authorized.capability;
     if (seenRequestIds.has(request.requestId)) return refusal(409, 'request-replayed');
     const tx = request.transaction;
     if (BigInt(tx.Fee) > maximumFeeDrops) return refusal(422, 'fee-above-ceiling');
     const reference = options.ledgerReference?.();
     if (reference !== undefined && (!Number.isSafeInteger(reference) || reference < 1 || tx.LastLedgerSequence <= reference || tx.LastLedgerSequence > reference + maximumLedgerHorizon)) return refusal(422, 'ledger-horizon');
-    if (options.clock !== undefined && tx.Expiration !== undefined && tx.Expiration <= Math.floor(options.clock() / 1000) - RIPPLE_EPOCH_OFFSET_SECONDS) return refusal(422, 'expired');
+    if (tx.Expiration !== undefined && tx.Expiration <= Math.floor(now / 1000) - RIPPLE_EPOCH_OFFSET_SECONDS) return refusal(422, 'expired');
+    // Single use, durably, BEFORE the key: a crash after this commit leaves the capability consumed and unsigned — never reusable.
+    let consumed: ReturnType<ReferenceCapabilityLedger['consume']>;
+    try {
+      consumed = consumption.consume(
+        { capabilityId: capability.capabilityId, executionId: capability.executionId, boundedGrantId: capability.boundedGrantId, signingPreimageDigest: capability.signingPreimageDigest, expiresAt: capability.expiresAt },
+        new Date(now).toISOString(),
+      );
+    } catch {
+      return refusal(503, 'consumption-unavailable');
+    }
+    if (consumed !== 'consumed') return refusal(409, consumed);
     seenRequestIds.add(request.requestId);
     if (seenRequestIds.size > REFERENCE_DELEGATED_OFFER_SIGNER_LIMITS.rememberedRequestIds) seenRequestIds.delete(seenRequestIds.values().next().value as string);
     let signed: { readonly tx_blob: string; readonly hash: string };
@@ -172,15 +236,41 @@ export function createReferenceDelegatedOfferSignerService(options: ReferenceDel
       // A plain copy: the SDK never sees the frozen parse result, and is handed nothing the parser did not accept.
       signed = held.wallet.sign(JSON.parse(JSON.stringify(tx)) as Parameters<Wallet['sign']>[0]);
     } catch {
+      failedQuietly(capability.capabilityId);
       return refusal(500, 'signing-failed');
     }
     // The reference checks its own output exactly as the Host will before answering.
-    if (!verifySignedDelegatedOffer({ prepared: tx, pair: held.pair, signedTransaction: signed.tx_blob, hash: signed.hash }).verified) return refusal(500, 'signing-failed');
+    if (!verifySignedDelegatedOffer({ prepared: tx, pair: held.pair, signedTransaction: signed.tx_blob, hash: signed.hash }).verified) {
+      failedQuietly(capability.capabilityId);
+      return refusal(500, 'signing-failed');
+    }
+    try {
+      consumption.markSigned(capability.capabilityId, signed.hash);
+    } catch {
+      // The row stays `consumed`: the capability is spent either way; the signature is returned.
+    }
     signatures += 1;
     return {
       status: 200,
-      body: { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: options.signerId, requestId: request.requestId, ownerAccount: held.pair.ownerAccount, delegateAccount: held.pair.delegateAccount, signedTransaction: signed.tx_blob, hash: signed.hash },
+      body: {
+        protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
+        signerId: options.signerId,
+        requestId: request.requestId,
+        capabilityId: capability.capabilityId,
+        ownerAccount: held.pair.ownerAccount,
+        delegateAccount: held.pair.delegateAccount,
+        signedTransaction: signed.tx_blob,
+        hash: signed.hash,
+      },
     };
+  }
+
+  function failedQuietly(capabilityId: string): void {
+    try {
+      consumption.markFailed(capabilityId);
+    } catch {
+      // Still consumed: a failure to record the failure never makes the capability reusable.
+    }
   }
 
   function answer(request: { readonly method: string; readonly path: string; readonly authorization: unknown; readonly contentType: unknown; readonly body: Buffer }): ReferenceSignerAnswer {
@@ -234,18 +324,30 @@ export function isReferenceSignerLoopbackHost(host: unknown): boolean {
   return host === '::1' || (typeof host === 'string' && /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)$/.test(host));
 }
 
-/** Starts the reference service on a literal loopback address; any other bind is refused before a socket is opened. */
+/** Starts the reference service on a literal loopback address; any other bind is refused before a socket is opened. It opens (and closes) its own consumption ledger at `consumptionLedgerPath`. */
 export async function startReferenceDelegatedOfferSigner(
-  options: ReferenceDelegatedOfferSignerOptions & { readonly host?: string; readonly port?: number },
+  options: Omit<ReferenceDelegatedOfferSignerOptions, 'consumption'> & { readonly consumptionLedgerPath: string; readonly host?: string; readonly port?: number },
 ): Promise<{ readonly server: Server; readonly port: number; readonly host: string; readonly identity: DelegatedOfferSignerIdentity; signatures(): number; close(): Promise<void> }> {
   const host = options.host ?? '127.0.0.1';
   if (!isReferenceSignerLoopbackHost(host)) throw new Error('The reference delegated offer signer binds a literal loopback address only.');
-  const service = createReferenceDelegatedOfferSignerService(options);
+  const consumption = await openReferenceCapabilityLedger(options.consumptionLedgerPath);
+  let service: ReferenceDelegatedOfferSignerService;
+  try {
+    service = createReferenceDelegatedOfferSignerService({ ...options, consumption });
+  } catch (error) {
+    consumption.close();
+    throw error;
+  }
   const server = createServer((req, res) => service.handle(req, res));
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(options.port ?? 0, host, () => resolve());
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(options.port ?? 0, host, () => resolve());
+    });
+  } catch (error) {
+    consumption.close();
+    throw error;
+  }
   return {
     server,
     port: (server.address() as AddressInfo).port,
@@ -255,7 +357,10 @@ export async function startReferenceDelegatedOfferSigner(
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
-        server.close(() => resolve());
+        server.close(() => {
+          consumption.close();
+          resolve();
+        });
       }),
   };
 }

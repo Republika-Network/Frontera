@@ -15,7 +15,8 @@ import {
   type VerifiedDelegatedOfferSignature,
 } from '../xrpl-trade-rail/index.js';
 import { createReferenceDelegatedOfferSignerService } from '../xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
-import { AUDIT, offerWorld } from './trade04b-xrpl-fixture.js';
+import { authorizedInput, offerWorld } from './trade04b-xrpl-fixture.js';
+import { s1ReferenceOptions } from './trade04c-s1-capability-fixture.js';
 
 /**
  * TRADE-04B — the security invariants of the protected delegated signer
@@ -35,6 +36,8 @@ import { AUDIT, offerWorld } from './trade04b-xrpl-fixture.js';
 
 const EDGE = 'src/enterprise/xrpl-trade-rail';
 const REFERENCE = `${EDGE}/reference/reference-delegated-offer-signer.ts`;
+/** TRADE-04C-S1: the reference signer's durable capability consumption ledger (reference process only). */
+const LEDGER = `${EDGE}/reference/reference-capability-ledger.ts`;
 const LAUNCHER = 'scripts/run-reference-xrpl-offer-signer.mjs';
 const BENCH = 'scripts/trade/bench-delegated-offer-signer.mjs';
 const SKIPPED = new Set(['node_modules', 'dist', 'dist-test', '.next', '.git', 'vendor']);
@@ -68,19 +71,25 @@ const importsOf = (text: string): readonly string[] =>
   [...codeOf(text).matchAll(/\bfrom\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]|\brequire\s*\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1] ?? match[2] ?? match[3] ?? '');
 
 const EDGE_SOURCES = walk(EDGE).map(read);
-const HOST_SIDE = EDGE_SOURCES.filter((source) => source.path !== REFERENCE);
+const HOST_SIDE = EDGE_SOURCES.filter((source) => source.path !== REFERENCE && source.path !== LEDGER);
 const PRODUCTION = ['src', 'packages', 'scripts', 'apps'].flatMap((root) => walk(root)).map(read);
 const DOC_PATH = 'docs/integrations/trade/TRADE-04B-PROTECTED-DELEGATED-SIGNER.md';
 
 type Scan = (sources: readonly Source[]) => readonly string[];
 
-/** Each edge file's imports, against its own allowlist. The reference may additionally import the SDK's `Wallet`/`ECDSA` and the filesystem. */
-const HOST_IMPORTS = /^(?:\.\/[a-z-]+\.js|\.\.\/external-authority-signer\/http-transport\.js|\.\.\/\.\.\/features\/trade-runtime\/index\.js|\.\.\/\.\.\/features\/xrpl-transport\/(?:index|xrpl-signature)\.js|node:(?:crypto|http|https))$/;
-const REFERENCE_IMPORTS = /^(?:\.\.\/delegated-offer-(?:protocol|verification)\.js|xrpl|node:(?:crypto|fs|http|net))$/;
+/**
+ * Each edge file's imports, against its own allowlist. The reference may additionally import the SDK's `Wallet`/`ECDSA` and the
+ * filesystem. TRADE-04C-S1 adds, for the Host side, CORE-02's capability artifact and verifier types (`authority-authenticity/
+ * delegated-offer-capability.js`, `verifier.js`); for the reference, its authorization check, CORE-02's verifier and its own
+ * consumption ledger — which alone may open SQLite.
+ */
+const HOST_IMPORTS = /^(?:\.\/[a-z-]+\.js|\.\.\/external-authority-signer\/http-transport\.js|\.\.\/authority-authenticity\/(?:delegated-offer-capability|verifier)\.js|\.\.\/\.\.\/features\/trade-runtime\/index\.js|\.\.\/\.\.\/features\/xrpl-transport\/(?:index|xrpl-signature)\.js|node:(?:crypto|http|https))$/;
+const REFERENCE_IMPORTS = /^(?:\.\.\/delegated-offer-(?:authorization|protocol|verification)\.js|\.\.\/\.\.\/authority-authenticity\/verifier\.js|\.\/reference-capability-ledger\.js|xrpl|node:(?:crypto|fs|http|net))$/;
+const LEDGER_IMPORTS = /^(?:better-sqlite3|node:(?:fs|path))$/;
 const disallowedImports: Scan = (sources) =>
   sources.flatMap((source) =>
     importsOf(source.text)
-      .filter((specifier) => !(source.path.endsWith('/reference/reference-delegated-offer-signer.ts') ? REFERENCE_IMPORTS : HOST_IMPORTS).test(specifier))
+      .filter((specifier) => !(source.path.endsWith('/reference/reference-delegated-offer-signer.ts') ? REFERENCE_IMPORTS : source.path.endsWith('/reference/reference-capability-ledger.ts') ? LEDGER_IMPORTS : HOST_IMPORTS).test(specifier))
       .map((specifier) => `${source.path} imports '${specifier}'`),
   );
 
@@ -107,7 +116,7 @@ describe('TRADE-04B — the edge is what it says (SEC-TRADE04B-01, -12, -13, -16
   it('has exactly the TRADE-04B files', () => {
     assert.deepEqual(
       EDGE_SOURCES.map((source) => source.path.slice(EDGE.length + 1)).sort(),
-      ['delegated-offer-protocol.ts', 'delegated-offer-signer-transport.ts', 'delegated-offer-signer.ts', 'delegated-offer-verification.ts', 'index.ts', 'reference/reference-delegated-offer-signer.ts'],
+      ['delegated-offer-authorization.ts', 'delegated-offer-protocol.ts', 'delegated-offer-signer-transport.ts', 'delegated-offer-signer.ts', 'delegated-offer-verification.ts', 'index.ts', 'reference/reference-capability-ledger.ts', 'reference/reference-delegated-offer-signer.ts'],
     );
   });
 
@@ -128,9 +137,11 @@ describe('TRADE-04B — the edge is what it says (SEC-TRADE04B-01, -12, -13, -16
     const reference = codeOf(readFileSync(REFERENCE, 'utf8'));
     assert.equal([...reference.matchAll(/\.wallet\.sign\(/g)].length, 1, 'the reference signs from exactly one place');
     const sign = reference.slice(reference.indexOf('function sign(body: Buffer)'), reference.indexOf('function answer('));
-    const order = ['parseDelegatedOfferSigningRequest(parsed)', 'wallets.get(', 'seenRequestIds.has(', 'maximumFeeDrops', '.wallet.sign(', 'verifySignedDelegatedOffer('].map((marker) => sign.indexOf(marker));
+    // TRADE-04C-S1: the capability is verified before anything else is considered, and consumed durably before the key.
+    const order = ['parseDelegatedOfferSigningRequest(parsed)', 'wallets.get(', 'authorizeDelegatedOffer(', 'seenRequestIds.has(', 'maximumFeeDrops', 'consumption.consume(', '.wallet.sign(', 'verifySignedDelegatedOffer(', 'consumption.markSigned('].map((marker) => sign.indexOf(marker));
     assert.ok(order.every((position) => position !== -1), JSON.stringify(order));
-    assert.deepEqual([...order].sort((a, b) => a - b), order, 'every refusal precedes the key; the reference verifies its own output');
+    assert.deepEqual([...order].sort((a, b) => a - b), order, 'every refusal precedes the key; the capability is consumed before the key; the reference verifies its own output');
+    assert.equal([...sign.matchAll(/consumption\.consume\(/g)].length, 1, 'one consumption site');
   });
 
   it('SEC-TRADE04B-12/16: no submission, ledger connection, autofill, interlock, sequence-domain composition or validated-reader composition anywhere in the edge — and no Testnet or Mainnet write path', () => {
@@ -140,7 +151,7 @@ describe('TRADE-04B — the edge is what it says (SEC-TRADE04B-01, -12, -13, -16
 
   it('SEC-TRADE04B-13/02: the Host-side files hold no key, seed or wallet — and nothing anywhere asks for an owner key', () => {
     assert.deepEqual(custody(HOST_SIDE), []);
-    assert.deepEqual(custody(EDGE_SOURCES), [REFERENCE], 'only the reference process holds keys');
+    assert.deepEqual(custody(EDGE_SOURCES), [REFERENCE], 'only the reference process holds keys (its consumption ledger holds none)');
     for (const source of EDGE_SOURCES) assert.equal(/ownerSeed|ownerKey|ownerSecret|ownerPrivate/i.test(source.text), false, source.path);
   });
 
@@ -173,7 +184,8 @@ describe('TRADE-04B — no new path to the signer, and Payment unchanged (SEC-TR
     // client is built, below the bounded grant) and the executor (the port's one caller). Still no Host module, route or export.
     assert.deepEqual([...edgeImporters(PRODUCTION)].sort(), [BENCH, LAUNCHER, 'src/enterprise/xrpl-trade-execution/host-composition.ts', 'src/enterprise/xrpl-trade-execution/host-configuration.ts', 'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts'].sort());
     const launcher = codeOf(readFileSync(LAUNCHER, 'utf8'));
-    assert.deepEqual([...launcher.matchAll(/from '([^']+)'/g)].map((match) => match[1]), ['../dist/src/enterprise/xrpl-trade-rail/reference/reference-delegated-offer-signer.js']);
+    // TRADE-04C-S1: plus `node:fs`, to read the pinned authority PUBLIC key file.
+    assert.deepEqual([...launcher.matchAll(/from '([^']+)'/g)].map((match) => match[1]), ['node:fs', '../dist/src/enterprise/xrpl-trade-rail/reference/reference-delegated-offer-signer.js']);
     for (const entry of ['src/index.ts', 'src/enterprise/index.ts', 'src/runtime/index.ts', 'src/kernel/index.ts', 'src/kernel-host/index.ts', 'src/enterprise/host/enterprise-host.ts', 'src/enterprise/host/host-configuration.ts']) {
       if (existsSync(entry)) assert.equal(/xrpl-trade-rail|DelegatedOffer/.test(readFileSync(entry, 'utf8')), false, entry);
     }
@@ -216,7 +228,9 @@ describe('TRADE-04B — no new path to the signer, and Payment unchanged (SEC-TR
       transaction: offerWorld().offer(),
       signedTransaction: 'AB',
       hash: 'CD',
-      audit: AUDIT,
+      capabilityId: 'ab'.repeat(32),
+      executionId: 'exec-1',
+      boundedGrantId: 'grant-1',
     };
     assert.equal(readExecutionAdapterResult(signature), undefined);
     // @ts-expect-error — a VerifiedDelegatedOfferSignature is not an ExecutionAdapterResult: it has no outcome.
@@ -227,7 +241,7 @@ describe('TRADE-04B — no new path to the signer, and Payment unchanged (SEC-TR
   it('F: a typed TRADE-04C consumer composes the port, and gets only a signed-not-submitted value — no execution adapter is introduced', async () => {
     const world = offerWorld();
     const credential = 'trade04b-structure-credential-0123456789';
-    const service = createReferenceDelegatedOfferSignerService({ signerId: 'ref-f', network: 'xrp-ledger-testnet', credential, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
+    const service = createReferenceDelegatedOfferSignerService({ ...s1ReferenceOptions(), signerId: 'ref-f', network: 'xrp-ledger-testnet', credential, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
     const call = (path: string, method: string, body?: unknown): unknown => JSON.parse(JSON.stringify(service.answer({ method, path, authorization: `Bearer ${credential}`, contentType: 'application/json', body: Buffer.from(body === undefined ? '' : JSON.stringify(body)) }).body));
     const port: DelegatedOfferSigningPort = createDelegatedOfferSigner({
       transport: { identity: async () => call('/v1/identity', 'GET'), signDelegatedOffer: async (request) => call('/v1/sign/xrpl-delegated-offer', 'POST', request) },
@@ -238,7 +252,7 @@ describe('TRADE-04B — no new path to the signer, and Payment unchanged (SEC-TR
     });
     // What a future executor does with it: hold it until its own reservation and single submission (TRADE-04C) — nothing here goes further.
     const futureExecutorStep = async (signing: DelegatedOfferSigningPort): Promise<{ readonly readyForReservation: string }> => {
-      const signed = await signing.signDelegatedOffer({ transaction: world.offer(), audit: AUDIT, validatedLedgerIndex: 1_000 });
+      const signed = await signing.signDelegatedOffer(authorizedInput(world, world.offer(), 1_000));
       return { readyForReservation: signed.hash };
     };
     assert.match((await futureExecutorStep(port)).readyForReservation, /^[0-9A-F]{64}$/);

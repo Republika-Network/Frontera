@@ -171,8 +171,10 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
     // discharge store's signed state (authority-material — it releases issuance).
     // CORE-05 added exactly one more: the approval store's signed state (it
     // resumes a withheld decision into a grant).
-    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
-    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signApprovalState', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
+    // TRADE-04C-S1 adds one verification — of the delegated-offer signing capability, under its own domain. Still no signing member.
+    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyDelegatedOfferCapability', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
+    // TRADE-04C-S1: and one structured signing operation — a capability, signed only after the issuance rule accepts it. No key member, no byte signing.
+    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signApprovalState', 'signDelegatedOfferCapability', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
   });
 
   it('the signer offers no generic "sign arbitrary bytes" capability', () => {

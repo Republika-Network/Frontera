@@ -14,6 +14,7 @@ import {
   createHttpExternalAuthoritySignerTransport,
   establishExternalAuthorityArtifactSigner,
   type ExternalAuthorityArtifactSigner,
+  type ExternalAuthoritySignerExtensionOperation,
   type ExternalAuthoritySignerOperation,
   type ExternalAuthoritySignerTransport,
   type ExternalAuthoritySigningRequest,
@@ -93,6 +94,10 @@ export function signWith(signer: AuthorityArtifactSigner, request: ExternalAutho
       return signer.signObligationDischargeState(request.state);
     case 'signApprovalState':
       return signer.signApprovalState(request.state);
+    case 'signDelegatedOfferCapability':
+      // TRADE-04C-S1 extension: only a signer that offers it can answer it.
+      if (signer.signDelegatedOfferCapability === undefined) throw new Error('This signer offers no delegated-offer capability operation.');
+      return signer.signDelegatedOfferCapability({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature });
   }
 }
 
@@ -103,7 +108,7 @@ export type Answer = (request: ExternalAuthoritySigningRequest, attempt: number)
  * genuine custody service holding `key`. Every call is recorded.
  */
 export class ScriptedTransport implements ExternalAuthoritySignerTransport {
-  readonly signCalls: ExternalAuthoritySignerOperation[] = [];
+  readonly signCalls: (ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation)[] = [];
   identityCalls = 0;
   identityAnswer: () => unknown = () => identityOf(this.key);
   answer: Answer;
@@ -123,7 +128,7 @@ export class ScriptedTransport implements ExternalAuthoritySignerTransport {
     return this.answer(requestToSign, attempt);
   }
 
-  count(operation: ExternalAuthoritySignerOperation): number {
+  count(operation: ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation): number {
     return this.signCalls.filter((entry) => entry === operation).length;
   }
 }

@@ -10,7 +10,6 @@ import {
   parseTradeDelegationPolicy,
   tradeDelegationRequestFor,
   validateTradeProposal,
-  type TradeAmount,
   type TradeDelegationAssessment,
   type TradeDelegationPolicy,
   type TradeNetwork,
@@ -27,8 +26,16 @@ import {
   xrplNonInclusionProven,
   type XrplValidatedLedgerReader,
 } from '../../features/xrpl-transport/index.js';
+import { DelegatedOfferCapabilityError, type DelegatedOfferCapabilityIssuer, type IssuedDelegatedOfferCapability } from '../authority-authenticity/delegated-offer-capability-issuer.js';
 import type { TradeAttestedProposal, TradeAttestedProposalSource } from '../trade-risk-context/index.js';
-import { DelegatedOfferSignerError, type DelegatedOfferAmount, type DelegatedOfferSigningPort, type PreparedDelegatedOffer, type VerifiedDelegatedOfferSignature } from '../xrpl-trade-rail/index.js';
+import {
+  DelegatedOfferSignerError,
+  delegatedOfferSigningPreimageDigest,
+  preparedDelegatedOfferFromProposal,
+  type DelegatedOfferSigningPort,
+  type PreparedDelegatedOffer,
+  type VerifiedDelegatedOfferSignature,
+} from '../xrpl-trade-rail/index.js';
 import type { DurableTradeSequenceInterlock, TradeInterlockSettlement, TradeReservationEvidence } from './sqlite-trade-sequence-interlock.js';
 import { TRADE_EXECUTION_DETAILS as D, type TradeExecutionDetail } from './trade-execution-details.js';
 
@@ -56,7 +63,9 @@ import { TRADE_EXECUTION_DETAILS as D, type TradeExecutionDetail } from './trade
  * 8 window     every observation within [V, V + span]; Expiration after V's close time
  * 9 build      the closed OfferCreate from the attested proposal only; Fee and LLS from configuration and V
  * 10 blocking  the durable interlock (witness probed) has no open window on that Sequence
- * 11 sign      DelegatedOfferSigningPort → verified, SIGNED_NOT_SUBMITTED
+ * 11 authorize TRADE-04C-S1: a CORE-02 delegated-offer signing capability for exactly this
+ *              transaction, issued for the authenticated grant (revoked/expired → refused)
+ * 11 sign      DelegatedOfferSigningPort, carrying the capability → verified, SIGNED_NOT_SUBMITTED
  * 12 reserve   durable, CORE-07-anchored, before anything is sent
  * 13 submit    submitReserved ONCE: the submit site claims the reservation for exactly this blob
  * 14 finality  validated reads only; tesSUCCESS = the transaction applied (NOT a fill)
@@ -135,6 +144,8 @@ export interface TradeExecutionTrace {
   readonly transactionHash?: string;
   readonly signingRequests: number;
   readonly submissionRequests: number;
+  /** TRADE-04C-S1: the capability issued for this execution (also the key of the signer's consumption ledger, beside the execution id). */
+  readonly capabilityId?: string;
   readonly evidence?: TradeReservationEvidence;
   readonly timings: Readonly<Record<string, number>>;
 }
@@ -143,6 +154,13 @@ export interface TradeOfferExecutorOptions {
   readonly configuration: TradeOfferExecutorConfiguration;
   readonly attested: TradeAttestedProposalSource;
   readonly signer: DelegatedOfferSigningPort;
+  /**
+   * TRADE-04C-S1 — the per-order signing authorization: the CORE-02 capability
+   * issuer (bound by the Host composition once the authenticated grant store
+   * and the authority signer exist) and the deployment's trust-domain id every
+   * capability names. No capability, no signature.
+   */
+  readonly authorization: { readonly trustDomain: string; readonly issuer: DelegatedOfferCapabilityIssuer };
   readonly ledger: TradeExecutionLedger;
   readonly interlock: TradeExecutionInterlock;
   /** Whether the ledger client is the configured network's SDK client or a trusted in-process injection (recorded in every reservation's evidence). */
@@ -203,29 +221,12 @@ function sameDecimal(left: string, right: string): boolean {
   return a !== undefined && a === normalize(right);
 }
 
-function wireAmount(amount: TradeAmount): DelegatedOfferAmount {
-  return 'drops' in amount ? amount.drops : Object.freeze({ currency: amount.currency, issuer: amount.issuer, value: amount.value });
-}
-
 function digestOf(domain: string, value: unknown): string {
   return `sha256:${createHash('sha256').update(`${domain}\n${canonicalTradeJson(value)}`).digest('hex')}`;
 }
 
-/** The OfferCreate prepared from the attested proposal's terms alone, plus the operational fields the executor fixed. */
-function buildOffer(proposal: TradeProposal, flagsValue: number, operational: { readonly sequence: number; readonly fee: string; readonly lastLedgerSequence: number }): PreparedDelegatedOffer {
-  return Object.freeze({
-    TransactionType: 'OfferCreate' as const,
-    Account: proposal.ownerAccount,
-    Delegate: proposal.delegateAccount,
-    TakerGets: wireAmount(proposal.takerGets),
-    TakerPays: wireAmount(proposal.takerPays),
-    Flags: flagsValue,
-    Sequence: operational.sequence,
-    Fee: operational.fee,
-    LastLedgerSequence: operational.lastLedgerSequence,
-    ...(proposal.expiration !== undefined ? { Expiration: proposal.expiration } : {}),
-  });
-}
+/** The OfferCreate prepared from the attested proposal's terms alone, plus the operational fields the executor fixed — the one derivation the signer re-checks (`preparedDelegatedOfferFromProposal`). */
+const buildOffer = preparedDelegatedOfferFromProposal;
 
 /**
  * Every bound term of the validated action, against the attested proposal.
@@ -288,6 +289,10 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
   if (typeof attestedSource?.attestedProposal !== 'function') throw new TradeExecutorConfigurationError('The TRADE-03 attested-proposal source is required.');
   const signer = options.signer;
   if (typeof signer?.signDelegatedOffer !== 'function') throw new TradeExecutorConfigurationError('The TRADE-04B signing port is required.');
+  const authorization = options.authorization;
+  if (typeof authorization?.issuer?.issue !== 'function' || typeof authorization.trustDomain !== 'string' || authorization.trustDomain.length === 0) {
+    throw new TradeExecutorConfigurationError('The TRADE-04C-S1 signing authorization (capability issuer and trust domain) is required.');
+  }
   const ledger = options.ledger;
   for (const method of ['connect', 'serverInfo', 'ledgerHeader', 'ledgerEntry', 'validatedLedgerIndex', 'lookupTransaction', 'submitReserved'] as const) {
     if (typeof ledger?.[method] !== 'function') throw new TradeExecutorConfigurationError(`The ledger capability must implement ${method}.`);
@@ -521,10 +526,20 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
     const timings: Record<string, number> = {};
     let signingRequests = 0;
     let submissionRequests = 0;
+    let capabilityId: string | undefined;
     const started = now();
     const finish = (result: ExecutionAdapterResult, extra: { readonly transactionHash?: string; readonly evidence?: TradeReservationEvidence } = {}): ExecutionAdapterResult => {
       timings['total'] = now() - started;
-      emit({ executionId: String(executionId), outcome: result.outcome, ...('detail' in result && result.detail !== undefined ? { detail: result.detail } : {}), signingRequests, submissionRequests, timings: Object.freeze({ ...timings }), ...extra });
+      emit({
+        executionId: String(executionId),
+        outcome: result.outcome,
+        ...('detail' in result && result.detail !== undefined ? { detail: result.detail } : {}),
+        signingRequests,
+        submissionRequests,
+        ...(capabilityId !== undefined ? { capabilityId } : {}),
+        timings: Object.freeze({ ...timings }),
+        ...extra,
+      });
       return result;
     };
     if (typeof executionId !== 'string') return finish(failed(F.ADAPTER_ERROR, D.NOT_BOUND));
@@ -554,21 +569,53 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
         // ── 4–10 ──
         const prepared = await preflight(action, bound, pair, timings);
 
+        // ── 11a (TRADE-04C-S1): the CORE-02 signing capability for exactly this transaction ──
+        const tc = now();
+        const signingPreimageDigest = delegatedOfferSigningPreimageDigest(prepared.offer, pair.signingPublicKey);
+        if (signingPreimageDigest === undefined) throw new Refusal(F.ADAPTER_ERROR, D.NOT_BOUND);
+        let issued: IssuedDelegatedOfferCapability;
+        try {
+          issued = await authorization.issuer.issue({
+            trustDomain: authorization.trustDomain,
+            executionId,
+            boundedGrantId: action.boundedGrantId,
+            organizationId: action.organization ?? '',
+            proposalDigest: bound.digest,
+            network: configuration.network,
+            ownerAccount: pair.ownerAccount,
+            delegateAccount: pair.delegateAccount,
+            signingPreimageDigest,
+            sequence: prepared.offer.Sequence,
+            fee: prepared.offer.Fee,
+            lastLedgerSequence: prepared.offer.LastLedgerSequence,
+          });
+        } catch (error) {
+          const code = error instanceof DelegatedOfferCapabilityError ? error.code : undefined;
+          // An authority that answered "no" (revoked, absent, not this grant's terms) is a refusal; anything else is unavailability.
+          if (code === 'CAPABILITY_REFUSED' || code === 'CAPABILITY_GRANT_REVOKED' || code === 'CAPABILITY_GRANT_NOT_FOUND' || code === 'CAPABILITY_REQUEST_INVALID') throw new Refusal(F.PROVIDER_REJECTED, D.CAPABILITY_REFUSED);
+          throw new Refusal(F.PROVIDER_UNAVAILABLE, D.CAPABILITY_UNAVAILABLE);
+        }
+        if (issued.capability.executionId !== executionId || issued.capability.boundedGrantId !== action.boundedGrantId || issued.capability.signingPreimageDigest !== signingPreimageDigest) throw new Refusal(F.ADAPTER_ERROR, D.CAPABILITY_REFUSED);
+        capabilityId = issued.capability.capabilityId;
+        timings['capability'] = now() - tc;
+
         // ── 11: the protected signer, below the bounded grant ──
         const t0 = now();
         let signature: VerifiedDelegatedOfferSignature;
         try {
           signingRequests += 1;
-          signature = await signer.signDelegatedOffer({ transaction: prepared.offer, audit: { executionId, grantRef: action.boundedGrantId, grantDigest: digestOf('frontera.trade-execution-authorization.v1', { boundedGrantId: action.boundedGrantId, decisionId: action.correlation.decisionId, requestId: action.correlation.requestId, executionId, proposalDigest: bound.digest }) }, validatedLedgerIndex: prepared.validated });
+          signature = await signer.signDelegatedOffer({ transaction: prepared.offer, proposal: bound.proposal, authorization: { capability: issued.canonical, signature: issued.signature }, validatedLedgerIndex: prepared.validated });
         } catch (error) {
           const reason = error instanceof DelegatedOfferSignerError ? error.reason : undefined;
           if (reason === 'OFFER_SIGNER_SIGNATURE_INVALID' || reason === 'OFFER_SIGNER_RESPONSE_MISMATCH' || reason === 'OFFER_SIGNER_IDENTITY_MISMATCH') throw new Refusal(F.ADAPTER_ERROR, D.SIGNATURE_REJECTED);
           if (reason === 'OFFER_SIGNER_REFUSED' || reason === 'OFFER_SIGNER_REQUEST_INVALID') throw new Refusal(F.PROVIDER_REJECTED, D.SIGNER_REFUSED);
           throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SIGNER_UNAVAILABLE);
         }
-        // Independently of the client's own verification: the signature is for exactly this owner, delegate, key and offer.
+        // Independently of the client's own verification: the signature is for exactly this owner, delegate, key, offer and capability.
         if (
           signature?.status !== 'signed-not-submitted' ||
+          signature.capabilityId !== issued.capability.capabilityId ||
+          signature.executionId !== executionId ||
           signature.ownerAccount !== pair.ownerAccount ||
           signature.delegateAccount !== pair.delegateAccount ||
           signature.signingPublicKey !== pair.signingPublicKey ||

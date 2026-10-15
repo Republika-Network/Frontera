@@ -17,7 +17,8 @@ import {
   type DelegatedOfferSigningRequest,
 } from '../xrpl-trade-rail/index.js';
 import { createReferenceDelegatedOfferSignerService, startReferenceDelegatedOfferSigner } from '../xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
-import { AUDIT, offerWorld, testDelegate, type OfferWorld } from './trade04b-xrpl-fixture.js';
+import { authorizedInput, offerWorld, testDelegate, type OfferWorld } from './trade04b-xrpl-fixture.js';
+import { capabilityFor, s1ReferenceOptions, signerAuthorization, tempCapabilityLedger } from './trade04c-s1-capability-fixture.js';
 
 /**
  * TRADE-04B — the Host-side external signer client (adversarial matrix D):
@@ -36,7 +37,7 @@ const pinOf = (world: OfferWorld, overrides: Partial<DelegatedOfferSignerPin> = 
 
 /** An in-process transport over the reference service: real signing, no socket, every call counted and optionally rewritten. */
 function referenceTransport(world: OfferWorld, rewrite: { identity?: (body: Record<string, unknown>) => unknown; sign?: (body: Record<string, unknown>, request: DelegatedOfferSigningRequest) => unknown } = {}) {
-  const service = createReferenceDelegatedOfferSignerService({ signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '1000' });
+  const service = createReferenceDelegatedOfferSignerService({ ...s1ReferenceOptions(), signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '1000' });
   const calls = { identity: 0, sign: 0 };
   const call = (path: string, method: string, body?: unknown) => {
     const answer = service.answer({ method, path, authorization: `Bearer ${CREDENTIAL}`, contentType: 'application/json', body: Buffer.from(body === undefined ? '' : JSON.stringify(body)) });
@@ -61,7 +62,8 @@ function referenceTransport(world: OfferWorld, rewrite: { identity?: (body: Reco
 const client = (transport: DelegatedOfferSignerTransport, pin: DelegatedOfferSignerPin, overrides: Record<string, unknown> = {}) =>
   createDelegatedOfferSigner({ transport, pin, timeoutMs: 2_000, maximumFeeDrops: '100', maximumLedgerHorizon: 40, probeIntervalMs: 0, ...overrides });
 
-const input = (world: OfferWorld, overrides: Record<string, unknown> = {}) => ({ transaction: world.offer(overrides), audit: AUDIT, validatedLedgerIndex: VALIDATED });
+/** TRADE-04C-S1: every input carries a CORE-02 capability for exactly its transaction. */
+const input = (world: OfferWorld, overrides: Record<string, unknown> = {}) => authorizedInput(world, world.offer(overrides), VALIDATED);
 
 async function refusal(promise: Promise<unknown>): Promise<string> {
   try {
@@ -116,7 +118,15 @@ describe('TRADE-04B D — client: identity pinning and state', () => {
     const a = offerWorld();
     const b = offerWorld();
     const pin = { signerId: SIGNER_ID, network: 'xrp-ledger-testnet' as const, pairs: [a.pair, b.pair] };
-    const swapped = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: SIGNER_ID, operations: [DELEGATED_OFFER_SIGNER_OPERATION], network: 'xrp-ledger-testnet', pairs: [{ ...a.pair, signingPublicKey: b.pair.signingPublicKey }, { ...b.pair, signingPublicKey: a.pair.signingPublicKey }] };
+    const { trustDomain, organizationId, issuerKeys } = signerAuthorization();
+    const swapped = {
+      protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
+      signerId: SIGNER_ID,
+      operations: [DELEGATED_OFFER_SIGNER_OPERATION],
+      network: 'xrp-ledger-testnet',
+      pairs: [{ ...a.pair, signingPublicKey: b.pair.signingPublicKey }, { ...b.pair, signingPublicKey: a.pair.signingPublicKey }],
+      authorization: { trustDomain, organizationId, issuerKeyIds: issuerKeys.map((key) => key.keyId) },
+    };
     const signer = client({ identity: async () => swapped, signDelegatedOffer: async () => assert.fail('never signs') }, pin);
     assert.equal((await signer.probe()).state, 'MISMATCH');
   });
@@ -150,7 +160,8 @@ describe('TRADE-04B D — client: identity pinning and state', () => {
     assert.equal((await signer.probe()).state, 'VERIFIED');
     down = true;
     assert.equal(await refusal(signer.signDelegatedOffer(input(world))), 'OFFER_SIGNER_TIMEOUT');
-    assert.deepEqual(signer.status(), { signerId: SIGNER_ID, state: 'UNAVAILABLE', reason: 'OFFER_SIGNER_TIMEOUT', pairs: 1 });
+    const { trustDomain, organizationId, issuerKeys } = signerAuthorization();
+    assert.deepEqual(signer.status(), { signerId: SIGNER_ID, state: 'UNAVAILABLE', reason: 'OFFER_SIGNER_TIMEOUT', pairs: 1, authorization: { trustDomain, organizationId, issuerKeyIds: issuerKeys.map((key) => key.keyId) } });
     assert.equal(await refusal(signer.signDelegatedOffer(input(world))), 'OFFER_SIGNER_NOT_VERIFIED', 'a once-proven identity is not assumed across an outage');
     down = false;
     const before = calls.identity;
@@ -261,15 +272,27 @@ describe('TRADE-04B D — client: correlation and response verification', () => 
 });
 
 describe('TRADE-04B D — client: refused locally, before any contact', () => {
-  const local: readonly [string, (world: OfferWorld) => Record<string, unknown>][] = [
-    ['not an OfferCreate', (world) => ({ transaction: { ...world.offer(), TransactionType: 'Payment' }, audit: AUDIT, validatedLedgerIndex: VALIDATED })],
-    ['wrong owner (not pinned)', (world) => ({ transaction: world.offer({ Account: offerWorld().owner }), audit: AUDIT, validatedLedgerIndex: VALIDATED })],
-    ['wrong delegate (not pinned)', (world) => ({ transaction: world.offer({ Delegate: offerWorld().delegate.address }), audit: AUDIT, validatedLedgerIndex: VALIDATED })],
+  const local: readonly [string, (world: OfferWorld) => object][] = [
+    ['not an OfferCreate', (world) => ({ ...input(world), transaction: { ...world.offer(), TransactionType: 'Payment' } })],
+    ['wrong owner (not pinned)', (world) => ({ ...input(world), transaction: world.offer({ Account: offerWorld().owner }) })],
+    ['wrong delegate (not pinned)', (world) => ({ ...input(world), transaction: world.offer({ Delegate: offerWorld().delegate.address }) })],
     ['fee above the Host ceiling', (world) => input(world, { Fee: '101' })],
     ['LastLedgerSequence at or below the validated ledger', (world) => input(world, { LastLedgerSequence: VALIDATED })],
     ['LastLedgerSequence beyond the horizon', (world) => input(world, { LastLedgerSequence: VALIDATED + 41 })],
-    ['no validated ledger index', (world) => ({ transaction: world.offer(), audit: AUDIT })],
-    ['malformed audit references', (world) => ({ transaction: world.offer(), audit: { ...AUDIT, grantDigest: 'x' }, validatedLedgerIndex: VALIDATED })],
+    ['no validated ledger index', (world) => {
+      const { validatedLedgerIndex: _omitted, ...rest } = input(world);
+      return rest;
+    }],
+    // TRADE-04C-S1: no v1 request survives — a bearer-only request, a missing or malformed capability, or one bound elsewhere is never sent.
+    ['a v1 request (audit references, no capability)', (world) => ({ transaction: world.offer(), audit: { executionId: 'exec-1', grantRef: 'grant-1', grantDigest: `sha256:${'ab'.repeat(32)}` }, validatedLedgerIndex: VALIDATED })],
+    ['no capability', (world) => {
+      const { authorization: _omitted, ...rest } = input(world);
+      return rest;
+    }],
+    ['a malformed capability text', (world) => ({ ...input(world), authorization: { ...input(world).authorization, capability: '{"format":"x"}' } })],
+    ['a capability for another transaction (Sequence)', (world) => ({ ...input(world), authorization: capabilityFor(world, world.offer({ Sequence: 99 })).authorization })],
+    ['a capability for another price', (world) => ({ ...input(world), authorization: capabilityFor(world, world.offer({ TakerGets: '26000000' })).authorization })],
+    ['a proposal whose order is another one', (world) => ({ ...input(world), proposal: capabilityFor(world, world.offer({ TakerGets: '26000000' })).proposal })],
   ];
   for (const [name, build] of local) {
     it(`refuses: ${name} — nothing is sent`, async () => {
@@ -356,7 +379,10 @@ async function hostile(respond: (req: IncomingMessage, res: ServerResponse) => v
 describe('TRADE-04B D — HTTP transport against the real reference signer and hostile servers (loopback only)', () => {
   it('the real reference signer on loopback: verified, signed, and a wrong credential is AUTHENTICATION_FAILED', async () => {
     const world = offerWorld();
-    const reference = await startReferenceDelegatedOfferSigner({ signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
+    const ledger = await tempCapabilityLedger();
+    ledger.ledger.close();
+    const { consumption: _unused, ...s1 } = s1ReferenceOptions();
+    const reference = await startReferenceDelegatedOfferSigner({ ...s1, consumptionLedgerPath: ledger.path, signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
     try {
       const endpoint = `http://127.0.0.1:${reference.port}`;
       const signer = client(createHttpDelegatedOfferSignerTransport({ endpoint, credential: CREDENTIAL }), pinOf(world));
@@ -368,21 +394,26 @@ describe('TRADE-04B D — HTTP transport against the real reference signer and h
       assert.equal(wrong.status().state, 'UNAVAILABLE', 'a credential mismatch is unavailability, not an identity mismatch');
     } finally {
       await reference.close();
+      ledger.cleanup();
     }
   });
 
   it('a rotated reference key (restart with a new delegate key, same signer id) is a mismatch, never adopted', async () => {
     const world = offerWorld();
-    const first = await startReferenceDelegatedOfferSigner({ signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
+    const ledger = await tempCapabilityLedger();
+    ledger.ledger.close();
+    const { consumption: _unused, ...s1 } = s1ReferenceOptions();
+    const first = await startReferenceDelegatedOfferSigner({ ...s1, consumptionLedgerPath: ledger.path, signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
     const port = first.port;
     const signer = client(createHttpDelegatedOfferSignerTransport({ endpoint: `http://127.0.0.1:${port}`, credential: CREDENTIAL }), pinOf(world));
     assert.equal((await signer.probe()).state, 'VERIFIED');
     await first.close();
-    const rotated = await startReferenceDelegatedOfferSigner({ signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: testDelegate().seed }], maximumFeeDrops: '100', port });
+    const rotated = await startReferenceDelegatedOfferSigner({ ...s1, consumptionLedgerPath: ledger.path, signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: testDelegate().seed }], maximumFeeDrops: '100', port });
     try {
       assert.equal((await signer.probe()).state, 'MISMATCH');
     } finally {
       await rotated.close();
+      ledger.cleanup();
     }
   });
 
@@ -468,7 +499,7 @@ describe('TRADE-04B D — HTTP transport against the real reference signer and h
     try {
       const transport = createHttpDelegatedOfferSignerTransport({ endpoint: server.endpoint, credential: CREDENTIAL });
       const world = offerWorld();
-      const request = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: SIGNER_ID, requestId: 'ab'.repeat(32), network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction: world.offer(), audit: { ...AUDIT, executionId: 'x'.repeat(17 * 1024) } } as unknown as DelegatedOfferSigningRequest;
+      const request = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: SIGNER_ID, requestId: 'ab'.repeat(32), network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction: world.offer(), proposal: input(world).proposal, authorization: { ...input(world).authorization, capability: 'x'.repeat(17 * 1024) } } as unknown as DelegatedOfferSigningRequest;
       assert.equal(await refusal(transport.signDelegatedOffer(request, { timeoutMs: 1_000 })), 'OFFER_SIGNER_REQUEST_INVALID');
       assert.equal(server.seen.length, 0);
     } finally {
@@ -490,7 +521,7 @@ describe('TRADE-04B D — HTTP transport against the real reference signer and h
     try {
       const world = offerWorld();
       const transport = createHttpDelegatedOfferSignerTransport({ endpoint: server.endpoint, credential: CREDENTIAL });
-      await refusal(transport.signDelegatedOffer({ protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: SIGNER_ID, requestId: 'ab'.repeat(32), network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction: world.offer(), audit: AUDIT }, { timeoutMs: 2_000 }));
+      await refusal(transport.signDelegatedOffer({ protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: SIGNER_ID, requestId: 'ab'.repeat(32), network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction: world.offer(), proposal: input(world).proposal, authorization: input(world).authorization }, { timeoutMs: 2_000 }));
       assert.deepEqual(server.seen, ['POST /v1/sign/xrpl-delegated-offer auth']);
       assert.equal(bodies.some((body) => body.includes(CREDENTIAL)), false);
       assert.equal(JSON.stringify(transport).includes(CREDENTIAL), false, 'the transport object exposes no credential');

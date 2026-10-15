@@ -4,11 +4,13 @@ import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import { isWellFormedDelegatedOfferCapability, type DelegatedOfferCapability } from './delegated-offer-capability.js';
 import { AuthorityAuthenticityConfigurationError, type AuthoritySignatureFailure } from './errors.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
   SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS,
   decodeAuthoritySignatureBytes,
+  delegatedOfferCapabilitySigningBytes,
   grantSigningBytes,
   isSupportedAuthoritySignatureAlgorithm,
   isWellFormedAuthoritySignature,
@@ -80,6 +82,12 @@ export interface AuthorityArtifactVerifier {
   verifyObligationDischargeState(state: ObligationDischargeStateCommitment, signature: unknown): AuthoritySignatureVerification;
   /** CORE-05: verifies an approval store's signed state commitment. */
   verifyApprovalState(state: ApprovalStateCommitment, signature: unknown): AuthoritySignatureVerification;
+  /**
+   * TRADE-04C-S1: verifies a delegated-offer signing capability under its own domain. A capability that is not well formed is
+   * refused as malformed before any key is consulted. Says nothing about expiry, consumption or what it is presented with —
+   * that is the delegated signer's to check.
+   */
+  verifyDelegatedOfferCapability(capability: DelegatedOfferCapability, signature: unknown): AuthoritySignatureVerification;
   /** The key ids this verifier trusts, for composition checks and diagnostics. Ids only — never key material. */
   readonly trustedKeyIds: readonly string[];
 }
@@ -243,6 +251,10 @@ export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificati
     },
     verifyApprovalState(state: ApprovalStateCommitment, signature: unknown): AuthoritySignatureVerification {
       return verify(approvalStateSigningBytes(state), signature);
+    },
+    verifyDelegatedOfferCapability(capability: DelegatedOfferCapability, signature: unknown): AuthoritySignatureVerification {
+      if (!isWellFormedDelegatedOfferCapability(capability)) return { verified: false, failure: 'AUTHORITY_SIGNATURE_MALFORMED' };
+      return verify(delegatedOfferCapabilitySigningBytes(capability), signature);
     },
   });
 }

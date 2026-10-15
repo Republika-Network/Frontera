@@ -15,7 +15,8 @@ import {
   startReferenceDelegatedOfferSigner,
   type ReferenceDelegatedOfferSignerOptions,
 } from '../xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
-import { AUDIT, offerWorld, testAccount, testDelegate, type OfferWorld } from './trade04b-xrpl-fixture.js';
+import { authorizedInput, offerWorld, testAccount, testDelegate, type OfferWorld } from './trade04b-xrpl-fixture.js';
+import { s1ReferenceOptions, tempCapabilityLedger, type CapabilityOptions } from './trade04c-s1-capability-fixture.js';
 
 /**
  * TRADE-04B — the reference delegated OfferCreate signer (adversarial matrix
@@ -30,6 +31,7 @@ const RIPPLE_EPOCH = 946_684_800;
 
 function service(worlds: readonly OfferWorld[], overrides: Partial<ReferenceDelegatedOfferSignerOptions> = {}) {
   return createReferenceDelegatedOfferSignerService({
+    ...s1ReferenceOptions(),
     signerId: 'ref-1',
     network: 'xrp-ledger-testnet',
     credential: CREDENTIAL,
@@ -40,17 +42,23 @@ function service(worlds: readonly OfferWorld[], overrides: Partial<ReferenceDele
 }
 
 let counter = 0;
-const requestBody = (world: OfferWorld, overrides: Record<string, unknown> = {}, transaction: Record<string, unknown> = {}) => ({
-  protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
-  signerId: 'ref-1',
-  requestId: (counter++).toString(16).padStart(64, '0'),
-  network: 'xrp-ledger-testnet',
-  ownerAccount: world.owner,
-  delegateAccount: world.delegate.address,
-  transaction: { ...world.offer(), ...transaction },
-  audit: AUDIT,
-  ...overrides,
-});
+/** A v2 request; TRADE-04C-S1: its capability authorizes exactly its (final) transaction, so each refusal below comes only from the change under test. */
+const requestBody = (world: OfferWorld, overrides: Record<string, unknown> = {}, transaction: Record<string, unknown> = {}, capability: CapabilityOptions = {}) => {
+  const tx = { ...world.offer(), ...transaction } as ReturnType<OfferWorld['offer']>;
+  const { proposal, authorization } = authorizedInput(world, tx, 1_000, capability);
+  return {
+    protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
+    signerId: 'ref-1',
+    requestId: (counter++).toString(16).padStart(64, '0'),
+    network: 'xrp-ledger-testnet',
+    ownerAccount: world.owner,
+    delegateAccount: world.delegate.address,
+    transaction: tx,
+    proposal,
+    authorization,
+    ...overrides,
+  };
+};
 
 const post = (svc: ReturnType<typeof service>, body: unknown, headers: { authorization?: unknown; contentType?: unknown } = {}) =>
   svc.answer({ method: 'POST', path: '/v1/sign/xrpl-delegated-offer', authorization: 'authorization' in headers ? headers.authorization : `Bearer ${CREDENTIAL}`, contentType: 'contentType' in headers ? headers.contentType : 'application/json', body: Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)) });
@@ -107,12 +115,14 @@ describe('TRADE-04B E — the reference signer signs one closed shape, for held 
     });
   }
 
-  it('refuses a replayed request id', () => {
+  it('refuses a replayed request id — and a replayed capability under a fresh request id', () => {
     const world = offerWorld();
     const svc = service([world]);
     const body = requestBody(world);
     assert.equal(post(svc, body).status, 200);
     assert.deepEqual(post(svc, body), { status: 409, body: { error: 'request-replayed' } });
+    assert.deepEqual(post(svc, { ...body, requestId: 'ff'.repeat(32) }), { status: 409, body: { error: 'capability-consumed' } });
+    assert.equal(svc.signatures(), 1);
   });
 
   it('the LastLedgerSequence horizon is enforced only against an injected trusted reference — never estimated', () => {
@@ -127,14 +137,15 @@ describe('TRADE-04B E — the reference signer signs one closed shape, for held 
     assert.equal(post(svc, requestBody(world, {}, { LastLedgerSequence: 5_000 })).status, 200, 'the reference went away: deferred again, explicitly');
   });
 
-  it('an Expiration already past by its clock is refused; without a clock the check is deferred', () => {
+  it('an Expiration already past by its clock is refused; the clock is required (TRADE-04C-S1: capability expiry is never deferred)', () => {
     const world = offerWorld();
     const now = Date.UTC(2026, 9, 13);
     const rippleNow = Math.floor(now / 1000) - RIPPLE_EPOCH;
     const svc = service([world], { clock: () => now });
-    assert.deepEqual(post(svc, requestBody(world, {}, { Expiration: rippleNow })), { status: 422, body: { error: 'expired' } });
-    assert.equal(post(svc, requestBody(world, {}, { Expiration: rippleNow + 60 })).status, 200);
-    assert.equal(post(service([world]), requestBody(world, {}, { Expiration: 1 })).status, 200);
+    assert.deepEqual(post(svc, requestBody(world, {}, { Expiration: rippleNow }, { now })), { status: 422, body: { error: 'expired' } });
+    assert.equal(post(svc, requestBody(world, {}, { Expiration: rippleNow + 60 }, { now })).status, 200);
+    const { clock: _clock, ...withoutClock } = { ...s1ReferenceOptions(), signerId: 'ref-1', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' };
+    assert.throws(() => createReferenceDelegatedOfferSignerService(withoutClock as unknown as ReferenceDelegatedOfferSignerOptions), /needs a clock/);
   });
 
   it('authenticates every route, accepts only JSON of bounded size, and has no other route — no key export', () => {
@@ -165,7 +176,7 @@ describe('TRADE-04B E — the reference signer signs one closed shape, for held 
 
   it('configuration is refused: mainnet, a short credential, a fee ceiling above 1 XRP, an owner’s own key, a duplicate pair', () => {
     const world = offerWorld();
-    const base = { signerId: 'ref-1', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' };
+    const base = { ...s1ReferenceOptions(), signerId: 'ref-1', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' };
     const ownerKey = testDelegate();
     for (const bad of [
       { ...base, network: 'xrp-ledger-mainnet' },
@@ -175,6 +186,11 @@ describe('TRADE-04B E — the reference signer signs one closed shape, for held 
       { ...base, keys: [base.keys[0], base.keys[0]] },
       { ...base, keys: [{ ownerAccount: world.owner, delegateSeed: 'not-a-seed' }] },
       { ...base, keys: [] },
+      // TRADE-04C-S1: no authority pinned, a private key as an issuer key, no consumption ledger.
+      { ...base, authorization: { ...base.authorization, issuerKeys: [] } },
+      { ...base, authorization: { ...base.authorization, issuerKeys: [{ ...base.authorization.issuerKeys[0]!, publicKeyPem: '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n' }] } },
+      { ...base, authorization: { ...base.authorization, trustDomain: '' } },
+      { ...base, consumption: undefined },
     ]) {
       assert.throws(() => createReferenceDelegatedOfferSignerService(bad as ReferenceDelegatedOfferSignerOptions), (error: unknown) => error instanceof Error && !error.message.includes(world.delegate.seed) && !error.message.includes(ownerKey.seed), JSON.stringify(Object.keys(bad)));
     }
@@ -184,7 +200,10 @@ describe('TRADE-04B E — the reference signer signs one closed shape, for held 
 describe('TRADE-04B E — binding: literal loopback only', () => {
   it('starts on loopback; refuses a public, wildcard or named bind before opening a socket', async () => {
     const world = offerWorld();
-    const options = { signerId: 'ref-1', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' };
+    const ledger = await tempCapabilityLedger();
+    ledger.ledger.close();
+    const { consumption: _unused, ...s1 } = s1ReferenceOptions();
+    const options = { ...s1, consumptionLedgerPath: ledger.path, signerId: 'ref-1', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' };
     const started = await startReferenceDelegatedOfferSigner(options);
     try {
       assert.equal(started.host, '127.0.0.1');
@@ -192,6 +211,7 @@ describe('TRADE-04B E — binding: literal loopback only', () => {
     } finally {
       await started.close();
     }
+    ledger.cleanup();
     for (const host of ['0.0.0.0', '::', 'localhost', '10.0.0.1', '192.168.1.10', 'example.com', '127.0.0.256', '']) {
       assert.equal(isReferenceSignerLoopbackHost(host), false, host);
       await assert.rejects(startReferenceDelegatedOfferSigner({ ...options, host }), /literal loopback/);
