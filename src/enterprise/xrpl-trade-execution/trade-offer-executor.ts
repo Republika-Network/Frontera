@@ -20,7 +20,6 @@ import {
   XRPL_SHARED_HISTORICAL_MAX_LAST_LEDGER_OFFSET,
   createXrplRestartQuarantine,
   createXrplValidatedLedgerReader,
-  readXrplInclusion,
   readXrplLedgerIndex,
   readXrplSubmission,
   xrplNonInclusionProven,
@@ -38,6 +37,7 @@ import {
 } from '../xrpl-trade-rail/index.js';
 import type { DurableTradeSequenceInterlock, TradeInterlockSettlement, TradeReservationEvidence } from './sqlite-trade-sequence-interlock.js';
 import { TRADE_EXECUTION_DETAILS as D, type TradeExecutionDetail } from './trade-execution-details.js';
+import { readTradeInclusion, type TradeTransactionIdentity } from './trade-ledger-evidence.js';
 
 /**
  * TRADE-04C — the governed XRPL **delegated OfferCreate executor**: the first
@@ -470,19 +470,26 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
     };
   }
 
-  /** After the one submission: validated reads until a ledger fact or the budget. */
-  async function awaitFinality(executionId: string, hash: string, window: { readonly minLedger: number; readonly maxLedger: number }): Promise<{ readonly result: ExecutionAdapterResult; readonly settlement?: TradeInterlockSettlement; readonly detail?: string }> {
+  /**
+   * After the one submission: validated reads until a ledger fact or the budget.
+   * TRADE-04D: each answer is bound to the transaction's identity (owner,
+   * delegate, type, `Sequence`, `LastLedgerSequence`, window); one that does
+   * not bind is unreadable — not an outcome.
+   */
+  async function awaitFinality(executionId: string, identity: TradeTransactionIdentity): Promise<{ readonly result: ExecutionAdapterResult; readonly settlement?: TradeInterlockSettlement; readonly detail?: string }> {
+    const hash = identity.transactionHash;
+    const window = { minLedger: identity.minLedger, maxLedger: identity.lastLedgerSequence };
     const deadline = now() + finalityTimeoutMs;
     const remaining = (): number => deadline - now();
     for (;;) {
       if (remaining() <= 0) break;
       await sleep(Math.min(pollIntervalMs, remaining()));
       let before: number | undefined;
-      let reading: ReturnType<typeof readXrplInclusion>;
+      let reading: ReturnType<typeof readTradeInclusion>['reading'];
       try {
         // The validated index FIRST: if it already reached the window's end, every ledger the lookup searches was validated before it ran.
         before = readXrplLedgerIndex(await ledger.validatedLedgerIndex(Math.max(1, Math.min(requestTimeoutMs, remaining()))));
-        reading = readXrplInclusion(await ledger.lookupTransaction({ hash, ...window }, Math.max(1, Math.min(requestTimeoutMs, remaining()))), hash);
+        reading = readTradeInclusion(await ledger.lookupTransaction({ hash, ...window }, Math.max(1, Math.min(requestTimeoutMs, remaining()))), identity).reading;
       } catch {
         continue; // a failed read is not an outcome
       }
@@ -674,7 +681,8 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
           }
           // A provisional answer is never an outcome (ADR-XRPL-SHARED-TRANSPORT): wait for a validated one.
           const t3 = now();
-          const final = await awaitFinality(executionId, signature.hash, { minLedger: prepared.validated + 1, maxLedger: prepared.offer.LastLedgerSequence });
+          const identity: TradeTransactionIdentity = { transactionHash: signature.hash, account: pair.ownerAccount, delegateAccount: pair.delegateAccount, sequence: prepared.offer.Sequence, lastLedgerSequence: prepared.offer.LastLedgerSequence, minLedger: prepared.validated + 1 };
+          const final = await awaitFinality(executionId, identity);
           timings['finality'] = now() - t3;
           await settleQuietly(executionId, signature.hash, final.settlement, final.settlement === undefined ? ('detail' in final.result ? final.result.detail : undefined) : final.detail);
           return finish(final.result, { transactionHash: signature.hash, evidence });

@@ -29,5 +29,31 @@ export { TRADE_EXECUTION_EVIDENCE_SCHEMA, tradeExecutionEvidenceOf } from './tra
 export type { TradeExecutionEvidenceRecord, TradeExecutionEvidenceStatus } from './trade-execution-evidence.js';
 export { TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT, TRADE_EXECUTOR_LIMITS, TradeExecutorConfigurationError, createTradeOfferExecutionAdapter } from './trade-offer-executor.js';
 export type { TradeExecutionInterlock, TradeExecutionLedger, TradeExecutionPair, TradeExecutionTrace, TradeOfferExecutionAdapter, TradeOfferExecutorConfiguration, TradeOfferExecutorOptions } from './trade-offer-executor.js';
-export { TRADE_RESOLUTION_AUTHORITY_ID, createTradeResolutionAuthority, readOnlyTradeLedger } from './trade-resolution-authority.js';
+export { TRADE_RESOLUTION_AUTHORITY_ID, createTradeResolutionAuthority, readOnlyTradeLedger, tradeTransactionIdentityOf } from './trade-resolution-authority.js';
 export type { TradeLedgerReader, TradeResolutionAuthorityOptions } from './trade-resolution-authority.js';
+// TRADE-04D — recovery and validated-ledger reconciliation (read-only).
+export { TRADE_INCLUSION_PROBLEMS, TRADE_LEDGER_EVIDENCE_REASONS, readTradeInclusion, readTradeLedgerEvidence } from './trade-ledger-evidence.js';
+export type { ReadTradeLedgerEvidenceOptions, TradeInclusionProblem, TradeInclusionReading, TradeLedgerEvidence, TradeLedgerEvidenceReason, TradeTransactionIdentity } from './trade-ledger-evidence.js';
+export { assessTradeOfferState, compareTradeAmounts, readOfferCreateEffect, readTradeOfferSnapshot } from './trade-offer-state.js';
+export type { TradeOfferAmounts, TradeOfferEffect, TradeOfferEffectReading, TradeOfferInterpretation, TradeOfferSnapshot, TradeOfferStateAssessment } from './trade-offer-state.js';
+export {
+  TRADE_RECOVERY_ASSESSMENT_SCHEMA,
+  TRADE_RECOVERY_CLASSES,
+  TRADE_RECOVERY_EVIDENCE_NEEDED,
+  TRADE_RECOVERY_INCONSISTENCIES,
+  TRADE_RECOVERY_REFUSALS,
+  TRADE_RECOVERY_UNCERTAINTIES,
+  assessTradeRecovery,
+} from './trade-recovery-assessment.js';
+export type {
+  TradeInterlockObservation,
+  TradeRecoveryAssessment,
+  TradeRecoveryCertainty,
+  TradeRecoveryClass,
+  TradeRecoveryInput,
+  TradeRecoveryP11Record,
+  TradeRecoveryP11View,
+  TradeSignerObservation,
+} from './trade-recovery-assessment.js';
+export { TRADE_RECOVERY_DIAGNOSTIC_SCHEMA, createTradeRecoveryCoordinator, diagnosticOf, readOnlyTradeRecoveryLedger } from './trade-recovery-coordinator.js';
+export type { TradeRecoveryContext, TradeRecoveryCoordinator, TradeRecoveryCoordinatorOptions, TradeRecoveryDiagnostic, TradeRecoveryLedgerReader, TradeRecoveryReport } from './trade-recovery-coordinator.js';

@@ -241,7 +241,7 @@ describe('TRADE-04C mutations — the executor (grant binding, ledger reliance, 
     {
       id: 'treat-provisional-success-as-settled',
       file: EXECUTOR,
-      search: 'const final = await awaitFinality(executionId, signature.hash, { minLedger: prepared.validated + 1, maxLedger: prepared.offer.LastLedgerSequence });',
+      search: 'const final = await awaitFinality(executionId, identity);',
       replace: "const final = { result: Object.freeze({ outcome: 'completed', providerRef: signature.hash }), settlement: 'validated-success', detail: 'tesSUCCESS' };",
       guard: (module) =>
         withRig(

@@ -98,7 +98,12 @@ describe('TRADE-04C structure — the edge and who reaches it', () => {
       'sqlite-trade-sequence-interlock.ts',
       'trade-execution-details.ts',
       'trade-execution-evidence.ts',
+      // TRADE-04D: the read-only recovery and validated-ledger reconciliation modules.
+      'trade-ledger-evidence.ts',
       'trade-offer-executor.ts',
+      'trade-offer-state.ts',
+      'trade-recovery-assessment.ts',
+      'trade-recovery-coordinator.ts',
       'trade-resolution-authority.ts',
     ]);
   });
