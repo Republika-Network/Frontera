@@ -106,7 +106,8 @@ describe('CORE-07 namespaces — the grammar and the closed per-kind rule (NS-1 
   });
 
   it('NS-3 / LEGACY-4 no namespace can be attached to any other kind — revocation, discharge, approval, XRPL, business-operation and refund slots stay single per organization', () => {
-    assert.deepEqual(UN_NAMESPACED_KINDS, ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state']);
+    // TRADE-04C: the trade sequence interlock's slot is single per organization too (one trade domain per Host).
+    assert.deepEqual(UN_NAMESPACED_KINDS, ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state', 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state']);
     for (const stateKind of UN_NAMESPACED_KINDS) {
       assert.equal(authorityStateBindingProblem({ stateKind, organizationId: ORG }), undefined, stateKind);
       assert.match(authorityStateBindingProblem({ stateKind, organizationId: ORG, namespace: 'stripe-usd' }) ?? '', /state kind that has none/, stateKind);

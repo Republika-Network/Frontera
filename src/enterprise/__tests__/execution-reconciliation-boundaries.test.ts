@@ -286,7 +286,8 @@ describe('P12 boundaries — §12 / §42 / §81 / §101 / §160 / §161 scope', 
     // PAY-03: and, when the file configures the XRPL rail, the read-only XRPL resolution authority beside it —
     // composed by one function that builds an authority list and a synchronous selector, and nothing else.
     const SANCTIONED = /function executionReconciliationOf\([\s\S]*?return \{ executionReconciliation: \{ enabled: true, authorities, selectAuthority \} \};\n\}/;
-    const SANCTIONED_CALL = '...executionReconciliationOf(host, xrpl),';
+    // TRADE-04C: and the read-only trade ledger authority, selected for the trade action — same function, same shape.
+    const SANCTIONED_CALL = '...executionReconciliationOf(host, xrpl, trade),';
     const SANCTIONED_IMPORTS = [
       "import type { ExecutionResolutionAuthority } from '../execution-reconciliation/authority.js';",
       "import { OPERATOR_ATTESTATION_AUTHORITY_ID, createOperatorAttestationAuthority } from '../execution-reconciliation/operator-attestation.js';",

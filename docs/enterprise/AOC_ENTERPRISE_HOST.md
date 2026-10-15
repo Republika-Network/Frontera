@@ -685,6 +685,8 @@ and fields, never values; no stack trace is printed.
 | `HOST_NOT_HEALTHY` | Composed, but a required module is unhealthy — e.g. the signed revocation state of the grant store does not verify |
 | `HOST_RELEASE_IDENTITY_INVALID` (PROD-03-03) | `dist/release-identity.json` exists but does not describe this build (another package version, Host or Kernel version, or a malformed record) |
 | `HOST_POLICY_SOURCE_AMBIGUOUS` (PROD-03) | The governed-action file declares `approvalPolicy` and the embedder also composed a `policyPackProvider` |
+| `HOST_TRADE_POLICY_REQUIRED` (TRADE-04C, R8) | `xrplTradeExecution` is configured and the composed policy provider is not the very object `createTradeRiskPolicyPackProvider` produced for this Host's TRADE-03 edge (its `contextProvider` and the executor's attestation source), trade action, trust domain, organization and every configured owner, with the mandatory TRADE-03 rule set — including no provider at all, an unrelated pack, hand-built TRADE-03 rules, or any wrapper or copy of the genuine provider |
+| `HOST_TRADE_POLICY_SOURCE_CONFLICT` (TRADE-04C, R8) | `xrplTradeExecution` is configured and the governed-action file declares `approvalPolicy`: a trade-executing Host composes exactly TRADE-03's mandatory trade policy (PROD-03 `approvalPolicy` is unchanged for every Host without trade execution) |
 
 Since PROD-03-03 the launcher runs the deployment preflight
 (`scripts/deploy/host-preflight.mjs`, also `npm run check:host-configuration`)

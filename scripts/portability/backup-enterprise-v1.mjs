@@ -375,6 +375,8 @@ export async function runBackup({ output, force = false, cold = false, allowMiss
           approvalsDeclared: requirements.approvalsDeclared,
           operatorsConfigured: requirements.operatorsConfigured,
           executionReconciliation: requirements.executionReconciliation,
+          xrplPaymentRail: requirements.xrplPaymentRail,
+          xrplTradeExecution: requirements.xrplTradeExecution,
           governedActionsFileDigest: requirements.governedActionsFileDigest,
         },
         stores: coverageStores,

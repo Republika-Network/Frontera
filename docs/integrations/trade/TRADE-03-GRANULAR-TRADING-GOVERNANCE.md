@@ -404,7 +404,9 @@ remains TRADE-04's.
 
 Each reading has `observedAt` set to the query instant, and `maxAgeSeconds`
 set to the whole seconds until the earliest freshness bound inside the
-evidence. The decision and the grant therefore cannot outlive any trusted
+evidence. (Since the F-1 correction, §38, the facts are relied on at the
+post-collection reliance instant; the reading is still *stated* at the query
+instant, and its window's end is the same absolute, fact-derived instant.) The decision and the grant therefore cannot outlive any trusted
 fact.
 
 ### 16.2 Binding verification
@@ -870,7 +872,8 @@ fixtures.
    - **Fresh reads.** It reads every source now through the trusted ports:
      market, exposure and active orders (each required exactly when the
      profile enforces it), and delegation (always required).
-   - **Assessment.** It runs `assessTradingRisk` at the Kernel's instant and
+   - **Assessment.** It runs `assessTradingRisk` at the trusted reliance
+     instant read after collection (§38; originally the Kernel's instant) and
      projects readings only when the risk evidence is reliable `SATISFIED`
      **and** the TRADE-02 delegation reliance holds. It returns both sets of
      readings or neither. Any exception yields no reading.
@@ -1124,3 +1127,97 @@ The failure identified in run 2 was PAY-08 x402 `LIFE-5 / LIFE-6 / LIFE-10`
   Its units are at most 64 bytes, so P7's behaviour is unchanged for them.
   No PAY-08 or TRADE code is on its path.
 - **Status:** an intermittent failure, recorded, not dismissed.
+
+## 38. F-1 correction — trusted post-collection reliance time (TRADE-04C, authorized)
+
+Recorded by TRADE-04C under the user's explicit authorization of a narrow TRADE-03 production correction.
+Files: `src/enterprise/trade-risk-context/trade-risk-context.ts`, `src/features/trade-runtime/policy/trade-risk-reliance.ts`.
+CORE, CORE-04's skew policy, grant formats, P11/P12 and every other subsystem are unchanged.
+
+**Verified defect.** The Kernel captures its evaluation instant `at` (`AocKernel.ts:330`) and only then
+calls the edge's provider. The edge assessed every source fact — delegation, reference price, exposure,
+active orders, the risk record and the profile window — *at `at`*. A source that honestly stamps the time
+it read (TRADE-02's verifier stamps `observedAt` when its read begins; an honest market feed stamps its
+read) is therefore later than `at` whenever a millisecond has elapsed, and was refused as from the future
+(`DELEGATION_RELIANCE_FROM_FUTURE`, `REFERENCE_FROM_FUTURE`). Reproduced with the shipped verifier and no
+back-dating: 22–27 of 40 trials refused at every latency, ~100 % on the shipped Host. TRADE-03's original
+qualification passed only because its fake sources back-dated their observations (1–2 s); the TRADE-04C
+Host fixture had needed a 5 s lag for the same reason. That was a defect, never qualified behavior.
+
+**Corrected lifecycle.**
+
+```
+before:  at := Host clock ─▶ provider ─▶ sources read and stamp t_i (> at) ─▶ assess at `at`  ─▶ t_i > at: FROM_FUTURE ✗
+after:   at := Host clock ─▶ provider ─▶ sources read and stamp t_i
+                         ─▶ relianceAt := Host clock, read once after every source answered
+                         ─▶ require at ≤ relianceAt < binding.expiresAt   (else: no reading)
+                         ─▶ assess every fact at relianceAt                (t_i > relianceAt: FROM_FUTURE; relianceAt − t_i > bound: STALE)
+                         ─▶ readings stated at `at`, each window ending at the same absolute, fact-derived instant
+```
+
+**Why the reliance instant is trusted.** It is read from the edge's `clock` — the Host's trusted clock, the
+same time authority the Kernel's `at` comes from (a composition requirement, now documented on the
+option) — never from a source, provider, caller or the trading engine. It is read *after* every source
+answered, so every honest observation precedes it. It may not precede the Kernel's instant: a regression is
+refused, never accommodated.
+
+**Why this is not a clock-skew allowance.** No fact may be dated after the reliance instant — zero
+tolerance, as before; a fact 1 ms or 60 s ahead of the trusted clock is refused. The gap between `at` and
+`relianceAt` is not a tolerance applied to anything: it is the measured duration of collection, bounded by
+the existing admission binding (a collection still running when the binding expires authorizes nothing —
+the same bound that already limited admission-to-evaluation, ≤ 300 s, at most `bindingSeconds`).
+
+**Expiry stays enforced, and nothing is extended.** Freshness is measured at the *later* instant, so it is
+stricter than before: a fact fresh at `at` but stale by `relianceAt` is refused, and a profile expiring in
+between is refused. The binding must be live at `relianceAt`. Each CORE-04 reading keeps its query-instant
+`observedAt` (CORE-04 classifies against `at`, with its own unchanged skew rule) and its window ends at
+exactly the absolute instant it always did — the earliest of the facts' own freshness ends, the
+assessment's reliance bound and the profile's end; at least one second must remain at `relianceAt`. A
+reading may never be stated after the reliance instant.
+
+**Evidence.** The sealed assessment's `assessedAt` is now the reliance instant (it was the Kernel instant);
+its freshness list carries every source's actual observation instant, unchanged. The digest covers both, so
+records stay internally consistent; a record is reliable at or after its `assessedAt` and never before it.
+The schema and digest domain are unchanged — only the meaning of `assessedAt` is now "relied on at". The
+TRADE-04C attestation records the same reliance instant.
+
+**Regression and mutation results.** `trade03-f1-reliance-time.test.ts`: 17 cases (A–R: honest real-time
+trials at 0/2/50 ms × 200 with zero false refusals, a 2 s delay admitted, collection past the binding
+refused at the exact boundary, stale delegation / price / exposure / orders, facts 1 ms and 60 s in the
+future, malformed times and clock, wrong organization, unaccepted source, revoked delegation, replay,
+profile expiring mid-collection, clock regression, expired binding, evidence and no-extension) and 10
+compiled-module mutants (8 detected, 2 contained by named independent rules). Stable over 12 runs under
+three-way concurrent load.
+
+**Remaining limitation.** A wall clock that *steps backwards* between `at` and `relianceAt` makes the edge
+refuse (fail closed). This qualification host (WSL2) re-syncs its clock in ~0.8–1.3 s backward steps about
+every 30 s, which refuses an order whose collection straddles a step. Production hosts should keep time with
+a slewing discipline (e.g. chrony) so the trusted clock never steps backwards.
+
+**How the real-time trials keep a clock refusal apart from a defect (revised at the PROD-03 integration).**
+No trial is skipped. Each trial records every instant the trusted clock handed out — the Kernel's `at`, every
+source stamp (including TRADE-02's verifier) and the edge's reliance read — in call order, and derives its
+expected outcome exactly: **refuse** iff the reliance instant precedes `at` or a stamp, otherwise **admit**.
+Every trial is asserted to that outcome. A required refusal must carry only clock causes (a `*_FROM_FUTURE`
+code, the verifier's `DELEGATION_OBSERVATION_FROM_FUTURE` behind TRADE-03's generic delegation code, or a
+`*_PREREQUISITE_NOT_MET` that follows from one of those); any other reason fails the trial as a product
+defect. A backwards read with no host clock step seen by the independent witness (wall vs. monotonic) also
+fails the trial. Counts are reported per category (non-regressed admitted / regressed and refused /
+regressed outside the reliance window and admitted). Deterministic injection covers both regression shapes
+(O: reliance before `at`; O2: a recovered regression, admitted; O3: reliance after `at` but before the stamps,
+refused as from the future), and self-tests prove the classifier rejects an un-witnessed regression, a non-clock
+refusal on a monotonic clock, and a non-clock reason during a regression.
+
+## 39. Mandatory policy composition (R8, corrected under TRADE-04C)
+
+The policy rules of §5 (`tradeRiskPolicyRules`) are not optional deployment data on a Host that executes trades.
+R8 showed why: TRADE-03's review requirement (`trade-risk-review`) and its policy-level proposal binding exist
+only as policy-pack rules, so a Host composed with any other policy — an unrelated pack, or a PROD-03
+`approvalPolicy` ruling another profile — executed an order this layer marked APPROVAL_REQUIRED with no human
+approval. The material-fact gate still denied VIOLATED orders; human review was lost.
+
+`createTradeRiskPolicyPackProvider(edge, { trustDomainId })` (`trade-risk-policy-provider.ts`) is now the only
+provider a trade-executing Host accepts: bound to a genuine edge, compiled from exactly these rules with their
+mandatory effects, frozen, and carrying a provenance only that factory can record, for that object alone. The
+Host verifies it before composing anything trade-related (TRADE-04C §37; SEC-INV-326). A TRADE-03-only Host
+(no executor) is unchanged; its embedder remains responsible for composing these rules.

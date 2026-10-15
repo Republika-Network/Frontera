@@ -363,3 +363,37 @@ the TRADE-04A text above is left as it was decided.
   these primitives, plus a canonical-serialization check.
 
 G1, G2 and G4 remain unapproved and unimplemented.
+
+## 13. Addendum — G2 and G4 implemented (TRADE-04C)
+
+Recorded by TRADE-04C (`docs/integrations/trade/TRADE-04C-GOVERNED-OFFERCREATE-EXECUTOR.md`); the TRADE-04A
+and TRADE-04B text above is left as it was decided. Both gates were narrowly authorized by the user for
+TRADE-04C; G1 was not, and is not implemented.
+
+- **G2 — what changed at the submit site.** `xrpl-sdk-client.ts` (same file, as §7 proposed) still writes the
+  repository's one `submit` request once, now in the module-private `openXrplSdkConnection`
+  (`requestSubmit`). Two callers reach it: PAY-02's `submit` (unchanged in meaning) and `submitReserved` of
+  the new `createXrplReservedSubmissionClient(configuration, authority)`, built from a transport-level
+  configuration (`wss://` endpoint, a non-mainnet network id, a timeout) instead of the Payment rail's.
+  `submitReserved` derives the claim from the blob itself (`xrplSubmissionClaimOf`: its hash, type, account,
+  `Sequence`, `LastLedgerSequence`), requires the bound authority's durable single-use claim, and only then
+  sends — once. No `submit(blob)` capability exists on it. It names no transaction type; the authority
+  (the trade interlock) admits `OfferCreate` only. §7's three conditions hold: no new network site, no
+  generic submit, and the pinned tests moved by naming the new composition, never by relaxing.
+- **G4 — the first Trade sequence domain.** A separate durable interlock
+  (`src/enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.ts`) on owner accounts disjoint from
+  every Payment source account, with its own CORE-07 slot `trade-sequence-reservations` (rail-neutral; its
+  anchored history covers reservations **and** submission claims). The Host runs
+  `assertXrplSequenceOwnership` over every configured XRPL domain — Payment sources, trade owners, never
+  delegates — before either interlock is opened (§9.2 now implemented). It implements §8's
+  `XrplSequenceAuthority` contract for a Trade-only store, with a `reserved` state before `submitting` and
+  no `not-submitted` release.
+- **Restart quarantine.** The rule stays PAY-03's; a transaction-neutral copy
+  (`xrpl-restart-quarantine.ts`) serves the trade domain, with the same historical bound (200) that both
+  domains' `LastLedgerSequence` offsets are held to — so either domain's quarantine also covers an account a
+  configuration change moved from the other.
+- **NO_BYPASS.** EP-074 (the governed trade submission) added, PROVEN — PATH LOCAL; EP-073 composed in exactly
+  that path and still DEPLOYMENT-GATED: twelve of seventy-four.
+
+G1 (§9.3, one shared account-scoped authority) remains proposed; Payment and Trade on one owner account are
+refused at boot. Live network behavior of the new client is qualified only in TRADE-05.

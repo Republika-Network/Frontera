@@ -2,8 +2,8 @@
   "name": "@aoc-enterprise/runtime",
   "version": "1.6.0",
   "generated": {
-    "commit": "2b5908205ab2562d4d75f63367563ada363df260",
-    "branch": "feat/prod-03-pilot-onboarding-operational-qualification",
+    "commit": "cbeef25597878f97c75efc03155527457a4b0772",
+    "branch": "feat/trade-04c-governed-offercreate-executor",
     "node": "v22.23.1"
   },
   "runtimeVersions": {
@@ -114,7 +114,7 @@
       },
       {
         "path": "scripts/portability/backup-enterprise-v1.mjs",
-        "checksum": "sha256:9e468c0c1a5c36d4c05b34372b63df9e8dbb4d78eb3be1108a7fab0e56539cf8"
+        "checksum": "sha256:71c86b12fc0b02aa50723cd5c620db517d7a57254f4b258eed6d07ffc5f51890"
       },
       {
         "path": "scripts/portability/check-portability-smoke.mjs",

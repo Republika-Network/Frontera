@@ -19,7 +19,11 @@ import {
   STORE_CONDITIONS,
   EXCLUDED_DURABLE_STATE,
   STATIC_SECRET_ENV_VARS,
+  DEPLOYMENT_FLAGS,
+  COVERAGE_MODEL,
+  assessBackupCoverage,
   conditionHolds,
+  requiredStoreDefinitions,
 } from '../scripts/portability/store-registry.mjs';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
@@ -70,8 +74,8 @@ test('registry entries are complete, unique and closed', () => {
   for (const field of ['name', 'filename', 'envVar', 'targetFilename']) {
     assert.equal(new Set(STORE_DEFINITIONS.map((storeDef) => storeDef[field])).size, STORE_DEFINITIONS.length, `${field} is unique`);
   }
-  // PROD-02: thirteen; ASSURE-01 added the durable Evidence Bundle Store.
-  assert.equal(STORE_DEFINITIONS.length, 15);
+  // PROD-02: thirteen; ASSURE-01 added the durable Evidence Bundle Store; TRADE-04C the trade sequence interlock (conditional).
+  assert.equal(STORE_DEFINITIONS.length, 16);
   assert.throws(() => conditionHolds('some-new-condition', {}), /Unknown store condition/);
   // The three signed stores carry their head and their witness slot; nothing else claims one.
   assert.deepEqual(
@@ -153,4 +157,59 @@ test('restore never opens (and so never creates) a store it did not just copy an
   for (const match of writes) assert.match(match[0], /flag: 'wx'/, `${match[1]} is created exclusively, never written through an existing file or link`);
   assert.ok(promotion.indexOf('promoted.push(reportPath)') < promotion.indexOf('writeFileSync(reportPath'), 'the report is registered for rollback before it is written');
   assert.match(restore, /if \(markerCreated\) rmSync\(markerPath/, 'a rollback removes only the marker this run created');
+});
+
+// PROD-03 × PAY-03/TRADE-04C: every flag a store condition reads must be type-checked in a
+// coverage record. Otherwise a manifest that omits it quietly un-requires that store
+// (found when integrating PROD-03 with TRADE-04C: xrplPaymentRail and xrplTradeExecution).
+function flagsConditionsRead() {
+  const read = new Set();
+  const spy = new Proxy({}, { get: (_target, key) => (typeof key === 'string' && read.add(key), true) });
+  for (const condition of STORE_CONDITIONS) conditionHolds(condition, spy);
+  return read;
+}
+
+const TRADE_DEPLOYMENT = Object.freeze({ organizationId: 'org-a', kernelAuthorityEnabled: true, governedActions: true, obligationsDeclared: false, approvalsDeclared: false, operatorsConfigured: false, executionReconciliation: true, xrplPaymentRail: true, xrplTradeExecution: true });
+
+function coverageManifest(deployment, { omit = [] } = {}) {
+  const required = requiredStoreDefinitions({ ...TRADE_DEPLOYMENT, ...deployment });
+  const included = required.filter((storeDef) => !omit.includes(storeDef.name));
+  return {
+    stores: included.map((storeDef) => ({ name: storeDef.name, filename: storeDef.filename, checksum: 'sha256:0', schemaVersion: 1 })),
+    coverage: {
+      coverageModel: COVERAGE_MODEL,
+      complete: true,
+      deployment,
+      stores: STORE_DEFINITIONS.map((storeDef) => ({ name: storeDef.name, required: included.some((entry) => entry.name === storeDef.name), included: included.some((entry) => entry.name === storeDef.name) })),
+    },
+  };
+}
+
+test('DEPLOYMENT_FLAGS is exactly the set of flags the store conditions read', () => {
+  assert.deepEqual([...DEPLOYMENT_FLAGS].sort(), [...flagsConditionsRead()].sort());
+  assert.ok(Object.isFrozen(DEPLOYMENT_FLAGS));
+});
+
+test('a coverage record with every flag recorded is judged on them: an omitted Payment or Trade interlock is incomplete', () => {
+  assert.equal(assessBackupCoverage(coverageManifest(TRADE_DEPLOYMENT)).complete, true);
+  for (const store of ['xrpl-submission-interlock', 'xrpl-trade-sequence-interlock']) {
+    assert.ok(STORE_DEFINITIONS.some((storeDef) => storeDef.name === store), store);
+    const verdict = assessBackupCoverage(coverageManifest(TRADE_DEPLOYMENT, { omit: [store] }));
+    assert.equal(verdict.complete, false, store);
+    assert.deepEqual(verdict.missingForSource, [store]);
+  }
+});
+
+test('a coverage record that drops or mistypes any deployment flag is malformed, never quietly un-required', () => {
+  for (const flag of DEPLOYMENT_FLAGS) {
+    const { [flag]: _dropped, ...withoutFlag } = TRADE_DEPLOYMENT;
+    assert.throws(() => assessBackupCoverage(coverageManifest(withoutFlag)), new RegExp(`coverage\\.deployment\\.${flag} must be a boolean`), `dropped ${flag}`);
+    assert.throws(() => assessBackupCoverage(coverageManifest({ ...TRADE_DEPLOYMENT, [flag]: 'true' })), new RegExp(`coverage\\.deployment\\.${flag} must be a boolean`), `string ${flag}`);
+  }
+});
+
+test('the backup writes every deployment flag into its coverage record', () => {
+  const writer = read('scripts/portability/backup-enterprise-v1.mjs');
+  const block = writer.slice(writer.indexOf('deployment: {'), writer.indexOf('stores: coverageStores'));
+  for (const flag of DEPLOYMENT_FLAGS) assert.ok(block.includes(`${flag}: requirements.${flag},`), flag);
 });

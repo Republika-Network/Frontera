@@ -93,9 +93,15 @@ const NOT_CORE: ReadonlySet<string> = new Set([...VERTICALS, XRPL_TRANSPORT]);
  * it is scanned on its own below (and held to `trade04b-protected-signer-structure.test.ts`).
  */
 const TRADE_SIGNER_EDGE = 'src/enterprise/xrpl-trade-rail';
+/**
+ * TRADE-04C: the governed delegated OfferCreate executor edge (`src/enterprise/xrpl-trade-execution/`) — XRPL- and
+ * trade-specific by construction, like the signer edge — out of CORE and scanned on its own below
+ * (and held to `trade04c-governed-executor-structure.test.ts`).
+ */
+const TRADE_EXECUTION_EDGE = 'src/enterprise/xrpl-trade-execution';
 const CORE = [
   ...['src/kernel', 'src/runtime', 'src/kernel-host', 'src/control-plane-web', 'src/index.ts'].flatMap((root) => walk(root)),
-  ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/') && !file.startsWith('src/enterprise/x402-payment-protocol/') && !file.startsWith(`${TRADE_SIGNER_EDGE}/`)),
+  ...walk('src/enterprise').filter((file) => !file.startsWith(`${EDGE}/`) && !file.startsWith('src/enterprise/xrpl-payment-rail/') && !file.startsWith('src/enterprise/x402-payment-protocol/') && !file.startsWith(`${TRADE_SIGNER_EDGE}/`) && !file.startsWith(`${TRADE_EXECUTION_EDGE}/`)),
   ...readdirSync('src/features')
     .filter((name) => !NOT_CORE.has(name))
     .flatMap((name) => walk(join('src/features', name))),
@@ -139,6 +145,15 @@ describe('PAY-04 M39 — no payment-protocol vocabulary in CORE', () => {
 
   it('the trade vertical is scanned on its own: it names no payment protocol either — in code or prose', () => {
     for (const file of TRADE) {
+      const text = readFileSync(file, 'utf8');
+      for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
+    }
+  });
+
+  it('the TRADE-04C governed executor edge is scanned on its own: it names no payment protocol — in code or prose', () => {
+    const edge = walk(TRADE_EXECUTION_EDGE);
+    assert.ok(edge.length >= 7, `found ${edge.length} executor-edge sources`);
+    for (const file of edge) {
       const text = readFileSync(file, 'utf8');
       for (const pattern of PROTOCOL_VOCABULARY) assert.equal(pattern.test(text), false, `${file}: ${String(pattern)}`);
     }

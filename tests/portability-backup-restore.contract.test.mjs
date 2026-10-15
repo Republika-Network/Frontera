@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { generateFixture } from '../scripts/portability/generate-portability-fixture.mjs';
 import { runBackup } from '../scripts/portability/backup-enterprise-v1.mjs';
 import { runRestore } from '../scripts/portability/restore-enterprise-v1.mjs';
+import { DEPLOYMENT_FLAGS, assessBackupCoverage } from '../scripts/portability/store-registry.mjs';
 import { comparePortabilityState } from '../scripts/portability/compare-portability-state.mjs';
 
 function workDir(prefix) {
@@ -77,6 +78,19 @@ test('complete backup: manifest, checksums, RESTORE.md, and stable store orderin
   for (const store of manifest.stores) {
     assert.equal(store.integrityCheck, 'ok');
     assert.equal(sha256(join(sharedBackupDir, 'stores', store.filename)), store.checksum);
+  }
+});
+
+test('a real backup records every deployment flag a store condition reads (PROD-03 × TRADE-04C strict coverage), and dropping one is refused', () => {
+  const manifest = JSON.parse(readFileSync(join(sharedBackupDir, 'backup-manifest.json'), 'utf8'));
+  for (const flag of DEPLOYMENT_FLAGS) assert.equal(typeof manifest.coverage.deployment[flag], 'boolean', flag);
+  assert.equal(manifest.coverage.deployment.xrplPaymentRail, false);
+  assert.equal(manifest.coverage.deployment.xrplTradeExecution, false);
+  assert.equal(assessBackupCoverage(manifest).complete, true);
+  for (const flag of ['xrplPaymentRail', 'xrplTradeExecution']) {
+    const legacy = structuredClone(manifest);
+    delete legacy.coverage.deployment[flag];
+    assert.throws(() => assessBackupCoverage(legacy), new RegExp(`coverage\\.deployment\\.${flag} must be a boolean`));
   }
 });
 

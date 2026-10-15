@@ -15,6 +15,7 @@ import { GovernedActionConfigurationError } from '../governed-action/errors.js';
 import { composeGovernedTrust, type ObligationConfiguration, type TrustedContextConfiguration } from '../trusted-context/index.js';
 import type { MonetaryAssetDefinition } from '../../features/monetary-runtime/index.js';
 import { XrplHostConfigurationProblem, parseXrplPaymentRailSection, type EnterpriseHostXrplPaymentRailConfiguration } from '../xrpl-payment-rail/host-configuration.js';
+import { XrplTradeHostConfigurationProblem, parseXrplTradeExecutionSection, type EnterpriseHostXrplTradeExecutionConfiguration } from '../xrpl-trade-execution/host-configuration.js';
 import { ApprovalPolicyConfigurationProblem, parseApprovalPolicySection, type EnterpriseHostApprovalPolicy } from './approval-policy.js';
 
 /**
@@ -39,6 +40,7 @@ import { ApprovalPolicyConfigurationProblem, parseApprovalPolicySection, type En
  */
 
 export type EnterpriseHostConfigurationErrorCode =
+  | 'HOST_XRPL_SEQUENCE_OWNERSHIP_INVALID'
   | 'HOST_ENVIRONMENT_INVALID'
   | 'HOST_GOVERNED_ACTIONS_FILE_UNREADABLE'
   | 'HOST_GOVERNED_ACTIONS_FILE_INVALID'
@@ -60,7 +62,11 @@ export type EnterpriseHostConfigurationErrorCode =
   /** PROD-03-03: `dist/release-identity.json` exists but does not describe this build. */
   | 'HOST_RELEASE_IDENTITY_INVALID'
   /** PROD-03: the governed-action file declares `approvalPolicy` and an embedder also composed a policy provider — one policy source, never two. */
-  | 'HOST_POLICY_SOURCE_AMBIGUOUS';
+  | 'HOST_POLICY_SOURCE_AMBIGUOUS'
+  /** R8 (TRADE-04C): trade execution is configured and the composed policy is not TRADE-03's mandatory provider for this Host's edge, action, trust domain and owners. */
+  | 'HOST_TRADE_POLICY_REQUIRED'
+  /** R8 (TRADE-04C): trade execution is configured beside a file `approvalPolicy` — a second policy source the mandatory trade policy cannot be composed with. */
+  | 'HOST_TRADE_POLICY_SOURCE_CONFLICT';
 
 /** A deployment defect the Host refuses to start with. Messages name variables, fields and codes — never a value. */
 export class EnterpriseHostConfigurationError extends Error {
@@ -124,6 +130,14 @@ export interface EnterpriseHostGovernedActionConfiguration {
    * the existing adapter registry and P12, or the Host refuses.
    */
   readonly xrplPaymentRail?: EnterpriseHostXrplPaymentRailConfiguration;
+  /**
+   * TRADE-04C (G4) — the governed XRPL delegated OfferCreate executor. Absent:
+   * nothing trade-related is composed. Present: validated in full here
+   * (`xrpl-trade-execution/host-configuration.ts`) and composed at boot —
+   * after every XRPL domain's sequence accounts are proven disjoint — through
+   * the existing adapter registry and P12, or the Host refuses.
+   */
+  readonly xrplTradeExecution?: EnterpriseHostXrplTradeExecutionConfiguration;
   /**
    * PROD-03 — approval requirements the shipped launcher can compose without
    * code: per Governance Profile, "a decision governed by it requires human
@@ -294,7 +308,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
   closedKeys(
     parsed,
-    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail'],
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution'],
     'the file',
   );
   if (parsed.version !== 1) invalid('version must be 1.');
@@ -443,6 +457,27 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     }
   }
 
+  // TRADE-04C: validated completely now — network, pairs and pins, signer
+  // reference, credential, route, P7 coupling and the trade parameters.
+  let xrplTradeExecution: EnterpriseHostXrplTradeExecutionConfiguration | undefined;
+  if (parsed.xrplTradeExecution !== undefined) {
+    try {
+      xrplTradeExecution = parseXrplTradeExecutionSection(env, parsed.xrplTradeExecution, {
+        routes,
+        financialActions: monetary.financialActions,
+        parameterDimensions: (governance?.parameterDimensions ?? []).map((dimension) => dimension.id),
+        otherAdapterIds: [...genericHttpAdapters.map((adapter) => String((adapter as { readonly adapterId?: unknown }).adapterId)), ...(xrplPaymentRail !== undefined ? [xrplPaymentRail.rail.railId] : [])],
+      });
+    } catch (error) {
+      if (error instanceof XrplTradeHostConfigurationProblem) {
+        if (error.kind === 'secret-unresolved') throw new EnterpriseHostConfigurationError('HOST_SECRET_REFERENCE_UNRESOLVED', error.message);
+        invalid(error.message);
+      }
+      throw error;
+    }
+    if (xrplPaymentRail !== undefined && xrplPaymentRail.paymentAction === xrplTradeExecution.tradeAction) invalid('xrplTradeExecution.tradeAction must differ from xrplPaymentRail.paymentAction.');
+  }
+
   return {
     governedActions: {
       trustDomainId,
@@ -456,6 +491,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
       routes,
       ...(profileLifecycle !== undefined ? { profileLifecycle } : {}),
       ...(xrplPaymentRail !== undefined ? { xrplPaymentRail } : {}),
+      ...(xrplTradeExecution !== undefined ? { xrplTradeExecution } : {}),
       ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
     },
     customerKeys: customerPrincipals,
@@ -619,6 +655,19 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
       throw new EnterpriseHostConfigurationError(
         'HOST_AUTHORITY_FRESHNESS_REQUIRED',
         `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplPaymentRail requires an external authority-state freshness witness (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external): its submission interlock's reservation history is anchored there, outside the interlock's backup and restore domain.`,
+      );
+    }
+    // TRADE-04C: the same two rules for the trade executor's own interlock, in every profile.
+    if (governed.xrplTradeExecution !== undefined && configuration.persistence.provider !== 'sqlite') {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_PERSISTENCE_NOT_DURABLE',
+        `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplTradeExecution requires AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite — its sequence interlock must survive a restart, or a second order could compete with an unconfirmed one.`,
+      );
+    }
+    if (governed.xrplTradeExecution !== undefined && configuration.authorityFreshness?.mode !== 'external') {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_AUTHORITY_FRESHNESS_REQUIRED',
+        `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplTradeExecution requires an external authority-state freshness witness (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external): its sequence interlock's history is anchored there (slot trade-sequence-reservations).`,
       );
     }
   }

@@ -14,6 +14,7 @@ import {
   tradeDelegationContextReading,
   tradeDelegationRequestFor,
   tradingRiskContextReadings,
+  tradingRiskProfileReference,
   type AcceptedTradeProposal,
   type TradeAsset,
   type TradeContextReading,
@@ -47,9 +48,12 @@ import type { BoundCustomerIdentity } from '../customer-identity/index.js';
  *    (organization, actor, action, resource — no applicant field), it takes
  *    the binding **at most once** (a second evaluation finds none), recompiles
  *    the stored proposal and checks it still yields the stored intent, reads
- *    every source **now** through the trusted ports, assesses with
- *    `assessTradingRisk`, and returns readings only for a reliable
- *    `SATISFIED` assessment and a reliable `AUTHORIZED` delegation.
+ *    every source **now** through the trusted ports, then reads the trusted
+ *    clock once — the **reliance instant** (F-1): not before the Kernel's
+ *    instant, strictly inside the binding's lifetime — assesses every fact
+ *    against it with `assessTradingRisk`, and returns readings only for a
+ *    reliable `SATISFIED` assessment and a reliable `AUTHORIZED` delegation,
+ *    stated at the Kernel's instant with their windows' absolute ends unchanged.
  * 3. **Policy (`trade-risk-policy.ts`).** Every reading is a material fact;
  *    deny unless each of the request's seven parameters, amount and currency
  *    equals its reading. Together with the query's action, resource and
@@ -79,6 +83,10 @@ export const TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT = 'simulated-sources-not-for-
 export const TRADE_RISK_MAXIMUM_BINDING_SECONDS = 300;
 /** Bindings held at once; admission beyond this is refused, never evicting a pending one. */
 export const TRADE_RISK_MAXIMUM_PENDING_BINDINGS = 1024;
+/** TRADE-04C: longest an attested proposal stays readable by the governed executor (the Host's grant lifetime is at most this). */
+export const TRADE_RISK_MAXIMUM_ATTESTATION_SECONDS = 3600;
+/** TRADE-04C: attested proposals retained at once; the oldest is forgotten first (its execution then fails closed). */
+export const TRADE_RISK_MAXIMUM_ATTESTATIONS = 4096;
 
 export interface TradeMarketReadRequest {
   readonly organizationId: string;
@@ -132,12 +140,46 @@ export interface TradeRiskContextOptions {
   readonly sourceIds: { readonly risk: string; readonly delegation: string };
   /** How long an admitted proposal waits for its evaluation, 1 … 300 s. */
   readonly bindingSeconds: number;
-  /** The trusted clock, for admission only (assessment uses the Kernel's instant). */
+  /**
+   * The trusted Host clock — the same time authority as the Kernel's. It times admission and, since F-1, the
+   * reliance instant: read once after every source answered, never earlier than the Kernel's evaluation
+   * instant and never past the binding's expiry. Never a source's, a provider's or the trading engine's clock.
+   */
   readonly clock: () => string;
   /** Required exactly when the profile admits simulated sources. */
   readonly simulation?: typeof TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT;
   /** Receives every sealed assessment, for audit. Errors are swallowed; it can never change a reading. */
   readonly onAssessment?: (evidence: TradingRiskAssessmentEvidence) => void;
+  /** TRADE-04C: how long an attested proposal stays readable by the governed executor, 1 … 3600 s. Default 3600. */
+  readonly attestationSeconds?: number;
+}
+
+/**
+ * TRADE-04C — what the edge attested, read back by the governed executor:
+ * the exact canonical proposal whose readings this provider returned to the
+ * Kernel for a reliable `SATISFIED` assessment and an `AUTHORIZED`
+ * delegation, for whom, and when. Retained per proposal digest for a bounded
+ * time; never a decision, a grant or an authorization — the executor still
+ * requires the grant to name this digest and re-derives every bound term.
+ */
+export interface TradeAttestedProposal {
+  readonly proposalDigest: string;
+  readonly proposal: AcceptedTradeProposal['proposal'];
+  readonly organizationId: string;
+  readonly principalId: string;
+  readonly actorId: string;
+  readonly action: string;
+  readonly resource: string;
+  readonly attestedAt: string;
+  /** The sealed risk assessment's digest the readings came from. */
+  readonly assessmentDigest: string;
+  /** The profile admitted simulated sources: never operational execution evidence. */
+  readonly simulatedSources: boolean;
+}
+
+/** TRADE-04C: the read-only lookup the governed executor composes. */
+export interface TradeAttestedProposalSource {
+  attestedProposal(proposalDigest: string): TradeAttestedProposal | undefined;
 }
 
 export const TRADE_RISK_ADMISSION_REFUSALS = Object.freeze({
@@ -163,6 +205,31 @@ export interface TradeRiskContext {
   admitProposal(identity: BoundCustomerIdentity, rawProposal: unknown, envelope?: { readonly expectedGovernanceProfile?: { readonly id: string; readonly version: number } }): TradeRiskAdmission;
   /** Pending bindings (for operations and tests). */
   pendingCount(): number;
+  /** TRADE-04C: what this provider attested, by proposal digest. Read-only. */
+  readonly attested: TradeAttestedProposalSource;
+}
+
+/**
+ * R8 — what a genuine edge was composed with, recorded at construction in a module-private registry. Read by
+ * `createTradeRiskPolicyPackProvider` only: an object that did not come from `createTradeRiskContext` has no
+ * entry, so no policy provider can be bound to it. Frozen data and the edge's own provider/attestation objects.
+ */
+export interface TradeRiskContextComposition {
+  readonly organizationId: string;
+  readonly action: string;
+  /** `<profileId>@<profileVersion>` of the pinned trading-risk profile — the value its readings carry. */
+  readonly profileReference: string;
+  readonly network: string;
+  readonly ownerAccounts: readonly string[];
+  readonly provider: ContextResolverPort;
+  readonly attested: TradeAttestedProposalSource;
+}
+
+const COMPOSED_EDGES = new WeakMap<object, TradeRiskContextComposition>();
+
+/** The composition of an edge `createTradeRiskContext` produced, or `undefined` for anything else. */
+export function tradeRiskContextCompositionOf(edge: unknown): TradeRiskContextComposition | undefined {
+  return typeof edge === 'object' && edge !== null ? COMPOSED_EDGES.get(edge) : undefined;
 }
 
 export class TradeRiskContextConfigurationError extends Error {
@@ -233,6 +300,23 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
   if (needsMarket && typeof ports.market?.read !== 'function') refuseConfiguration('The profile enforces a market reference: a market port is required.');
   if (profile.exposure.mode === 'enforce' && typeof ports.exposure?.read !== 'function') refuseConfiguration('The profile enforces exposure: an exposure port is required.');
   if (profile.activeOrders.mode === 'enforce' && typeof ports.activeOrders?.read !== 'function') refuseConfiguration('The profile enforces active orders: an active-order port is required.');
+  const attestationSeconds = options.attestationSeconds ?? TRADE_RISK_MAXIMUM_ATTESTATION_SECONDS;
+  if (typeof attestationSeconds !== 'number' || !Number.isSafeInteger(attestationSeconds) || attestationSeconds < 1 || attestationSeconds > TRADE_RISK_MAXIMUM_ATTESTATION_SECONDS) refuseConfiguration('attestationSeconds must be 1 to 3600.');
+  const attestations = new Map<string, { readonly record: TradeAttestedProposal; readonly expiresAtMs: number }>();
+  const attest = (record: TradeAttestedProposal): void => {
+    const expiresAtMs = Date.parse(record.attestedAt) + attestationSeconds * 1000;
+    attestations.delete(record.proposalDigest);
+    while (attestations.size >= TRADE_RISK_MAXIMUM_ATTESTATIONS) attestations.delete(attestations.keys().next().value as string);
+    attestations.set(record.proposalDigest, Object.freeze({ record: Object.freeze(record), expiresAtMs }));
+  };
+  const attested: TradeAttestedProposalSource = Object.freeze({
+    attestedProposal(proposalDigest: string): TradeAttestedProposal | undefined {
+      const entry = typeof proposalDigest === 'string' ? attestations.get(proposalDigest) : undefined;
+      const at = now();
+      if (entry === undefined || at === undefined || entry.expiresAtMs <= at) return undefined;
+      return entry.record;
+    },
+  });
 
   const bindings = new Map<string, Binding>();
   const slotOf = (organization: string, actorId: string, resource: string): string => JSON.stringify([organization, actorId, resource]);
@@ -241,6 +325,16 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
     try {
       const instant: unknown = clock();
       return isTradeInstant(instant) ? Date.parse(instant) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The trusted clock's current instant, exactly as it states it, or `undefined`. Never a source's or the engine's time. */
+  function trustedInstant(): string | undefined {
+    try {
+      const instant: unknown = clock();
+      return isTradeInstant(instant) ? instant : undefined;
     } catch {
       return undefined;
     }
@@ -330,6 +424,15 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
         : Promise.resolve(undefined),
     ]);
 
+    // F-1 — the reliance instant: the trusted Host clock, read once, AFTER every source answered. Every fact is
+    // assessed against it (a fact observed after it is from the future; age is measured up to it). It may not
+    // precede the Kernel's evaluation instant (a clock regression is refused, never accommodated) and must lie
+    // strictly inside the admission binding's lifetime (collection that outlived the binding authorizes nothing).
+    const relianceAt = trustedInstant();
+    if (relianceAt === undefined) return [];
+    const relianceMs = Date.parse(relianceAt);
+    if (relianceMs < Date.parse(at) || relianceMs >= entry.expiresAtMs) return [];
+
     const result = assessTradingRisk({
       proposal,
       identity: { organizationId: entry.organizationId, principalId: entry.principalId },
@@ -342,7 +445,7 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
         ...(activeOrders !== undefined ? { activeOrders } : {}),
       },
       ...(entry.intent.expectedGovernanceProfile !== undefined ? { governanceProfile: entry.intent.expectedGovernanceProfile } : {}),
-      assessedAt: at,
+      assessedAt: relianceAt,
     });
     if (!result.assessed) return [];
     try {
@@ -353,12 +456,27 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
 
     const queryBinding = { action: query.action, resourceScope: query.resourceScope, organizationId };
     const readings: { readonly reading: TradeContextReading; readonly sourceId: string }[] = [];
-    const risk = tradingRiskContextReadings(result.evidence, { proposal, profile: profileData, at, ...(entry.intent.expectedGovernanceProfile !== undefined ? { governanceProfile: entry.intent.expectedGovernanceProfile } : {}) }, queryBinding);
-    const delegated = delegation === undefined ? undefined : tradeDelegationContextReading(delegation, { proposal, at, policy: profile.delegation, action: binding.action }, queryBinding);
+    // Relied on at `relianceAt`; stated to the Trusted Context Boundary at the Kernel's instant `at` (the instant it
+    // classifies against), each reading's window ending at the same absolute, fact-derived instant as before.
+    const risk = tradingRiskContextReadings(result.evidence, { proposal, profile: profileData, at: relianceAt, readingAt: at, ...(entry.intent.expectedGovernanceProfile !== undefined ? { governanceProfile: entry.intent.expectedGovernanceProfile } : {}) }, queryBinding);
+    const delegated = delegation === undefined ? undefined : tradeDelegationContextReading(delegation, { proposal, at: relianceAt, readingAt: at, policy: profile.delegation, action: binding.action }, queryBinding);
     // Both or neither: a risk assessment without a reliable delegation reading, or the reverse, attests nothing.
     if (!risk.projected || delegated?.projected !== true) return [];
     for (const reading of risk.readings) readings.push({ reading, sourceId: sourceIds.risk });
     readings.push({ reading: delegated.reading, sourceId: sourceIds.delegation });
+    // TRADE-04C: what was attested, for the governed executor to re-derive the order from (never authority by itself).
+    attest({
+      proposalDigest: entry.accepted.digest,
+      proposal: entry.accepted.proposal,
+      organizationId: entry.organizationId,
+      principalId: entry.principalId,
+      actorId: entry.actorId,
+      action: entry.intent.action,
+      resource: entry.intent.resource,
+      attestedAt: relianceAt,
+      assessmentDigest: result.evidence.digest,
+      simulatedSources: profile.factProvenance === 'simulated-permitted',
+    });
 
     return readings
       .filter(({ reading }) => query.keys.includes(reading.key))
@@ -378,7 +496,20 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
     },
   });
 
-  return Object.freeze({ provider, admitProposal, pendingCount: () => bindings.size });
+  const edge: TradeRiskContext = Object.freeze({ provider, admitProposal, pendingCount: () => bindings.size, attested });
+  COMPOSED_EDGES.set(
+    edge,
+    Object.freeze({
+      organizationId,
+      action: binding.action,
+      profileReference: tradingRiskProfileReference(profile),
+      network: profile.network,
+      ownerAccounts: Object.freeze([...profile.ownerAccounts]),
+      provider,
+      attested,
+    }),
+  );
+  return edge;
 }
 
 /** Every fact class the edge can attest — the trading profile's `materialFacts`. */

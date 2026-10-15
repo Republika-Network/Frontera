@@ -44,3 +44,10 @@ export { readXrplInclusion, readXrplSubmission, xrplNonInclusionProven, xrplWind
 export type { XrplInclusionReading, XrplSubmissionReading } from './xrpl-submission-reading.js';
 export { XrplSequenceOwnershipError, assertXrplSequenceOwnership, xrplSequenceWindowBlocks } from './xrpl-sequence-safety.js';
 export type { XrplSequenceDomain, XrplSequenceOwnership, XrplSequenceOwnershipProblem, XrplSequenceWindow } from './xrpl-sequence-safety.js';
+export {
+  XRPL_SHARED_HISTORICAL_MAX_LAST_LEDGER_OFFSET,
+  XRPL_SHARED_RESTART_ANCHOR_SLACK_SECONDS,
+  XRPL_SHARED_RESTART_QUARANTINE_LEDGERS,
+  createXrplRestartQuarantine,
+} from './xrpl-restart-quarantine.js';
+export type { XrplRestartQuarantine } from './xrpl-restart-quarantine.js';

@@ -77,7 +77,8 @@ describe('PAY-09 — CORE and generic-port purity', () => {
   it('CORE-07: PAY-09 adds no anchored state kind — the closed list is unchanged and names no rail word beyond the classified PAY-03 one', () => {
     const checkpoint = codeOf('src/enterprise/authority-state-freshness/checkpoint.ts');
     const kinds = /AUTHORITY_STATE_KINDS = \[\.\.\.AUTHORITY_STORE_KINDS, ([^\]]*)\]/.exec(checkpoint)?.[1];
-    assert.equal(kinds, "'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations'");
+    // TRADE-04C (G4) added exactly one kind since, the rail-neutral 'trade-sequence-reservations', before PAY-03's; PAY-09 added none.
+    assert.equal(kinds, "'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations'");
     assert.match(codeOf(`${EDGE}/sqlite-stripe-payment-interlock.ts`), /PAYMENT_INITIATION_STATE_KIND = 'payment-initiation-reservations'/);
   });
 

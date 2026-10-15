@@ -6,6 +6,8 @@
  */
 export {
   TRADE_RISK_ADMISSION_REFUSALS,
+  TRADE_RISK_MAXIMUM_ATTESTATIONS,
+  TRADE_RISK_MAXIMUM_ATTESTATION_SECONDS,
   TRADE_RISK_MATERIAL_FACTS,
   TRADE_RISK_MAXIMUM_BINDING_SECONDS,
   TRADE_RISK_MAXIMUM_PENDING_BINDINGS,
@@ -22,6 +24,18 @@ export type {
   TradeRiskContext,
   TradeRiskContextOptions,
   TradeRiskSourcePorts,
+  TradeAttestedProposal,
+  TradeAttestedProposalSource,
 } from './trade-risk-context.js';
 export { TRADE_RISK_ABSENCE_SENSITIVE_RULES, tradeRiskPolicyRules, tradeRiskTrustedContextSources } from './trade-risk-policy.js';
 export type { TradeRiskPolicyOptions, TradeRiskSourceDeclarationOptions } from './trade-risk-policy.js';
+// R8: the one policy provider a trade-executing Host composes, and its provenance (read by the Host).
+export {
+  TRADE_RISK_MANDATORY_POLICY_EFFECTS,
+  TRADE_RISK_MANDATORY_POLICY_RULE_IDS,
+  TRADE_RISK_POLICY_PACK_ID,
+  TradeRiskPolicyProviderError,
+  createTradeRiskPolicyPackProvider,
+  tradeRiskPolicyProvenanceOf,
+} from './trade-risk-policy-provider.js';
+export type { TradeRiskPolicyProvenance } from './trade-risk-policy-provider.js';

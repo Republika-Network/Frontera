@@ -55,6 +55,10 @@ export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
  *   configures `xrplPaymentRail` (the read-only XRPL resolution authority).
  * - `xrpl-payment-rail` — the file configures `xrplPaymentRail` (PAY-03): the
  *   durable XRPL submission interlock.
+ * - `xrpl-trade-execution` — the file configures `xrplTradeExecution`
+ *   (TRADE-04C): the durable trade sequence interlock (its own file, its own
+ *   CORE-07 slot). The Host then also composes P12 (the trade resolution
+ *   authority).
  */
 export const STORE_CONDITIONS = Object.freeze([
   'always',
@@ -65,6 +69,7 @@ export const STORE_CONDITIONS = Object.freeze([
   'operators-configured',
   'embedder-reconciliation',
   'xrpl-payment-rail',
+  'xrpl-trade-execution',
 ]);
 
 /**
@@ -277,6 +282,23 @@ export const STORE_DEFINITIONS = Object.freeze([
     // No scope: verification adopts the file's own recorded scope, verifies every record and creates nothing.
     open: ({ factories }, path) => factories.xrplInterlock.createSqliteXrplSubmissionInterlock(path, { now: () => new Date().toISOString() }),
     lossEffect: 'restoring an older copy loses reservations the witness has seen: the Host refuses the XRPL rail (XRPL_INTERLOCK_FRESHNESS_FAILED, ROLLBACK_DETECTED) and signs nothing until the newest copy is restored; P12 cannot resolve a forgotten submission from the ledger',
+  },
+  {
+    name: 'xrpl-trade-sequence-interlock',
+    filename: 'xrpl-trade-sequence-interlock.sqlite',
+    envVar: 'AOC_ENTERPRISE_XRPL_TRADE_INTERLOCK_SQLITE_PATH',
+    configKey: 'xrplTradeInterlock.sqlitePath',
+    configPathOf: (config) => config.xrplTradeInterlock.sqlitePath,
+    targetFilename: 'xrpl-trade-sequence-interlock.sqlite',
+    condition: 'xrpl-trade-execution',
+    purpose: 'TRADE-04C: every delegated OfferCreate the governed trade executor signed, reserved before its one submission and claimed by the submit site, with its owner sequence window, evidence and settlement',
+    version: { kind: 'versions-table', table: 'trade_interlock_store_versions', migrationState: true },
+    supportedSchemaVersionsOf: ({ tradeInterlock }) => [tradeInterlock.TRADE_INTERLOCK_STORE_SCHEMA_VERSION],
+    recordTable: 'trade_reservations',
+    integrity: 'identity and state digests, forward-only lifecycle triggers, append-only transition log and anchored-event log (unsigned); the reservation-and-claim history is anchored at the CORE-07 witness, so a rolled-back or stale copy is refused at the next start (slot trade-sequence-reservations; not a signed store)',
+    // No scope: verification adopts the file's own recorded scope, verifies every record and creates nothing.
+    open: ({ factories }, path) => factories.tradeInterlock.createSqliteTradeSequenceInterlock(path, { now: () => new Date().toISOString() }),
+    lossEffect: 'restoring an older copy loses reservations or submission claims the witness has seen: the Host refuses the trade executor (XRPL_TRADE_INTERLOCK_FRESHNESS_FAILED, ROLLBACK_DETECTED) and signs nothing until the newest copy is restored; P12 cannot resolve a forgotten submission from the ledger',
   },
   {
     name: 'obligation-discharges',
@@ -502,8 +524,10 @@ export function deriveDeploymentRequirements(env, configuration) {
     operatorsConfigured: governedActions && Array.isArray(file.operators) && file.operators.length > 0,
     // PROD-03-02: the Host composes P12 (operator attestation) exactly when it serves an operator plane.
     // PAY-03: and whenever it composes the XRPL rail (the XRPL resolution authority).
-    executionReconciliation: governedActions && ((Array.isArray(file.operators) && file.operators.length > 0) || file.xrplPaymentRail !== undefined),
+    // TRADE-04C: and whenever it composes the governed trade executor (the trade resolution authority).
+    executionReconciliation: governedActions && ((Array.isArray(file.operators) && file.operators.length > 0) || file.xrplPaymentRail !== undefined || file.xrplTradeExecution !== undefined),
     xrplPaymentRail: governedActions && file.xrplPaymentRail !== undefined,
+    xrplTradeExecution: governedActions && file.xrplTradeExecution !== undefined,
     governedActionsFileDigest: fileDigest,
     secretReferenceEnvVars: [...secretReferences].sort(),
   };
@@ -529,6 +553,8 @@ export function conditionHolds(condition, requirements) {
       return requirements.executionReconciliation === true;
     case 'xrpl-payment-rail':
       return requirements.governedActions === true && requirements.xrplPaymentRail === true;
+    case 'xrpl-trade-execution':
+      return requirements.governedActions === true && requirements.xrplTradeExecution === true;
     default:
       // An unknown condition is a registry defect; refusing is the only safe reading.
       throw new DeploymentRequirementsError(`Unknown store condition '${String(condition)}'.`);
@@ -595,8 +621,13 @@ export function validateManifestStoreEntries(manifest) {
   }
 }
 
-/** Every deployment flag a store condition reads. */
-const DEPLOYMENT_FLAGS = ['kernelAuthorityEnabled', 'governedActions', 'obligationsDeclared', 'approvalsDeclared', 'operatorsConfigured', 'executionReconciliation'];
+/**
+ * Every deployment flag a store condition reads. Closed and complete: a flag a
+ * condition reads but this list omits would let a manifest that drops it
+ * quietly un-require that store (PAY-03 `xrplPaymentRail`, TRADE-04C
+ * `xrplTradeExecution`). Pinned against `conditionHolds` by test.
+ */
+export const DEPLOYMENT_FLAGS = Object.freeze(['kernelAuthorityEnabled', 'governedActions', 'obligationsDeclared', 'approvalsDeclared', 'operatorsConfigured', 'executionReconciliation', 'xrplPaymentRail', 'xrplTradeExecution']);
 
 /**
  * Which required stores the backup does not include, judged two ways and
@@ -683,6 +714,7 @@ export async function loadRegistryModules(repoRoot) {
     controlPlane: await required('enterprise/operator-control/control-plane-store.js'),
     evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
     xrplInterlock: await required('enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js'),
+    tradeInterlock: await required('enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.js'),
     authenticity: await required('enterprise/authority-authenticity/index.js'),
   };
   cachedModules.factories = {
@@ -697,6 +729,7 @@ export async function loadRegistryModules(repoRoot) {
     controlPlane: await required('enterprise/operator-control/control-plane-store.js'),
     evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
     xrplInterlock: await required('enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js'),
+    tradeInterlock: await required('enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.js'),
   };
   return cachedModules;
 }

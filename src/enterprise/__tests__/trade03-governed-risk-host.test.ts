@@ -214,7 +214,7 @@ function fakePorts(world: World): TradeRiskSourcePorts {
             ? { outcome: 'unavailable' as const, failure: 'TRANSPORT_UNAVAILABLE' }
             : {
                 outcome: 'observed' as const,
-                observation: grantedObservation({ owner: request.ownerAccount, delegate: request.delegateAccount, entryIndex: tradeDelegateEntryIndex(request.ownerAccount, request.delegateAccount), observedAt: iso(Date.now() - 1000) }) as never,
+                observation: grantedObservation({ owner: request.ownerAccount, delegate: request.delegateAccount, entryIndex: tradeDelegateEntryIndex(request.ownerAccount, request.delegateAccount), observedAt: iso(Date.now()) }) as never,
               };
         return assessTradeDelegation({ request, policy, read, assessedAt: iso(Date.now()) });
       },

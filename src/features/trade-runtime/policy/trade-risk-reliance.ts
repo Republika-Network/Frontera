@@ -65,6 +65,25 @@ export interface TradingRiskRelianceExpectation {
   readonly at: string;
   /** The Governance Profile the request resolved to; when given, the evidence must name exactly it. */
   readonly governanceProfile?: { readonly id: string; readonly version: number };
+  /**
+   * F-1: the instant the projected readings are stated at — the Kernel's evaluation instant, which the
+   * Trusted Context Boundary classifies against. Never later than `at`. Absent: `at`. It only moves the
+   * start of each reading's window; the window's end stays the absolute, fact-derived `validUntilMs`.
+   */
+  readonly readingAt?: string;
+}
+
+/**
+ * F-1 — the reading instant: `readingAt` when given (it must be a trusted instant no later than the
+ * reliance instant `at`), else `at`. `undefined` when it is malformed or later than `at`: a reading is
+ * never stated after the instant its facts were relied on.
+ */
+function readingInstantOf(expected: { readonly at: string; readonly readingAt?: unknown }): { readonly ms: number; readonly instant: string } | undefined {
+  const reliance = Date.parse(expected.at);
+  if (expected.readingAt === undefined) return { ms: reliance, instant: expected.at };
+  if (!isTradeInstant(expected.readingAt)) return undefined;
+  const reading = Date.parse(expected.readingAt);
+  return reading <= reliance ? { ms: reading, instant: expected.readingAt } : undefined;
 }
 
 export type TradingRiskReliance =
@@ -317,12 +336,16 @@ export function tradingRiskContextReadings(evidence: unknown, expected: TradingR
   if (!queryMatches(query, { action: parsedProfile.profile.action, resource: tradeResourceOf(validation.accepted), organizationId: proposal.organizationId })) {
     return Object.freeze({ projected: false as const, code: 'RISK_PROJECTION_QUERY_MISMATCH' as const });
   }
-  const maxAgeSeconds = wholeSecondsBetween(Date.parse(expected.at), reliance.validUntilMs);
-  if (maxAgeSeconds < 1) return Object.freeze({ projected: false as const, code: RR.STALE });
+  const readingAt = readingInstantOf(expected);
+  if (readingAt === undefined) return Object.freeze({ projected: false as const, code: RR.EXPECTATION_INVALID });
+  // At least a second of validity must remain at the reliance instant; the reading's window then runs from the
+  // reading instant to the same absolute end — its end is never extended (whole seconds, rounded down).
+  if (wholeSecondsBetween(Date.parse(expected.at), reliance.validUntilMs) < 1) return Object.freeze({ projected: false as const, code: RR.STALE });
+  const maxAgeSeconds = wholeSecondsBetween(readingAt.ms, reliance.validUntilMs);
   // Every bound value is read from the compiled intent itself, so a reading can never disagree with what compilation produces.
   const intent = compiledIntentOf(proposal, parsedProfile.profile.action, proposal.organizationId, proposal.principalId);
   if (intent === undefined || intent.parameters[TRADE_PARAMETER_DIMENSION_IDS.proposalDigest] !== validation.accepted.digest) return Object.freeze({ projected: false as const, code: RR.EXPECTATION_INVALID });
-  const base = { observedAt: expected.at, maxAgeSeconds, reference: reliance.evidenceDigest };
+  const base = { observedAt: readingAt.instant, maxAgeSeconds, reference: reliance.evidenceDigest };
   const parameterReadings = Object.entries(TRADE_INTENT_BINDING_FACTS).map(([dimension, key]) => Object.freeze({ key, value: intent.parameters[dimension] as string, ...base }));
   return Object.freeze({
     projected: true as const,
@@ -345,7 +368,7 @@ export function tradingRiskContextReadings(evidence: unknown, expected: TradingR
  */
 export function tradeDelegationContextReading(
   assessment: unknown,
-  expected: { readonly proposal: unknown; readonly at: string; readonly policy: TradeDelegationPolicy; readonly action: string },
+  expected: { readonly proposal: unknown; readonly at: string; readonly policy: TradeDelegationPolicy; readonly action: string; readonly readingAt?: string },
   query: TradeContextQueryBinding,
 ): { readonly projected: true; readonly reading: TradeContextReading } | { readonly projected: false; readonly code: string } {
   if (!isPlainRecord(expected) || !isTradeInstant(expected.at)) return { projected: false, code: RR.EXPECTATION_INVALID };
@@ -358,10 +381,14 @@ export function tradeDelegationContextReading(
   if (!reliance.reliable) return { projected: false, code: reliance.code };
   const copy = plainRiskData(assessment) as { readonly digest: string; readonly timing: { readonly observedAt: string; readonly maxAgeSeconds: number } };
   const bound = copy.timing.maxAgeSeconds < expected.policy.maxAgeSeconds ? copy.timing.maxAgeSeconds : expected.policy.maxAgeSeconds;
-  const maxAgeSeconds = wholeSecondsBetween(Date.parse(expected.at), Date.parse(copy.timing.observedAt) + bound * 1000);
-  if (maxAgeSeconds < 1 || !isTradeIdentifier(expected.policy.sourceId)) return { projected: false, code: 'DELEGATION_NOT_RELIABLE' };
+  const readingAt = readingInstantOf(expected);
+  if (readingAt === undefined) return { projected: false, code: RR.EXPECTATION_INVALID };
+  const freshUntilMs = Date.parse(copy.timing.observedAt) + bound * 1000;
+  // As for the risk readings: a second must remain at the reliance instant, and the window's absolute end is the observation's freshness end.
+  if (wholeSecondsBetween(Date.parse(expected.at), freshUntilMs) < 1 || !isTradeIdentifier(expected.policy.sourceId)) return { projected: false, code: 'DELEGATION_NOT_RELIABLE' };
+  const maxAgeSeconds = wholeSecondsBetween(readingAt.ms, freshUntilMs);
   return {
     projected: true,
-    reading: Object.freeze({ key: TRADE_RISK_FACT_CLASSES.delegation, value: validation.accepted.digest, observedAt: expected.at, maxAgeSeconds, reference: copy.digest }),
+    reading: Object.freeze({ key: TRADE_RISK_FACT_CLASSES.delegation, value: validation.accepted.digest, observedAt: readingAt.instant, maxAgeSeconds, reference: copy.digest }),
   };
 }

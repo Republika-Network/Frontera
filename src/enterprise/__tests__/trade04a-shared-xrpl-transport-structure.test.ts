@@ -95,7 +95,7 @@ describe('TRADE-04A — no new execution or submission path (SEC-TRADE04A-01, -0
 
   it('SEC-TRADE04A-14: the NO_BYPASS inventory still enumerates every effect path — TRADE-04A adds none and says so', () => {
     // TRADE-04B later added EP-073 (a signing request, denominator only); TRADE-04A's own record of adding none stands.
-    assert.match(NO_BYPASS, /Seventy-three production-capable effect paths/);
+    assert.match(NO_BYPASS, /Seventy-four production-capable effect paths/);
     assert.match(NO_BYPASS, /\*TRADE-04A changed neither number: eleven of seventy-two\.\*/);
     const transport = walk(TRANSPORT).map(read);
     for (const source of transport) assert.equal(/from\s+['"](?:node:)?(?:https?|net|tls|dns|dgram|http2)['"]|\bfetch\s*\(|WebSocket|\bnew\s+Client\s*\(/.test(codeOf(source.text)), false, source.path);
@@ -121,7 +121,8 @@ describe('TRADE-04A — Payment closure and boundaries (SEC-TRADE04A-02, -12, -1
     for (const file of walk(RAIL)) {
       const transportImports = importsOf(readFileSync(file, 'utf8')).filter((specifier) => /xrpl-transport/.test(specifier));
       // TRADE-04B (G3): the codec also reaches the shared codec file, by path, for the SDK calls it no longer makes itself.
-      const expected = file.endsWith('/xrpl-codec.ts') ? ['../../../xrpl-transport/index.js', '../../../xrpl-transport/xrpl-signature.js'] : file.endsWith('/xrpl-result-normalizer.ts') ? ['../../../xrpl-transport/index.js'] : [];
+      // TRADE-04C (G2): and the SDK client, for the reserved submission client's claim (hash and binding fields read from the blob) — the same two modules.
+      const expected = file.endsWith('/xrpl-codec.ts') || file.endsWith('/xrpl-sdk-client.ts') ? ['../../../xrpl-transport/index.js', '../../../xrpl-transport/xrpl-signature.js'] : file.endsWith('/xrpl-result-normalizer.ts') ? ['../../../xrpl-transport/index.js'] : [];
       assert.deepEqual(transportImports, expected, file);
     }
     assert.deepEqual(sdkImporters(walk(TRANSPORT).map(read)), [SHARED_SIGNATURE], 'the shared transport imports the SDK in exactly one file, its G3 codec file');
@@ -182,7 +183,16 @@ describe('TRADE-04A — owner-Sequence safety is structural (SEC-TRADE04A-08, -0
     const verifierCall = /createSqliteXrplSubmissionInterlock\(([^\n]*)\)/.exec(codeOf(readFileSync(VERIFIER, 'utf8')))?.[1] ?? '';
     assert.ok(verifierCall.length > 0 && !/scope/.test(verifierCall), 'the verification open passes no scope');
     assert.deepEqual(railCompositions(PRODUCTION), [`${EDGE}/host-composition.ts`], message);
-    assert.deepEqual(PRODUCTION.filter((source) => /assertXrplSequenceOwnership\s*\(/.test(codeOf(source.text)) && !source.path.startsWith(`${TRANSPORT}/`)).map((source) => source.path), [], 'no second domain yet, so no composition calls it yet');
+    // TRADE-04C (G4): the second domain exists — the governed trade executor, over its own interlock, composed in one place — and the Host
+    // declares every domain through assertXrplSequenceOwnership, from configuration, before either interlock is opened.
+    assert.deepEqual(PRODUCTION.filter((source) => /assertXrplSequenceOwnership\s*\(/.test(codeOf(source.text)) && !source.path.startsWith(`${TRANSPORT}/`)).map((source) => source.path), ['src/enterprise/host/enterprise-host.ts'], message);
+    const tradeInterlocks = PRODUCTION.filter((source) => /createSqliteTradeSequenceInterlock\s*\(/.test(codeOf(source.text)) && !source.path.endsWith('/sqlite-trade-sequence-interlock.ts')).map((source) => source.path);
+    assert.deepEqual(tradeInterlocks.sort(), ['scripts/portability/store-registry.mjs', 'src/enterprise/xrpl-trade-execution/host-composition.ts'], message);
+    const host = codeOf(readFileSync('src/enterprise/host/enterprise-host.ts', 'utf8'));
+    const boot = host.slice(host.indexOf('export async function bootEnterpriseHost('));
+    const order = ['assertXrplDomainsDisjoint(host)', "import('../xrpl-payment-rail/host-composition.js')", "import('../xrpl-trade-execution/host-composition.js')"].map((marker) => boot.indexOf(marker));
+    assert.ok(order.every((position) => position !== -1), 'the ownership check and both compositions are in the boot');
+    assert.deepEqual([...order].sort((a, b) => a - b), order, 'ownership is asserted over every domain before either interlock is opened');
   });
 
   it('SEC-TRADE04A-09: the durable reservation stays strictly between verification and the one submission', () => {

@@ -56,10 +56,28 @@ const ALLOWED_IMPORTS: ReadonlySet<string> = new Set([
   '../../features/domain-policy-pack-runtime/domain/policy-pack-rule.js',
 ]);
 
+/**
+ * R8 (TRADE-04C): the mandatory trade-policy factory compiles TRADE-03's own rules into the existing policy-pack
+ * runtime for the Kernel to evaluate — and only it may reach the runtime, its Kernel integration and context,
+ * the Kernel's provider type and `node:crypto` (identifiers). It evaluates and decides nothing itself.
+ */
+const PROVIDER_FILE = `${EDGE}/trade-risk-policy-provider.ts`;
+const PROVIDER_IMPORTS: ReadonlySet<string> = new Set([
+  'node:crypto',
+  '../../features/domain-policy-pack-runtime/integrations/action-enforcement-policy-pack-integration.js',
+  '../../features/domain-policy-pack-runtime/runtime/policy-pack-runtime-context.js',
+  '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js',
+  '../../kernel/index.js',
+]);
+
 type Scan = (sources: readonly Source[]) => readonly string[];
 
 const unapprovedImports: Scan = (sources) =>
-  sources.flatMap((source) => importsOf(source.text).filter((specifier) => !specifier.startsWith('./') && !ALLOWED_IMPORTS.has(specifier)).map((specifier) => `${source.path} imports '${specifier}'`));
+  sources.flatMap((source) =>
+    importsOf(source.text)
+      .filter((specifier) => !specifier.startsWith('./') && !ALLOWED_IMPORTS.has(specifier) && !(source.path === PROVIDER_FILE && PROVIDER_IMPORTS.has(specifier)))
+      .map((specifier) => `${source.path} imports '${specifier}'`),
+  );
 
 /** Decision, grant, orchestration and execution — the governance engine the edge must never be. */
 const ENGINE = [/\bevaluate\s*\(|\bdecide\s*\(|policy-condition-evaluator|createPolicyPackRuntime/, /issueFromDecision|createGrantIssuanceService|BoundedGrant|\.exercise\s*\(/, /GovernedActionOrchestrator|\.govern\s*\(|governAction/, /ExecutionAdapter|executionAdapter|\.execute\s*\(/];
@@ -74,21 +92,24 @@ const EFFECTS = [
 ];
 
 const forbidden = (patterns: readonly RegExp[]): Scan => (sources) => sources.flatMap((source) => patterns.filter((pattern) => pattern.test(codeOf(source.text))).map((pattern) => `${source.path}: ${String(pattern)}`));
+/** The engine scan, with the factory's one allowance: compiling a policy-pack runtime (never evaluating or deciding). */
+const engineOf: Scan = (sources) =>
+  sources.flatMap((source) => forbidden(source.path === PROVIDER_FILE ? [/\bevaluate\s*\(|\bdecide\s*\(|policy-condition-evaluator/, ...ENGINE.slice(1)] : ENGINE)([source]));
 
 const PRODUCTION: readonly Source[] = ['src', 'packages', 'scripts', 'apps'].flatMap(walk).map((path) => ({ path, text: readFileSync(path, 'utf8') }));
 
 describe('TRADE-03 K1 — the trade-risk-context edge is a CORE-04 provider and nothing more', () => {
-  it('has the three sources it was approved as', () => {
-    assert.deepEqual(EDGE_SOURCES.map((source) => source.path.slice(EDGE.length + 1)).sort(), ['index.ts', 'trade-risk-context.ts', 'trade-risk-policy.ts']);
+  it('has the four sources it was approved as (R8 added the mandatory trade-policy factory)', () => {
+    assert.deepEqual(EDGE_SOURCES.map((source) => source.path.slice(EDGE.length + 1)).sort(), ['index.ts', 'trade-risk-context.ts', 'trade-risk-policy-provider.ts', 'trade-risk-policy.ts']);
     assert.ok(PRODUCTION.length > 500);
   });
 
-  it('imports only the trade barrel, CORE-04, the customer-identity contract and policy-rule data types', () => {
+  it('imports only the trade barrel, CORE-04, the customer-identity contract and policy-rule data types (the factory alone: the policy-pack runtime it compiles into)', () => {
     assert.deepEqual(unapprovedImports(EDGE_SOURCES), []);
   });
 
   it('decides, grants, orchestrates and executes nothing', () => {
-    assert.deepEqual(forbidden(ENGINE)(EDGE_SOURCES), []);
+    assert.deepEqual(engineOf(EDGE_SOURCES), []);
   });
 
   it('signs, submits, connects and holds keys never; reaches neither the trade rail nor PAY', () => {
@@ -97,7 +118,20 @@ describe('TRADE-03 K1 — the trade-risk-context edge is a CORE-04 provider and 
 
   it('is composed by no production module: a deployment hands its provider to the Host as `contextProvider`', () => {
     const importers = PRODUCTION.filter((source) => !source.path.startsWith(`${EDGE}/`) && /trade-risk-context/.test(source.text)).map((source) => source.path);
-    assert.deepEqual(importers, []);
+    // TRADE-04C: the governed executor edge names the attested-proposal *types* only — it never constructs the edge.
+    // R8: the Host reads, at boot, the provenance of the policy provider it was handed — one import(), two names.
+    assert.deepEqual(importers.sort(), ['src/enterprise/host/enterprise-host.ts', 'src/enterprise/xrpl-trade-execution/host-composition.ts', 'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts']);
+    const host = codeOf(PRODUCTION.find((source) => source.path === 'src/enterprise/host/enterprise-host.ts')!.text);
+    assert.deepEqual(
+      host.split('\n').filter((line) => /trade-risk-context/.test(line)).map((line) => line.trim()),
+      ["const { TRADE_RISK_MANDATORY_POLICY_RULE_IDS, tradeRiskPolicyProvenanceOf } = await import('../trade-risk-context/index.js');"],
+    );
+    assert.equal(/\b(?:createTradeRiskContext|createTradeRiskPolicyPackProvider)\s*\(/.test(host), false, 'the Host constructs neither an edge nor a provider (its refusal message only names the factory)');
+    for (const path of importers.filter((entry) => entry !== 'src/enterprise/host/enterprise-host.ts')) {
+      const text = PRODUCTION.find((source) => source.path === path)!.text;
+      for (const line of text.split('\n').filter((entry) => /trade-risk-context/.test(entry) && /\bfrom\b/.test(entry))) assert.match(line, /^import type \{/, `${path}: ${line}`);
+      assert.equal(/createTradeRiskContext/.test(text), false, path);
+    }
   });
 
   it('the simulation acknowledgement is used by no production file but its definition', () => {
@@ -114,6 +148,16 @@ describe('TRADE-03 K1 — negative fixtures: every edge scan fails on a syntheti
       assert.equal(unapprovedImports(fixture(text)).length, 1, text);
     }
     assert.deepEqual(unapprovedImports(fixture("import { assessTradingRisk } from '../../features/trade-runtime/index.js';")), []);
+  });
+
+  it('the factory’s allowances are the factory’s alone', () => {
+    const elsewhere = (text: string): readonly Source[] => [{ path: `${EDGE}/trade-risk-context.ts`, text }];
+    assert.equal(unapprovedImports(elsewhere("import { createPolicyPackRuntime } from '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js';")).length, 1);
+    assert.equal(unapprovedImports([{ path: PROVIDER_FILE, text: "import { createPolicyPackRuntime } from '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js';" }]).length, 0);
+    assert.equal(unapprovedImports([{ path: PROVIDER_FILE, text: "import { g } from '../../features/grant-runtime/index.js';" }]).length, 1);
+    assert.ok(engineOf(elsewhere('const r = createPolicyPackRuntime(context);')).length > 0);
+    assert.deepEqual(engineOf([{ path: PROVIDER_FILE, text: 'const r = createPolicyPackRuntime(context);' }]), []);
+    assert.ok(engineOf([{ path: PROVIDER_FILE, text: 'const d = kernel.evaluate(request);' }]).length > 0);
   });
 
   it('a decision, grant, orchestration or execution is caught', () => {

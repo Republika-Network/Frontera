@@ -210,6 +210,11 @@ describe('NB-001 — repository-wide, only the enumerated production sources inv
         // bridge around the rail and hands the resulting adapter to the Host,
         // which adds it to the same registry. It invokes nothing.
         'src/enterprise/xrpl-payment-rail/host-composition.ts',
+        // TRADE-04C — the governed trade executor **implements** the port (a
+        // child the Host hands to the same registry, reachable only through the
+        // trade action's route). It invokes no adapter; its one network write is
+        // EP-074 through EP-069's request, enumerated by the network scan below.
+        'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts',
         // Deliberately NOT `src/enterprise/index.ts`: the Enterprise barrel has
         // never re-exported a `src/features` type — not `BoundedGrantStorePort`,
         // not `KernelGrantCapability`, not `ExecutionAdapter` — even where an
@@ -476,9 +481,10 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     assert.equal([...offerSigner.matchAll(/\bsend\s*\(/g)].length, 1, 'the delegated offer signer transport issues its request from exactly one place');
     assert.equal(/command:|submit|wss?:/.test(offerSigner), false, 'the delegated offer signer transport never submits and never reaches an XRPL server');
     assert.ok(DOC.includes('EP-073') && DOC.includes(offerSignerTransport), 'EP-073 is inventoried');
-    // TRADE-04B: composed by no production source — the TRADE-04C composition must place it below the bounded grant.
+    // TRADE-04B left it composed by nothing; TRADE-04C composes it in exactly one place, below the bounded grant (EP-074).
     const offerSignerFactoryUsers = PRODUCTION_SOURCES.filter((file) => /\bcreate(?:HttpDelegatedOfferSignerTransport|DelegatedOfferSigner)\b/.test(codeOf(file)) && !file.startsWith('src/enterprise/xrpl-trade-rail/'));
-    assert.deepEqual(offerSignerFactoryUsers, [], 'no production source composes the delegated offer signer');
+    assert.deepEqual(offerSignerFactoryUsers, ['src/enterprise/xrpl-trade-execution/host-composition.ts'], 'only the governed trade executor composition composes the delegated offer signer');
+    assert.ok(DOC.includes('EP-074'), 'EP-074 is inventoried');
     const stripe = codeOf(stripeClient);
     assert.equal([...stripe.matchAll(/\bsend\s*\(/g)].length, 1, 'the Stripe adapter issues every request from exactly one primitive');
     assert.equal([...stripe.matchAll(/\/confirm`/g)].length, 1, 'the one PaymentIntent confirmation route, written once');
@@ -505,6 +511,12 @@ describe('NB — P6: the Generic HTTP adapter is the one enumerated outbound net
     // when the governed-action file configures `xrplPaymentRail` (EP-069 stays composition-gated; the kit configures none).
     const factoryUsers = PRODUCTION_SOURCES.filter((file) => /\bcreateXrplSdkClient\b/.test(codeOf(file)) && file !== xrplClient && !file.endsWith('/rails/xrpl/index.ts'));
     assert.deepEqual(factoryUsers, ['src/enterprise/xrpl-payment-rail/host-composition.ts'], 'only the Host XRPL composition composes the XRPL client');
+    // TRADE-04C (G2): one request site, reached by exactly two callers — PAY-02's submit and the reservation-gated submitReserved (EP-074).
+    assert.equal([...xrpl.matchAll(/\brequestSubmit\s*\(/g)].length, 2, 'the one submit request is reached from exactly two places');
+    const reservedUsers = PRODUCTION_SOURCES.filter((file) => /\bcreateXrplReservedSubmissionClient\b/.test(codeOf(file)) && file !== xrplClient && !file.endsWith('/rails/xrpl/index.ts'));
+    assert.deepEqual(reservedUsers, ['src/enterprise/xrpl-trade-execution/host-composition.ts'], 'only the governed trade executor composition composes the reserved submission client');
+    const submitReservedCallers = PRODUCTION_SOURCES.filter((file) => /\.submitReserved\s*\(/.test(codeOf(file)));
+    assert.deepEqual(submitReservedCallers, ['src/enterprise/xrpl-trade-execution/trade-offer-executor.ts'], 'only the governed trade executor submits through it');
     const client = codeOf(consoleClient);
     assert.equal([...client.matchAll(/\bfetch\s*\(/g)].length, 1, 'the console client issues its request from exactly one place');
     assert.match(client, /redirect: 'manual'/, 'the console client follows no redirect');
@@ -664,7 +676,7 @@ describe('NB — the canonical document keeps its shape', () => {
   it('keeps the bounded-grant claim scoped to its path and never states it system-wide', () => {
     assert.ok(/PATH-LOCAL/.test(DOC), 'the document must keep using the PATH-LOCAL scope token');
     assert.ok(
-      DOC.includes('Eleven of seventy-three effect paths are under bounded-grant control.'),
+      DOC.includes('Twelve of seventy-four effect paths are under bounded-grant control.'),
       'the document must keep stating how few effect paths are bounded-grant controlled — that is the number every external claim must be consistent with. ' +
         'Prompt 4 raised the denominator from forty-six to forty-eight (EP-047/EP-048, the emergency-control operator writes) and left the numerator at three: ' +
         'the execution adapter registry added no effect path. P5 added EP-049, the customer HTTP entry onto the bounded-grant path itself, ' +
@@ -681,7 +693,8 @@ describe('NB — the canonical document keeps its shape', () => {
         'PAY-03 added EP-070 — the XRPL signing request to the external customer-controlled signer, like EP-056 a deployment-gated signing request and not a provider effect, reached only inside EP-069 — so only the denominator moved, by one. ' +
         'PAY-06 added EP-071 — the Lightning rail\'s payment send, like EP-069 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one. ' +
         'PAY-09 added EP-072 — the Stripe rail\'s PaymentIntent confirmation, like EP-069 and EP-071 a concrete provider network effect below the bounded-grant path, reached only through the PAY-01 bridge — so both numbers moved by one. ' +
-        'TRADE-04B added EP-073 — the delegated OfferCreate signing request to the external delegate signer, like EP-056 and EP-070 a deployment-gated signing request and not a provider effect, composed by nothing yet — so only the denominator moved, by one.',
+        'TRADE-04B added EP-073 — the delegated OfferCreate signing request to the external delegate signer, like EP-056 and EP-070 a deployment-gated signing request and not a provider effect, composed by nothing yet — so only the denominator moved, by one. ' +
+        'TRADE-04C added EP-074 — the governed trade executor\'s delegated OfferCreate submission, like EP-069, EP-071 and EP-072 a concrete provider network effect below the bounded-grant path, reached only through the adapter registry and only through the SDK client\'s one existing submit request after a durable reservation claim — so both numbers moved by one; EP-073 became composed, in exactly that path, and stays deployment-gated.',
     );
   });
 
@@ -695,7 +708,7 @@ describe('NB — the canonical document keeps its shape', () => {
     const ids = new Set([...DOC.matchAll(/\*\*EP-(\d{3})\*\*/g)].map((match) => match[1]));
     assert.equal(total, ids.size, 'the total must equal the number of inventoried EP rows');
     const pathLocal = rows.find((line) => line.startsWith('| PROVEN — PATH LOCAL'));
-    assert.ok(pathLocal?.includes('**11**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069') && pathLocal.includes('EP-071') && pathLocal.includes('EP-072'));
+    assert.ok(pathLocal?.includes('**12**') && pathLocal.includes('EP-050') && pathLocal.includes('EP-053') && pathLocal.includes('EP-069') && pathLocal.includes('EP-071') && pathLocal.includes('EP-072') && pathLocal.includes('EP-074'));
   });
 
   it('inventories the Generic HTTP outbound call as its own effect path, path-local, and without an egress claim', () => {
