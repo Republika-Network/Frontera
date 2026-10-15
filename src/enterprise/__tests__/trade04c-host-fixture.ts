@@ -147,6 +147,8 @@ function tradePolicy(resource: string) {
 export interface TradeHostOptions {
   /** Configure the section, but compose no attested-proposal source (refusal test). */
   readonly omitAttestation?: boolean;
+  /** Compose the embedder's TRADE-03 policy pack (default). `false`: no in-process policy source (PROD-03 `approvalPolicy` cross-feature tests). */
+  readonly embedderPolicy?: boolean;
   readonly sectionOverrides?: Record<string, unknown>;
   readonly envOverrides?: Record<string, string | undefined>;
   readonly fileOverrides?: Record<string, unknown>;
@@ -243,7 +245,7 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
       await bootEnterpriseHost({
         env: await withDeploymentWitness(env),
         contextProvider: edge.provider,
-        policyPackProvider: tradePolicy(resource),
+        ...(options.embedderPolicy === false ? {} : { policyPackProvider: tradePolicy(resource) }),
         xrplTradeExecution: {
           attested: options.omitAttestation === true ? undefined : edge.attested,
           ledgerClient: ledger.factory(),

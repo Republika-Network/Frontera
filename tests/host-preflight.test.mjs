@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { formatPreflight, runHostPreflight } from '../scripts/deploy/host-preflight.mjs';
-import { storeEnvironmentFor } from '../scripts/portability/store-registry.mjs';
+import { deriveDeploymentRequirements, storeEnvironmentFor } from '../scripts/portability/store-registry.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const enterprise = await import(join(ROOT, 'dist/src/enterprise/index.js'));
@@ -51,6 +51,9 @@ describe('PROD-03-03 Host preflight', () => {
     assert.match(output, /^PASS storage +\d+ composed stores writable/m);
     assert.match(output, /^RESULT: PASS$/m);
     assert.equal(output.includes(data), false, 'no filesystem path in the report');
+    // PROD-03: the deployment's store requirements, derived exactly as the storage check (and backup/restore) derive
+    // them — what the readiness gate judges a backup's coverage against (PR-15). Names and flags only, no value.
+    assert.deepEqual(result.deploymentRequirements, deriveDeploymentRequirements(durableEnv(data), result.configuration.configuration));
   });
 
   it('refuses the example placeholders, naming the variables and never a value', async () => {

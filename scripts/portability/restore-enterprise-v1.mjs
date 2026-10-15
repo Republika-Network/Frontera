@@ -50,13 +50,14 @@ import {
   cleanupDir,
 } from './lib-portability.mjs';
 import {
-  COVERAGE_MODEL,
+  BackupManifestError,
   STORE_DEFINITIONS,
-  conditionHolds,
+  assessBackupCoverage,
   deriveDeploymentRequirements,
   loadRegistryModules,
   storeDefinitionByName,
   targetStorePaths,
+  validateManifestStoreEntries,
 } from './store-registry.mjs';
 
 function parseArgs(argv) {
@@ -104,96 +105,30 @@ function loadAndValidateManifest(backupPath) {
   if (typeof manifest.backupId !== 'string' || !/^[A-Za-z0-9._-]{1,200}$/.test(manifest.backupId)) {
     throw new RestoreValidationError('Malformed manifest: backupId must be 1-200 letters, digits, ".", "_" or "-".');
   }
-  if (!Array.isArray(manifest.stores) || manifest.stores.length === 0) {
-    throw new RestoreValidationError('Malformed manifest: "stores" must be a non-empty array.');
-  }
-
-  const names = new Set();
-  const filenames = new Set();
-  for (const entry of manifest.stores) {
-    if (entry === null || typeof entry !== 'object') throw new RestoreValidationError('Malformed manifest: every store entry must be an object.');
-    for (const field of ['name', 'filename', 'checksum', 'schemaVersion']) {
-      if (entry[field] === undefined || entry[field] === null) throw new RestoreValidationError(`Malformed manifest: store entry is missing '${field}'.`);
-    }
-    if (names.has(entry.name)) throw new RestoreValidationError(`Malformed manifest: store '${entry.name}' appears more than once.`);
-    if (filenames.has(entry.filename)) throw new RestoreValidationError(`Malformed manifest: file '${entry.filename}' is claimed by more than one store.`);
-    names.add(entry.name);
-    filenames.add(entry.filename);
-    const storeDef = storeDefinitionByName(entry.name);
-    // A store this runtime does not know cannot be mapped, verified or opened.
-    // It might be authority state a newer build depends on: refuse, never skip.
-    if (storeDef === undefined) throw new RestoreValidationError(`Unknown store '${String(entry.name)}' in the manifest. This runtime's registry does not know it; refusing rather than dropping it.`);
-    if (entry.filename !== storeDef.filename) {
-      throw new RestoreValidationError(`Store '${entry.name}' must be stored as 'stores/${storeDef.filename}', but the manifest names '${String(entry.filename)}'.`);
-    }
-  }
+  // The store inventory: PROD-02's one reading of it, shared with the PROD-03 readiness gate.
+  asRestoreError(() => validateManifestStoreEntries(manifest));
   return manifest;
+}
+
+/** The registry's shared validators refuse with BackupManifestError; restore reports every refusal as its own, message unchanged. */
+function asRestoreError(validate) {
+  try {
+    return validate();
+  } catch (error) {
+    if (error instanceof BackupManifestError) throw new RestoreValidationError(error.message);
+    throw error;
+  }
 }
 
 // -- 2. coverage ---------------------------------------------------------------------
 
-/** Every deployment flag a store condition reads. */
-const DEPLOYMENT_FLAGS = ['kernelAuthorityEnabled', 'governedActions', 'obligationsDeclared', 'approvalsDeclared', 'operatorsConfigured', 'executionReconciliation'];
-
 /**
- * Which required stores the backup does not include, judged two ways and
- * never by trusting the producer's own `complete` flag:
- *
- * - against the backup's own recorded deployment, with THIS build's conditions
- *   (so a backup from an older registry that omitted a store the deployment
- *   composed is caught);
- * - against the restoring deployment's environment, when one is given.
+ * Which required stores the backup does not include, judged never by trusting
+ * the producer's own `complete` flag (store-registry.mjs `assessBackupCoverage`,
+ * shared with the PROD-03 readiness gate).
  */
 function assessCoverage(manifest, targetRequirements) {
-  const included = new Set(manifest.stores.map((entry) => entry.name));
-  if (manifest.coverage === undefined) {
-    const missingForTarget = targetRequirements === undefined ? [] : STORE_DEFINITIONS.filter((d) => conditionHolds(d.condition, targetRequirements) && !included.has(d.name)).map((d) => d.name);
-    return { model: 'legacy', complete: false, missingForSource: null, missingForTarget, reason: 'pre-PROD-02 backup: no coverage record, so it cannot be shown to be complete' };
-  }
-  const coverage = manifest.coverage;
-  if (coverage === null || typeof coverage !== 'object' || coverage.coverageModel !== COVERAGE_MODEL) {
-    throw new RestoreValidationError(`Unsupported coverage model '${String(coverage?.coverageModel)}'. This runtime understands only '${COVERAGE_MODEL}'; an unknown model fails closed.`);
-  }
-  if (coverage.deployment === null || typeof coverage.deployment !== 'object' || !Array.isArray(coverage.stores)) {
-    throw new RestoreValidationError('Malformed manifest: coverage must record the source deployment and every store.');
-  }
-  // The producer's record is input, never trusted shape: every flag a
-  // condition reads must be a real boolean (a string "true" would read as
-  // false and quietly un-require a store), the organization must be named,
-  // and every registry store must be accounted for exactly once.
-  for (const flag of DEPLOYMENT_FLAGS) {
-    if (typeof coverage.deployment[flag] !== 'boolean') throw new RestoreValidationError(`Malformed manifest: coverage.deployment.${flag} must be a boolean.`);
-  }
-  if (typeof coverage.deployment.organizationId !== 'string' || coverage.deployment.organizationId.length === 0) {
-    throw new RestoreValidationError('Malformed manifest: coverage.deployment.organizationId must name the organization the backup belongs to.');
-  }
-  if (typeof coverage.complete !== 'boolean') throw new RestoreValidationError('Malformed manifest: coverage.complete must be a boolean.');
-  for (const storeDef of STORE_DEFINITIONS) {
-    const entries = coverage.stores.filter((entry) => entry?.name === storeDef.name);
-    if (entries.length !== 1) throw new RestoreValidationError(`Malformed manifest: coverage must record store '${storeDef.name}' exactly once.`);
-    if (typeof entries[0].required !== 'boolean' || typeof entries[0].included !== 'boolean') throw new RestoreValidationError(`Malformed manifest: coverage of '${storeDef.name}' must say whether it is required and included.`);
-  }
-  for (const entry of coverage.stores) {
-    if (storeDefinitionByName(entry?.name) === undefined) throw new RestoreValidationError(`Unknown store '${String(entry?.name)}' in coverage.`);
-  }
-  for (const entry of coverage.stores) {
-    if (entry?.included === true && !included.has(entry.name)) throw new RestoreValidationError(`Malformed manifest: coverage says '${String(entry.name)}' is included, but the manifest has no such store.`);
-  }
-  for (const name of included) {
-    if (!coverage.stores.some((entry) => entry?.name === name && entry.included === true)) throw new RestoreValidationError(`Malformed manifest: store '${name}' is not recorded as included in coverage.`);
-  }
-  const missingForSource = STORE_DEFINITIONS.filter((d) => conditionHolds(d.condition, coverage.deployment) && !included.has(d.name)).map((d) => d.name);
-  const missingForTarget = targetRequirements === undefined ? [] : STORE_DEFINITIONS.filter((d) => conditionHolds(d.condition, targetRequirements) && !included.has(d.name)).map((d) => d.name);
-  // Whatever the producer itself recorded as required-but-absent stays absent.
-  const declaredMissing = coverage.stores.filter((entry) => entry.required === true && entry.included !== true).map((entry) => entry.name);
-  const complete = missingForSource.length === 0 && missingForTarget.length === 0 && declaredMissing.length === 0 && coverage.complete === true;
-  const reasons = [];
-  if (missingForSource.length > 0) reasons.push(`the source deployment composed ${missingForSource.join(', ')}, which the backup does not include`);
-  if (missingForTarget.length > 0) reasons.push(`the restoring deployment requires ${missingForTarget.join(', ')}, which the backup does not include`);
-  if (declaredMissing.length > 0) reasons.push(`the backup records ${declaredMissing.join(', ')} as required but not included`);
-  if (coverage.complete !== true) reasons.push('the backup records itself as incomplete');
-  if (coverage.complete === true && (missingForSource.length > 0 || declaredMissing.length > 0)) reasons.push('the manifest claims to be complete, which it is not');
-  return { model: COVERAGE_MODEL, complete, missingForSource, missingForTarget, reason: reasons.join('; ') };
+  return asRestoreError(() => assessBackupCoverage(manifest, targetRequirements));
 }
 
 // -- 3. files ------------------------------------------------------------------------

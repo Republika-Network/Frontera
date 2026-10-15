@@ -1,4 +1,4 @@
-# Frontera Pilot Operations (PROD-03-04)
+# Frontera Pilot Operations (PROD-03)
 
 The entry point for an organization that runs a Frontera pilot: who owns
 what, what must be true before go-live, how the Host is operated day to day,
@@ -15,7 +15,9 @@ here preserves it.
 | When | Read |
 | --- | --- |
 | Before deployment | [`docs/deployment/PILOT_DEPLOYMENT.md`](../deployment/PILOT_DEPLOYMENT.md) — the PROD-03-03 kit: build, configure, first start, configuration contract |
-| Before go-live | [`PILOT_READINESS.md`](PILOT_READINESS.md) — readiness checklist, go-live gate, handoff checklist |
+| Onboarding the organization, its operators and agents | [`ONBOARDING_RUNBOOK.md`](ONBOARDING_RUNBOOK.md) — the reference pilot, first boot, bootstrap, profiles, agents, bounded authority, approvals, evidence, revocation, pilot offboarding, the web console |
+| Before go-live | [`PILOT_READINESS.md`](PILOT_READINESS.md) — readiness checklist, the machine-checkable readiness gate (PR-01 … PR-20), go-live gate, handoff checklist |
+| Knowing what is protected | [`SECURITY_POSTURE.md`](SECURITY_POSTURE.md) — what Frontera protects and does not, deployment assumptions, key custody, witness, backups, network, credentials, the pilot threat model |
 | Agreeing who does what | [`SHARED_RESPONSIBILITY.md`](SHARED_RESPONSIBILITY.md) — the shared-responsibility matrix |
 | During operations | [`OPERATIONS_RUNBOOK.md`](OPERATIONS_RUNBOOK.md) — startup, shutdown, restart, backup, restore, upgrade, rollback, degraded states, operator resolution, emergency controls, approvals, credentials, witness |
 | If something is wrong | [`INCIDENT_TRIAGE.md`](INCIDENT_TRIAGE.md) — severity, triage matrix, evidence preservation, escalation |
@@ -33,7 +35,7 @@ on the separate `frontera-witness` volume.
 | A Linux x86_64 or arm64 host | The Host runtime (one OCI image built from the release) |
 | Docker Engine and Compose 2.20 or later | The governance engine: authority, scope, limits, approvals, obligations, emergency controls |
 | The Frontera image and kit, built from an approved release | The durable state model (SQLite stores, schema versions, signed and witness-anchored authority state) |
-| Persistent local volumes (not NFS/SMB) | Liveness, readiness and health (`/live`, `/ready`, `/health`) |
+| Persistent local volumes (not NFS/SMB) | Liveness, readiness and health (`/live`, `/ready`, `/health`), and the readiness gate (`pilot-readiness`) |
 | TLS termination and the reverse proxy | Release identity (`/version`) |
 | DNS, firewalling, network exposure | Configuration validation (`config-check`, the launcher's preflight) |
 | Secret storage and injection into `deploy/pilot/.env` | The operator plane: operational state, Attention, ASSURE traces, operator resolution |
@@ -82,8 +84,16 @@ of acceptance (A17):
 - Rotation of the authority signing key, the witness credential and the
   witness receipt key has no supported procedure in the pilot
   ([`OPERATIONS_RUNBOOK.md`](OPERATIONS_RUNBOOK.md) §14).
-- The CTRL-03 web console is not in the pilot image; the operator plane is the
-  HTTP API under `/api/admin/...`.
+- The CTRL-03 web console is not in the pilot image; it runs from the same
+  release's checkout on an operator machine (ONBOARDING_RUNBOOK.md §14), and
+  the operator plane is always the HTTP API under `/api/admin/...`.
+- Deterministic policy in the pilot is the governed-action file's
+  `approvalPolicy` (human approval per Governance Profile) and the authority's
+  own bounds; any other policy is in-process embedding, outside the qualified
+  pilot. Profile content changes are a configuration change and a restart.
+- Restoring an agent's authority after a revocation means onboarding it again
+  as a new identity (ONBOARDING_RUNBOOK.md §11.3).
+- Operators authenticate with bearer secrets: no SSO or MFA in the pilot.
 - No payment rail is part of the pilot. Frontera governs the configured
   Generic HTTP actions only.
 - Frontera provides no monitoring stack, alerting, log shipping, ticketing or

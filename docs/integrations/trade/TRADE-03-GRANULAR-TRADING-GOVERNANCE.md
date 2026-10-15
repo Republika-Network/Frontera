@@ -1191,6 +1191,19 @@ three-way concurrent load.
 
 **Remaining limitation.** A wall clock that *steps backwards* between `at` and `relianceAt` makes the edge
 refuse (fail closed). This qualification host (WSL2) re-syncs its clock in ~0.8–1.3 s backward steps about
-every 30 s, which refuses an order whose collection straddles a step; the real-time trials detect such steps
-independently (wall vs. monotonic clock) and count them, never as passes of the property. Production hosts
-should keep time with a slewing discipline (e.g. chrony) so the trusted clock never steps backwards.
+every 30 s, which refuses an order whose collection straddles a step. Production hosts should keep time with
+a slewing discipline (e.g. chrony) so the trusted clock never steps backwards.
+
+**How the real-time trials keep a clock refusal apart from a defect (revised at the PROD-03 integration).**
+No trial is skipped. Each trial records every instant the trusted clock handed out — the Kernel's `at`, every
+source stamp (including TRADE-02's verifier) and the edge's reliance read — in call order, and derives its
+expected outcome exactly: **refuse** iff the reliance instant precedes `at` or a stamp, otherwise **admit**.
+Every trial is asserted to that outcome. A required refusal must carry only clock causes (a `*_FROM_FUTURE`
+code, the verifier's `DELEGATION_OBSERVATION_FROM_FUTURE` behind TRADE-03's generic delegation code, or a
+`*_PREREQUISITE_NOT_MET` that follows from one of those); any other reason fails the trial as a product
+defect. A backwards read with no host clock step seen by the independent witness (wall vs. monotonic) also
+fails the trial. Counts are reported per category (non-regressed admitted / regressed and refused /
+regressed outside the reliance window and admitted). Deterministic injection covers both regression shapes
+(O: reliance before `at`; O2: a recovered regression, admitted; O3: reliance after `at` but before the stamps,
+refused as from the future), and self-tests prove the classifier rejects an un-witnessed regression, a non-clock
+refusal on a monotonic clock, and a non-clock reason during a regression.

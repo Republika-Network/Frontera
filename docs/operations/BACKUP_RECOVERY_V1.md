@@ -157,6 +157,11 @@ Full steps in `RUNBOOKS_V1.md` §5. Summary:
 2. Deploy the build recorded in the backup's manifest.
 3. Restore configuration (governed-action file — compare its SHA-256 with
    `coverage.deployment.governedActionsFileDigest`) and secrets (above).
+   `coverage.deployment` records every flag a store condition reads,
+   including `xrplPaymentRail` and `xrplTradeExecution`; a coverage record
+   that omits or mistypes one is refused as malformed (a missing flag would
+   otherwise quietly un-require that interlock). Coverage backups taken before
+   this rule lack the two XRPL flags and are refused — take a fresh backup.
 4. Make the signer (external custody) and the witness reachable. Do not
    restore the witness from the authority backup.
 5. `restore:v1` into the new data directory; start; verify.

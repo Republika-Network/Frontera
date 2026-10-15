@@ -76,7 +76,7 @@ interface Hooks {
   afterSources?: () => Promise<void> | void;
 }
 
-function world(clock: Clock, options: { readonly bindingSeconds?: number; readonly profile?: Record<string, unknown>; readonly verifierClock?: Clock; readonly create?: typeof createTradeRiskContext } = {}): World {
+function world(clock: Clock, options: { readonly bindingSeconds?: number; readonly profile?: Record<string, unknown>; readonly verifierClock?: Clock; readonly edgeClock?: Clock; readonly create?: typeof createTradeRiskContext } = {}): World {
   const delegations: unknown[] = [];
   const ledger = new FakeXrplLedger();
   const pair = pairWorld(ledger);
@@ -118,7 +118,7 @@ function world(clock: Clock, options: { readonly bindingSeconds?: number; readon
     },
     sourceIds: { risk: 'trade-risk-assessor', delegation: 'trade-delegation-verifier' },
     bindingSeconds: options.bindingSeconds ?? 30,
-    clock: () => iso(clock.now()),
+    clock: () => iso((options.edgeClock ?? clock).now()),
     simulation: TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT,
     onAssessment: (record) => evidence.push(record),
   });
@@ -138,6 +138,106 @@ async function evaluate(w: World, clock: Clock, options: { readonly at?: number 
 const admitted = (observations: readonly ContextFactObservation[]): boolean => observations.length === TRADE_RISK_MATERIAL_FACTS.length;
 const refusals = (w: World): readonly string[] => (w.evidence.at(-1)?.controls ?? []).filter((control) => control.outcome !== 'SATISFIED').map((control) => `${control.control}:${control.reason}`);
 
+/** The real trusted clock, recording every instant it hands out (same time source; it only observes). */
+class RecordingClock implements Clock {
+  reads: number[] = [];
+  /** Shared, in call order, by every recording clock of one world. */
+  constructor(private readonly log: number[] = []) {}
+  /** Injected step, for the classifier's self-tests only (real-time trials leave it 0). */
+  offsetMs = 0;
+  now(): number {
+    const ms = Date.now() + this.offsetMs;
+    this.reads.push(ms);
+    this.log.push(ms);
+    return ms;
+  }
+  reset(): void {
+    this.reads = [];
+  }
+}
+
+/** Two observers of the one real trusted clock — facts (Kernel instant, source stamps) and the edge — over one chronological log. */
+function recordingClocks(): { readonly facts: RecordingClock; readonly edge: RecordingClock; readonly log: number[] } {
+  const log: number[] = [];
+  return { facts: new RecordingClock(log), edge: new RecordingClock(log), log };
+}
+
+/** Fail-closed clock refusals: the trusted clock put a fact after the reliance instant. Anything else is a product defect. */
+const CLOCK_REFUSAL = /FROM_FUTURE/;
+
+/**
+ * The last assessment's refusals, each resolved to its cause: TRADE-03 reports a delegation the verifier did not
+ * authorize as DELEGATION_RELIANCE_NOT_AUTHORIZED, so the verifier's own reason is substituted.
+ */
+function causes(w: World): readonly string[] {
+  const verifierReason = String((w.delegations.at(-1) as Record<string, unknown> | undefined)?.['reason']);
+  return refusals(w).map((reason) => (reason === 'DELEGATION_VERIFIED:DELEGATION_RELIANCE_NOT_AUTHORIZED' ? `DELEGATION_VERIFIED:${verifierReason}` : reason));
+}
+
+/** Every refusal is a fact from the future, or a control whose prerequisite was one of those refused facts. */
+function onlyClockRefusals(reasons: readonly string[]): boolean {
+  const future = reasons.some((reason) => CLOCK_REFUSAL.test(reason));
+  return reasons.length > 0 && reasons.every((reason) => reason === '(refused before assessment)' || CLOCK_REFUSAL.test(reason) || (future && /PREREQUISITE_NOT_MET$/.test(reason)));
+}
+
+interface ClassifiedTrial {
+  /** The trusted clock handed out a smaller instant after a larger one during the trial. */
+  readonly nonMonotonic: boolean;
+  /** The reliance instant precedes the Kernel's instant or some source's stamp: the edge must refuse. */
+  readonly mustRefuse: boolean;
+  /** Independent witness: the wall clock advanced less than the monotonic clock (the host clock stepped backwards). */
+  readonly hostStepped: boolean;
+  readonly admitted: boolean;
+  readonly reasons: readonly string[];
+  readonly at: string;
+  /** The instant the edge read after collection (its last trusted-clock read). */
+  readonly relianceAt: string;
+  /** Monotonic duration of the evaluation, ms. */
+  readonly elapsedMs: number;
+}
+
+/**
+ * One real-time trial, classified from what the trusted clock actually handed out — never skipped. `facts`
+ * serves the Kernel's instant and every source stamp; `edge` is the same real clock, observed separately,
+ * so its last read is the reliance instant. Expected outcome, exactly: refuse iff the reliance instant is
+ * before the Kernel's instant or any stamp (`at <= relianceAt` and no fact after `relianceAt`), else admit.
+ */
+async function classifiedTrial(w: World, { facts, edge, log }: ReturnType<typeof recordingClocks>): Promise<ClassifiedTrial> {
+  const proposal = rawProposal(w.pair, { organizationId: ORG, principalId: PRINCIPAL });
+  const admission = w.edge.admitProposal(IDENTITY, proposal);
+  assert.ok(admission.admitted, JSON.stringify(admission));
+  const evidenceBefore = w.evidence.length;
+  facts.reset();
+  edge.reset();
+  log.length = 0;
+  const wall0 = Date.now();
+  const mono0 = performance.now();
+  const at = iso(facts.now());
+  const out = await w.edge.provider.resolveContext({ keys: [...TRADE_RISK_MATERIAL_FACTS].sort(), actorId: ACTOR, trustDomainId: 'trust-f1', action: admission.intent.action, resourceScope: admission.intent.resource, organizationId: ORG, at });
+  const elapsedMs = performance.now() - mono0;
+  const hostStepped = Date.now() - wall0 < elapsedMs - 5;
+  assert.ok(edge.reads.length >= 1, 'the edge read the trusted clock after collection');
+  const reliance = edge.reads.at(-1)!;
+  const nonMonotonic = log.some((ms, index) => index > 0 && ms < log[index - 1]!);
+  const mustRefuse = reliance < Math.max(...facts.reads);
+  const reasons = w.evidence.length > evidenceBefore ? causes(w) : ['(refused before assessment)'];
+  return { nonMonotonic, mustRefuse, hostStepped, admitted: admitted(out.observations), reasons, at, relianceAt: iso(reliance), elapsedMs };
+}
+
+/**
+ * Asserts the trial's outcome is exactly its expected one, and keeps the two kinds of refusal apart: a
+ * refusal is acceptable only when the clock made it necessary, and then only for a clock reason.
+ */
+function assertClassified(trial: ClassifiedTrial, label: string): void {
+  if (trial.nonMonotonic) assert.ok(trial.hostStepped, `${label}: the trusted clock went backwards but the independent witness saw no host clock step — not a host clock regression`);
+  if (trial.mustRefuse) {
+    assert.equal(trial.admitted, false, `${label}: the reliance instant preceded a fact the trusted clock had already handed out, yet the edge relied on it`);
+    assert.ok(onlyClockRefusals(trial.reasons), `${label}: refused, but for a non-clock reason: ${trial.reasons.join(', ')}`);
+  } else {
+    assert.equal(trial.admitted, true, `${label}: false refusal (no clock regression made it necessary): ${trial.reasons.join(', ')}`);
+  }
+}
+
 describe('F-1 — honest real-time sources are relied on (the defect, fixed)', () => {
   it('A: an observation made immediately after the Kernel’s evaluation instant is admitted', async () => {
     const w = world(realClock);
@@ -146,47 +246,47 @@ describe('F-1 — honest real-time sources are relied on (the defect, fixed)', (
   });
 
   for (const latency of [0, 2, 50]) {
-    it(`B/C: ${latency} ms of source latency, 200 real-time trials: zero false refusals (a real clock regression is refused, and counted as such)`, async () => {
-      const w = world(realClock);
+    it(`B/C: ${latency} ms of source latency, 200 real-time trials: every trial gets exactly its expected outcome (admit, or a clock refusal the clock made necessary)`, async (t) => {
+      const clocks = recordingClocks();
+      const w = world(clocks.facts, { edgeClock: clocks.edge });
       if (latency > 0) w.hooks.beforeDelegation = () => sleep(latency);
-      let falseRefusals = 0;
-      let regressionTrials = 0;
-      const reasons = new Set<string>();
+      const tally = { admitted: 0, clockRefusals: 0, regressedButAdmitted: 0, hostSteps: 0 };
       for (let trial = 0; trial < 200; trial += 1) {
-        // An independent witness of the host clock: if the wall clock advanced less than the monotonic clock during
-        // the trial, the trusted clock stepped backwards (this WSL2 host re-syncs its clock in ~1 s backward steps).
-        const wall0 = Date.now();
-        const mono0 = performance.now();
-        const { observations } = await evaluate(w, realClock);
-        const regressed = Date.now() - wall0 < performance.now() - mono0 - 5;
-        if (regressed) {
-          regressionTrials += 1;
-          continue; // a regression between the Kernel instant and the reliance instant must refuse (case O); either way it is no evidence of F-1
-        }
-        if (!admitted(observations)) {
-          falseRefusals += 1;
-          for (const reason of refusals(w)) reasons.add(reason);
-        }
+        const classified = await classifiedTrial(w, clocks);
+        assertClassified(classified, `trial ${trial} at ${classified.at}`);
+        if (classified.hostStepped) tally.hostSteps += 1;
+        if (classified.mustRefuse) tally.clockRefusals += 1;
+        else if (classified.nonMonotonic) tally.regressedButAdmitted += 1;
+        else tally.admitted += 1;
       }
-      assert.equal(falseRefusals, 0, `false refusals without any clock regression: ${[...reasons].join(', ') || '(no assessment)'}`);
-      assert.ok(regressionTrials < 200, 'the clock regressed in every trial: nothing was measured');
+      t.diagnostic(`latency ${latency} ms: ${tally.admitted} non-regressed admitted, ${tally.clockRefusals} regressed and refused (required), ${tally.regressedButAdmitted} regressed outside the reliance window and admitted (required), ${tally.hostSteps} trials during which the host clock stepped`);
+      assert.equal(tally.admitted + tally.clockRefusals + tally.regressedButAdmitted, 200, 'every trial is classified; none skipped');
+      assert.ok(tally.admitted > 0, 'no trial ran without a clock regression: nothing about F-1 was measured');
     });
   }
 
-  it('D: a legitimate two-second source delay inside the binding’s lifetime is admitted', async () => {
-    const w = world(realClock, { bindingSeconds: 30 });
+  it('D: a legitimate two-second source delay inside the binding’s lifetime is admitted', async (t) => {
+    const clocks = recordingClocks();
+    const w = world(clocks.facts, { bindingSeconds: 30, edgeClock: clocks.edge });
     w.hooks.beforeDelegation = () => sleep(2_000);
-    // A trial during which the host clock stepped backwards is no evidence either way (it must refuse: case O); re-run, at most five times.
+    // Every attempt is asserted to its exact expected outcome. An attempt the host clock made a required
+    // refusal is asserted as such, counted, and cannot show the two-second admission: try again, at most five times.
+    let clockRefusals = 0;
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const wall0 = Date.now();
-      const mono0 = performance.now();
-      const { observations, at } = await evaluate(w, realClock);
-      if (Date.now() - wall0 < performance.now() - mono0 - 5) continue;
-      assert.ok(admitted(observations), JSON.stringify(refusals(w)));
-      assert.ok(Date.parse(w.evidence.at(-1)!.assessedAt) - Date.parse(at) >= 2_000, 'assessed at the post-collection reliance instant');
+      const classified = await classifiedTrial(w, clocks);
+      assertClassified(classified, `attempt ${attempt}`);
+      if (classified.mustRefuse) {
+        clockRefusals += 1;
+        continue;
+      }
+      assert.equal(w.evidence.at(-1)!.assessedAt, classified.relianceAt, 'assessed at the post-collection reliance instant');
+      assert.ok(classified.elapsedMs >= 2_000, 'the two-second delay really elapsed (monotonic)');
+      // Wall-clock span: exact unless the host clock stepped meanwhile (then the reliance instant is still >= every stamp, as asserted above).
+      if (!classified.hostStepped) assert.ok(Date.parse(classified.relianceAt) - Date.parse(classified.at) >= 2_000, 'the reliance instant is two seconds after the Kernel instant');
+      t.diagnostic(`admitted on attempt ${attempt + 1} (host clock stepped during it: ${classified.hostStepped}); ${clockRefusals} earlier attempt(s) were required clock refusals`);
       return;
     }
-    assert.fail('the host clock regressed during five consecutive two-second trials');
+    assert.fail(`five consecutive two-second attempts were required clock refusals (${clockRefusals}); the two-second admission was never observed`);
   });
 });
 
@@ -320,6 +420,29 @@ describe('F-1 — every refusal still refuses (deterministic trusted clock)', ()
       clock.ms = T0 - 1;
     };
     assert.equal(admitted((await evaluate(w, clock, { at: T0 })).observations), false);
+  });
+
+  it('O2: a regression after the Kernel’s instant that the clock recovers from before reliance — every stamp at or before the reliance instant — is admitted (no fact after reliance)', async () => {
+    const clock = new ManualClock(T0 - 200);
+    const w = world(clock);
+    w.hooks.afterSources = () => {
+      clock.ms = T0 + 50;
+    };
+    const { observations } = await evaluate(w, clock, { at: T0 });
+    assert.ok(admitted(observations), JSON.stringify(refusals(w)));
+    assert.equal(w.evidence.at(-1)?.assessedAt, iso(T0 + 50));
+  });
+
+  it('O3: a regression between the sources’ stamps and the reliance instant (still after the Kernel’s instant) is refused as a fact from the future', async () => {
+    const clock = new ManualClock(T0 + 100);
+    const w = world(clock);
+    w.hooks.afterSources = () => {
+      clock.ms = T0 + 50;
+    };
+    const { observations } = await evaluate(w, clock, { at: T0 });
+    assert.equal(admitted(observations), false);
+    assert.ok(onlyClockRefusals(causes(w)), JSON.stringify(causes(w)));
+    assert.ok(causes(w).includes('DELEGATION_VERIFIED:DELEGATION_OBSERVATION_FROM_FUTURE'), 'TRADE-02’s verifier refused its own future-dated observation');
   });
 
   it('P: an expired binding (the Kernel asks after the admission lifetime) is refused before any source is asked', async () => {
@@ -516,4 +639,37 @@ describe('F-1 mutations — each removed or relaxed check is detected', () => {
       const risk = module.tradingRiskContextReadings(evidence, { proposal, profile: w.profile, at: evidence.assessedAt, readingAt: later }, { action: intent.action, resourceScope: intent.resource, organizationId: ORG });
       return !risk.projected;
     }));
+});
+
+describe('F-1 — the real-time classifier keeps product defects apart from required clock refusals (self-tests)', () => {
+  it('an injected backwards step at the reliance read is classified a required refusal — and, with no host clock step behind it, reported, never excused', async () => {
+    const clocks = recordingClocks();
+    const w = world(clocks.facts, { edgeClock: clocks.edge });
+    w.hooks.afterSources = () => {
+      clocks.edge.offsetMs = -1_000;
+    };
+    const trial = await classifiedTrial(w, clocks);
+    assert.equal(trial.nonMonotonic, true);
+    assert.equal(trial.mustRefuse, true);
+    assert.equal(trial.admitted, false, 'the edge refused the regressed reliance instant');
+    assert.equal(trial.hostStepped, false);
+    assert.throws(() => assertClassified(trial, 'injected'), /not a host clock regression/);
+    assert.doesNotThrow(() => assertClassified({ ...trial, hostStepped: true }, 'as if the host had stepped'));
+  });
+
+  it('a non-clock refusal on a monotonic clock is a product defect: classified as a false refusal', async () => {
+    const clocks = recordingClocks();
+    const w = world(clocks.facts, { edgeClock: clocks.edge });
+    w.hooks.marketOrganization = 'org-other';
+    const trial = await classifiedTrial(w, clocks);
+    assert.equal(trial.mustRefuse, false);
+    assert.equal(trial.admitted, false);
+    assert.throws(() => assertClassified(trial, 'defect'), /false refusal/);
+  });
+
+  it('a refusal for a non-clock reason is never accepted as a clock refusal, even when the clock did regress', () => {
+    const trial = { nonMonotonic: true, mustRefuse: true, hostStepped: true, admitted: false, reasons: ['REFERENCE_PRICE:REFERENCE_ORGANIZATION_MISMATCH'], at: iso(0), relianceAt: iso(0), elapsedMs: 0 };
+    assert.throws(() => assertClassified(trial, 'mixed'), /non-clock reason/);
+    assert.throws(() => assertClassified({ ...trial, admitted: true, reasons: [] }, 'relied'), /yet the edge relied on it/);
+  });
 });

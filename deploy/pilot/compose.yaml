@@ -167,6 +167,22 @@ services:
     healthcheck:
       disable: true
 
+  pilot-readiness:
+    # docker compose run --rm -T pilot-readiness [--require deployment|organization|pilot] [options]
+    # The PROD-03 pilot readiness gate and diagnostic (scripts/pilot/pilot-readiness.mjs):
+    # read-only. In the Host's image, configuration and network namespace, it
+    # sends GET requests to the running Host, runs the same preflight as
+    # config-check (`--preflight`) and reads only the files it is given. It
+    # authenticates with the observer credential and verifies the
+    # administrator's; it never prints either. Starts nothing.
+    <<: *frontera-host
+    profiles: ["tools"]
+    network_mode: service:network
+    entrypoint: ["node", "scripts/pilot/pilot-readiness.mjs", "--host", "http://127.0.0.1:8787", "--preflight", "--credential-env", "FRONTERA_OPERATOR_KEY_OBSERVER", "--operator-env", "FRONTERA_OPERATOR_KEY_ADMIN"]
+    command: []
+    healthcheck:
+      disable: true
+
 volumes:
   # The Host's durable state: every store above. Back these files up together.
   frontera-state:

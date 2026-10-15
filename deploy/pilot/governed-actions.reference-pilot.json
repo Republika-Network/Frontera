@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "trustDomainId": "trust-domain-pilot",
+  "grantLifetimeSeconds": 300,
+  "customerPrincipals": [],
+  "operators": [
+    { "operatorId": "ops-admin", "role": "organization-administrator", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_ADMIN" },
+    { "operatorId": "ops-provisioner", "role": "provisioner", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_PROVISIONER" },
+    { "operatorId": "ops-steward", "role": "profile-steward", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_STEWARD" },
+    { "operatorId": "ops-approver", "role": "approver", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_APPROVER" },
+    { "operatorId": "ops-responder", "role": "responder", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_RESPONDER" },
+    { "operatorId": "ops-observer", "role": "observer", "apiKeyEnv": "FRONTERA_OPERATOR_KEY_OBSERVER" }
+  ],
+  "profileLifecycle": "operator-promoted",
+  "governance": {
+    "parameterDimensions": [
+      { "id": "replicaCount", "type": "integer", "bound": "maximum" },
+      { "id": "deploymentStrategy", "type": "token", "bound": "exact" }
+    ],
+    "actionClasses": [{ "id": "deploy", "actions": ["deploy-release"] }],
+    "resourceClasses": [
+      { "id": "staging", "resources": ["staging-cluster"] },
+      { "id": "production", "resources": ["production-cluster"] }
+    ],
+    "profiles": [
+      {
+        "profileId": "deploy-staging",
+        "version": 1,
+        "owner": "org-pilot",
+        "provenance": { "authoredBy": "platform-team", "approvedBy": "change-board" },
+        "actionClass": "deploy",
+        "resourceClass": "staging",
+        "parameters": [
+          { "dimension": "replicaCount", "required": true },
+          { "dimension": "deploymentStrategy", "required": true }
+        ],
+        "materialFacts": [],
+        "relevantPolicies": []
+      },
+      {
+        "profileId": "deploy-production",
+        "version": 1,
+        "owner": "org-pilot",
+        "provenance": { "authoredBy": "platform-team", "approvedBy": "change-board" },
+        "actionClass": "deploy",
+        "resourceClass": "production",
+        "parameters": [
+          { "dimension": "replicaCount", "required": true },
+          { "dimension": "deploymentStrategy", "required": true }
+        ],
+        "materialFacts": [],
+        "relevantPolicies": ["pilot-approvals"],
+        "approval": { "approverAction": "approve-deploy", "minimumApprovals": 1, "requestTtlSeconds": 3600, "approvalValiditySeconds": 900 }
+      }
+    ]
+  },
+  "approvalPolicy": {
+    "policyId": "pilot-approvals",
+    "rules": [{ "ruleId": "production-deploy-review", "governanceProfile": "deploy-production", "reasonCode": "PRODUCTION_DEPLOY_REVIEW" }]
+  },
+  "genericHttpAdapters": [
+    {
+      "adapterId": "deploy-target",
+      "origin": "https://deploy.example.com",
+      "method": "POST",
+      "path": [{ "kind": "literal", "value": "deployments" }, { "kind": "source", "source": "resource" }],
+      "body": {
+        "kind": "json-object",
+        "fields": {
+          "action": { "kind": "source", "source": "action" },
+          "replicas": { "kind": "parameter", "dimension": "replicaCount" },
+          "strategy": { "kind": "parameter", "dimension": "deploymentStrategy" },
+          "executionId": { "kind": "source", "source": "correlation.executionId" },
+          "requestId": { "kind": "source", "source": "correlation.requestId" }
+        }
+      },
+      "credential": { "kind": "bearer", "tokenEnv": "FRONTERA_PROVIDER_TOKEN" },
+      "timeoutMs": 10000
+    }
+  ],
+  "routes": [{ "action": "deploy-release", "adapterId": "deploy-target" }]
+}

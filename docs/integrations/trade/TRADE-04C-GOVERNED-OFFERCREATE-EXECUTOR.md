@@ -335,6 +335,9 @@ lists its path on the state volume. A restored older copy is refused at the next
 (§14) — exactly PAY-03's posture. Production enablement additionally needs the TRADE-05 drill (backup,
 restore, witness reconciliation on a real deployment).
 
+Since the PROD-03 integration (§36), a backup's `coverage.deployment` records `xrplPaymentRail` and
+`xrplTradeExecution`, and a coverage record that omits or mistypes either is refused as malformed.
+
 ## 19. Security effect inventory changes
 
 | Inventory | Change | Meaning preserved |
@@ -377,9 +380,11 @@ prevent that cryptographically today.
 | `trade04c-account-authority.test.ts` | 8 | key derivation vs SDK (44 keys), master/regular/disabled/changed key, malformed roots, owner `Sequence` |
 | `trade04c-reserved-submission.test.ts` | 11 | G2 configuration, closed surface, not-connected, blob-derived claim, ordering pins, Payment surface |
 | `trade04c-governed-execution-host.test.ts` | 16 | Scenarios A–F on the shipped Host; boot refusals (overlap, attestation missing, env key material ×3, signer identity, configuration ×9) |
-| `trade03-f1-reliance-time.test.ts` | 27 | F-1 (TRADE-03 §38): honest real-time trials (3 × 200), 2 s delay, binding boundary, stale/future/malformed facts, organization, source, revocation, replay, profile expiry, clock regression, evidence and no-extension, 10 compiled-module mutants |
+| `trade03-f1-reliance-time.test.ts` | 32 | F-1 (TRADE-03 §38): honest real-time trials (3 × 200, each asserted to its exact expected outcome), 2 s delay, binding boundary, stale/future/malformed facts, organization, source, revocation, replay, profile expiry, clock regression (O, O2, O3), evidence and no-extension, 10 compiled-module mutants, 3 classifier self-tests |
 | `trade04c-governed-executor-structure.test.ts` | 17 | edge files, imports, reachers, routes, single builders and callers, order, post-submit uncertainty, no effects, bounds, ownership declaration and rule (same/different network, delegates, malformed), negative fixtures |
 | `trade04c-mutation.test.ts` | 23 | §23 |
+| `trade04c-prod03-host-integration.test.ts` | 10 | §36: PROD-03 policy-source rule and Payment/Trade sequence isolation, alone and together; nothing opened on refusal; `approvalPolicy` as a trade Host's one policy source (review added, VIOLATED denied, altered intent refused at step 1, replay) |
+| `portability-store-registry.structure.test.mjs` (+4) | 13 | §36: every flag a store condition reads is type-checked and written by the backup |
 
 Governed-path refusals (policy denial, approval required/revoked/expired, missing/expired/revoked grant,
 wrong principal/organization, risk ceiling, stale or missing trusted facts, emergency stop) are refusals
@@ -563,6 +568,7 @@ shapes), fee behavior under load, real finality and P12 resolution, a backup/res
 | R5 | customer direct submissions on the owner account | contractual (§27) |
 | R6 | G1 (shared accounts) | not authorized; refused at boot |
 | R7 | throughput (one order per owner per validated ledger) | documented; TRADE-04D |
+| R8 | `approvalPolicy` (PROD-03) as a trade Host's one policy source drops TRADE-03's policy-pack binding rules (§36) | open, defence in depth: the Kernel's material-fact gate still denies VIOLATED; TRADE-04C step 1 still refuses an altered intent (tested). Recommendation: compose TRADE-03's rules with the file policy, or refuse that composition — needs a decision |
 
 ## 34. Commercial readiness assessment
 
@@ -577,3 +583,37 @@ Testnet-proven: R1–R3 stand between it and a live pilot.
 AC-25); AC-18 holds (no live writes); AC-26 is satisfied as a precondition only (TRADE-05 needs separate
 authorization). Conditions: R1 (signer authorization), TRADE-05 live qualification, TRADE-04D recovery. (R2, F-1,
 is corrected.)
+
+## 36. Integration with `main` @ `9dfca30` (PROD-03, #188)
+
+`main` gained PROD-03 after this branch's baseline; it was merged in (`git merge --no-ff origin/main`, the four
+TRADE-04C commits kept). Two files conflicted, both additively:
+
+- `host/enterprise-host.ts` — kept PROD-03's `policyPackProviderOf` and `assertOnePolicySource`, and
+  TRADE-04C's `trade` argument to `toCreateEnterpriseOptions`, `assertXrplDomainsDisjoint`, the trade
+  composition and P12 selection. Both checks are pure functions of configuration in the same
+  pre-composition `try` of `bootEnterpriseHost` (before any rail, interlock, signer or store is composed);
+  sequence isolation runs first, so a configuration wrong both ways reports
+  `HOST_XRPL_SEQUENCE_OWNERSHIP_INVALID` deterministically.
+- `host/host-configuration.ts` — `approvalPolicy` and `xrplTradeExecution` side by side in imports, the typed
+  section, the closed key list (unknown keys still refused), parsing and propagation. Neither reads the other.
+
+**Cross-feature finding 1 — backup coverage flags (fixed).** PROD-03's coverage validator type-checked a fixed
+list of deployment flags that omitted `xrplPaymentRail` (already so on `main`) and TRADE-04C's
+`xrplTradeExecution`, and the backup never wrote either. A coverage record without the flag was judged
+complete without the matching interlock (reproduced; a restore into a trade Host still refused it through
+`missingForTarget`). Approved fix ("strict flags"): the backup writes both, the validator requires every flag a
+store condition reads (`DEPLOYMENT_FLAGS`, pinned against `conditionHolds` by test). Coverage backups taken
+before this change lack the two flags and are refused: take a fresh backup.
+
+**Cross-feature finding 2 — `approvalPolicy` and TRADE-03's policy rules (R8, open).** TRADE-03's binding rules
+are policy-pack rules the embedder composes as `policyPackProvider`. PROD-03 refuses that beside a file
+`approvalPolicy`, so a trade Host using `approvalPolicy` has no TRADE-03 binding rules. Tested on the shipped
+Host: an over-ceiling order is still **denied** by the Kernel's material-fact gate before any review; an altered
+intent **reaches review**, and once approved is refused by the executor at step 1
+(`trade-execution-not-bound`) with zero signing requests. No execution bypass; one defence-in-depth layer is
+absent in that composition. Not fixed here (it needs a design decision).
+
+**F-1 trial classification (revised).** See TRADE-03 §38: no trial is skipped; each is asserted to its exact
+expected outcome from the recorded trusted-clock reads, refusals must carry clock causes only, and
+deterministic injection plus classifier self-tests cover both regression shapes.
