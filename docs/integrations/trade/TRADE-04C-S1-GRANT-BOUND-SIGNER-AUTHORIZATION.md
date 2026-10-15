@@ -3,7 +3,7 @@
 - Milestone: TRADE-04C-S1. It closes TRADE-04C residual risk **R1** (§28/§33 of `TRADE-04C-GOVERNED-OFFERCREATE-EXECUTOR.md`) for credential theft.
 - Branch: `feat/trade-04c-signer-grant-capabilities`, worktree `Frontera-trade-04c-s1`.
 - Baseline: `main @ ffcf599742f3bd99441b289a924c95b923a220c8` (PR #190).
-- Architecture: Option 1 of the design gate (§2 below), **approved by the user on 2026-10-15**. It adds a new CORE-02 authority artifact and signing operation; no new root of trust is introduced.
+- Architecture: the design gate (§2) offered two options — a new CORE-02 per-order capability (Option 1) or signer-side verification of the existing signed grant only (Option 2, rejected: it could not bind the preimage, `Sequence`, `Fee`, LLS or execution). **Option 1 was approved by the user on 2026-10-15** and is what is built. It adds a new CORE-02 authority artifact and signing operation; no new root of trust is introduced.
 - Status: implemented and committed locally. Not pushed, no PR. The verdict is in §16 (READY FOR PR, not production-ready).
 
 > **What this does and does not claim.** After this milestone, a stolen bearer credential for the delegated signer obtains **zero** signatures from a signer implementing protocol v2; the reference signer is one. A capability signs at most once. Nothing here prevents a **compromised delegate key or signer process** from signing outside Frontera. Nothing here makes the stack production-ready: that still needs operational custody, recovery (TRADE-04D) and real-network qualification (TRADE-05).
@@ -24,7 +24,7 @@
 |---|---|---|
 | A | Attack | A bearer credential alone could get any closed, in-bounds OfferCreate signed for a pinned pair. |
 | B | Issuer | The **existing CORE-02 authority key**, under its existing custody. There is no Host-held key and no new root. |
-| C | Proof of grant and P11 | **Grant:** the custody boundary verifies the presented signed grant under its own key and checks that the capability's terms are the grant's exact tokens (§5). **P11:** the execution id is bound, not proven; no signed P11 artifact exists, and adding one was not proposed. |
+| C | Proof of grant and P11 | **Grant:** the custody boundary verifies the presented signed grant under its own key and checks that the capability's terms are the grant's exact tokens (§5). **P11:** the execution id is **Host-attested** — bound into the signed capability, but not independently cryptographically proven: no signed P11 artifact exists, and adding one was not proposed. A compromised Host could name any execution id. |
 | D | Custody | Unchanged. External custody gains one opt-in structured operation (§6). |
 | E | Verification | The signer pins 1–8 authority public keys (key id, `ed25519-v1`, SPKI PEM), the trust domain and the organization, and verifies with CORE-02's own `createAuthorityArtifactVerifier` under the capability's domain. |
 | F | Exact binding | `signingPreimageDigest` = `sha256` over `STX\0` ‖ the signing fields, with `SigningPubKey` set to the pinned delegate key. It also compares owner, delegate, network, `Sequence`, `Fee` and LLS field by field, and the order derived from the granted proposal. |
@@ -44,7 +44,7 @@
 | Holds a leaked signed grant | n/a | Nothing: a grant is not a capability, and the custody service issues capabilities only to its Host |
 | Compromised Host | Unlimited | Unchanged (AA-010): it can ask for grants and capabilities through the authority's credential |
 | Compromised signer process or delegate key | Unlimited | **Unchanged — outside this guarantee** (tested as such, §12) |
-| Database rewrite of the signer's ledger | n/a | It can delete consumption rows: that is a signer-host compromise |
+| Rewrite or rollback of the signer's ledger (deleting rows, or restoring an older copy of the file) | n/a | Consumed capabilities become reusable until they expire (≤ 60 s): a signer-host compromise, outside this guarantee. No external freshness anchor protects the ledger. |
 
 ## 4. Cryptographic authorization contract
 
@@ -57,7 +57,7 @@ The artifact is `frontera.xrpl-delegated-offer-capability.v1`, operation `sign-x
 | `issuerKeyId` | the authority key id; it must equal the envelope's key id |
 | `organizationId`, `trustDomain` | the organization, and the configured `governedActions.trustDomainId` |
 | `grantStoreId`, `boundedGrantId`, `grantDigest` | the authenticated grant (store id, id, digest) |
-| `executionId` | the P11 execution (bound, not proven) |
+| `executionId` | the P11 execution — Host-attested: bound, not independently proven |
 | `proposalDigest` | the TRADE-01 proposal the grant names |
 | `signingPreimageDigest` | the exact canonical signing bytes |
 | `ownerAccount`, `delegateAccount`, `network` | the pair and the ledger (Testnet or Devnet only) |
@@ -232,7 +232,8 @@ Additionally, TRADE-04B's 15 and TRADE-04C's mutants still pass. TRADE-04C's `ch
   - Host compromise (AA-010);
   - the post-issuance revocation window (≤ capability lifetime);
   - an attacker controlling both the credential and the channel can race the Host for the one authorized blob;
-  - the ledger file's integrity depends on the signer host;
+  - signer-ledger rollback: the ledger file's integrity depends on the signer host; deleting rows or restoring an older copy re-enables still-unexpired capabilities (≤ 60 s), and nothing anchors the ledger externally;
+  - P11 execution identity is Host-attested, not independently proven;
   - customer signers must implement v2 faithfully;
   - EP-073 stays DEPLOYMENT-GATED.
 - **TRADE-04D:** reconcile `consumed` capabilities without a hash after a signer crash (the execution is never re-signed); recover from a capability that was consumed but whose order was not submitted.
@@ -248,9 +249,9 @@ All runs: 2026-10-15, this WSL2 machine, worktree on `/mnt/c`, Node v22.23.1.
 | S1 suites (`trade04c-s1-capability`, `-signer-authorization`, `-host`, `-mutation`) | 43 + 39 + 6 + 32 = **120 / 120** |
 | TRADE-04B suites | **266 / 266** |
 | TRADE-04C suites (incl. Scenarios A–F on the shipped Host) | **160 / 160** |
-| Focused (TRADE, CORE-02 authority and custody, bounded grants, CORE-07, P11/P12, NO_BYPASS, Payment PAY-0x, XRPL transport and rails) | 2 698 tests: 2 693 pass, 4 fail. Three were structural pins of this change (PAY-04 CORE-naming list, TRADE-04A edge file list, transport importer list), updated with explicit notes; one was the separate-process test timing out under load. All four then pass: **90 / 90**. |
+| Focused (TRADE, CORE-02 authority and custody, bounded grants, CORE-07, P11/P12, NO_BYPASS, Payment PAY-0x, XRPL transport and rails) | 2 698 tests: 2 693 pass, 4 fail, 1 skipped. Three were structural pins of this change (PAY-04 CORE-naming list, TRADE-04A edge file list, transport importer list), updated with explicit notes; one was the separate-process test timing out under load. The four affected files were then rerun: **90 / 90**. |
 | Full root suite (`npm run test:root`) | **11 993 tests: 11 977 pass, 3 fail**, 9 skipped, 4 todo |
-| — the 3 failures | (1) `tests/external-authority-signer-launcher.test.mjs`: the known launcher deadline under load, recorded at TRADE-04A/B/C; passes alone (2/2). (2) `trade03-governed-risk-host` SEC-TRADE03-06: a load-dependent timing failure; passes alone (43/43, with the launcher file). (3) The S1 separate-process test: a signer restart under load outlived the 30 s capability, which the signer correctly refused as *expired* rather than *consumed*. The test now issues a 60 s capability and accepts expiry only when the restart demonstrably outlived it; 39/39 after the fix. |
+| — the 3 failures | (1) `tests/external-authority-signer-launcher.test.mjs`: the known launcher deadline under load, recorded at TRADE-04A/B/C; passes alone (2/2). (2) `trade03-governed-risk-host` SEC-TRADE03-06: a load-dependent timing failure; passes alone (43/43, with the launcher file). (3) The S1 separate-process test: a signer restart under load outlived the 30 s capability, which the signer correctly refused as *expired* rather than *consumed*. The test now issues a 60 s capability and accepts expiry only when the restart demonstrably outlived it; 39/39 after the fix. **The full root suite was not rerun after this final test fix**; only that suite was. |
 | Workspaces | **1 103 / 1 103** |
 | Release coherence (manifest + API freeze) | pass |
 | Protocol tarball (CI's steps) | built from pinned `eec79cdd`; matches the lock (sha256 `b0d6ee6f…`); isolated validation: every step ok, including test |
