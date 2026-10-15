@@ -5,7 +5,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { DELEGATED_OFFER_SIGNER_OPERATION, DELEGATED_OFFER_SIGNER_PROTOCOL, type DelegatedOfferSignerTransport, type PreparedDelegatedOffer } from '../xrpl-trade-rail/index.js';
-import { AUDIT, blobHash, decodeBlob, encodeFields, offerWorld } from './trade04b-xrpl-fixture.js';
+import { authorizedInput, blobHash, decodeBlob, encodeFields, offerWorld } from './trade04b-xrpl-fixture.js';
+import { s1ReferenceOptions, signerAuthorization, tempCapabilityLedger } from './trade04c-s1-capability-fixture.js';
 
 /**
  * TRADE-04B mutation qualification (AC-14), in TRADE-03's manner: each
@@ -105,7 +106,17 @@ describe('TRADE-04B mutation — the closed protocol', () => {
 // ── Host-side client ─────────────────────────────────────────────────────────
 
 type ClientModule = typeof import('../xrpl-trade-rail/delegated-offer-signer.js');
-const identity = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'mut-1', operations: [DELEGATED_OFFER_SIGNER_OPERATION], network: 'xrp-ledger-testnet', pairs: [world.pair] };
+const pinned = signerAuthorization();
+const identity = {
+  protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
+  signerId: 'mut-1',
+  operations: [DELEGATED_OFFER_SIGNER_OPERATION],
+  network: 'xrp-ledger-testnet',
+  pairs: [world.pair],
+  authorization: { trustDomain: pinned.trustDomain, organizationId: pinned.organizationId, issuerKeyIds: pinned.issuerKeys.map((key) => key.keyId) },
+};
+/** TRADE-04C-S1: a signing input with a capability for exactly `transaction`. */
+const signing = (transaction: PreparedDelegatedOffer = world.offer()) => authorizedInput(world, transaction, 1_000);
 const pin = { signerId: 'mut-1', network: 'xrp-ledger-testnet' as const, pairs: [world.pair] };
 
 /** A transport that signs genuinely (with the test key) and can replay its first answer or advertise an extra pair. */
@@ -114,10 +125,11 @@ function transportOf(behavior: { readonly replay?: boolean; readonly extraPair?:
   const transport = {
     signs: 0,
     identity: async () => (behavior.extraPair ? { ...identity, pairs: [world.pair, offerWorld().pair] } : identity),
-    signDelegatedOffer: async (request: { readonly requestId: string; readonly transaction: PreparedDelegatedOffer }) => {
+    signDelegatedOffer: async (request: { readonly requestId: string; readonly transaction: PreparedDelegatedOffer; readonly authorization: { readonly capability: string } }) => {
       transport.signs += 1;
       const signed = world.delegate.sign({ ...request.transaction });
-      const answer = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'mut-1', requestId: request.requestId, ownerAccount: world.owner, delegateAccount: world.delegate.address, signedTransaction: signed.blob, hash: signed.hash };
+      const capabilityId = (JSON.parse(request.authorization.capability) as { capabilityId: string }).capabilityId;
+      const answer = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'mut-1', requestId: request.requestId, capabilityId, ownerAccount: world.owner, delegateAccount: world.delegate.address, signedTransaction: signed.blob, hash: signed.hash };
       if (behavior.replay && first !== undefined) return first;
       first ??= answer;
       return answer;
@@ -138,8 +150,10 @@ describe('TRADE-04B mutation — Host-side client', () => {
       replace: '',
       guard: async (m) => {
         const signer = signerOf(m, transportOf({ replay: true }));
-        await signer.signDelegatedOffer({ transaction: world.offer(), audit: AUDIT, validatedLedgerIndex: 1_000 });
-        return refused(signer.signDelegatedOffer({ transaction: world.offer(), audit: AUDIT, validatedLedgerIndex: 1_000 }));
+        // The same capability twice (the client does not consume), so only the request id distinguishes the replayed answer.
+        const input = signing();
+        await signer.signDelegatedOffer(input);
+        return refused(signer.signDelegatedOffer(input));
       },
     }));
   it('C2: without exact pin equality, an identity advertising an extra pair is adopted (TOFU)', () =>
@@ -152,7 +166,7 @@ describe('TRADE-04B mutation — Host-side client', () => {
       replace: 'false',
       guard: async (m) => {
         const transport = transportOf({});
-        await refused(signerOf(m, transport).signDelegatedOffer({ transaction: world.offer({ Fee: '101' }), audit: AUDIT, validatedLedgerIndex: 1_000 }));
+        await refused(signerOf(m, transport).signDelegatedOffer(signing(world.offer({ Fee: '101' }))));
         return transport.signs === 0;
       },
     }));
@@ -164,7 +178,7 @@ describe('TRADE-04B mutation — Host-side client', () => {
       replace: '',
       guard: async (m) => {
         const transport = transportOf({});
-        await refused(signerOf(m, transport).signDelegatedOffer({ transaction: world.offer({ LastLedgerSequence: 1_000 }), audit: AUDIT, validatedLedgerIndex: 1_000 }));
+        await refused(signerOf(m, transport).signDelegatedOffer(signing(world.offer({ LastLedgerSequence: 1_000 }))));
         return transport.signs === 0;
       },
     }));
@@ -174,17 +188,21 @@ describe('TRADE-04B mutation — Host-side client', () => {
 
 type ReferenceModule = typeof import('../xrpl-trade-rail/reference/reference-delegated-offer-signer.js');
 const CREDENTIAL = 'trade04b-mutation-credential-0123456789';
-const referenceOptions = { signerId: 'mut-ref', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' };
-const post = (m: ReferenceModule, transaction: Record<string, unknown>, requestId = 'ab'.repeat(32), svc = m.createReferenceDelegatedOfferSignerService(referenceOptions)) => ({
-  svc,
-  status: svc.answer({
-    method: 'POST',
-    path: '/v1/sign/xrpl-delegated-offer',
-    authorization: `Bearer ${CREDENTIAL}`,
-    contentType: 'application/json',
-    body: Buffer.from(JSON.stringify({ protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'mut-ref', requestId, network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction, audit: AUDIT })),
-  }).status,
-});
+const referenceOptions = () => ({ ...s1ReferenceOptions(), signerId: 'mut-ref', network: 'xrp-ledger-testnet' as const, credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '100' });
+/** A fresh capability per post (unless the caller reuses a service and request id on purpose), so each guard isolates one check. */
+const post = (m: ReferenceModule, transaction: Record<string, unknown>, requestId = 'ab'.repeat(32), svc = m.createReferenceDelegatedOfferSignerService(referenceOptions())) => {
+  const { proposal, authorization } = signing(transaction as unknown as PreparedDelegatedOffer);
+  return {
+    svc,
+    status: svc.answer({
+      method: 'POST',
+      path: '/v1/sign/xrpl-delegated-offer',
+      authorization: `Bearer ${CREDENTIAL}`,
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify({ protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'mut-ref', requestId, network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction, proposal, authorization })),
+    }).status,
+  };
+};
 
 describe('TRADE-04B mutation — reference signer', () => {
   const file = join('reference', 'reference-delegated-offer-signer.js');
@@ -208,12 +226,17 @@ describe('TRADE-04B mutation — reference signer', () => {
       search: 'if (!isReferenceSignerLoopbackHost(host))',
       replace: 'if (false)',
       guard: async (m) => {
+        const ledger = await tempCapabilityLedger();
+        ledger.ledger.close();
+        const { consumption: _unused, ...options } = referenceOptions();
         try {
-          const started = await m.startReferenceDelegatedOfferSigner({ ...referenceOptions, host: '192.0.2.1' });
+          const started = await m.startReferenceDelegatedOfferSigner({ ...options, consumptionLedgerPath: ledger.path, host: '192.0.2.1' });
           await started.close();
           return false;
         } catch (error) {
           return /literal loopback/.test((error as Error).message);
+        } finally {
+          ledger.cleanup();
         }
       },
     }));

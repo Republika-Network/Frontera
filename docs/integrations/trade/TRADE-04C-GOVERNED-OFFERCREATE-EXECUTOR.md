@@ -515,7 +515,18 @@ network segment reachable from the Host alone and the credential lives only in t
 A compromised delegate signer (or key) is outside Frontera's enforcement: it can sign — and itself submit —
 any offer XLS-75 permits.
 
-**Recommendation (not implemented; needs its own approval):** a per-order, cryptographically grant-bound
+**Update — TRADE-04C-S1 (implemented, approved 2026-10-15; `TRADE-04C-S1-GRANT-BOUND-SIGNER-AUTHORIZATION.md`).**
+The signer protocol is now v2: every signing request carries a CORE-02 **delegated-offer signing capability**,
+issued per order by the existing authority key (software or external custody) only for a grant that key signed,
+and bound to the exact signing preimage, owner, delegate, network, `Sequence`, `Fee`, `LastLedgerSequence`,
+execution, grant and proposal, with a lifetime of at most 60 s. The reference signer verifies it against the
+authority key it pins and consumes it durably before signing. **Proven:** a stolen bearer credential alone obtains
+zero signatures from a v2 signer; a capability signs at most once, across concurrent requests, two processes
+sharing a ledger, and restarts. **Not changed:** a compromised delegate key or signer process, a compromised Host
+(AA-010), and revocation committed after issuance (bounded by the capability lifetime). The production claim above
+therefore remains conditional on the deployed signer implementing v2 verification and on its custody.
+
+**Original recommendation (TRADE-04C):** a per-order, cryptographically grant-bound
 signer authorization — the Host (or the CORE-02 external authority signer) issues a short-lived signed
 capability over `{ executionId, grant digest, prepared-offer digest, owner, delegate, network, LLS, expiry }`;
 the signer verifies it against a pinned authority key, enforces single use and its own expiry, and refuses
@@ -563,7 +574,7 @@ shapes), fee behavior under load, real finality and P12 resolution, a backup/res
 
 | # | Risk / item | Status |
 |---|---|---|
-| R1 | signer bearer credential bypass (§28) | BLOCKS the production claim; recommendation needs approval |
+| R1 | signer bearer credential bypass (§28) | **closed for credential theft at a v2 signer** by TRADE-04C-S1 (per-order CORE-02 capability, durable single use); residual: signer/delegate-key compromise, Host compromise (AA-010), post-issuance revocation window ≤ capability lifetime, and third-party signers must implement v2 verification |
 | R2 | F-1: TRADE-03 reliance at the Kernel instant vs a real verifier | **corrected** (TRADE-03 §38); residual: a backward-stepping host clock refuses (fail closed) — production hosts must slew, not step |
 | R3 | real-network behavior of `submitReserved` / `ledger_entry` error shapes | TRADE-05 |
 | R4 | fixed fee under load | documented; no escalation by design |

@@ -17,6 +17,9 @@ import { TRADE_RISK_MATERIAL_FACTS, TRADE_RISK_POLICY_PACK_ID, TRADE_RISK_SIMULA
 import type { PolicyPackProvider } from '../../kernel/index.js';
 import { TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT, XRPL_TRADE_EXECUTOR_ID, type TradeExecutionTrace } from '../xrpl-trade-execution/index.js';
 import { createReferenceDelegatedOfferSignerService } from '../xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
+import { openReferenceCapabilityLedger, type ReferenceCapabilityLedger } from '../xrpl-trade-rail/reference/reference-capability-ledger.js';
+import { AUTHORITY_KEY_A } from './authority-authenticity-fixture.js';
+import { signerAuthorization } from './trade04c-s1-capability-fixture.js';
 import { AGENT_KEY, AGENT_SUBJECT, ORG, POLICY_WRITER, TRUST_DOMAIN, Workspace, call, governedFile, secureEnv, type Reply } from './core04-host-fixture.js';
 import { approverGrant } from './core05-host-fixture.js';
 import { withDeploymentWitness } from './core07-freshness-fixture.js';
@@ -57,27 +60,58 @@ export const RLUSD_ID = `${NETWORK}:${RLUSD}/${ISSUER}`;
 const XRP_ID = `${NETWORK}:XRP`;
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-/** A tampering proxy in front of the reference signer: when `tamper` is set, it rewrites the transaction it forwards (Scenario E). */
+/**
+ * A tampering proxy in front of the reference signer: when `tamper` is set, it rewrites the transaction it forwards (Scenario E).
+ * TRADE-04C-S1: the reference signer pins the Host's authority key (`AUTHORITY_KEY_A`, the shipped Host's software custody in
+ * these fixtures), its trust domain and its organization, and consumes capabilities in a real SQLite ledger in `ledgerDir`.
+ */
 export interface SignerProxy {
   readonly endpoint: string;
   tamper: ((transaction: Record<string, unknown>) => Record<string, unknown>) | undefined;
+  /** Rewrites the whole forwarded request body (e.g. strip the capability: a stolen-credential caller). */
+  rewrite: ((request: Record<string, unknown>) => Record<string, unknown>) | undefined;
+  /** A **compromised** signer: answers with whatever this returns, never consulting the reference service (or its capability check). */
+  forge: ((request: Record<string, unknown>) => Record<string, unknown>) | undefined;
+  readonly ledger: ReferenceCapabilityLedger;
+  /** The last refusal code the signer answered with, if any. */
+  lastRefusal(): string | undefined;
   signatures(): number;
   close(): Promise<void>;
 }
 
-export async function startSignerProxy(pair: TradePairWorld): Promise<SignerProxy> {
-  const service = createReferenceDelegatedOfferSignerService({ signerId: SIGNER_ID, network: NETWORK, credential: SIGNER_TOKEN, keys: [{ ownerAccount: pair.owner, delegateSeed: pair.delegate.seed }], maximumFeeDrops: '1000', maximumLedgerHorizon: 200 });
-  const proxy: { tamper: SignerProxy['tamper'] } = { tamper: undefined };
+export async function startSignerProxy(pair: TradePairWorld, ledgerDir: string): Promise<SignerProxy> {
+  const ledger = await openReferenceCapabilityLedger(join(ledgerDir, 'offer-signer-capability-ledger.sqlite'));
+  const service = createReferenceDelegatedOfferSignerService({
+    signerId: SIGNER_ID,
+    network: NETWORK,
+    credential: SIGNER_TOKEN,
+    keys: [{ ownerAccount: pair.owner, delegateSeed: pair.delegate.seed }],
+    maximumFeeDrops: '1000',
+    maximumLedgerHorizon: 200,
+    clock: () => Date.now(),
+    authorization: signerAuthorization([AUTHORITY_KEY_A], { trustDomain: TRUST_DOMAIN, organizationId: ORG }),
+    consumption: ledger,
+  });
+  let lastRefusal: string | undefined;
+  const proxy: { tamper: SignerProxy['tamper']; rewrite: SignerProxy['rewrite']; forge: SignerProxy['forge'] } = { tamper: undefined, rewrite: undefined, forge: undefined };
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       let body = Buffer.concat(chunks);
-      if (proxy.tamper !== undefined && req.method === 'POST' && body.length > 0) {
-        const request = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
-        body = Buffer.from(JSON.stringify({ ...request, transaction: proxy.tamper(request['transaction'] as Record<string, unknown>) }), 'utf8');
+      if ((proxy.tamper !== undefined || proxy.rewrite !== undefined) && req.method === 'POST' && body.length > 0) {
+        let request = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+        if (proxy.tamper !== undefined) request = { ...request, transaction: proxy.tamper(request['transaction'] as Record<string, unknown>) };
+        if (proxy.rewrite !== undefined) request = proxy.rewrite(request);
+        body = Buffer.from(JSON.stringify(request), 'utf8');
+      }
+      if (proxy.forge !== undefined && req.method === 'POST' && body.length > 0) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(proxy.forge(JSON.parse(body.toString('utf8')) as Record<string, unknown>)));
+        return;
       }
       const answer = service.answer({ method: req.method ?? 'GET', path: req.url ?? '/', authorization: req.headers.authorization, contentType: req.headers['content-type'], body });
+      if (answer.status !== 200) lastRefusal = (answer.body as { error?: string }).error;
       res.writeHead(answer.status, { 'content-type': 'application/json' });
       res.end(JSON.stringify(answer.body));
     });
@@ -86,11 +120,16 @@ export async function startSignerProxy(pair: TradePairWorld): Promise<SignerProx
   server.unref();
   return Object.assign(proxy, {
     endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    ledger,
+    lastRefusal: () => lastRefusal,
     signatures: () => service.signatures(),
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
-        server.close(() => resolve());
+        server.close(() => {
+          ledger.close();
+          resolve();
+        });
       }),
   }) as SignerProxy;
 }
@@ -219,7 +258,8 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
   const ledger = options.ledger ?? new FakeXrplLedger();
   const pair = options.pair ?? pairWorld(ledger);
   const resource = `${NETWORK}:${pair.owner}`;
-  const signer = await startSignerProxy(pair);
+  const dir = options.dir ?? workspace.dir();
+  const signer = await startSignerProxy(pair, dir);
   const traces: TradeExecutionTrace[] = [];
   const assessments: TradingRiskAssessmentEvidence[] = [];
   const policy = parseTradeDelegationPolicy(DELEGATION_POLICY) as TradeDelegationPolicy;
@@ -244,7 +284,6 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
     onAssessment: (record) => assessments.push(record),
   });
   const edge = edgeFor(options.profileVersion);
-  const dir = options.dir ?? workspace.dir();
   const env = {
     ...secureEnv(dir, tradeFile(pair, options.signerEndpoint ?? signer.endpoint, options)),
     AOC_ENTERPRISE_XRPL_TRADE_INTERLOCK_SQLITE_PATH: join(dir, 'xrpl-trade-sequence-interlock.sqlite'),

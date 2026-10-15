@@ -179,9 +179,14 @@ describe('PAY-04 M39 — no payment-protocol vocabulary in CORE', () => {
   it('PAY-04 added no rail vocabulary to CORE: the core files naming XRPL are exactly PAY-03’s Host composition and P9’s documentation', () => {
     const naming = CORE.filter((file) => /xrpl/i.test(readFileSync(file, 'utf8'))).sort();
     assert.deepEqual(naming, [
+      // TRADE-04C-S1 (approved CORE-02 change): the delegated-offer capability names the XRPL operation it authorizes — its
+      // artifact, signing domain and custody-protocol operation. No rail logic, no SDK, no payment protocol in any of them.
+      'src/enterprise/authority-authenticity/authority-signature.ts',
+      'src/enterprise/authority-authenticity/delegated-offer-capability.ts',
       'src/enterprise/authority-state-freshness/checkpoint.ts',
       'src/enterprise/composition/composition-root.ts',
       'src/enterprise/configuration/enterprise-configuration.ts',
+      'src/enterprise/external-authority-signer/protocol.ts',
       'src/enterprise/host/enterprise-host.ts',
       'src/enterprise/host/host-configuration.ts',
       'src/features/monetary-runtime/domain/monetary-amount.ts',

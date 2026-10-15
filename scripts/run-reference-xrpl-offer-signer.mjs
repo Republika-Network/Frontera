@@ -1,6 +1,9 @@
-// The local REFERENCE delegated XRPL OfferCreate signer (TRADE-04B) — a
-// separate process that holds disposable XRPL *delegate* keys and answers the
-// closed `frontera.xrpl-delegated-offer-signer.v1` protocol. NOT an HSM, NOT a
+// The local REFERENCE delegated XRPL OfferCreate signer (TRADE-04B, hardened by
+// TRADE-04C-S1) — a separate process that holds disposable XRPL *delegate* keys
+// and answers the closed `frontera.xrpl-delegated-offer-signer.v2` protocol:
+// it signs only for a CORE-02 delegated-offer signing capability it verifies
+// against the authority key it pins, and consumes each capability durably
+// before touching a key. NOT an HSM, NOT a
 // KMS, NOT hardware-backed, NOT a custody certification: a reference custody
 // boundary for development and isolated XRPL Testnet qualification. Binds a
 // literal loopback address only. Never connects to XRPL, never submits, never
@@ -22,10 +25,18 @@
 //   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_MAX_FEE    fee ceiling in drops (default 100)
 //   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_PORT       default 0 (ephemeral)
 //   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_HOST       default 127.0.0.1; literal loopback only
+//   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_AUTHORITY_KEY_ID          the CORE-02 authority key id it accepts capabilities from
+//   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_AUTHORITY_PUBLIC_KEY_FILE that key's PUBLIC half (SPKI PEM, e.g. the reference
+//                                                                  authority signer's <key>.pub); never a private key
+//   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_TRUST_DOMAIN              the Host's governedActions.trustDomainId
+//   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_ORGANIZATION_ID           the organization it signs for
+//   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER        the durable capability consumption ledger (SQLite file)
 //
 // No trusted ledger reference is injected here (the reference reads no ledger), so its
 // LastLedgerSequence horizon check is deferred to the Host-side client. See
 // docs/integrations/trade/TRADE-04B-PROTECTED-DELEGATED-SIGNER.md.
+import { readFileSync } from 'node:fs';
+
 import {
   createReferenceDelegatedOfferKeyFile,
   loadReferenceDelegatedOfferKeyFile,
@@ -63,11 +74,33 @@ const credential = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_TOKEN');
 const maximumFeeDrops = process.env.FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_MAX_FEE ?? '100';
 const port = Number.parseInt(process.env.FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_PORT ?? '0', 10);
 const host = process.env.FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_HOST ?? '127.0.0.1';
+const authorityKeyId = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_AUTHORITY_KEY_ID');
+const authorityPublicKeyFile = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_AUTHORITY_PUBLIC_KEY_FILE');
+const trustDomain = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_TRUST_DOMAIN');
+const organizationId = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_ORGANIZATION_ID');
+const consumptionLedgerPath = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER');
 
 let signer;
 try {
   const { network, keys } = loadReferenceDelegatedOfferKeyFile(keyFile);
-  signer = await startReferenceDelegatedOfferSigner({ signerId, network, credential, keys, maximumFeeDrops, clock: () => Date.now(), host, port });
+  let publicKeyPem;
+  try {
+    publicKeyPem = readFileSync(authorityPublicKeyFile, 'utf8');
+  } catch {
+    refuse('the authority public key file is not readable.');
+  }
+  signer = await startReferenceDelegatedOfferSigner({
+    signerId,
+    network,
+    credential,
+    keys,
+    maximumFeeDrops,
+    clock: () => Date.now(),
+    authorization: { issuerKeys: [{ keyId: authorityKeyId, algorithm: 'ed25519-v1', publicKeyPem }], trustDomain, organizationId },
+    consumptionLedgerPath,
+    host,
+    port,
+  });
 } catch (error) {
   refuse(error instanceof Error ? error.message.split('\n')[0] : 'startup failed');
 }
@@ -80,4 +113,4 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 // Public identity only.
 const where = host.includes(':') ? `[${host}]` : host;
-console.log(`reference delegated offer signer (NOT an HSM) listening on http://${where}:${signer.port} signerId=${signerId} network=${signer.identity.network} pairs=${JSON.stringify(signer.identity.pairs)}`);
+console.log(`reference delegated offer signer (NOT an HSM) listening on http://${where}:${signer.port} signerId=${signerId} network=${signer.identity.network} pairs=${JSON.stringify(signer.identity.pairs)} authorization=${JSON.stringify(signer.identity.authorization)}`);

@@ -2,6 +2,8 @@ import { serializeBoundedGrant, isGrantRevocationReason, type BoundedGrant, type
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import { parseDelegatedOfferCapability, serializeDelegatedOfferCapability, type DelegatedOfferCapability } from '../authority-authenticity/delegated-offer-capability.js';
+import { isWellFormedAuthoritySignature } from '../authority-authenticity/authority-signature.js';
 
 /**
  * The Frontera external authority-signer protocol, v1 (CORE-02).
@@ -46,6 +48,33 @@ export const EXTERNAL_AUTHORITY_SIGNER_PATHS: Readonly<Record<ExternalAuthorityS
 });
 
 /**
+ * TRADE-04C-S1 — structured **extension** operations. Not part of the five
+ * every custody service must offer: a deployment requires an extension only
+ * when it composes the feature that needs it (`signDelegatedOfferCapability`:
+ * a Host composing the governed trade executor), and then requires the
+ * service to offer exactly the five plus that extension. A deployment that
+ * requires none still requires exactly the five — an extension it did not ask
+ * for is refused like any other unknown operation.
+ */
+export const EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS = ['signDelegatedOfferCapability'] as const;
+
+export type ExternalAuthoritySignerExtensionOperation = (typeof EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS)[number];
+
+/** One structured path per extension. Never a generic `/sign`. */
+export const EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS: Readonly<Record<ExternalAuthoritySignerExtensionOperation, string>> = Object.freeze({
+  signDelegatedOfferCapability: '/v1/sign/xrpl-delegated-offer-capability',
+});
+
+/** The path of a core or extension operation. */
+export function externalAuthoritySignerPath(operation: ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation): string {
+  return operation === 'signDelegatedOfferCapability' ? EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS[operation] : EXTERNAL_AUTHORITY_SIGNER_PATHS[operation];
+}
+
+export function isExternalAuthoritySignerExtensionOperation(value: unknown): value is ExternalAuthoritySignerExtensionOperation {
+  return typeof value === 'string' && (EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS as readonly string[]).includes(value);
+}
+
+/**
  * The custody service's statement of what it is. Public material only. The
  * requesting side compares every field against what its own configuration
  * pinned; nothing here is ever added to a trust registry.
@@ -66,7 +95,9 @@ export type ExternalAuthoritySigningRequest =
   | { readonly operation: 'signRevocation'; readonly revocation: GrantRevocation; readonly storeId: string }
   | { readonly operation: 'signRevocationState'; readonly state: RevocationStateCommitment }
   | { readonly operation: 'signObligationDischargeState'; readonly state: ObligationDischargeStateCommitment }
-  | { readonly operation: 'signApprovalState'; readonly state: ApprovalStateCommitment };
+  | { readonly operation: 'signApprovalState'; readonly state: ApprovalStateCommitment }
+  /** TRADE-04C-S1 extension: the capability, and the grant it is issued under as filed — so the custody service can re-verify that grant under its own key before signing. */
+  | { readonly operation: 'signDelegatedOfferCapability'; readonly capability: DelegatedOfferCapability; readonly grant: BoundedGrant; readonly storeId: string; readonly grantSignature: unknown };
 
 /**
  * The request body for an operation. A grant travels as its **canonical**
@@ -93,6 +124,9 @@ export function externalSigningRequestBody(request: ExternalAuthoritySigningRequ
         protocol: EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
         state: { storeId: request.state.storeId, organizationId: request.state.organizationId, sequence: request.state.sequence, chainDigest: request.state.chainDigest },
       };
+    case 'signDelegatedOfferCapability':
+      // Both artifacts travel canonical, for the same reason a grant does: the service parses the exact bytes it will reason about.
+      return { protocol: EXTERNAL_AUTHORITY_SIGNER_PROTOCOL, capability: serializeDelegatedOfferCapability(request.capability), grant: serializeBoundedGrant(request.grant), storeId: request.storeId, grantSignature: request.grantSignature };
   }
 }
 
@@ -128,7 +162,7 @@ function sequenceOf(value: unknown): value is number {
  * (round-trip exact), injected so this module stays free of store code.
  */
 export function parseExternalSigningRequest(
-  operation: ExternalAuthoritySignerOperation,
+  operation: ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation,
   body: unknown,
   parseGrant: (canonical: string) => BoundedGrant | undefined,
 ): ExternalAuthoritySigningRequest | undefined {
@@ -162,6 +196,16 @@ export function parseExternalSigningRequest(
       if (!boundedText(state.storeId) || !boundedText(state.organizationId) || !sequenceOf(state.sequence) || typeof state.chainDigest !== 'string' || !DIGEST.test(state.chainDigest)) return undefined;
       const parsed = { storeId: state.storeId, organizationId: state.organizationId, sequence: state.sequence, chainDigest: state.chainDigest };
       return operation === 'signApprovalState' ? { operation, state: parsed } : { operation, state: parsed };
+    }
+    case 'signDelegatedOfferCapability': {
+      if (!hasExactKeys(body, ['protocol', 'capability', 'grant', 'storeId', 'grantSignature']) || body.protocol !== EXTERNAL_AUTHORITY_SIGNER_PROTOCOL) return undefined;
+      if (typeof body.grant !== 'string' || !boundedText(body.storeId)) return undefined;
+      const envelope = body.grantSignature;
+      if (!hasExactKeys(envelope, ['algorithm', 'keyId', 'signature', 'artifactVersion']) || !isWellFormedAuthoritySignature(envelope)) return undefined;
+      const capability = parseDelegatedOfferCapability(body.capability);
+      const grant = parseGrant(body.grant);
+      if (capability === undefined || grant === undefined) return undefined;
+      return { operation, capability, grant, storeId: body.storeId, grantSignature: { algorithm: envelope.algorithm, keyId: envelope.keyId, signature: envelope.signature, artifactVersion: envelope.artifactVersion } };
     }
   }
 }

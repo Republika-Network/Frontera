@@ -15,7 +15,8 @@ import {
 } from '../xrpl-trade-rail/index.js';
 import { TRADE_OFFER_FLAGS } from '../../features/trade-runtime/index.js';
 import { EXTERNAL_XRPL_SIGNER_OPERATION, EXTERNAL_XRPL_SIGNER_PATHS, EXTERNAL_XRPL_SIGNER_PROTOCOL } from '../xrpl-payment-rail/signer-protocol.js';
-import { AUDIT, offerWorld, testAccount } from './trade04b-xrpl-fixture.js';
+import { offerWorld, testAccount } from './trade04b-xrpl-fixture.js';
+import { S1_ORGANIZATION, S1_TRUST_DOMAIN, capabilityFor } from './trade04c-s1-capability-fixture.js';
 
 /**
  * TRADE-04B — the closed protocol (adversarial matrix A) and the closed
@@ -26,6 +27,8 @@ import { AUDIT, offerWorld, testAccount } from './trade04b-xrpl-fixture.js';
 
 const world = offerWorld();
 const KEY = world.delegate.publicKey;
+/** TRADE-04C-S1: a valid capability + proposal for the world's offer. */
+const AUTHORIZED = capabilityFor(world, world.offer());
 
 const identity = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   protocol: DELEGATED_OFFER_SIGNER_PROTOCOL,
@@ -33,6 +36,7 @@ const identity = (overrides: Record<string, unknown> = {}): Record<string, unkno
   operations: [DELEGATED_OFFER_SIGNER_OPERATION],
   network: 'xrp-ledger-testnet',
   pairs: [{ ownerAccount: world.owner, delegateAccount: world.delegate.address, signingPublicKey: KEY }],
+  authorization: { trustDomain: S1_TRUST_DOMAIN, organizationId: S1_ORGANIZATION, issuerKeyIds: ['authority-key-a'] },
   ...overrides,
 });
 
@@ -44,7 +48,8 @@ const request = (overrides: Record<string, unknown> = {}): Record<string, unknow
   ownerAccount: world.owner,
   delegateAccount: world.delegate.address,
   transaction: { ...world.offer() },
-  audit: { ...AUDIT },
+  proposal: { ...AUTHORIZED.proposal },
+  authorization: { capability: AUTHORIZED.authorization.capability, signature: { ...AUTHORIZED.authorization.signature } },
   ...overrides,
 });
 
@@ -61,7 +66,13 @@ describe('TRADE-04B A — protocol grammar: identity', () => {
 
   const cases: readonly [string, unknown][] = [
     ['missing protocol version', (() => { const { protocol: _p, ...rest } = identity(); return rest; })()],
-    ['wrong protocol version', identity({ protocol: 'frontera.xrpl-delegated-offer-signer.v2' })],
+    ['an older protocol version (v1: no fallback)', identity({ protocol: 'frontera.xrpl-delegated-offer-signer.v1' })],
+    ['a future protocol version', identity({ protocol: 'frontera.xrpl-delegated-offer-signer.v3' })],
+    ['no pinned authorization (a v1 identity)', (() => { const { authorization: _a, ...rest } = identity(); return rest; })()],
+    ['an authorization with no issuer key', identity({ authorization: { trustDomain: S1_TRUST_DOMAIN, organizationId: S1_ORGANIZATION, issuerKeyIds: [] } })],
+    ['an authorization with a duplicated issuer key', identity({ authorization: { trustDomain: S1_TRUST_DOMAIN, organizationId: S1_ORGANIZATION, issuerKeyIds: ['k', 'k'] } })],
+    ['an authorization with nine issuer keys', identity({ authorization: { trustDomain: S1_TRUST_DOMAIN, organizationId: S1_ORGANIZATION, issuerKeyIds: Array.from({ length: 9 }, (_, i) => `k${i}`) } })],
+    ['an authorization carrying key material', identity({ authorization: { trustDomain: S1_TRUST_DOMAIN, organizationId: S1_ORGANIZATION, issuerKeyIds: ['k'], publicKeyPem: 'x' } })],
     ['the Payment protocol', identity({ protocol: EXTERNAL_XRPL_SIGNER_PROTOCOL })],
     ['wrong operation', identity({ operations: ['sign-xrpl-payment'] })],
     ['additional operation', identity({ operations: [DELEGATED_OFFER_SIGNER_OPERATION, 'sign-bytes'] })],
@@ -121,12 +132,19 @@ describe('TRADE-04B A — protocol grammar: request and response', () => {
     ['malformed request id (upper case)', request({ requestId: 'A1'.repeat(32) })],
     ['malformed request id (short)', request({ requestId: 'a1'.repeat(16) })],
     ['malformed request id (number)', request({ requestId: 1 })],
-    ['invalid execution reference', request({ audit: { ...AUDIT, executionId: 'has space' } })],
-    ['credential-shaped execution reference', request({ audit: { ...AUDIT, executionId: 'Bearer abc' } })],
-    ['incorrect grant reference', request({ audit: { ...AUDIT, grantRef: '' } })],
-    ['grant digest not a sha256 digest', request({ audit: { ...AUDIT, grantDigest: 'md5:abc' } })],
-    ['a serialized grant smuggled into the audit block', request({ audit: { ...AUDIT, grant: { decision: 'allow' } } })],
-    ['missing audit', (({ audit: _a, ...rest }) => rest)(request())],
+    // TRADE-04C-S1: the v1 audit block is gone; a bearer-only (v1-shaped) request is not a request.
+    ['a v1 audit block instead of an authorization', (({ authorization: _a, ...rest }) => ({ ...rest, audit: { executionId: 'exec-1', grantRef: 'grant-1', grantDigest: `sha256:${'ab'.repeat(32)}` } }))(request())],
+    ['an audit block beside the authorization', request({ audit: { executionId: 'exec-1', grantRef: 'grant-1', grantDigest: `sha256:${'ab'.repeat(32)}` } })],
+    ['missing authorization', (({ authorization: _a, ...rest }) => rest)(request())],
+    ['missing proposal', (({ proposal: _p, ...rest }) => rest)(request())],
+    ['a proposal that is not a TRADE-01 proposal', request({ proposal: { ...AUTHORIZED.proposal, permission: 'Payment' } })],
+    ['an authorization without a signature', request({ authorization: { capability: AUTHORIZED.authorization.capability } })],
+    ['an authorization with an empty capability', request({ authorization: { ...AUTHORIZED.authorization, capability: '' } })],
+    ['an authorization with a capability object instead of its canonical text', request({ authorization: { ...AUTHORIZED.authorization, capability: JSON.parse(AUTHORIZED.authorization.capability) as unknown } })],
+    ['an authorization with an oversized capability', request({ authorization: { ...AUTHORIZED.authorization, capability: 'x'.repeat(8_193) } })],
+    ['a signature under another algorithm', request({ authorization: { ...AUTHORIZED.authorization, signature: { ...AUTHORIZED.authorization.signature, algorithm: 'hmac-sha256' } } })],
+    ['a signature envelope carrying a public key', request({ authorization: { ...AUTHORIZED.authorization, signature: { ...AUTHORIZED.authorization.signature, publicKeyPem: 'x' } } })],
+    ['a serialized grant smuggled into the authorization', request({ authorization: { ...AUTHORIZED.authorization, grant: { decision: 'allow' } } })],
     ['transaction for another owner than named', request({ ownerAccount: other })],
     ['transaction for another delegate than named', request({ delegateAccount: other })],
     ['malformed nested transaction', request({ transaction: { TransactionType: 'OfferCreate' } })],
@@ -144,7 +162,7 @@ describe('TRADE-04B A — protocol grammar: request and response', () => {
   }
 
   it('the response is closed too: exact fields, a hex blob, a hash', () => {
-    const response = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 's-1', requestId: 'a1'.repeat(32), ownerAccount: world.owner, delegateAccount: world.delegate.address, signedTransaction: 'AB'.repeat(64), hash: 'CD'.repeat(32) };
+    const response = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 's-1', requestId: 'a1'.repeat(32), capabilityId: 'b2'.repeat(32), ownerAccount: world.owner, delegateAccount: world.delegate.address, signedTransaction: 'AB'.repeat(64), hash: 'CD'.repeat(32) };
     assert.ok(parseDelegatedOfferSigningResponse(response) !== undefined, 'control');
     for (const variant of [
       { ...response, extra: 1 },
@@ -152,6 +170,8 @@ describe('TRADE-04B A — protocol grammar: request and response', () => {
       { ...response, signedTransaction: 'AB'.repeat(4097) },
       { ...response, hash: 'cd'.repeat(32) },
       { ...response, requestId: undefined },
+      { ...response, capabilityId: 'B2'.repeat(32) },
+      (({ capabilityId: _c, ...rest }) => rest)(response),
       { ...response, protocol: EXTERNAL_XRPL_SIGNER_PROTOCOL },
       (({ delegateAccount: _d, ...rest }) => rest)(response),
     ]) {

@@ -190,6 +190,8 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
       // ones provisioned on the authority itself (P10), and financial actions
       // are exercisable only because P7 is composed.
       exerciseControls: { policy: () => [], revalidateAuthorityBinding: () => HOST_ORGANIZATIONAL_AUTHORITY_BINDING },
+      // TRADE-04C-S1: the executor's capability-issuer slot, bound by the composition over the authenticated grant store and authority signer.
+      ...(trade !== undefined ? { delegatedOfferCapabilities: trade.capabilities } : {}),
     },
     governedActionOrchestrator: {
       enabled: true,
@@ -474,6 +476,8 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
         interlockPath: host.configuration.xrplTradeInterlock?.sqlitePath ?? '.data/xrpl-trade-sequence-interlock.sqlite',
         busyTimeoutMs: host.configuration.persistence.busyTimeoutMs,
         attested: options.xrplTradeExecution?.attested,
+        // TRADE-04C-S1: every signing capability names the deployment's trust domain; the delegated signer pins it.
+        trustDomain: host.governedActions!.trustDomainId,
         logger,
         ...(options.xrplTradeExecution?.ledgerClient !== undefined ? { ledgerClient: options.xrplTradeExecution.ledgerClient } : {}),
         ...(options.xrplTradeExecution?.simulation !== undefined ? { simulation: options.xrplTradeExecution.simulation } : {}),
@@ -506,6 +510,10 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
 
     if (host.governedActions !== undefined && (posture.governedActions !== 'composed' || enterprise.governAction === undefined)) {
       throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'Governed actions were configured but the composed Enterprise does not expose them.');
+    }
+    // TRADE-04C-S1: a trade executor whose signing capabilities cannot be issued is not served — never a bearer-only signer.
+    if (trade !== undefined && !trade.capabilities.bound()) {
+      throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'The governed trade executor was composed but no delegated-offer capability issuer was bound; it would refuse every order.');
     }
     // CORE-02: a Host configured for external custody runs on an external
     // signer, or not at all — in any profile. Checked against the composed

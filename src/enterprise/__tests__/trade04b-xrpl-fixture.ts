@@ -1,6 +1,7 @@
 import { ECDSA, Wallet, decode, encode, encodeForSigning, hashes } from 'xrpl';
 
-import type { DelegatedOfferAuditReference, DelegatedOfferSignerPair, PreparedDelegatedOffer } from '../xrpl-trade-rail/index.js';
+import type { DelegatedOfferSignerPair, DelegatedOfferSigningInput, PreparedDelegatedOffer } from '../xrpl-trade-rail/index.js';
+import { capabilityFor, proposalForOffer, type CapabilityOptions } from './trade04c-s1-capability-fixture.js';
 
 /**
  * TRADE-04B qualification fixtures — test-only, offline.
@@ -41,6 +42,11 @@ export function vectorDelegate(label: number, algorithm: 'ed25519' | 'secp256k1'
   return delegateOf(Wallet.fromEntropy(new Uint8Array(16).fill(label), { algorithm: algorithm === 'ed25519' ? ECDSA.ed25519 : ECDSA.secp256k1 }));
 }
 
+/** TRADE-04C-S1: the delegate a reference key file holds (separate-process qualification) — memory only, never persisted again. */
+export function delegateFromSeed(seed: string): TestDelegate {
+  return delegateOf(Wallet.fromSeed(seed));
+}
+
 function delegateOf(wallet: Wallet): TestDelegate {
   return Object.freeze({
     address: wallet.classicAddress,
@@ -67,7 +73,20 @@ export const encodeFields = (fields: Record<string, unknown>): string => encode(
 export const signingEncoding = (fields: Record<string, unknown>): string => encodeForSigning(fields as Parameters<typeof encodeForSigning>[0]);
 export const blobHash = (blob: string): string => hashes.hashSignedTx(blob);
 
-export const AUDIT: DelegatedOfferAuditReference = Object.freeze({ executionId: 'exec-trade04b-0001', grantRef: 'grant-trade04b-0001', grantDigest: `sha256:${'ab'.repeat(32)}` });
+/**
+ * TRADE-04C-S1: a signing input carrying a valid CORE-02 capability for exactly `transaction` (or, when no proposal can
+ * express a deliberately malformed transaction, for the world's base offer — such a request is refused locally anyway).
+ */
+export function authorizedInput(world: OfferWorld, transaction: PreparedDelegatedOffer, validatedLedgerIndex: number, options: CapabilityOptions = {}): DelegatedOfferSigningInput {
+  let expressible = false;
+  try {
+    expressible = proposalForOffer(transaction) !== undefined;
+  } catch {
+    expressible = false;
+  }
+  const { proposal, authorization } = capabilityFor(world, expressible ? transaction : world.offer(), options);
+  return { transaction, proposal, authorization, validatedLedgerIndex };
+}
 
 /** One world: an owner, a delegate (with its key), an issuer, the pinned pair and a prepared offer builder. */
 export interface OfferWorld {
@@ -85,6 +104,11 @@ export function offerWorld(algorithm: 'ed25519' | 'secp256k1' = 'ed25519'): Offe
 /** The pinned-vector world: owner, issuer and delegate all from fixed entropy (labels 0x61, 0x62, and 0x63 / 0x64). */
 export function vectorWorld(algorithm: 'ed25519' | 'secp256k1'): OfferWorld {
   return worldOf(vectorDelegate(0x61, 'ed25519').address, vectorDelegate(0x62, 'ed25519').address, vectorDelegate(algorithm === 'ed25519' ? 0x63 : 0x64, algorithm));
+}
+
+/** TRADE-04C-S1: a world over a given owner and delegate (e.g. one loaded from a reference key file). */
+export function worldWith(owner: string, delegate: TestDelegate): OfferWorld {
+  return worldOf(owner, testAccount(), delegate);
 }
 
 function worldOf(owner: string, issuer: string, delegate: TestDelegate): OfferWorld {

@@ -1,18 +1,21 @@
 import { randomBytes } from 'node:crypto';
 
-import { isTradeNetwork } from '../../features/trade-runtime/index.js';
+import { isTradeNetwork, validateTradeProposal, type TradeProposal } from '../../features/trade-runtime/index.js';
+import { parseDelegatedOfferCapability } from '../authority-authenticity/delegated-offer-capability.js';
+import { delegatedOfferCapabilityBindingFailure } from './delegated-offer-authorization.js';
 import {
   DELEGATED_OFFER_SIGNER_PROTOCOL,
   delegatedOfferPairKey,
   isDelegatedOfferRequestId,
   isDelegatedOfferSignerId,
-  parseDelegatedOfferAuditReference,
+  parseDelegatedOfferAuthorization,
   parseDelegatedOfferSignerIdentity,
   parseDelegatedOfferSignerPair,
   parseDelegatedOfferSigningResponse,
   parsePreparedDelegatedOffer,
-  type DelegatedOfferAuditReference,
+  type DelegatedOfferAuthorization,
   type DelegatedOfferNetwork,
+  type DelegatedOfferSignerAuthorization,
   type DelegatedOfferSignerPair,
   type PreparedDelegatedOffer,
 } from './delegated-offer-protocol.js';
@@ -28,11 +31,12 @@ import { verifySignedDelegatedOffer } from './delegated-offer-verification.js';
  * ```
  * future executor (TRADE-04C)                                  delegate custody (customer or reference)
  * ───────────────────────────                                  ───────────────────────────────────────
- * signer.signDelegatedOffer({ transaction, audit, validatedLedgerIndex })
+ * signer.signDelegatedOffer({ transaction, proposal, authorization, validatedLedgerIndex })
  *   ├─ closed transaction, pinned pair, fee ceiling, LLS horizon   (refused locally, nothing sent)
+ *   ├─ capability bound to this transaction, pair, network, proposal (refused locally, nothing sent)
  *   ├─ identity proven against the pin before the first signature  (no TOFU)
  *   ├─ fresh requestId ── POST /v1/sign/xrpl-delegated-offer ──▶   signs exactly that OfferCreate as the delegate
- *   ├─ response bound to the requestId, signer, owner and delegate
+ *   ├─ response bound to the requestId, capability, signer, owner and delegate
  *   └─ blob verified: canonical, exact field set, same signing bytes, PINNED key, valid signature, own hash
  *        → VerifiedDelegatedOfferSignature { status: 'signed-not-submitted' }
  * ```
@@ -70,12 +74,17 @@ export interface DelegatedOfferSignerStatus {
   /** The last failure, as a closed reason. Never a body, status text, address or credential. */
   readonly reason?: DelegatedOfferSignerFailureReason;
   readonly pairs: number;
+  /** TRADE-04C-S1: the authorization the signer last advertised it pins (public identifiers). Diagnostic: a signer pinning another authority refuses every capability — it can never sign more because of it. */
+  readonly authorization?: DelegatedOfferSignerAuthorization;
 }
 
-/** What the future executor hands the signing capability. Every term was fixed before this call, from the grant. */
+/** What the executor hands the signing capability. Every term was fixed before this call, from the grant. */
 export interface DelegatedOfferSigningInput {
   readonly transaction: PreparedDelegatedOffer;
-  readonly audit: DelegatedOfferAuditReference;
+  /** The canonical TRADE-01 proposal the grant names. */
+  readonly proposal: TradeProposal;
+  /** TRADE-04C-S1: the CORE-02 capability (canonical text) and its authority signature, issued for exactly this transaction. */
+  readonly authorization: DelegatedOfferAuthorization;
   /** A **validated** ledger index the caller read through the shared transport's validated reader. Bounds `LastLedgerSequence`. */
   readonly validatedLedgerIndex: number;
 }
@@ -98,7 +107,10 @@ export interface VerifiedDelegatedOfferSignature {
   readonly transaction: PreparedDelegatedOffer;
   readonly signedTransaction: string;
   readonly hash: string;
-  readonly audit: DelegatedOfferAuditReference;
+  /** The capability the signer consumed for this signature, and the execution and grant it names. */
+  readonly capabilityId: string;
+  readonly executionId: string;
+  readonly boundedGrantId: string;
 }
 
 /** The typed port a future TRADE-04C executor composes. The only method; there is no "sign arbitrary transaction". */
@@ -208,9 +220,11 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
   let inFlightProbe: Promise<void> | undefined;
   let lastProbeAt: number | undefined;
   let inFlightSignatures = 0;
+  let advertisedAuthorization: DelegatedOfferSignerAuthorization | undefined;
   const usedRequestIds = new Set<string>();
 
-  const status = (): DelegatedOfferSignerStatus => Object.freeze({ signerId: pin.signerId, state, ...(reason !== undefined ? { reason } : {}), pairs: pin.pairs.length });
+  const status = (): DelegatedOfferSignerStatus =>
+    Object.freeze({ signerId: pin.signerId, state, ...(reason !== undefined ? { reason } : {}), pairs: pin.pairs.length, ...(advertisedAuthorization !== undefined ? { authorization: advertisedAuthorization } : {}) });
   const mismatch = (why: DelegatedOfferSignerFailureReason): void => {
     state = 'MISMATCH';
     reason = why;
@@ -249,6 +263,7 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
     }
     state = 'VERIFIED';
     reason = undefined;
+    advertisedAuthorization = identity.authorization;
   }
 
   function probe(force: boolean): Promise<void> {
@@ -267,18 +282,31 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
   };
 
   /** Everything checked before the signer is contacted. Nothing is sent for a request that fails here. */
-  function admit(input: DelegatedOfferSigningInput): { readonly transaction: PreparedDelegatedOffer; readonly pair: DelegatedOfferSignerPair; readonly audit: DelegatedOfferAuditReference } {
+  function admit(input: DelegatedOfferSigningInput): {
+    readonly transaction: PreparedDelegatedOffer;
+    readonly pair: DelegatedOfferSignerPair;
+    readonly proposal: TradeProposal;
+    readonly authorization: DelegatedOfferAuthorization;
+    readonly capability: { readonly capabilityId: string; readonly executionId: string; readonly boundedGrantId: string };
+  } {
     const transaction = parsePreparedDelegatedOffer(input?.transaction);
     if (transaction === undefined) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'The prepared transaction is not a closed delegated OfferCreate; nothing is signed.');
     const pair = pinnedPairs.get(delegatedOfferPairKey({ ownerAccount: transaction.Account, delegateAccount: transaction.Delegate }));
     if (pair === undefined) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'The prepared transaction is not for a pinned owner/delegate pair; nothing is signed.');
-    const audit = parseDelegatedOfferAuditReference(input.audit);
-    if (audit === undefined) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'The audit references are not recordable references; nothing is signed.');
+    const proposal = validateTradeProposal(input.proposal);
+    if (!proposal.valid) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'The proposal is not an accepted canonical trade proposal; nothing is signed.');
+    const authorization = parseDelegatedOfferAuthorization(input.authorization);
+    const capability = authorization === undefined ? undefined : parseDelegatedOfferCapability(authorization.capability);
+    if (authorization === undefined || capability === undefined) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'No well-formed delegated-offer capability authorizes this request; nothing is signed.');
+    // The Host's own defect if this fails — the signer would refuse it anyway — so it is never sent.
+    if (delegatedOfferCapabilityBindingFailure(capability, { transaction, proposal: proposal.accepted.proposal, pin: { network: pin.network, pair, trustDomain: capability.trustDomain, organizationId: capability.organizationId } }) !== undefined) {
+      return refuse('OFFER_SIGNER_REQUEST_INVALID', 'The capability is not bound to this transaction, pair, network and proposal; nothing is signed.');
+    }
     if (BigInt(transaction.Fee) > maximumFeeDrops) return refuse('OFFER_SIGNER_REQUEST_INVALID', "The prepared fee exceeds the Host's fee ceiling; nothing is signed.");
     const validated = input.validatedLedgerIndex;
     if (typeof validated !== 'number' || !Number.isSafeInteger(validated) || validated < 1) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'No validated ledger index bounds the request; nothing is signed.');
     if (transaction.LastLedgerSequence <= validated || transaction.LastLedgerSequence > validated + maximumLedgerHorizon) return refuse('OFFER_SIGNER_REQUEST_INVALID', 'The prepared LastLedgerSequence is outside the horizon above the validated ledger; nothing is signed.');
-    return { transaction, pair, audit };
+    return { transaction, pair, proposal: proposal.accepted.proposal, authorization, capability: { capabilityId: capability.capabilityId, executionId: capability.executionId, boundedGrantId: capability.boundedGrantId } };
   }
 
   function freshRequestId(): string {
@@ -290,7 +318,7 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
   }
 
   async function signDelegatedOffer(input: DelegatedOfferSigningInput): Promise<VerifiedDelegatedOfferSignature> {
-    const { transaction, pair, audit } = admit(input);
+    const { transaction, pair, proposal, authorization, capability } = admit(input);
     if (state !== 'VERIFIED') await probe(true);
     if (state !== 'VERIFIED') return refuse(state === 'MISMATCH' ? (reason ?? 'OFFER_SIGNER_IDENTITY_MISMATCH') : 'OFFER_SIGNER_NOT_VERIFIED', 'The delegated offer signer identity is not proven; nothing is signed.');
     if (inFlightSignatures >= maximumConcurrent) return refuse('OFFER_SIGNER_BUSY', 'The delegated offer signer concurrency bound is reached; nothing is signed.');
@@ -299,7 +327,7 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
     let raw: unknown;
     try {
       raw = await transport.signDelegatedOffer(
-        { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: pin.signerId, requestId, network: pin.network, ownerAccount: pair.ownerAccount, delegateAccount: pair.delegateAccount, transaction, audit },
+        { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: pin.signerId, requestId, network: pin.network, ownerAccount: pair.ownerAccount, delegateAccount: pair.delegateAccount, transaction, proposal, authorization },
         { timeoutMs },
       );
     } catch (error) {
@@ -314,8 +342,8 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
       unavailable('OFFER_SIGNER_MALFORMED_RESPONSE');
       return refuse('OFFER_SIGNER_MALFORMED_RESPONSE', 'The delegated offer signer answered outside the protocol; the answer is discarded.');
     }
-    // Bound to this request, this signer and this pair — a replayed or crossed answer is a contradiction of the pin.
-    if (response.requestId !== requestId || response.signerId !== pin.signerId || response.ownerAccount !== pair.ownerAccount || response.delegateAccount !== pair.delegateAccount) {
+    // Bound to this request, this capability, this signer and this pair — a replayed or crossed answer is a contradiction of the pin.
+    if (response.requestId !== requestId || response.capabilityId !== capability.capabilityId || response.signerId !== pin.signerId || response.ownerAccount !== pair.ownerAccount || response.delegateAccount !== pair.delegateAccount) {
       mismatch('OFFER_SIGNER_RESPONSE_MISMATCH');
       return refuse('OFFER_SIGNER_RESPONSE_MISMATCH', 'The delegated offer signer answered for another request, signer or pair; the answer is discarded.');
     }
@@ -336,7 +364,9 @@ export function createDelegatedOfferSigner(options: DelegatedOfferSignerOptions)
       transaction,
       signedTransaction: verification.blob.signedTransaction,
       hash: verification.blob.hash,
-      audit,
+      capabilityId: capability.capabilityId,
+      executionId: capability.executionId,
+      boundedGrantId: capability.boundedGrantId,
     });
   }
 

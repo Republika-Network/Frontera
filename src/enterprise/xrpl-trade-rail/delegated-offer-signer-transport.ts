@@ -7,7 +7,8 @@ import { DELEGATED_OFFER_SIGNER_PATHS, type DelegatedOfferSigningRequest } from 
 
 /**
  * TRADE-04B — the HTTP transport of the delegated OfferCreate signer: the one
- * outbound call site of `frontera.xrpl-delegated-offer-signer.v1` (NO_BYPASS
+ * outbound call site of `frontera.xrpl-delegated-offer-signer` (v2 since
+ * TRADE-04C-S1; the transport is version-neutral) (NO_BYPASS
  * EP-073, §7.6). A signing request, never a submission: it reaches the
  * configured signer and nothing else, and no XRPL server.
  *

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 
 import { DELEGATED_OFFER_SIGNER_PROTOCOL, DELEGATED_OFFER_VERIFICATION_FAILURES, verifySignedDelegatedOffer, type DelegatedOfferVerificationFailure, type PreparedDelegatedOffer } from '../xrpl-trade-rail/index.js';
 import { createReferenceDelegatedOfferSignerService } from '../xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
+import { s1ReferenceOptions } from './trade04c-s1-capability-fixture.js';
 import { signedByPinnedKey, xrplSingleSigningEncoding } from '../../features/xrpl-transport/xrpl-signature.js';
-import { AUDIT, blobHash, decodeBlob, encodeFields, offerWorld, signingEncoding, testAccount, testDelegate, vectorWorld, type OfferWorld } from './trade04b-xrpl-fixture.js';
+import { authorizedInput, blobHash, decodeBlob, encodeFields, offerWorld, signingEncoding, testAccount, testDelegate, vectorWorld, type OfferWorld } from './trade04b-xrpl-fixture.js';
 
 /**
  * TRADE-04B — offline cryptographic qualification of delegated OfferCreate
@@ -20,9 +21,16 @@ import { AUDIT, blobHash, decodeBlob, encodeFields, offerWorld, signingEncoding,
 
 const CREDENTIAL = 'trade04b-signature-credential-0123456789';
 
+/**
+ * TRADE-04C-S1: the reference signer now always has a clock (capability expiry is never deferred). The pinned vectors carry
+ * `Expiration` 800 000 000 (2025-05-08), so the signer's clock — and the capability's issuance — sit at 2025-01-01, before it.
+ */
+const VECTOR_CLOCK = Date.UTC(2025, 0, 1);
+
 function referenceSign(world: OfferWorld, prepared: PreparedDelegatedOffer): { readonly blob: string; readonly hash: string } {
-  const service = createReferenceDelegatedOfferSignerService({ signerId: 'ref-sig', network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '1000' });
-  const body = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'ref-sig', requestId: 'c3'.repeat(32), network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction: prepared, audit: AUDIT };
+  const service = createReferenceDelegatedOfferSignerService({ ...s1ReferenceOptions({ clock: () => VECTOR_CLOCK }), signerId: 'ref-sig', network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '1000' });
+  const { proposal, authorization } = authorizedInput(world, prepared, 1_000, { now: VECTOR_CLOCK });
+  const body = { protocol: DELEGATED_OFFER_SIGNER_PROTOCOL, signerId: 'ref-sig', requestId: 'c3'.repeat(32), network: 'xrp-ledger-testnet', ownerAccount: world.owner, delegateAccount: world.delegate.address, transaction: prepared, proposal, authorization };
   const answer = service.answer({ method: 'POST', path: '/v1/sign/xrpl-delegated-offer', authorization: `Bearer ${CREDENTIAL}`, contentType: 'application/json', body: Buffer.from(JSON.stringify(body)) });
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   const { signedTransaction, hash } = answer.body as { signedTransaction: string; hash: string };

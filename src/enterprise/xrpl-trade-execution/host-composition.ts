@@ -5,6 +5,7 @@ import {
   type XrplReservedSubmissionConfiguration,
 } from '../../features/payment-runtime/rails/xrpl/index.js';
 import type { XrplSequenceDomain } from '../../features/xrpl-transport/index.js';
+import { createDelegatedOfferCapabilityIssuerSlot, type DelegatedOfferCapabilityIssuerSlot } from '../authority-authenticity/delegated-offer-capability-issuer.js';
 import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
 import { isAuthorityStateFreshnessBoundary, type AuthorityStateFreshnessBoundary } from '../authority-state-freshness/session.js';
 import type { ExecutionResolutionAuthority } from '../execution-reconciliation/authority.js';
@@ -55,6 +56,8 @@ export interface ComposeXrplTradeExecutionOptions {
   readonly freshness: AuthorityStateFreshnessBoundary | undefined;
   /** TRADE-03's attested-proposal source (the in-process trade risk edge the embedder composed as `contextProvider`). Required. */
   readonly attested: TradeAttestedProposalSource | undefined;
+  /** TRADE-04C-S1: the deployment's trust-domain id (`governedActions.trustDomainId`), named by every signing capability. */
+  readonly trustDomain: string;
   readonly busyTimeoutMs?: number;
   readonly logger?: { info(message: string, fields?: Readonly<Record<string, unknown>>): void; warn(message: string, fields?: Readonly<Record<string, unknown>>): void };
   readonly ledgerClient?: XrplTradeLedgerClientFactory;
@@ -69,6 +72,13 @@ export interface ComposedXrplTradeExecution {
   readonly authority: ExecutionResolutionAuthority;
   readonly authorityId: typeof TRADE_RESOLUTION_AUTHORITY_ID;
   readonly modules: readonly EnterpriseModule[];
+  /**
+   * TRADE-04C-S1: the write-once capability-issuer slot the executor asks. The
+   * Host hands it to the composition root, which binds it over the
+   * authenticated grant store and the authority signer; until then every
+   * order is refused before signing, and the Host refuses to serve unbound.
+   */
+  readonly capabilities: DelegatedOfferCapabilityIssuerSlot;
   /** The trade evidence record for one execution (the verified interlock row), or `undefined`. */
   evidence(executionId: string): Promise<TradeExecutionEvidenceRecord | undefined>;
   close(): Promise<void>;
@@ -147,10 +157,13 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
     const resolverClient = clientFor(submission, interlock);
     opened.push(() => resolverClient.disconnect());
 
+    if (typeof options.trustDomain !== 'string' || options.trustDomain.length === 0) throw new XrplTradeCompositionError('XRPL_TRADE_COMPOSITION_FAILED', 'The trade executor needs the deployment trust-domain id its signing capabilities name.');
+    const capabilities = createDelegatedOfferCapabilityIssuerSlot();
     const adapter = createTradeOfferExecutionAdapter({
       configuration: configuration.executor,
       attested,
       signer,
+      authorization: { trustDomain: options.trustDomain, issuer: capabilities },
       ledger: executorClient,
       interlock,
       ledgerProvenance: options.ledgerClient === undefined ? 'xrpl-network' : 'injected-ledger-client',
@@ -234,7 +247,7 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
         void signer.probe().catch(() => {});
         const signerStatus = signer.status();
         const network = ledgerState();
-        const status = signerStatus.state === 'MISMATCH' || network === 'XRPL_READ_NETWORK_MISMATCH' ? 'unhealthy' : signerStatus.state === 'VERIFIED' && network === 'ready' ? 'healthy' : 'degraded';
+        const status = signerStatus.state === 'MISMATCH' || network === 'XRPL_READ_NETWORK_MISMATCH' || !capabilities.bound() ? 'unhealthy' : signerStatus.state === 'VERIFIED' && network === 'ready' ? 'healthy' : 'degraded';
         return {
           status,
           checkedAt: now(),
@@ -248,6 +261,9 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
             ...(signerStatus.reason !== undefined ? { signerReason: signerStatus.reason } : {}),
             signerId: signerStatus.signerId,
             pairs: signerStatus.pairs,
+            // TRADE-04C-S1: whether the per-order signing capability issuer is bound, and what authority the signer says it pins (public ids).
+            capabilityIssuer: capabilities.bound() ? 'bound' : 'unbound',
+            ...(signerStatus.authorization !== undefined ? { signerAuthorization: { trustDomain: signerStatus.authorization.trustDomain, organizationId: signerStatus.authorization.organizationId, issuerKeyIds: [...signerStatus.authorization.issuerKeyIds] } } : {}),
             resolutionAuthority: TRADE_RESOLUTION_AUTHORITY_ID,
           },
         };
@@ -264,6 +280,7 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
       authority,
       authorityId: TRADE_RESOLUTION_AUTHORITY_ID,
       modules: Object.freeze([interlockModule, executorModule]),
+      capabilities,
       async evidence(executionId: string) {
         const record = await interlock.read(executionId);
         return record === undefined ? undefined : tradeExecutionEvidenceOf(record, networkId);

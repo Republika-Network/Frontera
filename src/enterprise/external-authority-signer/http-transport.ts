@@ -2,7 +2,7 @@ import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
 import { AuthorityAuthenticityConfigurationError } from '../authority-authenticity/errors.js';
-import { EXTERNAL_AUTHORITY_SIGNER_PATHS, externalSigningRequestBody, type ExternalAuthoritySigningRequest } from './protocol.js';
+import { EXTERNAL_AUTHORITY_SIGNER_PATHS, externalAuthoritySignerPath, externalSigningRequestBody, type ExternalAuthoritySigningRequest } from './protocol.js';
 import { ExternalAuthoritySignerTransportError, type ExternalAuthoritySignerTransport } from './transport.js';
 
 /**
@@ -163,6 +163,6 @@ export function createHttpExternalAuthoritySignerTransport(options: HttpExternal
   return Object.freeze({
     identity: ({ timeoutMs }: { readonly timeoutMs: number }) => call('GET', EXTERNAL_AUTHORITY_SIGNER_PATHS.identity, undefined, timeoutMs),
     sign: (request: ExternalAuthoritySigningRequest, { timeoutMs }: { readonly timeoutMs: number }) =>
-      call('POST', EXTERNAL_AUTHORITY_SIGNER_PATHS[request.operation], externalSigningRequestBody(request), timeoutMs),
+      call('POST', externalAuthoritySignerPath(request.operation), externalSigningRequestBody(request), timeoutMs),
   });
 }

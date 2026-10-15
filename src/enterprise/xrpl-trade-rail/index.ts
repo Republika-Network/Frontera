@@ -1,6 +1,8 @@
 /**
  * TRADE-04B — the protected delegated OfferCreate signer edge: the closed
- * `frontera.xrpl-delegated-offer-signer.v1` protocol, Host-side verification of
+ * `frontera.xrpl-delegated-offer-signer` protocol (v2 since TRADE-04C-S1: every
+ * request carries a CORE-02 delegated-offer signing capability the signer
+ * verifies before touching a key), Host-side verification of
  * a delegated signature, the signer's HTTP transport (NO_BYPASS EP-073) and
  * the Host-side client with its typed `DelegatedOfferSigningPort`.
  *
@@ -14,6 +16,7 @@ export {
   DELEGATED_OFFER_OPTIONAL_FIELDS,
   DELEGATED_OFFER_REQUIRED_FIELDS,
   DELEGATED_OFFER_SIGNATURE_FIELDS,
+  DELEGATED_OFFER_SIGNER_MAXIMUM_ISSUER_KEYS,
   DELEGATED_OFFER_SIGNER_MAXIMUM_PAIRS,
   DELEGATED_OFFER_SIGNER_OPERATION,
   DELEGATED_OFFER_SIGNER_PATHS,
@@ -22,7 +25,8 @@ export {
   isDelegatedOfferAccount,
   isDelegatedOfferRequestId,
   isDelegatedOfferSignerId,
-  parseDelegatedOfferAuditReference,
+  parseDelegatedOfferAuthorization,
+  parseDelegatedOfferSignerAuthorization,
   parseDelegatedOfferSignerIdentity,
   parseDelegatedOfferSignerPair,
   parseDelegatedOfferSigningRequest,
@@ -31,9 +35,11 @@ export {
 } from './delegated-offer-protocol.js';
 export type {
   DelegatedOfferAmount,
-  DelegatedOfferAuditReference,
+  DelegatedOfferAuthoritySignature,
+  DelegatedOfferAuthorization,
   DelegatedOfferIssuedAmount,
   DelegatedOfferNetwork,
+  DelegatedOfferSignerAuthorization,
   DelegatedOfferSignerIdentity,
   DelegatedOfferSignerPair,
   DelegatedOfferSigningRequest,
@@ -43,6 +49,16 @@ export type {
 } from './delegated-offer-protocol.js';
 
 export { DELEGATED_OFFER_VERIFICATION_FAILURES, verifySignedDelegatedOffer } from './delegated-offer-verification.js';
+
+export {
+  DELEGATED_OFFER_AUTHORIZATION_FAILURES,
+  authorizeDelegatedOffer,
+  delegatedOfferCapabilityBindingFailure,
+  delegatedOfferSigningPreimageDigest,
+  preparedDelegatedOfferFromProposal,
+  sameDelegatedOffer,
+} from './delegated-offer-authorization.js';
+export type { DelegatedOfferAuthorizationFailure, DelegatedOfferAuthorizationInput, DelegatedOfferAuthorizationPin, DelegatedOfferAuthorizationResult } from './delegated-offer-authorization.js';
 export type { DelegatedOfferVerification, DelegatedOfferVerificationFailure, DelegatedOfferVerificationInput, VerifiedDelegatedOfferBlob } from './delegated-offer-verification.js';
 
 export {

@@ -5,10 +5,13 @@ import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-g
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { registerAuthoritySignerCustody } from './custody.js';
+import { assessDelegatedOfferCapabilityIssuance, type DelegatedOfferCapabilityIssuanceRequest } from './delegated-offer-capability.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
+import { createAuthorityArtifactVerifier } from './verifier.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
   SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS,
+  delegatedOfferCapabilitySigningBytes,
   grantSigningBytes,
   isSupportedAuthoritySignatureAlgorithm,
   revocationSigningBytes,
@@ -92,6 +95,17 @@ export interface AuthorityArtifactSigner {
    * authority artifact: same key, its own domain, a structured artifact.
    */
   signApprovalState(state: ApprovalStateCommitment): Promise<AuthoritySignature>;
+  /**
+   * TRADE-04C-S1: signs a delegated-offer signing capability — **only** after
+   * `assessDelegatedOfferCapabilityIssuance` accepts it inside this custody
+   * boundary: the presented grant must verify under this signer's own key and
+   * name exactly what the capability binds. Optional, because it is an
+   * extension: a custody boundary that does not offer it leaves the delegated
+   * signer unauthorizable, and the trade executor refuses before signing.
+   * Rejects with `AuthoritySigningUnavailableError` (`EXTERNAL_SIGNER_REFUSED`)
+   * when the assessment refuses.
+   */
+  signDelegatedOfferCapability?(request: DelegatedOfferCapabilityIssuanceRequest): Promise<AuthoritySignature>;
 }
 
 export interface SoftwareAuthorityArtifactSignerOptions {
@@ -99,6 +113,8 @@ export interface SoftwareAuthorityArtifactSignerOptions {
   readonly algorithm: AuthoritySignatureAlgorithm;
   /** PKCS#8 PEM. Accepted **only** here: no other component in this module takes a private key, and none returns one. */
   readonly privateKeyPem: string;
+  /** The clock the capability issuance rule reads (ms since the epoch). Defaults to `Date.now`. For tests. */
+  readonly now?: () => number;
 }
 
 /**
@@ -150,6 +166,10 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
     return { algorithm, keyId, signature: signature.toString('base64url'), artifactVersion: AUTHORITY_ARTIFACT_VERSION };
   }
 
+  // The issuance rule verifies a presented grant under this key alone: never a registry the request could influence.
+  const ownVerifier = createAuthorityArtifactVerifier([{ keyId, algorithm, publicKeyPem: createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }).toString() }]);
+  const now = options.now ?? Date.now;
+
   const signer: AuthorityArtifactSigner = Object.freeze({
     activeKeyId: keyId,
     algorithm,
@@ -167,6 +187,11 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
     },
     async signApprovalState(state: ApprovalStateCommitment): Promise<AuthoritySignature> {
       return signBytes(approvalStateSigningBytes(state));
+    },
+    async signDelegatedOfferCapability(request: DelegatedOfferCapabilityIssuanceRequest): Promise<AuthoritySignature> {
+      const assessment = assessDelegatedOfferCapabilityIssuance(request, { verifyGrant: (grant, storeId, signature) => ownVerifier.verifyGrant(grant, storeId, signature), activeKeyId: keyId, now: now() });
+      if (!assessment.issuable) throw new AuthoritySigningUnavailableError(`The authority signing key '${keyId}' refused the delegated-offer capability (${assessment.failure}).`, 'EXTERNAL_SIGNER_REFUSED');
+      return signBytes(delegatedOfferCapabilitySigningBytes(request.capability));
     },
   });
   registerAuthoritySignerCustody(signer, 'software');

@@ -63,7 +63,7 @@ const PRODUCTION = ['src', 'packages', 'scripts', 'apps'].flatMap(walk).map(read
 const code = (path: string): string => codeOf(readFileSync(path, 'utf8'));
 
 /** What the edge may import: itself, the trade vertical and its rail, the shared transport (barrel), the Payment rail barrel (G2 client only), and the CORE seams it composes against. */
-const ALLOWED = /^(?:\.\/[a-z-]+\.js|\.\.\/\.\.\/features\/(?:execution-runtime|trade-runtime|xrpl-transport)\/index\.js|\.\.\/\.\.\/features\/trade-runtime\/rails\/xrpl\/index\.js|\.\.\/\.\.\/features\/payment-runtime\/rails\/xrpl\/index\.js|\.\.\/(?:trade-risk-context|xrpl-trade-rail)\/index\.js|\.\.\/authority-state-freshness\/(?:checkpoint|errors|session)\.js|\.\.\/execution-reconciliation\/authority\.js|\.\.\/external-authority-signer\/http-transport\.js|\.\.\/governance-store\/digest\.js|\.\.\/modules\/enterprise-module\.js|\.\.\/version\.js|node:(?:crypto|fs|path)|better-sqlite3)$/;
+const ALLOWED = /^(?:\.\/[a-z-]+\.js|\.\.\/\.\.\/features\/(?:execution-runtime|trade-runtime|xrpl-transport)\/index\.js|\.\.\/\.\.\/features\/trade-runtime\/rails\/xrpl\/index\.js|\.\.\/\.\.\/features\/payment-runtime\/rails\/xrpl\/index\.js|\.\.\/(?:trade-risk-context|xrpl-trade-rail)\/index\.js|\.\.\/authority-state-freshness\/(?:checkpoint|errors|session)\.js|\.\.\/authority-authenticity\/delegated-offer-capability-issuer\.js|\.\.\/execution-reconciliation\/authority\.js|\.\.\/external-authority-signer\/http-transport\.js|\.\.\/governance-store\/digest\.js|\.\.\/modules\/enterprise-module\.js|\.\.\/version\.js|node:(?:crypto|fs|path)|better-sqlite3)$/;
 const disallowedImports = (sources: readonly Source[]): readonly string[] => sources.flatMap((source) => importsOf(source.text).filter((specifier) => !ALLOWED.test(specifier)).map((specifier) => `${source.path} imports '${specifier}'`));
 /** TRADE-04B's own signer benchmark composes the client against the loopback reference only (pinned by `trade04b-protected-signer-structure.test.ts`); it is not a Host path. */
 const TRADE04B_BENCH = 'scripts/trade/bench-delegated-offer-signer.mjs';
@@ -154,7 +154,8 @@ describe('TRADE-04C structure — the executor’s order, and no effect it may n
   it('bind → recorded → preflight → sign → independent check → reserve → submitReserved → finality, in that order, inside one owner queue', () => {
     const executor = code(`${EDGE}/trade-offer-executor.ts`);
     const body = executor.slice(executor.indexOf('async function execute('));
-    const markers = ['bind(action, attested, binding)', 'serialized(pair.ownerAccount', 'interlock.recorded(executionId)', 'preflight(action, bound, pair, timings)', 'signer.signDelegatedOffer(', 'canonicalTradeJson(signature.transaction) !== canonicalTradeJson(prepared.offer)', 'interlock.reserve(', 'ledger.submitReserved(executionId, signature.signedTransaction)', 'awaitFinality(executionId'];
+    // TRADE-04C-S1: the per-order capability is issued after the preflight and before the one signing call.
+    const markers = ['bind(action, attested, binding)', 'serialized(pair.ownerAccount', 'interlock.recorded(executionId)', 'preflight(action, bound, pair, timings)', 'authorization.issuer.issue(', 'signer.signDelegatedOffer(', 'canonicalTradeJson(signature.transaction) !== canonicalTradeJson(prepared.offer)', 'interlock.reserve(', 'ledger.submitReserved(executionId, signature.signedTransaction)', 'awaitFinality(executionId'];
     const order = markers.map((marker) => body.indexOf(marker));
     for (const [index, position] of order.entries()) assert.notEqual(position, -1, markers[index] ?? "");
     assert.deepEqual([...order].sort((a, b) => a - b), order);

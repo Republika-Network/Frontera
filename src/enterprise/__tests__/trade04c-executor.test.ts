@@ -8,6 +8,7 @@ import { TRADE_EXECUTION_DETAILS as D, TradeExecutorConfigurationError, createTr
 import type { DelegatedOfferSigningPort } from '../xrpl-trade-rail/index.js';
 import { closeAllWitnesses, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
 import { ACTION, NETWORK_ID, SIGNER_TOKEN, FakeXrplLedger, executorConfiguration, executorRig, rawProposal, validatedAction, type ExecutorRig } from './trade04c-execution-fixture.js';
+import { S1_TRUST_DOMAIN, testCapabilityIssuer } from './trade04c-s1-capability-fixture.js';
 import { decodeBlob, testDelegate } from './trade04b-xrpl-fixture.js';
 
 /**
@@ -60,7 +61,7 @@ const withParameter = (action: ValidatedExecutionAction, dimension: string, valu
 
 /** A test-composed adapter over the rig, past its own restart quarantine. */
 async function adapterOver(rig: ExecutorRig, overrides: Partial<Parameters<typeof createTradeOfferExecutionAdapter>[0]>): Promise<ReturnType<typeof createTradeOfferExecutionAdapter>> {
-  const adapter = createTradeOfferExecutionAdapter({ configuration: executorConfiguration(rig.pairs), attested: rig.book, signer: rig.signerClient, ledger: rig.ledger.client(NETWORK_ID, rig.interlock), interlock: rig.interlock, ledgerProvenance: 'injected-ledger-client', simulation: 'simulated-facts-offline-qualification-only', ...overrides });
+  const adapter = createTradeOfferExecutionAdapter({ configuration: executorConfiguration(rig.pairs), attested: rig.book, signer: rig.signerClient, authorization: { trustDomain: S1_TRUST_DOMAIN, issuer: rig.issuer }, ledger: rig.ledger.client(NETWORK_ID, rig.interlock), interlock: rig.interlock, ledgerProvenance: 'injected-ledger-client', simulation: 'simulated-facts-offline-qualification-only', ...overrides });
   await adapter.readiness();
   rig.ledger.passQuarantine();
   return adapter;
@@ -355,7 +356,7 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
 
   it('configuration: fee above its ceiling, offset outside the shared historical bound, mainnet, or a duplicated owner is refused', () => {
     const pairs = [{ owner: testDelegate().address, delegate: testDelegate() }];
-    const base = { attested: { attestedProposal: () => undefined }, signer: { signDelegatedOffer: async () => undefined as never }, ledger: new FakeXrplLedger().client(NETWORK_ID, { claimSubmission: async () => {} }), interlock: { recorded: async () => undefined, blocking: async () => false, reserve: async () => ({ outcome: 'blocked' as const }), markUnconfirmed: async () => {}, settle: async () => {} }, ledgerProvenance: 'injected-ledger-client' as const };
+    const base = { attested: { attestedProposal: () => undefined }, signer: { signDelegatedOffer: async () => undefined as never }, authorization: { trustDomain: S1_TRUST_DOMAIN, issuer: testCapabilityIssuer() }, ledger: new FakeXrplLedger().client(NETWORK_ID, { claimSubmission: async () => {} }), interlock: { recorded: async () => undefined, blocking: async () => false, reserve: async () => ({ outcome: 'blocked' as const }), markUnconfirmed: async () => {}, settle: async () => {} }, ledgerProvenance: 'injected-ledger-client' as const };
     for (const overrides of [{ feeDrops: '101' }, { maximumFeeDrops: '1000001' }, { lastLedgerOffset: 201 }, { lastLedgerOffset: 1 }, { network: 'xrp-ledger-mainnet' as never }, { observationSpanLedgers: 11 }]) {
       assert.throws(() => createTradeOfferExecutionAdapter({ ...base, configuration: executorConfiguration(pairs, overrides) }), TradeExecutorConfigurationError, JSON.stringify(overrides));
     }

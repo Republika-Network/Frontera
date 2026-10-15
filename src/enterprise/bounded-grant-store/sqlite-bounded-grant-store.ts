@@ -29,6 +29,7 @@ import {
 import {
   AuthoritySigningUnavailableError,
   bindStoreSignerCustody,
+  isWellFormedAuthoritySignature,
   type AuthorityArtifactSigner,
   type AuthorityArtifactVerifier,
   type AuthoritySignature,
@@ -211,9 +212,26 @@ export interface BoundedGrantStoreHealth {
   readonly freshness?: AuthorityStateFreshnessSessionStatus;
 }
 
+/** A grant read with the authority evidence it is filed with (`readSigned`). `grant` and `signature` are present together or not at all. */
+export interface SignedBoundedGrantRead {
+  readonly storeId: string;
+  readonly grant?: BoundedGrant;
+  readonly revocation?: GrantRevocation;
+  readonly signature?: AuthoritySignature;
+}
+
 /** The durable store, plus the lifecycle surface a host needs. The exercise path is handed only `BoundedGrantReaderPort`; nothing below widens what it can reach. */
 export interface DurableBoundedGrantStore extends BoundedGrantStorePort {
   readonly providerKind: 'sqlite';
+  /**
+   * TRADE-04C-S1: the same authoritative read as `read` — revocation state,
+   * record and grant digests, signature, semantic marker and CORE-07 freshness,
+   * all verified in one read transaction — plus the store id the grant is filed
+   * under and the **verified** authority signature it is filed with, so a
+   * custody boundary can re-verify the grant under its own key. Read-only; no
+   * schema change. Reached by the delegated-offer capability issuer alone.
+   */
+  readSigned(grantId: string): Promise<SignedBoundedGrantRead>;
   health(): Promise<BoundedGrantStoreHealth>;
   close(): Promise<void>;
 }
@@ -1140,6 +1158,16 @@ export async function createSqliteBoundedGrantStore(
     return { result: { grant, ...(revocation !== undefined ? { revocation } : {}) }, state: state.commitment };
   });
 
+  /** `runRead`, plus the verified envelope — the same row, in the same read transaction, after `verifiedGrant` accepted it. */
+  const runReadSigned = db.transaction((grantId: string): { readonly result: SignedBoundedGrantRead; readonly state: RevocationStateCommitment } => {
+    const { result, state } = runRead(grantId);
+    if (result.grant === undefined) return { result: { storeId: state.storeId }, state };
+    const envelope = signatureEnvelopeOf(selectGrant.get(grantId) as GrantRow);
+    if (!isWellFormedAuthoritySignature(envelope)) throw unauthentic(grantId, 'grant signature', 'AUTHORITY_SIGNATURE_MALFORMED');
+    const signature: AuthoritySignature = Object.freeze({ algorithm: envelope.algorithm, keyId: envelope.keyId, signature: envelope.signature, artifactVersion: envelope.artifactVersion });
+    return { result: { storeId: state.storeId, grant: result.grant, ...(result.revocation !== undefined ? { revocation: result.revocation } : {}), signature }, state };
+  });
+
   /** The outcome for a grant that already has a committed revocation. The first revocation stands, verified, exactly as it was recorded. */
   function alreadyRevoked(grantRow: GrantRow, grantId: string, state: VerifiedRevocationState): RevokeBoundedGrantOutcome {
     const existing = currentRevocation(grantId, grantRow.revocation_digest, state);
@@ -1389,6 +1417,13 @@ export async function createSqliteBoundedGrantStore(
     async read(grantId: string): Promise<ReadBoundedGrantResult> {
       assertOpen();
       const { result, state } = runRead(grantId);
+      noteVerified(state);
+      return result;
+    },
+
+    async readSigned(grantId: string): Promise<SignedBoundedGrantRead> {
+      assertOpen();
+      const { result, state } = runReadSigned(grantId);
       noteVerified(state);
       return result;
     },

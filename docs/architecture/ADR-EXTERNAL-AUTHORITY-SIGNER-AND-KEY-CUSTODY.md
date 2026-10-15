@@ -549,3 +549,26 @@ pinned the broad refusal, is replaced by a pointer to C2 … C5. Mutations, each
 restored byte-for-byte: M18 (broad rule restored) fails C2, C3; M19 (obligations
 ignored) fails C4; M20 (approvals ignored) fails C5; M21 (configured-memory
 refusal weakened) fails C1 and A1 … A2b, A7, A7b.
+
+## TRADE-04C-S1 amendment — the delegated-offer capability extension (2026-10-15)
+
+- **New artifact, same key, own domain.** `delegatedOfferCapability`
+  (`frontera:authority-artifact:xrpl-delegated-offer-capability:v1\n`), signed by the active authority key under
+  whatever custody the deployment chose. It authorizes exactly one delegated XRPL OfferCreate signature
+  (`src/enterprise/authority-authenticity/delegated-offer-capability.ts`).
+- **One structured extension operation**, `signDelegatedOfferCapability` at `/v1/sign/xrpl-delegated-offer-capability`.
+  It is not part of the five every custody service must offer. A deployment requires it only when it composes the
+  governed trade executor, and then requires the service to offer **exactly** the five plus it. A deployment that
+  does not require it still requires exactly the five, so an extension it did not ask for is refused.
+- **Not a free oracle.** The request carries the grant as filed, its store id and its signature. Every signer
+  implementation (the software signer in process, the reference service in its own process) applies
+  `assessDelegatedOfferCapabilityIssuance` before signing:
+  - the grant must verify under the signer's **own** active key;
+  - its exact CORE-03 tokens must name the capability's proposal digest, network and delegate, for the owner
+    resource and organization the capability binds;
+  - the capability must live at most 60 s and never past the grant.
+
+  AA-010 is unchanged: a compromised Host can still ask for grant signatures.
+- **Grant-store read surface.** `DurableBoundedGrantStore.readSigned` returns the same verified read as `read`,
+  plus the store id and the verified signature envelope. It reads only and changes no schema.
+

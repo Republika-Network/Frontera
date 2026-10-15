@@ -10,6 +10,7 @@ import type { ValidatedExecutionAction } from '../../features/execution-runtime/
 import { closeAllWitnesses, closeDeploymentWitnesses, startWitness } from './core07-freshness-fixture.js';
 import { decodeBlob, testDelegate } from './trade04b-xrpl-fixture.js';
 import { NETWORK_ID, ORG, executorRig, rawProposal, scratch, validatedAction, type ExecutorRig } from './trade04c-execution-fixture.js';
+import { S1_TRUST_DOMAIN } from './trade04c-s1-capability-fixture.js';
 import { XRPL_TRADE_EXECUTOR_ID } from '../xrpl-trade-execution/host-configuration.js';
 import { boundaryFor } from './core07-freshness-fixture.js';
 
@@ -130,8 +131,10 @@ describe('TRADE-04C mutations — the executor (grant binding, ledger reliance, 
     {
       id: 'change-taker-gets-after-grant',
       file: EXECUTOR,
-      search: 'TakerGets: wireAmount(proposal.takerGets),',
-      replace: "TakerGets: wireAmount('drops' in proposal.takerGets ? proposal.takerGets : { ...proposal.takerGets, value: '1000' }),",
+      // TRADE-04C-S1: the executor builds through the shared derivation (`preparedDelegatedOfferFromProposal`); the mutant alters the
+      // amount at the executor's binding of it. Detected now by the signer's own proposal-to-transaction check as well.
+      search: 'const buildOffer = index_js_5.preparedDelegatedOfferFromProposal;',
+      replace: "const buildOffer = (p, f, o) => index_js_5.preparedDelegatedOfferFromProposal('drops' in p.takerGets ? p : { ...p, takerGets: { ...p.takerGets, value: '1000' } }, f, o);",
       guard: (module) =>
         withRig(module, async (rig) => {
           await rig.adapter.execute(order(rig));
@@ -271,7 +274,7 @@ describe('TRADE-04C mutations — the executor (grant binding, ledger reliance, 
         withRig(module, async (rig) => {
           const original = rig.signerClient.signDelegatedOffer;
           const tampering = { signDelegatedOffer: async (input: Parameters<typeof original>[0]) => ({ ...(await original(input)), transaction: { ...input.transaction, TakerPays: '1' } }) };
-          const adapter = module.createTradeOfferExecutionAdapter({ configuration: (await import('./trade04c-execution-fixture.js')).executorConfiguration(rig.pairs), attested: rig.book, signer: tampering, ledger: rig.ledger.client(NETWORK_ID, rig.interlock), interlock: rig.interlock, ledgerProvenance: 'injected-ledger-client', simulation: 'simulated-facts-offline-qualification-only' });
+          const adapter = module.createTradeOfferExecutionAdapter({ configuration: (await import('./trade04c-execution-fixture.js')).executorConfiguration(rig.pairs), attested: rig.book, signer: tampering, authorization: { trustDomain: S1_TRUST_DOMAIN, issuer: rig.issuer }, ledger: rig.ledger.client(NETWORK_ID, rig.interlock), interlock: rig.interlock, ledgerProvenance: 'injected-ledger-client', simulation: 'simulated-facts-offline-qualification-only' });
           await adapter.readiness();
           rig.ledger.passQuarantine();
           await adapter.execute(order(rig));
@@ -287,7 +290,7 @@ describe('TRADE-04C mutations — the executor (grant binding, ledger reliance, 
         withRig(module, async (rig) => {
           const original = rig.signerClient.signDelegatedOffer;
           const tampering = { signDelegatedOffer: async (input: Parameters<typeof original>[0]) => ({ ...(await original(input)), signingPublicKey: testDelegate().publicKey }) };
-          const adapter = module.createTradeOfferExecutionAdapter({ configuration: (await import('./trade04c-execution-fixture.js')).executorConfiguration(rig.pairs), attested: rig.book, signer: tampering, ledger: rig.ledger.client(NETWORK_ID, rig.interlock), interlock: rig.interlock, ledgerProvenance: 'injected-ledger-client', simulation: 'simulated-facts-offline-qualification-only' });
+          const adapter = module.createTradeOfferExecutionAdapter({ configuration: (await import('./trade04c-execution-fixture.js')).executorConfiguration(rig.pairs), attested: rig.book, signer: tampering, authorization: { trustDomain: S1_TRUST_DOMAIN, issuer: rig.issuer }, ledger: rig.ledger.client(NETWORK_ID, rig.interlock), interlock: rig.interlock, ledgerProvenance: 'injected-ledger-client', simulation: 'simulated-facts-offline-qualification-only' });
           await adapter.readiness();
           rig.ledger.passQuarantine();
           await adapter.execute(order(rig));

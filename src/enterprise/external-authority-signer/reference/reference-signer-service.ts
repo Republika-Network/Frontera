@@ -5,13 +5,17 @@ import type { AddressInfo } from 'node:net';
 
 import { boundedGrantDigestMatches, isWellFormedBoundedGrantSemantics, type BoundedGrant } from '../../../features/grant-runtime/index.js';
 import { AUTHORITY_ARTIFACT_VERSION, type AuthoritySignature } from '../../authority-authenticity/authority-signature.js';
+import { AuthoritySigningUnavailableError } from '../../authority-authenticity/errors.js';
 import { authorityVerificationKeyFromPrivateKey, createSoftwareAuthorityArtifactSigner } from '../../authority-authenticity/signer.js';
 import { parseStoredGrant } from '../../bounded-grant-store/sqlite-bounded-grant-store.js';
 import {
+  EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS,
+  EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS,
   EXTERNAL_AUTHORITY_SIGNER_OPERATIONS,
   EXTERNAL_AUTHORITY_SIGNER_PATHS,
   EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
   parseExternalSigningRequest,
+  type ExternalAuthoritySignerExtensionOperation,
   type ExternalAuthoritySignerOperation,
   type ExternalAuthoritySigningRequest,
 } from '../protocol.js';
@@ -54,12 +58,21 @@ export interface ReferenceAuthoritySignerServiceOptions {
   readonly privateKeyPem: string;
   /** The bearer credential callers must present. */
   readonly credential: string;
+  /**
+   * TRADE-04C-S1: extension operations this service offers (default none). The
+   * delegated-offer capability extension signs a capability only after the
+   * software signer's issuance rule accepts it: the presented grant must verify
+   * under this service's own key and name what the capability binds.
+   */
+  readonly extensions?: readonly ExternalAuthoritySignerExtensionOperation[];
+  /** The clock the capability issuance rule reads. For tests. */
+  readonly now?: () => number;
 }
 
 export interface ReferenceAuthoritySignerService {
   handle(req: IncomingMessage, res: ServerResponse): void;
   /** How many signatures each operation has produced. Counts only. */
-  operationCounts(): Readonly<Record<ExternalAuthoritySignerOperation, number>>;
+  operationCounts(): Readonly<Partial<Record<ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation, number>>>;
   readonly publicKeyPem: string;
 }
 
@@ -83,11 +96,18 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 
 export function createReferenceAuthoritySignerService(options: ReferenceAuthoritySignerServiceOptions): ReferenceAuthoritySignerService {
   if (typeof options.credential !== 'string' || options.credential.length < 32) throw new Error('The reference authority signer needs a credential of at least 32 characters.');
-  const signer = createSoftwareAuthorityArtifactSigner({ keyId: options.keyId, algorithm: 'ed25519-v1', privateKeyPem: options.privateKeyPem });
+  const extensions: readonly ExternalAuthoritySignerExtensionOperation[] = options.extensions ?? [];
+  if (!Array.isArray(extensions) || new Set(extensions).size !== extensions.length || extensions.some((extension) => !(EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS as readonly string[]).includes(extension))) {
+    throw new Error(`The reference authority signer extensions must be distinct members of ${EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS.join(', ')}.`);
+  }
+  const signer = createSoftwareAuthorityArtifactSigner({ keyId: options.keyId, algorithm: 'ed25519-v1', privateKeyPem: options.privateKeyPem, ...(options.now !== undefined ? { now: options.now } : {}) });
   const publicKeyPem = authorityVerificationKeyFromPrivateKey(options.privateKeyPem);
   const expected = digest(`Bearer ${options.credential}`);
-  const counts = new Map<ExternalAuthoritySignerOperation, number>(EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.map((operation) => [operation, 0]));
-  const byPath = new Map<string, ExternalAuthoritySignerOperation>(EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.map((operation) => [EXTERNAL_AUTHORITY_SIGNER_PATHS[operation], operation]));
+  const counts = new Map<ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation, number>([...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS, ...extensions].map((operation) => [operation, 0]));
+  const byPath = new Map<string, ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation>([
+    ...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS.map((operation) => [EXTERNAL_AUTHORITY_SIGNER_PATHS[operation], operation] as const),
+    ...extensions.map((operation: ExternalAuthoritySignerExtensionOperation) => [EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS[operation], operation] as const),
+  ]);
 
   const identity = Object.freeze({
     protocol: EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
@@ -95,7 +115,7 @@ export function createReferenceAuthoritySignerService(options: ReferenceAuthorit
     algorithm: signer.algorithm,
     publicKeyPem,
     artifactVersion: AUTHORITY_ARTIFACT_VERSION,
-    operations: [...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS],
+    operations: [...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS, ...extensions],
   });
 
   function authenticated(req: IncomingMessage): boolean {
@@ -116,6 +136,9 @@ export function createReferenceAuthoritySignerService(options: ReferenceAuthorit
         return signer.signObligationDischargeState(request.state);
       case 'signApprovalState':
         return signer.signApprovalState(request.state);
+      case 'signDelegatedOfferCapability':
+        // The issuance rule runs inside the software signer, in this process: a refused capability is never signed.
+        return signer.signDelegatedOfferCapability!({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature });
     }
   }
 
@@ -168,7 +191,8 @@ export function createReferenceAuthoritySignerService(options: ReferenceAuthorit
           counts.set(operation, (counts.get(operation) ?? 0) + 1);
           send(res, 200, { signature });
         },
-        () => send(res, 500, { error: 'signing-failed' }),
+        // A refusal by the issuance rule is a refusal (422, never retried), not an outage.
+        (error: unknown) => (error instanceof AuthoritySigningUnavailableError && error.reason === 'EXTERNAL_SIGNER_REFUSED' ? send(res, 422, { error: 'refused' }) : send(res, 500, { error: 'signing-failed' })),
       );
     });
   }
@@ -176,7 +200,7 @@ export function createReferenceAuthoritySignerService(options: ReferenceAuthorit
   return Object.freeze({
     handle,
     publicKeyPem,
-    operationCounts: () => Object.freeze(Object.fromEntries(counts)) as Readonly<Record<ExternalAuthoritySignerOperation, number>>,
+    operationCounts: () => Object.freeze(Object.fromEntries(counts)) as Readonly<Partial<Record<ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation, number>>>,
   });
 }
 

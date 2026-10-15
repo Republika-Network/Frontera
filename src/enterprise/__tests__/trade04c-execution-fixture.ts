@@ -15,6 +15,8 @@ import { TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT, createTradeOfferExecutionAd
 import { XRPL_TRADE_EXECUTOR_ID } from '../xrpl-trade-execution/host-configuration.js';
 import { boundaryFor, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
 import { testAccount, testDelegate, type TestDelegate } from './trade04b-xrpl-fixture.js';
+import { S1_TRUST_DOMAIN, signerAuthorization, testCapabilityIssuer } from './trade04c-s1-capability-fixture.js';
+import type { DelegatedOfferCapabilityIssuer } from '../authority-authenticity/index.js';
 
 /**
  * TRADE-04C offline qualification fixtures.
@@ -283,11 +285,16 @@ export function pairWorld(ledger: FakeXrplLedger, options: { readonly permission
 
 export interface StartedReferenceSigner {
   readonly endpoint: string;
+  /** TRADE-04C-S1: the signer's durable capability consumption ledger. */
+  readonly ledgerPath: string;
   signatures(): number;
   close(): Promise<void>;
 }
 
-export async function startSigner(pairs: readonly TradePairWorld[], options: { readonly signerId?: string } = {}): Promise<StartedReferenceSigner> {
+/** The loopback reference signer, pinning the S1 test authority, the S1 trust domain and the rig's organization; its consumption ledger in its own temporary directory. */
+export async function startSigner(pairs: readonly TradePairWorld[], options: { readonly signerId?: string; readonly ledgerPath?: string; readonly organizationId?: string; readonly trustDomain?: string } = {}): Promise<StartedReferenceSigner> {
+  const space = options.ledgerPath === undefined ? scratch() : undefined;
+  const ledgerPath = options.ledgerPath ?? join(space!.dir, 'capability-ledger.sqlite');
   const started = await startReferenceDelegatedOfferSigner({
     signerId: options.signerId ?? SIGNER_ID,
     network: NETWORK,
@@ -295,9 +302,20 @@ export async function startSigner(pairs: readonly TradePairWorld[], options: { r
     keys: pairs.map((pair) => ({ ownerAccount: pair.owner, delegateSeed: pair.delegate.seed })),
     maximumFeeDrops: '1000',
     maximumLedgerHorizon: 200,
+    clock: () => Date.now(),
+    authorization: signerAuthorization(undefined, { organizationId: options.organizationId ?? ORG, trustDomain: options.trustDomain ?? S1_TRUST_DOMAIN }),
+    consumptionLedgerPath: ledgerPath,
   });
   started.server.unref();
-  return { endpoint: `http://127.0.0.1:${started.port}`, signatures: started.signatures, close: started.close };
+  return {
+    endpoint: `http://127.0.0.1:${started.port}`,
+    ledgerPath,
+    signatures: started.signatures,
+    close: async () => {
+      await started.close();
+      space?.cleanup();
+    },
+  };
 }
 
 export function signerClient(endpoint: string, pairs: readonly TradePairWorld[], options: { readonly signerId?: string; readonly lastLedgerOffset?: number } = {}): DelegatedOfferSigner {
@@ -399,6 +417,8 @@ export interface ExecutorRig {
   readonly traces: TradeExecutionTrace[];
   readonly witness: StartedWitness;
   readonly path: string;
+  /** TRADE-04C-S1: the capability issuer the executor asks (the unit-level test issuer unless one was injected). */
+  readonly issuer: DelegatedOfferCapabilityIssuer;
   close(): Promise<void>;
 }
 
@@ -413,7 +433,7 @@ export const scratch = (): { readonly dir: string; cleanup(): void } => {
  * signer client over HTTP to a loopback reference signer, and the labelled
  * fake ledger. Past the restart quarantine unless `quarantine: true`.
  */
-export async function executorRig(options: { readonly pairs?: number | readonly TradePairWorld[]; readonly configuration?: Partial<TradeOfferExecutorConfiguration>; readonly quarantine?: boolean; readonly simulation?: boolean; readonly dir?: string; readonly witness?: StartedWitness; readonly ledger?: FakeXrplLedger; readonly create?: typeof createTradeOfferExecutionAdapter; readonly createInterlock?: typeof createSqliteTradeSequenceInterlock } = {}): Promise<ExecutorRig> {
+export async function executorRig(options: { readonly pairs?: number | readonly TradePairWorld[]; readonly configuration?: Partial<TradeOfferExecutorConfiguration>; readonly quarantine?: boolean; readonly simulation?: boolean; readonly dir?: string; readonly witness?: StartedWitness; readonly ledger?: FakeXrplLedger; readonly create?: typeof createTradeOfferExecutionAdapter; readonly createInterlock?: typeof createSqliteTradeSequenceInterlock; readonly issuer?: DelegatedOfferCapabilityIssuer } = {}): Promise<ExecutorRig> {
   const ledger = options.ledger ?? new FakeXrplLedger();
   const pairs = Array.isArray(options.pairs) ? (options.pairs as readonly TradePairWorld[]) : Array.from({ length: (options.pairs as number | undefined) ?? 1 }, () => pairWorld(ledger));
   const space = options.dir === undefined ? scratch() : { dir: options.dir, cleanup: () => {} };
@@ -425,10 +445,12 @@ export async function executorRig(options: { readonly pairs?: number | readonly 
   const client = signerClient(signer.endpoint, pairs, { lastLedgerOffset: options.configuration?.lastLedgerOffset ?? 20 });
   const book = new AttestationBook();
   const traces: TradeExecutionTrace[] = [];
+  const issuer = options.issuer ?? testCapabilityIssuer();
   const adapter = (options.create ?? createTradeOfferExecutionAdapter)({
     configuration: executorConfiguration(pairs, options.configuration),
     attested: book,
     signer: client,
+    authorization: { trustDomain: S1_TRUST_DOMAIN, issuer },
     ledger: ledger.client(NETWORK_ID, interlock),
     interlock,
     ledgerProvenance: 'injected-ledger-client',
@@ -448,6 +470,7 @@ export async function executorRig(options: { readonly pairs?: number | readonly 
     traces,
     witness,
     path,
+    issuer,
     async close() {
       await interlock.close().catch(() => {});
       await signer.close().catch(() => {});
