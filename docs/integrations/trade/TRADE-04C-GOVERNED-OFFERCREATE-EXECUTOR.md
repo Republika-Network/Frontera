@@ -383,7 +383,9 @@ prevent that cryptographically today.
 | `trade03-f1-reliance-time.test.ts` | 32 | F-1 (TRADE-03 §38): honest real-time trials (3 × 200, each asserted to its exact expected outcome), 2 s delay, binding boundary, stale/future/malformed facts, organization, source, revocation, replay, profile expiry, clock regression (O, O2, O3), evidence and no-extension, 10 compiled-module mutants, 3 classifier self-tests |
 | `trade04c-governed-executor-structure.test.ts` | 17 | edge files, imports, reachers, routes, single builders and callers, order, post-submit uncertainty, no effects, bounds, ownership declaration and rule (same/different network, delegates, malformed), negative fixtures |
 | `trade04c-mutation.test.ts` | 23 | §23 |
-| `trade04c-prod03-host-integration.test.ts` | 10 | §36: PROD-03 policy-source rule and Payment/Trade sequence isolation, alone and together; nothing opened on refusal; `approvalPolicy` as a trade Host's one policy source (review added, VIOLATED denied, altered intent refused at step 1, replay) |
+| `trade04c-prod03-host-integration.test.ts` | 5 | §36: PROD-03 policy-source rule and Payment/Trade sequence isolation, alone and together; nothing opened on refusal |
+| `trade04c-r8-trade-policy.test.ts` | 19 | §37: R8-A … R8-G — unrelated / missing / hand-built / review-less / binding-less providers, approvalPolicy-only and beside the provider, forgery (wrapper, prototype look-alike, rule-dropping wrapper), binding (another edge or profile version, trust domain, owner scope), factory and provenance immutability; on the shipped Host: in-limit executes once, 800 RLUSD withheld with unauthorized / self / rejected / revoked / authority-revoked approvals never executing and a valid one executing exactly the grant-bound transaction once; structure pins |
+| `trade04c-r8-mutation.test.ts` | 1 (5 baselines, 10 mutants) | §37 mutation table |
 | `portability-store-registry.structure.test.mjs` (+4) | 13 | §36: every flag a store condition reads is type-checked and written by the backup |
 
 Governed-path refusals (policy denial, approval required/revoked/expired, missing/expired/revoked grant,
@@ -568,7 +570,7 @@ shapes), fee behavior under load, real finality and P12 resolution, a backup/res
 | R5 | customer direct submissions on the owner account | contractual (§27) |
 | R6 | G1 (shared accounts) | not authorized; refused at boot |
 | R7 | throughput (one order per owner per validated ledger) | documented; TRADE-04D |
-| R8 | `approvalPolicy` (PROD-03) as a trade Host's one policy source drops TRADE-03's policy-pack binding rules (§36) | open, defence in depth: the Kernel's material-fact gate still denies VIOLATED; TRADE-04C step 1 still refuses an altered intent (tested). Recommendation: compose TRADE-03's rules with the file policy, or refuse that composition — needs a decision |
+| R8 | a trade Host accepted any policy source: under a PROD-03 `approvalPolicy` ruling another profile, an order TRADE-03 marked APPROVAL_REQUIRED executed with no approval (§36, §37) | **corrected** (authorized): mandatory TRADE-03 policy provenance, enforced at boot (§37) |
 
 ## 34. Commercial readiness assessment
 
@@ -606,14 +608,73 @@ complete without the matching interlock (reproduced; a restore into a trade Host
 store condition reads (`DEPLOYMENT_FLAGS`, pinned against `conditionHolds` by test). Coverage backups taken
 before this change lack the two flags and are refused: take a fresh backup.
 
-**Cross-feature finding 2 — `approvalPolicy` and TRADE-03's policy rules (R8, open).** TRADE-03's binding rules
-are policy-pack rules the embedder composes as `policyPackProvider`. PROD-03 refuses that beside a file
-`approvalPolicy`, so a trade Host using `approvalPolicy` has no TRADE-03 binding rules. Tested on the shipped
-Host: an over-ceiling order is still **denied** by the Kernel's material-fact gate before any review; an altered
-intent **reaches review**, and once approved is refused by the executor at step 1
-(`trade-execution-not-bound`) with zero signing requests. No execution bypass; one defence-in-depth layer is
-absent in that composition. Not fixed here (it needs a design decision).
+**Cross-feature finding 2 — R8, an execution-governance bypass (corrected, §37).** First seen as a missing
+defence-in-depth layer (an altered intent reached review and was refused at the executor's step 1), then
+reproduced as a real bypass: with an `approvalPolicy` ruling only a non-trading profile, an 800-RLUSD order
+TRADE-03 assessed APPROVAL_REQUIRED was **executed — 1 signature, 1 submission, zero approvals**, because
+`trade-risk-review` is a TRADE-03 policy-pack rule and that composition carried none.
 
 **F-1 trial classification (revised).** See TRADE-03 §38: no trial is skipped; each is asserted to its exact
 expected outcome from the recorded trusted-clock reads, refusals must carry clock causes only, and
 deterministic injection plus classifier self-tests cover both regression shapes.
+
+## 37. R8 — mandatory trading policy provenance (security correction)
+
+**Root cause.** TRADE-03's controls that decide whether an assessed order may proceed are policy-pack rules
+(`tradeRiskPolicyRules`): `trade-risk-review` (APPROVAL_REQUIRED → CORE-05 approval), the exact binding of the
+seven trade parameters, amount and asset to the assessed proposal, the verified delegation, the pinned profile
+and the presence of every material fact. The Kernel's policy port is opaque, and the Host accepted any provider
+that satisfied `GOVERNED_ACTION_CONTEXT_POLICY_REQUIRED` — an unrelated pack, or (after PROD-03) a file
+`approvalPolicy` for another profile. What still held without those rules: VIOLATED (no readings → the Kernel
+denies), CORE-04 freshness/trust, P10/P11/P12, emergency stop, the executor's validated re-reads and exact
+binding. What was lost: human review, and policy-level proposal binding. The executor cannot replace them: it
+is action-neutral by design (CORE-08) and never sees approvals.
+
+**Correction (authorized; production files `trade-risk-context/trade-risk-policy-provider.ts` (new),
+`trade-risk-context/trade-risk-context.ts`, `trade-risk-context/index.ts`, `host/enterprise-host.ts`,
+`host/host-configuration.ts` — two refusal codes).**
+
+- `createTradeRiskPolicyPackProvider(edge, { trustDomainId })` binds only to an edge `createTradeRiskContext`
+  produced (recorded in that module's private registry) and reads the edge's pinned profile reference, action,
+  network and owners from it. It compiles exactly `tradeRiskPolicyRules` — the existing definitions — scoped to
+  the trust domain, the trade action and `<network>:<owner>` for every pinned owner, and refuses unless the
+  compiled set is exactly `TRADE_RISK_MANDATORY_POLICY_RULE_IDS` (stated independently of the builder) with each
+  rule's mandatory effect (`trade-risk-review` → `require_approval`; every other → `deny`). Rules are frozen data
+  captured at construction; each evaluation runs on a freshly compiled, frozen runtime. The provider is frozen;
+  its provenance is recorded in a private registry keyed by that object, so a wrapper, copy or prototype
+  look-alike carries none. No additional rules this milestone.
+- The Host (`assertTradePolicyComposed`, in the pre-composition block, before any XRPL store, signer or
+  executor): with `xrplTradeExecution`, a file `approvalPolicy` is refused (`HOST_TRADE_POLICY_SOURCE_CONFLICT`);
+  otherwise the exact object `policyPackProviderOf` hands the Kernel must carry provenance, the mandatory rule
+  set, the configured trade action, the Host's trust domain and organization, the Host's `contextProvider` and
+  the executor's attestation source as its edge's, and every configured owner in scope
+  (`HOST_TRADE_POLICY_REQUIRED`). Hosts without trade execution — PROD-03 included — are unchanged.
+
+**Approval enforcement on the shipped Host (`trade04c-r8-trade-policy.test.ts`).** In-limit order: executed
+once (1 signature, 1 submission). 800 RLUSD: TRADE-03 APPROVAL_REQUIRED → withheld by approval, 0 / 0; an
+unprovisioned actor's and the requesting agent's approvals are refused (still withheld, 0 / 0); a valid approval
+→ executed exactly once, the submitted blob's `Account`, `TakerGets` and `TakerPays` equal the proposal, the P11
+execution is recorded, a replay signs and sends nothing. Rejected, revoked-before-resume and
+approver-authority-revoked: never executed, 0 / 0. Expiry and quorum are CORE-05's (approval-lifecycle,
+approval-authenticity, CTRL-04 workflow suites). Profile change (R8-G): a provider qualified for another profile
+version cannot serve the Host (refused both ways); CORE-05 subjects bind the profile key and digest, the
+admitted-context digest and the requirement snapshot (approval-lifecycle: another context or requirement is
+superseded, never approved). An end-to-end restart on the same state was attempted and is **not** used as
+evidence: the fixture's restart path does not restore P10 (`FINANCIAL_AUTHORITY_UNRESOLVED` with the profile
+unchanged too).
+
+**Mutations (`trade04c-r8-mutation.test.ts`, one process per mutant, every edit applied exactly once, five
+unmutated baselines hold).**
+
+| Mutant | Configuration | Result |
+|---|---|---|
+| guard removed | approvalPolicy for another profile | **detected** — executed, APPROVAL_REQUIRED, 1 signature, 1 submission (the original R8 defect) |
+| unmarked provider accepted | hand-built rules without review | **detected** — executed 1 / 1 |
+| provenance read through the prototype | look-alike inheriting from the genuine provider | **detected** — executed 1 / 1 |
+| review requirement omitted (review → allow, factory effect check removed) | mandatory provider | **detected** — executed 1 / 1 |
+| review rule effect weakened | mandatory provider | contained — factory effect check (`TRADE_RISK_POLICY_PROVIDER_INVALID`) |
+| review rule removed | mandatory provider | contained — factory rule-set check |
+| review rule removed + factory checks removed | mandatory provider | contained — Host rule-set check (`HOST_TRADE_POLICY_REQUIRED`) |
+| proposal binding removed (rule builder) | mandatory provider | contained — factory rule-set check |
+| edge binding removed from the guard | provider qualified for profile @4 on an @3 Host | contained — `trade-risk-profile-pinned` denies, 0 / 0 |
+| approvalPolicy conflict accepted | approvalPolicy for another profile | contained — provenance check (`HOST_TRADE_POLICY_REQUIRED`) |

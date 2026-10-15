@@ -2,7 +2,7 @@
   "name": "@aoc-enterprise/runtime",
   "version": "1.6.0",
   "generated": {
-    "commit": "7336bbb4ac0c8756904ec8e677e21ba9667f47a4",
+    "commit": "cbeef25597878f97c75efc03155527457a4b0772",
     "branch": "feat/trade-04c-governed-offercreate-executor",
     "node": "v22.23.1"
   },

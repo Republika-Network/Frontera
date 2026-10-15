@@ -29,3 +29,13 @@ export type {
 } from './trade-risk-context.js';
 export { TRADE_RISK_ABSENCE_SENSITIVE_RULES, tradeRiskPolicyRules, tradeRiskTrustedContextSources } from './trade-risk-policy.js';
 export type { TradeRiskPolicyOptions, TradeRiskSourceDeclarationOptions } from './trade-risk-policy.js';
+// R8: the one policy provider a trade-executing Host composes, and its provenance (read by the Host).
+export {
+  TRADE_RISK_MANDATORY_POLICY_EFFECTS,
+  TRADE_RISK_MANDATORY_POLICY_RULE_IDS,
+  TRADE_RISK_POLICY_PACK_ID,
+  TradeRiskPolicyProviderError,
+  createTradeRiskPolicyPackProvider,
+  tradeRiskPolicyProvenanceOf,
+} from './trade-risk-policy-provider.js';
+export type { TradeRiskPolicyProvenance } from './trade-risk-policy-provider.js';

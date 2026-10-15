@@ -13,7 +13,8 @@ import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import type { GovernanceConfiguration } from '../governance-profile/index.js';
 import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host.js';
 import { buildDurableAuthorityPayloads, DURABLE_FIXTURE_OPERATOR } from '../kernel-authority/fixtures/durable-authority.fixture.js';
-import { TRADE_RISK_MATERIAL_FACTS, TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT, createTradeRiskContext, tradeRiskPolicyRules, tradeRiskTrustedContextSources, type TradeRiskContext } from '../trade-risk-context/index.js';
+import { TRADE_RISK_MATERIAL_FACTS, TRADE_RISK_POLICY_PACK_ID, TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT, createTradeRiskContext, createTradeRiskPolicyPackProvider, tradeRiskPolicyRules, tradeRiskTrustedContextSources, type TradeRiskContext } from '../trade-risk-context/index.js';
+import type { PolicyPackProvider } from '../../kernel/index.js';
 import { TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT, XRPL_TRADE_EXECUTOR_ID, type TradeExecutionTrace } from '../xrpl-trade-execution/index.js';
 import { createReferenceDelegatedOfferSignerService } from '../xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
 import { AGENT_KEY, AGENT_SUBJECT, ORG, POLICY_WRITER, TRUST_DOMAIN, Workspace, call, governedFile, secureEnv, type Reply } from './core04-host-fixture.js';
@@ -118,7 +119,7 @@ function governance(resource: string): GovernanceConfiguration {
         resourceClass: 'trading-account',
         parameters: TRADE_PROFILE_PARAMETERS,
         materialFacts: TRADE_RISK_MATERIAL_FACTS,
-        relevantPolicies: ['trade04c-policy'],
+        relevantPolicies: [TRADE_RISK_POLICY_PACK_ID],
         approval: { approverAction: APPROVE_TRADE, minimumApprovals: 1, requestTtlSeconds: 3600, approvalValiditySeconds: 900 },
       },
     ],
@@ -126,7 +127,11 @@ function governance(resource: string): GovernanceConfiguration {
   };
 }
 
-function tradePolicy(resource: string) {
+/**
+ * A hand-built TRADE-03 policy (the pre-R8 embedder construction): the same rules, minus `omit`, from no factory.
+ * R8 tests compose it to prove the Host refuses any provider the TRADE-03 factory did not produce.
+ */
+export function handBuiltTradePolicy(resource: string, omit: readonly string[] = []) {
   const runtime = createPolicyPackRuntime(createPolicyPackRuntimeContext('2026-01-01T00:00:00.000Z'));
   runtime.registerPolicyPack(POLICY_WRITER, { id: 'trade04c-policy', name: 'TRADE-04C trading-risk policy', description: 'Synthetic', kind: 'data_boundary', domain: 'general_enterprise' });
   runtime.registerPolicyPackVersion(POLICY_WRITER, {
@@ -134,7 +139,7 @@ function tradePolicy(resource: string) {
     policyPackId: 'trade04c-policy',
     version: '1.0.0',
     scope: { resourceScopes: [resource] },
-    rules: tradeRiskPolicyRules({ policyPackVersionId: POLICY_VERSION, profileReference: PROFILE_REFERENCE, sourceIds: ['trade04c-source'] }),
+    rules: tradeRiskPolicyRules({ policyPackVersionId: POLICY_VERSION, profileReference: PROFILE_REFERENCE, sourceIds: ['trade04c-source'] }).filter((rule) => !omit.includes(rule.id)),
     sources: [{ id: 'trade04c-source', type: 'internal_control', title: 'Synthetic', description: 'Synthetic', authority: 'demo_only' }],
     effectiveFrom: '2026-01-01T00:00:00.000Z',
     demoOnly: true,
@@ -147,8 +152,14 @@ function tradePolicy(resource: string) {
 export interface TradeHostOptions {
   /** Configure the section, but compose no attested-proposal source (refusal test). */
   readonly omitAttestation?: boolean;
-  /** Compose the embedder's TRADE-03 policy pack (default). `false`: no in-process policy source (PROD-03 `approvalPolicy` cross-feature tests). */
+  /** Compose the embedder's TRADE-03 policy (default). `false`: no in-process policy source (PROD-03 `approvalPolicy` cross-feature tests). */
   readonly embedderPolicy?: boolean;
+  /** R8: compose this provider instead of TRADE-03's mandatory one (arbitrary, hand-built, wrapped or foreign providers). */
+  readonly policyProvider?: (context: { readonly edge: TradeRiskContext; readonly resource: string; readonly mandatory: () => PolicyPackProvider }) => PolicyPackProvider;
+  /** R8: the trading-risk profile's version (default: the fixture's) — a profile change is a new edge and a new provider. */
+  readonly profileVersion?: number;
+  /** R8: build the policy provider from a second, separately composed edge with this profile version (not the Host's edge). */
+  readonly policyEdgeProfileVersion?: number;
   readonly sectionOverrides?: Record<string, unknown>;
   readonly envOverrides?: Record<string, string | undefined>;
   readonly fileOverrides?: Record<string, unknown>;
@@ -216,10 +227,10 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
   // on the true clock — no back-dating (the F-1 correction assesses at the post-collection reliance instant).
   const verifier = createXrplDelegationVerifier({ port: { serverInfo: async () => ledger.serverInfo(), ledgerEntryDelegate: async (request) => ledger.ledgerEntry({ ...request }) }, network: NETWORK, clock: () => iso(Date.now()), maxValidatedLedgerAgeSeconds: 10, policy });
   const now = Date.now();
-  const edge = createTradeRiskContext({
+  const edgeFor = (profileVersion: number | undefined): TradeRiskContext => createTradeRiskContext({
     organizationId: ORG,
     action: ACTION,
-    profile: profileData({ organizationId: ORG, effectiveFrom: iso(now - 86_400_000), expiresAt: iso(now + 30 * 86_400_000), ownerAccounts: [pair.owner], delegateAccounts: [pair.delegate.address], pairs: [hostPair] }),
+    profile: profileData({ organizationId: ORG, effectiveFrom: iso(now - 86_400_000), expiresAt: iso(now + 30 * 86_400_000), ownerAccounts: [pair.owner], delegateAccounts: [pair.delegate.address], pairs: [hostPair], ...(profileVersion !== undefined ? { profileVersion } : {}) }),
     ports: {
       market: { read: async (request) => request.quotes.map((quote) => market({ organizationId: ORG, network: request.network as typeof NETWORK, base: request.base, quote, observedAt: iso(Date.now()) })) },
       exposure: { read: async (request) => sealTradeExposureSnapshot(exposureReading({ organizationId: ORG, ownerAccount: request.ownerAccount, observedAt: iso(Date.now()) })) },
@@ -232,6 +243,7 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
     simulation: TRADE_RISK_SIMULATION_ACKNOWLEDGEMENT,
     onAssessment: (record) => assessments.push(record),
   });
+  const edge = edgeFor(options.profileVersion);
   const dir = options.dir ?? workspace.dir();
   const env = {
     ...secureEnv(dir, tradeFile(pair, options.signerEndpoint ?? signer.endpoint, options)),
@@ -245,7 +257,14 @@ export async function bootTradeHost(workspace: Workspace, options: TradeHostOpti
       await bootEnterpriseHost({
         env: await withDeploymentWitness(env),
         contextProvider: edge.provider,
-        ...(options.embedderPolicy === false ? {} : { policyPackProvider: tradePolicy(resource) }),
+        ...(options.embedderPolicy === false
+          ? {}
+          : {
+              policyPackProvider:
+                options.policyProvider !== undefined
+                  ? options.policyProvider({ edge, resource, mandatory: () => createTradeRiskPolicyPackProvider(edge, { trustDomainId: TRUST_DOMAIN }) })
+                  : createTradeRiskPolicyPackProvider(options.policyEdgeProfileVersion !== undefined ? edgeFor(options.policyEdgeProfileVersion) : edge, { trustDomainId: TRUST_DOMAIN }),
+            }),
         xrplTradeExecution: {
           attested: options.omitAttestation === true ? undefined : edge.attested,
           ledgerClient: ledger.factory(),

@@ -1,12 +1,11 @@
-import { after, before, describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { approvals, as, commandFor } from './core05-host-fixture.js';
 import { closeDeploymentWitnesses } from './core07-freshness-fixture.js';
 import { FakeXrplLedger, pairWorld } from './trade04c-execution-fixture.js';
-import { ACTION, APPROVER, GOVERNANCE_PIN, Workspace, admit, bootTradeHost, governTrade, post, proposalFor, type TradeHost, type TradeHostOptions } from './trade04c-host-fixture.js';
+import { ACTION, GOVERNANCE_PIN, Workspace, bootTradeHost, type TradeHostOptions } from './trade04c-host-fixture.js';
 
 /**
  * TRADE-04C × PROD-03 — the two Host additions composed together on the
@@ -92,9 +91,9 @@ const code = (expected: string) => (error: { code?: string }) => {
 };
 
 describe('TRADE-04C × PROD-03 — boot refusals: each check holds alone and together, before any XRPL store opens', () => {
-  it('A/G: the file approvalPolicy beside the trade embedder’s policy pack is ambiguous — refused; trade configuration does not change policy-source selection', async () => {
+  it('A/G: the file approvalPolicy beside the trade policy is refused — on a trade Host by the trade rule (R8), which precedes PROD-03’s generic ambiguity rule; without trade, PROD-03’s selection is unchanged (prod03 suites)', async () => {
     const dir = workspace.dir();
-    await assert.rejects(bootTradeHost(workspace, { dir, ...fileApprovalPolicy }), code('HOST_POLICY_SOURCE_AMBIGUOUS'));
+    await assert.rejects(bootTradeHost(workspace, { dir, ...fileApprovalPolicy }), code('HOST_TRADE_POLICY_SOURCE_CONFLICT'));
     assertNoXrplStoreOpened(dir);
   });
 
@@ -120,7 +119,7 @@ describe('TRADE-04C × PROD-03 — boot refusals: each check holds alone and tog
     assertNoXrplStoreOpened(dir);
   });
 
-  it('D/E: disjoint accounts but an ambiguous policy source — still refused by the policy-source rule, nothing opened', async () => {
+  it('D/E: disjoint accounts but a second policy source — still refused (the trade policy-source rule), nothing opened', async () => {
     const ledger = new FakeXrplLedger();
     const pair = pairWorld(ledger);
     const stranger = pairWorld(new FakeXrplLedger());
@@ -128,7 +127,7 @@ describe('TRADE-04C × PROD-03 — boot refusals: each check holds alone and tog
     const dir = workspace.dir();
     await assert.rejects(
       bootTradeHost(workspace, { ledger, pair, dir, ...merged(fileApprovalPolicy, withPaymentRail(stranger.owner, stranger.delegate.publicKey)) }),
-      code('HOST_POLICY_SOURCE_AMBIGUOUS'),
+      code('HOST_TRADE_POLICY_SOURCE_CONFLICT'),
     );
     assertNoXrplStoreOpened(dir);
   });
@@ -142,87 +141,6 @@ describe('TRADE-04C × PROD-03 — boot refusals: each check holds alone and tog
   });
 });
 
-describe('TRADE-04C × PROD-03 — approvalPolicy as the one policy source of a trade Host: it can only add review', () => {
-  let trade: TradeHost;
-  const counts = (): { readonly signatures: number; readonly sends: number } => ({ signatures: trade.signer.signatures(), sends: trade.ledger.submitCalls.length });
-
-  before(async () => {
-    trade = await bootTradeHost(workspace, { embedderPolicy: false, ...fileApprovalPolicy });
-  });
-  after(async () => {
-    await trade?.signer.close().catch(() => {});
-  });
-
-  /** Governs `raw`; if review is required, approves it through CORE-05 and resumes. Returns both replies. */
-  async function governAndApprove(raw: Record<string, unknown>) {
-    const intent = await admit(trade, raw);
-    const first = await post(trade, intent);
-    if (first.body['withheldBy'] !== 'approval') return { first, resumed: undefined };
-    const view = await approvals(trade.host).describe(first.body['requestId'] as string);
-    assert.ok(view !== undefined, first.text);
-    await approvals(trade.host).approve(as(APPROVER), commandFor(view));
-    return { first, resumed: await post(trade, intent) };
-  }
-
-  it('F: the file rule sends an in-limit order to review (zero effect); approved through CORE-05, it executes exactly once', async () => {
-    const before = counts();
-    const { first, resumed } = await governAndApprove(proposalFor(trade, '100'));
-    assert.equal(first.body['status'], 'withheld', first.text);
-    assert.equal(first.body['withheldBy'], 'approval', first.text);
-    assert.equal(trade.assessments.at(-1)?.outcome, 'SATISFIED', 'TRADE-03 still assessed the order');
-    assert.ok(resumed !== undefined);
-    assert.equal(resumed.body['status'], 'executed', resumed.text);
-    assert.deepEqual(counts(), { signatures: before.signatures + 1, sends: before.sends + 1 });
-  });
-
-  it('F: TRADE-03 governance is not bypassed — an order above the pair’s notional maximum is VIOLATED and never executes, even when a reviewer approves', async () => {
-    const before = counts();
-    const { first, resumed } = await governAndApprove(proposalFor(trade, '3000'));
-    assert.equal(trade.assessments.at(-1)?.outcome, 'VIOLATED');
-    assert.equal(first.body['status'], 'denied', `the Kernel denies before any review is opened: ${first.text}`);
-    assert.equal(resumed, undefined, 'nothing was sent to review, so nothing could be approved');
-    assert.deepEqual(counts(), before, `no signature, no send: ${first.text}`);
-  });
-
-  it('F: an approval never launders an altered intent — without the embedder’s TRADE-03 binding rules it reaches review, and the executor’s exact binding still refuses it: never signed or sent', async () => {
-    // Composition fact (recorded, not hidden): TRADE-03's binding rules are policy-pack rules the embedder composes.
-    // With the file approvalPolicy as the one policy source they are absent, so the policy layer does not deny an
-    // altered intent; the reviewer sees it, and if approved, TRADE-04C's step 1 (exact binding to the attested
-    // proposal the grant names) refuses before any signature.
-    const before = counts();
-    const intent = await admit(trade, proposalFor(trade, '10'));
-    const altered = { ...intent, parameters: { ...intent.parameters, tradeQuantity: '11' } };
-    const first = await post(trade, altered);
-    assert.equal(first.body['withheldBy'], 'approval', first.text);
-    const view = await approvals(trade.host).describe(first.body['requestId'] as string);
-    assert.ok(view !== undefined);
-    await approvals(trade.host).approve(as(APPROVER), commandFor(view));
-    const resumed = await post(trade, altered);
-    assert.notEqual(resumed.body['status'], 'executed', resumed.text);
-    assert.equal(trade.traces.at(-1)?.outcome, 'failed', JSON.stringify(trade.traces.at(-1)));
-    assert.equal(trade.traces.at(-1)?.detail, 'trade-execution-not-bound', 'refused at step 1, before preparation, signing or reservation');
-    assert.equal(trade.traces.at(-1)?.signingRequests, 0);
-    assert.deepEqual(counts(), before);
-  });
-
-  it('F: a replay of an approved, executed request never signs or sends again', async () => {
-    const intent = await admit(trade, proposalFor(trade, '20'));
-    const first = await post(trade, intent);
-    assert.equal(first.body['withheldBy'], 'approval', first.text);
-    const view = await approvals(trade.host).describe(first.body['requestId'] as string);
-    await approvals(trade.host).approve(as(APPROVER), commandFor(view!));
-    const executed = await post(trade, intent);
-    assert.equal(executed.body['status'], 'executed', executed.text);
-    const before = counts();
-    const replay = await post(trade, intent);
-    assert.equal(replay.body['executionId'], executed.body['executionId']);
-    assert.deepEqual(counts(), before);
-  });
-
-  it('governTrade on the composed Host never reaches the ledger without review: every trade under the ruled profile is withheld first', async () => {
-    const before = counts();
-    const reply = await governTrade(trade, proposalFor(trade, '5'));
-    assert.equal(reply.body['withheldBy'], 'approval', reply.text);
-    assert.deepEqual(counts(), before);
-  });
-});
+// An approvalPolicy as a trade Host's only policy source was R8: an order TRADE-03 marked for review executed
+// without approval when the file ruled another profile. That composition is now refused at boot — see
+// trade04c-r8-trade-policy.test.ts (R8-B) and trade04c-r8-mutation.test.ts.

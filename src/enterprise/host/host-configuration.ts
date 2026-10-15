@@ -62,7 +62,11 @@ export type EnterpriseHostConfigurationErrorCode =
   /** PROD-03-03: `dist/release-identity.json` exists but does not describe this build. */
   | 'HOST_RELEASE_IDENTITY_INVALID'
   /** PROD-03: the governed-action file declares `approvalPolicy` and an embedder also composed a policy provider — one policy source, never two. */
-  | 'HOST_POLICY_SOURCE_AMBIGUOUS';
+  | 'HOST_POLICY_SOURCE_AMBIGUOUS'
+  /** R8 (TRADE-04C): trade execution is configured and the composed policy is not TRADE-03's mandatory provider for this Host's edge, action, trust domain and owners. */
+  | 'HOST_TRADE_POLICY_REQUIRED'
+  /** R8 (TRADE-04C): trade execution is configured beside a file `approvalPolicy` — a second policy source the mandatory trade policy cannot be composed with. */
+  | 'HOST_TRADE_POLICY_SOURCE_CONFLICT';
 
 /** A deployment defect the Host refuses to start with. Messages name variables, fields and codes — never a value. */
 export class EnterpriseHostConfigurationError extends Error {

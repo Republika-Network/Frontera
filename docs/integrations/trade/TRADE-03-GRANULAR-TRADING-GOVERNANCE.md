@@ -1207,3 +1207,17 @@ regressed outside the reliance window and admitted). Deterministic injection cov
 (O: reliance before `at`; O2: a recovered regression, admitted; O3: reliance after `at` but before the stamps,
 refused as from the future), and self-tests prove the classifier rejects an un-witnessed regression, a non-clock
 refusal on a monotonic clock, and a non-clock reason during a regression.
+
+## 39. Mandatory policy composition (R8, corrected under TRADE-04C)
+
+The policy rules of §5 (`tradeRiskPolicyRules`) are not optional deployment data on a Host that executes trades.
+R8 showed why: TRADE-03's review requirement (`trade-risk-review`) and its policy-level proposal binding exist
+only as policy-pack rules, so a Host composed with any other policy — an unrelated pack, or a PROD-03
+`approvalPolicy` ruling another profile — executed an order this layer marked APPROVAL_REQUIRED with no human
+approval. The material-fact gate still denied VIOLATED orders; human review was lost.
+
+`createTradeRiskPolicyPackProvider(edge, { trustDomainId })` (`trade-risk-policy-provider.ts`) is now the only
+provider a trade-executing Host accepts: bound to a genuine edge, compiled from exactly these rules with their
+mandatory effects, frozen, and carrying a provenance only that factory can record, for that object alone. The
+Host verifies it before composing anything trade-related (TRADE-04C §37; SEC-INV-326). A TRADE-03-only Host
+(no executor) is unchanged; its embedder remains responsible for composing these rules.

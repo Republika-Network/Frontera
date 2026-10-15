@@ -303,6 +303,52 @@ function assertOnePolicySource(host: EnterpriseHostConfiguration, options: BootE
   );
 }
 
+/**
+ * R8 (TRADE-04C): a Host that executes trades composes exactly TRADE-03's mandatory policy provider.
+ *
+ * TRADE-03's review requirement and proposal-binding rules are policy-pack rules, and the Kernel's policy port
+ * is opaque — so the Host cannot inspect an arbitrary provider. Before this check, any provider (or a PROD-03
+ * `approvalPolicy` ruling another profile) satisfied composition, and an order TRADE-03 marked for review
+ * executed with no human approval. Now the provider the Kernel receives must be the very object
+ * `createTradeRiskPolicyPackProvider` produced (provenance is keyed by that object: a wrapper or copy has
+ * none), bound to the same TRADE-03 edge whose readings and attestations this Host composes, for the
+ * configured trade action, this trust domain and organization, and every configured owner — with the
+ * mandatory rule set. A file `approvalPolicy` beside trade execution is a second policy source and is refused.
+ * Configuration and object identity only; nothing is opened. The trade vertical is loaded only when configured.
+ */
+async function assertTradePolicyComposed(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions): Promise<void> {
+  const governed = host.governedActions;
+  const trade = governed?.xrplTradeExecution;
+  if (governed === undefined || trade === undefined) return;
+  const required = (detail: string): never => {
+    throw new EnterpriseHostConfigurationError('HOST_TRADE_POLICY_REQUIRED', `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplTradeExecution requires TRADE-03's mandatory trade policy (createTradeRiskPolicyPackProvider) as the Host's policy provider: ${detail}. Nothing was opened.`);
+  };
+  if (governed.approvalPolicy !== undefined) {
+    throw new EnterpriseHostConfigurationError(
+      'HOST_TRADE_POLICY_SOURCE_CONFLICT',
+      `${GOVERNED_ACTIONS_FILE_VARIABLE} declares approvalPolicy beside xrplTradeExecution. A trade-executing Host composes exactly TRADE-03's mandatory trade policy; a second policy source is refused. Nothing was opened.`,
+    );
+  }
+  // The exact object the Kernel will evaluate with (policyPackProviderOf returns it unchanged when the file declares no approvalPolicy).
+  const effective = policyPackProviderOf(host, options);
+  if (effective === undefined) required('no policy provider is composed');
+  const { TRADE_RISK_MANDATORY_POLICY_RULE_IDS, tradeRiskPolicyProvenanceOf } = await import('../trade-risk-context/index.js');
+  const provenance = tradeRiskPolicyProvenanceOf(effective);
+  if (provenance === undefined) return required('the composed provider was not produced by the TRADE-03 factory');
+  if (JSON.stringify(provenance.ruleIds) !== JSON.stringify(TRADE_RISK_MANDATORY_POLICY_RULE_IDS)) required('its rule set is not the mandatory one');
+  if (provenance.action !== trade.tradeAction) required('it is bound to another action');
+  if (provenance.trustDomainId !== governed.trustDomainId) required('it is bound to another trust domain');
+  if (provenance.organizationId !== host.configuration.kernelAuthority?.organizationId) required('it is bound to another organization');
+  if (options.contextProvider !== provenance.contextProvider) required("the Host's contextProvider is not the policy's TRADE-03 edge");
+  const attested = options.xrplTradeExecution?.attested;
+  // An absent attestation source is refused by the trade composition itself (XRPL_TRADE_ATTESTATION_SOURCE_MISSING), before its interlock opens.
+  if (attested !== undefined && attested !== provenance.attested) required("the executor's attestation source is not the policy's TRADE-03 edge");
+  const scopes = new Set(provenance.resourceScopes);
+  for (const pair of trade.executor.pairs) {
+    if (!scopes.has(`${trade.executor.network}:${pair.ownerAccount}`)) required('a configured owner account is outside its scope');
+  }
+}
+
 /** Posture a secure-profile Host must have composed. Checked against the composed objects, after composition, before listen. */
 function secureProfileShortfalls(posture: EnterpriseHealthPosture): readonly string[] {
   const expected: Partial<Record<keyof EnterpriseHealthPosture, string>> = {
@@ -386,6 +432,8 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
     assertProcessHoldsNoXrplKey(host, options.env ?? process.env);
     // TRADE-04C: before either interlock is opened.
     assertXrplDomainsDisjoint(host);
+    // R8: a trade-executing Host composes exactly TRADE-03's mandatory policy, before anything trade-related opens.
+    await assertTradePolicyComposed(host, options);
     assertOnePolicySource(host, options);
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'configuration', errorCode: refusalCode(error) });

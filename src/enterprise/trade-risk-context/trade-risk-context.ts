@@ -14,6 +14,7 @@ import {
   tradeDelegationContextReading,
   tradeDelegationRequestFor,
   tradingRiskContextReadings,
+  tradingRiskProfileReference,
   type AcceptedTradeProposal,
   type TradeAsset,
   type TradeContextReading,
@@ -206,6 +207,29 @@ export interface TradeRiskContext {
   pendingCount(): number;
   /** TRADE-04C: what this provider attested, by proposal digest. Read-only. */
   readonly attested: TradeAttestedProposalSource;
+}
+
+/**
+ * R8 — what a genuine edge was composed with, recorded at construction in a module-private registry. Read by
+ * `createTradeRiskPolicyPackProvider` only: an object that did not come from `createTradeRiskContext` has no
+ * entry, so no policy provider can be bound to it. Frozen data and the edge's own provider/attestation objects.
+ */
+export interface TradeRiskContextComposition {
+  readonly organizationId: string;
+  readonly action: string;
+  /** `<profileId>@<profileVersion>` of the pinned trading-risk profile — the value its readings carry. */
+  readonly profileReference: string;
+  readonly network: string;
+  readonly ownerAccounts: readonly string[];
+  readonly provider: ContextResolverPort;
+  readonly attested: TradeAttestedProposalSource;
+}
+
+const COMPOSED_EDGES = new WeakMap<object, TradeRiskContextComposition>();
+
+/** The composition of an edge `createTradeRiskContext` produced, or `undefined` for anything else. */
+export function tradeRiskContextCompositionOf(edge: unknown): TradeRiskContextComposition | undefined {
+  return typeof edge === 'object' && edge !== null ? COMPOSED_EDGES.get(edge) : undefined;
 }
 
 export class TradeRiskContextConfigurationError extends Error {
@@ -472,7 +496,20 @@ export function createTradeRiskContext(options: TradeRiskContextOptions): TradeR
     },
   });
 
-  return Object.freeze({ provider, admitProposal, pendingCount: () => bindings.size, attested });
+  const edge: TradeRiskContext = Object.freeze({ provider, admitProposal, pendingCount: () => bindings.size, attested });
+  COMPOSED_EDGES.set(
+    edge,
+    Object.freeze({
+      organizationId,
+      action: binding.action,
+      profileReference: tradingRiskProfileReference(profile),
+      network: profile.network,
+      ownerAccounts: Object.freeze([...profile.ownerAccounts]),
+      provider,
+      attested,
+    }),
+  );
+  return edge;
 }
 
 /** Every fact class the edge can attest — the trading profile's `materialFacts`. */
