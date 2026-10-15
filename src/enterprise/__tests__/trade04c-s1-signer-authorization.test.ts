@@ -51,8 +51,9 @@ const body = (world: OfferWorld, transaction: PreparedDelegatedOffer, authorized
   ...overrides,
 });
 
-async function inProcess(worlds: readonly OfferWorld[], path = ledgerPath(), options: { readonly keys?: Parameters<typeof s1ReferenceOptions>[0] } = {}) {
-  const ledger = await openReferenceCapabilityLedger(path);
+async function inProcess(worlds: readonly OfferWorld[], path?: string, options: { readonly keys?: Parameters<typeof s1ReferenceOptions>[0]; readonly create?: boolean } = {}) {
+  // TRADE-04D: a ledger is created only explicitly — here, for a fresh path; a restart reopens the existing file.
+  const ledger = await openReferenceCapabilityLedger(path ?? ledgerPath(), { create: options.create ?? path === undefined });
   const service = createReferenceDelegatedOfferSignerService({
     ...s1ReferenceOptions({ consumption: ledger, ...options.keys }),
     signerId: SIGNER_ID,
@@ -208,7 +209,7 @@ describe('TRADE-04C-S1 §6 — single use across concurrency, processes and rest
   it('concurrent reuse over loopback HTTP: 12 simultaneous requests with one capability → exactly one signature', async () => {
     const world = offerWorld();
     const { consumption: _unused, ...s1 } = s1ReferenceOptions();
-    const started = await startReferenceDelegatedOfferSigner({ ...s1, consumptionLedgerPath: ledgerPath(), signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '1000' });
+    const started = await startReferenceDelegatedOfferSigner({ ...s1, consumptionLedgerPath: ledgerPath(), createConsumptionLedger: true, signerId: SIGNER_ID, network: 'xrp-ledger-testnet', credential: CREDENTIAL, keys: [{ ownerAccount: world.owner, delegateSeed: world.delegate.seed }], maximumFeeDrops: '1000' });
     try {
       const offer = world.offer();
       const authorized = capabilityFor(world, offer);
@@ -224,7 +225,7 @@ describe('TRADE-04C-S1 §6 — single use across concurrency, processes and rest
   it('two signer instances sharing one ledger file (two processes’ view): the same capability, interleaved → exactly one signature in all', async () => {
     const world = offerWorld();
     const path = ledgerPath();
-    const first = await inProcess([world], path);
+    const first = await inProcess([world], path, { create: true });
     const second = await inProcess([world], path);
     try {
       const offer = world.offer();
@@ -248,7 +249,7 @@ describe('TRADE-04C-S1 §6 — single use across concurrency, processes and rest
     const path = ledgerPath();
     const offer = world.offer();
     const authorized = capabilityFor(world, offer);
-    const before = await inProcess([world], path);
+    const before = await inProcess([world], path, { create: true });
     assert.equal(before.post(body(world, offer, authorized)).status, 200);
     before.close();
     const after = await inProcess([world], path);
@@ -266,7 +267,7 @@ describe('TRADE-04C-S1 §6 — single use across concurrency, processes and rest
     const path = ledgerPath();
     const offer = world.offer();
     const authorized = capabilityFor(world, offer);
-    const crashed = await openReferenceCapabilityLedger(path);
+    const crashed = await openReferenceCapabilityLedger(path, { create: true });
     // Exactly the write the signer commits before it touches its key — then the process dies.
     assert.equal(crashed.consume({ capabilityId: authorized.capability.capabilityId, executionId: authorized.capability.executionId, boundedGrantId: authorized.capability.boundedGrantId, signingPreimageDigest: authorized.capability.signingPreimageDigest, expiresAt: authorized.capability.expiresAt }, new Date().toISOString()), 'consumed');
     crashed.close();
@@ -372,7 +373,7 @@ describe('TRADE-04C-S1 §7 — a real separate-process reference signer (the shi
       const authorityPublicKeyFile = join(dir, 'authority.pub');
       writeFileSync(authorityPublicKeyFile, AUTHORITY_KEY_A.publicKeyPem);
       const common = { keyFile, signerId: SIGNER_ID, credential: CREDENTIAL, authorityKeyId: AUTHORITY_KEY_A.keyId, authorityPublicKeyFile, trustDomain: S1_TRUST_DOMAIN, organizationId: S1_ORGANIZATION, ledgerPath: join(dir, 'capability-ledger.sqlite') };
-      let signer = await spawnOfferSigner(common);
+      let signer = await spawnOfferSigner({ ...common, initializeLedger: true });
       stops.push(() => signer.stop());
       const { trustDomain, organizationId } = signerAuthorization();
       assert.deepEqual(signer.identity['authorization'], { trustDomain, organizationId, issuerKeyIds: [AUTHORITY_KEY_A.keyId] });

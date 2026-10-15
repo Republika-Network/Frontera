@@ -15,8 +15,19 @@
 //       delegate key per owner, and writes its PUBLIC identity to <file>.pub for the operator to pin.
 //       Owner accounts are public; no seed is ever accepted as an argument.
 //
+//   node scripts/run-reference-xrpl-offer-signer.mjs init-consumption-ledger
+//       TRADE-04D: explicitly initializes a NEW signer's capability consumption ledger at
+//       FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER. Refused when anything exists there:
+//       initialization never replaces, resets or adopts a ledger.
+//
+//   node scripts/run-reference-xrpl-offer-signer.mjs inspect-capability <executionId>
+//       TRADE-04D: the signer operator's recovery read — prints what the ledger holds for one
+//       execution (state, capability id, transaction hash; never a key or credential). Never
+//       creates or writes. `unavailable` when the ledger cannot be read, never `absent`.
+//
 //   node scripts/run-reference-xrpl-offer-signer.mjs
-//       Serves an EXISTING key file. A missing key file is refused, never created.
+//       Serves an EXISTING key file and an EXISTING consumption ledger. A missing key file or a
+//       missing ledger is refused, never created (a recreated ledger would forget every consumed capability).
 //
 // Its own environment (never the Host's):
 //   FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_KEY_FILE   the key file (Linux filesystem, 0600)
@@ -39,6 +50,8 @@ import { readFileSync } from 'node:fs';
 
 import {
   createReferenceDelegatedOfferKeyFile,
+  initializeReferenceCapabilityLedger,
+  inspectReferenceCapabilityLedger,
   loadReferenceDelegatedOfferKeyFile,
   startReferenceDelegatedOfferSigner,
 } from '../dist/src/enterprise/xrpl-trade-rail/reference/reference-delegated-offer-signer.js';
@@ -55,6 +68,23 @@ function required(name) {
   return value;
 }
 
+if (process.argv[2] === 'init-consumption-ledger') {
+  if (process.argv.length > 3) refuse('init-consumption-ledger takes no arguments.');
+  try {
+    await initializeReferenceCapabilityLedger(required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER'));
+    console.log('reference capability consumption ledger initialized (new, empty). Never re-run it for an existing signer: a missing ledger is restored from its own backup or investigated, not recreated.');
+  } catch (error) {
+    refuse(error instanceof Error ? error.message.split('\n')[0] : 'ledger initialization failed');
+  }
+  process.exit(0);
+}
+if (process.argv[2] === 'inspect-capability') {
+  const executionId = process.argv[3];
+  if (typeof executionId !== 'string' || executionId.length === 0 || process.argv.length > 4) refuse('inspect-capability takes exactly one execution id.');
+  console.log(JSON.stringify(await inspectReferenceCapabilityLedger(required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER'), executionId)));
+  process.exit(0);
+}
+
 const keyFile = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_KEY_FILE');
 
 if (process.argv[2] === 'create-key') {
@@ -67,7 +97,7 @@ if (process.argv[2] === 'create-key') {
   }
   process.exit(0);
 }
-if (process.argv.length > 2) refuse('unknown arguments; the only command is create-key.');
+if (process.argv.length > 2) refuse('unknown arguments; the commands are create-key, init-consumption-ledger and inspect-capability.');
 
 const signerId = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_ID');
 const credential = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_TOKEN');

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+
 import type { ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
 import { xrplSubmissionClaimOf, type XrplReservedSubmissionAuthority, type XrplReservedSubmissionConfiguration } from '../../features/payment-runtime/rails/xrpl/index.js';
 import { compileTradeProposal, createTradeGovernanceBinding, tradeDelegateEntryIndex, validateTradeProposal } from '../../features/trade-runtime/index.js';
@@ -14,7 +15,7 @@ import { createSqliteTradeSequenceInterlock, type DurableTradeSequenceInterlock 
 import { TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT, createTradeOfferExecutionAdapter, type TradeExecutionTrace, type TradeOfferExecutionAdapter, type TradeOfferExecutorConfiguration } from '../xrpl-trade-execution/trade-offer-executor.js';
 import { XRPL_TRADE_EXECUTOR_ID } from '../xrpl-trade-execution/host-configuration.js';
 import { boundaryFor, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
-import { testAccount, testDelegate, type TestDelegate } from './trade04b-xrpl-fixture.js';
+import { decodeBlob, testAccount, testDelegate, type TestDelegate } from './trade04b-xrpl-fixture.js';
 import { S1_TRUST_DOMAIN, signerAuthorization, testCapabilityIssuer } from './trade04c-s1-capability-fixture.js';
 import type { DelegatedOfferCapabilityIssuer } from '../authority-authenticity/index.js';
 
@@ -58,6 +59,14 @@ export type SubmitBehavior =
   /** Accepted, never included (expires at LastLedgerSequence). */
   | { readonly kind: 'drop' };
 
+/**
+ * TRADE-04D — what a validated `tesSUCCESS` OfferCreate did to the book in the
+ * fake: `rest` (placed, nothing crossed), `partial` (half crossed, the rest
+ * placed), `fill` (fully crossed, nothing placed). A modelled metadata shape,
+ * labelled as such — never a market.
+ */
+export type FakeOfferEffect = 'rest' | 'partial' | 'fill';
+
 export interface SubmittedTransaction {
   readonly executionId: string;
   readonly blob: string;
@@ -68,6 +77,7 @@ export interface SubmittedTransaction {
   includedAt?: number;
   result?: string;
   pendingResult?: string;
+  offerEffect?: FakeOfferEffect;
 }
 
 interface AccountRoot {
@@ -91,6 +101,14 @@ export interface LedgerFaults {
   lookupThrows?: boolean;
   /** Each `ledger_entry` read first validates one more ledger (observations spread over several ledgers). */
   advanceOnEntry?: boolean;
+  /** TRADE-04D: a `tx` lookup that times out (`TimeoutError`). */
+  lookupTimeout?: boolean;
+  /** TRADE-04D: the server holds an incomplete history (`txnNotFound` without `searched_all`). */
+  historyIncomplete?: boolean;
+  /** TRADE-04D: adversarial rewriting of a `tx` answer before it is returned (tampered hash, body, ledger, metadata). */
+  tamperLookup?: (answer: Record<string, unknown>) => unknown;
+  /** TRADE-04D: the validated index read through `validatedLedgerIndex` (not `server_info`) is shifted by this much. */
+  validatedIndexSkew?: number;
 }
 
 export class FakeXrplLedger {
@@ -102,6 +120,10 @@ export class FakeXrplLedger {
   readonly submitCalls: string[] = [];
   readonly faults: LedgerFaults = {};
   behavior: SubmitBehavior = { kind: 'accept' };
+  /** TRADE-04D: the effect the next validated tesSUCCESS OfferCreate has on the book. */
+  offerEffect: FakeOfferEffect = 'rest';
+  /** TRADE-04D: the fake's Offer ledger objects, keyed `owner|sequence`. */
+  readonly offers = new Map<string, Record<string, unknown>>();
   /** When true, every `lookupTransaction` advances one ledger (so a finality loop progresses with real timers). */
   autoAdvance = true;
   private readonly startCloseTime = Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
@@ -125,6 +147,11 @@ export class FakeXrplLedger {
         if (this.validatedIndex > tx.lastLedgerSequence) continue;
         tx.includedAt = this.validatedIndex;
         tx.result = tx.pendingResult;
+        if (tx.result === 'tesSUCCESS') {
+          tx.offerEffect ??= this.offerEffect;
+          const created = this.createdOfferOf(tx);
+          if (created !== undefined) this.offers.set(`${tx.account}|${tx.sequence}`, { LedgerEntryType: 'Offer', ...created, index: this.offerIndexOf(tx) });
+        }
         const root = this.accounts.get(tx.account);
         // Every validated result consumes the owner's Sequence (tes and tec alike).
         if (root !== undefined && root.sequence === tx.sequence) root.sequence += 1;
@@ -179,6 +206,11 @@ export class FakeXrplLedger {
         node: { Account: delegate.account, Authorize: delegate.authorize, Flags: 0, LedgerEntryType: 'Delegate', OwnerNode: '0', Permissions: permissions.map((value) => ({ Permission: { PermissionValue: value } })), PreviousTxnID: HASH(42), PreviousTxnLgrSeq: 900, index },
       };
     }
+    const offer = request['offer'] as { readonly account: string; readonly seq: number } | undefined;
+    if (offer !== undefined) {
+      const node = this.offers.get(`${offer.account}|${offer.seq}`);
+      return node === undefined ? { error: 'entryNotFound', ...this.bound() } : { ...this.bound(), index: node['index'], node };
+    }
     const account = request['account_root'] as string | undefined;
     if (account !== undefined) {
       if (this.faults.accountRootThrows === true) throw new Error('unreachable');
@@ -202,11 +234,64 @@ export class FakeXrplLedger {
 
   lookupTransaction(query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }): unknown {
     if (this.faults.lookupThrows === true) throw new Error('timeout');
+    if (this.faults.lookupTimeout === true) throw Object.assign(new Error('Timeout for request'), { name: 'TimeoutError' });
     const before = this.validatedIndex;
     if (this.autoAdvance) this.advance(1);
     const tx = this.submitted.find((entry) => entry.hash === query.hash);
-    if (tx?.includedAt !== undefined && tx.includedAt <= before + 1) return { hash: tx.hash, validated: true, ledger_index: tx.includedAt, meta: { TransactionResult: tx.result } };
-    return { error: 'txnNotFound', searched_all: true };
+    const answer: Record<string, unknown> =
+      tx?.includedAt !== undefined && tx.includedAt <= before + 1 && tx.includedAt >= query.minLedger && tx.includedAt <= query.maxLedger
+        ? this.validatedAnswerOf(tx)
+        : this.faults.historyIncomplete === true
+          ? { error: 'txnNotFound', searched_all: false }
+          : { error: 'txnNotFound', searched_all: true };
+    return this.faults.tamperLookup !== undefined ? this.faults.tamperLookup(answer) : answer;
+  }
+
+  /** The decoded signed transaction, as rippled's API v2 `tx_json` carries it (without `hash`). */
+  txJsonOf(tx: SubmittedTransaction): Record<string, unknown> {
+    return decodeBlob(tx.blob);
+  }
+
+  private offerIndexOf(tx: SubmittedTransaction): string {
+    return HASH(tx.sequence * 104_729 + 3);
+  }
+
+  /** The Offer the transaction left on the book, as metadata `NewFields`, or `undefined` (fully crossed). */
+  private createdOfferOf(tx: SubmittedTransaction): Record<string, unknown> | undefined {
+    const body = this.txJsonOf(tx);
+    const halve = (amount: unknown): unknown => {
+      if (typeof amount === 'string') return String(BigInt(amount) / 2n);
+      const record = amount as { readonly currency: string; readonly issuer: string; readonly value: string };
+      return { ...record, value: String(Number(record.value) / 2) };
+    };
+    const base = { Account: tx.account, Sequence: tx.sequence, BookDirectory: HASH(tx.sequence * 31 + 5), Flags: 0 };
+    if (tx.offerEffect === 'fill') return undefined;
+    if (tx.offerEffect === 'partial') return { ...base, TakerGets: halve(body['TakerGets']), TakerPays: halve(body['TakerPays']) };
+    return { ...base, TakerGets: body['TakerGets'], TakerPays: body['TakerPays'] };
+  }
+
+  /** A validated `tx` answer in rippled's API v2 shape: `hash`, `ledger_index`, `ledger_hash`, `validated`, `tx_json`, `meta`. */
+  private validatedAnswerOf(tx: SubmittedTransaction): Record<string, unknown> {
+    const nodes: unknown[] = [];
+    if (tx.result === 'tesSUCCESS') {
+      const created = this.createdOfferOf(tx);
+      if (created !== undefined) nodes.push({ CreatedNode: { LedgerEntryType: 'Offer', LedgerIndex: this.offerIndexOf(tx), NewFields: created } });
+      if (tx.offerEffect !== 'rest') nodes.push({ DeletedNode: { LedgerEntryType: 'Offer', LedgerIndex: HASH(777), FinalFields: { Account: 'rCounterpartyFakeXXXXXXXXXXXXXXXXX', Sequence: 3 } } });
+    }
+    nodes.push({ ModifiedNode: { LedgerEntryType: 'AccountRoot', LedgerIndex: HASH(tx.sequence * 13 + 1), FinalFields: { Account: tx.account, Sequence: tx.sequence + 1 } } });
+    return {
+      hash: tx.hash,
+      ledger_index: tx.includedAt,
+      ledger_hash: this.hashOf(tx.includedAt!),
+      validated: true,
+      tx_json: this.txJsonOf(tx),
+      meta: { TransactionIndex: 0, TransactionResult: tx.result, AffectedNodes: nodes },
+    };
+  }
+
+  /** A later event removes a resting offer (filled, cancelled or expired: the fake does not say which, and neither may a reading). */
+  removeOffer(owner: string, sequence: number): void {
+    this.offers.delete(`${owner}|${sequence}`);
   }
 
   /** The labelled fake's reserved submission: the real claim derivation, the real interlock claim, then a recorded send. */
@@ -261,7 +346,7 @@ export class FakeXrplLedger {
       serverInfo: async () => this.serverInfo(),
       ledgerHeader: async (index: number) => this.ledgerHeader(index),
       ledgerEntry: async (request: Readonly<Record<string, unknown>>) => this.ledgerEntry(request),
-      validatedLedgerIndex: async () => this.validatedIndex,
+      validatedLedgerIndex: async () => this.validatedIndex + (this.faults.validatedIndexSkew ?? 0),
       lookupTransaction: async (query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }) => this.lookupTransaction(query),
       submitReserved: (executionId: string, blob: string) => this.submitReserved(authority, networkId, executionId, blob),
     };
@@ -305,6 +390,8 @@ export async function startSigner(pairs: readonly TradePairWorld[], options: { r
     clock: () => Date.now(),
     authorization: signerAuthorization(undefined, { organizationId: options.organizationId ?? ORG, trustDomain: options.trustDomain ?? S1_TRUST_DOMAIN }),
     consumptionLedgerPath: ledgerPath,
+    // TRADE-04D: a fresh scratch ledger is initialized explicitly; a given path (a restart) must already hold one.
+    createConsumptionLedger: options.ledgerPath === undefined,
   });
   started.server.unref();
   return {
@@ -433,7 +520,7 @@ export const scratch = (): { readonly dir: string; cleanup(): void } => {
  * signer client over HTTP to a loopback reference signer, and the labelled
  * fake ledger. Past the restart quarantine unless `quarantine: true`.
  */
-export async function executorRig(options: { readonly pairs?: number | readonly TradePairWorld[]; readonly configuration?: Partial<TradeOfferExecutorConfiguration>; readonly quarantine?: boolean; readonly simulation?: boolean; readonly dir?: string; readonly witness?: StartedWitness; readonly ledger?: FakeXrplLedger; readonly create?: typeof createTradeOfferExecutionAdapter; readonly createInterlock?: typeof createSqliteTradeSequenceInterlock; readonly issuer?: DelegatedOfferCapabilityIssuer } = {}): Promise<ExecutorRig> {
+export async function executorRig(options: { readonly pairs?: number | readonly TradePairWorld[]; readonly configuration?: Partial<TradeOfferExecutorConfiguration>; readonly quarantine?: boolean; readonly simulation?: boolean; readonly dir?: string; readonly witness?: StartedWitness; readonly ledger?: FakeXrplLedger; readonly create?: typeof createTradeOfferExecutionAdapter; readonly createInterlock?: typeof createSqliteTradeSequenceInterlock; readonly issuer?: DelegatedOfferCapabilityIssuer; readonly signerLedgerPath?: string } = {}): Promise<ExecutorRig> {
   const ledger = options.ledger ?? new FakeXrplLedger();
   const pairs = Array.isArray(options.pairs) ? (options.pairs as readonly TradePairWorld[]) : Array.from({ length: (options.pairs as number | undefined) ?? 1 }, () => pairWorld(ledger));
   const space = options.dir === undefined ? scratch() : { dir: options.dir, cleanup: () => {} };
@@ -441,7 +528,8 @@ export async function executorRig(options: { readonly pairs?: number | readonly 
   const boundary = await boundaryFor(witness, ORG);
   const path = join(space.dir, 'trade-interlock.sqlite');
   const interlock = await (options.createInterlock ?? createSqliteTradeSequenceInterlock)(path, { scope: { domainId: XRPL_TRADE_EXECUTOR_ID, networkId: NETWORK_ID }, sequenceAccounts: pairs.map((pair) => pair.owner), now: () => new Date().toISOString(), freshness: { boundary } });
-  const signer = await startSigner(pairs);
+  // TRADE-04D: a given signer ledger path (an existing, explicitly initialized ledger) survives the rig — a signer restart reopens it.
+  const signer = await startSigner(pairs, options.signerLedgerPath !== undefined ? { ledgerPath: options.signerLedgerPath } : {});
   const client = signerClient(signer.endpoint, pairs, { lastLedgerOffset: options.configuration?.lastLedgerOffset ?? 20 });
   const book = new AttestationBook();
   const traces: TradeExecutionTrace[] = [];

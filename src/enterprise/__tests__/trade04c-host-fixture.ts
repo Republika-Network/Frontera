@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -80,7 +81,9 @@ export interface SignerProxy {
 }
 
 export async function startSignerProxy(pair: TradePairWorld, ledgerDir: string): Promise<SignerProxy> {
-  const ledger = await openReferenceCapabilityLedger(join(ledgerDir, 'offer-signer-capability-ledger.sqlite'));
+  // TRADE-04D: the fixture plays the customer's signer operator — it initializes a new signer's ledger once, explicitly; a Host restart reopens it.
+  const ledgerFile = join(ledgerDir, 'offer-signer-capability-ledger.sqlite');
+  const ledger = await openReferenceCapabilityLedger(ledgerFile, { create: !existsSync(ledgerFile) });
   const service = createReferenceDelegatedOfferSignerService({
     signerId: SIGNER_ID,
     network: NETWORK,

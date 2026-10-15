@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync, type Stats } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync, type Stats } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -22,7 +22,10 @@ import {
   type DelegatedOfferSignerPair,
 } from '../delegated-offer-protocol.js';
 import { verifySignedDelegatedOffer } from '../delegated-offer-verification.js';
-import { openReferenceCapabilityLedger, type ReferenceCapabilityLedger } from './reference-capability-ledger.js';
+import { inspectReferenceCapabilityLedger, openReferenceCapabilityLedger, type ReferenceCapabilityInspection, type ReferenceCapabilityLedger } from './reference-capability-ledger.js';
+
+export { inspectReferenceCapabilityLedger };
+export type { ReferenceCapabilityInspection };
 
 /**
  * TRADE-04B — the **reference** delegated OfferCreate signer.
@@ -324,13 +327,28 @@ export function isReferenceSignerLoopbackHost(host: unknown): boolean {
   return host === '::1' || (typeof host === 'string' && /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)$/.test(host));
 }
 
-/** Starts the reference service on a literal loopback address; any other bind is refused before a socket is opened. It opens (and closes) its own consumption ledger at `consumptionLedgerPath`. */
+/**
+ * TRADE-04D — initializes a **new** signer's consumption ledger at `path`, and
+ * nothing else. Refused when anything already exists there: initialization
+ * never replaces, resets or adopts a ledger (a restored or lost one included).
+ */
+export async function initializeReferenceCapabilityLedger(path: string): Promise<void> {
+  if (typeof path !== 'string' || path.trim().length === 0 || path.trim() === ':memory:') throw new Error('The reference capability ledger needs a durable file path.');
+  if (existsSync(path)) throw new Error('A file already exists at the consumption ledger path; initialization never replaces or resets a ledger.');
+  (await openReferenceCapabilityLedger(path, { create: true })).close();
+}
+
+/**
+ * Starts the reference service on a literal loopback address; any other bind is refused before a socket is opened. It opens (and closes) its own
+ * consumption ledger at `consumptionLedgerPath` — an existing, initialized ledger, unless `createConsumptionLedger` explicitly initializes a new one
+ * (TRADE-04D: a missing ledger is never silently recreated).
+ */
 export async function startReferenceDelegatedOfferSigner(
-  options: Omit<ReferenceDelegatedOfferSignerOptions, 'consumption'> & { readonly consumptionLedgerPath: string; readonly host?: string; readonly port?: number },
+  options: Omit<ReferenceDelegatedOfferSignerOptions, 'consumption'> & { readonly consumptionLedgerPath: string; readonly createConsumptionLedger?: boolean; readonly host?: string; readonly port?: number },
 ): Promise<{ readonly server: Server; readonly port: number; readonly host: string; readonly identity: DelegatedOfferSignerIdentity; signatures(): number; close(): Promise<void> }> {
   const host = options.host ?? '127.0.0.1';
   if (!isReferenceSignerLoopbackHost(host)) throw new Error('The reference delegated offer signer binds a literal loopback address only.');
-  const consumption = await openReferenceCapabilityLedger(options.consumptionLedgerPath);
+  const consumption = await openReferenceCapabilityLedger(options.consumptionLedgerPath, { create: options.createConsumptionLedger === true });
   let service: ReferenceDelegatedOfferSignerService;
   try {
     service = createReferenceDelegatedOfferSignerService({ ...options, consumption });
