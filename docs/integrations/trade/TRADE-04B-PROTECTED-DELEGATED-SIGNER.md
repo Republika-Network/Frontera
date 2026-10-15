@@ -519,6 +519,7 @@ P12 resolution from ledger evidence; restart quarantine for the trade domain.
 |---|---|
 | Create a reference key | Linux FS; `FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_KEY_FILE=… node scripts/run-reference-xrpl-offer-signer.mjs create-key xrp-ledger-testnet <owner…>`; keep the file `0600`; pin `<file>.pub` |
 | Start the reference signer | set `…_KEY_FILE`, `…_ID`, `…_TOKEN` (≥ 32 chars), optional `…_MAX_FEE`, `…_PORT`, `…_HOST` (literal loopback); `node scripts/run-reference-xrpl-offer-signer.mjs` — it prints public identity only |
+| Initialize the consumption ledger (TRADE-04C-S1 / TRADE-04D) | once per **new** signer: `FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER=… node scripts/run-reference-xrpl-offer-signer.mjs init-consumption-ledger` (refused if the file exists); serving refuses a missing ledger — a lost ledger is restored or investigated, never recreated (TRADE-04D §4, §14) |
 | Verify identity | Host client `probe()` → `VERIFIED`; `MISMATCH` means stop and compare the pin |
 | `UNAVAILABLE` | check reachability/credential; the next signature re-proves identity automatically |
 | `MISMATCH` | do not restart blindly: investigate rotation or tampering; change the pin only after re-qualification |
