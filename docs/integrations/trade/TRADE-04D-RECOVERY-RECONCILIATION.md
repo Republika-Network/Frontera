@@ -668,3 +668,26 @@ A capability that survives the release — it lives ≤ 60 s + 5 s skew, while L
   - `trade04d-fixture-quarantine.test.ts`, with a mocked clock, failed for 50 / 120 / 600 s boot delays before the correction (3 / 7 fail) and passes after (7 / 7). It also pins that a too-short ledger history is still quarantined, and that close times are never rebased.
   - The real S1 separate-process test with a 50 s boot delay injected: fails before (`trade-restart-quarantine`), passes after.
   - Unmodified, under the 16-CPU-burner load that first reproduced it: 3 / 3 pass, durations 60 s, 77 s and 130 s (the original failure was at 92 s).
+
+### 19.5 Final validation (after `9a1cdea`, `2656dfa`)
+
+Logs were kept outside the repository; every exit code is as recorded.
+
+| Step | Exit | Result |
+|---|---|---|
+| build / typecheck / lint | 0 / 0 / 0 | pass |
+| Focused (118 files: TRADE-04A–04D incl. D-1 and fixture, CORE-02, CORE-07 and freshness, P11/P12, PAY-0x, XRPL rail and transport, NO_BYPASS, security invariants, CORE-06, PROD-02/03, backup/restore/portability) | 0 | **2263 / 2263** |
+| Full root suite (in tree) | 0 | **12198 tests: 12185 pass, 0 fail**, 9 skipped, 4 todo |
+| Workspaces | 0 | 1103 / 1103 |
+| Release coherence, release integrity, portability smoke | 0 / 0 / 0 | pass |
+| Publishability, clean-room consumer | 0 / 0 | pass |
+| Protocol-tarball validation (isolated install) | **1** | every step PASS except `test`. Run 1: 12198 tests, 12183 pass, **1 fail** (not named: the script keeps only the output tail). Run 2, instrumented to keep full output: 12182 pass, **2 fail** |
+
+The two failures in the instrumented tarball run:
+
+- `trade04d-d1-mutation` `release-without-a-qualified-proof`: `AUTHORITY_FRESHNESS_UNAVAILABLE`, "witness did not answer within 2000 ms", during the guard's setup on the *shipped* module, before any mutation applied. This is the CORE-07 witness-timeout class seen in every earlier full run.
+- `prod02-disaster-recovery-host`: HTTP 503 on a CORE-05 approval command, in a Host that composes no trade executor.
+
+Both files pass alone, 22 / 22 twice. **The root suite is not represented as fully passing in the isolated tarball install:** under that install's load, CORE-07 witness timeouts remain.
+
+Mutation (D-1): 20 mutants, 16 detected, 4 contained. TRADE-04C, S1 and 04D mutation suites: all pass within the focused run.
