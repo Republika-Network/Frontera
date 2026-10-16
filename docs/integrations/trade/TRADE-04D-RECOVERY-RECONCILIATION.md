@@ -434,7 +434,7 @@ preflight (validated reads; non-binding blocking probe, witness probed)
   → claim / submit / finality   unchanged (G2)
 ```
 
-Any refusal **before** `markSigning` (capability refused or unavailable, a capability that does not bind, a marker that could not be recorded) abandons the intent by compare-and-set. Nothing after it ever releases the intent from the executor.
+No refusal at any step releases the intent. *(Revised by the final security review, §19: the first version abandoned the intent on a refusal before `markSigning`. That was unsafe because CORE-02 issuance is external.)*
 
 ### 17.2 The intent: what it binds
 
@@ -454,11 +454,11 @@ Integrity follows the reservation pattern: identity and state digests, an append
 intended ──markSigning (anchored 'sign')──▶ signing ──reserve (anchored 'reserve')──▶ bound ─▶ reservation lifecycle (unchanged):
    │                                           │                                              reserved → submitting → unconfirmed → settled
    │                                           └──expireIntent (P12, owner-Sequence proof)──▶ expired
-   └──abandonIntent (compare-and-set; only while never contacted)──▶ abandoned
+   └──────────────┴── expireIntent (only a qualified owner-Sequence proof for exactly this window) ──▶ expired
 ```
 
 - **Open, and blocking under the shared rule `xrplSequenceWindowBlocks`:** `intended`, `signing`. A `bound` intent's window is held by its reservation.
-- **Release without a ledger fact:** only `abandoned`. It is reachable only from `intended`, and `signing` is anchored *before* the signer is contacted. The compare-and-set and the marker exclude each other: exactly one commits (tested under concurrency, two connections).
+- **Release without a ledger fact:** none. There is no abandoned state (§19).
 - **Release by the ledger:** the validated index reaching `LastLedgerSequence` (the same G4 rule as a reservation), or `expired`, recorded only on the owner-Sequence proof. Elapsed time is never an input.
 
 Under v2, `reserve` refuses unless the execution's intent is `signing` and binds the reservation exactly: owner, `Sequence`, LLS, `minLedger`, and every shared evidence value, `preparedDigest` included. The reservation, the `signing → bound` transition and the `reserve` event commit in one transaction. The `reserved → submitting → unconfirmed → settled` semantics, the claim and every settlement are unchanged.
@@ -467,7 +467,7 @@ Under v2, `reserve` refuses unless the execution's intent is `signing` and binds
 
 Slot `trade-sequence-reservations` is unchanged. Its hash chain now also covers `intent` and `sign` events, in commit order. A restore that loses an intent or a signing marker is `ROLLBACK_DETECTED` at the next open (tested), as is one that loses a reservation or a claim. A crash with the witness prepared but the file not committed is `PENDING_RECOVERY`, and no capability was issued against it (tested).
 
-`abandoned` and `expired` are local transitions, like `settle`. Both only ever release, so a restore that loses one re-blocks: conservative.
+`expired` is a local transition, like `settle`. It only ever releases, so a restore that loses it re-blocks: conservative.
 
 ### 17.5 Migration v1 → v2
 
@@ -491,7 +491,7 @@ Slot `trade-sequence-reservations` is unchanged. Its hash chain now also covers 
 
 - **Assessment:**
   - It reads the intent: `assessment.intent`, with the capability id and window in the diagnostic.
-  - `intended`/`abandoned` → `capability-not-consumed`, **proven**, signature `excluded-by-host`.
+  - `intended` → `capability-not-consumed`, **pending**, signature `not-sent-by-host`, uncertainty `capability-issuance-unknown`. The Host never handed the capability to the delegated signer, but one may exist (§19).
   - `signing` with no reservation → new class 13 `signing-attempted`, or the signer-reported classes 2–4.
   - A signer consumption reported against an intent the Host never sent → `inconsistent-evidence`, as is a capability id mismatch.
 - **Owner-Sequence proof** (`trade-sequence-evidence.ts`, read-only, shared validated reader):
@@ -499,7 +499,6 @@ Slot `trade-sequence-reservations` is unchanged. Its hash chain now also covers 
   - `Sequence` above it means consumed by *some* transaction: never a closure.
   - Below it, absent, unreadable, wrong network or stale: unresolved.
 - **P12** (existing trade authority, extended):
-  - `intended` → abandon by compare-and-set → `confirmed-not-completed PROVIDER_UNAVAILABLE`. If the executor's marker won the race → unresolved.
   - `signing` → only the owner-Sequence proof → `expireIntent` → `confirmed-not-completed PROVIDER_REJECTED`.
   - Anything else → unresolved.
   - P11 claims are never reopened.
@@ -513,13 +512,14 @@ Each row lists the effects counted as capabilities / signatures / submissions.
 |---|---|
 | Crash before the intent commit | 0 / 0 / 0, no intent; a fresh order then runs once |
 | Crash during witness preparation of the intent | 0 / 0 / 0; next open `PENDING_RECOVERY`; file holds no intent |
-| Crash after the intent commit, before issuance | 0 / 0 / 0; `intended`; restart refuses; P12 abandons; window released |
-| Crash after issuance, before the marker | 1 / 0 / 0; as above (the capability never left the process) |
-| Crash after consumption / after signing, before the response | 1 / 1 / 0; `signing`; abandonment refused; window held; restart refuses with **no** new capability; past LLS the owner-Sequence proof → `proven-not-included`, P12 `expired` |
+| Crash after the intent commit, before issuance | 0 / 0 / 0; `intended`; window held; restart refuses; P12 unresolved until the owner-Sequence proof past LLS, then `expired` |
+| Crash after issuance, before the marker | 1 / 0 / 0; as above |
+| Issuance answered a timeout, but the capability exists and is intercepted | intent stays `intended`; a competing order is refused; the credential holder can sign only the intent's exact transaction; if it consumes the Sequence, P12 stays unresolved (§19) |
+| Crash after consumption / after signing, before the response | 1 / 1 / 0; `signing`; a forged release is refused; window held; restart refuses with **no** new capability; past LLS the owner-Sequence proof → `proven-not-included`, P12 `expired` |
 | Crash at the old reservation point (signed, `reserve` never ran) | 1 / 1 / 0; window held; if the customer's copy consumes the Sequence → `sequence-consumed-by-unknown-transaction`, P12 unresolved |
 | Duplicate execution ids | one intent ever; `execution-recorded` |
-| Same-owner contention | an open intent blocks; `abandoned` releases at once; `signing` only at LLS |
-| Concurrent processes (two connections, one witness) | one intent per contested Sequence; marker vs abandonment exactly one wins |
+| Same-owner contention | an open intent blocks until LLS, or until a qualified proof for exactly its window; forged, foreign-window and foreign-owner proofs are refused |
+| Concurrent processes (two connections, one witness) | one intent per contested Sequence; forged releases racing a signing marker never commit |
 | Restart with an unresolved intent | still blocking; executor refuses |
 | Stale backup | losing an intent or a signing marker → `ROLLBACK_DETECTED` |
 | Lost submission claim | unchanged, refused (§16 K) |
@@ -528,10 +528,9 @@ Each row lists the effects counted as capabilities / signatures / submissions.
 | Corrupted / partially migrated store | refused, unmutated |
 | Witness unavailable | intent refused; 0 / 0 / 0 even with the pre-signing probe bypassed |
 
-Mutation suite `trade04d-d1-mutation.test.ts`: **20 mutants, 14 detected, 6 contained**. Each contained mutant names the independent boundary that contains it:
+Mutation suite `trade04d-d1-mutation.test.ts` (after §19): **20 mutants, 16 detected, 4 contained**. Each contained mutant names the independent boundary that contains it:
 
-- abandon of a contacted intent, and a reservation on an uncontacted intent → the forward-only trigger;
-- the executor abandoning after signer contact → the compare-and-set;
+- a reservation on an uncontacted intent → the forward-only trigger;
 - an ignored `blocked` outcome → the closed outcome check;
 - an ignored prior intent → the intent's own `execution-recorded` and its window;
 - an absent `AccountRoot` read as proof → the AccountRoot parse.
@@ -547,6 +546,7 @@ Pre-existing mutants whose verdict D-1 changed, recorded rather than hidden:
 ### 17.8 Behaviour changes callers can see
 
 1. After the signer was contacted, even if it refused, the owner Sequence stays held until the validated ledger passes `LastLedgerSequence` or P12 records the owner-Sequence proof. The next order on that owner is `trade-sequence-in-flight` until then. A signer's refusal is its word, not proof that no signature exists (requirement: never assume that a missing Host-side signature means the transaction could not exist).
+1a. *(§19)* The same holds after any refusal at capability issuance: refused, revoked, timed out, or a capability that does not bind. Once the intent exists, its window is held until the ledger closes it.
 2. A duplicate execution after an intent is `unconfirmed trade-execution-previously-recorded` (no `providerRef` when no hash was ever recorded), instead of reaching the signer.
 3. `reserve` without a `signing` intent is refused (`TRADE_INTERLOCK_INTENT_REFUSED`).
 
@@ -603,3 +603,59 @@ So after D-1, a signer rollback can at most produce an extra signature of an alr
 - Neither D-6 nor D-3 is implemented.
 
 **Operational rule, unchanged:** after restoring a signer ledger, keep the signer stopped for at least 65 s on an accurate clock before serving.
+
+## 19. Final security review of D-1 (2026-10-15)
+
+### 19.1 The issuance-to-marking interval: a gap was found and closed
+
+CORE-02 capabilities are signed by the **external authority signer**. `createExternalAuthoritySigner` calls it over a network transport, with a per-attempt timeout and bounded retries of the availability family. The Host builds the capability's content; the signature is produced and returned across that boundary. The first D-1 version abandoned an `intended` intent in three places:
+
+- the executor, on any issuance failure;
+- the executor, on a capability that did not bind or a marker it could not record;
+- P12, for any `intended` intent left by a crash.
+
+That reasoning held only if no capability could exist without the Host having handed it to the signer, and that is false. The cases:
+
+| Case | Can a valid capability exist outside the Host? | Before | Now |
+|---|---|---|---|
+| Request never attempted (crash after `recordIntent`) | no | abandoned | held until a ledger fact |
+| Explicit refusal by the issuer's local checks (grant missing, revoked, out of terms) | no: refused before the authority signer is asked | abandoned | held (fail-closed; cost: the owner waits for LLS) |
+| Authority-signer timeout or unavailability, outcome unknown | **yes**: the remote signer may have signed, possibly more than once on retry | abandoned | held |
+| Issued, not yet exposed beyond the Host | yes, on the authority-signer channel | — | held |
+| Issued, then a crash before `markSigning` | yes | P12 abandoned it | held |
+| Issued, then CORE-07 failure during `markSigning` | yes | abandoned | held |
+| Concurrent release and marking | — | compare-and-set | no release path exists; forged releases racing the marker never commit (tested) |
+| A caller with the signer credential and an intercepted capability | yes | could sign **after** the window was released, competing with a new order on the same Sequence, while P12 had reported "not completed" | can sign only the intent's exact transaction; the window stays held; P12 never reports "not completed" unless the Sequence is proven unconsumed past LLS (tested end to end, §17.7) |
+
+**Correction (smallest that proves the property).** Abandonment is removed entirely. No `abandonIntent`, no `abandoned` state, and the forward-only trigger admits `intended → signing | expired` and `signing → bound | expired`. An issuance marker was considered and rejected: it would need another anchored write per order, and it would still have to treat a timed-out issuance as possibly successful. The only extra cases it could release early are crashes between `recordIntent` and the marker, which the ledger releases within LLS anyway.
+
+**The property, and why it holds.** Once an intent exists, its owner `Sequence` window is released only when no transaction with that `Sequence` and `LastLedgerSequence` can be included any more:
+
+- the validated index reached `LastLedgerSequence` (the shared G4 rule); or
+- a validated owner `Sequence` still unconsumed at or past it.
+
+A capability that survives the release — it lives ≤ 60 s + 5 s skew, while LLS is ≤ 200 ledgers past the reference — can only sign the intent's exact preimage. The capability binds `signingPreimageDigest`, and so `Sequence`, `LastLedgerSequence` and Fee. Such a signature can never be included. One capability per execution and no repeat are unchanged: an execution with an intent is never issued, signed or sent again.
+
+### 19.2 Release authority
+
+- **Before.** `expireIntent(executionId, detail)` trusted its caller. The owner-Sequence requirement was a convention of the P12 caller.
+- **Now.** `expireIntent(executionId, proof)` refuses unless `proof` is an object `readTradeSequenceEvidence` itself produced, branded in a module-private `WeakSet`. It must also be for exactly the intent's owner, `Sequence` and `LastLedgerSequence`, at a validated ledger at or past LLS, with the `Sequence` unconsumed. The release records the proof's ledger index and hash in the transition detail.
+- **Refused (tested):**
+  - a bare execution id;
+  - a plain object asserting finality;
+  - a genuine proof for another `Sequence` or another owner;
+  - an unknown execution;
+  - forged releases racing a signing marker from a second connection.
+- **Structurally pinned:**
+  - nothing in the edge mentions abandonment;
+  - only `trade-resolution-authority.ts` calls `expireIntent`, and only with `readTradeSequenceEvidence`'s result;
+  - the executor cannot release.
+- **Mutants:** `release-without-a-qualified-proof` and `proof-for-another-owner-accepted` are detected.
+- **No operator override exists.**
+- **Residual.** The validated reader handed to P12 (built by the Host composition from the shared transport) is trusted for what an XRPL server validated (SEC-INV-328). The brand proves the answer went through the qualified reading, not that the server was honest. `blocking`, `recordIntent` and `reserve` still take the caller's validated index, as before D-1. The executor derives it from the shared validated reader.
+
+### 19.3 Assessment and P12 after the correction
+
+- **Assessment.** `intended` → `capability-not-consumed`, **pending**, signature `not-sent-by-host`, uncertainty `capability-issuance-unknown`. It is never *proven* on the Host's record.
+- **P12.** Resolves `intended` and `signing` alike, on the proof only.
+- **Signer report.** A signer consumption reported for an `intended` intent stays `inconsistent-evidence`. Here it is the signal of a capability used outside the Host.

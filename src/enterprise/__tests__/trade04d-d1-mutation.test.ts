@@ -150,16 +150,15 @@ describe('TRADE-04D D-1 mutations — the intent in the interlock', () => {
       }),
     },
     {
-      id: 'abandon-a-contacted-intent',
+      id: 'release-without-a-qualified-proof',
       file: INTERLOCK,
-      replacements: [['            if (intent.state !== from)\n                return intent.state;', '            void from;']],
-      expect: 'contained',
-      containedBy: 'the forward-only intent trigger (signing → abandoned is not a transition the schema admits)',
+      replacements: [["            if (!(0, trade_sequence_evidence_js_1.isQualifiedTradeSequenceProof)(proof, intent) || proof.status !== 'not-included')\n                throw intentRefused('expiry-without-qualified-proof');", '']],
       guard: (m) => withStore(m, async (store) => {
         const r = reservation();
         await intendAndSign(store, r, 500);
-        await store.abandonIntent(r.executionId).catch(() => undefined);
-        return (await store.readIntent(r.executionId))?.state === 'signing' && (await store.blocking({ account: OWNER, sequence: 40, validatedLedgerIndex: 500 })) === true;
+        const forged = { status: 'not-included', proof: 'owner-sequence-unconsumed', window: { account: OWNER, sequence: r.sequence, lastLedgerSequence: r.lastLedgerSequence }, ledgerIndex: 600, ledgerHash: 'B'.repeat(64), accountSequence: r.sequence } as const;
+        await store.expireIntent(r.executionId, forged).catch(() => undefined);
+        return (await store.readIntent(r.executionId))?.state === 'signing' && (await store.blocking({ account: OWNER, sequence: r.sequence, validatedLedgerIndex: 500 })) === true;
       }),
     },
     {
@@ -272,23 +271,6 @@ describe('TRADE-04D D-1 mutations — the executor', () => {
       guard: (m) => run(m, async (rig) => (await rig.adapter.execute(order(rig))).outcome === 'completed' && rig.ledger.submitCalls.length === 1),
     },
     {
-      id: 'abandon-after-the-signer-was-contacted',
-      file: EXECUTOR,
-      replacements: [['                    throw new Refusal(F.PROVIDER_UNAVAILABLE, trade_execution_details_js_1.TRADE_EXECUTION_DETAILS.SIGNER_UNAVAILABLE);', '                    return abandonBeforeSigning(new Refusal(F.PROVIDER_UNAVAILABLE, trade_execution_details_js_1.TRADE_EXECUTION_DETAILS.SIGNER_UNAVAILABLE));']],
-      expect: 'contained',
-      containedBy: 'the interlock’s compare-and-set (only an `intended` intent is abandoned) and the forward-only trigger',
-      guard: (m) =>
-        run(
-          m,
-          async (rig) => {
-            const action = order(rig);
-            await rig.adapter.execute(action);
-            return (await rig.interlock.readIntent(action.correlation.executionId))?.state === 'signing';
-          },
-          { create: (options) => m.createTradeOfferExecutionAdapter({ ...options, signer: { signDelegatedOffer: async () => Promise.reject(new Error('connection reset')) } }) },
-        ),
-    },
-    {
       id: 'blocked-intent-ignored',
       file: EXECUTOR,
       replacements: [["                if (intent?.outcome === 'blocked')\n                    throw new Refusal(F.PROVIDER_UNAVAILABLE, trade_execution_details_js_1.TRADE_EXECUTION_DETAILS.SEQUENCE_IN_FLIGHT);", '']],
@@ -360,6 +342,16 @@ describe('TRADE-04D D-1 mutations — the owner-Sequence proof, the assessment a
       containedBy: 'the AccountRoot parse (`readXrplOwnerSequence` reads no Sequence from an absent entry → entry-malformed, unresolved)',
       guard: async (m) => (await m.readTradeSequenceEvidence(at(530, undefined), window)).status === 'unresolved',
     },
+    {
+      id: 'proof-for-another-owner-accepted',
+      file: EVIDENCE,
+      replacements: [['        proof.window.account === window.account &&\n', '']],
+      guard: async (m) => {
+        const other = testAccount();
+        const foreign = await m.readTradeSequenceEvidence({ ledgerEntry: async () => ({ outcome: 'read' as const, value: { validatedLedger: {} as never, ledgerIndex: 530, ledgerHash: 'B'.repeat(64), entry: { state: 'present' as const, node: { LedgerEntryType: 'AccountRoot', Account: other, Sequence: 40 } } } }) }, { ...window, account: other });
+        return foreign.status === 'not-included' && m.isQualifiedTradeSequenceProof(foreign, window) === false;
+      },
+    },
   ];
   for (const mutant of evidenceMutants) it(`${mutant.expect ?? 'detected'}: ${mutant.id}`, () => qualify(mutant));
 
@@ -368,10 +360,19 @@ describe('TRADE-04D D-1 mutations — the owner-Sequence proof, the assessment a
     {
       id: 'contacted-intent-read-as-never-signed',
       file: ASSESSMENT,
-      replacements: [["    const unsignedByHost = record === undefined && (intent?.state === 'intended' || intent?.state === 'abandoned');", "    const unsignedByHost = record === undefined && (intent?.state === 'intended' || intent?.state === 'abandoned' || intent?.state === 'signing');"]],
+      replacements: [["    const notSentByHost = record === undefined && intent?.state === 'intended';", "    const notSentByHost = record === undefined && (intent?.state === 'intended' || intent?.state === 'signing');"]],
       guard: (m) => {
         const a = m.assessTradeRecovery({ executionId: signingIntent.executionId, interlock: { status: 'read', record: undefined, intent: signingIntent } });
         return a.signature === 'possible' && a.certainty !== 'proven';
+      },
+    },
+    {
+      id: 'unsent-intent-reported-as-proven',
+      file: ASSESSMENT,
+      replacements: [["            klass = 'capability-not-consumed';\n            certainty = 'pending';", "            klass = 'capability-not-consumed';\n            certainty = 'proven';"]],
+      guard: (m) => {
+        const intended = intentRecordFor(reservation(), 'intended');
+        return m.assessTradeRecovery({ executionId: intended.executionId, interlock: { status: 'read', record: undefined, intent: intended } }).certainty !== 'proven';
       },
     },
   ];
@@ -379,7 +380,7 @@ describe('TRADE-04D D-1 mutations — the owner-Sequence proof, the assessment a
 
   const query = (intent: TradeIntentRecord) => ({ organizationId: ORG, executionId: intent.executionId, evaluationId: 'e', requestId: intent.evidence.requestId, decisionId: intent.evidence.decisionId, boundedGrantId: intent.evidence.boundedGrantId, action: ACTION, basis: 'initial-observation-unconfirmed' as const });
   /** The labelled fake ledger (validated index 1 000, past the intent's LastLedgerSequence 520) with the owner at `sequence`. */
-  const authorityOf = (m: AuthorityModule, intent: TradeIntentRecord, abandoned: TradeIntentRecord['state'], sequence: number) => {
+  const authorityOf = (m: AuthorityModule, intent: TradeIntentRecord, sequence: number) => {
     const fake = new FakeXrplLedger();
     fake.fund(OWNER, sequence);
     const client = fake.client(NETWORK_ID, { claimSubmission: async () => {} });
@@ -388,7 +389,7 @@ describe('TRADE-04D D-1 mutations — the owner-Sequence proof, the assessment a
       action: ACTION,
       requestTimeoutMs: 1_000,
       ledger: readOnlyTradeLedger(client),
-      interlock: { read: async () => undefined, settle: async () => {}, readIntent: async () => intent, abandonIntent: async () => abandoned, expireIntent: async () => 'expired' },
+      interlock: { read: async () => undefined, settle: async () => {}, readIntent: async () => intent, expireIntent: async () => 'expired' },
       entries: validatedEntryReader(client, NETWORK_ID),
     });
   };
@@ -397,17 +398,7 @@ describe('TRADE-04D D-1 mutations — the owner-Sequence proof, the assessment a
       id: 'p12-closes-a-signing-intent-without-the-proof',
       file: AUTHORITY,
       replacements: [["            if (evidence.status !== 'not-included')\n                return UNRESOLVED;", '']],
-      guard: async (m) => (await authorityOf(m, signingIntent, 'signing', 41).resolve(query(signingIntent))).outcome === 'unresolved',
-    },
-    {
-      id: 'p12-abandon-without-compare-and-set',
-      file: AUTHORITY,
-      replacements: [["                if (state !== 'abandoned')\n                    return UNRESOLVED;", '']],
-      guard: async (m) => {
-        // The executor's signing marker won the race: the abandonment answered `signing`.
-        const intended = intentRecordFor(reservation(), 'intended');
-        return (await authorityOf(m, intended, 'signing', 40).resolve(query(intended))).outcome === 'unresolved';
-      },
+      guard: async (m) => (await authorityOf(m, signingIntent, 41).resolve(query(signingIntent))).outcome === 'unresolved',
     },
   ];
   for (const mutant of authorityMutants) it(`${mutant.expect ?? 'detected'}: ${mutant.id}`, () => qualify(mutant));

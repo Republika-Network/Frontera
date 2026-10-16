@@ -50,7 +50,7 @@ export async function reserveWithIntent(store: Pick<DurableTradeSequenceInterloc
 
 /** A verified-looking intent record for the pure assessment (the store's own decoding is qualified separately). */
 export function intentRecordFor(reservation: TradeReservationInput, state: TradeIntentRecord['state'], overrides: Partial<TradeIntentRecord> = {}): TradeIntentRecord {
-  const signed = state !== 'intended' && state !== 'abandoned';
+  const signed = state !== 'intended';
   return {
     ...intentFor(reservation),
     state,

@@ -68,7 +68,8 @@ import { readTradeInclusion, type TradeTransactionIdentity } from './trade-ledge
  * 11 authorize TRADE-04C-S1: a CORE-02 delegated-offer signing capability for exactly this
  *              transaction, issued for the authenticated grant (revoked/expired → refused)
  * 11b signing  D-1: intent → signing (anchored, binding the capability id) before the signer is contacted;
- *              any refusal before this point abandons the intent (compare-and-set), none after it
+ *              no refusal ever releases an intent: issuance is external (CORE-02 custody), so a valid
+ *              capability may exist even when the Host saw a failure — only the ledger releases it
  * 11 sign      DelegatedOfferSigningPort, carrying the capability → verified, SIGNED_NOT_SUBMITTED
  * 12 reserve   durable, CORE-07-anchored, continuing exactly the signing intent, before anything is sent
  * 13 submit    submitReserved ONCE: the submit site claims the reservation for exactly this blob
@@ -133,7 +134,7 @@ export interface TradeExecutionLedger {
   submitReserved(executionId: string, signedTransaction: string): Promise<unknown>;
 }
 
-export type TradeExecutionInterlock = Pick<DurableTradeSequenceInterlock, 'recorded' | 'readIntent' | 'blocking' | 'recordIntent' | 'markSigning' | 'abandonIntent' | 'reserve' | 'markUnconfirmed' | 'settle'>;
+export type TradeExecutionInterlock = Pick<DurableTradeSequenceInterlock, 'recorded' | 'readIntent' | 'blocking' | 'recordIntent' | 'markSigning' | 'reserve' | 'markUnconfirmed' | 'settle'>;
 
 export interface TradeExecutionLogger {
   info(message: string, fields?: Readonly<Record<string, unknown>>): void;
@@ -302,7 +303,7 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
     if (typeof ledger?.[method] !== 'function') throw new TradeExecutorConfigurationError(`The ledger capability must implement ${method}.`);
   }
   const interlock = options.interlock;
-  for (const method of ['recorded', 'readIntent', 'blocking', 'recordIntent', 'markSigning', 'abandonIntent', 'reserve', 'markUnconfirmed', 'settle'] as const) {
+  for (const method of ['recorded', 'readIntent', 'blocking', 'recordIntent', 'markSigning', 'reserve', 'markUnconfirmed', 'settle'] as const) {
     if (typeof interlock?.[method] !== 'function') throw new TradeExecutorConfigurationError(`The trade interlock must implement ${method}.`);
   }
   if (options.ledgerProvenance !== 'xrpl-network' && options.ledgerProvenance !== 'injected-ledger-client') throw new TradeExecutorConfigurationError('ledgerProvenance must be stated.');
@@ -614,15 +615,9 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
           return finish(Object.freeze({ outcome: 'unconfirmed', ...(intent.transactionHash !== undefined ? { providerRef: intent.transactionHash } : {}), detail: D.PREVIOUSLY_RECORDED }), intent.transactionHash !== undefined ? { transactionHash: intent.transactionHash } : {});
         }
         if (intent?.outcome !== 'recorded') throw new Refusal(F.ADAPTER_ERROR, D.INTENT_FAILED);
-        /** Before the signer is contacted, and only then: the intent is released by compare-and-set. If it cannot be, it stays open and holds the window until the ledger passes LastLedgerSequence. */
-        const abandonBeforeSigning = async (refusal: Refusal): Promise<never> => {
-          try {
-            await interlock.abandonIntent(executionId, refusal.detail);
-          } catch {
-            log('warn', 'trade.intent.abandon_failed', { executionId });
-          }
-          throw refusal;
-        };
+        // From here every refusal leaves the intent open: it holds the owner Sequence until the validated ledger
+        // reaches LastLedgerSequence or P12 records the owner-Sequence proof. A capability request that failed,
+        // timed out or was refused is never read as "no capability exists" (the authority signer is external).
 
         // ── 11a (TRADE-04C-S1): the CORE-02 signing capability for exactly this transaction ──
         const tc = now();
@@ -645,10 +640,10 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
         } catch (error) {
           const code = error instanceof DelegatedOfferCapabilityError ? error.code : undefined;
           // An authority that answered "no" (revoked, absent, not this grant's terms) is a refusal; anything else is unavailability.
-          if (code === 'CAPABILITY_REFUSED' || code === 'CAPABILITY_GRANT_REVOKED' || code === 'CAPABILITY_GRANT_NOT_FOUND' || code === 'CAPABILITY_REQUEST_INVALID') return abandonBeforeSigning(new Refusal(F.PROVIDER_REJECTED, D.CAPABILITY_REFUSED));
-          return abandonBeforeSigning(new Refusal(F.PROVIDER_UNAVAILABLE, D.CAPABILITY_UNAVAILABLE));
+          if (code === 'CAPABILITY_REFUSED' || code === 'CAPABILITY_GRANT_REVOKED' || code === 'CAPABILITY_GRANT_NOT_FOUND' || code === 'CAPABILITY_REQUEST_INVALID') throw new Refusal(F.PROVIDER_REJECTED, D.CAPABILITY_REFUSED);
+          throw new Refusal(F.PROVIDER_UNAVAILABLE, D.CAPABILITY_UNAVAILABLE);
         }
-        if (issued.capability.executionId !== executionId || issued.capability.boundedGrantId !== action.boundedGrantId || issued.capability.signingPreimageDigest !== signingPreimageDigest) return abandonBeforeSigning(new Refusal(F.ADAPTER_ERROR, D.CAPABILITY_REFUSED));
+        if (issued.capability.executionId !== executionId || issued.capability.boundedGrantId !== action.boundedGrantId || issued.capability.signingPreimageDigest !== signingPreimageDigest) throw new Refusal(F.ADAPTER_ERROR, D.CAPABILITY_REFUSED);
         capabilityId = issued.capability.capabilityId;
         timings['capability'] = now() - tc;
 
@@ -656,8 +651,8 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
         try {
           await interlock.markSigning(executionId, issued.capability.capabilityId);
         } catch {
-          // Not provably recorded: the signer is never contacted. The compare-and-set abandonment fails harmlessly if the marker did commit.
-          return abandonBeforeSigning(new Refusal(F.ADAPTER_ERROR, D.INTENT_FAILED));
+          // Not provably recorded: the signer is never contacted, and the intent stays open.
+          throw new Refusal(F.ADAPTER_ERROR, D.INTENT_FAILED);
         }
 
         // ── 11: the protected signer, below the bounded grant ──

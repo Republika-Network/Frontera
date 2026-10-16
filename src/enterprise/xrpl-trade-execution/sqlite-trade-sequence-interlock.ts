@@ -15,6 +15,7 @@ import {
   type AuthorityStateFreshnessStatusValue,
 } from '../authority-state-freshness/session.js';
 import { computeDigest } from '../governance-store/digest.js';
+import { isQualifiedTradeSequenceProof, type TradeSequenceEvidence } from './trade-sequence-evidence.js';
 
 /**
  * TRADE-04C (gate G4) — the durable **trade** owner-account `Sequence`
@@ -64,15 +65,17 @@ import { computeDigest } from '../governance-store/digest.js';
  *
  * ```
  * intended ──sign (anchored)──▶ signing ──reserve (anchored)──▶ bound   (the reservation row continues the lifecycle)
- *    │                             └──expire (validated owner-Sequence proof past LLS)──▶ expired
- *    └──abandon (only while the signer was never contacted)──▶ abandoned
+ *    └──────────────┴──expire (a qualified owner-Sequence proof at or past LLS)──▶ expired
  * ```
  *
  * `intended` and `signing` are open and block under the same shared rule as a
  * reservation. `signing` is written, and anchored, strictly before the signer
- * is contacted, so an intent still `intended` proves no capability ever left
- * this process; `abandoned` is reachable only from there, by compare-and-set,
- * so an abandonment and a signing attempt can never both succeed. Every
+ * is contacted. There is **no abandonment**: the CORE-02 capability is signed
+ * by an external authority signer over a network, so once an intent exists a
+ * valid capability may exist outside this process even when the Host saw a
+ * failure or crashed — an intent is released only by the ledger: the
+ * validated index reaching `LastLedgerSequence` (the shared blocking rule),
+ * or `expired` on a proof only `readTradeSequenceEvidence` produces. Every
  * reservation recorded under v2 must continue a `signing` intent that binds
  * it exactly (owner, `Sequence`, LLS, window, evidence, prepared digest).
  * A v1 file is migrated in place, once, only after it verified completely and
@@ -207,7 +210,7 @@ export interface TradeSubmissionRecord extends TradeReservationInput {
 
 export type TradeReservation = { readonly outcome: 'reserved' } | { readonly outcome: 'blocked' } | { readonly outcome: 'execution-recorded'; readonly transactionHash: string };
 
-export const TRADE_INTENT_STATES = ['intended', 'signing', 'bound', 'abandoned', 'expired'] as const;
+export const TRADE_INTENT_STATES = ['intended', 'signing', 'bound', 'expired'] as const;
 export type TradeIntentState = (typeof TRADE_INTENT_STATES)[number];
 /** The intent states that hold the owner `Sequence` window (a `bound` intent's window is held by its reservation). */
 export const TRADE_INTENT_OPEN_STATES: readonly TradeIntentState[] = Object.freeze(['intended', 'signing']);
@@ -299,10 +302,13 @@ export interface DurableTradeSequenceInterlock extends XrplReservedSubmissionAut
   recordIntent(intent: TradeIntentInput, validatedLedgerIndex: number): Promise<TradeIntentOutcome>;
   /** D-1: `intended → signing`, anchored, binding the capability id — strictly before the signer is contacted. Throws (nothing may be signed) unless the intent was `intended`. */
   markSigning(executionId: string, capabilityId: string): Promise<void>;
-  /** D-1: `intended → abandoned` by compare-and-set, only while the signer was never contacted. Answers the intent's state afterwards (anything but `abandoned` means it was not abandoned). */
-  abandonIntent(executionId: string, detail?: string): Promise<TradeIntentState>;
-  /** D-1: `signing → expired`: a validated ledger at or past LastLedgerSequence holds the owner Sequence at or below the intent's (P12 only). Answers the state afterwards. */
-  expireIntent(executionId: string, detail?: string): Promise<TradeIntentState>;
+  /**
+   * D-1: `intended | signing → expired`, only with a non-inclusion proof
+   * `readTradeSequenceEvidence` produced for exactly this intent's owner,
+   * `Sequence` and `LastLedgerSequence` (validated, at or past LLS, Sequence
+   * unconsumed). Anything else is refused. Answers the state afterwards.
+   */
+  expireIntent(executionId: string, proof: TradeSequenceEvidence): Promise<TradeIntentState>;
   readIntent(executionId: string): Promise<TradeIntentRecord | undefined>;
   /** One atomic, anchored check-and-record. Under v2 it continues the execution's `signing` intent, which must bind it exactly. Throws when it cannot: nothing is submitted. */
   reserve(record: TradeReservationInput, validatedLedgerIndex: number): Promise<TradeReservation>;
@@ -438,7 +444,7 @@ CREATE TABLE IF NOT EXISTS trade_intents (
   evidence TEXT NOT NULL,
   recorded_at TEXT NOT NULL,
   identity_digest TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('intended', 'signing', 'bound', 'abandoned', 'expired')),
+  state TEXT NOT NULL CHECK (state IN ('intended', 'signing', 'bound', 'expired')),
   capability_id TEXT,
   updated_at TEXT NOT NULL,
   state_digest TEXT NOT NULL
@@ -472,7 +478,7 @@ CREATE TRIGGER IF NOT EXISTS trade_intents_capability_once BEFORE UPDATE OF capa
 WHEN OLD.capability_id IS NOT NULL AND NEW.capability_id IS NOT OLD.capability_id
 BEGIN SELECT RAISE(ABORT, 'trade intent capability is bound once'); END;
 CREATE TRIGGER IF NOT EXISTS trade_intents_forward_only BEFORE UPDATE OF state ON trade_intents
-WHEN NOT ((OLD.state = 'intended' AND NEW.state IN ('signing', 'abandoned')) OR (OLD.state = 'signing' AND NEW.state IN ('bound', 'expired')))
+WHEN NOT ((OLD.state = 'intended' AND NEW.state IN ('signing', 'expired')) OR (OLD.state = 'signing' AND NEW.state IN ('bound', 'expired')))
 BEGIN SELECT RAISE(ABORT, 'trade intent state moves forward only'); END;
 CREATE TRIGGER IF NOT EXISTS trade_intent_transitions_append_only_update BEFORE UPDATE ON trade_intent_transitions
 BEGIN SELECT RAISE(ABORT, 'trade intent transitions are append-only'); END;
@@ -1139,15 +1145,20 @@ export async function createSqliteTradeSequenceInterlock(dbPath: string, options
     return intentStatements;
   }
 
-  /** A local, unanchored intent transition (`abandoned`, `expired`): both only ever release, so losing one to a restore is conservative. */
-  function intentTransition(executionId: string, from: TradeIntentState, to: TradeIntentState, detail: string | null): TradeIntentState {
+  /** The one local, unanchored intent transition: `expired`, on a qualified proof. It only ever releases, so losing it to a restore is conservative. */
+  function expireOnProof(executionId: string, proof: TradeSequenceEvidence): TradeIntentState {
     const s = writableIntents();
     return db.transaction(() => {
       observeFresh();
       verifyCompleteness();
       const intent = intentOf(executionId);
       if (intent === undefined) throw intentRefused('no-intent');
-      if (intent.state !== from) return intent.state;
+      if (intent.state !== 'intended' && intent.state !== 'signing') return intent.state;
+      if (!isQualifiedTradeSequenceProof(proof, intent) || proof.status !== 'not-included') throw intentRefused('expiry-without-qualified-proof');
+      const from = intent.state;
+      const to: TradeIntentState = 'expired';
+      // The proof's validated ledger, recorded with the release.
+      const detail = `unconsumed.${proof.ledgerIndex}.${proof.ledgerHash}`;
       const updatedAt = now();
       const identity = intentIdentityDigest(intent, intent.recordedAt);
       s.update.run({ executionId, state: to, capabilityId: intent.capabilityId ?? null, updatedAt, stateDigest: intentStateDigest(identity, to, intent.capabilityId ?? null, updatedAt) });
@@ -1325,7 +1336,7 @@ export async function createSqliteTradeSequenceInterlock(dbPath: string, options
             return { event: signEventDigest(intentIdentityDigest(intent, intent.recordedAt), capabilityId), head: currentHead() };
           },
           () => {
-            // Re-read inside the committing transaction: an abandonment that won the race refuses the signing.
+            // Re-read inside the committing transaction: an expiry that won the race refuses the signing.
             const intent = intentOf(executionId);
             if (intent === undefined || intent.state !== 'intended') throw intentRefused('not-intended');
             const updatedAt = now();
@@ -1337,17 +1348,10 @@ export async function createSqliteTradeSequenceInterlock(dbPath: string, options
         );
       });
     },
-    async abandonIntent(executionId, detail) {
+    async expireIntent(executionId, proof) {
       assertOpen();
       if (typeof executionId !== 'string' || !EXECUTION_ID.test(executionId)) throw invalid('executionId');
-      if (detail !== undefined && !DETAIL.test(detail)) throw invalid('detail');
-      return guarded(() => intentTransition(executionId, 'intended', 'abandoned', detail ?? null));
-    },
-    async expireIntent(executionId, detail) {
-      assertOpen();
-      if (typeof executionId !== 'string' || !EXECUTION_ID.test(executionId)) throw invalid('executionId');
-      if (detail !== undefined && !DETAIL.test(detail)) throw invalid('detail');
-      return guarded(() => intentTransition(executionId, 'signing', 'expired', detail ?? null));
+      return guarded(() => expireOnProof(executionId, proof));
     },
     async readIntent(executionId) {
       assertOpen();

@@ -54,11 +54,14 @@ export const TRADE_RECOVERY_ASSESSMENT_SCHEMA = 'frontera.trade-recovery-assessm
  *     is unknown. The window is held; only the owner-`Sequence` proof (or a
  *     signer-reported hash looked up on the ledger by an operator) ends it.
  *
- * With an intent, classes 2 and 10 become Host-provable without the signer:
- * `intended` / `abandoned` prove the signer was never contacted
- * (`capability-not-consumed`, signature `excluded-by-host`); a validated
- * owner `Sequence` still unconsumed at or past `LastLedgerSequence` proves the
- * intent's transaction `proven-not-included`.
+ * With an intent, class 10 becomes provable without the signer or the hash:
+ * a validated owner `Sequence` still unconsumed at or past
+ * `LastLedgerSequence` proves the intent's transaction `proven-not-included`.
+ * An `intended` intent shows the Host never handed a capability to the
+ * delegated signer (`capability-not-consumed`, signature `not-sent-by-host`)
+ * — never that no capability exists: CORE-02 signs capabilities in an
+ * external authority signer, so issuance can complete unseen. It stays
+ * pending until the ledger proves the window closed.
  */
 export const TRADE_RECOVERY_CLASSES = [
   'no-trade-record',
@@ -120,11 +123,11 @@ export interface TradeRecoveryInput {
 }
 
 export type TradeRecoveryCertainty = 'proven' | 'pending' | 'indeterminate' | 'refused';
-/** `excluded-by-host`: D-1 — the Host's anchored intent proves the signer was never contacted for this execution. */
-export type TradeRecoverySignature = 'verified-by-host' | 'reported-by-signer' | 'possible' | 'reported-failed-by-signer' | 'not-reported-by-signer' | 'excluded-by-host' | 'unknown';
+/** `not-sent-by-host`: D-1 — the Host's anchored intent shows it never handed a capability to the delegated signer; a capability issued externally may still exist, so this is never proof of no signature. */
+export type TradeRecoverySignature = 'verified-by-host' | 'reported-by-signer' | 'possible' | 'reported-failed-by-signer' | 'not-reported-by-signer' | 'not-sent-by-host' | 'unknown';
 /** What Frontera's own submit site did. `claimed` proves a claim, never delivery. */
 export type TradeRecoveryFronteraSubmission = 'never' | 'claimed' | 'unknown';
-export type TradeRecoverySequenceStatus = 'not-reserved' | 'blocked' | 'window-closed-record-open' | 'released-by-ledger-fact' | 'released-unsigned' | 'unknown';
+export type TradeRecoverySequenceStatus = 'not-reserved' | 'blocked' | 'window-closed-record-open' | 'released-by-ledger-fact' | 'unknown';
 
 export const TRADE_RECOVERY_INCONSISTENCIES = [
   'interlock-corrupt',
@@ -164,6 +167,7 @@ export const TRADE_RECOVERY_UNCERTAINTIES = [
   'offer-state-not-established',
   // D-1
   'sequence-consumed-by-unknown-transaction',
+  'capability-issuance-unknown',
 ] as const;
 export type TradeRecoveryUncertainty = (typeof TRADE_RECOVERY_UNCERTAINTIES)[number];
 
@@ -260,8 +264,8 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   // ── D-1: the intent ──
   const intent = interlock.status === 'read' ? interlock.intent : undefined;
   if (intent !== undefined && intent.executionId !== executionId) inconsistencies.push('execution-id-mismatch');
-  /** The anchored intent proves the signer was never contacted: `signing` is written before any contact, and `abandoned` is reachable only from `intended`. */
-  const unsignedByHost = record === undefined && (intent?.state === 'intended' || intent?.state === 'abandoned');
+  /** The anchored intent shows the Host never handed a capability to the delegated signer (`signing` is written before any contact). Not proof that no capability or signature exists. */
+  const notSentByHost = record === undefined && intent?.state === 'intended';
   const intentOnly = record === undefined && intent !== undefined;
 
   // ── P11 / P12 against the row ──
@@ -298,7 +302,7 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
       if (signer.state === 'signed' && signer.transactionHash !== record.transactionHash) inconsistencies.push('signer-hash-mismatch');
       // The Host verified a signature before it reserved: a signer that reports none (absent / failed) contradicts it — a stale restore, or another signer.
       if (signer.state === 'absent' || signer.state === 'signing-failed') inconsistencies.push('signer-denies-host-verified-signature');
-    } else if (unsignedByHost && (signer.state === 'consumed' || signer.state === 'signed' || signer.state === 'signing-failed')) {
+    } else if (notSentByHost && (signer.state === 'consumed' || signer.state === 'signed' || signer.state === 'signing-failed')) {
       // The Host never handed a capability to the signer for this execution: a consumption is not one this Host authorized.
       inconsistencies.push('signer-consumption-without-host-signing');
     }
@@ -333,8 +337,8 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   if (intentOnly && sequenceEvidence !== undefined) {
     if (sequenceEvidence.status === 'not-included') ledgerOutcome = 'not-included';
     else if (sequenceEvidence.status === 'sequence-consumed') {
-      // Consumed by some transaction; for a never-signed intent that is someone else's, for a signing one it may be this one.
-      if (!unsignedByHost) uncertainties.push('sequence-consumed-by-unknown-transaction');
+      // Consumed by some transaction — possibly this intent's, signed under a capability the Host never saw leave.
+      uncertainties.push('sequence-consumed-by-unknown-transaction');
       if (intent.state === 'expired') inconsistencies.push('intent-settlement-contradicts-ledger');
     } else if (sequenceEvidence.reason === 'sequence-regressed') inconsistencies.push('ledger-binding-mismatch');
     else if (sequenceEvidence.reason === 'window-open') uncertainties.push('outcome-pending-window-open');
@@ -344,12 +348,12 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   // ── Signature and Frontera's own submission ──
   let signature: TradeRecoverySignature = 'unknown';
   if (record !== undefined) signature = 'verified-by-host';
-  else if (unsignedByHost) signature = 'excluded-by-host';
+  else if (notSentByHost) signature = 'not-sent-by-host';
   else if (signer?.executionId === executionId) {
     signature = signer.state === 'signed' ? 'reported-by-signer' : signer.state === 'consumed' ? 'possible' : signer.state === 'signing-failed' ? 'reported-failed-by-signer' : signer.state === 'absent' ? 'not-reported-by-signer' : 'unknown';
   }
   // A capability was handed to the signer: a signature is possible whatever the signer does or does not report.
-  if (intentOnly && !unsignedByHost && signature === 'unknown') signature = 'possible';
+  if (intentOnly && !notSentByHost && signature === 'unknown') signature = 'possible';
   const fronteraSubmission: TradeRecoveryFronteraSubmission = interlock.status !== 'read' ? 'unknown' : record === undefined || record.submissionAttempts === 0 ? 'never' : 'claimed';
   if (fronteraSubmission === 'claimed' && ledgerOutcome === undefined) uncertainties.push('delivery-unknown');
 
@@ -361,9 +365,8 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
     else if (validatedIndex === undefined) sequenceStatus = 'unknown';
     else sequenceStatus = xrplSequenceWindowBlocks({ sequence: record.sequence, lastLedgerSequence: record.lastLedgerSequence, open: true }, record.sequence, validatedIndex) ? 'blocked' : 'window-closed-record-open';
   } else if (intent !== undefined) {
-    // D-1: the intent holds the window exactly as a reservation would; only `abandoned` (never contacted) and `expired` (ledger fact) release it.
-    if (intent.state === 'abandoned') sequenceStatus = 'released-unsigned';
-    else if (intent.state === 'expired') sequenceStatus = 'released-by-ledger-fact';
+    // D-1: the intent holds the window exactly as a reservation would; only a ledger fact releases it.
+    if (intent.state === 'expired') sequenceStatus = 'released-by-ledger-fact';
     else if (validatedIndex === undefined) sequenceStatus = 'unknown';
     else sequenceStatus = xrplSequenceWindowBlocks({ sequence: intent.sequence, lastLedgerSequence: intent.lastLedgerSequence, open: true }, intent.sequence, validatedIndex) ? 'blocked' : 'window-closed-record-open';
   }
@@ -384,9 +387,9 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
     if (ledgerOutcome === 'not-included' || intent.state === 'expired') {
       klass = 'proven-not-included';
       certainty = 'proven';
-    } else if (unsignedByHost) {
+    } else if (notSentByHost) {
       klass = 'capability-not-consumed';
-      certainty = 'proven';
+      certainty = 'pending';
     } else if (signer?.executionId === executionId && signer.state === 'signed') {
       klass = 'signed-not-reserved';
       certainty = 'indeterminate';
@@ -435,9 +438,10 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   }
 
   // ── What remains uncertain, what would settle it, and why nothing runs automatically ──
-  if (intentOnly && klass !== 'inconsistent-evidence' && klass !== 'proven-not-included' && !unsignedByHost) {
+  if (intentOnly && klass !== 'inconsistent-evidence' && klass !== 'proven-not-included') {
     // D-1: the window is known (the intent fixed it); what is unknown is whether a signature exists, and only the ledger can end that.
-    if (signature !== 'reported-by-signer') uncertainties.push('signature-existence-unknown');
+    if (notSentByHost) uncertainties.push('capability-issuance-unknown');
+    else if (signature !== 'reported-by-signer') uncertainties.push('signature-existence-unknown');
     needed.push('validated-owner-sequence-past-last-ledger-sequence');
   }
   if (record === undefined && intent === undefined && interlock.status === 'read' && klass !== 'inconsistent-evidence') {
@@ -461,7 +465,7 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
 
   const existingPaths: ('p12-reconcile' | 'operator-attestation')[] = [];
   if (record !== undefined && record.state !== 'settled' && klass !== 'inconsistent-evidence') existingPaths.push('p12-reconcile');
-  // D-1: P12 abandons a never-contacted intent by compare-and-set, or expires a signing one on the owner-Sequence proof.
+  // D-1: P12 expires an open intent on the owner-Sequence proof, and on nothing else.
   if (intentOnly && (intent.state === 'intended' || intent.state === 'signing') && klass !== 'inconsistent-evidence') existingPaths.push('p12-reconcile');
   if (klass === 'inconsistent-evidence' || klass === 'indeterminate' || (record === undefined && p11Record !== undefined && observation === undefined)) existingPaths.push('operator-attestation');
 

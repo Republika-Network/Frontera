@@ -29,7 +29,7 @@ import { intendAndSign, intentFor, reserveWithIntent, testCapabilityId, validate
 import { createV1TradeSequenceInterlockForMigrationTests } from './trade04d-v1-interlock-fixture.js';
 import { testAccount } from './trade04b-xrpl-fixture.js';
 import { readXrplOwnerSequence } from '../../features/trade-runtime/rails/xrpl/index.js';
-import { readTradeOwnerSequence } from '../xrpl-trade-execution/trade-sequence-evidence.js';
+import { readTradeOwnerSequence, readTradeSequenceEvidence } from '../xrpl-trade-execution/trade-sequence-evidence.js';
 
 /**
  * TRADE-04D D-1 — the durable pre-signing intent, qualified offline on the
@@ -200,7 +200,7 @@ describe('TRADE-04D D-1 — crash points: no re-signing, no resubmission, the wi
     ['after the intent commit, before capability issuance', 'issue', 0],
     ['after capability issuance, before the signing marker', 'markSigning', 1],
   ] as const) {
-    it(`crash ${name}: the intent stays \`intended\` — provably never signed; restart refuses the execution; P12 abandons it by compare-and-set and the window is released without waiting for the ledger`, async () => {
+    it(`crash ${name}: the intent stays \`intended\` and its window held — never released on the Host's own record (a capability may exist outside it); restart refuses; only the owner-Sequence proof past LastLedgerSequence releases it`, async () => {
       const w = await world();
       const issuer = step === 'issue' ? { issued: [] as unknown[], issue: () => never<never>() } : testCapabilityIssuer();
       const rig = await executorRig({ ...w, issuer: issuer as ReturnType<typeof testCapabilityIssuer>, ...(step === 'markSigning' ? { create: crashingAt('markSigning') } : {}) });
@@ -218,15 +218,17 @@ describe('TRADE-04D D-1 — crash points: no re-signing, no resubmission, the wi
         restarted.book.attest(raw);
         restarted.ledger.autoAdvance = false;
         const intent = (await restarted.interlock.readIntent(executionId))!;
-        assert.equal(await restarted.interlock.blocking({ account: intent.account, sequence: intent.sequence, validatedLedgerIndex: intent.minLedger - 1 }), true, 'restart with an unresolved intent: the window is still held');
+        assert.equal(await restarted.interlock.blocking({ account: intent.account, sequence: intent.sequence, validatedLedgerIndex: intent.lastLedgerSequence - 1 }), true, 'restart with an unresolved intent: the window is still held');
         const again = await restarted.adapter.execute(action);
         assert.deepEqual([again.outcome, 'detail' in again ? again.detail : undefined], ['unconfirmed', 'trade-execution-previously-recorded']);
         const report = await coordinatorFor(restarted).assess(executionId, { p11: p11Of(action) });
-        assert.deepEqual([report.assessment.class, report.assessment.certainty, report.assessment.signature], ['capability-not-consumed', 'proven', 'excluded-by-host']);
-        const resolution = await resolverFor(restarted).resolve(queryOf(action));
-        assert.deepEqual(resolution, { outcome: 'resolved', certainty: 'confirmed-not-completed', failure: 'PROVIDER_UNAVAILABLE' });
-        assert.equal((await restarted.interlock.readIntent(executionId))?.state, 'abandoned');
-        assert.equal(await restarted.interlock.blocking({ account: intent.account, sequence: intent.sequence, validatedLedgerIndex: intent.minLedger - 1 }), false, 'released: the signer was provably never contacted');
+        assert.deepEqual([report.assessment.class, report.assessment.certainty, report.assessment.signature, report.assessment.sequence.status], ['capability-not-consumed', 'pending', 'not-sent-by-host', 'blocked']);
+        assert.ok(report.assessment.uncertainties.includes('capability-issuance-unknown'));
+        assert.deepEqual(await resolverFor(restarted).resolve(queryOf(action)), { outcome: 'unresolved' }, 'P12 never closes an intent on the Host’s own record');
+        assert.equal((await restarted.interlock.readIntent(executionId))?.state, 'intended');
+        restarted.ledger.advance(intent.lastLedgerSequence - restarted.ledger.validatedIndex);
+        assert.deepEqual(await resolverFor(restarted).resolve(queryOf(action)), { outcome: 'resolved', certainty: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED' });
+        assert.equal((await restarted.interlock.readIntent(executionId))?.state, 'expired');
         assert.deepEqual(await counts(restarted, issuer2), { capabilities: 0, signatures: 0, submissions: 0, intents: 1, reservations: 0 });
       } finally {
         await restarted.close();
@@ -234,7 +236,55 @@ describe('TRADE-04D D-1 — crash points: no re-signing, no resubmission, the wi
     });
   }
 
-  it('crash after the signing marker, before the signer answers (capability consumed, maybe signed): the window is held; abandonment is refused; the owner-Sequence proof past LastLedgerSequence closes it — never a second signature', async () => {
+  it('capability issued while the Host saw a timeout (external issuance outcome unknown): the intent stays open; a holder of the signer credential and the intercepted capability can sign only the original transaction; no other order takes the Sequence; P12 never reports it not-completed while the Sequence is consumed', async () => {
+    const { validateTradeProposal } = await import('../../features/trade-runtime/index.js');
+    const { preparedDelegatedOfferFromProposal } = await import('../xrpl-trade-rail/index.js');
+    const w = await world();
+    const inner = testCapabilityIssuer();
+    let intercepted: Awaited<ReturnType<typeof inner.issue>> | undefined;
+    // The external authority signer signed; its answer was lost to the Host but copied off the wire.
+    const issuer = { issued: inner.issued, issue: async (input: Parameters<typeof inner.issue>[0]) => {
+      intercepted = await inner.issue(input);
+      throw new (await import('../authority-authenticity/delegated-offer-capability-issuer.js')).DelegatedOfferCapabilityError('CAPABILITY_SIGNING_UNAVAILABLE', 'timed out');
+    } };
+    const rig = await executorRig({ ...w, issuer: issuer as ReturnType<typeof testCapabilityIssuer> });
+    try {
+      rig.ledger.autoAdvance = false;
+      const { raw, action } = order(rig);
+      const result = await rig.adapter.execute(action);
+      assert.deepEqual([result.outcome, 'detail' in result ? result.detail : undefined], ['failed', 'trade-capability-unavailable']);
+      const executionId = action.correlation.executionId;
+      const intent = (await rig.interlock.readIntent(executionId))!;
+      assert.equal(intent.state, 'intended', 'the Host never handed the capability to the signer — and does not release the window for it');
+      assert.ok(intercepted !== undefined);
+
+      // A competing order on the same owner is refused before any capability.
+      const before = inner.issued.length;
+      const competing = await rig.adapter.execute(order(rig).action);
+      assert.deepEqual([competing.outcome, 'detail' in competing ? competing.detail : undefined], ['failed', 'trade-sequence-in-flight']);
+      assert.equal(inner.issued.length, before);
+
+      // The attacker presents the intercepted capability with the signer credential: it signs exactly the intent's transaction.
+      const accepted = validateTradeProposal(raw);
+      assert.ok(accepted.valid);
+      const offer = preparedDelegatedOfferFromProposal(accepted.accepted.proposal, accepted.accepted.terms.flagsValue, { sequence: intent.sequence, fee: intent.evidence.fee, lastLedgerSequence: intent.lastLedgerSequence });
+      const signature = await rig.signerClient.signDelegatedOffer({ transaction: offer, proposal: accepted.accepted.proposal, authorization: { capability: intercepted!.canonical, signature: intercepted!.signature }, validatedLedgerIndex: intent.minLedger - 1 });
+      assert.equal(signature.status, 'signed-not-submitted');
+      assert.equal(signature.transaction.Sequence, intent.sequence, 'the capability binds the intent’s exact preimage: the same Sequence and window');
+      // Out of band, it is included: the owner Sequence is consumed.
+      rig.ledger.fund(intent.account, intent.sequence + 1);
+      rig.ledger.advance(intent.lastLedgerSequence - rig.ledger.validatedIndex + 1);
+      assert.deepEqual(await resolverFor(rig).resolve(queryOf(action)), { outcome: 'unresolved' }, 'before this review the executor abandoned such an intent and P12 reported it not-completed');
+      const report = await coordinatorFor(rig).assess(executionId, { p11: p11Of(action) });
+      assert.ok(report.assessment.uncertainties.includes('sequence-consumed-by-unknown-transaction'));
+      assert.equal((await rig.interlock.readIntent(executionId))?.state, 'intended');
+      assert.equal(rig.ledger.submitCalls.length, 0, 'Frontera sent nothing');
+    } finally {
+      await rig.close();
+    }
+  });
+
+  it('crash after the signing marker, before the signer answers (capability consumed, maybe signed): the window is held; a forged release is refused; the owner-Sequence proof past LastLedgerSequence closes it — never a second signature', async () => {
     const w = await world();
     const issuer = testCapabilityIssuer();
     const rig = await executorRig({ ...w, issuer, create: (options) => createTradeOfferExecutionAdapter({ ...options, signer: { signDelegatedOffer: async (request) => { await options.signer.signDelegatedOffer(request); return never(); } } }) });
@@ -252,7 +302,7 @@ describe('TRADE-04D D-1 — crash points: no re-signing, no resubmission, the wi
       restarted.ledger.autoAdvance = false;
       const intent = (await restarted.interlock.readIntent(executionId))!;
       assert.equal(intent.state, 'signing');
-      assert.equal(await restarted.interlock.abandonIntent(executionId), 'signing', 'a contacted signer’s intent is never abandoned');
+      await assert.rejects(restarted.interlock.expireIntent(executionId, { status: 'not-included', proof: 'owner-sequence-unconsumed', window: { account: intent.account, sequence: intent.sequence, lastLedgerSequence: intent.lastLedgerSequence }, ledgerIndex: intent.lastLedgerSequence, ledgerHash: 'B'.repeat(64), accountSequence: intent.sequence }), (error: { check?: string }) => error.check === 'expiry-without-qualified-proof', 'a forged proof never releases it');
       // The same Sequence for another order is blocked while the window is open.
       assert.equal(await restarted.interlock.blocking({ account: intent.account, sequence: intent.sequence, validatedLedgerIndex: intent.lastLedgerSequence - 1 }), true);
       const again = await restarted.adapter.execute(action);
@@ -378,7 +428,7 @@ describe('TRADE-04D D-1 — uniqueness and contention', () => {
     }
   });
 
-  it('same-owner Sequence contention: an open intent blocks a competing intent on that owner (same or lower Sequence) until the window closes; an abandoned one releases it at once; a signing one never early', async () => {
+  it('same-owner Sequence contention: an open intent blocks a competing intent on that owner (same or lower Sequence) until the ledger closes the window; it is released early only by a qualified owner-Sequence proof for exactly its window', async () => {
     const witness = await startWitness();
     const store = await open(join(persistent(), 'i.sqlite'), witness);
     try {
@@ -387,15 +437,29 @@ describe('TRADE-04D D-1 — uniqueness and contention', () => {
       assert.equal(await store.blocking({ account: OWNER, sequence: 40, validatedLedgerIndex: 500 }), true);
       assert.equal(await store.blocking({ account: OWNER, sequence: 41, validatedLedgerIndex: 500 }), false);
       assert.deepEqual(await store.recordIntent(intentFor(reservation()), 500), { outcome: 'blocked' });
-      assert.equal(await store.abandonIntent(a.executionId, 'trade-capability-refused'), 'abandoned');
-      const b = reservation();
-      assert.equal((await store.recordIntent(intentFor(b), 500)).outcome, 'recorded', 'released: never contacted');
-      await store.markSigning(b.executionId, testCapabilityId());
-      assert.equal(await store.abandonIntent(b.executionId), 'signing');
       assert.equal(await store.blocking({ account: OWNER, sequence: 40, validatedLedgerIndex: 519 }), true, 'not at LastLedgerSequence - 1');
       assert.equal(await store.blocking({ account: OWNER, sequence: 40, validatedLedgerIndex: 520 }), false, 'the validated ledger reached LastLedgerSequence: the ledger fact, not elapsed time');
-      assert.equal(await store.expireIntent(b.executionId, 'trade-intent-sequence-unconsumed'), 'expired');
-      assert.equal(await store.expireIntent(a.executionId), 'abandoned', 'expiry applies only to a signing intent');
+      // Release attempts that are not a qualified proof for exactly this window: refused, nothing changes.
+      const window = { account: OWNER, sequence: 40, lastLedgerSequence: 520 };
+      const forged = { status: 'not-included', proof: 'owner-sequence-unconsumed', window, ledgerIndex: 600, ledgerHash: 'B'.repeat(64), accountSequence: 40 } as const;
+      const refusedRelease = (error: { check?: string }) => error.check === 'expiry-without-qualified-proof';
+      await assert.rejects(store.expireIntent(a.executionId, forged), refusedRelease, 'a plain object asserting finality');
+      await assert.rejects(store.expireIntent(a.executionId, undefined as never), refusedRelease, 'nothing but the execution id');
+      const reader = (ledgerIndex: number, sequence: number, account = OWNER) => ({ ledgerEntry: async () => ({ outcome: 'read' as const, value: { ledgerIndex, ledgerHash: 'B'.repeat(64), entry: { state: 'present' as const, node: { LedgerEntryType: 'AccountRoot', Account: account, Sequence: sequence } } } }) });
+      const otherWindow = await readTradeSequenceEvidence(reader(600, 41), { ...window, sequence: 41 });
+      assert.equal(otherWindow.status, 'not-included');
+      await assert.rejects(store.expireIntent(a.executionId, otherWindow), refusedRelease, 'a genuine proof for another Sequence');
+      const otherOwner = testAccount();
+      const otherOwnerProof = await readTradeSequenceEvidence(reader(600, 40, otherOwner), { ...window, account: otherOwner });
+      await assert.rejects(store.expireIntent(a.executionId, otherOwnerProof), refusedRelease, 'a genuine proof for another owner');
+      assert.equal((await readTradeSequenceEvidence(reader(519, 40), window)).status, 'unresolved', 'no proof before LastLedgerSequence');
+      assert.equal((await readTradeSequenceEvidence(reader(600, 41), window)).status, 'sequence-consumed', 'no proof once the Sequence is consumed');
+      assert.equal((await store.readIntent(a.executionId))?.state, 'intended');
+      const proof = await readTradeSequenceEvidence(reader(600, 40), window);
+      assert.equal(await store.expireIntent(a.executionId, proof), 'expired');
+      assert.equal((await store.readIntent(a.executionId))?.transitions.at(-1)?.detail, `unconsumed.600.${'B'.repeat(64)}`, 'the release records the validated ledger it rests on');
+      assert.equal(await store.expireIntent(a.executionId, proof), 'expired', 'idempotent');
+      await assert.rejects(store.expireIntent('aoc.exec:never-recorded', proof), (error: { check?: string }) => error.check === 'no-intent');
     } finally {
       await store.close();
     }
@@ -411,13 +475,14 @@ describe('TRADE-04D D-1 — uniqueness and contention', () => {
       assert.equal(local.filter((outcome) => outcome.outcome === 'recorded').length, 1);
       const across = await Promise.allSettled([store.recordIntent(intentFor(reservation({ sequence: 80 })), 500), other.recordIntent(intentFor(reservation({ sequence: 80 })), 500)]);
       assert.equal(across.filter((result) => result.status === 'fulfilled' && result.value.outcome === 'recorded').length, 1, JSON.stringify(across.map((result) => (result.status === 'fulfilled' ? result.value : (result.reason as { code?: string }).code))));
-      // An abandonment and a signing marker race: exactly one commits.
+      // A signing marker raced by forged releases from another connection: the forgeries never commit.
       const contested = reservation({ sequence: 90 });
       await store.recordIntent(intentFor(contested), 500);
-      const race = await Promise.allSettled([store.markSigning(contested.executionId, testCapabilityId()), other.abandonIntent(contested.executionId)]);
-      const final = (await store.readIntent(contested.executionId))!.state;
-      assert.ok(final === 'signing' || final === 'abandoned');
-      assert.equal(race[0].status === 'fulfilled', final === 'signing', 'the signing marker succeeds exactly when it won');
+      const forged = { status: 'not-included', proof: 'owner-sequence-unconsumed', window: { account: OWNER, sequence: 90, lastLedgerSequence: 520 }, ledgerIndex: 600, ledgerHash: 'B'.repeat(64), accountSequence: 90 } as const;
+      const race = await Promise.allSettled([store.markSigning(contested.executionId, testCapabilityId()), other.expireIntent(contested.executionId, forged), other.expireIntent(contested.executionId, forged)]);
+      assert.equal(race[0].status, 'fulfilled');
+      assert.deepEqual(race.slice(1).map((result) => result.status), ['rejected', 'rejected']);
+      assert.equal((await store.readIntent(contested.executionId))!.state, 'signing');
     } finally {
       await store.close();
       await other.close();
@@ -659,5 +724,20 @@ describe('TRADE-04D D-1 — the owner-Sequence parser equals TRADE-02’s', () =
       Object.create({ LedgerEntryType: 'AccountRoot', Account: owner, Sequence: 7 }),
     ];
     for (const node of nodes) assert.equal(readTradeOwnerSequence(node, owner), readXrplOwnerSequence(node, owner), JSON.stringify(node));
+  });
+});
+
+describe('TRADE-04D D-1 — release authority (structural)', () => {
+  it('there is no abandonment anywhere; only the P12 trade authority calls expireIntent, and only with a proof readTradeSequenceEvidence produced', async () => {
+    const { readFileSync } = await import('node:fs');
+    const edge = 'src/enterprise/xrpl-trade-execution';
+    const files = ['host-composition.ts', 'sqlite-trade-sequence-interlock.ts', 'trade-offer-executor.ts', 'trade-recovery-assessment.ts', 'trade-recovery-coordinator.ts', 'trade-resolution-authority.ts', 'trade-sequence-evidence.ts'];
+    for (const file of files) assert.equal(/abandon(?:Intent|ed')/.test(readFileSync(`${edge}/${file}`, 'utf8')), false, file);
+    const callers = files.filter((file) => /\.expireIntent!?\(/.test(readFileSync(`${edge}/${file}`, 'utf8')));
+    assert.deepEqual(callers, ['trade-resolution-authority.ts']);
+    const authority = readFileSync(`${edge}/trade-resolution-authority.ts`, 'utf8');
+    assert.match(authority, /const evidence = await readTradeSequenceEvidence\(reader, intent\);[\s\S]*?interlock\.expireIntent!\(intent\.executionId, evidence\)/);
+    assert.match(readFileSync(`${edge}/sqlite-trade-sequence-interlock.ts`, 'utf8'), /if \(!isQualifiedTradeSequenceProof\(proof, intent\) \|\| proof\.status !== 'not-included'\) throw intentRefused\('expiry-without-qualified-proof'\);/);
+    assert.equal(/expireIntent/.test(readFileSync(`${edge}/trade-offer-executor.ts`, 'utf8')), false, 'the executor cannot release');
   });
 });

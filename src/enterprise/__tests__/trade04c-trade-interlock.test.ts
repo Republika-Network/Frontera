@@ -400,7 +400,7 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
       "DROP TRIGGER trade_anchored_events_v2_append_only_delete; DELETE FROM trade_anchored_events_v2 WHERE kind = 'sign';",
       'DROP TRIGGER trade_intents_no_delete; DELETE FROM trade_intents;',
       'DROP TRIGGER trade_intents_identity_immutable; UPDATE trade_intents SET sequence = 41;',
-      "DROP TRIGGER trade_intents_forward_only; UPDATE trade_intents SET state = 'abandoned';",
+      "DROP TRIGGER trade_intents_forward_only; UPDATE trade_intents SET state = 'expired';",
       "DROP TRIGGER trade_intents_identity_immutable; UPDATE trade_intents SET signing_preimage_digest = 'sha256:' || substr('0000000000000000000000000000000000000000000000000000000000000000', 1, 64);",
       'DROP TRIGGER trade_intent_transitions_append_only_delete; DELETE FROM trade_intent_transitions;',
       'DROP TRIGGER trade_intents_capability_once; UPDATE trade_intents SET capability_id = NULL;',

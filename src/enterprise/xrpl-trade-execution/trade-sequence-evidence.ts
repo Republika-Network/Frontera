@@ -66,9 +66,30 @@ export interface TradeSequenceWindow {
 export type TradeSequenceEvidenceReason = 'window-open' | 'entry-absent' | 'entry-malformed' | 'sequence-regressed' | 'ledger-unavailable';
 
 export type TradeSequenceEvidence =
-  | { readonly status: 'not-included'; readonly proof: 'owner-sequence-unconsumed'; readonly ledgerIndex: number; readonly ledgerHash: string; readonly accountSequence: number }
+  | { readonly status: 'not-included'; readonly proof: 'owner-sequence-unconsumed'; readonly window: TradeSequenceWindow; readonly ledgerIndex: number; readonly ledgerHash: string; readonly accountSequence: number }
   | { readonly status: 'sequence-consumed'; readonly ledgerIndex: number; readonly ledgerHash: string; readonly accountSequence: number }
   | { readonly status: 'unresolved'; readonly reason: TradeSequenceEvidenceReason; readonly failure?: string; readonly ledgerIndex?: number; readonly ledgerHash?: string };
+
+/**
+ * Proofs this module produced — and only those. An intent is released on the
+ * ledger only with one (`isQualifiedTradeSequenceProof`): a caller cannot
+ * forge one from an execution id or a plain object asserting finality.
+ */
+const QUALIFIED_PROOFS = new WeakSet<object>();
+
+/** Whether `value` is a non-inclusion proof this module produced for exactly `window` (owner, `Sequence`, `LastLedgerSequence`), at or past `LastLedgerSequence`. */
+export function isQualifiedTradeSequenceProof(value: unknown, window: TradeSequenceWindow): boolean {
+  if (value === null || typeof value !== 'object' || !QUALIFIED_PROOFS.has(value)) return false;
+  const proof = value as Extract<TradeSequenceEvidence, { readonly status: 'not-included' }>;
+  return (
+    proof.status === 'not-included' &&
+    proof.window.account === window.account &&
+    proof.window.sequence === window.sequence &&
+    proof.window.lastLedgerSequence === window.lastLedgerSequence &&
+    proof.accountSequence === window.sequence &&
+    proof.ledgerIndex >= window.lastLedgerSequence
+  );
+}
 
 export async function readTradeSequenceEvidence(reader: TradeSequenceEntryReader, window: TradeSequenceWindow): Promise<TradeSequenceEvidence> {
   let read: Awaited<ReturnType<TradeSequenceEntryReader['ledgerEntry']>>;
@@ -86,5 +107,7 @@ export async function readTradeSequenceEvidence(reader: TradeSequenceEntryReader
   if (accountSequence > window.sequence) return Object.freeze({ status: 'sequence-consumed', ...at, accountSequence });
   if (accountSequence < window.sequence) return Object.freeze({ status: 'unresolved', reason: 'sequence-regressed', ...at });
   if (ledgerIndex < window.lastLedgerSequence) return Object.freeze({ status: 'unresolved', reason: 'window-open', ...at });
-  return Object.freeze({ status: 'not-included', proof: 'owner-sequence-unconsumed', ...at, accountSequence });
+  const proof = Object.freeze({ status: 'not-included' as const, proof: 'owner-sequence-unconsumed' as const, window: Object.freeze({ account: window.account, sequence: window.sequence, lastLedgerSequence: window.lastLedgerSequence }), ...at, accountSequence });
+  QUALIFIED_PROOFS.add(proof);
+  return proof;
 }

@@ -190,7 +190,7 @@ export function createTradeRecoveryCoordinator(options: TradeRecoveryCoordinator
     if (record !== undefined && record.executionId === executionId) {
       ledgerEvidence = await readTradeLedgerEvidence(ledger, tradeTransactionIdentityOf(record), { networkId, requestTimeoutMs });
       if (ledgerEvidence.status === 'included') offer = await offerStateOf(ledgerEvidence, record, context.offerSnapshot !== false);
-    } else if (record === undefined && intent !== undefined && intent.executionId === executionId && intent.state !== 'abandoned') {
+    } else if (record === undefined && intent !== undefined && intent.executionId === executionId) {
       // D-1: no hash to look up — the owner's validated Sequence is the evidence.
       sequenceEvidence = await readTradeSequenceEvidence(reader, intent);
     }
