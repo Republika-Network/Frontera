@@ -159,9 +159,18 @@ export class FakeXrplLedger {
     }
   }
 
-  /** Past the restart quarantine: more than 204 ledgers, closing more than 180 s after the executor started. */
+  /**
+   * Past the restart quarantine: more than 204 ledgers, closing more than
+   * 180 s after the executor started. The executor started before this call,
+   * so the fake keeps validating ledgers (4 s apart, close times never
+   * rebased) until the ledger 204 back closes after *now* + 180 s — however
+   * long the Host took to boot after this fake was built. The quarantine
+   * itself is the executor's and is unchanged (TRADE-04D final review).
+   */
   passQuarantine(): void {
     this.advance(260);
+    const anchor = Math.floor(Date.now() / 1000) - RIPPLE_EPOCH + 180;
+    while (this.closeTimeOf(this.validatedIndex - 204) <= anchor) this.advance(1);
   }
 
   fund(address: string, sequence = 7, options: { readonly flags?: number; readonly regularKey?: string } = {}): void {

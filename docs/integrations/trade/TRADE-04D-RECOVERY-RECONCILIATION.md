@@ -659,3 +659,12 @@ A capability that survives the release — it lives ≤ 60 s + 5 s skew, while L
 - **Assessment.** `intended` → `capability-not-consumed`, **pending**, signature `not-sent-by-host`, uncertainty `capability-issuance-unknown`. It is never *proven* on the Host's record.
 - **P12.** Resolves `intended` and `signing` alike, on the proof only.
 - **Signer report.** A signer consumption reported for an `intended` intent stays `inconsistent-evidence`. Here it is the signal of a capability used outside the Host.
+
+### 19.4 The S1 separate-process test: fixture timing, corrected
+
+- **Cause.** `FakeXrplLedger` dates its close times from its own construction (4 s per ledger). `passQuarantine()` advanced a fixed 260 ledgers, so the ledger 204 back closed 224 s after construction. The executor's real restart quarantine requires that ledger to close more than 180 s after the *executor* started. A Host that booted more than ~44 s after the fake was built therefore stayed quarantined (`trade-restart-quarantine`, zero signing requests).
+- **Correction (fixture only).** `passQuarantine()` still validates at least 260 ledgers, then keeps validating ledgers (4 s apart, close times never rebased) until the ledger 204 back closes after *now* + 180 s. The executor started before the call, so that bounds its anchor. The restart quarantine, LastLedgerSequence limits, clock reliance, CORE-07 and every production timeout are unchanged.
+- **Evidence:**
+  - `trade04d-fixture-quarantine.test.ts`, with a mocked clock, failed for 50 / 120 / 600 s boot delays before the correction (3 / 7 fail) and passes after (7 / 7). It also pins that a too-short ledger history is still quarantined, and that close times are never rebased.
+  - The real S1 separate-process test with a 50 s boot delay injected: fails before (`trade-restart-quarantine`), passes after.
+  - Unmodified, under the 16-CPU-burner load that first reproduced it: 3 / 3 pass, durations 60 s, 77 s and 130 s (the original failure was at 92 s).
