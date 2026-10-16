@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { XRPL_TRADE_EXECUTOR_ID } from '../xrpl-trade-execution/host-configuration.js';
 import {
   TRADE_INTERLOCK_STORE_SCHEMA_VERSION,
+  TRADE_INTERLOCK_STORE_SCHEMA_VERSION_V1,
   TRADE_RESERVATIONS_STATE_KIND,
   createSqliteTradeSequenceInterlock,
   type DurableTradeSequenceInterlock,
@@ -15,6 +16,7 @@ import {
 } from '../xrpl-trade-execution/sqlite-trade-sequence-interlock.js';
 import { ScriptedWitnessTransport, boundaryFor, closeAllWitnesses, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
 import { ORG, scratch } from './trade04c-execution-fixture.js';
+import { intendAndSign, intentFor, reserveWithIntent } from './trade04d-intent-fixture.js';
 import { testAccount } from './trade04b-xrpl-fixture.js';
 
 /**
@@ -86,6 +88,7 @@ function restore(backup: string, path: string): void {
   copyFileSync(backup, path);
 }
 
+const intentForTest = (record: TradeReservationInput) => intentFor(record);
 const claimOf = (record: TradeReservationInput, overrides: Record<string, unknown> = {}) => ({ executionId: record.executionId, networkId: 1, transactionHash: record.transactionHash, transactionType: 'OfferCreate', account: record.account, sequence: record.sequence, lastLedgerSequence: record.lastLedgerSequence, ...overrides });
 const code = (expected: string) => (error: { code?: string }) => error.code === expected;
 
@@ -95,14 +98,14 @@ describe('TRADE-04C interlock — reservation and blocking', () => {
     const store = await open(pathFor(), witness);
     try {
       const first = reservation();
-      assert.deepEqual(await store.reserve(first, 500), { outcome: 'reserved' });
+      assert.deepEqual(await reserveWithIntent(store, first, 500), { outcome: 'reserved' });
       assert.equal(await store.recorded(first.executionId), first.transactionHash);
       assert.equal(await store.blocking({ account: OWNER, sequence: 40, validatedLedgerIndex: 500 }), true);
       assert.equal(await store.blocking({ account: OWNER, sequence: 39, validatedLedgerIndex: 500 }), true);
       assert.equal(await store.blocking({ account: OWNER, sequence: 41, validatedLedgerIndex: 500 }), false);
       assert.equal(await store.blocking({ account: OTHER_OWNER, sequence: 40, validatedLedgerIndex: 500 }), false);
-      assert.deepEqual(await store.reserve(reservation({ sequence: 40 }), 500), { outcome: 'blocked' }, 'two executions competing for one Sequence');
-      assert.deepEqual(await store.reserve(reservation({ account: OTHER_OWNER, sequence: 40 }), 500), { outcome: 'reserved' }, 'different owners are isolated');
+      assert.deepEqual(await reserveWithIntent(store, reservation({ sequence: 40 }), 500), { outcome: 'blocked' }, 'two executions competing for one Sequence');
+      assert.deepEqual(await reserveWithIntent(store, reservation({ account: OTHER_OWNER, sequence: 40 }), 500), { outcome: 'reserved' }, 'different owners are isolated');
       assert.equal(await store.blocking({ account: OWNER, sequence: 40, validatedLedgerIndex: 520 }), false, 'the ledger reached LastLedgerSequence');
       assert.deepEqual(await store.reserve({ ...first, transactionHash: HASH(9_999) }, 500), { outcome: 'execution-recorded', transactionHash: first.transactionHash }, 'one record per execution, ever');
     } finally {
@@ -114,7 +117,7 @@ describe('TRADE-04C interlock — reservation and blocking', () => {
     const witness = await startWitness();
     const store = await open(pathFor(), witness);
     try {
-      const outcomes = await Promise.all(Array.from({ length: 8 }, () => store.reserve(reservation({ sequence: 77, account: OTHER_OWNER }), 500)));
+      const outcomes = await Promise.all(Array.from({ length: 8 }, () => reserveWithIntent(store, reservation({ sequence: 77, account: OTHER_OWNER }), 500)));
       assert.equal(outcomes.filter((outcome) => outcome.outcome === 'reserved').length, 1);
       assert.equal(outcomes.filter((outcome) => outcome.outcome === 'blocked').length, 7);
     } finally {
@@ -128,7 +131,7 @@ describe('TRADE-04C interlock — reservation and blocking', () => {
     const a = await open(path, witness);
     const b = await open(path, witness);
     try {
-      const results = await Promise.allSettled([a.reserve(reservation({ sequence: 90 }), 500), b.reserve(reservation({ sequence: 90 }), 500)]);
+      const results = await Promise.allSettled([reserveWithIntent(a, reservation({ sequence: 90 }), 500), reserveWithIntent(b, reservation({ sequence: 90 }), 500)]);
       const reserved = results.filter((result) => result.status === 'fulfilled' && result.value.outcome === 'reserved');
       assert.equal(reserved.length, 1, JSON.stringify(results.map((result) => (result.status === 'fulfilled' ? result.value : (result.reason as { code?: string }).code))));
     } finally {
@@ -163,7 +166,7 @@ describe('TRADE-04C interlock — the submission claim (G2): exactly the reserve
     const record = reservation();
     try {
       await assert.rejects(store.claimSubmission(claimOf(record)), code('TRADE_INTERLOCK_CLAIM_REFUSED'), 'no reservation');
-      await store.reserve(record, 500);
+      await reserveWithIntent(store, record, 500);
       for (const [field, value] of [
         ['executionId', 'aoc.exec:someone-else'],
         ['networkId', 2],
@@ -201,7 +204,7 @@ describe('TRADE-04C interlock — the submission claim (G2): exactly the reserve
     const store = await open(pathFor(), witness);
     try {
       const record = reservation();
-      await store.reserve(record, 500);
+      await reserveWithIntent(store, record, 500);
       await store.markUnconfirmed(record.executionId, record.transactionHash, 'trade-submission-outcome-unknown');
       assert.equal((await store.read(record.executionId))?.state, 'reserved', 'an unclaimed reservation is never marked submitted');
       await store.claimSubmission(claimOf(record));
@@ -226,7 +229,7 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const path = pathFor();
     const store = await open(path, witness);
     assert.equal(store.anchored, true);
-    await store.reserve(reservation(), 500);
+    await reserveWithIntent(store, reservation(), 500);
     assert.equal((await store.health()).freshness, 'ready');
     await store.close();
     const reopened = await open(path, witness);
@@ -238,13 +241,13 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const witness = await startWitness();
     const path = pathFor();
     const store = await open(path, witness);
-    await store.reserve(reservation(), 500);
+    await reserveWithIntent(store, reservation(), 500);
     await store.close();
     const backup = `${path}.backup`;
     copyFileSync(path, backup);
     const again = await open(path, witness);
     const later = reservation({ account: OTHER_OWNER });
-    await again.reserve(later, 500);
+    await reserveWithIntent(again, later, 500);
     await again.claimSubmission(claimOf(later));
     await again.close();
     restore(backup, path);
@@ -256,7 +259,7 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const path = pathFor();
     const store = await open(path, witness);
     const record = reservation();
-    await store.reserve(record, 500);
+    await reserveWithIntent(store, record, 500);
     await store.close();
     const backup = `${path}.backup`;
     copyFileSync(path, backup);
@@ -271,9 +274,10 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const witness = await startWitness();
     const path = pathFor();
     const store = await open(path, witness);
-    await store.reserve(reservation(), 500);
+    await reserveWithIntent(store, reservation(), 500);
     await witness.close();
     await assert.rejects(store.blocking({ account: OWNER, sequence: 41, validatedLedgerIndex: 500 }));
+    await assert.rejects(store.recordIntent(intentForTest(reservation({ sequence: 60, account: OTHER_OWNER })), 500), 'no intent is recorded without the witness');
     await assert.rejects(store.reserve(reservation({ sequence: 60, account: OTHER_OWNER }), 500));
     await store.close();
     await assert.rejects(open(path, witness));
@@ -288,10 +292,13 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const boundary = await boundaryFor(witness, ORG, { transport: scripted });
     const store = await createSqliteTradeSequenceInterlock(path, { scope: SCOPE, sequenceAccounts: [OWNER, OTHER_OWNER], now, freshness: { boundary } });
     const committed = reservation();
-    await store.reserve(committed, 500);
+    await reserveWithIntent(store, committed, 500);
     // Finalize lost after the local commit ("crash after store commit, before witness finalize").
     scripted.answer = (request, forward) => (request.operation === 'finalize' ? Promise.reject(new Error('lost')) : forward());
     const second = reservation({ account: OTHER_OWNER, sequence: 70 });
+    scripted.answer = (_request, forward) => forward();
+    await intendAndSign(store, second, 500);
+    scripted.answer = (request, forward) => (request.operation === 'finalize' ? Promise.reject(new Error('lost')) : forward());
     await store.reserve(second, 500).catch(() => undefined);
     scripted.answer = (_request, forward) => forward();
     await store.close();
@@ -305,12 +312,12 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const witness2 = await startWitness();
     const scripted2 = new ScriptedWitnessTransport(createHttpAuthorityStateWitnessTransport({ endpoint: witness2.endpoint, credential: WITNESS_TOKEN }));
     const store2 = await createSqliteTradeSequenceInterlock(path2, { scope: SCOPE, sequenceAccounts: [OWNER], now, freshness: { boundary: await boundaryFor(witness2, ORG, { transport: scripted2 }) } });
-    await store2.reserve(reservation(), 500);
+    await reserveWithIntent(store2, reservation(), 500);
     const backup = `${path2}.before`;
     await store2.close();
     copyFileSync(path2, backup);
     const store3 = await open(path2, witness2, { accounts: [OWNER] });
-    await store3.reserve(reservation({ sequence: 80 }), 500);
+    await reserveWithIntent(store3, reservation({ sequence: 80 }), 500);
     await store3.close();
     restore(backup, path2);
     await assert.rejects(open(path2, witness2, { accounts: [OWNER] }), (error: { code?: string; message?: string }) => /ROLLBACK|PENDING/.test(`${error.code} ${error.message}`), 'a history the witness saw advance past this file is refused');
@@ -334,6 +341,10 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
       return answer;
     };
     const lost = reservation();
+    const forward = scripted.answer;
+    scripted.answer = (_request, next) => next();
+    await intendAndSign(store, lost, 500);
+    scripted.answer = forward;
     await assert.rejects(store.reserve(lost, 500));
     blocker?.exec('ROLLBACK');
     blocker?.close();
@@ -342,6 +353,7 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     await assert.rejects(open(path, witness, { accounts: [OWNER] }), (error: { code?: string }) => error.code === 'AUTHORITY_FRESHNESS_PENDING_RECOVERY');
     const verifier = await createSqliteTradeSequenceInterlock(path, { now });
     assert.equal((await verifier.verifyAll()).records, 0, 'the file holds no record of it');
+    assert.equal((await verifier.readIntent(lost.executionId))?.state, 'signing', 'its intent, committed before, still holds the window');
     await verifier.close();
   });
 
@@ -349,7 +361,7 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const witness = await startWitness();
     const path = pathFor();
     const store = await open(path, witness);
-    await store.reserve(reservation(), 500);
+    await reserveWithIntent(store, reservation(), 500);
     await store.close();
     const forged = pathFor();
     copyFileSync(path, forged);
@@ -360,11 +372,12 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const versioned = pathFor();
     copyFileSync(path, versioned);
     const db2 = new Database(versioned);
-    db2.prepare(`INSERT INTO trade_interlock_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.trade-sequence-interlock.schema.v2', 'current', ?)`).run(now());
+    db2.prepare(`INSERT INTO trade_interlock_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.trade-sequence-interlock.schema.v3', 'current', ?)`).run(now());
     db2.close();
     await assert.rejects(open(versioned, witness), /schema version this runtime does not implement/);
     await assert.rejects(open(path, witness, { scope: { domainId: XRPL_TRADE_EXECUTOR_ID, networkId: 2 } }), /another domain or XRPL network/);
-    assert.equal(TRADE_INTERLOCK_STORE_SCHEMA_VERSION, 'aoc.trade-sequence-interlock.schema.v1');
+    assert.equal(TRADE_INTERLOCK_STORE_SCHEMA_VERSION, 'aoc.trade-sequence-interlock.schema.v2', 'TRADE-04D D-1');
+    assert.equal(TRADE_INTERLOCK_STORE_SCHEMA_VERSION_V1, 'aoc.trade-sequence-interlock.schema.v1');
     assert.equal(TRADE_RESERVATIONS_STATE_KIND, 'trade-sequence-reservations');
   });
 
@@ -373,14 +386,24 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     const path = pathFor();
     const store = await open(path, witness);
     const record = reservation();
-    await store.reserve(record, 500);
+    await reserveWithIntent(store, record, 500);
     await store.close();
     const tampers = [
       'DROP TRIGGER trade_reservations_identity_immutable; UPDATE trade_reservations SET sequence = 41;',
       'DROP TRIGGER trade_reservations_forward_only; UPDATE trade_reservations SET state = \'settled\', settlement = \'expired\';',
       "DROP TRIGGER trade_reservations_identity_immutable; UPDATE trade_reservations SET evidence = replace(evidence, 'master-key', 'regular-key');",
       'DROP TRIGGER trade_reservations_no_delete; DELETE FROM trade_reservations;',
-      'DROP TRIGGER trade_anchored_events_append_only_delete; DELETE FROM trade_anchored_events;',
+      // Under v2 the history's events are in the v2 table (the v1 table is frozen, empty for a new file).
+      'DROP TRIGGER trade_anchored_events_v2_append_only_delete; DELETE FROM trade_anchored_events_v2;',
+      // D-1: the intent behind the reservation.
+      "DROP TRIGGER trade_anchored_events_v2_append_only_delete; DELETE FROM trade_anchored_events_v2 WHERE kind = 'intent';",
+      "DROP TRIGGER trade_anchored_events_v2_append_only_delete; DELETE FROM trade_anchored_events_v2 WHERE kind = 'sign';",
+      'DROP TRIGGER trade_intents_no_delete; DELETE FROM trade_intents;',
+      'DROP TRIGGER trade_intents_identity_immutable; UPDATE trade_intents SET sequence = 41;',
+      "DROP TRIGGER trade_intents_forward_only; UPDATE trade_intents SET state = 'abandoned';",
+      "DROP TRIGGER trade_intents_identity_immutable; UPDATE trade_intents SET signing_preimage_digest = 'sha256:' || substr('0000000000000000000000000000000000000000000000000000000000000000', 1, 64);",
+      'DROP TRIGGER trade_intent_transitions_append_only_delete; DELETE FROM trade_intent_transitions;',
+      'DROP TRIGGER trade_intents_capability_once; UPDATE trade_intents SET capability_id = NULL;',
     ];
     for (const sql of tampers) {
       const copy = pathFor();
@@ -393,7 +416,7 @@ describe('TRADE-04C interlock — CORE-07 freshness and startup', () => {
     }
     // The untampered file verifies without a witness and writes nothing.
     const verifier = await createSqliteTradeSequenceInterlock(path, { now });
-    assert.deepEqual(await verifier.verifyAll(), { records: 1, open: 1 });
+    assert.deepEqual(await verifier.verifyAll(), { records: 1, open: 1, intents: 1, openIntents: 0 });
     await assert.rejects(verifier.reserve(reservation(), 500), code('TRADE_INTERLOCK_INVALID'));
     await verifier.close();
   });

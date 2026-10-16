@@ -25,6 +25,7 @@ import { XRPL_TRADE_EXECUTOR_ID } from '../xrpl-trade-execution/host-configurati
 import { boundaryFor, closeAllWitnesses, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
 import { ACTION, FakeXrplLedger, NETWORK_ID, ORG, executorRig, pairWorld, rawProposal, scratch, validatedAction, type ExecutorRig, type TradePairWorld } from './trade04c-execution-fixture.js';
 import { testCapabilityIssuer } from './trade04c-s1-capability-fixture.js';
+import { reserveWithIntent, validatedEntryReader } from './trade04d-intent-fixture.js';
 
 /**
  * TRADE-04D §11 — offline recovery qualification on the real executor, the
@@ -62,18 +63,20 @@ function p11Of(action: ValidatedExecutionAction, result?: ExecutionAdapterResult
   return { record: { attempt, terminal: { observation: { kind: 'provider', certainty, ...providerRef } } } };
 }
 
-function coordinatorFor(rig: ExecutorRig, interlock: Pick<DurableTradeSequenceInterlock, 'read' | 'health'> = rig.interlock) {
+function coordinatorFor(rig: ExecutorRig, interlock: Pick<DurableTradeSequenceInterlock, 'read' | 'health'> & Partial<Pick<DurableTradeSequenceInterlock, 'readIntent'>> = rig.interlock) {
   return createTradeRecoveryCoordinator({
     networkId: NETWORK_ID,
     requestTimeoutMs: 1_000,
     maxValidatedLedgerAgeSeconds: 10,
     ledger: readOnlyTradeRecoveryLedger(rig.ledger.client(NETWORK_ID, rig.interlock)),
-    interlock: { read: (executionId: string) => interlock.read(executionId), health: () => interlock.health() },
+    interlock: { read: (executionId: string) => interlock.read(executionId), ...(interlock.readIntent !== undefined ? { readIntent: (executionId: string) => interlock.readIntent!(executionId) } : {}), health: () => interlock.health() },
   });
 }
 
+/** As the Host composes it: the transaction reads, plus (D-1) the validated entry reads and the intent access. */
 function resolverFor(rig: ExecutorRig) {
-  return createTradeResolutionAuthority({ networkId: NETWORK_ID, action: ACTION, requestTimeoutMs: 1_000, ledger: readOnlyTradeLedger(rig.ledger.client(NETWORK_ID, rig.interlock)), interlock: rig.interlock });
+  const reads = readOnlyTradeRecoveryLedger(rig.ledger.client(NETWORK_ID, rig.interlock));
+  return createTradeResolutionAuthority({ networkId: NETWORK_ID, action: ACTION, requestTimeoutMs: 1_000, ledger: readOnlyTradeLedger(rig.ledger.client(NETWORK_ID, rig.interlock)), interlock: rig.interlock, entries: validatedEntryReader(reads, NETWORK_ID) });
 }
 
 function queryOf(action: ValidatedExecutionAction, providerRef?: string) {
@@ -101,7 +104,7 @@ async function restartedRig(previous: { readonly dir: string; readonly witness: 
 }
 
 describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restart and recovery add no signature or submission', () => {
-  it('after signing, before the response: Frontera never reserved or sent it; the signer reports the hash; restart → the same execution is refused by the signer’s execution uniqueness, zero new signatures', async () => {
+  it('after signing, before the response: Frontera never reserved or sent it, but its D-1 intent holds the window; the signer reports the hash; restart → the same execution is refused at the intent (no new capability, no signature); past LastLedgerSequence the owner Sequence proves non-inclusion', async () => {
     const dir = persistent().dir;
     const witness = await startWitness();
     const ledger = new FakeXrplLedger();
@@ -117,15 +120,24 @@ describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restar
     assert.deepEqual([result.outcome, 'detail' in result ? result.detail : undefined], ['failed', 'trade-signer-unavailable']);
     assert.deepEqual(effects(rig, issuer), { signatures: 1, submissions: 0, capabilities: 1 });
     assert.equal(await rig.interlock.recorded(action.correlation.executionId), undefined, 'no reservation: the submit site can never send it');
+    // D-1: the Host recorded the window before the capability existed, and the signing marker before the signer was contacted.
+    const intent = await rig.interlock.readIntent(action.correlation.executionId);
+    assert.equal(intent?.state, 'signing');
+    assert.equal(intent?.capabilityId, issuer.issued[0]?.capabilityId);
+    assert.equal(await rig.interlock.blocking({ account: rig.pairs[0]!.owner, sequence: intent!.sequence, validatedLedgerIndex: rig.ledger.validatedIndex }), true, 'the owner Sequence is held: never reused while the blob may exist');
 
     const signer = await signerObservation(rig, action.correlation.executionId);
     assert.equal(signer.state, 'signed');
     const report = await coordinatorFor(rig).assess(action.correlation.executionId, { p11: p11Of(action, result), signer });
     assert.equal(report.assessment.class, 'signed-not-reserved');
+    assert.equal(report.assessment.intent, 'signing');
     assert.equal(report.assessment.fronteraSubmission, 'never');
     assert.equal(report.assessment.signature, 'reported-by-signer');
-    assert.ok(report.assessment.uncertainties.includes('inclusion-unprovable-without-window'));
+    assert.equal(report.assessment.sequence.status, 'blocked');
+    assert.equal(report.assessment.uncertainties.includes('inclusion-unprovable-without-window'), false, 'D-1: the window is known');
+    assert.ok(report.assessment.evidenceNeeded.includes('validated-owner-sequence-past-last-ledger-sequence'));
     assert.ok(report.assessment.uncertainties.includes('signer-evidence-not-authoritative'));
+    assert.equal(report.diagnostic.intentCapabilityId, intent?.capabilityId);
     assert.deepEqual(effects(rig, issuer), { signatures: 1, submissions: 0, capabilities: 1 }, 'assessment adds nothing');
     await rig.close();
 
@@ -136,11 +148,20 @@ describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restar
       restarted.book.attest(raw);
       // Only a defective caller could hand the adapter the same execution twice (P11's claim never reopens). Even then:
       const again = await restarted.adapter.execute(action);
-      assert.deepEqual([again.outcome, 'detail' in again ? again.detail : undefined], ['failed', 'trade-signer-refused']);
-      assert.deepEqual(effects(restarted), { signatures: 0, submissions: 0 }, 'the signer’s durable execution uniqueness refuses a second signature');
-      assert.equal(issuer2.issued.length, 1, 'contained, not prevented: a replacement capability is issued only to a caller that bypasses P11 — and it signs nothing (no Host record of issuance: gate D-1)');
-      const restartedReport = await coordinatorFor(restarted).assess(action.correlation.executionId, { p11: p11Of(action, result), signer: await signerObservation(restarted, action.correlation.executionId) });
-      assert.equal(restartedReport.assessment.class, 'signed-not-reserved', 'the signer restart did not clear the replay ledger');
+      assert.deepEqual([again.outcome, 'detail' in again ? again.detail : undefined, 'providerRef' in again ? again.providerRef : undefined], ['unconfirmed', 'trade-execution-previously-recorded', undefined]);
+      assert.deepEqual(effects(restarted), { signatures: 0, submissions: 0 });
+      assert.equal(issuer2.issued.length, 0, 'D-1 closes the gap: the Host’s anchored intent refuses the execution before any replacement capability is issued');
+      const restartedSigner = await signerObservation(restarted, action.correlation.executionId);
+      assert.deepEqual([restartedSigner.state, 'transactionHash' in restartedSigner ? restartedSigner.transactionHash : undefined], ['signed', signer.state === 'signed' ? signer.transactionHash : undefined], 'the signer restart did not clear the replay ledger');
+
+      // The ledger passes LastLedgerSequence (the restarted rig already passed its quarantine) with the owner Sequence unconsumed: proven not included — without the hash, and never re-signed.
+      if (restarted.ledger.validatedIndex < intent!.lastLedgerSequence) restarted.ledger.advance(intent!.lastLedgerSequence - restarted.ledger.validatedIndex);
+      const proven = await coordinatorFor(restarted).assess(action.correlation.executionId, { p11: p11Of(action, result) });
+      assert.deepEqual([proven.assessment.class, proven.assessment.certainty, proven.assessment.ledger.via], ['proven-not-included', 'proven', 'owner-sequence']);
+      const resolution = await resolverFor(restarted).resolve(queryOf(action));
+      assert.deepEqual(resolution, { outcome: 'resolved', certainty: 'confirmed-not-completed', failure: 'PROVIDER_REJECTED' });
+      assert.equal((await restarted.interlock.readIntent(action.correlation.executionId))?.state, 'expired', 'P12 recorded the ledger fact; it never reopens');
+      assert.deepEqual(effects(restarted), { signatures: 0, submissions: 0 }, 'recovery and reconciliation added no signature and no submission');
     } finally {
       await restarted.close();
     }
@@ -168,9 +189,10 @@ describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restar
       assert.equal(report.assessment.class, 'capability-consumed-unsigned');
       assert.equal(report.assessment.signature, 'possible', 'a consumed capability never proves a signature, nor its absence');
       assert.ok(report.assessment.uncertainties.includes('signature-existence-unknown'));
-      // The executor's real signer (same ledger) refuses the execution from now on.
+      assert.equal(report.assessment.intent, 'signing', 'D-1: the Host recorded the signer contact before it happened');
+      // D-1: the Host's intent refuses the execution from now on — before the signer (whose ledger would refuse it too) is ever asked.
       const again = await rig.adapter.execute(action);
-      assert.equal(again.outcome, 'failed');
+      assert.deepEqual([again.outcome, 'detail' in again ? again.detail : undefined], ['unconfirmed', 'trade-execution-previously-recorded']);
       assert.deepEqual(effects(rig), { signatures: 0, submissions: 0 });
     } finally {
       await rig.close();
@@ -185,6 +207,8 @@ describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restar
       const result = await rig.adapter.execute(action);
       const report = await coordinatorFor(rig).assess(action.correlation.executionId, { p11: p11Of(action, result), signer: await signerObservation(rig, action.correlation.executionId) });
       assert.deepEqual([report.assessment.class, report.assessment.certainty], ['capability-not-consumed', 'indeterminate']);
+      // D-1: the transport failed after the signing marker — the Host cannot know the request did not arrive, so the window is held, never released on the signer's report.
+      assert.deepEqual([report.assessment.intent, report.assessment.sequence.status], ['signing', 'blocked']);
       assert.deepEqual(effects(rig), { signatures: 0, submissions: 0 });
     } finally {
       await rig.close();
@@ -601,7 +625,7 @@ describe('TRADE-04D §8 — crash, restart and consistency (Phase 8 A–T not co
     const open = async () => createSqliteTradeSequenceInterlock(path, { scope: { domainId: XRPL_TRADE_EXECUTOR_ID, networkId: NETWORK_ID }, sequenceAccounts: [owner], now: () => new Date().toISOString(), freshness: { boundary: await boundaryFor(witness, ORG) } });
     const store = await open();
     const reservation = { executionId: 'aoc.exec:trade04d-claim', account: owner, sequence: 7, lastLedgerSequence: 520, minLedger: 501, transactionHash: 'A'.repeat(64), evidence: { organizationId: ORG, subject: 's', requestId: 'r', decisionId: 'd', boundedGrantId: 'g', proposalDigest: 'sha256:p', delegateAccount: pairWorld(new FakeXrplLedger()).owner, signerId: 'sig', signerRequestId: 'q', signingPublicKey: 'ED00', keyAuthority: 'master-key' as const, preparedDigest: 'sha256:x', delegationAssessmentDigest: 'sha256:a', delegationFactsDigest: 'sha256:f', referenceLedgerIndex: 500, referenceLedgerHash: 'B'.repeat(64), delegationLedgerIndex: 500, delegateRootLedgerIndex: 500, ownerRootLedgerIndex: 500, fee: '12', ledgerProvenance: 'injected-ledger-client' as const } };
-    assert.equal((await store.reserve(reservation, 500)).outcome, 'reserved');
+    assert.equal((await reserveWithIntent(store, reservation, 500)).outcome, 'reserved');
     await store.close();
     copyFileSync(path, `${path}.backup`);
     const reopened = await open();
@@ -653,8 +677,10 @@ describe('TRADE-04D §8 — crash, restart and consistency (Phase 8 A–T not co
       const second = await coordinatorFor(rig).assess(action.correlation.executionId, context);
       assert.deepEqual(second.assessment, first.assessment);
       const again = await rig.adapter.execute(action);
-      assert.deepEqual([again.outcome, 'detail' in again ? again.detail : undefined], ['failed', 'trade-capability-refused']);
+      // D-1: refused at the Host's intent, before the grant is even consulted: no capability, revoked or not.
+      assert.deepEqual([again.outcome, 'detail' in again ? again.detail : undefined], ['unconfirmed', 'trade-execution-previously-recorded']);
       assert.deepEqual(effects(rig, issuer), { signatures: 0, submissions: 0, capabilities: 1 });
+      assert.equal(first.assessment.intent, 'signing', 'the crashed signer was contacted: the window is held');
     } finally {
       await rig.close();
     }

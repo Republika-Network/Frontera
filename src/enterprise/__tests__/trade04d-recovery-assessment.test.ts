@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 import { TRADE_RECOVERY_CLASSES, assessTradeRecovery, type TradeLedgerEvidence, type TradeRecoveryP11Record, type TradeRecoveryP11View, type TradeSignerObservation, type TradeSubmissionRecord } from '../xrpl-trade-execution/index.js';
 import { testAccount } from './trade04b-xrpl-fixture.js';
+import { intentRecordFor } from './trade04d-intent-fixture.js';
 
 /**
  * TRADE-04D §3 — the recovery decision table, pure: each of the twelve
@@ -65,6 +66,8 @@ describe('TRADE-04D §3 — the twelve classes', () => {
     ['11 incomplete history', { executionId: EXEC, interlock: read(row('unconfirmed')), p11: p11(provider('unconfirmed', HASH)), ledger: unresolved('history-incomplete', 125) }, 'indeterminate', 'indeterminate'],
     ['11 interlock freshness unproven', { executionId: EXEC, interlock: { status: 'unavailable', reason: 'freshness-unproven' } }, 'indeterminate', 'indeterminate'],
     ['12 interlock corrupt', { executionId: EXEC, interlock: { status: 'unavailable', reason: 'corrupt' } }, 'inconsistent-evidence', 'refused'],
+    // D-1: the Host's own record that a capability reached the signer, with no reservation after it.
+    ['13 signing attempted (D-1 intent `signing`), window open', { executionId: EXEC, interlock: { status: 'read', record: undefined, intent: intentRecordFor(row('reserved'), 'signing') }, p11: p11(provider('confirmed-not-completed')), sequenceEvidence: { status: 'unresolved', reason: 'window-open', ledgerIndex: 105, ledgerHash: 'B'.repeat(64) } }, 'signing-attempted', 'pending'],
   ];
   for (const [name, input, klass, certainty] of cases) {
     it(name, () => {
@@ -76,7 +79,7 @@ describe('TRADE-04D §3 — the twelve classes', () => {
     });
   }
 
-  it('all twelve classes are reachable from the table above', () => {
+  it('all classes (twelve, and D-1’s thirteenth) are reachable from the table above', () => {
     assert.deepEqual([...new Set(cases.map(([, , klass]) => klass))].sort(), [...TRADE_RECOVERY_CLASSES].sort());
   });
 });

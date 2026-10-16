@@ -105,6 +105,8 @@ describe('TRADE-04C structure — the edge and who reaches it', () => {
       'trade-recovery-assessment.ts',
       'trade-recovery-coordinator.ts',
       'trade-resolution-authority.ts',
+      // TRADE-04D D-1: the read-only owner-Sequence evidence for an intent with no reservation.
+      'trade-sequence-evidence.ts',
     ]);
   });
 
@@ -160,7 +162,7 @@ describe('TRADE-04C structure — the executor’s order, and no effect it may n
     const executor = code(`${EDGE}/trade-offer-executor.ts`);
     const body = executor.slice(executor.indexOf('async function execute('));
     // TRADE-04C-S1: the per-order capability is issued after the preflight and before the one signing call.
-    const markers = ['bind(action, attested, binding)', 'serialized(pair.ownerAccount', 'interlock.recorded(executionId)', 'preflight(action, bound, pair, timings)', 'authorization.issuer.issue(', 'signer.signDelegatedOffer(', 'canonicalTradeJson(signature.transaction) !== canonicalTradeJson(prepared.offer)', 'interlock.reserve(', 'ledger.submitReserved(executionId, signature.signedTransaction)', 'awaitFinality(executionId'];
+    const markers = ['bind(action, attested, binding)', 'serialized(pair.ownerAccount', 'interlock.recorded(executionId)', 'interlock.readIntent(executionId)', 'preflight(action, bound, pair, timings)', 'interlock.recordIntent(', 'authorization.issuer.issue(', 'interlock.markSigning(executionId, issued.capability.capabilityId)', 'signer.signDelegatedOffer(', 'canonicalTradeJson(signature.transaction) !== canonicalTradeJson(prepared.offer)', 'interlock.reserve(', 'ledger.submitReserved(executionId, signature.signedTransaction)', 'awaitFinality(executionId'];
     const order = markers.map((marker) => body.indexOf(marker));
     for (const [index, position] of order.entries()) assert.notEqual(position, -1, markers[index] ?? "");
     assert.deepEqual([...order].sort((a, b) => a - b), order);

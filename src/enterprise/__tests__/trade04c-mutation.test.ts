@@ -13,6 +13,7 @@ import { NETWORK_ID, ORG, executorRig, rawProposal, scratch, validatedAction, ty
 import { S1_TRUST_DOMAIN } from './trade04c-s1-capability-fixture.js';
 import { XRPL_TRADE_EXECUTOR_ID } from '../xrpl-trade-execution/host-configuration.js';
 import { boundaryFor } from './core07-freshness-fixture.js';
+import { reserveWithIntent } from './trade04d-intent-fixture.js';
 
 /**
  * TRADE-04C mutation qualification (prompt §20), in TRADE-03's and TRADE-04B's
@@ -173,6 +174,8 @@ describe('TRADE-04C mutations — the executor (grant binding, ledger reliance, 
       file: EXECUTOR,
       search: '        if (!key.authorized)\n            throw',
       replace: '        if (false)\n            throw',
+      // TRADE-04D D-1: contained before any capability exists — the durable intent's closed evidence refuses an order with no proven key authority (`keyAuthority`), so nothing is issued, signed or sent.
+      expect: 'contained',
       guard: (module) =>
         withRig(module, async (rig) => {
           const action = order(rig);
@@ -197,6 +200,8 @@ describe('TRADE-04C mutations — the executor (grant binding, ledger reliance, 
       file: EXECUTOR,
       search: '        if (blocked)\n            throw',
       replace: '        if (false)\n            throw',
+      // TRADE-04D D-1: contained by the binding check — the anchored intent refuses a competing open window (`blocked`) before any capability is issued; the pre-signing probe is now the early, non-binding read.
+      expect: 'contained',
       guard: (module) =>
         withRig(
           module,
@@ -336,7 +341,7 @@ describe('TRADE-04C mutations — the durable trade interlock (G4) and its claim
         const s = await store(module, [owner]);
         try {
           const r = record();
-          await s.interlock.reserve(r, 500);
+          await reserveWithIntent(s.interlock, r, 500);
           return await refused(s.interlock.claimSubmission(claimOf(r, 'F'.repeat(64))));
         } finally {
           await s.close();
@@ -349,13 +354,13 @@ describe('TRADE-04C mutations — the durable trade interlock (G4) and its claim
       search: "if (record.state !== 'reserved')\n                        throw claimRefused('already-claimed');",
       replace: 'void record;',
       occurrences: 2,
-      // Contained by the schema: trade_anchored_events is UNIQUE (kind, execution_id), so a second claim cannot commit.
+      // Contained by the schema: trade_anchored_events_v2 (like the frozen v1 table) is UNIQUE (kind, execution_id), so a second claim cannot commit.
       expect: 'contained',
       guard: async (module) => {
         const s = await store(module, [owner]);
         try {
           const r = record();
-          await s.interlock.reserve(r, 500);
+          await reserveWithIntent(s.interlock, r, 500);
           await s.interlock.claimSubmission(claimOf(r));
           return await refused(s.interlock.claimSubmission(claimOf(r)));
         } finally {
@@ -366,13 +371,15 @@ describe('TRADE-04C mutations — the durable trade interlock (G4) and its claim
     {
       id: 'skip-sequence-blocking-at-reservation',
       file: INTERLOCK,
-      search: "if (openBlocking(input.account, input.sequence, validatedLedgerIndex))\n                        return { done: { outcome: 'blocked' } };",
+      search: "if (openBlocking(input.account, input.sequence, validatedLedgerIndex, input.executionId))\n                        return { done: { outcome: 'blocked' } };",
       replace: '',
+      // TRADE-04D D-1: contained — a competing execution is refused at its anchored intent, before any capability exists, so it never reaches a reservation; the reservation-time check remains as defence in depth.
+      expect: 'contained',
       guard: async (module) => {
         const s = await store(module, [owner]);
         try {
-          await s.interlock.reserve(record(40), 500);
-          return (await s.interlock.reserve(record(40), 500)).outcome === 'blocked';
+          await reserveWithIntent(s.interlock, record(40), 500);
+          return (await reserveWithIntent(s.interlock, record(40), 500)).outcome === 'blocked';
         } finally {
           await s.close();
         }
@@ -387,7 +394,7 @@ describe('TRADE-04C mutations — the durable trade interlock (G4) and its claim
         const s = await store(module, [owner]);
         try {
           const r = record(40);
-          await s.interlock.reserve(r, 500);
+          await reserveWithIntent(s.interlock, r, 500);
           await s.interlock.claimSubmission(claimOf(r));
           await s.interlock.markUnconfirmed(r.executionId, r.transactionHash);
           return (await s.interlock.blocking({ account: owner, sequence: 40, validatedLedgerIndex: 500 })) === true;
@@ -414,13 +421,13 @@ describe('TRADE-04C mutations — the durable trade interlock (G4) and its claim
     {
       id: 'unanchored-claim',
       file: INTERLOCK,
-      search: "                    insertEvent.run('claim', claim.executionId, eventDigest('claim', identity));",
+      search: "                    ev.insert.run('claim', claim.executionId, eventDigest('claim', identity));",
       replace: '',
       guard: async (module) => {
         const s = await store(module, [owner]);
         try {
           const r = record();
-          await s.interlock.reserve(r, 500);
+          await reserveWithIntent(s.interlock, r, 500);
           await s.interlock.claimSubmission(claimOf(r)).catch(() => undefined);
           // A claim that is not in the anchored history is refused as corrupt on the next read.
           const read = await s.interlock.read(r.executionId).then((value) => value, () => undefined);

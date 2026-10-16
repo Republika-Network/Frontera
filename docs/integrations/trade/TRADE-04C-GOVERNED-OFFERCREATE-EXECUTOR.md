@@ -695,3 +695,5 @@ unmutated baselines hold).**
 | proposal binding removed (rule builder) | mandatory provider | contained — factory rule-set check |
 | edge binding removed from the guard | provider qualified for profile @4 on an @3 Host | contained — `trade-risk-profile-pinned` denies, 0 / 0 |
 | approvalPolicy conflict accepted | approvalPolicy for another profile | contained — provenance check (`HOST_TRADE_POLICY_REQUIRED`) |
+
+> **Annotation (TRADE-04D D-1, 2026-10-15).** The trade interlock is now schema **v2**: a durable, CORE-07-anchored pre-signing *intent* precedes capability issuance, and a `signing` marker precedes signer contact; the reservation described here continues that intent and is otherwise unchanged. A v1 file is migrated in place once, after verification and CORE-07 establishment. The order in §§ above is historical TRADE-04C evidence; the current order is `TRADE-04D-RECOVERY-RECONCILIATION.md` §17.

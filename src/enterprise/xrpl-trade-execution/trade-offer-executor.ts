@@ -35,7 +35,7 @@ import {
   type PreparedDelegatedOffer,
   type VerifiedDelegatedOfferSignature,
 } from '../xrpl-trade-rail/index.js';
-import type { DurableTradeSequenceInterlock, TradeInterlockSettlement, TradeReservationEvidence } from './sqlite-trade-sequence-interlock.js';
+import type { DurableTradeSequenceInterlock, TradeIntentOutcome, TradeInterlockSettlement, TradeReservationEvidence } from './sqlite-trade-sequence-interlock.js';
 import { TRADE_EXECUTION_DETAILS as D, type TradeExecutionDetail } from './trade-execution-details.js';
 import { readTradeInclusion, type TradeTransactionIdentity } from './trade-ledger-evidence.js';
 
@@ -63,10 +63,14 @@ import { readTradeInclusion, type TradeTransactionIdentity } from './trade-ledge
  * 8 window     every observation within [V, V + span]; Expiration after V's close time
  * 9 build      the closed OfferCreate from the attested proposal only; Fee and LLS from configuration and V
  * 10 blocking  the durable interlock (witness probed) has no open window on that Sequence
+ * 10a intent   TRADE-04D D-1: the execution's intent (owner, Sequence, Fee, LLS, window, preimage
+ *              digest, evidence) durable and CORE-07-anchored; it holds the Sequence window from here
  * 11 authorize TRADE-04C-S1: a CORE-02 delegated-offer signing capability for exactly this
  *              transaction, issued for the authenticated grant (revoked/expired → refused)
+ * 11b signing  D-1: intent → signing (anchored, binding the capability id) before the signer is contacted;
+ *              any refusal before this point abandons the intent (compare-and-set), none after it
  * 11 sign      DelegatedOfferSigningPort, carrying the capability → verified, SIGNED_NOT_SUBMITTED
- * 12 reserve   durable, CORE-07-anchored, before anything is sent
+ * 12 reserve   durable, CORE-07-anchored, continuing exactly the signing intent, before anything is sent
  * 13 submit    submitReserved ONCE: the submit site claims the reservation for exactly this blob
  * 14 finality  validated reads only; tesSUCCESS = the transaction applied (NOT a fill)
  * ```
@@ -129,7 +133,7 @@ export interface TradeExecutionLedger {
   submitReserved(executionId: string, signedTransaction: string): Promise<unknown>;
 }
 
-export type TradeExecutionInterlock = Pick<DurableTradeSequenceInterlock, 'recorded' | 'blocking' | 'reserve' | 'markUnconfirmed' | 'settle'>;
+export type TradeExecutionInterlock = Pick<DurableTradeSequenceInterlock, 'recorded' | 'readIntent' | 'blocking' | 'recordIntent' | 'markSigning' | 'abandonIntent' | 'reserve' | 'markUnconfirmed' | 'settle'>;
 
 export interface TradeExecutionLogger {
   info(message: string, fields?: Readonly<Record<string, unknown>>): void;
@@ -298,7 +302,7 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
     if (typeof ledger?.[method] !== 'function') throw new TradeExecutorConfigurationError(`The ledger capability must implement ${method}.`);
   }
   const interlock = options.interlock;
-  for (const method of ['recorded', 'blocking', 'reserve', 'markUnconfirmed', 'settle'] as const) {
+  for (const method of ['recorded', 'readIntent', 'blocking', 'recordIntent', 'markSigning', 'abandonIntent', 'reserve', 'markUnconfirmed', 'settle'] as const) {
     if (typeof interlock?.[method] !== 'function') throw new TradeExecutorConfigurationError(`The trade interlock must implement ${method}.`);
   }
   if (options.ledgerProvenance !== 'xrpl-network' && options.ledgerProvenance !== 'injected-ledger-client') throw new TradeExecutorConfigurationError('ledgerProvenance must be stated.');
@@ -566,20 +570,62 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
       return await serialized(pair.ownerAccount, async () => {
         // ── 3: never twice ──
         let earlier: string | undefined;
+        let attempted: boolean;
         try {
           earlier = await interlock.recorded(executionId);
+          // D-1: an intent alone (no reservation) is an attempt too — its signer may already have been contacted.
+          attempted = earlier !== undefined || (await interlock.readIntent(executionId)) !== undefined;
         } catch {
           return finish(failed(F.ADAPTER_ERROR, D.INTERLOCK_UNAVAILABLE));
         }
         if (typeof earlier === 'string') return finish(unconfirmed(earlier, D.PREVIOUSLY_RECORDED), { transactionHash: earlier });
+        if (attempted) return finish(Object.freeze({ outcome: 'unconfirmed', detail: D.PREVIOUSLY_RECORDED }));
 
         // ── 4–10 ──
         const prepared = await preflight(action, bound, pair, timings);
 
-        // ── 11a (TRADE-04C-S1): the CORE-02 signing capability for exactly this transaction ──
-        const tc = now();
         const signingPreimageDigest = delegatedOfferSigningPreimageDigest(prepared.offer, pair.signingPublicKey);
         if (signingPreimageDigest === undefined) throw new Refusal(F.ADAPTER_ERROR, D.NOT_BOUND);
+        const preparedDigest = digestOf('frontera.trade-prepared-offer.v1', prepared.offer);
+
+        // ── 10a (TRADE-04D D-1): the durable, anchored intent — before any capability exists ──
+        const ti = now();
+        let intent: TradeIntentOutcome;
+        try {
+          intent = await interlock.recordIntent(
+            {
+              executionId,
+              account: pair.ownerAccount,
+              sequence: prepared.offer.Sequence,
+              lastLedgerSequence: prepared.offer.LastLedgerSequence,
+              minLedger: prepared.validated + 1,
+              signingPreimageDigest,
+              evidence: { ...prepared.evidence, preparedDigest, trustDomain: authorization.trustDomain, network: configuration.network },
+            },
+            prepared.validated,
+          );
+        } catch {
+          throw new Refusal(F.ADAPTER_ERROR, D.INTENT_FAILED);
+        }
+        timings['intent'] = now() - ti;
+        if (intent?.outcome === 'blocked') throw new Refusal(F.PROVIDER_UNAVAILABLE, D.SEQUENCE_IN_FLIGHT);
+        // Attempted before (by this or another process): never prepared, issued or signed again.
+        if (intent?.outcome === 'execution-recorded') {
+          return finish(Object.freeze({ outcome: 'unconfirmed', ...(intent.transactionHash !== undefined ? { providerRef: intent.transactionHash } : {}), detail: D.PREVIOUSLY_RECORDED }), intent.transactionHash !== undefined ? { transactionHash: intent.transactionHash } : {});
+        }
+        if (intent?.outcome !== 'recorded') throw new Refusal(F.ADAPTER_ERROR, D.INTENT_FAILED);
+        /** Before the signer is contacted, and only then: the intent is released by compare-and-set. If it cannot be, it stays open and holds the window until the ledger passes LastLedgerSequence. */
+        const abandonBeforeSigning = async (refusal: Refusal): Promise<never> => {
+          try {
+            await interlock.abandonIntent(executionId, refusal.detail);
+          } catch {
+            log('warn', 'trade.intent.abandon_failed', { executionId });
+          }
+          throw refusal;
+        };
+
+        // ── 11a (TRADE-04C-S1): the CORE-02 signing capability for exactly this transaction ──
+        const tc = now();
         let issued: IssuedDelegatedOfferCapability;
         try {
           issued = await authorization.issuer.issue({
@@ -599,12 +645,20 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
         } catch (error) {
           const code = error instanceof DelegatedOfferCapabilityError ? error.code : undefined;
           // An authority that answered "no" (revoked, absent, not this grant's terms) is a refusal; anything else is unavailability.
-          if (code === 'CAPABILITY_REFUSED' || code === 'CAPABILITY_GRANT_REVOKED' || code === 'CAPABILITY_GRANT_NOT_FOUND' || code === 'CAPABILITY_REQUEST_INVALID') throw new Refusal(F.PROVIDER_REJECTED, D.CAPABILITY_REFUSED);
-          throw new Refusal(F.PROVIDER_UNAVAILABLE, D.CAPABILITY_UNAVAILABLE);
+          if (code === 'CAPABILITY_REFUSED' || code === 'CAPABILITY_GRANT_REVOKED' || code === 'CAPABILITY_GRANT_NOT_FOUND' || code === 'CAPABILITY_REQUEST_INVALID') return abandonBeforeSigning(new Refusal(F.PROVIDER_REJECTED, D.CAPABILITY_REFUSED));
+          return abandonBeforeSigning(new Refusal(F.PROVIDER_UNAVAILABLE, D.CAPABILITY_UNAVAILABLE));
         }
-        if (issued.capability.executionId !== executionId || issued.capability.boundedGrantId !== action.boundedGrantId || issued.capability.signingPreimageDigest !== signingPreimageDigest) throw new Refusal(F.ADAPTER_ERROR, D.CAPABILITY_REFUSED);
+        if (issued.capability.executionId !== executionId || issued.capability.boundedGrantId !== action.boundedGrantId || issued.capability.signingPreimageDigest !== signingPreimageDigest) return abandonBeforeSigning(new Refusal(F.ADAPTER_ERROR, D.CAPABILITY_REFUSED));
         capabilityId = issued.capability.capabilityId;
         timings['capability'] = now() - tc;
+
+        // ── 11b (D-1): the point of no return, durable and anchored BEFORE the signer is contacted ──
+        try {
+          await interlock.markSigning(executionId, issued.capability.capabilityId);
+        } catch {
+          // Not provably recorded: the signer is never contacted. The compare-and-set abandonment fails harmlessly if the marker did commit.
+          return abandonBeforeSigning(new Refusal(F.ADAPTER_ERROR, D.INTENT_FAILED));
+        }
 
         // ── 11: the protected signer, below the bounded grant ──
         const t0 = now();
@@ -637,7 +691,8 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
 
         // ── 12: durable before the submission, or no submission ──
         const t1 = now();
-        const evidence: TradeReservationEvidence = { ...prepared.evidence, signerId: signature.signerId, signerRequestId: signature.requestId, preparedDigest: digestOf('frontera.trade-prepared-offer.v1', prepared.offer) };
+        // From here every refusal leaves the intent `signing`: it holds the window until a ledger fact, never released by this process.
+        const evidence: TradeReservationEvidence = { ...prepared.evidence, signerId: signature.signerId, signerRequestId: signature.requestId, preparedDigest };
         let reservation: Awaited<ReturnType<TradeExecutionInterlock['reserve']>>;
         try {
           reservation = await interlock.reserve(

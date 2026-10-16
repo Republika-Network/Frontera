@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
  * - the four recovery modules hold no write: no settle, reserve, claim,
  *   submit, signing call or capability issuance;
  * - the coordinator's ledger view has exactly six reads, and the composed
- *   `recovery()` is handed the interlock's `read` and `health` only;
+ *   `recovery()` is handed the interlock's `read`, `readIntent` (D-1) and
+ *   `health` only;
  * - no route, server or API module names the recovery surface;
  * - the assessment and the coordinator read no clock and take no grant or
  *   capability expiry as input;
@@ -24,7 +25,7 @@ import assert from 'node:assert/strict';
  */
 
 const EDGE = 'src/enterprise/xrpl-trade-execution';
-const RECOVERY = ['trade-ledger-evidence.ts', 'trade-offer-state.ts', 'trade-recovery-assessment.ts', 'trade-recovery-coordinator.ts'].map((file) => `${EDGE}/${file}`);
+const RECOVERY = ['trade-ledger-evidence.ts', 'trade-offer-state.ts', 'trade-recovery-assessment.ts', 'trade-recovery-coordinator.ts', 'trade-sequence-evidence.ts'].map((file) => `${EDGE}/${file}`);
 const codeOf = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
 const code = (path: string): string => codeOf(readFileSync(path, 'utf8'));
 
@@ -50,12 +51,12 @@ describe('TRADE-04D structure — the recovery modules are read-only', () => {
     for (const fixture of ['interlock.settle(a)', 'x.reserve(y)', 'claimSubmission', 'ledger.submitReserved(', 'signer.signDelegatedOffer(', 'issuer.issue({', 'INSERT INTO t']) assert.equal(WRITE.test(fixture), true, fixture);
   });
 
-  it('the coordinator’s ledger view has exactly six reads; the composed recovery() gets the interlock’s read and health only', () => {
+  it('the coordinator’s ledger view has exactly six reads; the composed recovery() gets the interlock’s read, readIntent and health only', () => {
     const coordinator = code(`${EDGE}/trade-recovery-coordinator.ts`);
     const view = coordinator.slice(coordinator.indexOf('export function readOnlyTradeRecoveryLedger('), coordinator.indexOf('export interface TradeRecoveryCoordinatorOptions'));
     assert.deepEqual([...view.matchAll(/^\s+(\w+): \(/gm)].map((match) => match[1]), ['connect', 'serverInfo', 'validatedLedgerIndex', 'lookupTransaction', 'ledgerHeader', 'ledgerEntry']);
     const composition = code(`${EDGE}/host-composition.ts`);
-    assert.match(composition, /ledger: readOnlyTradeRecoveryLedger\(resolverClient\),\s*interlock: \{ read: \(executionId: string\) => interlock\.read\(executionId\), health: \(\) => interlock\.health\(\) \}/);
+    assert.match(composition, /ledger: readOnlyTradeRecoveryLedger\(resolverClient\),\s*interlock: \{ read: \(executionId: string\) => interlock\.read\(executionId\), readIntent: \(executionId: string\) => interlock\.readIntent\(executionId\), health: \(\) => interlock\.health\(\) \}/);
   });
 
   it('no route: no API, server, adapter or control-plane module names the recovery surface', () => {

@@ -1,7 +1,8 @@
 import { xrplSequenceWindowBlocks } from '../../features/xrpl-transport/index.js';
-import type { TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
+import type { TradeIntentRecord, TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
 import type { TradeLedgerEvidence, TradeLedgerEvidenceReason } from './trade-ledger-evidence.js';
 import type { TradeOfferStateAssessment } from './trade-offer-state.js';
+import type { TradeSequenceEvidence } from './trade-sequence-evidence.js';
 
 /**
  * TRADE-04D — the **recovery assessment** of one governed trade execution: a
@@ -16,6 +17,7 @@ import type { TradeOfferStateAssessment } from './trade-offer-state.js';
  * | --- | --- | --- |
  * | P11 attempt and initial observation (+ P12 resolution) | Host, authoritative for what the governed path recorded | identity and outcome cross-check |
  * | trade interlock row | Host, CORE-07-anchored reservations and claims | what Frontera reserved and whether its submit site claimed it |
+ * | trade intent (D-1) | Host, CORE-07-anchored intent and signing marker | the window held before any capability existed, and whether the signer was ever contacted |
  * | signer capability-ledger observation | **customer-operated signer**, not anchored | a hint only: it can add uncertainty or a hash to look up, never remove uncertainty |
  * | validated-ledger evidence (`readTradeLedgerEvidence`) | XRPL | the only source of a transaction outcome |
  *
@@ -43,6 +45,20 @@ export const TRADE_RECOVERY_ASSESSMENT_SCHEMA = 'frontera.trade-recovery-assessm
  * 10. `proven-not-included` — complete validated non-inclusion after `LastLedgerSequence`, or a `tem` submit answer
  * 11. `indeterminate` — the evidence needed is unavailable (ledger, history, freshness, store)
  * 12. `inconsistent-evidence` — inputs contradict each other or fail their binding
+ *
+ * TRADE-04D D-1 adds one Host-proven state the signer's report used to be the
+ * only witness of:
+ *
+ * 13. `signing-attempted` — the intent is `signing`: a capability was handed
+ *     to the signer and no reservation followed; whether a signature exists
+ *     is unknown. The window is held; only the owner-`Sequence` proof (or a
+ *     signer-reported hash looked up on the ledger by an operator) ends it.
+ *
+ * With an intent, classes 2 and 10 become Host-provable without the signer:
+ * `intended` / `abandoned` prove the signer was never contacted
+ * (`capability-not-consumed`, signature `excluded-by-host`); a validated
+ * owner `Sequence` still unconsumed at or past `LastLedgerSequence` proves the
+ * intent's transaction `proven-not-included`.
  */
 export const TRADE_RECOVERY_CLASSES = [
   'no-trade-record',
@@ -57,6 +73,7 @@ export const TRADE_RECOVERY_CLASSES = [
   'proven-not-included',
   'indeterminate',
   'inconsistent-evidence',
+  'signing-attempted',
 ] as const;
 export type TradeRecoveryClass = (typeof TRADE_RECOVERY_CLASSES)[number];
 
@@ -77,7 +94,7 @@ export interface TradeRecoveryP11View {
 /** The trade interlock read: the verified row (or none), or why it could not be read. */
 export type TradeInterlockObservation =
   /** `witness-unreachable`: rows verified against the floor this process established, but the CORE-07 witness cannot currently confirm the history. */
-  | { readonly status: 'read'; readonly record: TradeSubmissionRecord | undefined; readonly freshness?: 'witness-unreachable' }
+  | { readonly status: 'read'; readonly record: TradeSubmissionRecord | undefined; readonly intent?: TradeIntentRecord; readonly freshness?: 'witness-unreachable' }
   | { readonly status: 'unavailable'; readonly reason: 'corrupt' | 'freshness-unproven' | 'unreadable' };
 
 /**
@@ -97,14 +114,17 @@ export interface TradeRecoveryInput {
   readonly interlock: TradeInterlockObservation;
   readonly signer?: TradeSignerObservation;
   readonly ledger?: TradeLedgerEvidence;
+  /** D-1: the owner-`Sequence` evidence for an intent with no reservation (no hash to look up). */
+  readonly sequenceEvidence?: TradeSequenceEvidence;
   readonly offer?: TradeOfferStateAssessment;
 }
 
 export type TradeRecoveryCertainty = 'proven' | 'pending' | 'indeterminate' | 'refused';
-export type TradeRecoverySignature = 'verified-by-host' | 'reported-by-signer' | 'possible' | 'reported-failed-by-signer' | 'not-reported-by-signer' | 'unknown';
+/** `excluded-by-host`: D-1 — the Host's anchored intent proves the signer was never contacted for this execution. */
+export type TradeRecoverySignature = 'verified-by-host' | 'reported-by-signer' | 'possible' | 'reported-failed-by-signer' | 'not-reported-by-signer' | 'excluded-by-host' | 'unknown';
 /** What Frontera's own submit site did. `claimed` proves a claim, never delivery. */
 export type TradeRecoveryFronteraSubmission = 'never' | 'claimed' | 'unknown';
-export type TradeRecoverySequenceStatus = 'not-reserved' | 'blocked' | 'window-closed-record-open' | 'released-by-ledger-fact' | 'unknown';
+export type TradeRecoverySequenceStatus = 'not-reserved' | 'blocked' | 'window-closed-record-open' | 'released-by-ledger-fact' | 'released-unsigned' | 'unknown';
 
 export const TRADE_RECOVERY_INCONSISTENCIES = [
   'interlock-corrupt',
@@ -122,6 +142,11 @@ export const TRADE_RECOVERY_INCONSISTENCIES = [
   'signer-denies-host-verified-signature',
   'settlement-contradicts-ledger',
   'ledger-binding-mismatch',
+  // D-1
+  'intent-without-p11-claim',
+  'signer-consumption-without-host-signing',
+  'signer-capability-mismatch',
+  'intent-settlement-contradicts-ledger',
 ] as const;
 export type TradeRecoveryInconsistency = (typeof TRADE_RECOVERY_INCONSISTENCIES)[number];
 
@@ -137,6 +162,8 @@ export const TRADE_RECOVERY_UNCERTAINTIES = [
   'interlock-freshness-unproven',
   'included-without-frontera-claim',
   'offer-state-not-established',
+  // D-1
+  'sequence-consumed-by-unknown-transaction',
 ] as const;
 export type TradeRecoveryUncertainty = (typeof TRADE_RECOVERY_UNCERTAINTIES)[number];
 
@@ -152,6 +179,8 @@ export const TRADE_RECOVERY_EVIDENCE_NEEDED = [
   'host-record-of-transaction-window',
   'trusted-operational-recovery',
   'p11-record',
+  // D-1: the owner's validated AccountRoot at or past LastLedgerSequence
+  'validated-owner-sequence-past-last-ledger-sequence',
 ] as const;
 export type TradeRecoveryEvidenceNeeded = (typeof TRADE_RECOVERY_EVIDENCE_NEEDED)[number];
 
@@ -162,11 +191,24 @@ export interface TradeRecoveryAssessment {
   readonly certainty: TradeRecoveryCertainty;
   /** The interlock lifecycle state the assessment read (`absent` when no row; `unavailable` when unreadable). Never changed by an assessment. */
   readonly lifecycle: TradeSubmissionRecord['state'] | 'absent' | 'unavailable';
+  /** D-1: the intent's state (`absent` when the execution has none — no attempt, or one from before D-1). */
+  readonly intent: TradeIntentRecord['state'] | 'absent' | 'unavailable';
   readonly settlement?: string;
   readonly signature: TradeRecoverySignature;
   readonly fronteraSubmission: TradeRecoveryFronteraSubmission;
   readonly sequence: { readonly status: TradeRecoverySequenceStatus; readonly owner?: string; readonly sequence?: number; readonly lastLedgerSequence?: number };
-  readonly ledger: { readonly consulted: boolean; readonly status?: TradeLedgerEvidence['status']; readonly reason?: TradeLedgerEvidenceReason; readonly engineResult?: string; readonly ledgerIndex?: number; readonly ledgerHash?: string; readonly validatedIndex?: number };
+  readonly ledger: {
+    readonly consulted: boolean;
+    readonly status?: TradeLedgerEvidence['status'] | TradeSequenceEvidence['status'];
+    readonly reason?: TradeLedgerEvidenceReason | Extract<TradeSequenceEvidence, { readonly status: 'unresolved' }>['reason'];
+    /** D-1: how the answer was established — the transaction lookup by hash, or the owner's validated `Sequence`. */
+    readonly via?: 'transaction-lookup' | 'owner-sequence';
+    readonly engineResult?: string;
+    readonly ledgerIndex?: number;
+    readonly ledgerHash?: string;
+    readonly validatedIndex?: number;
+    readonly accountSequence?: number;
+  };
   readonly offer?: TradeOfferStateAssessment;
   readonly inconsistencies: readonly TradeRecoveryInconsistency[];
   readonly uncertainties: readonly TradeRecoveryUncertainty[];
@@ -200,7 +242,7 @@ function uniq<T>(values: readonly T[]): readonly T[] {
 
 /** Classifies one execution. Pure and total. */
 export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAssessment {
-  const { executionId, p11, interlock, signer, ledger, offer } = input;
+  const { executionId, p11, interlock, signer, ledger, offer, sequenceEvidence } = input;
   const inconsistencies: TradeRecoveryInconsistency[] = [];
   const uncertainties: TradeRecoveryUncertainty[] = [];
   const needed: TradeRecoveryEvidenceNeeded[] = [];
@@ -215,6 +257,12 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   }
   if (interlock.status === 'read' && interlock.freshness === 'witness-unreachable') uncertainties.push('interlock-freshness-unproven');
   if (record !== undefined && record.executionId !== executionId) inconsistencies.push('execution-id-mismatch');
+  // ── D-1: the intent ──
+  const intent = interlock.status === 'read' ? interlock.intent : undefined;
+  if (intent !== undefined && intent.executionId !== executionId) inconsistencies.push('execution-id-mismatch');
+  /** The anchored intent proves the signer was never contacted: `signing` is written before any contact, and `abandoned` is reachable only from `intended`. */
+  const unsignedByHost = record === undefined && (intent?.state === 'intended' || intent?.state === 'abandoned');
+  const intentOnly = record === undefined && intent !== undefined;
 
   // ── P11 / P12 against the row ──
   const p11Record = p11?.record;
@@ -230,6 +278,12 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
       if (providerRef !== undefined && providerRef !== record.transactionHash) inconsistencies.push('p11-reference-mismatch');
     }
     if (record === undefined && interlock.status === 'read' && providerRef !== undefined) inconsistencies.push('p11-reference-without-trade-record');
+    if (intentOnly && p11Record === undefined) inconsistencies.push('intent-without-p11-claim');
+    if (intentOnly && p11Record !== undefined) {
+      const e = intent.evidence;
+      if (e.requestId !== p11Record.attempt.requestId || e.decisionId !== p11Record.attempt.decisionId || e.boundedGrantId !== p11Record.attempt.boundedGrantId || e.organizationId !== p11Record.attempt.organizationId) inconsistencies.push('p11-identity-mismatch');
+      if (observation?.kind === 'withheld') inconsistencies.push('withheld-execution-has-trade-record');
+    }
   } else {
     needed.push('p11-record');
   }
@@ -244,7 +298,11 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
       if (signer.state === 'signed' && signer.transactionHash !== record.transactionHash) inconsistencies.push('signer-hash-mismatch');
       // The Host verified a signature before it reserved: a signer that reports none (absent / failed) contradicts it — a stale restore, or another signer.
       if (signer.state === 'absent' || signer.state === 'signing-failed') inconsistencies.push('signer-denies-host-verified-signature');
+    } else if (unsignedByHost && (signer.state === 'consumed' || signer.state === 'signed' || signer.state === 'signing-failed')) {
+      // The Host never handed a capability to the signer for this execution: a consumption is not one this Host authorized.
+      inconsistencies.push('signer-consumption-without-host-signing');
     }
+    if (signer.executionId === executionId && intent?.capabilityId !== undefined && 'capabilityId' in signer && signer.capabilityId !== intent.capabilityId) inconsistencies.push('signer-capability-mismatch');
   }
 
   // ── The ledger against the row ──
@@ -271,23 +329,43 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
     if ((p11.resolution.certainty === 'confirmed-completed') !== (ledgerOutcome === 'success')) inconsistencies.push('p12-resolution-contradicts-ledger');
   }
   if (record?.state === 'reserved' && (ledgerOutcome === 'success' || ledgerOutcome === 'failure')) uncertainties.push('included-without-frontera-claim');
+  // ── D-1: the owner's validated Sequence, for an intent no reservation continued ──
+  if (intentOnly && sequenceEvidence !== undefined) {
+    if (sequenceEvidence.status === 'not-included') ledgerOutcome = 'not-included';
+    else if (sequenceEvidence.status === 'sequence-consumed') {
+      // Consumed by some transaction; for a never-signed intent that is someone else's, for a signing one it may be this one.
+      if (!unsignedByHost) uncertainties.push('sequence-consumed-by-unknown-transaction');
+      if (intent.state === 'expired') inconsistencies.push('intent-settlement-contradicts-ledger');
+    } else if (sequenceEvidence.reason === 'sequence-regressed') inconsistencies.push('ledger-binding-mismatch');
+    else if (sequenceEvidence.reason === 'window-open') uncertainties.push('outcome-pending-window-open');
+    else uncertainties.push('ledger-evidence-unavailable');
+  }
 
   // ── Signature and Frontera's own submission ──
   let signature: TradeRecoverySignature = 'unknown';
   if (record !== undefined) signature = 'verified-by-host';
+  else if (unsignedByHost) signature = 'excluded-by-host';
   else if (signer?.executionId === executionId) {
     signature = signer.state === 'signed' ? 'reported-by-signer' : signer.state === 'consumed' ? 'possible' : signer.state === 'signing-failed' ? 'reported-failed-by-signer' : signer.state === 'absent' ? 'not-reported-by-signer' : 'unknown';
   }
+  // A capability was handed to the signer: a signature is possible whatever the signer does or does not report.
+  if (intentOnly && !unsignedByHost && signature === 'unknown') signature = 'possible';
   const fronteraSubmission: TradeRecoveryFronteraSubmission = interlock.status !== 'read' ? 'unknown' : record === undefined || record.submissionAttempts === 0 ? 'never' : 'claimed';
   if (fronteraSubmission === 'claimed' && ledgerOutcome === undefined) uncertainties.push('delivery-unknown');
 
   // ── The owner Sequence, by the shared blocking rule only ──
-  const validatedIndex = ledger === undefined ? undefined : ledger.status === 'unresolved' ? ledger.validatedIndexBefore : ledger.validatedIndexAfter;
+  const validatedIndex = ledger !== undefined ? (ledger.status === 'unresolved' ? ledger.validatedIndexBefore : ledger.validatedIndexAfter) : intentOnly ? sequenceEvidence?.ledgerIndex : undefined;
   let sequenceStatus: TradeRecoverySequenceStatus = interlock.status !== 'read' ? 'unknown' : 'not-reserved';
   if (record !== undefined) {
     if (record.state === 'settled') sequenceStatus = 'released-by-ledger-fact';
     else if (validatedIndex === undefined) sequenceStatus = 'unknown';
     else sequenceStatus = xrplSequenceWindowBlocks({ sequence: record.sequence, lastLedgerSequence: record.lastLedgerSequence, open: true }, record.sequence, validatedIndex) ? 'blocked' : 'window-closed-record-open';
+  } else if (intent !== undefined) {
+    // D-1: the intent holds the window exactly as a reservation would; only `abandoned` (never contacted) and `expired` (ledger fact) release it.
+    if (intent.state === 'abandoned') sequenceStatus = 'released-unsigned';
+    else if (intent.state === 'expired') sequenceStatus = 'released-by-ledger-fact';
+    else if (validatedIndex === undefined) sequenceStatus = 'unknown';
+    else sequenceStatus = xrplSequenceWindowBlocks({ sequence: intent.sequence, lastLedgerSequence: intent.lastLedgerSequence, open: true }, intent.sequence, validatedIndex) ? 'blocked' : 'window-closed-record-open';
   }
 
   // ── The class: inconsistency first, then a ledger fact, then the strongest local fact ──
@@ -302,6 +380,27 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   } else if (interlock.status === 'unavailable') {
     klass = 'indeterminate';
     certainty = 'indeterminate';
+  } else if (intentOnly) {
+    if (ledgerOutcome === 'not-included' || intent.state === 'expired') {
+      klass = 'proven-not-included';
+      certainty = 'proven';
+    } else if (unsignedByHost) {
+      klass = 'capability-not-consumed';
+      certainty = 'proven';
+    } else if (signer?.executionId === executionId && signer.state === 'signed') {
+      klass = 'signed-not-reserved';
+      certainty = 'indeterminate';
+    } else if (signer?.executionId === executionId && (signer.state === 'consumed' || signer.state === 'signing-failed')) {
+      klass = 'capability-consumed-unsigned';
+      certainty = 'indeterminate';
+    } else if (signer?.executionId === executionId && signer.state === 'absent') {
+      // The signer reports no consumption — a hint only: the capability did reach it (or may have), so the window stays held.
+      klass = 'capability-not-consumed';
+      certainty = 'indeterminate';
+    } else {
+      klass = 'signing-attempted';
+      certainty = uncertainties.includes('ledger-evidence-unavailable') || sequenceEvidence === undefined ? 'indeterminate' : 'pending';
+    }
   } else if (ledgerOutcome === 'success' || (ledgerOutcome === undefined && record?.settlement === 'validated-success' && ledger === undefined)) {
     klass = 'validated-success';
     certainty = 'proven';
@@ -336,7 +435,12 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   }
 
   // ── What remains uncertain, what would settle it, and why nothing runs automatically ──
-  if (record === undefined && interlock.status === 'read' && klass !== 'inconsistent-evidence') {
+  if (intentOnly && klass !== 'inconsistent-evidence' && klass !== 'proven-not-included' && !unsignedByHost) {
+    // D-1: the window is known (the intent fixed it); what is unknown is whether a signature exists, and only the ledger can end that.
+    if (signature !== 'reported-by-signer') uncertainties.push('signature-existence-unknown');
+    needed.push('validated-owner-sequence-past-last-ledger-sequence');
+  }
+  if (record === undefined && intent === undefined && interlock.status === 'read' && klass !== 'inconsistent-evidence') {
     if (p11Record !== undefined || signer !== undefined) {
       if (signature === 'possible' || signature === 'unknown' || signature === 'not-reported-by-signer' || signature === 'reported-failed-by-signer') uncertainties.push('signature-existence-unknown');
       if (signature !== 'not-reported-by-signer' || p11Record !== undefined) {
@@ -346,7 +450,7 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
       if (signer === undefined) needed.push('signer-capability-ledger-observation');
     }
   }
-  if (record !== undefined || p11Record !== undefined || signer?.state === 'consumed' || signer?.state === 'signed' || signer?.state === 'signing-failed') refusals.push('execution-already-attempted');
+  if (record !== undefined || intent !== undefined || p11Record !== undefined || signer?.state === 'consumed' || signer?.state === 'signed' || signer?.state === 'signing-failed') refusals.push('execution-already-attempted');
   if (signature === 'verified-by-host' || signature === 'reported-by-signer' || signature === 'possible') refusals.push('signed-bytes-not-retained');
   if (sequenceStatus === 'blocked' || sequenceStatus === 'unknown') refusals.push('sequence-held-until-ledger-fact');
   if (uncertainties.includes('outcome-pending-window-open')) needed.push('validated-ledger-past-last-ledger-sequence');
@@ -357,6 +461,8 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
 
   const existingPaths: ('p12-reconcile' | 'operator-attestation')[] = [];
   if (record !== undefined && record.state !== 'settled' && klass !== 'inconsistent-evidence') existingPaths.push('p12-reconcile');
+  // D-1: P12 abandons a never-contacted intent by compare-and-set, or expires a signing one on the owner-Sequence proof.
+  if (intentOnly && (intent.state === 'intended' || intent.state === 'signing') && klass !== 'inconsistent-evidence') existingPaths.push('p12-reconcile');
   if (klass === 'inconsistent-evidence' || klass === 'indeterminate' || (record === undefined && p11Record !== undefined && observation === undefined)) existingPaths.push('operator-attestation');
 
   return Object.freeze({
@@ -365,6 +471,7 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
     class: klass,
     certainty,
     lifecycle: interlock.status !== 'read' ? 'unavailable' : (record?.state ?? 'absent'),
+    intent: interlock.status !== 'read' ? 'unavailable' : (intent?.state ?? 'absent'),
     ...(record?.settlement !== undefined ? { settlement: record.settlement } : {}),
     signature,
     fronteraSubmission,
@@ -373,8 +480,18 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
       ...(record !== undefined ? { owner: record.account, sequence: record.sequence, lastLedgerSequence: record.lastLedgerSequence } : {}),
     }),
     ledger: Object.freeze({
-      consulted: ledger !== undefined,
-      ...(ledger !== undefined ? { status: ledger.status } : {}),
+      consulted: ledger !== undefined || (intentOnly && sequenceEvidence !== undefined),
+      ...(ledger !== undefined ? { status: ledger.status, via: 'transaction-lookup' as const } : {}),
+      ...(ledger === undefined && intentOnly && sequenceEvidence !== undefined
+        ? {
+            status: sequenceEvidence.status,
+            via: 'owner-sequence' as const,
+            ...(sequenceEvidence.status === 'unresolved' ? { reason: sequenceEvidence.reason } : {}),
+            ...(sequenceEvidence.ledgerIndex !== undefined ? { ledgerIndex: sequenceEvidence.ledgerIndex } : {}),
+            ...(sequenceEvidence.ledgerHash !== undefined ? { ledgerHash: sequenceEvidence.ledgerHash } : {}),
+            ...(sequenceEvidence.status !== 'unresolved' ? { accountSequence: sequenceEvidence.accountSequence } : {}),
+          }
+        : {}),
       ...(ledger?.status === 'unresolved' ? { reason: ledger.reason } : {}),
       ...(ledger?.status === 'included' ? { engineResult: ledger.engineResult, ledgerIndex: ledger.ledgerIndex, ...(ledger.ledgerHash !== undefined ? { ledgerHash: ledger.ledgerHash } : {}) } : {}),
       ...(validatedIndex !== undefined ? { validatedIndex } : {}),

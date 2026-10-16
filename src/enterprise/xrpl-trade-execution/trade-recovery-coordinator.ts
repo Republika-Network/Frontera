@@ -1,6 +1,6 @@
 import { createXrplValidatedLedgerReader, type XrplReadTimer, type XrplValidatedLedgerReader } from '../../features/xrpl-transport/index.js';
 import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
-import { TradeInterlockStoreError, type TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
+import { TradeInterlockStoreError, type TradeIntentRecord, type TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
 import { readTradeLedgerEvidence, type TradeLedgerEvidence, type TradeLedgerReader } from './trade-ledger-evidence.js';
 import { assessTradeOfferState, readOfferCreateEffect, readTradeOfferSnapshot, type TradeOfferStateAssessment } from './trade-offer-state.js';
 import {
@@ -14,13 +14,15 @@ import {
   type TradeSignerObservation,
 } from './trade-recovery-assessment.js';
 import { tradeTransactionIdentityOf } from './trade-resolution-authority.js';
+import { readTradeSequenceEvidence, type TradeSequenceEvidence } from './trade-sequence-evidence.js';
 
 /**
  * TRADE-04D — the **recovery coordinator**: reads, never writes.
  *
  * ```
  * assess(executionId, { p11?, signer? })
- *   → interlock.read                      corrupt / stale / unreadable → fail closed (indeterminate or inconsistent)
+ *   → interlock.read (+ readIntent, D-1)  corrupt / stale / unreadable → fail closed (indeterminate or inconsistent)
+ *   → no reservation, an intent:          the owner's validated AccountRoot Sequence (D-1 non-inclusion proof)
  *   → validated evidence for the row's    network ×2, validated index ×2, bounded tx lookup, row binding
  *     one transaction
  *   → offer effect from its metadata      ledger hash from the answer, or the validated header
@@ -65,7 +67,7 @@ export interface TradeRecoveryCoordinatorOptions {
   readonly maxValidatedLedgerAgeSeconds: number;
   readonly ledger: TradeRecoveryLedgerReader;
   /** The interlock's verified read, and (when composed) its health: a failed CORE-07 status refuses the read; an unreachable witness is reported. */
-  readonly interlock: { read(executionId: string): Promise<TradeSubmissionRecord | undefined>; health?(): Promise<{ readonly freshness?: string }> };
+  readonly interlock: { read(executionId: string): Promise<TradeSubmissionRecord | undefined>; readIntent?(executionId: string): Promise<TradeIntentRecord | undefined>; health?(): Promise<{ readonly freshness?: string }> };
   readonly timer?: XrplReadTimer;
 }
 
@@ -94,6 +96,9 @@ export interface TradeRecoveryDiagnostic {
   readonly classification: TradeRecoveryAssessment['class'];
   readonly certainty: TradeRecoveryAssessment['certainty'];
   readonly lastDurableState: TradeRecoveryAssessment['lifecycle'];
+  /** D-1: the pre-signing intent's state, and the capability it handed to the signer (an id, never the capability). */
+  readonly intentState: TradeRecoveryAssessment['intent'];
+  readonly intentCapabilityId?: string;
   readonly settlement?: string;
   readonly signerCapability: TradeSignerObservation['state'] | 'not-supplied';
   readonly signature: TradeRecoveryAssessment['signature'];
@@ -108,6 +113,9 @@ export interface TradeRecoveryDiagnostic {
     readonly decisionId?: string;
     readonly reservedAt?: string;
     readonly transitions?: readonly { readonly to: string; readonly at: string; readonly detail?: string }[];
+    readonly intentTransitions?: readonly { readonly to: string; readonly at: string; readonly detail?: string }[];
+    readonly intentRecordedAt?: string;
+    readonly window?: { readonly sequence: number; readonly lastLedgerSequence: number; readonly minLedger: number };
     readonly referenceLedgerIndex?: number;
     readonly referenceLedgerHash?: string;
   };
@@ -136,7 +144,8 @@ async function observeInterlock(interlock: TradeRecoveryCoordinatorOptions['inte
     const freshness = interlock.health === undefined ? undefined : (await interlock.health()).freshness;
     if (freshness !== undefined && FAILED_FRESHNESS.has(freshness)) return Object.freeze({ status: 'unavailable', reason: 'freshness-unproven' });
     const record = await interlock.read(executionId);
-    return Object.freeze({ status: 'read', record, ...(freshness === 'unavailable' ? { freshness: 'witness-unreachable' as const } : {}) });
+    const intent = interlock.readIntent === undefined ? undefined : await interlock.readIntent(executionId);
+    return Object.freeze({ status: 'read', record, ...(intent !== undefined ? { intent } : {}), ...(freshness === 'unavailable' ? { freshness: 'witness-unreachable' as const } : {}) });
   } catch (error) {
     if (error instanceof TradeInterlockStoreError && error.code === 'TRADE_INTERLOCK_CORRUPT') return Object.freeze({ status: 'unavailable', reason: 'corrupt' });
     if (error instanceof AuthorityStateFreshnessError) return Object.freeze({ status: 'unavailable', reason: 'freshness-unproven' });
@@ -174,11 +183,16 @@ export function createTradeRecoveryCoordinator(options: TradeRecoveryCoordinator
   async function assess(executionId: string, context: TradeRecoveryContext = {}): Promise<TradeRecoveryReport> {
     const observed = await observeInterlock(interlock, executionId);
     const record = observed.status === 'read' ? observed.record : undefined;
+    const intent = observed.status === 'read' ? observed.intent : undefined;
     let ledgerEvidence: TradeLedgerEvidence | undefined;
+    let sequenceEvidence: TradeSequenceEvidence | undefined;
     let offer: TradeOfferStateAssessment | undefined;
     if (record !== undefined && record.executionId === executionId) {
       ledgerEvidence = await readTradeLedgerEvidence(ledger, tradeTransactionIdentityOf(record), { networkId, requestTimeoutMs });
       if (ledgerEvidence.status === 'included') offer = await offerStateOf(ledgerEvidence, record, context.offerSnapshot !== false);
+    } else if (record === undefined && intent !== undefined && intent.executionId === executionId && intent.state !== 'abandoned') {
+      // D-1: no hash to look up — the owner's validated Sequence is the evidence.
+      sequenceEvidence = await readTradeSequenceEvidence(reader, intent);
     }
     const assessment = assessTradeRecovery({
       executionId,
@@ -186,28 +200,31 @@ export function createTradeRecoveryCoordinator(options: TradeRecoveryCoordinator
       ...(context.p11 !== undefined ? { p11: context.p11 } : {}),
       ...(context.signer !== undefined ? { signer: context.signer } : {}),
       ...(ledgerEvidence !== undefined ? { ledger: ledgerEvidence } : {}),
+      ...(sequenceEvidence !== undefined ? { sequenceEvidence } : {}),
       ...(offer !== undefined ? { offer } : {}),
     });
-    return Object.freeze({ assessment, diagnostic: diagnosticOf(assessment, record, context, networkId) });
+    return Object.freeze({ assessment, diagnostic: diagnosticOf(assessment, record, context, networkId, intent) });
   }
 
   return Object.freeze({ assess });
 }
 
 /** Projects an assessment for an operator: no amounts, no prices, no keys, no credentials, no blob. */
-export function diagnosticOf(assessment: TradeRecoveryAssessment, record: TradeSubmissionRecord | undefined, context: TradeRecoveryContext, networkId: number): TradeRecoveryDiagnostic {
-  const e = record?.evidence;
+export function diagnosticOf(assessment: TradeRecoveryAssessment, record: TradeSubmissionRecord | undefined, context: TradeRecoveryContext, networkId: number, intent?: TradeIntentRecord): TradeRecoveryDiagnostic {
+  const e = record?.evidence ?? intent?.evidence;
   const attempt = context.p11?.record?.attempt;
   const offer = assessment.offer;
   return Object.freeze({
     schema: TRADE_RECOVERY_DIAGNOSTIC_SCHEMA,
     executionId: assessment.executionId,
     ...((e?.organizationId ?? attempt?.organizationId) !== undefined ? { organizationId: (e?.organizationId ?? attempt?.organizationId)! } : {}),
-    ...(record !== undefined ? { ownerAccount: record.account, delegateAccount: record.evidence.delegateAccount } : {}),
+    ...(record !== undefined ? { ownerAccount: record.account, delegateAccount: record.evidence.delegateAccount } : intent !== undefined ? { ownerAccount: intent.account, delegateAccount: intent.evidence.delegateAccount } : {}),
     networkId,
     classification: assessment.class,
     certainty: assessment.certainty,
     lastDurableState: assessment.lifecycle,
+    intentState: assessment.intent,
+    ...(intent?.capabilityId !== undefined ? { intentCapabilityId: intent.capabilityId } : {}),
     ...(assessment.settlement !== undefined ? { settlement: assessment.settlement } : {}),
     signerCapability: context.signer?.state ?? 'not-supplied',
     signature: assessment.signature,
@@ -232,6 +249,8 @@ export function diagnosticOf(assessment: TradeRecoveryAssessment, record: TradeS
       ...((e?.requestId ?? attempt?.requestId) !== undefined ? { requestId: (e?.requestId ?? attempt?.requestId)! } : {}),
       ...((e?.decisionId ?? attempt?.decisionId) !== undefined ? { decisionId: (e?.decisionId ?? attempt?.decisionId)! } : {}),
       ...(record !== undefined ? { transitions: Object.freeze(record.transitions.map((transition) => Object.freeze({ to: transition.to, at: transition.at, ...(transition.detail !== undefined ? { detail: transition.detail } : {}) }))) } : {}),
+      ...(intent !== undefined ? { intentTransitions: Object.freeze(intent.transitions.map((transition) => Object.freeze({ to: transition.to, at: transition.at, ...(transition.detail !== undefined ? { detail: transition.detail } : {}) }))), intentRecordedAt: intent.recordedAt } : {}),
+      ...(intent !== undefined ? { window: Object.freeze({ sequence: intent.sequence, lastLedgerSequence: intent.lastLedgerSequence, minLedger: intent.minLedger }) } : {}),
       ...(e !== undefined ? { referenceLedgerIndex: e.referenceLedgerIndex, referenceLedgerHash: e.referenceLedgerHash } : {}),
     }),
     inconsistencies: assessment.inconsistencies,

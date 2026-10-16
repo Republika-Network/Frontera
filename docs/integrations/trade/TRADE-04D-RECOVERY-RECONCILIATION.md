@@ -120,7 +120,7 @@ Consequences: Frontera can **never** resubmit (no stored blob), so "retry" is im
 
 | Gate | Proposal | Why gated |
 |---|---|---|
-| D-1 | A durable **pre-signing intent** on the Host (owner, Sequence, LLS, preimage digest, capability id) anchored in CORE-07 before the signer call. It would close H.1–H.3 on the Host side: the Sequence stays blocked and the window is known | interlock schema v2 + new anchored event kind (incompatible migration) |
+| D-1 | A durable **pre-signing intent** on the Host (owner, Sequence, LLS, preimage digest, capability id) anchored in CORE-07 before the signer call. It would close H.1–H.3 on the Host side: the Sequence stays blocked and the window is known | interlock schema v2 + new anchored event kind (incompatible migration). **Authorized and implemented 2026-10-15 — §17** |
 | D-2 | Expose the recovery diagnostic as an authenticated `/api/admin/operations/...` route | new endpoint |
 | D-3 | External freshness anchoring of the signer ledger (a customer-side witness) | new trust boundary |
 | D-4 | A signer-protocol read operation for capability state | protocol v2 change |
@@ -337,7 +337,7 @@ Phase 10 items already qualified elsewhere, and re-run in §16: submission-claim
 
 ## 13. Remaining uncertainties
 
-1. **Pre-reservation signatures (H.1–H.3).** After a signer failure, crash or lost response, or after a failed reservation, the Host holds no Sequence, LLS or capability id. Inclusion of a lost blob is provable only with the signer's hash. Non-inclusion is not provable, and the owner Sequence is not held by the interlock. Frontera provably never sent such a blob; a party holding it could. The fix is gate **D-1** (a durable pre-signing intent).
+1. **Pre-reservation signatures (H.1–H.3).** After a signer failure, crash or lost response, or after a failed reservation, the Host holds no Sequence, LLS or capability id. Inclusion of a lost blob is provable only with the signer's hash. Non-inclusion is not provable, and the owner Sequence is not held by the interlock. Frontera provably never sent such a blob; a party holding it could. The fix is gate **D-1** (a durable pre-signing intent). *Closed on the Host side by D-1 (§17): the window is recorded and held before the capability exists, and non-inclusion is provable from the owner's validated Sequence. What remains is §17.9.*
 2. P11 `failed` after a possible signature means "Frontera never submitted", not "the ledger proves non-inclusion". P11 stores no `detail` to distinguish the two (**D-5**).
 3. The XRPL server is trusted for what it validated; ledger proofs are not verified.
 4. Offer history between the including ledger and a snapshot is not reconstructed (TRADE-07).
@@ -356,7 +356,7 @@ SQLite durability (`synchronous=FULL`, WAL) survives crashes. It does **not** de
 2. Confirm on a real rippled that `tx` (API v2) carries `tx_json` and `ledger_hash` as the evidence contract reads them. The `ledger_hash` fallback to the validated header is implemented, but the shape is not proven live.
 3. Confirm real `ledger_entry {offer}` and `entryNotFound` shapes, and real offer metadata for resting, partial and IOC/FoK cases.
 4. A live recovery drill: response loss, restart, Host backup and restore, and the signer ledger initialization procedure.
-5. Decisions on D-1 (pre-signing intent) and D-6 (signer restart quarantine) before any production claim.
+5. Decisions on D-1 (pre-signing intent) and D-6 (signer restart quarantine) before any production claim. *(D-1 implemented, §17. D-6 assessed, not implemented, §18.)*
 6. Unchanged: the R1 residuals of TRADE-04C-S1, the customer-operated v2 signer, and G1 not authorized.
 
 ## 16. Validation and final qualification verdict
@@ -406,3 +406,200 @@ It is not production-ready and not Testnet-proven. That still needs:
 - a decision on D-1, the Host-side pre-signing intent that would close §13.1;
 - a decision on D-6, or a separately decided D-3, for signer-ledger rollback (§14);
 - the S1 residuals.
+
+---
+
+## 17. D-1 — The durable pre-signing intent (authorized 2026-10-15)
+
+> Addendum. §§0–16 above are TRADE-04D's original qualification record and are not rewritten. D-1 was authorized explicitly as a narrowly scoped production change: a Trade interlock schema migration and CORE-07 integration within the existing slot. No CORE-wide schema, Payment store, authority root or effect path changed.
+
+### 17.1 The gap, and its order
+
+Before D-1 the executor:
+
+1. selected the owner Sequence;
+2. had CORE-02 issue the capability;
+3. contacted the signer;
+4. only then reserved the Sequence durably.
+
+A crash between steps 3 and 4 left a possibly valid blob with no Host record (§1.H.1–H.3). Now:
+
+```
+preflight (validated reads; non-binding blocking probe, witness probed)
+  → recordIntent      durable + anchored ('intent' event); holds the owner Sequence window          ← before any capability
+  → issuer.issue      CORE-02 capability for exactly the intent's preimage
+  → markSigning       durable + anchored ('sign' event), binds the capability id                   ← before the signer is contacted
+  → signer            signature verified independently (unchanged)
+  → reserve           continues exactly this `signing` intent → `bound`; anchored ('reserve')
+  → claim / submit / finality   unchanged (G2)
+```
+
+Any refusal **before** `markSigning` (capability refused or unavailable, a capability that does not bind, a marker that could not be recorded) abandons the intent by compare-and-set. Nothing after it ever releases the intent from the executor.
+
+### 17.2 The intent: what it binds
+
+`trade_intents` holds one row per execution id, ever (`UNIQUE`). Each row binds:
+
+- the execution id;
+- the owner, its `Sequence`, `LastLedgerSequence` and `minLedger` (the reference validated index + 1);
+- the `signingPreimageDigest` the capability will name;
+- closed evidence: organization, subject, request, decision, bounded grant, proposal digest, delegate, signing key and key authority, the **prepared-offer digest** (which commits to the whole OfferCreate, Fee included), the delegation assessment and facts digests, the reference ledger index and hash, the delegation and AccountRoot observation indices, fee, ledger provenance, **trust domain** and **network**;
+- once `signing`, the capability id.
+
+Integrity follows the reservation pattern: identity and state digests, an append-only transition log, forward-only and immutability triggers, the capability id bound once, and nothing ever deleted. Every read re-verifies the row, and a mismatch is refused, never repaired.
+
+### 17.3 State machine
+
+```
+intended ──markSigning (anchored 'sign')──▶ signing ──reserve (anchored 'reserve')──▶ bound ─▶ reservation lifecycle (unchanged):
+   │                                           │                                              reserved → submitting → unconfirmed → settled
+   │                                           └──expireIntent (P12, owner-Sequence proof)──▶ expired
+   └──abandonIntent (compare-and-set; only while never contacted)──▶ abandoned
+```
+
+- **Open, and blocking under the shared rule `xrplSequenceWindowBlocks`:** `intended`, `signing`. A `bound` intent's window is held by its reservation.
+- **Release without a ledger fact:** only `abandoned`. It is reachable only from `intended`, and `signing` is anchored *before* the signer is contacted. The compare-and-set and the marker exclude each other: exactly one commits (tested under concurrency, two connections).
+- **Release by the ledger:** the validated index reaching `LastLedgerSequence` (the same G4 rule as a reservation), or `expired`, recorded only on the owner-Sequence proof. Elapsed time is never an input.
+
+Under v2, `reserve` refuses unless the execution's intent is `signing` and binds the reservation exactly: owner, `Sequence`, LLS, `minLedger`, and every shared evidence value, `preparedDigest` included. The reservation, the `signing → bound` transition and the `reserve` event commit in one transaction. The `reserved → submitting → unconfirmed → settled` semantics, the claim and every settlement are unchanged.
+
+### 17.4 CORE-07
+
+Slot `trade-sequence-reservations` is unchanged. Its hash chain now also covers `intent` and `sign` events, in commit order. A restore that loses an intent or a signing marker is `ROLLBACK_DETECTED` at the next open (tested), as is one that loses a reservation or a claim. A crash with the witness prepared but the file not committed is `PENDING_RECOVERY`, and no capability was issued against it (tested).
+
+`abandoned` and `expired` are local transitions, like `settle`. Both only ever release, so a restore that loses one re-blocks: conservative.
+
+### 17.5 Migration v1 → v2
+
+- **When.** Only on the Host's open for execution, and only **after** every v1 record verified and CORE-07 established the history. A stale or rolled-back v1 copy is refused by the witness first and left unmigrated (tested). Verification tooling (backup/restore, no scope, no witness) opens a v1 file read-only and never migrates it.
+- **How.** One immediate transaction, additive only:
+  - create the intent tables, the migration record, the v2 anchored-event table and the `trade_anchored_history` view;
+  - freeze the v1 event table against inserts, keeping every row, digest and trigger;
+  - seed the v2 event row ids to continue after the last v1 row;
+  - record the version.
+
+  Nothing is dropped, rebuilt, reset or re-anchored. The witnessed head is recomputed through the view and must equal the pre-migration head, or the transaction aborts.
+- **Legacy.** The migration record (digest-checked, immutable) keeps the reservation and event ceilings. Reservations at or below them predate D-1 and need no intent. Any later one must continue a `signing` intent. Legacy windows still block, and legacy claims still work; they are anchored in the v2 table.
+- **Refused, unmutated:**
+  - a v2 version row whose tables or view are incomplete;
+  - a v1 file carrying v2 tables;
+  - a forged v2 version row on v1 tables;
+  - a tampered or deleted migration record.
+- **Backup/restore.** `store-registry.mjs` accepts both versions (`TRADE_INTERLOCK_SUPPORTED_SCHEMA_VERSIONS`). A restored v1 backup is verified as v1, and the Host migrates it only once it proves fresh. Coverage and conditional-store flags are unchanged.
+
+### 17.6 Recovery, P11/P12, diagnostics
+
+- **Assessment:**
+  - It reads the intent: `assessment.intent`, with the capability id and window in the diagnostic.
+  - `intended`/`abandoned` → `capability-not-consumed`, **proven**, signature `excluded-by-host`.
+  - `signing` with no reservation → new class 13 `signing-attempted`, or the signer-reported classes 2–4.
+  - A signer consumption reported against an intent the Host never sent → `inconsistent-evidence`, as is a capability id mismatch.
+- **Owner-Sequence proof** (`trade-sequence-evidence.ts`, read-only, shared validated reader):
+  - A validated `AccountRoot` at `L ≥ LastLedgerSequence` with `Sequence` still equal to the intent's proves the intent's transaction was never included, whatever its hash.
+  - `Sequence` above it means consumed by *some* transaction: never a closure.
+  - Below it, absent, unreadable, wrong network or stale: unresolved.
+- **P12** (existing trade authority, extended):
+  - `intended` → abandon by compare-and-set → `confirmed-not-completed PROVIDER_UNAVAILABLE`. If the executor's marker won the race → unresolved.
+  - `signing` → only the owner-Sequence proof → `expireIntent` → `confirmed-not-completed PROVIDER_REJECTED`.
+  - Anything else → unresolved.
+  - P11 claims are never reopened.
+- **Executor.** An execution with any intent (or reservation) is answered `unconfirmed trade-execution-previously-recorded` before any ledger read or capability. A restart after a signer crash no longer issues a replacement capability: the §1.H/§4.4 *contained, not prevented* note is now **prevented**.
+
+### 17.7 Fault injection and mutation (counts are explicit in every test)
+
+Each row lists the effects counted as capabilities / signatures / submissions.
+
+| Fault | Result |
+|---|---|
+| Crash before the intent commit | 0 / 0 / 0, no intent; a fresh order then runs once |
+| Crash during witness preparation of the intent | 0 / 0 / 0; next open `PENDING_RECOVERY`; file holds no intent |
+| Crash after the intent commit, before issuance | 0 / 0 / 0; `intended`; restart refuses; P12 abandons; window released |
+| Crash after issuance, before the marker | 1 / 0 / 0; as above (the capability never left the process) |
+| Crash after consumption / after signing, before the response | 1 / 1 / 0; `signing`; abandonment refused; window held; restart refuses with **no** new capability; past LLS the owner-Sequence proof → `proven-not-included`, P12 `expired` |
+| Crash at the old reservation point (signed, `reserve` never ran) | 1 / 1 / 0; window held; if the customer's copy consumes the Sequence → `sequence-consumed-by-unknown-transaction`, P12 unresolved |
+| Duplicate execution ids | one intent ever; `execution-recorded` |
+| Same-owner contention | an open intent blocks; `abandoned` releases at once; `signing` only at LLS |
+| Concurrent processes (two connections, one witness) | one intent per contested Sequence; marker vs abandonment exactly one wins |
+| Restart with an unresolved intent | still blocking; executor refuses |
+| Stale backup | losing an intent or a signing marker → `ROLLBACK_DETECTED` |
+| Lost submission claim | unchanged, refused (§16 K) |
+| Incomplete / unavailable / wrong-network / stale ledger | unresolved; window held |
+| Proven non-inclusion | owner Sequence unconsumed at `L ≥ LLS` only |
+| Corrupted / partially migrated store | refused, unmutated |
+| Witness unavailable | intent refused; 0 / 0 / 0 even with the pre-signing probe bypassed |
+
+Mutation suite `trade04d-d1-mutation.test.ts`: **20 mutants, 14 detected, 6 contained**. Each contained mutant names the independent boundary that contains it:
+
+- abandon of a contacted intent, and a reservation on an uncontacted intent → the forward-only trigger;
+- the executor abandoning after signer contact → the compare-and-set;
+- an ignored `blocked` outcome → the closed outcome check;
+- an ignored prior intent → the intent's own `execution-recorded` and its window;
+- an absent `AccountRoot` read as proof → the AccountRoot parse.
+
+Pre-existing mutants whose verdict D-1 changed, recorded rather than hidden:
+
+| Mutant | Was | Now | Contained by |
+|---|---|---|---|
+| TRADE-04C `skip-delegate-key-verification` | detected | contained | the intent's closed evidence (no `keyAuthority`, nothing issued) |
+| TRADE-04C `skip-sequence-blocking-before-signing` | detected | contained | the anchored intent's binding blocking check |
+| TRADE-04C `skip-sequence-blocking-at-reservation` | detected | contained | the same check |
+
+### 17.8 Behaviour changes callers can see
+
+1. After the signer was contacted, even if it refused, the owner Sequence stays held until the validated ledger passes `LastLedgerSequence` or P12 records the owner-Sequence proof. The next order on that owner is `trade-sequence-in-flight` until then. A signer's refusal is its word, not proof that no signature exists (requirement: never assume that a missing Host-side signature means the transaction could not exist).
+2. A duplicate execution after an intent is `unconfirmed trade-execution-previously-recorded` (no `providerRef` when no hash was ever recorded), instead of reaching the signer.
+3. `reserve` without a `signing` intent is refused (`TRADE_INTERLOCK_INTENT_REFUSED`).
+
+### 17.9 What D-1 does not close
+
+- **Outcome when the Sequence was consumed and no hash is known.** If the signer was contacted and the owner's Sequence advanced, the Host cannot tell, without the hash, whether its transaction or another one consumed it. It stays `signing-attempted` and unresolved. A signer-reported hash can be looked up by an operator through the existing transaction evidence. P11 still records `failed` for a signer failure (pre-existing TRADE-04C semantics, unchanged by D-1; refining it is D-5).
+- **The Host trusts its own process between `issue` and `markSigning`.** A capability issued but never marked exists only in memory. A compromised Host process is outside this boundary.
+- The signer ledger's rollback exposure (§14) is unchanged in the signer, but D-1 changes its consequence; see §18.
+
+### 17.10 Validation (D-1)
+
+| Step | Result |
+|---|---|
+| D-1 suites (`trade04d-d1-intent`, `trade04d-d1-mutation`) | 19 / 19 and 20 / 20 |
+| Targeted preservation: TRADE-04A/B/C/S1/04D, CORE-02, CORE-07 and freshness, P11/P12, PAY-0x, XRPL rail, PROD-02/03, backup/restore/portability (107 files) | **2049 / 2049** |
+| Boundaries: shared transport, TRADE-02 rail, security invariants, NO_BYPASS, CORE-06 | 158 / 158 |
+| Typecheck, lint, publishability | pass |
+| Workspaces | 1103 / 1103 |
+| Full root suite (final tree) | 12189 tests: **12175 pass, 1 fail**, 9 skipped, 4 todo. The one failure is the S1 separate-process scenario (`PROVIDER_UNAVAILABLE`), the load-dependent restart-quarantine fixture margin below; it passes alone |
+
+Boundary pins held, not widened. The first full run failed the shared-transport and TRADE-02-rail importer pins. The fix keeps both boundaries: the Host composition builds the validated reader it hands P12, and the evidence module carries its own `AccountRoot` parser, pinned equal to TRADE-02's.
+
+Two failure classes under full-suite load are environmental, with evidence:
+
+- **`trade04c-s1-host` Scenario A through a separate signer process.** Its trace shows `trade-restart-quarantine` with zero signing requests: a TRADE-04C preflight refusal *before* any D-1 code. The fixture's fake ledger dates its close times from its own construction, and `passQuarantine()` leaves a 44 s margin to the executor's start. Under load, Host boot exceeds it; a run under 16 CPU burners reproduced it. It passes alone 3 / 3.
+- **External-authority launcher.** `/posture` timeouts, the §16 class; 2 / 2 alone.
+
+## 18. D-6 — Signer restart quarantine: assessment (not implemented)
+
+**Question.** Does a ≥ 65 s refusal to sign after the reference signer starts (capability lifetime ≤ 60 s + 5 s skew) mitigate the signer-ledger rollback exposure (§14)?
+
+**What it would cover.** After a restore of an older consumption-ledger copy *that requires a restart*, every capability consumed in the lost history has expired by the signer's clock before the signer serves. A replay is then refused as expired.
+
+**Why it is not sufficient alone:**
+
+1. **No restart needed.** An in-place rewrite of the SQLite file by another process with write access, or a swap the running process picks up, needs no restart. The quarantine never runs.
+2. **Clock dependence.** Expiry is checked against the signer's wall clock, and the signer refuses only `issuedAt` more than 5 s in its future. If the signer's clock is behind real time by Δ > 5 s at or before the restart, a captured capability stays valid Δ − 5 s past the quarantine. A monotonic quarantine does not help, because expiry is wall-clock. A clock stepped *backward after* the start extends both equally, which is safe; a *forward* step shortens both equally, which is also safe. So D-6 holds only under the clock-accuracy assumption capability expiry already makes.
+3. **Customer custody.** The quarantine is a property of the reference signer. A customer running a modified or different v2 signer may omit it, and the Host cannot verify or attest it. It is a reference-implementation hardening, not a Host guarantee.
+4. **It protects the signer's single-use record, not the Host's accounting.**
+
+**What D-1 changes.**
+
+- A capability can be replayed only within its ≤ 60 s (+ skew) lifetime. That is far inside the transaction's window, since LLS is ≤ 200 ledgers past the reference.
+- The capability names exactly the intent's preimage, so a replay can only produce a signature over the *same* transaction: same Sequence, so at most one inclusion.
+- Every capability that ever left the Host belongs to an intent the Host has already recorded as `signing`. The Host never releases that window, and never answers P11/P12 "not completed", without the validated owner-Sequence proof past LLS. After that point the transaction can never be included.
+
+So after D-1, a signer rollback can at most produce an extra signature of an already-accounted transaction. It can no longer produce an *unaccounted* one, and the Host-side consequence of the §14 exposure is closed.
+
+**Recommendation.**
+
+- D-6 is **not necessary** for the Host's correctness after D-1, and it is **not sufficient** for signer-ledger freshness (reasons 1–3).
+- It remains a cheap hardening of the reference signer's single-use property, with an availability cost: 65 s unavailable on every start. It is offered as an operator decision, unchanged.
+- Full freshness of the signer ledger still needs **D-3** (external anchoring in customer custody, a new trust boundary), as before.
+- Neither D-6 nor D-3 is implemented.
+
+**Operational rule, unchanged:** after restoring a signer ledger, keep the signer stopped for at least 65 s on an accurate clock before serving.

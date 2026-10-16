@@ -1,7 +1,8 @@
 import { EXECUTION_FAILURE_REASONS } from '../../features/execution-runtime/index.js';
 import type { ExecutionResolutionAuthority, ExecutionResolutionAuthorityResult, ExecutionResolutionQuery } from '../execution-reconciliation/authority.js';
-import type { TradeInterlockSettlement, TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
+import type { TradeIntentRecord, TradeIntentState, TradeInterlockSettlement, TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
 import { readTradeLedgerEvidence, type TradeLedgerReader, type TradeTransactionIdentity } from './trade-ledger-evidence.js';
+import { readTradeSequenceEvidence, type TradeSequenceEntryReader } from './trade-sequence-evidence.js';
 
 export type { TradeLedgerReader } from './trade-ledger-evidence.js';
 
@@ -21,7 +22,14 @@ export function readOnlyTradeLedger(client: TradeLedgerReader): TradeLedgerReade
 export interface TradeResolutionInterlockAccess {
   read(executionId: string): Promise<TradeSubmissionRecord | undefined>;
   settle(executionId: string, transactionHash: string, settlement: TradeInterlockSettlement, detail?: string): Promise<void>;
+  /** TRADE-04D D-1 (all three, or none): the intent of an execution no reservation continued. */
+  readIntent?(executionId: string): Promise<TradeIntentRecord | undefined>;
+  abandonIntent?(executionId: string, detail?: string): Promise<TradeIntentState>;
+  expireIntent?(executionId: string, detail?: string): Promise<TradeIntentState>;
 }
+
+/** D-1: the validated `AccountRoot` read the owner-`Sequence` proof needs — the shared validated reader, built by the composition. Read-only. */
+export type TradeResolutionEntryReader = TradeSequenceEntryReader;
 
 export interface TradeResolutionAuthorityOptions {
   readonly networkId: number;
@@ -29,6 +37,8 @@ export interface TradeResolutionAuthorityOptions {
   readonly requestTimeoutMs: number;
   readonly ledger: TradeLedgerReader;
   readonly interlock: TradeResolutionInterlockAccess;
+  /** D-1: with it, a `signing` intent can be closed on the owner-`Sequence` proof; without it, it stays unresolved. */
+  readonly entries?: TradeResolutionEntryReader;
 }
 
 const UNRESOLVED: ExecutionResolutionAuthorityResult = Object.freeze({ outcome: 'unresolved' });
@@ -63,6 +73,14 @@ export function tradeTransactionIdentityOf(record: TradeSubmissionRecord): Trade
  * containing the including ledger, and validated-index ordering. Any
  * mismatch is `unresolved`.
  *
+ * TRADE-04D D-1 — an execution with an **intent** and no reservation:
+ *
+ * | intent | answer |
+ * | --- | --- |
+ * | `intended` | abandoned by compare-and-set (it fails if the executor marked `signing` first) → `confirmed-not-completed PROVIDER_UNAVAILABLE`: the signer was provably never contacted |
+ * | `abandoned` | `confirmed-not-completed PROVIDER_UNAVAILABLE` |
+ * | `signing` / `expired` | the owner's validated `Sequence` unconsumed at or past `LastLedgerSequence` → `confirmed-not-completed PROVIDER_REJECTED` (expired); anything else → `unresolved` |
+ *
  * Absence of a record is never evidence (a record is written before anything
  * can be sent). It never submits, re-signs or rebuilds anything: an
  * uncertain trade is resolved from the ledger or stays uncertain.
@@ -73,12 +91,49 @@ export function createTradeResolutionAuthority(options: TradeResolutionAuthority
     if (typeof ledger?.[method] !== 'function') throw new TypeError(`The trade resolution authority's ledger must implement ${method}.`);
   }
   if (typeof interlock?.read !== 'function' || typeof interlock.settle !== 'function') throw new TypeError('The trade resolution authority needs the trade interlock.');
+  const intents = typeof interlock.readIntent === 'function' && typeof interlock.abandonIntent === 'function' && typeof interlock.expireIntent === 'function';
+  if (!intents && (interlock.readIntent !== undefined || interlock.abandonIntent !== undefined || interlock.expireIntent !== undefined)) throw new TypeError('The trade resolution authority takes the intent access whole, or not at all.');
+  const reader = options.entries;
+  if (reader !== undefined && typeof reader.ledgerEntry !== 'function') throw new TypeError('The trade resolution authority’s validated entry reader must implement ledgerEntry.');
 
   async function settleQuietly(record: TradeSubmissionRecord, settlement: TradeInterlockSettlement, detail: string): Promise<void> {
     try {
       await interlock.settle(record.executionId, record.transactionHash, settlement, detail);
     } catch {
       // Bookkeeping; the blocking rule already released on the ledger fact.
+    }
+  }
+
+  /** D-1: an execution whose intent no reservation continued. Never a guess: abandoned by compare-and-set, or expired on the owner-Sequence proof. */
+  async function resolveIntent(query: ExecutionResolutionQuery): Promise<ExecutionResolutionAuthorityResult> {
+    if (!intents) return UNRESOLVED;
+    let intent: TradeIntentRecord | undefined;
+    try {
+      intent = await interlock.readIntent!(query.executionId);
+    } catch {
+      return UNRESOLVED;
+    }
+    if (intent === undefined || intent.executionId !== query.executionId || intent.state === 'bound') return UNRESOLVED;
+    // No hash was ever recorded for it: a reference names something this execution never reserved.
+    if (query.providerRef !== undefined) return UNRESOLVED;
+    if (intent.evidence.boundedGrantId !== query.boundedGrantId || intent.evidence.decisionId !== query.decisionId || intent.evidence.requestId !== query.requestId) return UNRESOLVED;
+    try {
+      if (intent.state === 'intended' || intent.state === 'abandoned') {
+        // The compare-and-set and the executor's `signing` marker exclude each other: exactly one commits.
+        const state = intent.state === 'abandoned' ? 'abandoned' : await interlock.abandonIntent!(intent.executionId, 'trade-intent-never-signed');
+        if (state !== 'abandoned') return UNRESOLVED;
+        return Object.freeze({ outcome: 'resolved', certainty: 'confirmed-not-completed', failure: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE });
+      }
+      if (reader === undefined) return UNRESOLVED;
+      const evidence = await readTradeSequenceEvidence(reader, intent);
+      if (evidence.status !== 'not-included') return UNRESOLVED;
+      if (intent.state === 'signing') {
+        const state = await interlock.expireIntent!(intent.executionId, 'trade-intent-sequence-unconsumed');
+        if (state !== 'expired') return UNRESOLVED;
+      }
+      return Object.freeze({ outcome: 'resolved', certainty: 'confirmed-not-completed', failure: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED });
+    } catch {
+      return UNRESOLVED;
     }
   }
 
@@ -90,7 +145,8 @@ export function createTradeResolutionAuthority(options: TradeResolutionAuthority
     } catch {
       return UNRESOLVED;
     }
-    if (record === undefined || record.executionId !== query.executionId) return UNRESOLVED;
+    if (record === undefined) return resolveIntent(query);
+    if (record.executionId !== query.executionId) return UNRESOLVED;
     if (query.providerRef !== undefined && query.providerRef !== record.transactionHash) return UNRESOLVED;
     if (record.evidence.boundedGrantId !== query.boundedGrantId || record.evidence.decisionId !== query.decisionId || record.evidence.requestId !== query.requestId) return UNRESOLVED;
     try {
