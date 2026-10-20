@@ -492,6 +492,18 @@ changed after the backup (a revocation, a discharge, an approval verdict),
 the Host refuses with `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`; that is a
 SEV-1 escalation, never a reason to reset the witness.
 
+**Governed trading (`xrplTradeExecution`, TRADE-04D).** The trade interlock
+moves from schema v1 to v2 forward-only, the first time a TRADE-04D Host opens
+it for execution; a pre-TRADE-04D release then refuses the file. Its anchored
+history covers every intent, signing marker, reservation and submission claim,
+so once the upgraded Host has accepted **one** trade order, the pre-upgrade
+backup is behind the witness and is refused at the next open
+(`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`): there is no supported downgrade
+after the first v2 intent. Before such an upgrade: take and verify the §5
+backup, drain trading (no reservation left `reserved`, `submitting` or
+`unconfirmed`), and record the pre-upgrade `/version`. Never reset or re-enroll
+the witness to make an older interlock open (TRADE-04D §21).
+
 The witness is never rolled back or restored as part of a rollback.
 
 ## 9. Health, readiness and degraded states

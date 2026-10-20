@@ -549,10 +549,11 @@ Pre-existing mutants whose verdict D-1 changed, recorded rather than hidden:
 1a. *(§19)* The same holds after any refusal at capability issuance: refused, revoked, timed out, or a capability that does not bind. Once the intent exists, its window is held until the ledger closes it.
 2. A duplicate execution after an intent is `unconfirmed trade-execution-previously-recorded` (no `providerRef` when no hash was ever recorded), instead of reaching the signer.
 3. `reserve` without a `signing` intent is refused (`TRADE_INTERLOCK_INTENT_REFUSED`).
+4. *(§20, H-1)* From the issuance call on, those refusals are reported to P11 as `unconfirmed` (no `providerRef`), not `failed`: the P7 capacity stays settled and the execution is closed by P12 on the ledger fact.
 
 ### 17.9 What D-1 does not close
 
-- **Outcome when the Sequence was consumed and no hash is known.** If the signer was contacted and the owner's Sequence advanced, the Host cannot tell, without the hash, whether its transaction or another one consumed it. It stays `signing-attempted` and unresolved. A signer-reported hash can be looked up by an operator through the existing transaction evidence. P11 still records `failed` for a signer failure (pre-existing TRADE-04C semantics, unchanged by D-1; refining it is D-5).
+- **Outcome when the Sequence was consumed and no hash is known.** If the signer was contacted and the owner's Sequence advanced, the Host cannot tell, without the hash, whether its transaction or another one consumed it. It stays `signing-attempted` and unresolved. A signer-reported hash can be looked up by an operator through the existing transaction evidence. P11 still records `failed` for a signer failure (pre-existing TRADE-04C semantics, unchanged by D-1; refining it is D-5). *(Corrected by H-1, §20: P11 now records `unconfirmed` for every refusal after the issuance call; D-5, a durable P11 `detail`, is unchanged and still open.)*
 - **The Host trusts its own process between `issue` and `markSigning`.** A capability issued but never marked exists only in memory. A compromised Host process is outside this boundary.
 - The signer ledger's rollback exposure (§14) is unchanged in the signer, but D-1 changes its consequence; see §18.
 
@@ -691,3 +692,104 @@ The two failures in the instrumented tarball run:
 Both files pass alone, 22 / 22 twice. **The root suite is not represented as fully passing in the isolated tarball install:** under that install's load, CORE-07 witness timeouts remain.
 
 Mutation (D-1): 20 mutants, 16 detected, 4 contained. TRADE-04C, S1 and 04D mutation suites: all pass within the focused run.
+
+## 20. H-1 — Post-intent outcome certainty (authorized 2026-10-20)
+
+> Addendum, from the TRADE-04D integration readiness review. §§0–19 are not rewritten.
+
+### 20.1 The finding
+
+After `recordIntent`, the executor reported every refusal through one catch as a terminal `failed`. That covered:
+
+- capability issuance unavailable or timed out;
+- a capability that did not bind;
+- a signing marker that could not be recorded;
+- a delegated signer that was unreachable, refused, or answered out of protocol;
+- a signature that failed the independent check;
+- a reservation that failed after a verified signature.
+
+`failed` is P11's terminal observation. It releases the P7 capacity, and P12 is never consulted for it. Yet in every one of those cases a valid capability, and possibly a signature, could exist outside the Host until the ledger passes `LastLedgerSequence`. That is the premise of §19: issuance is external, and a signer's refusal is its word. A crash at the same point already took the honest path (`ALREADY_ATTEMPTED` → P12). Only the non-crash path claimed certainty.
+
+The recovery assessment would also have marked such a record `p11-outcome-contradicts-ledger` had the transaction been included out of band.
+
+### 20.2 The correction (smallest that proves the property)
+
+The change is local to `trade-offer-executor.ts`:
+
+- **A flag.** `capabilityMayExist` is raised immediately before the issuance call. It is lowered only when the issuer refused with one of `CAPABILITY_NEVER_REQUESTED`: `CAPABILITY_ISSUER_UNBOUND`, `…_UNSUPPORTED`, `…_REQUEST_INVALID`, `…_GRANT_UNAVAILABLE`, `…_GRANT_NOT_FOUND`, `…_GRANT_REVOKED` or `…_REFUSED`. These are the refusals `delegated-offer-capability-issuer.ts` makes **before** `sign.call`, plus the unbound slot. A structural test pins the set against the issuer's source.
+- **The outer catch.** While the flag is raised, it answers `unconfirmed` with the refusing step's `detail` and **no** `providerRef`. P11 reconciliation therefore stays bound to the intent rather than to a hash the Host never recorded: a P11 reference without a trade record is `p11-reference-without-trade-record`.
+- **What does not change.** No new detail, outcome type, state, store, route, retry, re-signing or re-issuance. The intent and idempotency invariants, P11/P12, the TRADE-04C-S1 capability and signer protocol, and every refusal before the issuance call (`failed`, as before) are untouched.
+
+| Path | Before | After |
+|---|---|---|
+| Any refusal before the issuance call (binding, preflight, `recordIntent` failed or blocked) | `failed` | `failed` |
+| Issuer refusal before its signing call (`CAPABILITY_NEVER_REQUESTED`) | `failed` | `failed` (non-issuance proven) |
+| `CAPABILITY_SIGNING_UNAVAILABLE`, `CAPABILITY_SIGNATURE_INVALID`, or an unrecognized issuer error | `failed` | `unconfirmed` |
+| A capability that does not bind | `failed` | `unconfirmed` |
+| `markSigning` failed (capability issued) | `failed` | `unconfirmed` |
+| Signer unreachable, refused, out of protocol, or busy / not verified | `failed` | `unconfirmed` |
+| Signature fails the independent check | `failed` | `unconfirmed` |
+| Reservation failed or blocked after a verified signature | `failed` | `unconfirmed` |
+| From the claim on (§1, TRADE-04C) | `unconfirmed` / ledger | unchanged |
+
+A signer refusal made by the client before sending is also `unconfirmed`: the capability already exists. The certainty boundary is the capability's possible existence, not whether the Host sent it. A narrower rule would rest on the same trust in the authority-signer channel that §19.1 declined to assume.
+
+### 20.3 Consequences callers can see
+
+1. The governed result is `execution_unconfirmed` (HTTP 409) instead of `execution_failed` (502) for the paths above.
+2. P7 capacity is **settled**, not released, until P12 resolves the execution.
+3. Closing such an execution needs an explicit P12 `reconcile` once the validated ledger passes `LastLedgerSequence`. The trade authority then answers `confirmed-not-completed` on the owner-Sequence proof (§17.6), or stays unresolved if the `Sequence` was consumed.
+4. A replay of the request is answered from P11 and never reaches the executor.
+
+### 20.4 Tests
+
+- **`trade04d-h1-post-intent-outcome.test.ts`**
+  - The seven pre-issuance refusals stay `failed`, with nothing issued, signed or sent, and the window held.
+  - Nine post-issuance paths are `unconfirmed`, with no `providerRef`, nothing sent, the window held, and a repeat adding no capability, signature or submission.
+  - P12 is unresolved before `LastLedgerSequence` and `confirmed-not-completed` after it.
+  - A consumed `Sequence` stays unresolved.
+  - After a restart, there is no replacement capability, and P12 closes the `intended` intent.
+  - On the shipped Host: `execution_unconfirmed`, the P7 reservation is `settled` / `execution-unconfirmed`, and a replay does not call the executor.
+  - Structure: the classification is pinned against the issuer's source, every issuer failure is classified, and the flag order is pinned.
+- **`trade04d-h1-mutation.test.ts`**: five mutants, each expected *detected*:
+  - the uncertain refusal reported as `failed`;
+  - the flag never raised;
+  - an issuance timeout treated as proven non-issuance;
+  - a proven refusal reported as uncertain;
+  - the flag raised before the intent.
+- **Updated to the corrected semantics** (outcome assertions only; no security assertion weakened):
+  - `trade04c-executor.test.ts`: signature rejected, signer unavailable, client-side horizon refusal, reservation failed;
+  - `trade04c-s1-capability.test.ts`: the issuance table gains an expected outcome per row, and the crossing capability is `unconfirmed`;
+  - `trade04d-d1-intent.test.ts`: issuance timeout;
+  - `trade04d-recovery-scenarios.test.ts`: Scenario D, signer died after consumption.
+
+### 20.5 L-2 — read-only inspection
+
+`inspectReferenceCapabilityLedger` now opens `readonly: true` (SQLITE_OPEN_READONLY), and is query-only besides. Before, it opened a writable connection that was only asked not to write. On the customer's signer host, inspection can now neither write, checkpoint nor recover the ledger it reads.
+
+This is pinned structurally in `trade04d-recovery-structure.test.ts` and recorded in SEC-INV-330. **To confirm when the suites run:** a read-only WAL connection must still read a ledger whose `-wal`/`-shm` files are absent, after the signer stopped. `trade04d-signer-recovery.test.ts` and Scenario D inspect exactly that state.
+
+### 20.6 Validation status
+
+**Not executed.** The change and its tests were written on 2026-10-20 in the `Frontera-trade-04d` worktree on `/mnt/c` (Windows host, WSL2). The founder's direction is that project code is not run in that environment without an isolated workspace, and none had been provisioned. Nothing here is a test result.
+
+Required before merge, in an isolated workspace, on a clean LF export:
+
+- `npm ci`, typecheck, build, lint;
+- the two H-1 suites;
+- the four updated suites;
+- TRADE-04A/B/C/S1/04D and their mutation suites;
+- CORE-02, CORE-07, P11/P12, PAY-0x, NO_BYPASS / security invariants / CORE-06, PROD-02/03, and backup/restore;
+- the full root suite, workspaces, release coherence, publishability and the clean-room consumer.
+
+Each must be recorded with its exact command, counts, failures and SHA.
+
+## 21. Upgrade, backup and downgrade — the forward-only interlock schema (accepted 2026-10-20)
+
+**Decision (founder).** Interlock schema v2 is accepted as a forward-only migration. The conditions are that backups and downgrade limits are explicit. This section states them; SEC-INV-333 carries the residual.
+
+- **Migration is irreversible.** The first TRADE-04D Host that opens a v1 interlock for execution migrates it in place (§17.5). No tool migrates back. A pre-TRADE-04D runtime refuses a v2 file at open ("a schema version this runtime does not implement"), unmutated.
+- **Back up before upgrading.** Take and verify the PROD-02 backup (`OPERATIONS_RUNBOOK.md` §5) with the current release, which still holds the v1 file. Drain trading first: no reservation `reserved`, `submitting` or `unconfirmed`. Record `/version`. That backup is the only way back.
+- **No supported binary downgrade after the first v2 intent.** The migration leaves the witnessed head unchanged, so the v1 backup and the old release remain usable **only until the upgraded Host records its first intent**. Every intent, signing marker, reservation and claim advances the CORE-07 history. After that, a restored v1 backup is behind the witness and is refused (`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`, §17.4). Rolling back then means losing every trade record since the backup, and that is refused by design.
+- **Never.** Never reset, rescope or re-enroll the witness to make an older interlock open. It would reopen Sequences whose transactions may still be included.
+- **Operations.** `OPERATIONS_RUNBOOK.md` §8 carries the operator-facing summary.
