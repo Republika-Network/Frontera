@@ -1,6 +1,6 @@
 # TRADE-04D — Durable Recovery, Validated-Ledger Reconciliation & Delegated Signer Crash Safety
 
-> **Status:** IMPLEMENTED (offline; fake-ledger qualified). §1 is the Phase 1 architecture checkpoint, written before any production edit and unchanged in substance; §2–§16 record what was built and qualified.
+> **Status:** IMPLEMENTED (offline; fake-ledger qualified) — merged as `71c19fc` (PR #192, 2026-10-20); post-merge hardening P1/P2 in §22. §1 is the Phase 1 architecture checkpoint, written before any production edit and unchanged in substance; §2–§16 record what was built and qualified.
 > **Baseline:** `origin/main` @ `66ca5b8` (TRADE-04C-S1, PR #191), with TRADE-04A `11db917`, 04B `d9339a5` and 04C `ffcf599` as ancestors.
 > **Network:** none. No live XRPL access and no transactions. TRADE-04D is offline-qualified; TRADE-05 is separately authorized.
 
@@ -771,18 +771,71 @@ This is pinned structurally in `trade04d-recovery-structure.test.ts` and recorde
 
 ### 20.6 Validation status
 
-**Not executed.** The change and its tests were written on 2026-10-20 in the `Frontera-trade-04d` worktree on `/mnt/c` (Windows host, WSL2). The founder's direction is that project code is not run in that environment without an isolated workspace, and none had been provisioned. Nothing here is a test result.
+**Executed on GitHub Actions; not run locally.** The change and its tests were written on 2026-10-20 in the `Frontera-trade-04d` worktree on `/mnt/c` (Windows host, WSL2). The founder's direction is that project code is not run in that environment without an isolated workspace, so none of it ran there. The isolated workspace was GitHub Actions: a fresh `ubuntu-latest` runner per job, Node 22, a clean checkout of the commit (LF), `npm ci`.
 
-Required before merge, in an isolated workspace, on a clean LF export:
+The first run failed to compile: the H-1 suite built an `ExecutionResolutionQuery` without its required `basis` (4 × TS2345). `a0ffbce` supplied `'initial-observation-unconfirmed'` in the test helper only. A PROD-03-04 documentation guard then failed on a rail named in the pilot runbook; `2e65716` moved that paragraph to §21. No production code changed between the first run and the qualified head.
 
-- `npm ci`, typecheck, build, lint;
-- the two H-1 suites;
-- the four updated suites;
-- TRADE-04A/B/C/S1/04D and their mutation suites;
-- CORE-02, CORE-07, P11/P12, PAY-0x, NO_BYPASS / security invariants / CORE-06, PROD-02/03, and backup/restore;
-- the full root suite, workspaces, release coherence, publishability and the clean-room consumer.
+| Commit | Workflow | Run | Result |
+|---|---|---|---|
+| `2e65716` (PR #192 head) | CI — `validate`, `pilot-deployment`, `pilot-acceptance`, `pilot-operations` | 39499321298 | all succeeded |
+| `2e65716` | Publishability — `publishability`, `clean-room-consumer`, `protocol-tarball-consumption` | 39499321299 | all succeeded |
+| `2e65716` | CodeQL — `javascript-typescript`, `actions` | 39499316501 | succeeded |
+| `71c19fc` (squash merge, tree identical to `2e65716`) | CI / Publishability / CodeQL | 39500613663 / 39500613626 / 39500613439 | all succeeded |
 
-Each must be recorded with its exact command, counts, failures and SHA.
+`validate` ran `npm ci`, `npm run typecheck`, `npm run build`, `npm run lint`, `npm test` (root suite, then workspaces), `npm run legal:check` and `npm run check:release-coherence`.
+
+- **Root suite:** 12 226 tests: 12 212 passed, 0 failed, 10 skipped, 4 todo. The 4 todo are the known PROD-01 F1 SQLite classification items, which do not fail the run.
+- **Workspaces:** 1 103 passed, 0 failed.
+- **Suite coverage:** the run includes all 150 top-level TRADE-04 suites — TRADE-04A/B/C/S1/04D with their mutation suites, the two H-1 suites (6 top-level, including `trade04d-h1-mutation`, 5 mutants) and the four updated suites — together with CORE-02, CORE-07, P11/P12, PAY-0x, NO_BYPASS, CORE-06, PROD-02/03 and backup/restore.
+- **L-2:** the read-only WAL inspection (§20.5) passed in `trade04d-signer-recovery.test.ts` and Scenario D.
+
+What this does not cover: a real XRPL ledger (TRADE-05), and the P1/P2 corrections of §22, which their own PR's runs qualify.
+
+## 22. Post-merge hardening — P1 and P2 (2026-10-20)
+
+After PR #192 merged (`71c19fc`), an adversarial review confirmed two findings an automated reviewer had left open on the PR. Neither releases anything unsafely: both fail closed. P1 meant H-1's own closure path never closed in the shipped composition; P2 raised a false contradiction and, after a restart, could strand an execution.
+
+### 22.1 P1 — the resolver's ledger client was never connected
+
+**Finding.** `host-composition.ts` builds a dedicated `resolverClient` for the P12 trade authority and the recovery coordinator. Only `readTradeLedgerEvidence` — the lookup by transaction hash, for an execution with a reservation — called `connect()`. An intent-only execution has no hash. Its owner-`Sequence` read goes through the shared validated reader, whose three reads never connect. The SDK client refuses a request before `connect()`, so in production that read failed (`ledger-unavailable`). P12 answered `unresolved` past `LastLedgerSequence`, and the intent kept holding the owner's `Sequence`. The only way out was an unrelated reservation lookup connecting the shared client first.
+
+**Why the tests missed it.** `FakeXrplLedger` served reads without a connection, and its `connected` flag was shared by every client.
+
+**Correction.** Both validated-read ports — the composition's `ownerSequenceReader` and the coordinator's internal reader — call `connect()` before `server_info`. Every validated read asks `server_info` first, so the client a read uses is connected by that read, never by another client.
+
+- **Connection count:** `connect()` is idempotent (a no-op once connected), so one connection is opened and reused.
+- **Failure semantics:** a failed or timed-out connect is a failed read inside the reader's existing time bound: `ledger-unavailable` → `unresolved`. It is never proof of non-inclusion, and the intent's window stays held.
+- **Unchanged:** the shared transport reader, its port contract and every other client.
+
+### 22.2 P2 — an expired intent and the reuse of its Sequence
+
+**Finding.** `expired` is recorded only on a qualified owner-`Sequence` proof for exactly the intent's window: unconsumed at a validated ledger at or past `LastLedgerSequence`. The interlock writes the proof's ledger with the transition (`unconsumed.<index>.<hash>`). That releases the `Sequence`, which the owner's next transaction then legitimately consumes. Two readers still re-read the live ledger as if the window were open:
+
+- the recovery assessment classified the consumed `Sequence` as `intent-settlement-contradicts-ledger` → `inconsistent-evidence` (operator recovery for a normal progression);
+- P12 re-read the ledger before honouring `expired`. If the process stopped between the expiry and P12 recording its answer, asking again after the `Sequence` was reused answered `unresolved` for good.
+
+**Correction.** `recordedTradeSequenceExpiry` (`trade-sequence-evidence.ts`) reads the recorded proof strictly. It requires an `expired` intent with exactly one `expired` transition, a well-formed detail, and a ledger at or past `LastLedgerSequence`; anything else is `undefined` and is never trusted.
+
+- **P12:** an `expired` intent with that record answers `confirmed-not-completed` from the record, after the same identity bindings as before (grant, decision, request, no `providerRef`). It does no ledger read. Without the record it answers `unresolved`.
+- **Assessment:** for an `expired` intent, a consumption read at a ledger **after** the recorded proof is the permitted reuse: no inconsistency, no uncertainty. A consumption at or before the proof's ledger, or an `expired` intent without a record, is still `intent-settlement-contradicts-ledger`, since a `Sequence` never moves back.
+- **Unchanged:** an open (`intended` / `signing`) intent is never closed on a consumed `Sequence`, and only a qualified proof expires one.
+
+### 22.3 What did not change
+
+No generic contract, CORE-07 slot, witnessed record, schema or migration changed. `expireIntent` and its qualified-proof check are untouched, as is the P11/P12 port, P7, the executor (H-1), the issuer and the signer. No new state, store, route or effect path was added. The interlock's `expired` state was already the local ledger fact that releases the `Sequence` (§17); P12 now honours that same record, so no new trust is placed in the store.
+
+### 22.4 Tests
+
+| Suite | What it proves |
+|---|---|
+| `trade04d-p1p2-hardening.test.ts` | **P1:** on the shipped Host with every fake client refusing reads until **it** connected (`strictConnections`), an H-1 intent-only execution stays `unresolved` while the resolver cannot connect, then resolves on the owner-Sequence proof — once (`established: now`, then `previously`), with no signature or send added. The coordinator over a never-connected client: a failed connect is `ledger-unavailable` (Sequence `unknown`, intent still `signing`); connected, `proven-not-included`, and one connection opened for two assessments. A structural pin covers both ports. **P2:** an expired intent with its `Sequence` reused (P12 and replays answer `confirmed-not-completed`; the assessment is `proven-not-included` with no contradiction); a restart between the expiry and P12's record; a consumption inside the window (never an expiry; the intent stays `signing`); an unreadable owner `Sequence` (open intent unresolved; expired intent answered from the record); a consumption at the proof's own ledger (still `inconsistent-evidence`); the strict reading of the recorded proof, and P12 refusing an `expired` state without it |
+| `trade04d-p1p2-mutation.test.ts` | 8 mutants, each detected: the coordinator reading before connecting; a recorded proof inside the window, a second expiry transition, or a malformed detail accepted; a reuse after the proof read as a contradiction; a consumption before the proof ignored; P12 ignoring the record; P12 closing an `expired` intent without it |
+
+`FakeXrplLedger` gains `strictConnections` (off by default), `connectionsOpened` and a `connectThrows` fault. Existing suites are unchanged.
+
+### 22.5 Validation status
+
+**Not run locally**, for the same reason as §20.6. GitHub Actions on the hardening PR is the validation: its run IDs, counts and SHA are recorded here when they complete. Until then nothing in §22 is a test result. No live XRPL validation is claimed.
 
 ## 21. Upgrade, backup and downgrade — the forward-only interlock schema (accepted 2026-10-20)
 
