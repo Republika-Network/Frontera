@@ -117,7 +117,8 @@ describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restar
     } })) });
     const { raw, action } = order(rig);
     const result = await rig.adapter.execute(action);
-    assert.deepEqual([result.outcome, 'detail' in result ? result.detail : undefined], ['failed', 'trade-signer-unavailable']);
+    // H-1: a signature exists outside the Host — P11 is told unconfirmed (no provider reference: no reservation, no Host hash), never failed.
+    assert.deepEqual([result.outcome, 'detail' in result ? result.detail : undefined, 'providerRef' in result ? result.providerRef : undefined], ['unconfirmed', 'trade-signer-unavailable', undefined]);
     assert.deepEqual(effects(rig, issuer), { signatures: 1, submissions: 0, capabilities: 1 });
     assert.equal(await rig.interlock.recorded(action.correlation.executionId), undefined, 'no reservation: the submit site can never send it');
     // D-1: the Host recorded the window before the capability existed, and the signing marker before the signer was contacted.
@@ -182,7 +183,8 @@ describe('TRADE-04D Scenario D — signer crash: consumed, response lost; restar
     try {
       const { action } = order(rig);
       const result = await rig.adapter.execute(action);
-      assert.equal(result.outcome, 'failed');
+      // H-1: the signer consumed the capability; whether it signed is unknowable — unconfirmed, never failed.
+      assert.equal(result.outcome, 'unconfirmed');
       const signer = await signerObservation(rig, action.correlation.executionId);
       assert.equal(signer.state, 'consumed');
       const report = await coordinatorFor(rig).assess(action.correlation.executionId, { p11: p11Of(action, result), signer });

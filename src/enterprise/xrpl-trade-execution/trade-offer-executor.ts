@@ -25,7 +25,7 @@ import {
   xrplNonInclusionProven,
   type XrplValidatedLedgerReader,
 } from '../../features/xrpl-transport/index.js';
-import { DelegatedOfferCapabilityError, type DelegatedOfferCapabilityIssuer, type IssuedDelegatedOfferCapability } from '../authority-authenticity/delegated-offer-capability-issuer.js';
+import { DelegatedOfferCapabilityError, type DelegatedOfferCapabilityIssuer, type DelegatedOfferCapabilityIssuerFailure, type IssuedDelegatedOfferCapability } from '../authority-authenticity/delegated-offer-capability-issuer.js';
 import type { TradeAttestedProposal, TradeAttestedProposalSource } from '../trade-risk-context/index.js';
 import {
   DelegatedOfferSignerError,
@@ -78,7 +78,36 @@ import { readTradeInclusion, type TradeTransactionIdentity } from './trade-ledge
  *
  * No retry anywhere: not of a read that failed, not of a signature, not of a
  * submission. An execution that was signed is never signed again.
+ *
+ * **Outcome certainty (TRADE-04D H-1).** A refusal is `failed` only while no
+ * capability for the execution can exist: before step 11, or when the issuer
+ * refused before asking the authority signer (`CAPABILITY_NEVER_REQUESTED`).
+ * From the issuance call on, every refusal is `unconfirmed`, with no provider
+ * reference (the Host holds no reservation and no hash): a capability may have
+ * been signed by the external custody, and a signature may exist outside this
+ * process, until the ledger passes `LastLedgerSequence`. P11 therefore never
+ * records a definitive failure that the ledger could still contradict; the P7
+ * capacity stays settled; P12's owner-Sequence proof closes it.
  */
+
+/**
+ * TRADE-04D H-1 — the issuer's refusals that are made **before** the
+ * authority signer is asked (`delegated-offer-capability-issuer.ts`): with one
+ * of these, no capability for this execution exists, so the refusal is a
+ * terminal failure. Every other issuance failure — the signing call failed or
+ * timed out (`CAPABILITY_SIGNING_UNAVAILABLE`), its answer did not verify
+ * (`CAPABILITY_SIGNATURE_INVALID`), or an unrecognized error — leaves it
+ * unknown whether the custody boundary signed one.
+ */
+const CAPABILITY_NEVER_REQUESTED: ReadonlySet<DelegatedOfferCapabilityIssuerFailure> = new Set<DelegatedOfferCapabilityIssuerFailure>([
+  'CAPABILITY_ISSUER_UNBOUND',
+  'CAPABILITY_ISSUER_UNSUPPORTED',
+  'CAPABILITY_REQUEST_INVALID',
+  'CAPABILITY_GRANT_UNAVAILABLE',
+  'CAPABILITY_GRANT_NOT_FOUND',
+  'CAPABILITY_GRANT_REVOKED',
+  'CAPABILITY_REFUSED',
+]);
 
 /** The only value that lets the executor run on facts from a profile admitting simulated sources. Passed in code by qualification tests — never read from configuration. */
 export const TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT = 'simulated-facts-offline-qualification-only' as const;
@@ -539,6 +568,8 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
     let signingRequests = 0;
     let submissionRequests = 0;
     let capabilityId: string | undefined;
+    // H-1: set when the issuance call starts, cleared only by a refusal the issuer made before asking the authority signer.
+    let capabilityMayExist = false;
     const started = now();
     const finish = (result: ExecutionAdapterResult, extra: { readonly transactionHash?: string; readonly evidence?: TradeReservationEvidence } = {}): ExecutionAdapterResult => {
       timings['total'] = now() - started;
@@ -622,6 +653,7 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
         // ── 11a (TRADE-04C-S1): the CORE-02 signing capability for exactly this transaction ──
         const tc = now();
         let issued: IssuedDelegatedOfferCapability;
+        capabilityMayExist = true;
         try {
           issued = await authorization.issuer.issue({
             trustDomain: authorization.trustDomain,
@@ -639,6 +671,8 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
           });
         } catch (error) {
           const code = error instanceof DelegatedOfferCapabilityError ? error.code : undefined;
+          // H-1: only a refusal made before the authority signer was asked proves that no capability exists.
+          if (code !== undefined && CAPABILITY_NEVER_REQUESTED.has(code)) capabilityMayExist = false;
           // An authority that answered "no" (revoked, absent, not this grant's terms) is a refusal; anything else is unavailability.
           if (code === 'CAPABILITY_REFUSED' || code === 'CAPABILITY_GRANT_REVOKED' || code === 'CAPABILITY_GRANT_NOT_FOUND' || code === 'CAPABILITY_REQUEST_INVALID') throw new Refusal(F.PROVIDER_REJECTED, D.CAPABILITY_REFUSED);
           throw new Refusal(F.PROVIDER_UNAVAILABLE, D.CAPABILITY_UNAVAILABLE);
@@ -745,6 +779,9 @@ export function createTradeOfferExecutionAdapter(options: TradeOfferExecutorOpti
       // Reached only before anything was submitted.
       const refusal = error instanceof Refusal ? error : new Refusal(F.ADAPTER_ERROR, D.NOT_BOUND);
       log('warn', 'trade.offer.refused', { executionId, detail: refusal.detail });
+      // H-1: once a capability may exist, a refusal never proves the order cannot reach the ledger — unconfirmed,
+      // with no provider reference (no reservation, no hash on the Host), held for P12's owner-Sequence proof.
+      if (capabilityMayExist) return finish(Object.freeze({ outcome: 'unconfirmed', detail: refusal.detail }));
       return finish(failed(refusal.reason, refusal.detail));
     }
   }

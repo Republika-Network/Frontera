@@ -56,6 +56,14 @@ function assertRefusedUnsigned(rig: ExecutorRig, result: ExecutionAdapterResult,
   assert.equal(rig.ledger.submitCalls.length, 0, 'nothing sent');
 }
 
+/** TRADE-04D H-1: refused after a capability may exist — never a terminal failure; no provider reference (no reservation, no Host hash); nothing sent. */
+function assertUncertainUnsent(rig: ExecutorRig, result: ExecutionAdapterResult, expected: string): void {
+  assert.equal(result.outcome, 'unconfirmed', JSON.stringify(result));
+  assert.equal(detail(result), expected, JSON.stringify(result));
+  assert.equal('providerRef' in result ? result.providerRef : undefined, undefined, 'no provider reference without a reservation');
+  assert.equal(rig.ledger.submitCalls.length, 0, 'nothing sent');
+}
+
 const withParameter = (action: ValidatedExecutionAction, dimension: string, value: string): ValidatedExecutionAction =>
   ({ ...action, parameters: action.parameters!.map((parameter) => (parameter.dimension === dimension ? { ...parameter, value } : parameter)) }) as ValidatedExecutionAction;
 
@@ -325,7 +333,7 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
         const adapter = await adapterOver(rig, { signer: port });
         const { action } = order(rig);
         const result = await adapter.execute(action);
-        assert.equal(detail(result), D.SIGNATURE_REJECTED, JSON.stringify(result));
+        assertUncertainUnsent(rig, result, D.SIGNATURE_REJECTED);
         assert.equal(await rig.interlock.recorded(action.correlation.executionId), undefined, 'nothing reserved');
       }
       assert.equal(rig.ledger.submitCalls.length, 0);
@@ -337,7 +345,7 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
       await rig.signer.close();
       const { action } = order(rig);
       const result = await rig.adapter.execute(action);
-      assert.equal(detail(result), D.SIGNER_UNAVAILABLE);
+      assertUncertainUnsent(rig, result, D.SIGNER_UNAVAILABLE);
       assert.equal(rig.ledger.submitCalls.length, 0);
       assert.equal(await rig.interlock.recorded(action.correlation.executionId), undefined);
     });
@@ -350,7 +358,9 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
       const narrow = signerClient(rig.signer.endpoint, rig.pairs, { lastLedgerOffset: 10 });
       const adapter = await adapterOver(rig, { configuration: executorConfiguration(rig.pairs, { lastLedgerOffset: 30 }), signer: narrow });
       const { action } = order(rig);
-      assertRefusedUnsigned(rig, await adapter.execute(action), D.SIGNER_REFUSED);
+      // H-1: the capability was already issued, so even a refusal the client makes before sending is not a terminal failure.
+      assertUncertainUnsent(rig, await adapter.execute(action), D.SIGNER_REFUSED);
+      assert.equal(rig.signer.signatures(), 0, 'nothing signed');
     });
   });
 
@@ -534,7 +544,8 @@ describe('TRADE-04C D/E — durable reservation, one submission, uncertainty pre
       const adapter = await adapterOver(rig, { interlock });
       const { action } = order(rig);
       const result = await adapter.execute(action);
-      assert.equal(detail(result), D.RESERVATION_FAILED);
+      // H-1: a verified signature exists (discarded here, but the signer produced it) — unconfirmed, never failed.
+      assertUncertainUnsent(rig, result, D.RESERVATION_FAILED);
       assert.equal(rig.signer.signatures(), 1);
       assert.equal(rig.ledger.submitCalls.length, 0);
     });

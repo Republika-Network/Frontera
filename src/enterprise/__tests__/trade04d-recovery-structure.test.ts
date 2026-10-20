@@ -116,4 +116,14 @@ describe('TRADE-04D structure — the customer signer ledger is never recreated 
     const serve = launcher.slice(launcher.indexOf("const keyFile = required('FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_KEY_FILE');"));
     assert.equal(/initializeReferenceCapabilityLedger|createConsumptionLedger|create:\s*true/.test(serve), false, 'serving never creates a ledger');
   });
+
+  it('L-2: the operator’s inspection opens the ledger with a genuinely read-only connection (SQLITE_OPEN_READONLY), and is query-only besides', () => {
+    const ledger = code('src/enterprise/xrpl-trade-rail/reference/reference-capability-ledger.ts');
+    const inspection = ledger.slice(ledger.indexOf('export async function inspectReferenceCapabilityLedger('));
+    assert.ok(inspection.length > 0);
+    const opens = [...inspection.matchAll(/new Database\(([^)]*)\)/g)].map((match) => match[1]);
+    assert.deepEqual(opens, ['file, { readonly: true, fileMustExist: true }'], 'exactly one open, read-only');
+    assert.match(inspection, /db\.pragma\('query_only = ON'\);/);
+    assert.equal(/journal_mode|wal_checkpoint|\.exec\(|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM/i.test(inspection), false, 'inspection never writes or checkpoints');
+  });
 });

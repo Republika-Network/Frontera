@@ -373,15 +373,17 @@ describe('TRADE-04C-S1 — the executor: no capability, no signature', () => {
     });
   });
 
-  for (const [name, error, detail] of [
-    ['the authority refuses (revoked, absent or another grant’s terms)', new DelegatedOfferCapabilityError('CAPABILITY_GRANT_REVOKED', 'revoked'), 'trade-capability-refused'],
-    ['the authority is unavailable', new DelegatedOfferCapabilityError('CAPABILITY_SIGNING_UNAVAILABLE', 'down'), 'trade-capability-unavailable'],
-    ['the issuer slot was never bound', new DelegatedOfferCapabilityError('CAPABILITY_ISSUER_UNBOUND', 'unbound'), 'trade-capability-unavailable'],
+  // TRADE-04D H-1: the outcome follows what the refusal proves. A refusal the issuer made before asking the authority
+  // signer proves no capability exists (failed); a signing call that failed may have produced one (unconfirmed).
+  for (const [name, error, detail, outcome] of [
+    ['the authority refuses (revoked, absent or another grant’s terms)', new DelegatedOfferCapabilityError('CAPABILITY_GRANT_REVOKED', 'revoked'), 'trade-capability-refused', 'failed'],
+    ['the authority is unavailable (the signing call failed: it may have signed)', new DelegatedOfferCapabilityError('CAPABILITY_SIGNING_UNAVAILABLE', 'down'), 'trade-capability-unavailable', 'unconfirmed'],
+    ['the issuer slot was never bound', new DelegatedOfferCapabilityError('CAPABILITY_ISSUER_UNBOUND', 'unbound'), 'trade-capability-unavailable', 'failed'],
   ] as const) {
-    it(`${name}: refused before the signer is contacted — zero signatures, zero sends`, async () => {
+    it(`${name}: refused before the signer is contacted — zero signatures, zero sends; ${outcome}`, async () => {
       await withRig({ issuer: testCapabilityIssuer({ refuse: () => error }) }, async (rig) => {
         const result = await rig.adapter.execute(order(rig));
-        assert.equal(result.outcome, 'failed');
+        assert.equal(result.outcome, outcome);
         assert.equal((result as { detail?: string }).detail, detail);
         assert.deepEqual([rig.signer.signatures(), rig.ledger.submitCalls.length, rig.traces.at(-1)?.signingRequests], [0, 0, 0]);
       });
@@ -395,6 +397,8 @@ describe('TRADE-04C-S1 — the executor: no capability, no signature', () => {
       await withRig({ issuer: crossing }, async (rig) => {
         const result = await rig.adapter.execute(order(rig));
         assert.equal((result as { detail?: string }).detail, 'trade-capability-refused', JSON.stringify(change));
+        // H-1: a capability was issued (for the wrong terms) — the Host refused to use it, but it exists: never a terminal failure.
+        assert.equal(result.outcome, 'unconfirmed', JSON.stringify(change));
         assert.deepEqual([rig.signer.signatures(), rig.ledger.submitCalls.length], [0, 0]);
       });
     }

@@ -223,7 +223,8 @@ export async function openReferenceCapabilityLedger(path: string, options: { rea
 /**
  * TRADE-04D — the signer operator's recovery read: what the ledger at `path`
  * holds for one execution. Never creates, migrates or writes (the file must
- * exist; the connection is query-only). Any failure — missing file, foreign
+ * exist; the connection is opened read-only, and is query-only besides).
+ * Any failure — missing file, foreign
  * schema, failed integrity check, unreadable row — answers `unavailable`,
  * never `absent`.
  */
@@ -235,7 +236,9 @@ export async function inspectReferenceCapabilityLedger(path: string, executionId
   let db: import('better-sqlite3').Database | undefined;
   try {
     const { default: Database } = await import('better-sqlite3');
-    db = new Database(file, { fileMustExist: true });
+    // TRADE-04D L-2: SQLITE_OPEN_READONLY, not a writable connection asked to behave — inspection on the
+    // signer's host never writes, checkpoints or recovers the ledger it reads.
+    db = new Database(file, { readonly: true, fileMustExist: true });
     db.pragma('query_only = ON');
     if (!tableExists(db, 'capability_ledger_versions') || !tableExists(db, 'consumed_capabilities')) return unavailable;
     const version = db.prepare('SELECT schema_version FROM capability_ledger_versions WHERE id = 1').get() as { schema_version: unknown } | undefined;

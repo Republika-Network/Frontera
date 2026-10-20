@@ -252,7 +252,8 @@ describe('TRADE-04D D-1 — crash points: no re-signing, no resubmission, the wi
       rig.ledger.autoAdvance = false;
       const { raw, action } = order(rig);
       const result = await rig.adapter.execute(action);
-      assert.deepEqual([result.outcome, 'detail' in result ? result.detail : undefined], ['failed', 'trade-capability-unavailable']);
+      // H-1: the signing call failed, so a capability may exist — unconfirmed, never a terminal failure P11 would have to contradict.
+      assert.deepEqual([result.outcome, 'detail' in result ? result.detail : undefined, 'providerRef' in result ? result.providerRef : undefined], ['unconfirmed', 'trade-capability-unavailable', undefined]);
       const executionId = action.correlation.executionId;
       const intent = (await rig.interlock.readIntent(executionId))!;
       assert.equal(intent.state, 'intended', 'the Host never handed the capability to the signer — and does not release the window for it');
