@@ -74,7 +74,7 @@ function resolverFor(rig: ExecutorRig) {
   const reads = readOnlyTradeRecoveryLedger(rig.ledger.client(NETWORK_ID, rig.interlock));
   return createTradeResolutionAuthority({ networkId: NETWORK_ID, action: ACTION, requestTimeoutMs: 1_000, ledger: readOnlyTradeLedger(rig.ledger.client(NETWORK_ID, rig.interlock)), interlock: rig.interlock, entries: validatedEntryReader(reads, NETWORK_ID) });
 }
-const queryOf = (action: ValidatedExecutionAction) => ({ organizationId: ORG, executionId: action.correlation.executionId, evaluationId: 'eval-h1', requestId: action.correlation.requestId, decisionId: action.correlation.decisionId, boundedGrantId: action.boundedGrantId, action: ACTION });
+const queryOf = (action: ValidatedExecutionAction) => ({ organizationId: ORG, executionId: action.correlation.executionId, evaluationId: 'eval-h1', requestId: action.correlation.requestId, decisionId: action.correlation.decisionId, boundedGrantId: action.boundedGrantId, action: ACTION, basis: 'initial-observation-unconfirmed' as const });
 
 /** Before the issuance call the issuer refused on its own: no capability exists. Terminal failure, exactly as before H-1. */
 const PROVEN_NOT_ISSUED: readonly (readonly [DelegatedOfferCapabilityIssuerFailure, string])[] = [
