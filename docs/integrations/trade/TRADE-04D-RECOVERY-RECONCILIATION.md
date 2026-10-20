@@ -822,7 +822,16 @@ After PR #192 merged (`71c19fc`), an adversarial review confirmed two findings a
 
 ### 22.3 What did not change
 
-No generic contract, CORE-07 slot, witnessed record, schema or migration changed. `expireIntent` and its qualified-proof check are untouched, as is the P11/P12 port, P7, the executor (H-1), the issuer and the signer. No new state, store, route or effect path was added. The interlock's `expired` state was already the local ledger fact that releases the `Sequence` (§17); P12 now honours that same record, so no new trust is placed in the store.
+No generic contract, CORE-07 slot, witnessed record, schema or migration changed. `expireIntent` and its qualified-proof check are untouched, as is the P11/P12 port, P7, the executor (H-1), the issuer and the signer. No new state, store, route or effect path was added.
+
+**Trust change (decision pending).** P2 does change what P12 trusts.
+
+- **What the record is:** `expired` is a local, unanchored transition (§17, "the one local, unanchored intent transition"). Its state digest is an unkeyed hash. It is integrity-checked against corruption and lost conservatively on a restore, but it is not tamper-evident against someone who can write the Host's interlock database.
+- **Before:** P12 closed an `expired` intent only on a fresh ledger read. A forged `expired` on an intent whose transaction was in fact included stayed `unresolved`.
+- **Now:** P12 answers `confirmed-not-completed` from the record, so the same forgery yields a false not-completed and returns its P7 capacity. The Host's `Sequence` release already trusted this record.
+- **Inherent:** without the hash or a historical-ledger read, nothing on the ledger distinguishes "consumed by a later order" from "consumed by this intent's own transaction". P2's liveness therefore requires trusting the recorded proof.
+- **Tamper-evident alternative:** anchor the expiry as a CORE-07 event carrying the proof's ledger and hash. That changes the witnessed history, so it was not done without approval.
+- **Conservative alternative:** keep the fresh-read requirement in P12 (the assessment fix and P1 stand). A stranded execution then closes through the existing operator-attestation path.
 
 ### 22.4 Tests
 
@@ -835,7 +844,23 @@ No generic contract, CORE-07 slot, witnessed record, schema or migration changed
 
 ### 22.5 Validation status
 
-**Not run locally**, for the same reason as §20.6. GitHub Actions on the hardening PR is the validation: its run IDs, counts and SHA are recorded here when they complete. Until then nothing in §22 is a test result. No live XRPL validation is claimed.
+**Not run locally**, for the same reason as §20.6. Executed on GitHub Actions for PR #193 at `e367779`, which contains the code and tests of `ef6bf3b`:
+
+| Workflow | Run | Result |
+|---|---|---|
+| CI — `validate`, `pilot-deployment`, `pilot-acceptance`, `pilot-operations` | 39507905767 | all succeeded |
+| Publishability — `publishability`, `clean-room-consumer`, `protocol-tarball-consumption` | 39507905662 | all succeeded |
+| CodeQL — `javascript-typescript`, `actions` | 39507901733 | succeeded |
+
+- **Root suite:** 12 243 tests: 12 229 passed, 0 failed, 10 skipped, 4 todo (+17 over §20.6: 9 tests, 8 mutants).
+- **Workspaces:** 1 103 passed, 0 failed.
+- **TRADE-04:** all 154 top-level suites passed. That includes `trade04d-p1p2-hardening` (9 of 9) and `trade04d-p1p2-mutation` (8 of 8 mutants detected), with the H-1, D-1 and earlier TRADE-04D mutation suites unchanged and passing.
+
+Limits:
+
+- The Host-level P1 test is not mutation-qualified (the composition cannot be swapped under a booted Host); its port is pinned structurally, and the coordinator's identical port is mutation-qualified.
+- No live XRPL validation is claimed.
+- Later commits on the PR are documentation only; their runs are listed on the PR.
 
 ## 21. Upgrade, backup and downgrade — the forward-only interlock schema (accepted 2026-10-20)
 
