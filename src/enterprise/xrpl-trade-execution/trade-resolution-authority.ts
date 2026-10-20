@@ -3,7 +3,7 @@ import type { ExecutionResolutionAuthority, ExecutionResolutionAuthorityResult, 
 import type { TradeIntentRecord, TradeIntentState, TradeInterlockSettlement, TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
 import type { TradeSequenceEvidence } from './trade-sequence-evidence.js';
 import { readTradeLedgerEvidence, type TradeLedgerReader, type TradeTransactionIdentity } from './trade-ledger-evidence.js';
-import { readTradeSequenceEvidence, recordedTradeSequenceExpiry, type TradeSequenceEntryReader } from './trade-sequence-evidence.js';
+import { readTradeSequenceEvidence, type TradeSequenceEntryReader } from './trade-sequence-evidence.js';
 
 export type { TradeLedgerReader } from './trade-ledger-evidence.js';
 
@@ -42,8 +42,6 @@ export interface TradeResolutionAuthorityOptions {
 }
 
 const UNRESOLVED: ExecutionResolutionAuthorityResult = Object.freeze({ outcome: 'unresolved' });
-/** D-1: an intent's transaction proven never included (expired on the owner-Sequence proof). */
-const NOT_COMPLETED: ExecutionResolutionAuthorityResult = Object.freeze({ outcome: 'resolved', certainty: 'confirmed-not-completed', failure: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED });
 
 /** The identity a ledger answer must match: exactly what the verified interlock row fixed. */
 export function tradeTransactionIdentityOf(record: TradeSubmissionRecord): TradeTransactionIdentity {
@@ -121,10 +119,6 @@ export function createTradeResolutionAuthority(options: TradeResolutionAuthority
     // No hash was ever recorded for it: a reference names something this execution never reserved.
     if (query.providerRef !== undefined) return UNRESOLVED;
     if (intent.evidence.boundedGrantId !== query.boundedGrantId || intent.evidence.decisionId !== query.decisionId || intent.evidence.requestId !== query.requestId) return UNRESOLVED;
-    // P2: `expired` is the qualified proof already recorded. Once the window closed, the released Sequence may be
-    // consumed by a later order, so a fresh read is no evidence about this one; asking again (a restart between
-    // the expiry and P12's record) answers from the record. A malformed record is never a closure.
-    if (intent.state === 'expired') return recordedTradeSequenceExpiry(intent) !== undefined ? NOT_COMPLETED : UNRESOLVED;
     try {
       if (reader === undefined) return UNRESOLVED;
       const evidence = await readTradeSequenceEvidence(reader, intent);
@@ -132,7 +126,7 @@ export function createTradeResolutionAuthority(options: TradeResolutionAuthority
       // The interlock accepts only this proof object, for exactly this window; `expired` already is that fact recorded.
       const state = await interlock.expireIntent!(intent.executionId, evidence);
       if (state !== 'expired') return UNRESOLVED;
-      return NOT_COMPLETED;
+      return Object.freeze({ outcome: 'resolved', certainty: 'confirmed-not-completed', failure: EXECUTION_FAILURE_REASONS.PROVIDER_REJECTED });
     } catch {
       return UNRESOLVED;
     }
