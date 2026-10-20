@@ -2,7 +2,7 @@ import { xrplSequenceWindowBlocks } from '../../features/xrpl-transport/index.js
 import type { TradeIntentRecord, TradeSubmissionRecord } from './sqlite-trade-sequence-interlock.js';
 import type { TradeLedgerEvidence, TradeLedgerEvidenceReason } from './trade-ledger-evidence.js';
 import type { TradeOfferStateAssessment } from './trade-offer-state.js';
-import type { TradeSequenceEvidence } from './trade-sequence-evidence.js';
+import { recordedTradeSequenceExpiry, type TradeSequenceEvidence } from './trade-sequence-evidence.js';
 
 /**
  * TRADE-04D — the **recovery assessment** of one governed trade execution: a
@@ -337,9 +337,15 @@ export function assessTradeRecovery(input: TradeRecoveryInput): TradeRecoveryAss
   if (intentOnly && sequenceEvidence !== undefined) {
     if (sequenceEvidence.status === 'not-included') ledgerOutcome = 'not-included';
     else if (sequenceEvidence.status === 'sequence-consumed') {
-      // Consumed by some transaction — possibly this intent's, signed under a capability the Host never saw leave.
-      uncertainties.push('sequence-consumed-by-unknown-transaction');
-      if (intent.state === 'expired') inconsistencies.push('intent-settlement-contradicts-ledger');
+      const expiry = recordedTradeSequenceExpiry(intent);
+      if (intent.state !== 'expired') {
+        // Consumed by some transaction — possibly this intent's, signed under a capability the Host never saw leave.
+        uncertainties.push('sequence-consumed-by-unknown-transaction');
+      } else if (expiry === undefined || sequenceEvidence.ledgerIndex <= expiry.ledgerIndex) {
+        // Consumed at or before the ledger the recorded proof saw it unconsumed (a Sequence never moves back), or no proof on record.
+        inconsistencies.push('intent-settlement-contradicts-ledger');
+      }
+      // P2: otherwise consumed after the recorded proof — the released Sequence reused by a later transaction, which the expiry permits.
     } else if (sequenceEvidence.reason === 'sequence-regressed') inconsistencies.push('ledger-binding-mismatch');
     else if (sequenceEvidence.reason === 'window-open') uncertainties.push('outcome-pending-window-open');
     else uncertainties.push('ledger-evidence-unavailable');

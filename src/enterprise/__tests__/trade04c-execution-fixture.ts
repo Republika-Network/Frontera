@@ -109,6 +109,8 @@ export interface LedgerFaults {
   tamperLookup?: (answer: Record<string, unknown>) => unknown;
   /** TRADE-04D: the validated index read through `validatedLedgerIndex` (not `server_info`) is shifted by this much. */
   validatedIndexSkew?: number;
+  /** TRADE-04D P1: connecting fails (the endpoint cannot be reached). */
+  connectThrows?: boolean;
 }
 
 export class FakeXrplLedger {
@@ -129,6 +131,14 @@ export class FakeXrplLedger {
   private readonly startCloseTime = Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
   private readonly firstIndex = 1_000;
   connected = false;
+  /**
+   * TRADE-04D P1: when true, a client answers a read only after **that** client
+   * connected — as a real XRPL client refuses a request before `connect()` — so
+   * no read can lean on a connection another client opened. Off by default.
+   */
+  strictConnections = false;
+  /** TRADE-04D P1: connections actually opened (a `connect()` on a client that was not connected), across all clients. */
+  connectionsOpened = 0;
 
   hashOf(index: number): string {
     return HASH(index * 7919 + 17);
@@ -345,18 +355,28 @@ export class FakeXrplLedger {
   }
 
   client(networkId: number, authority: XrplReservedSubmissionAuthority) {
+    let connected = false;
+    const read = <T>(answer: () => T): T => {
+      if (this.strictConnections && !connected) throw Object.assign(new Error('not connected'), { name: 'NotConnectedError' });
+      return answer();
+    };
     return {
       connect: async () => {
+        // A connected client's connect() is a no-op, as the SDK's is: only opening a connection can fail.
+        if (!connected && this.faults.connectThrows === true) throw new Error('unreachable');
+        if (!connected) this.connectionsOpened += 1;
+        connected = true;
         this.connected = true;
       },
       disconnect: async () => {
+        connected = false;
         this.connected = false;
       },
-      serverInfo: async () => this.serverInfo(),
-      ledgerHeader: async (index: number) => this.ledgerHeader(index),
-      ledgerEntry: async (request: Readonly<Record<string, unknown>>) => this.ledgerEntry(request),
-      validatedLedgerIndex: async () => this.validatedIndex + (this.faults.validatedIndexSkew ?? 0),
-      lookupTransaction: async (query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }) => this.lookupTransaction(query),
+      serverInfo: async () => read(() => this.serverInfo()),
+      ledgerHeader: async (index: number) => read(() => this.ledgerHeader(index)),
+      ledgerEntry: async (request: Readonly<Record<string, unknown>>) => read(() => this.ledgerEntry(request)),
+      validatedLedgerIndex: async () => read(() => this.validatedIndex + (this.faults.validatedIndexSkew ?? 0)),
+      lookupTransaction: async (query: { readonly hash: string; readonly minLedger: number; readonly maxLedger: number }) => read(() => this.lookupTransaction(query)),
       submitReserved: (executionId: string, blob: string) => this.submitReserved(authority, networkId, executionId, blob),
     };
   }

@@ -91,6 +91,44 @@ export function isQualifiedTradeSequenceProof(value: unknown, window: TradeSeque
   );
 }
 
+/** The validated ledger an `expired` intent's owner-`Sequence` proof was taken at, as the interlock recorded it. */
+export interface TradeRecordedSequenceExpiry {
+  readonly ledgerIndex: number;
+  readonly ledgerHash: string;
+}
+
+/** `expireOnProof`'s transition detail (`sqlite-trade-sequence-interlock.ts`): `unconsumed.<validated index>.<validated ledger hash>`. */
+const RECORDED_EXPIRY = /^unconsumed\.([1-9][0-9]{0,9})\.([0-9A-F]{64})$/;
+
+/**
+ * TRADE-04D P2 — the proof an `expired` intent already carries. The interlock
+ * writes `expired` only on a qualified proof for exactly the intent's window,
+ * and records that proof's validated ledger with the transition. From then on
+ * the recorded fact is the evidence: the window closed with the `Sequence`
+ * unconsumed, so the intent's transaction can never be included, and the
+ * released `Sequence` is the owner's next one — a later transaction consuming
+ * it says nothing about this intent.
+ *
+ * Answers the recorded ledger, or `undefined` when the intent is not
+ * `expired`, has not exactly one `expired` transition, or that transition does
+ * not carry a well-formed proof at or past `LastLedgerSequence`. An
+ * `undefined` record is never trusted as a closure.
+ */
+export function recordedTradeSequenceExpiry(intent: {
+  readonly state: string;
+  readonly lastLedgerSequence: number;
+  readonly transitions: readonly { readonly to: string; readonly detail?: string }[];
+}): TradeRecordedSequenceExpiry | undefined {
+  if (intent.state !== 'expired') return undefined;
+  const expiries = intent.transitions.filter((transition) => transition.to === 'expired');
+  if (expiries.length !== 1) return undefined;
+  const match = RECORDED_EXPIRY.exec(expiries[0]!.detail ?? '');
+  if (match === null) return undefined;
+  const ledgerIndex = Number(match[1]);
+  if (!Number.isSafeInteger(ledgerIndex) || ledgerIndex > 0xffff_ffff || ledgerIndex < intent.lastLedgerSequence) return undefined;
+  return Object.freeze({ ledgerIndex, ledgerHash: match[2]! });
+}
+
 export async function readTradeSequenceEvidence(reader: TradeSequenceEntryReader, window: TradeSequenceWindow): Promise<TradeSequenceEvidence> {
   let read: Awaited<ReturnType<TradeSequenceEntryReader['ledgerEntry']>>;
   try {
