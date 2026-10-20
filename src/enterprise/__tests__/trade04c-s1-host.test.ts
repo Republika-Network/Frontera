@@ -153,7 +153,7 @@ describe('TRADE-04C-S1 §7 — the shipped Host against a real separate-process 
       const authorityPublicKeyFile = join(dir, 'authority.pub');
       writeFileSync(authorityPublicKeyFile, AUTHORITY_KEY_A.publicKeyPem);
       const ledgerPath = join(dir, 'capability-ledger.sqlite');
-      const signer = await spawnOfferSigner({ keyFile, signerId: SIGNER_ID, credential: SIGNER_TOKEN, authorityKeyId: AUTHORITY_KEY_A.keyId, authorityPublicKeyFile, trustDomain: TRUST_DOMAIN, organizationId: ORG, ledgerPath });
+      const signer = await spawnOfferSigner({ keyFile, signerId: SIGNER_ID, credential: SIGNER_TOKEN, authorityKeyId: AUTHORITY_KEY_A.keyId, authorityPublicKeyFile, trustDomain: TRUST_DOMAIN, organizationId: ORG, ledgerPath, initializeLedger: true });
       stop = () => signer.stop();
       const trade = await bootTradeHost(workspace, { ledger, pair: { owner, delegate }, signerEndpoint: signer.endpoint });
       try {

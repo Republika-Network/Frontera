@@ -235,8 +235,14 @@ describe('TRADE-04C Scenario E — tampering: a valid signature over a different
       assert.equal(trade.traces.at(-1)?.detail, 'trade-signer-refused');
       assert.equal(await tradeRecord(trade, reply.body['executionId'] as string), undefined, 'nothing reserved');
       trade.signer.tamper = undefined;
-      const after = await governTrade(trade, proposalFor(trade, '41'));
-      assert.equal(after.body['status'], 'executed', 'an honest refusal does not contradict the pin: the next authorized order executes');
+      // TRADE-04D D-1: the signer WAS contacted, so its refusal is not proof that no signature exists — the intent holds the owner Sequence until the ledger passes LastLedgerSequence.
+      const held = await governTrade(trade, proposalFor(trade, '41'));
+      assert.notEqual(held.body['status'], 'executed', held.text);
+      assert.equal(trade.traces.at(-1)?.detail, 'trade-sequence-in-flight', 'the refused attempt’s window is held, never released on the signer’s word');
+      assert.equal(trade.ledger.submitCalls.length, before.sends);
+      trade.ledger.advance(21);
+      const after = await governTrade(trade, proposalFor(trade, '42'));
+      assert.equal(after.body['status'], 'executed', 'an honest refusal does not contradict the pin: once the ledger closes the window, the next authorized order executes');
       assert.equal(trade.ledger.submitCalls.length, before.sends + 1);
     } finally {
       await trade.signer.close();

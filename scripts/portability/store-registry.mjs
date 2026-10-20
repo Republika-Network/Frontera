@@ -293,7 +293,7 @@ export const STORE_DEFINITIONS = Object.freeze([
     condition: 'xrpl-trade-execution',
     purpose: 'TRADE-04C: every delegated OfferCreate the governed trade executor signed, reserved before its one submission and claimed by the submit site, with its owner sequence window, evidence and settlement',
     version: { kind: 'versions-table', table: 'trade_interlock_store_versions', migrationState: true },
-    supportedSchemaVersionsOf: ({ tradeInterlock }) => [tradeInterlock.TRADE_INTERLOCK_STORE_SCHEMA_VERSION],
+    supportedSchemaVersionsOf: ({ tradeInterlock }) => [...tradeInterlock.TRADE_INTERLOCK_SUPPORTED_SCHEMA_VERSIONS],
     recordTable: 'trade_reservations',
     integrity: 'identity and state digests, forward-only lifecycle triggers, append-only transition log and anchored-event log (unsigned); the reservation-and-claim history is anchored at the CORE-07 witness, so a rolled-back or stale copy is refused at the next start (slot trade-sequence-reservations; not a signed store)',
     // No scope: verification adopts the file's own recorded scope, verifies every record and creates nothing.

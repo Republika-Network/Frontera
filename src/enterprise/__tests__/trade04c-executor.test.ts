@@ -56,6 +56,14 @@ function assertRefusedUnsigned(rig: ExecutorRig, result: ExecutionAdapterResult,
   assert.equal(rig.ledger.submitCalls.length, 0, 'nothing sent');
 }
 
+/** TRADE-04D H-1: refused after a capability may exist — never a terminal failure; no provider reference (no reservation, no Host hash); nothing sent. */
+function assertUncertainUnsent(rig: ExecutorRig, result: ExecutionAdapterResult, expected: string): void {
+  assert.equal(result.outcome, 'unconfirmed', JSON.stringify(result));
+  assert.equal(detail(result), expected, JSON.stringify(result));
+  assert.equal('providerRef' in result ? result.providerRef : undefined, undefined, 'no provider reference without a reservation');
+  assert.equal(rig.ledger.submitCalls.length, 0, 'nothing sent');
+}
+
 const withParameter = (action: ValidatedExecutionAction, dimension: string, value: string): ValidatedExecutionAction =>
   ({ ...action, parameters: action.parameters!.map((parameter) => (parameter.dimension === dimension ? { ...parameter, value } : parameter)) }) as ValidatedExecutionAction;
 
@@ -325,7 +333,7 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
         const adapter = await adapterOver(rig, { signer: port });
         const { action } = order(rig);
         const result = await adapter.execute(action);
-        assert.equal(detail(result), D.SIGNATURE_REJECTED, JSON.stringify(result));
+        assertUncertainUnsent(rig, result, D.SIGNATURE_REJECTED);
         assert.equal(await rig.interlock.recorded(action.correlation.executionId), undefined, 'nothing reserved');
       }
       assert.equal(rig.ledger.submitCalls.length, 0);
@@ -337,7 +345,7 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
       await rig.signer.close();
       const { action } = order(rig);
       const result = await rig.adapter.execute(action);
-      assert.equal(detail(result), D.SIGNER_UNAVAILABLE);
+      assertUncertainUnsent(rig, result, D.SIGNER_UNAVAILABLE);
       assert.equal(rig.ledger.submitCalls.length, 0);
       assert.equal(await rig.interlock.recorded(action.correlation.executionId), undefined);
     });
@@ -350,13 +358,15 @@ describe('TRADE-04C C — the signer is untrusted: only exactly the prepared off
       const narrow = signerClient(rig.signer.endpoint, rig.pairs, { lastLedgerOffset: 10 });
       const adapter = await adapterOver(rig, { configuration: executorConfiguration(rig.pairs, { lastLedgerOffset: 30 }), signer: narrow });
       const { action } = order(rig);
-      assertRefusedUnsigned(rig, await adapter.execute(action), D.SIGNER_REFUSED);
+      // H-1: the capability was already issued, so even a refusal the client makes before sending is not a terminal failure.
+      assertUncertainUnsent(rig, await adapter.execute(action), D.SIGNER_REFUSED);
+      assert.equal(rig.signer.signatures(), 0, 'nothing signed');
     });
   });
 
   it('configuration: fee above its ceiling, offset outside the shared historical bound, mainnet, or a duplicated owner is refused', () => {
     const pairs = [{ owner: testDelegate().address, delegate: testDelegate() }];
-    const base = { attested: { attestedProposal: () => undefined }, signer: { signDelegatedOffer: async () => undefined as never }, authorization: { trustDomain: S1_TRUST_DOMAIN, issuer: testCapabilityIssuer() }, ledger: new FakeXrplLedger().client(NETWORK_ID, { claimSubmission: async () => {} }), interlock: { recorded: async () => undefined, blocking: async () => false, reserve: async () => ({ outcome: 'blocked' as const }), markUnconfirmed: async () => {}, settle: async () => {} }, ledgerProvenance: 'injected-ledger-client' as const };
+    const base = { attested: { attestedProposal: () => undefined }, signer: { signDelegatedOffer: async () => undefined as never }, authorization: { trustDomain: S1_TRUST_DOMAIN, issuer: testCapabilityIssuer() }, ledger: new FakeXrplLedger().client(NETWORK_ID, { claimSubmission: async () => {} }), interlock: { recorded: async () => undefined, readIntent: async () => undefined, blocking: async () => false, recordIntent: async () => ({ outcome: 'blocked' as const }), markSigning: async () => {}, abandonIntent: async () => 'abandoned' as const, reserve: async () => ({ outcome: 'blocked' as const }), markUnconfirmed: async () => {}, settle: async () => {} }, ledgerProvenance: 'injected-ledger-client' as const };
     for (const overrides of [{ feeDrops: '101' }, { maximumFeeDrops: '1000001' }, { lastLedgerOffset: 201 }, { lastLedgerOffset: 1 }, { network: 'xrp-ledger-mainnet' as never }, { observationSpanLedgers: 11 }]) {
       assert.throws(() => createTradeOfferExecutionAdapter({ ...base, configuration: executorConfiguration(pairs, overrides) }), TradeExecutorConfigurationError, JSON.stringify(overrides));
     }
@@ -534,7 +544,8 @@ describe('TRADE-04C D/E — durable reservation, one submission, uncertainty pre
       const adapter = await adapterOver(rig, { interlock });
       const { action } = order(rig);
       const result = await adapter.execute(action);
-      assert.equal(detail(result), D.RESERVATION_FAILED);
+      // H-1: a verified signature exists (discarded here, but the signer produced it) — unconfirmed, never failed.
+      assertUncertainUnsent(rig, result, D.RESERVATION_FAILED);
       assert.equal(rig.signer.signatures(), 1);
       assert.equal(rig.ledger.submitCalls.length, 0);
     });

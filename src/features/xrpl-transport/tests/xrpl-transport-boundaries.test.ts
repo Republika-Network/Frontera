@@ -216,8 +216,13 @@ describe('TRADE-04A shared XRPL transport — boundaries', () => {
       'src/enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.ts',
       'src/enterprise/xrpl-trade-execution/host-composition.ts',
       'src/enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.ts',
+      // TRADE-04D: the read-only trade evidence contract (wraps readXrplInclusion / xrplNonInclusionProven), the offer-state reading,
+      // the recovery assessment (blocking rule) and coordinator (validated reader); the P12 authority now reads through the evidence contract.
+      'src/enterprise/xrpl-trade-execution/trade-ledger-evidence.ts',
       'src/enterprise/xrpl-trade-execution/trade-offer-executor.ts',
-      'src/enterprise/xrpl-trade-execution/trade-resolution-authority.ts',
+      'src/enterprise/xrpl-trade-execution/trade-offer-state.ts',
+      'src/enterprise/xrpl-trade-execution/trade-recovery-assessment.ts',
+      'src/enterprise/xrpl-trade-execution/trade-recovery-coordinator.ts',
       // TRADE-04C-S1: the signer's capability check, for the exact single-signing preimage digest (xrpl-signature.ts: bytes only).
       'src/enterprise/xrpl-trade-rail/delegated-offer-authorization.ts',
       'src/enterprise/xrpl-trade-rail/delegated-offer-protocol.ts',

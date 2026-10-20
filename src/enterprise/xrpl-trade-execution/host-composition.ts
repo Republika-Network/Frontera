@@ -4,7 +4,7 @@ import {
   type XrplReservedSubmissionAuthority,
   type XrplReservedSubmissionConfiguration,
 } from '../../features/payment-runtime/rails/xrpl/index.js';
-import type { XrplSequenceDomain } from '../../features/xrpl-transport/index.js';
+import { createXrplValidatedLedgerReader, type XrplSequenceDomain } from '../../features/xrpl-transport/index.js';
 import { createDelegatedOfferCapabilityIssuerSlot, type DelegatedOfferCapabilityIssuerSlot } from '../authority-authenticity/delegated-offer-capability-issuer.js';
 import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
 import { isAuthorityStateFreshnessBoundary, type AuthorityStateFreshnessBoundary } from '../authority-state-freshness/session.js';
@@ -17,6 +17,7 @@ import { XRPL_TRADE_EXECUTOR_ID, tradeExecutionNetworkId, type EnterpriseHostXrp
 import { createSqliteTradeSequenceInterlock, type DurableTradeSequenceInterlock } from './sqlite-trade-sequence-interlock.js';
 import { tradeExecutionEvidenceOf, type TradeExecutionEvidenceRecord } from './trade-execution-evidence.js';
 import { createTradeOfferExecutionAdapter, type TRADE_EXECUTION_SIMULATION_ACKNOWLEDGEMENT, type TradeExecutionLedger, type TradeExecutionTrace, type TradeOfferExecutionAdapter } from './trade-offer-executor.js';
+import { createTradeRecoveryCoordinator, readOnlyTradeRecoveryLedger, type TradeRecoveryContext, type TradeRecoveryReport } from './trade-recovery-coordinator.js';
 import { TRADE_RESOLUTION_AUTHORITY_ID, createTradeResolutionAuthority, readOnlyTradeLedger } from './trade-resolution-authority.js';
 
 export const XRPL_TRADE_EXECUTOR_MODULE_ID = 'aoc.enterprise.xrpl-trade-executor';
@@ -81,6 +82,14 @@ export interface ComposedXrplTradeExecution {
   readonly capabilities: DelegatedOfferCapabilityIssuerSlot;
   /** The trade evidence record for one execution (the verified interlock row), or `undefined`. */
   evidence(executionId: string): Promise<TradeExecutionEvidenceRecord | undefined>;
+  /**
+   * TRADE-04D: the read-only recovery assessment and operator diagnostic for
+   * one execution — over the verified interlock row, validated evidence read
+   * through the six-read recovery ledger view, and what the caller supplies
+   * (its P11/P12 view, the signer operator's report). Writes nothing, settles
+   * nothing, releases nothing, grants nothing. In process only: no route.
+   */
+  recovery(executionId: string, context?: TradeRecoveryContext): Promise<TradeRecoveryReport>;
   close(): Promise<void>;
 }
 
@@ -104,6 +113,7 @@ export function xrplTradeSequenceDomain(configuration: EnterpriseHostXrplTradeEx
  * 3. ledger client      the reserved submission client, bound to THIS interlock (G2); a second, read-only one for P12
  * 4. executor           ExecutionAdapter; readiness proves the network (mismatch → refuse; unreachable → degraded)
  * 5. resolver           the read-only P12 authority
+ * 6. recovery           TRADE-04D: the read-only recovery coordinator (assessment + diagnostic; no route, no write)
  * ```
  *
  * The signer and the submission capability are handed to the executor and to
@@ -174,7 +184,31 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
     const readiness = await adapter.readiness();
     if (readiness.status === 'unavailable' && readiness.detail === 'XRPL_READ_NETWORK_MISMATCH') throw new XrplTradeCompositionError('XRPL_TRADE_NETWORK_MISMATCH', 'The configured XRPL endpoint reports a different network than the trade executor is configured for; it is not composed.');
 
-    const authority = createTradeResolutionAuthority({ networkId, action: configuration.tradeAction, requestTimeoutMs: configuration.executor.requestTimeoutMs, ledger: readOnlyTradeLedger(resolverClient), interlock });
+    // TRADE-04D D-1: the resolver also reads the owner's validated AccountRoot — the shared validated reader over the read-only six-read view — to close a signing intent on the owner-Sequence proof.
+    const resolverReads = readOnlyTradeRecoveryLedger(resolverClient);
+    const ownerSequenceReader = createXrplValidatedLedgerReader({
+      port: Object.freeze({ serverInfo: () => resolverReads.serverInfo(), ledgerHeader: (index: number) => resolverReads.ledgerHeader(index), ledgerEntry: (request: Readonly<Record<string, unknown>>) => resolverReads.ledgerEntry(request) }),
+      networkId,
+      maxValidatedLedgerAgeSeconds: configuration.executor.maxValidatedLedgerAgeSeconds,
+      requestTimeoutMs: configuration.executor.requestTimeoutMs,
+      maxResponseBytes: 65_536,
+    });
+    const authority = createTradeResolutionAuthority({
+      networkId,
+      action: configuration.tradeAction,
+      requestTimeoutMs: configuration.executor.requestTimeoutMs,
+      ledger: readOnlyTradeLedger(resolverClient),
+      interlock,
+      entries: ownerSequenceReader,
+    });
+    // TRADE-04D: the recovery coordinator shares the resolver's client, through its own six-read view, and the interlock's read only.
+    const recovery = createTradeRecoveryCoordinator({
+      networkId,
+      requestTimeoutMs: configuration.executor.requestTimeoutMs,
+      maxValidatedLedgerAgeSeconds: configuration.executor.maxValidatedLedgerAgeSeconds,
+      ledger: readOnlyTradeRecoveryLedger(resolverClient),
+      interlock: { read: (executionId: string) => interlock.read(executionId), readIntent: (executionId: string) => interlock.readIntent(executionId), health: () => interlock.health() },
+    });
 
     let closed: Promise<void> | undefined;
     const close = (): Promise<void> => (closed ??= closeAll());
@@ -285,6 +319,7 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
         const record = await interlock.read(executionId);
         return record === undefined ? undefined : tradeExecutionEvidenceOf(record, networkId);
       },
+      recovery: (executionId: string, context?: TradeRecoveryContext) => recovery.assess(executionId, context),
       close,
     });
   } catch (error) {

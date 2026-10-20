@@ -199,6 +199,13 @@ export function memoryCapabilityLedger(): ReferenceCapabilityLedger & { readonly
       const row = rows.get(capabilityId);
       return row === undefined ? undefined : { state: row.state, ...(row.transactionHash !== undefined ? { transactionHash: row.transactionHash } : {}) };
     },
+    inspect(executionId) {
+      const found = [...rows.entries()].find(([, row]) => row.executionId === executionId);
+      if (found === undefined) return { source: 'customer-signer-ledger', executionId, state: 'absent' };
+      const [capabilityId, row] = found;
+      if (row.state === 'signed') return { source: 'customer-signer-ledger', executionId, state: 'signed', capabilityId, transactionHash: row.transactionHash! };
+      return { source: 'customer-signer-ledger', executionId, state: row.state, capabilityId };
+    },
     counts() {
       const out: Record<ReferenceCapabilityState, number> = { consumed: 0, signed: 0, 'signing-failed': 0 };
       for (const row of rows.values()) out[row.state] += 1;
@@ -212,7 +219,7 @@ export function memoryCapabilityLedger(): ReferenceCapabilityLedger & { readonly
 export async function tempCapabilityLedger(): Promise<{ readonly ledger: ReferenceCapabilityLedger; readonly path: string; readonly dir: string; cleanup(): void }> {
   const dir = mkdtempSync(join(tmpdir(), 'trade04c-s1-ledger-'));
   const path = join(dir, 'capability-ledger.sqlite');
-  const ledger = await openReferenceCapabilityLedger(path);
+  const ledger = await openReferenceCapabilityLedger(path, { create: true });
   return {
     ledger,
     path,
@@ -301,9 +308,15 @@ export async function spawnOfferSigner(options: {
   readonly ledgerPath: string;
   readonly port?: number;
   readonly maximumFeeDrops?: string;
+  /** TRADE-04D: run the launcher's explicit `init-consumption-ledger` first (a new signer). Restarts never pass it. */
+  readonly initializeLedger?: boolean;
 }): Promise<SpawnedOfferSigner> {
-  const { spawn } = await import('node:child_process');
+  const { spawn, spawnSync } = await import('node:child_process');
   const script = join(process.cwd(), 'scripts', 'run-reference-xrpl-offer-signer.mjs');
+  if (options.initializeLedger === true) {
+    const init = spawnSync(process.execPath, [script, 'init-consumption-ledger'], { env: { PATH: process.env['PATH'] ?? '', FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER: options.ledgerPath }, encoding: 'utf8' });
+    if (init.status !== 0) throw new Error(`init-consumption-ledger failed: ${init.stderr}`);
+  }
   const child = spawn(process.execPath, [script], {
     env: {
       PATH: process.env['PATH'] ?? '',

@@ -563,6 +563,12 @@ Offer-state reconstruction from validated metadata (resting, partially filled, f
 drills on a real ledger; per-owner throughput beyond one order per validated ledger (pending-Sequence
 chaining).
 
+> **Annotation (TRADE-04D, 2026-10-15).** This list was reconciled with TRADE-00 §12.2/§18 in
+> `TRADE-04D-RECOVERY-RECONCILIATION.md` §1.L. TRADE-04D delivered metadata offer-effect classification with a
+> point-in-time validated snapshot, a read-only operator recovery diagnostic (in-process; no route), and offline
+> recovery drills. OfferCancel, continuous lifecycle tracking and pending-Sequence chaining remain with TRADE-07,
+> and real-ledger drills with TRADE-05. The text above is kept as written.
+
 ## 32. Explicitly deferred to TRADE-05 (live Testnet, separately authorized)
 
 Funded Testnet owner and delegate accounts, a real XLS-75 delegation, the reference (or customer) signer on
@@ -689,3 +695,5 @@ unmutated baselines hold).**
 | proposal binding removed (rule builder) | mandatory provider | contained — factory rule-set check |
 | edge binding removed from the guard | provider qualified for profile @4 on an @3 Host | contained — `trade-risk-profile-pinned` denies, 0 / 0 |
 | approvalPolicy conflict accepted | approvalPolicy for another profile | contained — provenance check (`HOST_TRADE_POLICY_REQUIRED`) |
+
+> **Annotation (TRADE-04D D-1, 2026-10-15).** The trade interlock is now schema **v2**: a durable, CORE-07-anchored pre-signing *intent* precedes capability issuance, and a `signing` marker precedes signer contact; the reservation described here continues that intent and is otherwise unchanged. A v1 file is migrated in place once, after verification and CORE-07 establishment. The order in §§ above is historical TRADE-04C evidence; the current order is `TRADE-04D-RECOVERY-RECONCILIATION.md` §17.

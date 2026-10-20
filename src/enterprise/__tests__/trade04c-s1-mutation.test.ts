@@ -210,7 +210,7 @@ async function withLedger(m: LedgerModule, run: (ledger: Awaited<ReturnType<Ledg
   const space = await tempCapabilityLedger();
   space.ledger.close();
   rmSync(space.path, { force: true });
-  const ledger = await m.openReferenceCapabilityLedger(space.path);
+  const ledger = await m.openReferenceCapabilityLedger(space.path, { create: true });
   try {
     return run(ledger);
   } finally {

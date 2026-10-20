@@ -185,6 +185,8 @@ FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_TRUST_DOMAIN / _ORGANIZATION_ID
 FRONTERA_REFERENCE_XRPL_OFFER_SIGNER_CONSUMPTION_LEDGER
 ```
 
+*TRADE-04D:* the ledger is no longer created on first start. A new signer runs `node scripts/run-reference-xrpl-offer-signer.mjs init-consumption-ledger` once, which is refused if anything already exists at the path. Serving refuses a missing ledger. `inspect-capability <executionId>` is the operator's read-only recovery query (TRADE-04D §4).
+
 ## 12. Security results (§6 of the milestone)
 
 | Requirement | Evidence | Result |
@@ -236,7 +238,7 @@ Additionally, TRADE-04B's 15 and TRADE-04C's mutants still pass. TRADE-04C's `ch
   - P11 execution identity is Host-attested, not independently proven;
   - customer signers must implement v2 faithfully;
   - EP-073 stays DEPLOYMENT-GATED.
-- **TRADE-04D:** reconcile `consumed` capabilities without a hash after a signer crash (the execution is never re-signed); recover from a capability that was consumed but whose order was not submitted.
+- **TRADE-04D:** reconcile `consumed` capabilities without a hash after a signer crash (the execution is never re-signed); recover from a capability that was consumed but whose order was not submitted. *(Done offline, TRADE-04D §4: the ledger is no longer created implicitly — `init-consumption-ledger` / `create: true` — it is read for recovery by `inspect-capability`, and the Host treats the report as a hint. The rollback limitation stands, TRADE-04D §14.)*
 - **TRADE-05:** a live Testnet run with a customer-operated v2 signer and external authority custody offering the extension.
 
 ## 16. Validation and verdict
