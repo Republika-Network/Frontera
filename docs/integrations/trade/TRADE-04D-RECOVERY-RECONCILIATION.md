@@ -863,4 +863,16 @@ The same forgery also releases the intent's window in the interlock's blocking r
 
 ### 22.5 Validation status
 
-**Not run locally** (§20.6). GitHub Actions on PR #193 is the validation; its run IDs and counts are recorded on the PR. No live XRPL validation is claimed.
+**Not run locally** (§20.6). Executed on GitHub Actions for PR #193 at `930690c` (P1 kept, P2 withdrawn):
+
+| Workflow | Run | Result |
+|---|---|---|
+| CI — `validate`, `pilot-deployment`, `pilot-acceptance`, `pilot-operations` | 39516147137 | all succeeded |
+| Publishability — `publishability`, `clean-room-consumer`, `protocol-tarball-consumption` | 39516147155 | all succeeded |
+| CodeQL — `javascript-typescript`, `actions` | 39516141969 | succeeded |
+
+- **Root suite:** 12 232 tests: 12 218 passed, 0 failed, 10 skipped, 4 todo (+6 over §20.6).
+- **New suites:** `trade04d-p1-resolver-connection` 3 of 3; `trade04d-p1-mutation` 1 of 1 mutant detected; `trade04d-forged-expiry` 2 of 2.
+- **Existing suites:** TRADE-04D recovery, H-1, D-1 and their mutation suites, P7, P11/P12 and CORE-07 all passed.
+
+The next commit adds a verification-mode check that the Host's own store accepts the forged row (independent review, finding 3); its runs are listed on the PR. No live XRPL validation is claimed.

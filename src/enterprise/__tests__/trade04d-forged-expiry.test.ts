@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import type { ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
 import { computeDigest } from '../governance-store/digest.js';
 import {
+  createSqliteTradeSequenceInterlock,
   createTradeOfferExecutionAdapter,
   createTradeRecoveryCoordinator,
   createTradeResolutionAuthority,
@@ -186,6 +187,13 @@ describe('TRADE-04D — a forged local expiry never closes an execution', () => 
       trade.ledger.fund(intentRow.account, intentRow.sequence + 1);
       trade.ledger.advance(intentRow.last_ledger_sequence - trade.ledger.validatedIndex + 1);
       forgeExpired(interlockPath, executionId, { ledgerIndex: trade.ledger.validatedIndex, ledgerHash: trade.ledger.hashOf(trade.ledger.validatedIndex) });
+      // The production store's own decode accepts the forged row (verification open of the Host's file): P12's refusal below is the ledger's, not the store's.
+      const verifier = await createSqliteTradeSequenceInterlock(interlockPath, { now: () => new Date().toISOString() });
+      try {
+        assert.equal((await verifier.readIntent(executionId))?.state, 'expired', 'the forgery passes the store’s unkeyed integrity checks: the residual under test');
+      } finally {
+        await verifier.close();
+      }
 
       for (let pass = 0; pass < 2; pass += 1) {
         const answer = (await trade.host.enterprise.executionReconciliation!.reconcile({ organizationId: HOST_ORG, executionId })) as { readonly outcome: string };
