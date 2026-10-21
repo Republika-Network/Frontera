@@ -74,6 +74,7 @@ For each threat: **mitigations in place**, and residual assessment.
 
 ### 7.2 Replay risks
 - Evaluate: `Idempotency-Key` is tenant-scoped (`org:{id}` / `global`); same key + same payload digest → recorded replay; same key + different payload → `409 GOVERNANCE_IDEMPOTENCY_CONFLICT`.
+- Request-id cross-path pre-squatting (G-01B0): the evaluate route and the governed-action path share one request-id space. The evaluate route refuses caller request ids in the server-derived `aoc.` namespace (SEC-INV-335), and a governed-action probe is answered only by its own claim, never by a record another path left at its request id (SEC-INV-336). **Residual:** actor and organization on the evaluate route remain caller-asserted (G-01A); the cross-tenant request-id existence oracle (409) and other readers of governed request ids are G-01B1 — `docs/security/G-01B0-REQUEST-ID-ISOLATION.md`.
 - Passport issuance: body `idempotencyKey` with subject-digest comparison; replay returns the existing passport.
 - Passport events: contiguous `sequence` + `UNIQUE(passport_id, sequence)` + chain digests make replayed/duplicated events unappendable.
 - **Residual:** non-idempotent writes (signals, manual reviews, finding events) can be submitted twice with distinct ids by an authorized caller — that is attributable data, append-only, and visible in history; not silently deduplicated by design.

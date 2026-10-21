@@ -33,6 +33,7 @@ import {
   onboard,
   release,
   restart,
+  seedHistoricalEvaluateRecord,
   transfer,
   transition,
   type BootedProd02,
@@ -618,11 +619,14 @@ describe('PROD-03-01 — authorization, disclosure and the trace model', () => {
 describe('PROD-03-01 review fixes — evaluation-only identity and the disclosed classification', () => {
   it('an evaluate-route decision whose caller chose a governed-shaped request id stays evaluation-only', async () => {
     const spoofed = `aoc.gar:${'ab'.repeat(16)}`;
-    const evaluated = await call(booted.baseUrl, 'POST', '/api/governance/evaluate', { authorization: `Bearer ${deployment.secrets.legacyKey}`, body: buildDeniedRequestBody({ requestId: spoofed, organization: { id: ORG } }) });
-    // A denial is answered 422 by the evaluate route; either way the decision is committed to the Governance Store.
-    assert.ok(evaluated.status === 200 || evaluated.status === 422, evaluated.text);
-    assert.equal(evaluated.body['requestId'], spoofed);
-    assert.equal(typeof (evaluated.body['governanceRecord'] as Record<string, unknown> | undefined)?.['evaluationId'], 'string', 'the decision was recorded');
+    // G-01B0: the evaluate route now refuses a request id in the server-derived namespace.
+    const refusedAtIngress = await call(booted.baseUrl, 'POST', '/api/governance/evaluate', { authorization: `Bearer ${deployment.secrets.legacyKey}`, body: buildDeniedRequestBody({ requestId: spoofed, organization: { id: ORG } }) });
+    assert.equal(refusedAtIngress.status, 400, refusedAtIngress.text);
+    assert.equal((refusedAtIngress.body['error'] as Record<string, unknown>)['code'], 'INVALID_REQUEST');
+    // A record committed that way before G-01B0 is still in the store: seed one exactly as the
+    // evaluate route committed it (system context, the body's organization and actor, no claim).
+    const evaluationId = await seedHistoricalEvaluateRecord(deployment, dataDir, booted, spoofed);
+    assert.equal(typeof evaluationId, 'string', 'the historical decision is recorded');
     const view = await viewOf(spoofed);
     assert.equal(view.classification, 'evaluation-only', 'the request id’s shape does not make it governed');
     assert.equal(view.attentionRequired, false);

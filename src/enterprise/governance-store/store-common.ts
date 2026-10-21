@@ -7,7 +7,7 @@ import { redactSensitiveValues } from './redaction.js';
 import { eventRecordDigestInput } from './projection.js';
 import { isDefinitiveExecutionSummary } from '../governed-action/execution-summary.js';
 import { isGovernedActionIdempotencyClaim } from '../governed-action/identifiers.js';
-import { GOVERNANCE_REFERENCE_TYPES, GOVERNANCE_STORE_CONTRACT_IDS, isCanonicalGovernanceReferenceType, type GovernanceEventRecord, type GovernanceRecord, type GovernanceRecordSummary, type GovernanceGovernedPathFilter, type GovernanceIdempotencyRecord, type GovernanceStoreAccessContext, type GovernanceStoreQuery } from './contracts.js';
+import { GOVERNANCE_REFERENCE_TYPES, GOVERNANCE_STORE_CONTRACT_IDS, isCanonicalGovernanceReferenceType, type GovernanceEventRecord, type GovernanceRecord, type GovernanceRecordSummary, type GovernanceGovernedPathFilter, type GovernanceIdempotencyProbe, type GovernanceIdempotencyRecord, type GovernanceStoreAccessContext, type GovernanceStoreQuery } from './contracts.js';
 
 /**
  * Provider-independent Governance Store semantics: access-scope
@@ -264,6 +264,17 @@ export function isDefinitiveExecutionEvidence(externalVersion: string | undefine
  */
 export function isGovernedActionClaimFor(organizationId: string | undefined, requestId: string, scope: string, idempotencyKey: string): boolean {
   return isGovernedActionIdempotencyClaim({ organizationId, requestId, scope, idempotencyKey });
+}
+
+/**
+ * G-01B0 — whether an idempotency probe carries the governed-action path's own
+ * claim for its request id. Such a probe is answered by that claim alone: that
+ * path writes its claim and its request row in one transaction, so a record
+ * standing at the request id without the claim was written by another path,
+ * and is never replayed or adopted as this request's decision.
+ */
+export function probesGovernedActionClaim(context: GovernanceStoreAccessContext, probe: GovernanceIdempotencyProbe): boolean {
+  return probe.idempotency !== undefined && isGovernedActionClaimFor(context.organizationId, probe.requestId, probe.idempotency.scope, probe.idempotency.idempotencyKey);
 }
 
 /** The in-memory form of `GovernanceStoreQuery.governedPath`; the SQLite provider mirrors it in SQL. `idempotencyClaim`: the record's own idempotency claim, if it holds one. */

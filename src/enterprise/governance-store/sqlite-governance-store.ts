@@ -48,6 +48,7 @@ import {
   isGovernedActionClaimFor,
   legacyEventToRecord,
   normalizeQueryLimit,
+  probesGovernedActionClaim,
   recordToLegacyEvent,
   requireReadScope,
   resolveQueryOrganization,
@@ -884,6 +885,9 @@ export async function createSqliteGovernanceStore(dbPath: string, options: Creat
     }
     const existingRequest = selectRequestByRequestId.get(probe.requestId) as RequestRow | undefined;
     if (existingRequest !== undefined) {
+      // G-01B0: the governed-action path's own claim is absent, so whatever
+      // stands at this request id is another path's record; never replay or adopt it.
+      if (probesGovernedActionClaim(context, probe)) return { kind: 'conflict', conflictKind: 'request-id' };
       if (existingRequest.payload_digest !== probe.payloadDigest) return { kind: 'conflict', conflictKind: 'request-id' };
       const evaluationRow = selectEvaluationByRequestId.get(probe.requestId) as EvaluationRow | undefined;
       const record = evaluationRow !== undefined ? loadVisibleRecord(context, evaluationRow.evaluation_id) : null;
