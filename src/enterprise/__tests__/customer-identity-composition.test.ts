@@ -217,7 +217,7 @@ describe('IDENTITY-12: existing v1 routes are unchanged by this capability', () 
     assert.equal(withAdmission.body.status, 'allowed');
   });
 
-  it('legacy authentication on evaluate() is untouched: a customer-plane key still authenticates there as the scoped key it always was', async () => {
+  it('legacy authentication on evaluate() keeps working for a scoped key that states its organization (G-01A: omission is refused)', async () => {
     const enterprise = await track(
       createEnterprise({
         configuration: configurationWith(CUSTOMER_KEYS, { AOC_ENTERPRISE_REQUIRE_AUTH: 'true' }),
@@ -228,8 +228,12 @@ describe('IDENTITY-12: existing v1 routes are unchanged by this capability', () 
     );
 
     await assert.rejects(enterprise.evaluate(buildAllowedRequestBody({ requestId: 'req-legacy-auth-missing' })));
-    const legacy = await enterprise.evaluate(buildAllowedRequestBody({ requestId: 'req-legacy-auth-legacy' }), { authorizationHeader: `Bearer ${LEGACY}` });
+    const legacy = await enterprise.evaluate(buildAllowedRequestBody({ requestId: 'req-legacy-auth-legacy', organization: { id: ORG } }), { authorizationHeader: `Bearer ${LEGACY}` });
     assert.equal(legacy.body.status, 'allowed');
+    // G-01A: a scoped key that omits its organization is no longer an implicit match.
+    await assert.rejects(enterprise.evaluate(buildAllowedRequestBody({ requestId: 'req-legacy-auth-omitted' }), { authorizationHeader: `Bearer ${LEGACY}` }), (error: unknown) => (error as { httpStatus?: number }).httpStatus === 403);
+    // G-01A: a customer-plane key is no longer a scoped legacy key on evaluate: it may claim only its bound actor.
+    await assert.rejects(enterprise.evaluate(buildAllowedRequestBody({ requestId: 'req-legacy-auth-customer', organization: { id: ORG } }), { authorizationHeader: `Bearer ${SECRET}` }), (error: unknown) => (error as { httpStatus?: number }).httpStatus === 403);
   });
 
   it('on its own adds no HTTP route: the one customer route needs the orchestrator too', async () => {

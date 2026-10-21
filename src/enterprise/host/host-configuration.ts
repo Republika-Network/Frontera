@@ -5,9 +5,18 @@ import {
   validateEnterpriseEnvironment,
   type EnterpriseAdministrator,
   type EnterpriseApiKey,
+  type EnterpriseAuditor,
   type EnterpriseConfiguration,
   type EnterpriseOperator,
+  type EnterpriseServicePrincipal,
 } from '../configuration/enterprise-configuration.js';
+import {
+  LegacyKeyConfigurationError,
+  ServicePrincipalConfigurationError,
+  assertLegacyKeyConfiguration,
+  assertServicePrincipalConfiguration,
+} from '../orchestration/advisory-identity.js';
+import { AuditorConfigurationError, assertAuditorConfiguration } from '../orchestration/governance-record-disclosure.js';
 import { LEGACY_ADMINISTRATOR_ROLE, OPERATOR_ROLES, isOperatorRole, type OperatorRoleOrLegacy } from '../operator-control/roles.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
@@ -50,6 +59,12 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_CREDENTIALS_AMBIGUOUS'
   | 'HOST_ADMINISTRATOR_INVALID'
   | 'HOST_OPERATOR_INVALID'
+  /** G-01A: a `servicePrincipals` entry is malformed, ambiguous, or names no explicit actor. */
+  | 'HOST_SERVICE_PRINCIPAL_INVALID'
+  /** G-01A: an `auditors` entry is malformed, ambiguous, or has a weak or shared secret. */
+  | 'HOST_AUDITOR_INVALID'
+  /** G-01A: `AOC_ENTERPRISE_LEGACY_KEY_MODE` is `restricted` (the secure-profile default) and a legacy key is not organization-scoped. */
+  | 'HOST_LEGACY_KEY_UNSCOPED'
   | 'HOST_PERSISTENCE_NOT_DURABLE'
   | 'HOST_AUTHENTICATION_REQUIRED'
   | 'HOST_GOVERNED_ACTIONS_REQUIRED'
@@ -225,6 +240,10 @@ interface ParsedGovernedActionsFile {
   readonly administrators: readonly EnterpriseAdministrator[];
   /** CTRL-02: resolved operator credentials, each with one role from the closed model. Kept apart from every ordinary credential. */
   readonly operators: readonly EnterpriseOperator[];
+  /** G-01A: resolved service principals. Kept apart from every other credential; they authenticate the advisory evaluate route only. */
+  readonly servicePrincipals: readonly EnterpriseServicePrincipal[];
+  /** G-01A: resolved auditors. Kept apart from every other credential; they authenticate the Governance Record read routes only. */
+  readonly auditors: readonly EnterpriseAuditor[];
 }
 
 function administratorInvalid(message: string): never {
@@ -291,6 +310,53 @@ function parseOperators(env: Env, value: unknown, administrators: readonly Enter
   });
 }
 
+/**
+ * G-01A: `servicePrincipals` — named service credentials that may request
+ * advisory evaluations on behalf of the actors they list, in the one
+ * organization this instance serves. Optional. Only the file's **shape** is
+ * read here: `onBehalfOf` accepts `actors` and nothing else, so no wildcard
+ * or "every actor" form can be written, and the secret is an environment
+ * reference. Every identity rule — reserved and colliding ids, secret
+ * strength, explicit actors, one organization — is the shared
+ * `assertServicePrincipalConfiguration`, run on the resolved configuration
+ * below and again at composition, so an embedder meets exactly the same rules.
+ */
+function parseServicePrincipals(env: Env, value: unknown, organizationId: string): readonly EnterpriseServicePrincipal[] {
+  if (value === undefined) return [];
+  const entries = array(value, 'servicePrincipals');
+  if (entries.length === 0) invalid('servicePrincipals must name at least one principal when present; omit it to configure none.');
+  return entries.map((entry, index) => {
+    const where = `servicePrincipals[${index}]`;
+    if (!isRecord(entry)) invalid(`${where} must be an object.`);
+    closedKeys(entry, ['principalId', 'apiKeyEnv', 'onBehalfOf'], where);
+    const principalId = text(entry.principalId, `${where}.principalId`);
+    if (!isRecord(entry.onBehalfOf)) invalid(`${where}.onBehalfOf must be an object.`);
+    closedKeys(entry.onBehalfOf, ['actors'], `${where}.onBehalfOf`);
+    const actors = array(entry.onBehalfOf.actors, `${where}.onBehalfOf.actors`).map((actor, actorIndex) => text(actor, `${where}.onBehalfOf.actors[${actorIndex}]`));
+    return { principalId, organizationId, key: secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`), onBehalfOfActors: Object.freeze([...actors]) };
+  });
+}
+
+/**
+ * G-01A: `auditors` — read-only credentials for the Governance Record read
+ * routes of the one organization this instance serves. Optional. Only the
+ * shape is read here (`auditorId`, `apiKeyEnv`, nothing else — an auditor has
+ * no role, organization or permission field to widen); every identity and
+ * secret rule is the shared `assertAuditorConfiguration`, run below and again
+ * at composition.
+ */
+function parseAuditors(env: Env, value: unknown, organizationId: string): readonly EnterpriseAuditor[] {
+  if (value === undefined) return [];
+  const entries = array(value, 'auditors');
+  if (entries.length === 0) invalid('auditors must name at least one auditor when present; omit it to configure none.');
+  return entries.map((entry, index) => {
+    const where = `auditors[${index}]`;
+    if (!isRecord(entry)) invalid(`${where} must be an object.`);
+    closedKeys(entry, ['auditorId', 'apiKeyEnv'], where);
+    return { auditorId: text(entry.auditorId, `${where}.auditorId`), organizationId, key: secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`) };
+  });
+}
+
 function parseGovernedActionsFile(env: Env, path: string, organizationId: string): ParsedGovernedActionsFile {
   let raw: string;
   try {
@@ -308,7 +374,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
   closedKeys(
     parsed,
-    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution'],
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'servicePrincipals', 'auditors', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution'],
     'the file',
   );
   if (parsed.version !== 1) invalid('version must be 1.');
@@ -333,6 +399,8 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   });
   const administrators = parseAdministrators(env, parsed.administrators);
   const operators = parseOperators(env, parsed.operators, administrators);
+  const servicePrincipals = parseServicePrincipals(env, parsed.servicePrincipals, organizationId);
+  const auditors = parseAuditors(env, parsed.auditors, organizationId);
   // CTRL-02: with operators configured, agents are onboarded by identified
   // operators (operator-issued credentials), so the file may name no static
   // customer principal at all.
@@ -497,6 +565,8 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     customerKeys: customerPrincipals,
     administrators,
     operators,
+    servicePrincipals,
+    auditors,
   };
 }
 
@@ -543,9 +613,18 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
   const administrators = parsed?.administrators ?? [];
   // CTRL-02 operators, likewise never merged into `authentication.apiKeys`.
   const operators = parsed?.operators ?? [];
+  // G-01A: service principals, likewise never merged into `authentication.apiKeys`.
+  const servicePrincipals = parsed?.servicePrincipals ?? [];
+  // G-01A: auditors, likewise never merged into `authentication.apiKeys`.
+  const auditors = parsed?.auditors ?? [];
   const configuration: EnterpriseConfiguration = {
     ...base,
-    authentication: { apiKeys: [...base.authentication.apiKeys, ...customerKeys] },
+    authentication: {
+      apiKeys: [...base.authentication.apiKeys, ...customerKeys],
+      ...(servicePrincipals.length > 0 ? { servicePrincipals } : {}),
+      ...(auditors.length > 0 ? { auditors } : {}),
+      ...(base.authentication.legacyKeyMode !== undefined ? { legacyKeyMode: base.authentication.legacyKeyMode } : {}),
+    },
     ...(administrators.length > 0 || operators.length > 0 ? { administration: { administrators, ...(operators.length > 0 ? { operators } : {}) } } : {}),
   };
 
@@ -554,11 +633,13 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     ...configuration.authentication.apiKeys.map((apiKey) => apiKey.key),
     ...administrators.map((administrator) => administrator.key),
     ...operators.map((operator) => operator.key),
+    ...servicePrincipals.map((servicePrincipal) => servicePrincipal.key),
+    ...auditors.map((auditor) => auditor.key),
   ]) {
     if (seen.has(secret)) {
       throw new EnterpriseHostConfigurationError(
         'HOST_CREDENTIALS_AMBIGUOUS',
-        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals, administrators and/or operators). One secret authenticates one caller.',
+        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals, servicePrincipals, auditors, administrators and/or operators). One secret authenticates one caller.',
       );
     }
     seen.add(secret);
@@ -572,7 +653,7 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
   }
   // CTRL-02: a Host whose agents are onboarded by operators may start with no
   // static key — its customer credentials are operator-issued.
-  if (configuration.features.requireAuthentication && configuration.authentication.apiKeys.length === 0 && operators.length === 0) {
+  if (configuration.features.requireAuthentication && configuration.authentication.apiKeys.length === 0 && operators.length === 0 && servicePrincipals.length === 0) {
     throw new EnterpriseHostConfigurationError(
       'HOST_CREDENTIALS_MISSING',
       'AOC_ENTERPRISE_REQUIRE_AUTH is on and no credential is configured. Set AOC_ENTERPRISE_API_KEYS or configure customerPrincipals in the governed-action file. There is no default key.',
@@ -670,6 +751,30 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
         `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplTradeExecution requires an external authority-state freshness witness (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external): its sequence interlock's history is anchored there (slot trade-sequence-reservations).`,
       );
     }
+  }
+
+  // G-01A: the shared rules, on the configuration actually built — the same
+  // functions composition runs for an embedder. In `restricted` mode (the
+  // secure-profile default) no legacy key holds implicit cross-organization
+  // system access: an unscoped key is refused before anything is served; the
+  // read contracts themselves are unchanged. `compat` is the explicit opt-in.
+  try {
+    assertServicePrincipalConfiguration(configuration, base.kernelAuthority.organizationId);
+  } catch (error) {
+    if (error instanceof ServicePrincipalConfigurationError) throw new EnterpriseHostConfigurationError('HOST_SERVICE_PRINCIPAL_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${error.message}`);
+    throw error;
+  }
+  try {
+    assertAuditorConfiguration(configuration, base.kernelAuthority.organizationId);
+  } catch (error) {
+    if (error instanceof AuditorConfigurationError) throw new EnterpriseHostConfigurationError('HOST_AUDITOR_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${error.message}`);
+    throw error;
+  }
+  try {
+    assertLegacyKeyConfiguration(configuration);
+  } catch (error) {
+    if (error instanceof LegacyKeyConfigurationError) throw new EnterpriseHostConfigurationError('HOST_LEGACY_KEY_UNSCOPED', `AOC_ENTERPRISE_API_KEYS: ${error.message}`);
+    throw error;
   }
 
   return { configuration, governedActions: governed, secureProfile };

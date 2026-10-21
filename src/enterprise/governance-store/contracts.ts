@@ -498,7 +498,55 @@ export interface AppendGovernanceEvaluationInput {
   readonly idempotency?: GovernanceIdempotencyContext;
 
   readonly accessContext: GovernanceStoreAccessContext;
+
+  /**
+   * G-01A — who requested this evaluation, as the Enterprise Host established
+   * it. Sealed into the aggregate as one store-only event record
+   * (`GovernanceEvaluationAttributed`), covered by `eventsDigest`, and never
+   * published. Omitted, the aggregate is exactly what it was before G-01A.
+   */
+  readonly attribution?: GovernanceEvaluationAttribution;
 }
+
+/** G-01A — the versioned attribution payload format this build writes and can read. */
+export const GOVERNANCE_ATTRIBUTION_VERSION = 'aoc.governance-attribution.v1';
+
+/** G-01A — the event type an attribution is sealed under. A store record type, never an `EnterpriseEventType`: it is never published. */
+export const GOVERNANCE_ATTRIBUTION_EVENT_TYPE = 'GovernanceEvaluationAttributed';
+
+/**
+ * G-01A — the requesting identity of one advisory evaluation.
+ *
+ * * `customer-principal` — a credential whose principal is bound, through
+ *   customer identity admission, to exactly the evaluated actor.
+ * * `service-principal` — a configured service credential evaluating on
+ *   behalf of an actor on its explicit allow-list. The requesting principal
+ *   and the evaluated actor are recorded separately.
+ * * `legacy-asserted` — a legacy API key. The actor is the caller's
+ *   assertion, never an authenticated identity.
+ *
+ * An aggregate with no attribution (every record committed before G-01A, and
+ * every record committed with authentication disabled) carries no
+ * authenticated identity, and is never treated as having one.
+ */
+export type GovernanceEvaluationAttribution =
+  | {
+      readonly version: typeof GOVERNANCE_ATTRIBUTION_VERSION;
+      readonly basis: 'customer-principal' | 'service-principal';
+      readonly organizationId: string;
+      readonly requestingPrincipalId: string;
+      readonly evaluatedActorId: string;
+      /** 128 random bits (32 lowercase hex). Makes the event's digests unguessable, so a reader shown them cannot confirm a guessed principal id. */
+      readonly salt: string;
+    }
+  | {
+      readonly version: typeof GOVERNANCE_ATTRIBUTION_VERSION;
+      readonly basis: 'legacy-asserted';
+      readonly legacyScope: 'organization' | 'unscoped';
+      readonly organizationId?: string;
+      readonly evaluatedActorId: string;
+      readonly salt: string;
+    };
 
 export interface AppendGovernanceEvaluationResult {
   readonly evaluationId: string;

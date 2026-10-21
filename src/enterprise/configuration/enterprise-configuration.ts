@@ -43,6 +43,65 @@ export interface EnterpriseApiKeyCustomerIdentity {
 }
 
 /**
+ * G-01A: one service principal — a named, separately authenticated credential
+ * that may request advisory evaluations (`POST /api/governance/evaluate`) on
+ * behalf of the actors on its explicit allow-list, in exactly one
+ * organization, and nothing else.
+ *
+ * Deliberately **not** an `EnterpriseApiKey`, and never merged into
+ * `authentication.apiKeys`: a service secret authenticates the advisory
+ * evaluate route only — not the customer plane, not a read, not the operator
+ * or administration plane. It carries no system authority, no wildcard and no
+ * "any actor" form; the requesting principal and the evaluated actor are
+ * recorded separately on every evaluation it requests.
+ *
+ * Supplied through the Host's governed-action file (`servicePrincipals`),
+ * whose secrets are environment-variable references; `AOC_ENTERPRISE_API_KEYS`
+ * has no syntax for it.
+ */
+export interface EnterpriseServicePrincipal {
+  readonly principalId: string;
+  readonly organizationId: string;
+  readonly key: string;
+  /** The actors this principal may request evaluations for. Non-empty and explicit; never a pattern. */
+  readonly onBehalfOfActors: readonly string[];
+}
+
+/**
+ * G-01A: one auditor — a read-only credential that may read the complete
+ * Governance Records of exactly one organization, including the
+ * authenticated attribution an ordinary organization-scoped key receives only
+ * as a marked projection.
+ *
+ * Deliberately **not** an `EnterpriseApiKey`, never merged into
+ * `authentication.apiKeys`: an auditor secret authenticates the Governance
+ * Record read routes (`GET /api/governance/...`) and nothing else — no
+ * evaluation, no governed action, no evidence, passport or assurance route, no
+ * operator, approval or administration plane — and never holds a system
+ * context. Supplied through the Host's governed-action file (`auditors`).
+ */
+export interface EnterpriseAuditor {
+  readonly auditorId: string;
+  readonly organizationId: string;
+  readonly key: string;
+}
+
+/**
+ * G-01A: how legacy API keys (`AOC_ENTERPRISE_API_KEYS`) are treated.
+ *
+ * * `restricted` — the default in secure profiles (`staging`, `production`).
+ *   An unscoped key is refused at startup, so no legacy key holds implicit
+ *   cross-organization system access; a scoped key evaluates only for its own,
+ *   stated organization, and the actor it names is recorded as asserted.
+ * * `compat` — the default elsewhere, and an explicit opt-in
+ *   (`AOC_ENTERPRISE_LEGACY_KEY_MODE=compat`) in a secure profile: unscoped keys
+ *   keep their v1 meaning, recorded as asserted, never as authenticated.
+ */
+export type EnterpriseLegacyKeyMode = 'restricted' | 'compat';
+
+export const ENTERPRISE_LEGACY_KEY_MODES: readonly EnterpriseLegacyKeyMode[] = ['restricted', 'compat'];
+
+/**
  * CTRL-01: one authority administrator credential.
  *
  * Deliberately **not** an `EnterpriseApiKey`, and never merged into
@@ -124,6 +183,12 @@ export interface EnterpriseConfiguration {
   readonly authentication: {
     /** Static bearer tokens accepted by the Enterprise Host's own authentication step. Never forwarded to the Kernel. */
     readonly apiKeys: readonly EnterpriseApiKey[];
+    /** G-01A: service principals for the advisory evaluate route only. Absent means none. */
+    readonly servicePrincipals?: readonly EnterpriseServicePrincipal[];
+    /** G-01A: read-only auditors for the Governance Record read routes only. Absent means none. */
+    readonly auditors?: readonly EnterpriseAuditor[];
+    /** G-01A: absent means the environment's default (`effectiveLegacyKeyMode`): `restricted` for staging and production, `compat` elsewhere. */
+    readonly legacyKeyMode?: EnterpriseLegacyKeyMode;
   };
   /**
    * CTRL-01: the authority administration API's credentials. Absent or empty
@@ -529,6 +594,58 @@ function parseApiKeys(value: string | undefined): readonly EnterpriseApiKey[] {
     });
 }
 
+/** G-01A: secure profiles are `restricted` unless a configuration opts into `compat` explicitly; every other profile keeps `compat`. */
+function defaultLegacyKeyMode(environment: EnterpriseEnvironment): EnterpriseLegacyKeyMode {
+  return environment === 'production' || environment === 'staging' ? 'restricted' : 'compat';
+}
+
+function parseLegacyKeyMode(value: string | undefined, environment: EnterpriseEnvironment): EnterpriseLegacyKeyMode {
+  if (value === 'restricted' || value === 'compat') return value;
+  return defaultLegacyKeyMode(environment);
+}
+
+/**
+ * G-01A: the legacy-key mode in force — the one rule every consumer reads,
+ * whether the configuration came from the Host's loader or was built by an
+ * embedder. An explicit mode wins; an absent one is the environment's
+ * default, so a programmatic `production` configuration is `restricted`
+ * unless it says `compat`.
+ */
+export function effectiveLegacyKeyMode(configuration: Pick<EnterpriseConfiguration, 'environment' | 'authentication'>): EnterpriseLegacyKeyMode {
+  return configuration.authentication.legacyKeyMode ?? defaultLegacyKeyMode(configuration.environment);
+}
+
+function deepFreeze<T>(value: T): T {
+  // Already frozen means already visited: a cyclic value terminates instead of recursing.
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const member of Object.values(value)) deepFreeze(member);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * G-01A — the configuration composition validates and serves from: the
+ * caller's own configuration with every identity-bearing part replaced by a
+ * deep, frozen copy taken once — the environment (which decides the legacy-key
+ * mode), the feature flags (which decide whether authentication is required),
+ * every credential under `authentication` (API keys and their customer
+ * identities, service principals and their allow-lists, auditors, the
+ * legacy-key mode) and the operator and administrator credentials. An
+ * embedder that mutates its own objects after `createEnterprise` changes
+ * nothing that authenticates or authorizes a caller. Everything else (stores,
+ * paths, limits, signers) is still the caller's object, by reference, as
+ * before; the caller's objects are never frozen.
+ */
+export function snapshotIdentityConfiguration(configuration: EnterpriseConfiguration): EnterpriseConfiguration {
+  return Object.freeze({
+    ...configuration,
+    features: deepFreeze(structuredClone(configuration.features)),
+    authentication: deepFreeze(structuredClone(configuration.authentication)),
+    ...(configuration.administration !== undefined ? { administration: deepFreeze(structuredClone(configuration.administration)) } : {}),
+  });
+}
+
 const ENVIRONMENT_VALUES: readonly EnterpriseEnvironment[] = ['development', 'test', 'staging', 'production'];
 const PERSISTENCE_PROVIDER_VALUES: readonly EnterprisePersistenceProviderKind[] = ['memory', 'sqlite'];
 const LOG_LEVEL_VALUES: readonly EnterpriseConfiguration['logLevel'][] = ['debug', 'info', 'warn', 'error'];
@@ -578,6 +695,7 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
   oneOf('AOC_ENTERPRISE_PERSISTENCE_PROVIDER', PERSISTENCE_PROVIDER_VALUES);
   oneOf('AOC_ENTERPRISE_LOG_LEVEL', LOG_LEVEL_VALUES);
   oneOf('AOC_ENTERPRISE_TRACE_LEVEL', ['basic', 'full']);
+  oneOf('AOC_ENTERPRISE_LEGACY_KEY_MODE', ENTERPRISE_LEGACY_KEY_MODES);
   for (const name of BOOLEAN_VARIABLES) {
     const value = env[name];
     if (value !== undefined && !['true', 'false', '1', '0'].includes(value.toLowerCase())) problems.push(`${name} must be true or false.`);
@@ -849,6 +967,7 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     authentication: {
       apiKeys: parseApiKeys(env.AOC_ENTERPRISE_API_KEYS),
+      legacyKeyMode: parseLegacyKeyMode(env.AOC_ENTERPRISE_LEGACY_KEY_MODE, parseEnvironment(env.AOC_ENTERPRISE_ENV)),
     },
     features: {
       traceLevel: env.AOC_ENTERPRISE_TRACE_LEVEL === 'full' ? 'full' : 'basic',

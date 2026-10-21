@@ -47,10 +47,11 @@ function credentialsEqual(candidate: string, configured: string): boolean {
 /**
  * Constant-time lookup of a presented bearer token among the configured API
  * keys. Every configured key is always compared, so the match position cannot
- * be inferred from response timing either.
+ * be inferred from response timing either. Generic over anything that carries
+ * a `key`, so G-01A's service principals are matched by this same comparison.
  */
-export function matchApiKey(token: string, apiKeys: readonly EnterpriseApiKey[]): EnterpriseApiKey | undefined {
-  let matched: EnterpriseApiKey | undefined;
+export function matchApiKey<T extends Pick<EnterpriseApiKey, 'key'> = EnterpriseApiKey>(token: string, apiKeys: readonly T[]): T | undefined {
+  let matched: T | undefined;
   for (const apiKey of apiKeys) {
     if (credentialsEqual(token, apiKey.key) && matched === undefined) {
       matched = apiKey;

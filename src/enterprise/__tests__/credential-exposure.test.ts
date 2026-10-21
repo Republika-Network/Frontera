@@ -105,7 +105,7 @@ describe('R004.B: AocEnterprise.configuration never exposes raw secrets', () => 
       const listener = createEnterpriseRequestListener(enterprise);
       assert.equal(typeof listener, 'function');
 
-      const authenticated = await enterprise.evaluate(buildAllowedRequestBody(), {
+      const authenticated = await enterprise.evaluate(buildAllowedRequestBody({ organization: { id: 'org-acme' } }), {
         authorizationHeader: `Bearer ${SENTINEL}`,
       });
       assert.equal(authenticated.body.status, 'allowed', 'the real configured credential must still authenticate successfully');

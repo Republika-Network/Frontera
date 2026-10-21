@@ -130,9 +130,10 @@ Errors:
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | Shape validation failure, Kernel validation failure, malformed JSON, body over 1 MiB |
 | 401 | `AUTHENTICATION_FAILED` | Auth enabled and token missing/unrecognized |
-| 403 | `AUTHORIZATION_FAILED` | Org-scoped key used for a request naming a different `organization.id` |
-| 409 | `CONCURRENCY_CONFLICT` | Same `requestId` resubmitted with a different payload |
-| 409 | `GOVERNANCE_IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload |
+| 403 | `AUTHORIZATION_FAILED` | Org-scoped key used for a request naming a different `organization.id`; since G-01A also: an organization-bound credential whose request omits `organization`, a customer principal naming an actor other than its bound actor, a service principal naming an actor outside its allow-list, a customer or service principal naming another `actor.trustDomainId` than the Host's, and an unscoped key while legacy keys are `restricted` |
+| 409 | `CONCURRENCY_CONFLICT` | Same `requestId` resubmitted with a different payload, or (G-01A) by a different requester |
+| 409 | `GOVERNANCE_IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload, or (G-01A) by a different requester |
+| 503 | `PROVIDER_UNAVAILABLE` | (G-01A) a customer principal's identity could not be resolved |
 | 413 | `GOVERNANCE_RECORD_TOO_LARGE` | Store-level payload/trace/event caps exceeded |
 | 500 | `INFRASTRUCTURE_FAILURE`, `GOVERNANCE_STORE_TRANSACTION_FAILED`, `GOVERNANCE_STORE_VALIDATION_ERROR`, `GOVERNANCE_RECORD_CORRUPTED` | Kernel/commit/store faults |
 | 503 | `ENTERPRISE_NOT_READY` (with `lifecycleState` in the error body), `GOVERNANCE_STORE_UNAVAILABLE` | Lifecycle not ready; store unreachable |
@@ -146,6 +147,25 @@ key with a different payload is `409 GOVERNANCE_IDEMPOTENCY_CONFLICT`. No
 successful response is ever returned unless the Governance Store commit
 succeeded.
 
+**Identity and attribution (G-01A, an intentional v1 security tightening).**
+The request and response shapes and the error codes are unchanged; what the
+body's `actor` and `organization` may claim is not. They are checked against
+the credential: a customer-principal key evaluates only as the actor customer
+identity admission binds it to, in its organization and the Host's trust
+domain; a service principal (governed-action file `servicePrincipals`, never
+`AOC_ENTERPRISE_API_KEYS`) only for the actors on its explicit allow-list; an
+organization-scoped legacy key only in the organization it now must state; an
+unscoped key only where `AOC_ENTERPRISE_LEGACY_KEY_MODE=compat` (the
+non-secure default, an explicit opt-in in `staging`/`production`). Each new
+record is sealed with who requested it (`GovernanceEvaluationAttributed`, a
+store-only event inside the aggregate, covered by its digests, never
+published, not projected into any evidence bundle): the requesting principal
+and the evaluated actor for customer and service principals, the asserted
+actor for legacy keys. A decision replays only to the requester that committed
+it; a record without attribution (committed before G-01A, or with
+authentication disabled) never answers a customer or service principal. See
+`docs/security/G-01A-TRUSTED-IDENTITY-ATTRIBUTION.md`.
+
 #### Governance reads
 
 | Method + Path | Purpose | Success | Errors |
@@ -156,6 +176,11 @@ succeeded.
 | `GET /api/governance/requests/{id}` | Fetch by `requestId`. | `200` `GovernanceRecord` | Same as above |
 
 No request bodies, no idempotency semantics (reads).
+
+**Canonical record vs. projection (G-01A, an approved v1 security tightening of the three record routes).** URLs, methods, error codes and every other response field are unchanged. What differs is who sees one event payload:
+
+- **Canonical** — the complete stored aggregate, exactly as before: system scope, and a configured **auditor** credential (governed-action file `auditors`) for records of its one organization. An auditor authenticates these read routes (record by evaluation, decision or request id, and `…/verify`) and nothing else; it cannot evaluate, execute, build evidence, approve, operate or administer, and is never system scope. An auditor reading another organization's record gets `404`.
+- **Projection** — an ordinary organization-scoped key (legacy or customer principal) reading a record whose `GovernanceEvaluationAttributed` event names a requesting principal (customer or service) receives the record with that event's `eventPayload` replaced by `{"withheld":"attribution"}` and an additive top-level `projection` marker: `{ version: "aoc.governance-record-projection.v1", canonical: false, withheld: [{ eventId, eventType, field: "eventPayload", reason: "auditor-authorization-required" }], verification }`. A projection's digests describe the stored canonical record and cannot be recomputed from the projection; `GET /api/governance/evaluations/{id}/verify` verifies the complete stored record server-side. Records without such an event — every pre-G-01A record and every legacy key's asserted attribution — are returned canonical and unmarked to every reader.
 
 ### 2.3 Evidence Bundles
 

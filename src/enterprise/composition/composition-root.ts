@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 
 import { AOC_KERNEL_VERSION, createAocKernel, type AocKernel, type KernelIdGenerator, type PolicyPackProvider } from '../../kernel/index.js';
 import { computeEnterpriseHealth, type EnterpriseHealthPosture, type EnterpriseHealthReport } from '../health/health-check.js';
-import { loadEnterpriseConfiguration, toPublicEnterpriseConfiguration, type EnterpriseConfiguration, type PublicEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import { loadEnterpriseConfiguration, snapshotIdentityConfiguration, toPublicEnterpriseConfiguration, type EnterpriseConfiguration, type PublicEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { createInProcessEventPublisher, type EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import {
   evaluateGovernanceRequest,
@@ -11,6 +11,8 @@ import {
   type EvaluateGovernanceRequestInput,
 } from '../orchestration/evaluate-governance-request.js';
 import { governGovernedActionRequest } from '../orchestration/govern-governed-action-request.js';
+import { assertLegacyKeyConfiguration, assertServicePrincipalConfiguration } from '../orchestration/advisory-identity.js';
+import { assertAuditorConfiguration } from '../orchestration/governance-record-disclosure.js';
 import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
@@ -1446,7 +1448,10 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
 }
 
 async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() => Promise<void>)[]): Promise<AocEnterprise> {
-  const configuration = options.configuration ?? loadEnterpriseConfiguration();
+  // G-01A: validated and served from one frozen snapshot of every
+  // identity-bearing setting, so the caller's later mutations of its own
+  // objects never reach authentication or authorization.
+  const configuration = snapshotIdentityConfiguration(options.configuration ?? loadEnterpriseConfiguration());
   const eventIdGenerator = createEnterpriseIdGenerator();
 
   // Customer identity admission is checked before anything is opened: a
@@ -1454,6 +1459,12 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // only ever produce an ambiguous or foreign principal, or with no binding
   // source at all, is refused outright instead of starting in a weaker mode.
   const customerIdentityRequested = options.customerIdentityAdmission?.enabled === true;
+  // G-01A: service principals and legacy keys are held to the same rules the
+  // Host's loader applies, here, whoever built the configuration — before
+  // anything is opened.
+  assertServicePrincipalConfiguration(configuration, configuration.kernelAuthority.organizationId);
+  assertAuditorConfiguration(configuration, configuration.kernelAuthority.organizationId);
+  assertLegacyKeyConfiguration(configuration);
   if (customerIdentityRequested) {
     if (options.kernelAuthorityStore === undefined && !configuration.kernelAuthority.enabled) {
       throw new CustomerIdentityConfigurationError(
@@ -2884,6 +2895,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         logger,
         configuration,
         enterpriseContext,
+        // G-01A: customer identity is admission's answer, and the trust domain
+        // is the governed-action configuration's -- never the caller's.
+        ...(customerIdentityAdmission !== undefined ? { customerIdentityAdmission } : {}),
+        ...(governedActionOptions !== undefined ? { trustDomainId: governedActionOptions.trustDomainId } : {}),
       });
     },
     async health() {
