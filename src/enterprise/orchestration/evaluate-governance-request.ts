@@ -10,15 +10,16 @@ import {
 } from '../api/governance-evaluate-contract.js';
 import { EnterpriseHttpError, EnterpriseHttpErrors, mapGovernanceStoreErrorToHttp } from '../api/enterprise-http-errors.js';
 import type { EnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import type { CustomerIdentityAdmissionService } from '../customer-identity/contracts.js';
 import type { EnterpriseEvent, EnterpriseEventPublisher, GovernanceEvaluationRequestedEvent } from '../events/enterprise-events.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { isGovernanceStoreError } from '../governance-store/errors.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
 import { toKernelEvaluationResult } from '../governance-store/store-common.js';
-import type { GovernanceEnterpriseContext, GovernanceIdempotencyContext, GovernanceRecord, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
+import type { GovernanceEnterpriseContext, GovernanceEvaluationAttribution, GovernanceIdempotencyContext, GovernanceRecord } from '../governance-store/contracts.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import type { EnterpriseTelemetry } from '../telemetry/enterprise-telemetry.js';
-import { extractBearerToken, matchApiKey } from './credential-matching.js';
+import { authenticateAdvisoryCaller, establishAdvisoryIdentity, mayReplayTo } from './advisory-identity.js';
 import { buildGovernanceEvaluationOutcomeEvent } from './governance-evaluation-events.js';
 
 /** Transport-level input to one evaluation call -- the not-yet-validated wire body plus the caller's auth header and optional `Idempotency-Key` header value. */
@@ -43,36 +44,16 @@ export interface EvaluateGovernanceRequestDependencies {
   readonly configuration: EnterpriseConfiguration;
   /** Live Enterprise context (lifecycle state, module snapshot, providers) captured into every appended aggregate. Supplied by the composition root. */
   readonly enterpriseContext: () => GovernanceEnterpriseContext;
+  /** G-01A: the composed customer identity admission. Absent, a customer-plane credential cannot evaluate. */
+  readonly customerIdentityAdmission?: CustomerIdentityAdmissionService;
+  /** G-01A: the trusted Host trust domain. Absent, no customer or service principal can evaluate. */
+  readonly trustDomainId?: string;
 }
 
 /** The Enterprise Host's evaluation response -- an HTTP status derived from `KernelDecisionStatus`, plus the wire response body. */
 export interface EnterpriseEvaluationResponse {
   readonly httpStatus: number;
   readonly body: GovernanceEvaluateResponseBody;
-}
-
-/**
- * Enterprise-owned authentication/authorization -- entirely separate from,
- * and prior to, anything the Kernel evaluates. A missing/unknown key is a
- * 401; a recognized key scoped to a different organization than the
- * request names is a 403. Neither check is a governance decision.
- */
-function authenticateAndAuthorize(
-  authorizationHeader: string | undefined,
-  organizationId: string | undefined,
-  configuration: EnterpriseConfiguration,
-): void {
-  if (!configuration.features.requireAuthentication) return;
-
-  const token = extractBearerToken(authorizationHeader);
-  if (token === undefined) throw EnterpriseHttpErrors.authenticationFailed('A Bearer token is required.');
-
-  const matchedKey = matchApiKey(token, configuration.authentication.apiKeys);
-  if (matchedKey === undefined) throw EnterpriseHttpErrors.authenticationFailed('The provided credential is not recognized.');
-
-  if (matchedKey.organizationId !== undefined && organizationId !== undefined && matchedKey.organizationId !== organizationId) {
-    throw EnterpriseHttpErrors.authorizationFailed(`This credential is not authorized for organization '${organizationId}'.`);
-  }
 }
 
 /** Idempotency scope: always tenant-qualified so one organization's key can never collide with another's (PR-004 section 15). Requests naming no organization share the explicit global scope. */
@@ -98,19 +79,23 @@ export async function evaluateGovernanceRequest(
   const receivedAt = deps.clock.now();
   const startedAtMs = Date.now();
 
+  // Enterprise-owned authentication -- entirely separate from, and prior to,
+  // anything the Kernel evaluates. Neither a 401 nor a 403 is a governance
+  // decision. G-01A: the credential establishes who is calling; the body's
+  // actor and organization are claims checked against it after validation.
   const candidateOrganizationId = isPlainObjectWithOrganization(input.rawBody) ? input.rawBody.organization?.id : undefined;
-  authenticateAndAuthorize(input.authorizationHeader, candidateOrganizationId, deps.configuration);
+  const caller = authenticateAdvisoryCaller(input.authorizationHeader, candidateOrganizationId, deps.configuration);
 
   const body = validateGovernanceEvaluateRequestBody(input.rawBody);
   const request = toKernelEvaluationRequest(body, deps.clock, deps.idGenerator);
   const options = toKernelEvaluationOptions(body, deps.configuration.features.traceLevel);
 
+  const { accessContext, attribution } = await establishAdvisoryIdentity(caller, input.authorizationHeader, request, {
+    configuration: deps.configuration,
+    ...(deps.customerIdentityAdmission !== undefined ? { customerIdentityAdmission: deps.customerIdentityAdmission } : {}),
+    ...(deps.trustDomainId !== undefined ? { trustDomainId: deps.trustDomainId } : {}),
+  });
   const organizationId = request.organization?.id;
-  const accessContext: GovernanceStoreAccessContext = {
-    system: true,
-    ...(organizationId !== undefined ? { organizationId } : {}),
-    actorId: request.actor.id,
-  };
   const idempotency: GovernanceIdempotencyContext | undefined =
     input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey, scope: idempotencyScopeFor(organizationId) } : undefined;
 
@@ -135,6 +120,7 @@ export async function evaluateGovernanceRequest(
     throw idempotencyConflictError(resolution.conflictKind, request.requestId);
   }
   if (resolution.kind === 'replay') {
+    assertReplayableTo(resolution.record, attribution, idempotency, request.requestId, deps);
     return replayResponse(resolution.record, deps, Date.now() - startedAtMs);
   }
 
@@ -187,6 +173,7 @@ export async function evaluateGovernanceRequest(
       events: aggregateEvents,
       ...(idempotency !== undefined ? { idempotency } : {}),
       accessContext,
+      ...(attribution !== undefined ? { attribution } : {}),
     });
   } catch (error) {
     deps.telemetry.recordPersistenceFailure();
@@ -226,6 +213,7 @@ export async function evaluateGovernanceRequest(
   // A concurrent racer committed the equivalent aggregate first — answer
   // with the stored original, exactly like the pre-Kernel replay path.
   if (appended.idempotentReplay && appended.existingRecord !== undefined) {
+    assertReplayableTo(appended.existingRecord, attribution, idempotency, request.requestId, deps);
     return replayResponse(appended.existingRecord, deps, Date.now() - startedAtMs);
   }
 
@@ -286,6 +274,27 @@ function replayResponse(record: GovernanceRecord, deps: EvaluateGovernanceReques
       aggregateDigest: record.integrity.aggregateDigest,
     }),
   };
+}
+
+/**
+ * G-01A: an equivalent stored decision answers only the requester that
+ * committed it. Any other requester -- another principal, another basis, or an
+ * authenticated principal meeting a record that carries no attribution -- gets
+ * the existing 409 for the key or request id it reused, and nothing is written.
+ */
+function assertReplayableTo(
+  record: GovernanceRecord,
+  attribution: GovernanceEvaluationAttribution | undefined,
+  idempotency: GovernanceIdempotencyContext | undefined,
+  requestId: string,
+  deps: EvaluateGovernanceRequestDependencies,
+): void {
+  if (mayReplayTo(record, attribution)) return;
+  deps.telemetry.recordStoreIdempotencyConflict();
+  if (idempotency !== undefined) {
+    throw new EnterpriseHttpError(409, 'GOVERNANCE_IDEMPOTENCY_CONFLICT', 'This Idempotency-Key was already used by another requester or with a different request payload.');
+  }
+  throw EnterpriseHttpErrors.concurrencyConflict(`requestId '${requestId}' was already submitted by another requester or with a different payload; a request id must uniquely identify one governance request.`);
 }
 
 /** `request-id` conflicts keep the PR-002 wire contract (409 CONCURRENCY_CONFLICT); caller-key conflicts are the PR-004 409 GOVERNANCE_IDEMPOTENCY_CONFLICT. */

@@ -11,6 +11,7 @@ import {
   type EvaluateGovernanceRequestInput,
 } from '../orchestration/evaluate-governance-request.js';
 import { governGovernedActionRequest } from '../orchestration/govern-governed-action-request.js';
+import { assertServicePrincipalConfiguration } from '../orchestration/advisory-identity.js';
 import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
@@ -1454,6 +1455,9 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // only ever produce an ambiguous or foreign principal, or with no binding
   // source at all, is refused outright instead of starting in a weaker mode.
   const customerIdentityRequested = options.customerIdentityAdmission?.enabled === true;
+  // G-01A: service principals are checked as strictly as customer
+  // credentials, here, whoever built the configuration.
+  assertServicePrincipalConfiguration(configuration, configuration.kernelAuthority.organizationId);
   if (customerIdentityRequested) {
     if (options.kernelAuthorityStore === undefined && !configuration.kernelAuthority.enabled) {
       throw new CustomerIdentityConfigurationError(
@@ -2884,6 +2888,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         logger,
         configuration,
         enterpriseContext,
+        // G-01A: customer identity is admission's answer, and the trust domain
+        // is the governed-action configuration's -- never the caller's.
+        ...(customerIdentityAdmission !== undefined ? { customerIdentityAdmission } : {}),
+        ...(governedActionOptions !== undefined ? { trustDomainId: governedActionOptions.trustDomainId } : {}),
       });
     },
     async health() {

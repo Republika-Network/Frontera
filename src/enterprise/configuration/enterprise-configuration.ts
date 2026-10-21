@@ -43,6 +43,46 @@ export interface EnterpriseApiKeyCustomerIdentity {
 }
 
 /**
+ * G-01A: one service principal — a named, separately authenticated credential
+ * that may request advisory evaluations (`POST /api/governance/evaluate`) on
+ * behalf of the actors on its explicit allow-list, in exactly one
+ * organization, and nothing else.
+ *
+ * Deliberately **not** an `EnterpriseApiKey`, and never merged into
+ * `authentication.apiKeys`: a service secret authenticates the advisory
+ * evaluate route only — not the customer plane, not a read, not the operator
+ * or administration plane. It carries no system authority, no wildcard and no
+ * "any actor" form; the requesting principal and the evaluated actor are
+ * recorded separately on every evaluation it requests.
+ *
+ * Supplied through the Host's governed-action file (`servicePrincipals`),
+ * whose secrets are environment-variable references; `AOC_ENTERPRISE_API_KEYS`
+ * has no syntax for it.
+ */
+export interface EnterpriseServicePrincipal {
+  readonly principalId: string;
+  readonly organizationId: string;
+  readonly key: string;
+  /** The actors this principal may request evaluations for. Non-empty and explicit; never a pattern. */
+  readonly onBehalfOfActors: readonly string[];
+}
+
+/**
+ * G-01A: how legacy API keys (`AOC_ENTERPRISE_API_KEYS`) are treated.
+ *
+ * * `restricted` — the default in secure profiles (`staging`, `production`).
+ *   An unscoped key is refused at startup, so no legacy key holds implicit
+ *   cross-organization system access; a scoped key evaluates only for its own,
+ *   stated organization, and the actor it names is recorded as asserted.
+ * * `compat` — the default elsewhere, and an explicit opt-in
+ *   (`AOC_ENTERPRISE_LEGACY_KEY_MODE=compat`) in a secure profile: unscoped keys
+ *   keep their v1 meaning, recorded as asserted, never as authenticated.
+ */
+export type EnterpriseLegacyKeyMode = 'restricted' | 'compat';
+
+export const ENTERPRISE_LEGACY_KEY_MODES: readonly EnterpriseLegacyKeyMode[] = ['restricted', 'compat'];
+
+/**
  * CTRL-01: one authority administrator credential.
  *
  * Deliberately **not** an `EnterpriseApiKey`, and never merged into
@@ -124,6 +164,10 @@ export interface EnterpriseConfiguration {
   readonly authentication: {
     /** Static bearer tokens accepted by the Enterprise Host's own authentication step. Never forwarded to the Kernel. */
     readonly apiKeys: readonly EnterpriseApiKey[];
+    /** G-01A: service principals for the advisory evaluate route only. Absent means none. */
+    readonly servicePrincipals?: readonly EnterpriseServicePrincipal[];
+    /** G-01A: absent means `compat` — exactly the v1 meaning of a legacy key. */
+    readonly legacyKeyMode?: EnterpriseLegacyKeyMode;
   };
   /**
    * CTRL-01: the authority administration API's credentials. Absent or empty
@@ -529,6 +573,12 @@ function parseApiKeys(value: string | undefined): readonly EnterpriseApiKey[] {
     });
 }
 
+/** G-01A: an explicit mode wins; otherwise secure profiles are `restricted` and every other profile keeps `compat`. */
+function parseLegacyKeyMode(value: string | undefined, environment: EnterpriseEnvironment): EnterpriseLegacyKeyMode {
+  if (value === 'restricted' || value === 'compat') return value;
+  return environment === 'production' || environment === 'staging' ? 'restricted' : 'compat';
+}
+
 const ENVIRONMENT_VALUES: readonly EnterpriseEnvironment[] = ['development', 'test', 'staging', 'production'];
 const PERSISTENCE_PROVIDER_VALUES: readonly EnterprisePersistenceProviderKind[] = ['memory', 'sqlite'];
 const LOG_LEVEL_VALUES: readonly EnterpriseConfiguration['logLevel'][] = ['debug', 'info', 'warn', 'error'];
@@ -578,6 +628,7 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
   oneOf('AOC_ENTERPRISE_PERSISTENCE_PROVIDER', PERSISTENCE_PROVIDER_VALUES);
   oneOf('AOC_ENTERPRISE_LOG_LEVEL', LOG_LEVEL_VALUES);
   oneOf('AOC_ENTERPRISE_TRACE_LEVEL', ['basic', 'full']);
+  oneOf('AOC_ENTERPRISE_LEGACY_KEY_MODE', ENTERPRISE_LEGACY_KEY_MODES);
   for (const name of BOOLEAN_VARIABLES) {
     const value = env[name];
     if (value !== undefined && !['true', 'false', '1', '0'].includes(value.toLowerCase())) problems.push(`${name} must be true or false.`);
@@ -849,6 +900,7 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     authentication: {
       apiKeys: parseApiKeys(env.AOC_ENTERPRISE_API_KEYS),
+      legacyKeyMode: parseLegacyKeyMode(env.AOC_ENTERPRISE_LEGACY_KEY_MODE, parseEnvironment(env.AOC_ENTERPRISE_ENV)),
     },
     features: {
       traceLevel: env.AOC_ENTERPRISE_TRACE_LEVEL === 'full' ? 'full' : 'basic',

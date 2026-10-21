@@ -4,7 +4,9 @@ import { computeDigest } from './digest.js';
 import { canonicalSerialize } from './canonical-json.js';
 import { redactSensitiveValues } from './redaction.js';
 import { GovernanceStoreError } from './errors.js';
+import { assertAttributionMatchesRequest, attributionEventPayload } from './attribution.js';
 import {
+  GOVERNANCE_ATTRIBUTION_EVENT_TYPE,
   GOVERNANCE_STORE_CONTRACT_IDS,
   GOVERNANCE_STORE_SCHEMA_VERSION,
   type AppendGovernanceEvaluationInput,
@@ -175,6 +177,7 @@ function validateAppendInput(input: AppendGovernanceEvaluationInput): void {
       { requestOrganizationId: input.request.organization?.id ?? null },
     );
   }
+  if (input.attribution !== undefined) assertAttributionMatchesRequest(input.attribution, input.request);
 }
 
 interface EventEnvelopeFields {
@@ -336,6 +339,26 @@ export function buildGovernanceAggregate(
       deps.limits,
     ),
   );
+  // G-01A: the attribution, sealed after the operational events. Store-only:
+  // it carries no `requestId`, so the legacy `listEnterpriseEvents` surface
+  // never lists it, and it is never handed to an event publisher.
+  if (input.attribution !== undefined) {
+    const withoutDigest: Omit<GovernanceEventRecord, 'eventDigest'> = {
+      eventId: deps.nextId('gov-attribution-event'),
+      eventType: GOVERNANCE_ATTRIBUTION_EVENT_TYPE,
+      aggregateType: 'governance_evaluation',
+      aggregateId: evaluationId,
+      ...(causationSourceId !== undefined ? { causationId: causationSourceId } : {}),
+      sequence: eventRecords.length + 1,
+      occurredAt: input.receivedAt,
+      persistedAt,
+      enterpriseVersion: enterpriseContext.enterpriseVersion,
+      kernelVersion: result.kernelVersion,
+      eventContract: GOVERNANCE_STORE_CONTRACT_IDS.eventRecord,
+      eventPayload: attributionEventPayload(input.attribution),
+    };
+    eventRecords.push({ ...withoutDigest, eventDigest: computeDigest(eventRecordDigestInput(withoutDigest)) });
+  }
 
   // -- metadata record --
   const metadataRecord: GovernanceRecordMetadata = {
