@@ -658,7 +658,7 @@ The Governance Store holds one request-id space (`request_id` is UNIQUE across t
 
 ### 4.35 Trusted identity and attribution on the advisory evaluate route (G-01A)
 
-`POST /api/governance/evaluate` no longer trusts the actor and organization a request names because the request is authenticated; each is checked against the credential, the requester is sealed into the record, and a decision replays only to its requester — `docs/security/G-01A-TRUSTED-IDENTITY-ATTRIBUTION.md`. No new route, store, schema, migration, CORE-07 slot, public response field or error code.
+`POST /api/governance/evaluate` no longer trusts the actor and organization a request names because the request is authenticated; each is checked against the credential, the requester is sealed into the record, and a decision replays only to its requester — `docs/security/G-01A-TRUSTED-IDENTITY-ATTRIBUTION.md`. No new route, store, schema, migration or CORE-07 slot; the one new public response field is the approved, additive `projection` marker on the three Governance Record read routes (SEC-INV-343); no new error code.
 
 | ID | Invariant | Scope | Enforcement | Evidence | Residual |
 |---|---|---|---|---|---|

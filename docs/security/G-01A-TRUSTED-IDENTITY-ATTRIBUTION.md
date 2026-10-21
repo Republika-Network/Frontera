@@ -1,7 +1,7 @@
 # G-01A — Trusted identity and attribution on the advisory evaluate route
 
 Status: implemented on a Draft PR (base `1ea0368`). Not merged.
-Invariants: SEC-INV-337 … SEC-INV-342 (`docs/security/SECURITY_INVARIANTS.md` §4.35).
+Invariants: SEC-INV-337 … SEC-INV-343 (`docs/security/SECURITY_INVARIANTS.md` §4.35).
 
 ## 1. The problem
 
@@ -60,7 +60,7 @@ Disclosure (founder decision 4):
   - a **marked projection** to every ordinary organization-scoped key: each attribution event that names a requesting principal has its `eventPayload` replaced by `{"withheld":"attribution"}`, and the response carries `projection: { version: "aoc.governance-record-projection.v1", canonical: false, withheld: [...], verification }`. Organization scope alone is never auditor authority.
   - A legacy key's asserted attribution names no principal and is not withheld; a payload this build cannot read is withheld (fail closed). Records with nothing to withhold are returned canonical and unmarked.
   - **Digests.** Every attribution carries 128 random bits (`salt`), so the attribution event's `eventDigest`, the `eventsDigest` and the `aggregateDigest` a projection still shows cannot be used to confirm a guessed principal id. A projection's digests describe the canonical record and cannot be recomputed from it; `GET …/verify` checks the complete stored record server-side.
-  - **Auditor authority.** An auditor secret is not an API key: it authenticates the five Governance Record read methods only (record by evaluation, decision or request id; verify; query) — not evaluate, governed actions, evidence, passports, assurance, approvals, the operator or administration plane — and is never system scope. One shared validator (`assertAuditorConfiguration`), run by the Host loader (`HOST_AUDITOR_INVALID`) and at composition (`AuditorConfigurationError`): the served organization only; a canonical id outside `agent:` naming no customer or service principal, operator, administrator or other auditor; a ≥ 32-character trim-stable secret no other credential shares.
+  - **Auditor authority.** An auditor secret is not an API key: it authenticates only the Governance Record read service — over HTTP the record routes by evaluation, decision or request id and `…/verify` (query is an in-process method with no HTTP route) — not evaluate, governed actions, evidence, passports, assurance, approvals, the operator or administration plane — and is never system scope. One shared validator (`assertAuditorConfiguration`), run by the Host loader (`HOST_AUDITOR_INVALID`) and at composition (`AuditorConfigurationError`): the served organization only; a canonical id outside `agent:` naming no customer or service principal, operator, administrator or other auditor; a ≥ 32-character trim-stable secret no other credential shares.
 
   Every other read surface was checked and discloses nothing to an ordinary reader: `query` returns summaries without events, `verify` returns digests and booleans, evidence v1/v2 project event types only, the operator plane's decision view projects named fields, and `listEnterpriseEvents` never lists the attribution event.
 
@@ -74,9 +74,9 @@ Historical records (no attribution): never answer a customer or service principa
 
 ## 5. Scope
 
-Changed: `orchestration/advisory-identity.ts` (new), `orchestration/evaluate-governance-request.ts`, `orchestration/credential-matching.ts` (`matchApiKey` generic, same comparison), `governance-store/attribution.ts` (new), `governance-store/contracts.ts`, `governance-store/projection.ts`, `configuration/enterprise-configuration.ts`, `host/host-configuration.ts`, `composition/composition-root.ts`.
+Changed: `orchestration/advisory-identity.ts` (new), `orchestration/evaluate-governance-request.ts`, `orchestration/credential-matching.ts` (`matchApiKey` generic, same comparison), `governance-store/attribution.ts` (new), `governance-store/contracts.ts`, `governance-store/projection.ts`, `configuration/enterprise-configuration.ts`, `host/host-configuration.ts`, `composition/composition-root.ts`, `orchestration/governance-record-disclosure.ts` (new), `orchestration/governance-read-service.ts`.
 
-Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` delegation, which the Kernel verifies against provisioned capability tokens and delegation grants), CORE-07, grants and their signatures, P7 / P11 / P12, the governed-action path, the customer-identity layer, the read routes, the Store schema, the public response shapes, every error code.
+Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` delegation, which the Kernel verifies against provisioned capability tokens and delegation grants), CORE-07, grants and their signatures, P7 / P11 / P12, the governed-action path, the customer-identity layer, the Store schema, every error code catalogued. The three Governance Record read routes keep their URLs, methods, error codes and fields, and gain only the approved `projection` marker and the withheld attribution payload for ordinary readers (§3).
 
 ## 6. Residual risks
 
