@@ -166,7 +166,7 @@ export interface EnterpriseConfiguration {
     readonly apiKeys: readonly EnterpriseApiKey[];
     /** G-01A: service principals for the advisory evaluate route only. Absent means none. */
     readonly servicePrincipals?: readonly EnterpriseServicePrincipal[];
-    /** G-01A: absent means `compat` — exactly the v1 meaning of a legacy key. */
+    /** G-01A: absent means the environment's default (`effectiveLegacyKeyMode`): `restricted` for staging and production, `compat` elsewhere. */
     readonly legacyKeyMode?: EnterpriseLegacyKeyMode;
   };
   /**
@@ -573,10 +573,25 @@ function parseApiKeys(value: string | undefined): readonly EnterpriseApiKey[] {
     });
 }
 
-/** G-01A: an explicit mode wins; otherwise secure profiles are `restricted` and every other profile keeps `compat`. */
+/** G-01A: secure profiles are `restricted` unless a configuration opts into `compat` explicitly; every other profile keeps `compat`. */
+function defaultLegacyKeyMode(environment: EnterpriseEnvironment): EnterpriseLegacyKeyMode {
+  return environment === 'production' || environment === 'staging' ? 'restricted' : 'compat';
+}
+
 function parseLegacyKeyMode(value: string | undefined, environment: EnterpriseEnvironment): EnterpriseLegacyKeyMode {
   if (value === 'restricted' || value === 'compat') return value;
-  return environment === 'production' || environment === 'staging' ? 'restricted' : 'compat';
+  return defaultLegacyKeyMode(environment);
+}
+
+/**
+ * G-01A: the legacy-key mode in force — the one rule every consumer reads,
+ * whether the configuration came from the Host's loader or was built by an
+ * embedder. An explicit mode wins; an absent one is the environment's
+ * default, so a programmatic `production` configuration is `restricted`
+ * unless it says `compat`.
+ */
+export function effectiveLegacyKeyMode(configuration: Pick<EnterpriseConfiguration, 'environment' | 'authentication'>): EnterpriseLegacyKeyMode {
+  return configuration.authentication.legacyKeyMode ?? defaultLegacyKeyMode(configuration.environment);
 }
 
 const ENVIRONMENT_VALUES: readonly EnterpriseEnvironment[] = ['development', 'test', 'staging', 'production'];

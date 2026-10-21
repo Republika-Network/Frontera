@@ -113,6 +113,10 @@ const IDENTITY_DEPS = { configuration: configuration(), customerIdentityAdmissio
 type IdentityModule = typeof import('../orchestration/advisory-identity.js');
 type AttributionModule = typeof import('../governance-store/attribution.js');
 type OrchestratorModule = typeof import('../orchestration/evaluate-governance-request.js');
+type ConfigurationModule = typeof import('../configuration/enterprise-configuration.js');
+type CompositionModule = typeof import('../composition/composition-root.js');
+const CONFIGURATION = 'configuration/enterprise-configuration.js';
+const COMPOSITION = 'composition/composition-root.js';
 const IDENTITY = 'orchestration/advisory-identity.js';
 const ATTRIBUTION = 'governance-store/attribution.js';
 const ORCHESTRATOR = 'orchestration/evaluate-governance-request.js';
@@ -314,5 +318,139 @@ describe('G-01A mutations — orchestrator wiring', () => {
         const record = await store.getByEvaluationId({ system: true }, outcome.body.governanceRecord?.evaluationId ?? '');
         return record?.events.some((event) => event.eventType === GOVERNANCE_ATTRIBUTION_EVENT_TYPE) === true;
       },
+    }));
+});
+
+// ---------------------------------------------------------------------------
+// Post-review hardening: embedders meet the Host's rules, and a replay signal
+// without its record fails closed.
+
+const SERVICE_SECRET = 'G01A_MUTATION_EMBEDDER_SERVICE_SECRET_0000';
+const OPERATOR_SECRET = 'G01A_MUTATION_EMBEDDER_OPERATOR_SECRET_000';
+function embedderConfiguration(servicePrincipal: { readonly principalId?: string; readonly key?: string }): EnterpriseConfiguration {
+  const base = configuration();
+  return {
+    ...base,
+    administration: { administrators: [], operators: [{ operatorId: 'ops-g01a-mutation', role: 'observer', key: OPERATOR_SECRET }] },
+    authentication: { ...base.authentication, servicePrincipals: [{ principalId: servicePrincipal.principalId ?? 'svc-g01a-embedder', organizationId: ORG, key: servicePrincipal.key ?? SERVICE_SECRET, onBehalfOfActors: [PMFREAK_ACTOR_ID] }] },
+  };
+}
+function throwsServicePrincipalError(m: IdentityModule, servicePrincipal: { readonly principalId?: string; readonly key?: string }): boolean {
+  try {
+    m.assertServicePrincipalConfiguration(embedderConfiguration(servicePrincipal), ORG);
+    return false;
+  } catch (error) {
+    return error instanceof m.ServicePrincipalConfigurationError;
+  }
+}
+
+describe('G-01A mutations — embedder validation', () => {
+  it('service-principal-may-reuse-an-operator-id is detected', () =>
+    qualify<IdentityModule>({
+      id: 'service-principal-may-reuse-an-operator-id',
+      file: IDENTITY,
+      replacements: [['...operators.map((operator) => operator.operatorId),', '']],
+      guard: (m) => throwsServicePrincipalError(m, { principalId: 'ops-g01a-mutation' }),
+    }));
+
+  it('service-principal-may-share-an-operator-secret is detected', () =>
+    qualify<IdentityModule>({
+      id: 'service-principal-may-share-an-operator-secret',
+      file: IDENTITY,
+      replacements: [['if (secrets.has(key))', 'if (false)']],
+      guard: (m) => throwsServicePrincipalError(m, { key: OPERATOR_SECRET }),
+    }));
+
+  it('service-principal-may-use-the-agent-prefix is detected', () =>
+    qualify<IdentityModule>({
+      id: 'service-principal-may-use-the-agent-prefix',
+      file: IDENTITY,
+      replacements: [['if (servicePrincipal.principalId.startsWith(', 'if (false && servicePrincipal.principalId.startsWith(']],
+      guard: (m) => throwsServicePrincipalError(m, { principalId: 'agent:g01a-mutation' }),
+    }));
+
+  it('secure-profile-defaults-to-compat is detected', () =>
+    qualify<ConfigurationModule>({
+      id: 'secure-profile-defaults-to-compat',
+      file: CONFIGURATION,
+      replacements: [['return configuration.authentication.legacyKeyMode ?? defaultLegacyKeyMode(configuration.environment);', "return configuration.authentication.legacyKeyMode ?? 'compat';"]],
+      guard: (m) => m.effectiveLegacyKeyMode({ environment: 'production', authentication: { apiKeys: [] } }) === 'restricted' && m.effectiveLegacyKeyMode({ environment: 'staging', authentication: { apiKeys: [] } }) === 'restricted',
+    }));
+
+  it('composition-skips-the-legacy-key-rule is detected', () =>
+    qualify<CompositionModule>({
+      id: 'composition-skips-the-legacy-key-rule',
+      file: COMPOSITION,
+      replacements: [['(0, advisory_identity_js_1.assertLegacyKeyConfiguration)(configuration);', '']],
+      guard: async (m) => {
+        const base = configuration();
+        try {
+          const enterprise = await m.createEnterprise({ configuration: { ...base, environment: 'production', authentication: { apiKeys: [{ key: BARE_KEY }] } }, kernelProviders: buildTestKernelProviders() });
+          await enterprise.close().catch(() => {});
+          return false;
+        } catch (error) {
+          return (error as Error).name === 'LegacyKeyConfigurationError';
+        }
+      },
+    }));
+
+  it('composition-skips-the-service-principal-rule is detected', () =>
+    qualify<CompositionModule>({
+      id: 'composition-skips-the-service-principal-rule',
+      file: COMPOSITION,
+      replacements: [['(0, advisory_identity_js_1.assertServicePrincipalConfiguration)(configuration, configuration.kernelAuthority.organizationId);', '']],
+      guard: async (m) => {
+        try {
+          const enterprise = await m.createEnterprise({ configuration: embedderConfiguration({ principalId: 'ops-g01a-mutation' }), kernelProviders: buildTestKernelProviders() });
+          await enterprise.close().catch(() => {});
+          return false;
+        } catch (error) {
+          return (error as Error).name === 'ServicePrincipalConfigurationError';
+        }
+      },
+    }));
+});
+
+/** A Store that signals a replay but hands back no record, at the probe or inside the append. */
+function replayWithoutRecord(where: 'probe' | 'append'): GovernanceStore {
+  const raw = createInMemoryGovernanceStore();
+  return new Proxy(raw, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      if (property === 'resolveIdempotency') return async () => (where === 'probe' ? { kind: 'replay', record: undefined } : { kind: 'new' });
+      if (property === 'appendEvaluation' && where === 'append') {
+        return async () => ({ evaluationId: 'gov-evaluation-foreign', decisionId: 'decision-foreign', requestId: 'foreign', created: false, idempotentReplay: true, aggregateDigest: `sha256:${'0'.repeat(64)}`, persistedAt: '2026-01-01T00:00:00.000Z' });
+      }
+      return (value as (...inner: unknown[]) => unknown).bind(target);
+    },
+  });
+}
+
+async function failsClosed(m: OrchestratorModule, where: 'probe' | 'append'): Promise<boolean> {
+  const rawBody = buildAllowedRequestBody({ requestId: `g01a-mutation-no-record-${(sequence += 1)}`, organization: { id: ORG } });
+  try {
+    await m.evaluateGovernanceRequest({ rawBody, authorizationHeader: `Bearer ${CUSTOMER_KEY}`, idempotencyKey: `g01a-mutation-no-record-key-${sequence}` }, await dependencies(replayWithoutRecord(where)));
+    return false;
+  } catch (error) {
+    return (error as { httpStatus?: unknown; code?: unknown }).httpStatus === 500 && (error as { code?: unknown }).code === 'GOVERNANCE_RECORD_CORRUPTED';
+  }
+}
+
+describe('G-01A mutations — a replay without its record fails closed', () => {
+  it('probe-replay-without-record-trusted is detected', () =>
+    qualify<OrchestratorModule>({
+      id: 'probe-replay-without-record-trusted',
+      file: ORCHESTRATOR,
+      replacements: [['if (!isReplayableRecordShape(record)) {', 'if (false) {']],
+      guard: (m) => failsClosed(m, 'probe'),
+    }));
+
+  it('append-replay-without-record-is-a-fresh-commit is detected', () =>
+    qualify<OrchestratorModule>({
+      id: 'append-replay-without-record-is-a-fresh-commit',
+      file: ORCHESTRATOR,
+      replacements: [['if (appended.idempotentReplay) {', 'if (appended.idempotentReplay && appended.existingRecord !== undefined) {']],
+      guard: (m) => failsClosed(m, 'append'),
     }));
 });

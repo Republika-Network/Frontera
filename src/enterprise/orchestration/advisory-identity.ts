@@ -1,9 +1,10 @@
 import type { KernelEvaluationRequest } from '../../kernel/index.js';
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
-import type { EnterpriseConfiguration, EnterpriseServicePrincipal } from '../configuration/enterprise-configuration.js';
+import { effectiveLegacyKeyMode, type EnterpriseConfiguration, type EnterpriseServicePrincipal } from '../configuration/enterprise-configuration.js';
 import { CUSTOMER_IDENTITY_REFUSAL_REASONS, type CustomerIdentityAdmissionService } from '../customer-identity/contracts.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/identifiers.js';
 import { readRecordedAttribution, sameRequester } from '../governance-store/attribution.js';
+import { AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
 import {
   GOVERNANCE_ATTRIBUTION_VERSION,
   type GovernanceEvaluationAttribution,
@@ -99,9 +100,12 @@ export function authenticateAdvisoryCaller(authorizationHeader: string | undefin
   } else if (matchedKey.customerIdentity !== undefined) {
     // A customer identity without an organization is malformed configuration; it is never a legacy key.
     throw EnterpriseHttpErrors.authorizationFailed('This credential is not authorized to evaluate.');
+  } else if (matchedKey.organizationId !== undefined && matchedKey.organizationId.length === 0) {
+    // An empty organization is malformed configuration, never "unscoped": it is refused, not widened to system.
+    throw EnterpriseHttpErrors.authorizationFailed('This credential is not authorized to evaluate.');
   } else {
-    const organizationId = matchedKey.organizationId !== undefined && matchedKey.organizationId.length > 0 ? matchedKey.organizationId : undefined;
-    if (organizationId === undefined && configuration.authentication.legacyKeyMode === 'restricted') {
+    const organizationId = matchedKey.organizationId;
+    if (organizationId === undefined && effectiveLegacyKeyMode(configuration) === 'restricted') {
       throw EnterpriseHttpErrors.authorizationFailed('An unscoped credential is not accepted while legacy keys are restricted.');
     }
     caller = { kind: 'legacy', ...(organizationId !== undefined ? { organizationId } : {}) };
@@ -209,7 +213,10 @@ export function mayReplayTo(record: GovernanceRecord, attribution: GovernanceEva
   return attribution !== undefined && sameRequester(recorded.attribution, attribution);
 }
 
-/** Thrown when a configured service principal could never be a safe, unambiguous requester. */
+/** The shortest service-principal secret accepted, wherever the configuration came from. Equal to the operator and administrator minimum. */
+export const SERVICE_PRINCIPAL_MIN_SECRET_LENGTH = 32;
+
+/** Thrown when a configured service principal could never be a safe, unambiguous requester. The message names fields and positions, never a secret. */
 export class ServicePrincipalConfigurationError extends Error {
   constructor(message: string) {
     super(message);
@@ -217,32 +224,75 @@ export class ServicePrincipalConfigurationError extends Error {
   }
 }
 
+/** Thrown when legacy keys are `restricted` and one of them is not organization-scoped. */
+export class LegacyKeyConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LegacyKeyConfigurationError';
+  }
+}
+
 /**
- * Composition-time check of `authentication.servicePrincipals`, so an embedder
- * that bypasses the Host's file parser still cannot compose a weaker service
- * principal: the served organization only, an explicit non-empty allow-list of
- * exact actor ids, one identity per principal id, one secret per caller.
+ * The one service-principal validator. The Host's file parser checks only the
+ * file's shape and then runs this on the configuration it built; composition
+ * runs it again on whatever configuration it is handed, so an embedder that
+ * bypasses the parser meets exactly the same rules:
+ *
+ * * scoped to the one organization this instance serves;
+ * * a canonical principal id outside the operator-issued `agent:` namespace,
+ *   naming no other principal, operator or administrator;
+ * * a secret of at least 32 characters without surrounding whitespace, shared
+ *   with no API key, operator, administrator or other service principal;
+ * * a non-empty allow-list of exact, distinct actor ids — no `*`.
  */
 export function assertServicePrincipalConfiguration(configuration: EnterpriseConfiguration, servedOrganizationId: string): void {
   const servicePrincipals = configuration.authentication.servicePrincipals ?? [];
-  const customerPrincipalIds = new Set(configuration.authentication.apiKeys.flatMap((apiKey) => (apiKey.customerIdentity !== undefined ? [apiKey.customerIdentity.principalId] : [])));
-  const secrets = new Set(configuration.authentication.apiKeys.map((apiKey) => apiKey.key));
+  const administrators = configuration.administration?.administrators ?? [];
+  const operators = configuration.administration?.operators ?? [];
+  const takenIds = new Set([
+    ...configuration.authentication.apiKeys.flatMap((apiKey) => (apiKey.customerIdentity !== undefined ? [apiKey.customerIdentity.principalId] : [])),
+    ...administrators.map((administrator) => administrator.operatorId),
+    ...operators.map((operator) => operator.operatorId),
+  ]);
+  const secrets = new Set([...configuration.authentication.apiKeys.map((apiKey) => apiKey.key), ...administrators.map((administrator) => administrator.key), ...operators.map((operator) => operator.key)]);
   const principalIds = new Set<string>();
   servicePrincipals.forEach((servicePrincipal, index) => {
-    const where = `Service principal #${index}`;
-    if (!isCanonicalCustomerIdentifier(servicePrincipal.principalId)) throw new ServicePrincipalConfigurationError(`${where} has a malformed principalId.`);
-    if (servicePrincipal.organizationId !== servedOrganizationId) throw new ServicePrincipalConfigurationError(`${where} is not scoped to the organization this instance serves.`);
-    if (principalIds.has(servicePrincipal.principalId) || customerPrincipalIds.has(servicePrincipal.principalId)) {
-      throw new ServicePrincipalConfigurationError(`${where} reuses a principal id; one principal id names one identity.`);
+    const where = `servicePrincipals[${index}]`;
+    if (!isCanonicalCustomerIdentifier(servicePrincipal.principalId)) throw new ServicePrincipalConfigurationError(`${where}.principalId must be a non-empty, trim-stable identifier of at most 256 characters with no control characters.`);
+    if (servicePrincipal.principalId.startsWith(AGENT_PRINCIPAL_PREFIX)) {
+      throw new ServicePrincipalConfigurationError(`${where}.principalId uses the '${AGENT_PRINCIPAL_PREFIX}' prefix, which is reserved for operator-issued agent principals.`);
+    }
+    if (principalIds.has(servicePrincipal.principalId) || takenIds.has(servicePrincipal.principalId)) {
+      throw new ServicePrincipalConfigurationError(`${where}.principalId already names another principal, operator or administrator; one principal id names one identity.`);
     }
     principalIds.add(servicePrincipal.principalId);
-    if (typeof servicePrincipal.key !== 'string' || servicePrincipal.key.length === 0 || secrets.has(servicePrincipal.key)) {
-      throw new ServicePrincipalConfigurationError(`${where} has an empty secret or one shared with another credential.`);
+    if (servicePrincipal.organizationId !== servedOrganizationId) throw new ServicePrincipalConfigurationError(`${where} is not scoped to the organization this instance serves.`);
+    const key = servicePrincipal.key;
+    if (typeof key !== 'string' || key.length < SERVICE_PRINCIPAL_MIN_SECRET_LENGTH || key.trim() !== key) {
+      throw new ServicePrincipalConfigurationError(`${where} has a secret shorter than ${SERVICE_PRINCIPAL_MIN_SECRET_LENGTH} characters or with surrounding whitespace. A service credential must be a long random secret.`);
     }
-    secrets.add(servicePrincipal.key);
+    if (secrets.has(key)) throw new ServicePrincipalConfigurationError(`${where} shares its secret with another credential; one secret authenticates one caller.`);
+    secrets.add(key);
     const actors = servicePrincipal.onBehalfOfActors;
     if (!Array.isArray(actors) || actors.length === 0 || actors.some((actor) => !isCanonicalCustomerIdentifier(actor) || actor.includes('*')) || new Set(actors).size !== actors.length) {
-      throw new ServicePrincipalConfigurationError(`${where} must list at least one exact, distinct actor id; there is no implicit or wildcard delegation.`);
+      throw new ServicePrincipalConfigurationError(`${where}.onBehalfOf.actors must list at least one exact, distinct actor id (no '*'); there is no implicit or wildcard delegation.`);
     }
   });
+}
+
+/**
+ * The one legacy-key rule: while the effective mode is `restricted` (the
+ * default for staging and production, whoever built the configuration), no
+ * API key may be unscoped — an unscoped key is the only legacy credential that
+ * resolves to system scope on the read routes. Run by the Host's loader and
+ * again at composition.
+ */
+export function assertLegacyKeyConfiguration(configuration: EnterpriseConfiguration): void {
+  if (effectiveLegacyKeyMode(configuration) !== 'restricted') return;
+  const index = configuration.authentication.apiKeys.findIndex((apiKey) => apiKey.organizationId === undefined || apiKey.organizationId.length === 0);
+  if (index !== -1) {
+    throw new LegacyKeyConfigurationError(
+      `API key #${index} has no organization while legacy keys are restricted (the default for staging and production): an unscoped key would hold system access across every organization. Scope it, or opt into compat explicitly (AOC_ENTERPRISE_LEGACY_KEY_MODE=compat / authentication.legacyKeyMode: 'compat').`,
+    );
+  }
 }

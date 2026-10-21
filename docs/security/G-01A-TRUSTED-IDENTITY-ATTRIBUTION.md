@@ -22,12 +22,16 @@ The governed-action path (`POST /api/governed-actions`) already derived actor an
 
 **Customer principals** (keys carrying `customerIdentity`). The advisory route now calls the existing `CustomerIdentityAdmissionService.admit()` — credential → principal → organization → Kernel Authority binding → actor. The body must name exactly that organization, that actor, and the Host's trust domain (the governed-action configuration's `trustDomainId`). Admission absent → the key cannot evaluate (403), never downgraded to a legacy key. Admission unavailable → 503 `PROVIDER_UNAVAILABLE`.
 
-**Service principals** (`servicePrincipals` in the governed-action file; `EnterpriseConfiguration.authentication.servicePrincipals` for embedders). A named principal with its own secret (≥ 32 characters, unique across every credential), scoped to the one organization this instance serves, with `onBehalfOf: { actors: [...] }` — explicit, non-empty, exact ids. `onBehalfOf` accepts no other field, so no wildcard or "any bound actor" form can be written; `*` is refused. A service secret is **not** an `EnterpriseApiKey`: it authenticates the advisory evaluate route only — no read, no customer route, no operator or administration plane — and never holds a system context. The principal id may not collide with a customer principal, an operator, an administrator or the operator-issued `agent:` namespace. Composition re-checks all of this for embedders (`ServicePrincipalConfigurationError`).
+**Service principals** (`servicePrincipals` in the governed-action file; `EnterpriseConfiguration.authentication.servicePrincipals` for embedders). A named principal with its own secret (≥ 32 characters, unique across every credential), scoped to the one organization this instance serves, with `onBehalfOf: { actors: [...] }` — explicit, non-empty, exact ids. `onBehalfOf` accepts no other field, so no wildcard or "any bound actor" form can be written; `*` is refused. A service secret is **not** an `EnterpriseApiKey`: it authenticates the advisory evaluate route only — no read, no customer route, no operator or administration plane — and never holds a system context. The principal id may not collide with a customer principal, an operator, an administrator or the operator-issued `agent:` namespace.
+
+One validator, two entry points: the Host's file parser reads only the file's shape (closed keys, environment-referenced secret), then runs `assertServicePrincipalConfiguration` on the configuration it built; `createEnterprise` runs the same function on whatever configuration it is handed. An embedder that bypasses the parser therefore meets identical rules — served organization, canonical id outside `agent:`, no collision with customer principals, operators or administrators, a secret of ≥ 32 characters without surrounding whitespace that no API key, operator, administrator or other service principal shares, and an explicit, distinct, wildcard-free allow-list (`ServicePrincipalConfigurationError`; the Host maps it to `HOST_SERVICE_PRINCIPAL_INVALID`). The Host's global one-secret-one-caller check still runs first, so a secret shared with a configured credential surfaces there as `HOST_CREDENTIALS_AMBIGUOUS`.
 
 **Legacy keys.** `AOC_ENTERPRISE_LEGACY_KEY_MODE`:
 
 - `restricted` — default in `staging` / `production`. The Host refuses to start with an unscoped key (`HOST_LEGACY_KEY_UNSCOPED`), so no legacy key holds implicit cross-organization system access; an unscoped key presented anyway is refused on evaluate (403).
 - `compat` — default elsewhere; an explicit opt-in in a secure profile. Unscoped keys keep their v1 meaning.
+
+The mode in force is `effectiveLegacyKeyMode`: an explicit mode wins, otherwise `staging` / `production` are `restricted` — for a configuration the Host loaded and for one an embedder built by hand alike. `assertLegacyKeyConfiguration` (the Host maps it to `HOST_LEGACY_KEY_UNSCOPED`; composition throws `LegacyKeyConfigurationError`) refuses an unscoped key while restricted, before anything is served, so bypassing the Host loader does not reopen system reads. An empty organization id on a key is malformed, never unscoped: evaluate refuses it, and restricted mode refuses it at startup.
 
 In both modes a scoped key must now state its own organization, and its store context is the tenant scope, not `system`. The actor it names is recorded as **asserted**.
 
@@ -51,11 +55,13 @@ Disclosure (founder decision 4):
 - **Never published.** The event is built inside the Store's projection; it never passes through the event publisher.
 - **Not on the legacy event surface.** It carries no `requestId`, so `listEnterpriseEvents` (both providers) never lists it.
 - **Not in evidence.** Evidence bundles project an aggregate's events as `{ eventType, occurredAt }` only (`evidence/projector.ts`); no disclosure level — PUBLIC through FULL — carries the principal id.
-- **Raw Governance Record reads.** `GET /api/governance/evaluations/{id}` (and by request/decision id) returns the complete aggregate to a credential scoped to that organization, as it always has — including the full trace and request payload, which the evidence policies reserve for AUDITOR and above. The attribution payload is visible there to the same audience. See §6.
+- **Raw Governance Record reads — OPEN (P1).** `GET /api/governance/evaluations/{id}` (and by request/decision id) returns the complete canonical aggregate to any credential scoped to that organization, including the attribution payload. The founder has not waived this: organization scope alone does not imply AUDITOR authorization. Closing it changes those routes' response for organization-scoped callers and needs an AUDITOR authorization the read routes do not have today, so it awaits a bounded design decision (see the PR). Every other read surface was checked and discloses nothing: `query` returns summaries without events, `verify` returns digests and booleans, evidence v1/v2 project event types only, and the operator plane's decision view projects named fields.
 
 ## 4. Replay
 
 `Idempotency-Key` scopes stay `org:{id}` / `global` (no format change). A stored decision answers a caller only if `mayReplayTo` holds: the same basis, requesting principal (or legacy scope), organization and actor. Otherwise the caller gets the existing `409 GOVERNANCE_IDEMPOTENCY_CONFLICT` (key) or `409 CONCURRENCY_CONFLICT` (request id) and nothing is written. The check runs on the pre-Kernel probe **and** on the append transaction's replay.
+
+A replay signal that comes without the record it replays — possible only from an injected Store, on the probe or inside the append — is a `500 GOVERNANCE_RECORD_CORRUPTED` integrity error: never trusted as a replay, never treated as this caller's fresh commit, nothing written, no commit or completion event published.
 
 Historical records (no attribution): never answer a customer or service principal — not adopted, not promoted. They still answer a legacy key or an unauthenticated caller exactly as before, and are returned untouched (no attribution is added). An unreadable attribution (two events, unknown version, or contradicting its request) answers no one.
 
@@ -67,7 +73,7 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 
 ## 6. Residual risks
 
-- **In-organization raw reads.** Any credential scoped to an organization — including a customer principal — reads that organization's complete Governance Records through the governance read routes, now including attribution payloads (principal ids). This is the existing read contract (it already exposes AUDITOR-level trace data to those credentials); narrowing it to principal- or actor-level scoping changes read contracts and is proposed as a separate milestone.
+- **In-organization raw reads (open P1, blocking merge).** See §3.
 - **Legacy keys within one organization are indistinguishable.** Two scoped legacy keys of one organization share `legacy-asserted / organization` attribution and may replay each other's decisions, as in v1. Configured legacy keys carry no identity to tell them apart.
 - **Unscoped keys under `compat`** keep cross-organization system access on the read routes — by explicit opt-in only.
 - **Request-id existence oracle.** `request_id` is unique store-wide, so a reused id still answers 409 across requesters and tenants (G-01B1).
@@ -75,4 +81,4 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 
 ## 7. Evidence
 
-Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (12 mutants over the compiled modules, each detected by its guard). Run IDs are reported on the PR.
+Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (20 mutants over the compiled modules, each detected by its guard). Run IDs are reported on the PR.

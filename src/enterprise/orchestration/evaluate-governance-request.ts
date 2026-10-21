@@ -120,8 +120,7 @@ export async function evaluateGovernanceRequest(
     throw idempotencyConflictError(resolution.conflictKind, request.requestId);
   }
   if (resolution.kind === 'replay') {
-    assertReplayableTo(resolution.record, attribution, idempotency, request.requestId, deps);
-    return replayResponse(resolution.record, deps, Date.now() - startedAtMs);
+    return replayResponse(replayableRecord(resolution.record, attribution, idempotency, request.requestId, deps), deps, Date.now() - startedAtMs);
   }
 
   // -- Operational pre-evaluation event: published in-process only; its
@@ -208,14 +207,17 @@ export async function evaluateGovernanceRequest(
     }
     throw EnterpriseHttpErrors.infrastructureFailure('The evaluation could not be persisted.');
   }
-  deps.telemetry.recordStoreAppend(Date.now() - appendStartedAtMs, appended.idempotentReplay);
-
   // A concurrent racer committed the equivalent aggregate first — answer
-  // with the stored original, exactly like the pre-Kernel replay path.
-  if (appended.idempotentReplay && appended.existingRecord !== undefined) {
-    assertReplayableTo(appended.existingRecord, attribution, idempotency, request.requestId, deps);
-    return replayResponse(appended.existingRecord, deps, Date.now() - startedAtMs);
+  // with the stored original, exactly like the pre-Kernel replay path. G-01A:
+  // a replay signal is answered only from the record it names, after the
+  // requester check; one that names no record is never treated as this
+  // caller's fresh commit.
+  if (appended.idempotentReplay) {
+    const existing = replayableRecord(appended.existingRecord, attribution, idempotency, request.requestId, deps);
+    deps.telemetry.recordStoreAppend(Date.now() - appendStartedAtMs, true);
+    return replayResponse(existing, deps, Date.now() - startedAtMs);
   }
+  deps.telemetry.recordStoreAppend(Date.now() - appendStartedAtMs, false);
 
   deps.logger.info('governance.audit.decision', {
     requestId: result.requestId,
@@ -281,15 +283,23 @@ function replayResponse(record: GovernanceRecord, deps: EvaluateGovernanceReques
  * committed it. Any other requester -- another principal, another basis, or an
  * authenticated principal meeting a record that carries no attribution -- gets
  * the existing 409 for the key or request id it reused, and nothing is written.
+ * A Store that signals a replay without the record it replays (an injected
+ * Store can) gives nothing to check the requester against: that is an
+ * integrity failure, never a replay and never a fresh commit.
  */
-function assertReplayableTo(
-  record: GovernanceRecord,
+function replayableRecord(
+  record: GovernanceRecord | null | undefined,
   attribution: GovernanceEvaluationAttribution | undefined,
   idempotency: GovernanceIdempotencyContext | undefined,
   requestId: string,
   deps: EvaluateGovernanceRequestDependencies,
-): void {
-  if (mayReplayTo(record, attribution)) return;
+): GovernanceRecord {
+  if (!isReplayableRecordShape(record)) {
+    deps.telemetry.recordStoreCorruptedRecord();
+    deps.logger.error('governance.evaluate.replay_without_record', { requestId, route: 'POST /api/governance/evaluate' });
+    throw new EnterpriseHttpError(500, 'GOVERNANCE_RECORD_CORRUPTED', 'A stored governance record is corrupted; see server logs.');
+  }
+  if (mayReplayTo(record, attribution)) return record;
   deps.telemetry.recordStoreIdempotencyConflict();
   if (idempotency !== undefined) {
     throw new EnterpriseHttpError(409, 'GOVERNANCE_IDEMPOTENCY_CONFLICT', 'This Idempotency-Key was already used by another requester or with a different request payload.');
@@ -305,6 +315,13 @@ function idempotencyConflictError(conflictKind: 'idempotency-key' | 'request-id'
   return EnterpriseHttpErrors.concurrencyConflict(
     `requestId '${requestId}' was already submitted with a different payload; a request id must uniquely identify one governance request.`,
   );
+}
+
+/** The minimum a replayed record must carry for the requester check and the replay response: its request, evaluation, events and integrity. */
+function isReplayableRecordShape(record: GovernanceRecord | null | undefined): record is GovernanceRecord {
+  if (record === null || typeof record !== 'object') return false;
+  const candidate = record as unknown as Record<string, unknown>;
+  return ['request', 'evaluation', 'integrity'].every((key) => candidate[key] !== null && typeof candidate[key] === 'object') && Array.isArray(candidate['events']);
 }
 
 function isPlainObjectWithOrganization(value: unknown): value is { organization?: { id?: string } } {

@@ -11,7 +11,7 @@ import {
   type EvaluateGovernanceRequestInput,
 } from '../orchestration/evaluate-governance-request.js';
 import { governGovernedActionRequest } from '../orchestration/govern-governed-action-request.js';
-import { assertServicePrincipalConfiguration } from '../orchestration/advisory-identity.js';
+import { assertLegacyKeyConfiguration, assertServicePrincipalConfiguration } from '../orchestration/advisory-identity.js';
 import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
@@ -1455,9 +1455,11 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // only ever produce an ambiguous or foreign principal, or with no binding
   // source at all, is refused outright instead of starting in a weaker mode.
   const customerIdentityRequested = options.customerIdentityAdmission?.enabled === true;
-  // G-01A: service principals are checked as strictly as customer
-  // credentials, here, whoever built the configuration.
+  // G-01A: service principals and legacy keys are held to the same rules the
+  // Host's loader applies, here, whoever built the configuration — before
+  // anything is opened.
   assertServicePrincipalConfiguration(configuration, configuration.kernelAuthority.organizationId);
+  assertLegacyKeyConfiguration(configuration);
   if (customerIdentityRequested) {
     if (options.kernelAuthorityStore === undefined && !configuration.kernelAuthority.enabled) {
       throw new CustomerIdentityConfigurationError(

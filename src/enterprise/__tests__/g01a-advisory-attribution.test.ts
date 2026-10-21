@@ -40,7 +40,7 @@ import { createEnterpriseServer, type EnterpriseServer } from '../host/enterpris
 import { EnterpriseHostConfigurationError, loadEnterpriseHostConfiguration } from '../host/host-configuration.js';
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
-import { mayReplayTo, ServicePrincipalConfigurationError } from '../orchestration/advisory-identity.js';
+import { LegacyKeyConfigurationError, mayReplayTo, ServicePrincipalConfigurationError } from '../orchestration/advisory-identity.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
 import { freshnessEnv } from './core07-freshness-fixture.js';
 import { ALLOWED_INTENT, EVALUATED_AT_POLICY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
@@ -775,22 +775,127 @@ describe('G-01A — the Host parses service principals strictly and refuses unsc
   });
 });
 
-describe('G-01A — composition refuses a weaker service principal, whoever built the configuration', () => {
+describe('G-01A — composition holds an embedder to the Host’s service-principal rules (one shared validator)', () => {
+  const SECRET = 'G01A_COMPOSITION_SERVICE_SECRET_000000000';
+  const ADMIN_SECRET = 'G01A_COMPOSITION_ADMIN_SECRET_00000000000';
+  const OPERATOR_SECRET = 'G01A_COMPOSITION_OPERATOR_SECRET_0000000';
+  const administration = { administrators: [{ operatorId: 'ops-admin-g01a', key: ADMIN_SECRET }], operators: [{ operatorId: 'ops-observer-g01a', role: 'observer', key: OPERATOR_SECRET }] };
+  const valid: EnterpriseServicePrincipal = { principalId: 'svc-x', organizationId: ORG, key: SECRET, onBehalfOfActors: [PMFREAK_ACTOR_ID] };
   const variants: readonly [string, EnterpriseServicePrincipal][] = [
-    ['another organization', { principalId: 'svc-x', organizationId: 'org-other', key: 'G01A_COMPOSITION_SERVICE_SECRET_000000000', onBehalfOfActors: [PMFREAK_ACTOR_ID] }],
-    ['an empty allow-list', { principalId: 'svc-x', organizationId: ORG, key: 'G01A_COMPOSITION_SERVICE_SECRET_000000000', onBehalfOfActors: [] }],
-    ['a wildcard actor', { principalId: 'svc-x', organizationId: ORG, key: 'G01A_COMPOSITION_SERVICE_SECRET_000000000', onBehalfOfActors: ['*'] }],
-    ['a secret shared with an API key', { principalId: 'svc-x', organizationId: ORG, key: LEGACY_KEY, onBehalfOfActors: [PMFREAK_ACTOR_ID] }],
-    ['a customer principal id', { principalId: PRINCIPAL, organizationId: ORG, key: 'G01A_COMPOSITION_SERVICE_SECRET_000000000', onBehalfOfActors: [PMFREAK_ACTOR_ID] }],
+    ['another organization', { ...valid, organizationId: 'org-other' }],
+    ['an empty allow-list', { ...valid, onBehalfOfActors: [] }],
+    ['a wildcard actor', { ...valid, onBehalfOfActors: ['*'] }],
+    ['a duplicated actor', { ...valid, onBehalfOfActors: [PMFREAK_ACTOR_ID, PMFREAK_ACTOR_ID] }],
+    ['a secret shared with an API key', { ...valid, key: LEGACY_KEY }],
+    ['a secret shared with an administrator', { ...valid, key: ADMIN_SECRET }],
+    ['a secret shared with an operator', { ...valid, key: OPERATOR_SECRET }],
+    ['a short secret', { ...valid, key: 'short-secret' }],
+    ['a secret with surrounding whitespace', { ...valid, key: ` ${SECRET}` }],
+    ['a customer principal id', { ...valid, principalId: PRINCIPAL }],
+    ['an operator id', { ...valid, principalId: 'ops-observer-g01a' }],
+    ['an administrator id', { ...valid, principalId: 'ops-admin-g01a' }],
+    ['the reserved agent: prefix', { ...valid, principalId: 'agent:g01a' }],
+    ['a malformed principal id', { ...valid, principalId: ' svc-x' }],
   ];
   for (const [label, servicePrincipal] of variants) {
-    it(label, async () => {
+    it(`${label} is refused before anything is composed`, async () => {
       const base = configuration();
       await assert.rejects(
-        createEnterprise({ configuration: { ...base, authentication: { ...base.authentication, servicePrincipals: [servicePrincipal] } }, kernelProviders: buildTestKernelProviders() }),
-        (error: unknown) => error instanceof ServicePrincipalConfigurationError,
+        createEnterprise({ configuration: { ...base, administration, authentication: { ...base.authentication, servicePrincipals: [servicePrincipal] } }, kernelProviders: buildTestKernelProviders() }),
+        (error: unknown) => error instanceof ServicePrincipalConfigurationError && !error.message.includes(SECRET) && !error.message.includes(ADMIN_SECRET) && !error.message.includes(OPERATOR_SECRET),
       );
     });
+  }
+
+  it('two service principals sharing one id or one secret are refused', async () => {
+    const base = configuration();
+    for (const second of [{ ...valid, key: 'G01A_COMPOSITION_SERVICE_SECRET_111111111' }, { ...valid, principalId: 'svc-y' }]) {
+      await assert.rejects(
+        createEnterprise({ configuration: { ...base, authentication: { ...base.authentication, servicePrincipals: [valid, second] } }, kernelProviders: buildTestKernelProviders() }),
+        (error: unknown) => error instanceof ServicePrincipalConfigurationError,
+      );
+    }
+  });
+});
+
+describe('G-01A — composition enforces the restricted legacy-key mode for embedders too', () => {
+  it('a programmatic production configuration with an unscoped key is refused — restricted is the default, not a Host-loader feature', async () => {
+    const fromEnvironment = loadEnterpriseConfiguration({ AOC_ENTERPRISE_ENV: 'production', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_REQUIRE_AUTH: 'true', AOC_ENTERPRISE_API_KEYS: BARE_KEY, AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG });
+    await assert.rejects(createEnterprise({ configuration: fromEnvironment, kernelProviders: buildTestKernelProviders() }), (error: unknown) => error instanceof LegacyKeyConfigurationError && !error.message.includes(BARE_KEY));
+
+    // A hand-built configuration that never states a mode: the environment's default applies.
+    const base = configuration();
+    for (const environment of ['production', 'staging'] as const) {
+      await assert.rejects(
+        createEnterprise({ configuration: { ...base, environment, authentication: { apiKeys: [{ key: BARE_KEY }] } }, kernelProviders: buildTestKernelProviders() }),
+        (error: unknown) => error instanceof LegacyKeyConfigurationError,
+      );
+    }
+    await assert.rejects(
+      createEnterprise({ configuration: { ...base, authentication: { apiKeys: [{ key: BARE_KEY }], legacyKeyMode: 'restricted' } }, kernelProviders: buildTestKernelProviders() }),
+      (error: unknown) => error instanceof LegacyKeyConfigurationError,
+    );
+  });
+
+  it('compat stays an explicit, working opt-in; a development configuration keeps its v1 default', async () => {
+    const base = configuration();
+    const explicit = await createEnterprise({ configuration: { ...base, environment: 'production', authentication: { apiKeys: [{ key: BARE_KEY }], legacyKeyMode: 'compat' } }, kernelProviders: buildTestKernelProviders() });
+    enterprises.push(explicit);
+    const development = await createEnterprise({ configuration: { ...base, authentication: { apiKeys: [{ key: BARE_KEY }] } }, kernelProviders: buildTestKernelProviders() });
+    enterprises.push(development);
+    const outcome = await development.evaluate(buildAllowedRequestBody({ requestId: fresh('dev-compat') }), { authorizationHeader: `Bearer ${BARE_KEY}` });
+    assert.equal(outcome.httpStatus, 200);
+  });
+
+  it('an empty organization on a key is malformed, never unscoped: evaluate refuses it, and restricted refuses it at startup', async () => {
+    const base = configuration();
+    const compat = await createEnterprise({ configuration: { ...base, authentication: { apiKeys: [{ key: BARE_KEY, organizationId: '' }], legacyKeyMode: 'compat' } }, kernelProviders: buildTestKernelProviders() });
+    enterprises.push(compat);
+    await assert.rejects(
+      compat.evaluate(buildAllowedRequestBody({ requestId: fresh('empty-org') }), { authorizationHeader: `Bearer ${BARE_KEY}` }),
+      (error: unknown) => error instanceof EnterpriseHttpError && error.httpStatus === 403,
+    );
+    await assert.rejects(
+      createEnterprise({ configuration: { ...base, authentication: { apiKeys: [{ key: BARE_KEY, organizationId: '' }], legacyKeyMode: 'restricted' } }, kernelProviders: buildTestKernelProviders() }),
+      (error: unknown) => error instanceof LegacyKeyConfigurationError,
+    );
+  });
+});
+
+describe('G-01A — a replay signal without its record fails closed', () => {
+  for (const provider of PROVIDERS) {
+    for (const where of ['pre-evaluation probe', 'append transaction'] as const) {
+      it(`${provider.name}, ${where}: an injected Store that signals a replay but returns no record is an integrity error — never a replay, never a fresh commit`, async () => {
+        const raw = await provider.open();
+        const store = new Proxy(raw, {
+          get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver) as unknown;
+            if (typeof value !== 'function') return value;
+            if (property === 'resolveIdempotency') return async () => (where === 'pre-evaluation probe' ? { kind: 'replay', record: undefined } : { kind: 'new' });
+            if (property === 'appendEvaluation' && where === 'append transaction') {
+              return async () => ({ evaluationId: 'gov-evaluation-foreign', decisionId: 'decision-foreign', requestId: 'foreign', created: false, idempotentReplay: true, aggregateDigest: `sha256:${'0'.repeat(64)}`, persistedAt: '2026-01-01T00:00:00.000Z' });
+            }
+            return (value as (...inner: unknown[]) => unknown).bind(target);
+          },
+        });
+        const enterprise = await createEnterprise(await hostOptions(store));
+        enterprises.push(enterprise);
+        const published: EnterpriseEvent[] = [];
+        const unsubscribe = enterprise.eventPublisher.subscribe((event) => published.push(event));
+        try {
+          for (const secret of [CUSTOMER_KEY, SERVICE_KEY, LEGACY_KEY]) {
+            await assert.rejects(
+              enterprise.evaluate(body({ requestId: fresh(`no-record-${where.length}`) }), { authorizationHeader: `Bearer ${secret}`, idempotencyKey: fresh('no-record-key') }),
+              (error: unknown) => error instanceof EnterpriseHttpError && error.httpStatus === 500 && error.code === 'GOVERNANCE_RECORD_CORRUPTED' && !error.message.includes('foreign'),
+            );
+          }
+        } finally {
+          unsubscribe();
+        }
+        assert.equal((await raw.query(SYSTEM, {})).records.length, 0, 'nothing was written');
+        assert.equal(published.some((event) => event.type === 'GovernanceRecordCommitted' || event.type === 'GovernanceEvaluationCompleted'), false, 'no commit or completion was announced');
+      });
+    }
   }
 });
 

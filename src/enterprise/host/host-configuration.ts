@@ -9,8 +9,12 @@ import {
   type EnterpriseOperator,
   type EnterpriseServicePrincipal,
 } from '../configuration/enterprise-configuration.js';
-import { isCanonicalCustomerIdentifier } from '../customer-identity/identifiers.js';
-import { AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
+import {
+  LegacyKeyConfigurationError,
+  ServicePrincipalConfigurationError,
+  assertLegacyKeyConfiguration,
+  assertServicePrincipalConfiguration,
+} from '../orchestration/advisory-identity.js';
 import { LEGACY_ADMINISTRATOR_ROLE, OPERATOR_ROLES, isOperatorRole, type OperatorRoleOrLegacy } from '../operator-control/roles.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
@@ -300,48 +304,30 @@ function parseOperators(env: Env, value: unknown, administrators: readonly Enter
   });
 }
 
-function servicePrincipalInvalid(message: string): never {
-  throw new EnterpriseHostConfigurationError('HOST_SERVICE_PRINCIPAL_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${message}`);
-}
-
 /**
  * G-01A: `servicePrincipals` — named service credentials that may request
  * advisory evaluations on behalf of the actors they list, in the one
- * organization this instance serves. Optional. The allow-list is explicit and
- * non-empty: `onBehalfOf` accepts `actors` and nothing else, so no wildcard or
- * "any actor" form can be written. A service principal id is one identity: it
- * may not also be a customer principal, an operator, an administrator, or an
- * operator-issued agent principal.
+ * organization this instance serves. Optional. Only the file's **shape** is
+ * read here: `onBehalfOf` accepts `actors` and nothing else, so no wildcard
+ * or "every actor" form can be written, and the secret is an environment
+ * reference. Every identity rule — reserved and colliding ids, secret
+ * strength, explicit actors, one organization — is the shared
+ * `assertServicePrincipalConfiguration`, run on the resolved configuration
+ * below and again at composition, so an embedder meets exactly the same rules.
  */
-function parseServicePrincipals(env: Env, value: unknown, organizationId: string, takenIds: ReadonlySet<string>): readonly EnterpriseServicePrincipal[] {
+function parseServicePrincipals(env: Env, value: unknown, organizationId: string): readonly EnterpriseServicePrincipal[] {
   if (value === undefined) return [];
   const entries = array(value, 'servicePrincipals');
   if (entries.length === 0) invalid('servicePrincipals must name at least one principal when present; omit it to configure none.');
-  const seen = new Set<string>();
   return entries.map((entry, index) => {
     const where = `servicePrincipals[${index}]`;
     if (!isRecord(entry)) invalid(`${where} must be an object.`);
     closedKeys(entry, ['principalId', 'apiKeyEnv', 'onBehalfOf'], where);
     const principalId = text(entry.principalId, `${where}.principalId`);
-    if (!isCanonicalCustomerIdentifier(principalId)) servicePrincipalInvalid(`${where}.principalId must be at most 256 characters with no control characters.`);
-    if (principalId.startsWith(AGENT_PRINCIPAL_PREFIX)) servicePrincipalInvalid(`${where}.principalId uses the '${AGENT_PRINCIPAL_PREFIX}' prefix, which is reserved for operator-issued agent principals.`);
-    if (seen.has(principalId) || takenIds.has(principalId)) {
-      servicePrincipalInvalid(`${where}.principalId '${principalId}' already names another principal, operator or administrator; one principal id names one identity.`);
-    }
-    seen.add(principalId);
     if (!isRecord(entry.onBehalfOf)) invalid(`${where}.onBehalfOf must be an object.`);
     closedKeys(entry.onBehalfOf, ['actors'], `${where}.onBehalfOf`);
     const actors = array(entry.onBehalfOf.actors, `${where}.onBehalfOf.actors`).map((actor, actorIndex) => text(actor, `${where}.onBehalfOf.actors[${actorIndex}]`));
-    if (actors.length === 0) servicePrincipalInvalid(`${where}.onBehalfOf.actors must name at least one actor; there is no implicit or wildcard delegation.`);
-    for (const actor of actors) {
-      if (!isCanonicalCustomerIdentifier(actor) || actor.includes('*')) servicePrincipalInvalid(`${where}.onBehalfOf.actors must be exact actor ids (at most 256 characters, no control characters, no '*').`);
-    }
-    if (new Set(actors).size !== actors.length) servicePrincipalInvalid(`${where}.onBehalfOf.actors names an actor more than once.`);
-    const key = secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`);
-    if (key.length < MIN_ADMINISTRATOR_SECRET_LENGTH || key.trim() !== key) {
-      servicePrincipalInvalid(`${where}.apiKeyEnv names a secret shorter than ${MIN_ADMINISTRATOR_SECRET_LENGTH} characters or with surrounding whitespace. A service credential must be a long random secret.`);
-    }
-    return { principalId, organizationId, key, onBehalfOfActors: Object.freeze([...actors]) };
+    return { principalId, organizationId, key: secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`), onBehalfOfActors: Object.freeze([...actors]) };
   });
 }
 
@@ -387,12 +373,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   });
   const administrators = parseAdministrators(env, parsed.administrators);
   const operators = parseOperators(env, parsed.operators, administrators);
-  const servicePrincipals = parseServicePrincipals(
-    env,
-    parsed.servicePrincipals,
-    organizationId,
-    new Set([...customerPrincipals.map(({ principal }) => principal.principalId), ...administrators.map((administrator) => administrator.operatorId), ...operators.map((operator) => operator.operatorId)]),
-  );
+  const servicePrincipals = parseServicePrincipals(env, parsed.servicePrincipals, organizationId);
   // CTRL-02: with operators configured, agents are onboarded by identified
   // operators (operator-issued credentials), so the file may name no static
   // customer principal at all.
@@ -740,17 +721,22 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     }
   }
 
-  // G-01A: in `restricted` mode (the secure-profile default) no legacy key
-  // holds implicit cross-organization system access. An unscoped key is the
-  // only legacy credential that resolves to system scope on the read routes
-  // and to any organization on evaluate, so it is refused here, before
-  // anything is served; the read contracts themselves are unchanged. `compat`
-  // is the explicit opt-in that keeps the v1 meaning.
-  if (configuration.authentication.legacyKeyMode === 'restricted' && configuration.authentication.apiKeys.some((apiKey) => apiKey.organizationId === undefined || apiKey.organizationId.length === 0)) {
-    throw new EnterpriseHostConfigurationError(
-      'HOST_LEGACY_KEY_UNSCOPED',
-      'AOC_ENTERPRISE_API_KEYS contains a key without an organization while AOC_ENTERPRISE_LEGACY_KEY_MODE is restricted (the default for staging and production): an unscoped key would hold system access across every organization. Scope it as key:organizationId, or set AOC_ENTERPRISE_LEGACY_KEY_MODE=compat to opt in explicitly.',
-    );
+  // G-01A: the shared rules, on the configuration actually built — the same
+  // functions composition runs for an embedder. In `restricted` mode (the
+  // secure-profile default) no legacy key holds implicit cross-organization
+  // system access: an unscoped key is refused before anything is served; the
+  // read contracts themselves are unchanged. `compat` is the explicit opt-in.
+  try {
+    assertServicePrincipalConfiguration(configuration, base.kernelAuthority.organizationId);
+  } catch (error) {
+    if (error instanceof ServicePrincipalConfigurationError) throw new EnterpriseHostConfigurationError('HOST_SERVICE_PRINCIPAL_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${error.message}`);
+    throw error;
+  }
+  try {
+    assertLegacyKeyConfiguration(configuration);
+  } catch (error) {
+    if (error instanceof LegacyKeyConfigurationError) throw new EnterpriseHostConfigurationError('HOST_LEGACY_KEY_UNSCOPED', `AOC_ENTERPRISE_API_KEYS: ${error.message}`);
+    throw error;
   }
 
   return { configuration, governedActions: governed, secureProfile };
