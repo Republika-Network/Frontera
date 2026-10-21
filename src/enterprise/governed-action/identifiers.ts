@@ -37,8 +37,9 @@ export const SERVER_DERIVED_IDENTIFIER_PREFIX = 'aoc.';
  * G-01B0 — whether a caller-supplied request id falls in the server-derived
  * namespace. Refused at caller ingress, so no caller can occupy, replay or
  * collide with a governed request identity. Checked after `trim()` and
- * case-insensitively: a variant cannot collide with a derived id, but it
- * would still pass for one wherever ids are displayed.
+ * case-insensitively, which only widens the refusal: the Store compares
+ * request ids byte for byte, so no other spelling can collide with a derived
+ * id. Visual lookalikes (other scripts, zero-width characters) are not refused.
  */
 export function isServerDerivedIdentifierNamespace(requestId: string): boolean {
   return requestId.trim().toLowerCase().startsWith(SERVER_DERIVED_IDENTIFIER_PREFIX);

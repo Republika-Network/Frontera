@@ -1,20 +1,16 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { createManualEnforcementClock } from '../../features/action-enforcement/runtime/enforcement-runtime-context.js';
 import type { ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
-import { AocKernel } from '../../kernel/index.js';
-import { toKernelEvaluationRequest } from '../api/governance-evaluate-contract.js';
-import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
 import { createControlPlaneWebServer, loadControlPlaneWebConfiguration, type ControlPlaneWebServer } from '../../control-plane-web/index.js';
 import { Browser, formsOf, freePort, textOf } from '../../control-plane-web/__tests__/web-browser.js';
 import { FINANCIAL_AUTHORITY_REASON_CODES as F } from '../execution-governance/index.js';
 import { GOVERNED_PATH_LOG_EVENTS } from '../operations/governed-path-log.js';
 import { call, expectStatus, logLines, type RecordingAdapter, type Reply } from './ctrl02-host-fixture.js';
-import { buildDeniedRequestBody, buildTestKernelProviders } from './support.js';
+import { buildDeniedRequestBody } from './support.js';
 import {
   ACCOUNT,
   ADAPTER_ID,
@@ -37,6 +33,7 @@ import {
   onboard,
   release,
   restart,
+  seedHistoricalEvaluateRecord,
   transfer,
   transition,
   type BootedProd02,
@@ -619,38 +616,6 @@ describe('PROD-03-01 — authorization, disclosure and the trace model', () => {
   });
 });
 
-/**
- * A Governance Record as `POST /api/governance/evaluate` committed one before
- * G-01B0 refused a caller's `aoc.` request id: a denial for `buildDeniedRequestBody`,
- * appended through a second connection to this Host's own Governance Store.
- */
-async function seedHistoricalEvaluateRecord(requestId: string): Promise<string> {
-  const path = deployment.envFor(dataDir)['AOC_ENTERPRISE_SQLITE_PATH'];
-  assert.equal(typeof path, 'string', 'the Host’s Governance Store path');
-  const providers = buildTestKernelProviders();
-  const clock = createManualEnforcementClock(new Date().toISOString());
-  const ids = { nextId: (prefix: string): string => `${prefix}-g01b0-seed-${randomUUID()}` };
-  const kernel = new AocKernel({ recognitionProvider: providers.recognitionProvider, clock, idGenerator: ids });
-  const request = toKernelEvaluationRequest(buildDeniedRequestBody({ requestId, organization: { id: ORG } }), clock, ids);
-  const result = await kernel.evaluate(request);
-  assert.equal(result.status, 'denied');
-  const store = await createSqliteGovernanceStore(path as string, { now: () => new Date().toISOString(), enterpriseVersion: booted.host.enterprise.configuration.enterpriseVersion });
-  try {
-    const appended = await store.appendEvaluation({
-      request,
-      result,
-      receivedAt: request.requestedAt,
-      enterpriseContext: { enterpriseVersion: booted.host.enterprise.configuration.enterpriseVersion, lifecycleState: 'ready', modules: [] },
-      events: [],
-      accessContext: { system: true, organizationId: ORG, actorId: request.actor.id },
-    });
-    assert.equal(appended.created, true);
-    return appended.evaluationId;
-  } finally {
-    await store.close();
-  }
-}
-
 describe('PROD-03-01 review fixes — evaluation-only identity and the disclosed classification', () => {
   it('an evaluate-route decision whose caller chose a governed-shaped request id stays evaluation-only', async () => {
     const spoofed = `aoc.gar:${'ab'.repeat(16)}`;
@@ -660,7 +625,7 @@ describe('PROD-03-01 review fixes — evaluation-only identity and the disclosed
     assert.equal((refusedAtIngress.body['error'] as Record<string, unknown>)['code'], 'INVALID_REQUEST');
     // A record committed that way before G-01B0 is still in the store: seed one exactly as the
     // evaluate route committed it (system context, the body's organization and actor, no claim).
-    const evaluationId = await seedHistoricalEvaluateRecord(spoofed);
+    const evaluationId = await seedHistoricalEvaluateRecord(deployment, dataDir, booted, spoofed);
     assert.equal(typeof evaluationId, 'string', 'the historical decision is recorded');
     const view = await viewOf(spoofed);
     assert.equal(view.classification, 'evaluation-only', 'the request id’s shape does not make it governed');

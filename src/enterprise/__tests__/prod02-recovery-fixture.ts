@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,12 +10,16 @@ import { createActionEnforcementPolicyPackIntegration } from '../../features/dom
 import type { PolicyPackRule } from '../../features/domain-policy-pack-runtime/domain/policy-pack-rule.js';
 import { createPolicyPackRuntimeContext } from '../../features/domain-policy-pack-runtime/runtime/policy-pack-runtime-context.js';
 import { createPolicyPackRuntime } from '../../features/domain-policy-pack-runtime/services/policy-pack-runtime.js';
-import type { PolicyPackProvider } from '../../kernel/index.js';
+import { createManualEnforcementClock } from '../../features/action-enforcement/runtime/enforcement-runtime-context.js';
+import { AocKernel, type PolicyPackProvider } from '../../kernel/index.js';
+import { toKernelEvaluationRequest } from '../api/governance-evaluate-contract.js';
+import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
 import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host.js';
 import { AUTHORITY_KEY_A, authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
 import { externalCustodyEnv, signerKeyDirectory, spawnReferenceSigner, type SpawnedSigner } from './core02-external-signer-fixture.js';
 import { WITNESS_TOKEN, freshnessEnv, spawnReferenceWitness, witnessDirectory, type SpawnedWitness } from './core07-freshness-fixture.js';
 import { call, capturingLogger, create, expectStatus, recordingAdapter, type RecordingAdapter, type Reply } from './ctrl02-host-fixture.js';
+import { buildDeniedRequestBody, buildTestKernelProviders } from './support.js';
 
 /**
  * PROD-02 — one production-shaped Frontera deployment, for qualifying disaster
@@ -566,6 +570,41 @@ export const transfer = (value: string, idempotencyKey: string, resource: string
 export const release = (resource: string, idempotencyKey: string): Record<string, unknown> => ({ action: DEPLOY, resource, parameters: { releaseVersion: 'release-2026-10-02' }, idempotencyKey });
 export const maintain = (idempotencyKey: string): Record<string, unknown> => ({ action: MAINTAIN, resource: EDGE, parameters: { certificateSerial: 'serial-0042' }, idempotencyKey });
 export const restart = (idempotencyKey: string): Record<string, unknown> => ({ action: RESTART, resource: STAGING, idempotencyKey });
+
+/**
+ * G-01B0 — a Governance Record exactly as `POST /api/governance/evaluate`
+ * committed one before G-01B0 refused a caller's `aoc.` request id: a denial
+ * for `buildDeniedRequestBody`, in the system context with the body's
+ * organization and actor and no governed claim, appended through a second
+ * connection to the running Host's own Governance Store (the store is not
+ * witness-anchored, and the chain head is read inside the append transaction).
+ */
+export async function seedHistoricalEvaluateRecord(deployment: Deployment, dataDir: string, booted: BootedProd02, requestId: string): Promise<string> {
+  const path = deployment.envFor(dataDir)['AOC_ENTERPRISE_SQLITE_PATH'];
+  assert.equal(typeof path, 'string', 'the Host’s Governance Store path');
+  const enterpriseVersion = booted.host.enterprise.configuration.enterpriseVersion;
+  const clock = createManualEnforcementClock(new Date().toISOString());
+  const ids = { nextId: (prefix: string): string => `${prefix}-g01b0-seed-${randomUUID()}` };
+  const kernel = new AocKernel({ recognitionProvider: buildTestKernelProviders().recognitionProvider, clock, idGenerator: ids });
+  const request = toKernelEvaluationRequest(buildDeniedRequestBody({ requestId, organization: { id: ORG } }), clock, ids);
+  const result = await kernel.evaluate(request);
+  assert.equal(result.status, 'denied');
+  const store = await createSqliteGovernanceStore(path as string, { now: () => new Date().toISOString(), enterpriseVersion });
+  try {
+    const appended = await store.appendEvaluation({
+      request,
+      result,
+      receivedAt: request.requestedAt,
+      enterpriseContext: { enterpriseVersion, lifecycleState: 'ready', modules: [] },
+      events: [],
+      accessContext: { system: true, organizationId: ORG, actorId: request.actor.id },
+    });
+    assert.equal(appended.created, true);
+    return appended.evaluationId;
+  } finally {
+    await store.close();
+  }
+}
 
 export async function govern(baseUrl: string, credential: string, body: Record<string, unknown>): Promise<Reply> {
   return call(baseUrl, 'POST', '/api/governed-actions', { authorization: bearer(credential), body });

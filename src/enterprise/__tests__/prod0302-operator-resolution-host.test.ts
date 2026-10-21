@@ -34,6 +34,7 @@ import {
   onboard,
   release,
   restart,
+  seedHistoricalEvaluateRecord,
   transfer,
   transition,
   type BootedProd02,
@@ -612,9 +613,12 @@ describe('PROD-03-02 — R8: nothing else can be resolved', () => {
     assert.deepEqual(resolutionRows(stoppedExecution), []);
 
     // Evaluation-only: a Kernel decision with no governed path, whatever its request id looks like.
+    // G-01B0: the evaluate route refuses that request id now; a record it committed before is seeded as it was.
     const spoofedRequestId = `aoc.gar:${'cd'.repeat(16)}`;
-    const evaluated = await call(booted.baseUrl, 'POST', '/api/governance/evaluate', { authorization: `Bearer ${deployment.secrets.legacyKey}`, body: buildDeniedRequestBody({ requestId: spoofedRequestId, organization: { id: ORG } }) });
-    assert.ok(evaluated.status === 200 || evaluated.status === 422, evaluated.text);
+    const refusedAtIngress = await call(booted.baseUrl, 'POST', '/api/governance/evaluate', { authorization: `Bearer ${deployment.secrets.legacyKey}`, body: buildDeniedRequestBody({ requestId: spoofedRequestId, organization: { id: ORG } }) });
+    assert.equal(refusedAtIngress.status, 400, refusedAtIngress.text);
+    assert.equal(errorCode(refusedAtIngress), 'INVALID_REQUEST');
+    await seedHistoricalEvaluateRecord(deployment, dataDir, booted, spoofedRequestId);
     const evaluationView = await viewOf(spoofedRequestId);
     assert.equal(evaluationView.classification, 'evaluation-only');
     assert.equal(evaluationView.resolvable, false);

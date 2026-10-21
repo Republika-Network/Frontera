@@ -221,7 +221,7 @@ for (const provider of PROVIDERS) {
       assert.deepEqual(resolution, { kind: 'conflict', conflictKind: 'request-id' });
     });
 
-    it('a mismatched planted record is a conflict', async () => {
+    it('unchanged: a mismatched planted record is a conflict', async () => {
       const store = await provider.open();
       const { request, result } = await captureGovernedRequest(IDENTITY, ALLOWED_INTENT);
       await plant(store, { ...request, action: { ...request.action, resourceScope: 'project:planted' } }, result);
@@ -295,7 +295,7 @@ for (const provider of PROVIDERS) {
       });
     }
 
-    it('a mismatched planted record is refused before the Kernel', async () => {
+    it('unchanged: a mismatched planted record is refused before the Kernel', async () => {
       const store = await provider.open();
       const { request, result } = await captureGovernedRequest(IDENTITY, ALLOWED_INTENT);
       const planted = await plant(store, { ...request, action: { ...request.action, resourceScope: 'project:planted' } }, result);
