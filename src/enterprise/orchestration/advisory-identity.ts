@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type { KernelEvaluationRequest } from '../../kernel/index.js';
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
 import { effectiveLegacyKeyMode, type EnterpriseConfiguration, type EnterpriseServicePrincipal } from '../configuration/enterprise-configuration.js';
@@ -118,6 +120,11 @@ export function authenticateAdvisoryCaller(authorizationHeader: string | undefin
   return caller;
 }
 
+/** 128 random bits per attribution: the sealed event's digests then confirm nothing about a guessed principal id to a reader who sees only them. */
+function attributionSalt(): string {
+  return randomBytes(16).toString('hex');
+}
+
 function requireStatedOrganization(request: KernelEvaluationRequest, organizationId: string): void {
   // Omission is not an implicit match: an organization-bound credential evaluates only in the organization it states.
   if (request.organization?.id !== organizationId) {
@@ -149,12 +156,12 @@ export async function establishAdvisoryIdentity(caller: AdvisoryCaller, authoriz
         requireStatedOrganization(request, caller.organizationId);
         return {
           accessContext: { system: false, organizationId: caller.organizationId, actorId },
-          attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: caller.organizationId, evaluatedActorId: actorId },
+          attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: caller.organizationId, evaluatedActorId: actorId, salt: attributionSalt() },
         };
       }
       return {
         accessContext: { system: true, ...(organizationId !== undefined ? { organizationId } : {}), actorId },
-        attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'unscoped', ...(organizationId !== undefined ? { organizationId } : {}), evaluatedActorId: actorId },
+        attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'unscoped', ...(organizationId !== undefined ? { organizationId } : {}), evaluatedActorId: actorId, salt: attributionSalt() },
       };
     }
 
@@ -179,7 +186,7 @@ export async function establishAdvisoryIdentity(caller: AdvisoryCaller, authoriz
       requireTrustedTrustDomain(request, deps.trustDomainId);
       return {
         accessContext: { system: false, organizationId: principal.organizationId, actorId },
-        attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: principal.organizationId, requestingPrincipalId: principal.principalId, evaluatedActorId: actorId },
+        attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: principal.organizationId, requestingPrincipalId: principal.principalId, evaluatedActorId: actorId, salt: attributionSalt() },
       };
     }
 
@@ -190,7 +197,7 @@ export async function establishAdvisoryIdentity(caller: AdvisoryCaller, authoriz
       requireTrustedTrustDomain(request, deps.trustDomainId);
       return {
         accessContext: { system: false, organizationId: principal.organizationId, actorId },
-        attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'service-principal', organizationId: principal.organizationId, requestingPrincipalId: principal.principalId, evaluatedActorId: actorId },
+        attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'service-principal', organizationId: principal.organizationId, requestingPrincipalId: principal.principalId, evaluatedActorId: actorId, salt: attributionSalt() },
       };
     }
   }

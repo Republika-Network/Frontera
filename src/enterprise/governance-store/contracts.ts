@@ -536,6 +536,8 @@ export type GovernanceEvaluationAttribution =
       readonly organizationId: string;
       readonly requestingPrincipalId: string;
       readonly evaluatedActorId: string;
+      /** 128 random bits (32 lowercase hex). Makes the event's digests unguessable, so a reader shown them cannot confirm a guessed principal id. */
+      readonly salt: string;
     }
   | {
       readonly version: typeof GOVERNANCE_ATTRIBUTION_VERSION;
@@ -543,6 +545,7 @@ export type GovernanceEvaluationAttribution =
       readonly legacyScope: 'organization' | 'unscoped';
       readonly organizationId?: string;
       readonly evaluatedActorId: string;
+      readonly salt: string;
     };
 
 export interface AppendGovernanceEvaluationResult {

@@ -121,7 +121,7 @@ const IDENTITY = 'orchestration/advisory-identity.js';
 const ATTRIBUTION = 'governance-store/attribution.js';
 const ORCHESTRATOR = 'orchestration/evaluate-governance-request.js';
 
-const customerAttribution = (principalId: string): GovernanceEvaluationAttribution => ({ version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: principalId, evaluatedActorId: PMFREAK_ACTOR_ID });
+const customerAttribution = (principalId: string): GovernanceEvaluationAttribution => ({ version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: principalId, evaluatedActorId: PMFREAK_ACTOR_ID, salt: '0123456789abcdef0123456789abcdef' });
 
 describe('G-01A mutations — identity binding', () => {
   const mutants: readonly Mutant<IdentityModule>[] = [
@@ -452,5 +452,186 @@ describe('G-01A mutations — a replay without its record fails closed', () => {
       file: ORCHESTRATOR,
       replacements: [['if (appended.idempotentReplay) {', 'if (appended.idempotentReplay && appended.existingRecord !== undefined) {']],
       guard: (m) => failsClosed(m, 'append'),
+    }));
+});
+
+// ---------------------------------------------------------------------------
+// P1: authorization-aware disclosure on the raw record read routes.
+
+type DisclosureModule = typeof import('../orchestration/governance-record-disclosure.js');
+type ReadServiceModule = typeof import('../orchestration/governance-read-service.js');
+const DISCLOSURE = 'orchestration/governance-record-disclosure.js';
+const READ_SERVICE = 'orchestration/governance-read-service.js';
+const AUDITOR_KEY = 'G01A_MUTATION_AUDITOR_KEY_0123456789abcdef';
+const SALT = '0123456789abcdef0123456789abcdef';
+
+function readerConfiguration(): EnterpriseConfiguration {
+  const base = configuration();
+  return { ...base, authentication: { ...base.authentication, auditors: [{ auditorId: 'auditor-g01a-mutation', organizationId: ORG, key: AUDITOR_KEY }] } };
+}
+
+/** A canonical record carrying a service principal's attribution — built through the real Store, never by hand. */
+let attributedRecord: Promise<GovernanceRecord> | undefined;
+function serviceAttributedRecord(): Promise<GovernanceRecord> {
+  attributedRecord ??= (async () => {
+    const { enterprise } = await composed();
+    const store = createInMemoryGovernanceStore();
+    const kernelRequest = request();
+    const appended = await store.appendEvaluation({
+      request: kernelRequest,
+      result: await enterprise.kernel.evaluate(kernelRequest),
+      receivedAt: '2026-01-01T00:00:00.000Z',
+      enterpriseContext: { enterpriseVersion: 'test', lifecycleState: 'ready', modules: [] },
+      events: [],
+      accessContext: { system: false, organizationId: ORG, actorId: PMFREAK_ACTOR_ID },
+      attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'service-principal', organizationId: ORG, requestingPrincipalId: 'svc-g01a-mutation', evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT },
+    });
+    const record = await store.getByEvaluationId({ system: true }, appended.evaluationId);
+    assert.ok(record !== null);
+    return record;
+  })();
+  return attributedRecord;
+}
+
+const discloses = (view: unknown): boolean => JSON.stringify(view).includes('svc-g01a-mutation');
+
+describe('G-01A mutations — P1 read authorization and projection', () => {
+  const mutants: readonly Mutant<DisclosureModule>[] = [
+    {
+      id: 'organization-key-reads-canonically',
+      file: DISCLOSURE,
+      replacements: [["organizationId: matchedKey.organizationId }, disclosure: 'projected' }", "organizationId: matchedKey.organizationId }, disclosure: 'canonical' }"]],
+      guard: (m) => m.resolveGovernanceReadAccess(`Bearer ${SCOPED_KEY}`, readerConfiguration()).disclosure === 'projected',
+    },
+    {
+      id: 'auditor-reads-as-system',
+      file: DISCLOSURE,
+      replacements: [["return { context: { system: false, organizationId: matchedAuditor.organizationId }, disclosure: 'canonical' };", "return { context: { system: true }, disclosure: 'canonical' };"]],
+      guard: (m) => {
+        const access = m.resolveGovernanceReadAccess(`Bearer ${AUDITOR_KEY}`, readerConfiguration());
+        return access.context.system === false && access.context.organizationId === ORG && access.disclosure === 'canonical';
+      },
+    },
+    {
+      id: 'projection-reveals-the-attribution',
+      file: DISCLOSURE,
+      replacements: [['return { ...event, eventPayload:', 'return { ...event, shownPayload:']],
+      guard: async (m) => !discloses(m.projectGovernanceRecord(await serviceAttributedRecord(), 'projected')),
+    },
+    {
+      id: 'projection-is-unmarked',
+      file: DISCLOSURE,
+      replacements: [['return { ...record, events, projection: {', 'return { ...record, events, unmarked: {']],
+      guard: async (m) => m.projectGovernanceRecord(await serviceAttributedRecord(), 'projected').projection?.canonical === false,
+    },
+    {
+      id: 'principal-bearing-attribution-treated-as-legacy',
+      file: DISCLOSURE,
+      replacements: [["return fields['basis'] === 'legacy-asserted' && !('requestingPrincipalId' in fields);", 'return true;']],
+      guard: async (m) => !discloses(m.projectGovernanceRecord(await serviceAttributedRecord(), 'projected')),
+    },
+    {
+      id: 'auditor-may-share-a-service-secret',
+      file: DISCLOSURE,
+      replacements: [['if (secrets.has(key))', 'if (false)']],
+      guard: (m) => {
+        const base = readerConfiguration();
+        try {
+          m.assertAuditorConfiguration({ ...base, authentication: { ...base.authentication, auditors: [{ auditorId: 'auditor-x', organizationId: ORG, key: 'G01A_MUTATION_SERVICE_KEY_0123456789abcde' }] } }, ORG);
+          return false;
+        } catch (error) {
+          return error instanceof m.AuditorConfigurationError;
+        }
+      },
+    },
+    {
+      id: 'auditor-may-reuse-a-service-principal-id',
+      file: DISCLOSURE,
+      replacements: [['...servicePrincipals.map((servicePrincipal) => servicePrincipal.principalId),', '']],
+      guard: (m) => {
+        const base = readerConfiguration();
+        try {
+          m.assertAuditorConfiguration({ ...base, authentication: { ...base.authentication, auditors: [{ auditorId: 'svc-g01a-mutation', organizationId: ORG, key: AUDITOR_KEY }] } }, ORG);
+          return false;
+        } catch (error) {
+          return error instanceof m.AuditorConfigurationError;
+        }
+      },
+    },
+    {
+      id: 'auditor-of-another-organization',
+      file: DISCLOSURE,
+      replacements: [['if (auditor.organizationId !== servedOrganizationId)', 'if (false)']],
+      guard: (m) => {
+        const base = readerConfiguration();
+        try {
+          m.assertAuditorConfiguration({ ...base, authentication: { ...base.authentication, auditors: [{ auditorId: 'auditor-x', organizationId: 'org-other', key: AUDITOR_KEY }] } }, ORG);
+          return false;
+        } catch (error) {
+          return error instanceof m.AuditorConfigurationError;
+        }
+      },
+    },
+  ];
+  for (const mutant of mutants) it(`${mutant.id} is detected`, () => qualify(mutant));
+
+  it('read-service-skips-the-projection is detected', () =>
+    qualify<ReadServiceModule>({
+      id: 'read-service-skips-the-projection',
+      file: READ_SERVICE,
+      replacements: [['return record === null ? null : (0, governance_record_disclosure_js_1.projectGovernanceRecord)(record, disclosure);', 'return record;']],
+      guard: async (m) => {
+        const record = await serviceAttributedRecord();
+        const { enterprise } = await composed();
+        const store = { getByEvaluationId: async () => record } as unknown as GovernanceStore;
+        const view = await m.createGovernanceReadService(store, readerConfiguration(), enterprise.telemetry).getByEvaluationId(`Bearer ${SCOPED_KEY}`, record.evaluation.evaluationId);
+        return view !== null && !discloses(view) && view.projection !== undefined;
+      },
+    }));
+
+  it('composition-skips-the-auditor-rule is detected', () =>
+    qualify<CompositionModule>({
+      id: 'composition-skips-the-auditor-rule',
+      file: COMPOSITION,
+      replacements: [['(0, governance_record_disclosure_js_1.assertAuditorConfiguration)(configuration, configuration.kernelAuthority.organizationId);', '']],
+      guard: async (m) => {
+        const base = readerConfiguration();
+        try {
+          const enterprise = await m.createEnterprise({ configuration: { ...base, authentication: { ...base.authentication, auditors: [{ auditorId: 'auditor-x', organizationId: 'org-other', key: AUDITOR_KEY }] } }, kernelProviders: buildTestKernelProviders() });
+          await enterprise.close().catch(() => {});
+          return false;
+        } catch (error) {
+          return (error as Error).name === 'AuditorConfigurationError';
+        }
+      },
+    }));
+
+  it('attribution-is-unsalted is detected', () =>
+    qualify<IdentityModule>({
+      id: 'attribution-is-unsalted',
+      file: IDENTITY,
+      replacements: [["return (0, node_crypto_1.randomBytes)(16).toString('hex');", "return '0'.repeat(32);"]],
+      guard: async (m) => {
+        const salts = await Promise.all([1, 2].map(async () => {
+          const identity = await m.establishAdvisoryIdentity({ kind: 'legacy', organizationId: ORG }, `Bearer ${SCOPED_KEY}`, request(), IDENTITY_DEPS);
+          return identity.attribution?.salt;
+        }));
+        return salts[0] !== undefined && salts[0] !== salts[1];
+      },
+    }));
+
+  it('store-accepts-an-unsalted-attribution is detected', () =>
+    qualify<AttributionModule>({
+      id: 'store-accepts-an-unsalted-attribution',
+      file: ATTRIBUTION,
+      replacements: [["!SALT.test(candidate['salt'])", 'false']],
+      guard: (m) => {
+        try {
+          m.assertAttributionMatchesRequest({ ...customerAttribution(PRINCIPAL), salt: 'not-random' }, request());
+          return false;
+        } catch {
+          return true;
+        }
+      },
     }));
 });

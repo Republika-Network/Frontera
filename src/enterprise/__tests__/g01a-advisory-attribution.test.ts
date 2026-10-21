@@ -41,6 +41,7 @@ import { EnterpriseHostConfigurationError, loadEnterpriseHostConfiguration } fro
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { LegacyKeyConfigurationError, mayReplayTo, ServicePrincipalConfigurationError } from '../orchestration/advisory-identity.js';
+import { AuditorConfigurationError, GOVERNANCE_RECORD_PROJECTION_VERSION } from '../orchestration/governance-record-disclosure.js';
 import { authorityAuthenticityEnv } from './authority-authenticity-fixture.js';
 import { freshnessEnv } from './core07-freshness-fixture.js';
 import { ALLOWED_INTENT, EVALUATED_AT_POLICY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
@@ -82,6 +83,9 @@ const LEGACY_KEY = 'G01A_LEGACY_SCOPED_KEY_SENTINEL_0123456789';
 const BARE_KEY = 'G01A_LEGACY_BARE_KEY_SENTINEL_0123456789ab';
 const SERVICE_KEY = 'G01A_SERVICE_KEY_SENTINEL_0123456789abcdef';
 const NARROW_SERVICE_KEY = 'G01A_NARROW_SERVICE_KEY_SENTINEL_01234567';
+const AUDITOR_KEY = 'G01A_AUDITOR_KEY_SENTINEL_0123456789abcdef0';
+const AUDITOR_ID = 'auditor-g01a';
+const AUDITORS = [{ auditorId: AUDITOR_ID, organizationId: ORG, key: AUDITOR_KEY }] as const;
 
 const KEYS: readonly EnterpriseApiKey[] = [
   { key: CUSTOMER_KEY, organizationId: ORG, customerIdentity: { principalId: PRINCIPAL, externalSubject: SUBJECT } },
@@ -97,7 +101,7 @@ const SERVICES: readonly EnterpriseServicePrincipal[] = [
 ];
 
 const SYSTEM: GovernanceStoreAccessContext = { system: true };
-const ALL_SECRETS = [CUSTOMER_KEY, OTHER_CUSTOMER_KEY, LEGACY_KEY, BARE_KEY, SERVICE_KEY, NARROW_SERVICE_KEY];
+const ALL_SECRETS = [CUSTOMER_KEY, OTHER_CUSTOMER_KEY, LEGACY_KEY, BARE_KEY, SERVICE_KEY, NARROW_SERVICE_KEY, AUDITOR_KEY];
 
 function body(overrides: Partial<GovernanceEvaluateRequestBody> = {}): GovernanceEvaluateRequestBody {
   return buildAllowedRequestBody({ organization: { id: ORG }, ...overrides });
@@ -112,7 +116,7 @@ function configuration(legacyKeyMode: 'compat' | 'restricted' = 'compat'): Enter
     AOC_ENTERPRISE_REQUIRE_AUTH: 'true',
     AOC_ENTERPRISE_LOG_LEVEL: 'error',
   });
-  return { ...base, authentication: { apiKeys: legacyKeyMode === 'restricted' ? KEYS.filter((apiKey) => apiKey.key !== BARE_KEY) : KEYS, servicePrincipals: SERVICES, legacyKeyMode } };
+  return { ...base, authentication: { apiKeys: legacyKeyMode === 'restricted' ? KEYS.filter((apiKey) => apiKey.key !== BARE_KEY) : KEYS, servicePrincipals: SERVICES, auditors: AUDITORS, legacyKeyMode } };
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +233,17 @@ async function storedRecord(h: Harness, reply: Reply): Promise<GovernanceRecord>
   return record;
 }
 
-async function attributionOf(h: Harness, reply: Reply): Promise<GovernanceEvaluationAttribution> {
+/** The sealed attribution, minus its random salt (asserted well-formed here), so tests can compare the rest exactly. */
+async function attributionOf(h: Harness, reply: Reply): Promise<Omit<GovernanceEvaluationAttribution, 'salt'>> {
   const recorded = readRecordedAttribution(await storedRecord(h, reply));
   assert.equal(recorded.status, 'attributed');
   if (recorded.status !== 'attributed') throw new Error('unreachable');
-  return recorded.attribution;
+  const { salt, ...rest } = recorded.attribution;
+  assert.match(salt, /^[0-9a-f]{32}$/);
+  return rest;
 }
+
+const SALT = '0123456789abcdef0123456789abcdef';
 
 async function refusedWithoutWrite(h: Harness, reply: Promise<Reply>, status: number, code: string): Promise<void> {
   const before = h.appends();
@@ -298,7 +307,7 @@ for (const provider of PROVIDERS) {
       assert.ok([200, 422].includes(reply.status), reply.text);
       const attribution = await attributionOf(h, reply);
       assert.equal(attribution.basis, 'customer-principal');
-      assert.equal(attribution.basis === 'customer-principal' ? attribution.requestingPrincipalId : undefined, PRINCIPAL);
+      assert.equal('requestingPrincipalId' in attribution ? attribution.requestingPrincipalId : undefined, PRINCIPAL);
     });
 
     it('an unknown credential is the v1 401 and writes nothing', async () => {
@@ -510,7 +519,7 @@ for (const provider of PROVIDERS) {
         assert.equal((await store.verify(SYSTEM, evaluationId)).valid, true);
         const db = new Database(path);
         try {
-          const forged = JSON.stringify({ attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID } });
+          const forged = JSON.stringify({ attribution: { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT } });
           const changed = db.prepare('UPDATE governance_events SET event_payload_json = ? WHERE event_type = ? AND aggregate_id = ?').run(forged, GOVERNANCE_ATTRIBUTION_EVENT_TYPE, evaluationId);
           assert.equal(changed.changes, 1);
         } finally {
@@ -541,7 +550,7 @@ for (const provider of PROVIDERS) {
       accessContext: { system: false, organizationId: ORG, actorId: PMFREAK_ACTOR_ID },
       attribution: attribution as GovernanceEvaluationAttribution,
     });
-    const valid = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID } as const;
+    const valid = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT } as const;
 
     const refusals: readonly [string, unknown][] = [
       ['another actor', { ...valid, evaluatedActorId: OTHER_ACTOR }],
@@ -550,8 +559,10 @@ for (const provider of PROVIDERS) {
       ['an unknown basis', { ...valid, basis: 'system' }],
       ['an extra field', { ...valid, system: true }],
       ['a principal without an id', { ...valid, requestingPrincipalId: '' }],
-      ['a legacy attribution without a scope', { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', organizationId: ORG, evaluatedActorId: PMFREAK_ACTOR_ID }],
-      ['a legacy attribution carrying a principal', { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID }],
+      ['a legacy attribution without a scope', { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', organizationId: ORG, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT }],
+      ['a legacy attribution carrying a principal', { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT }],
+      ['an attribution without a salt', { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID }],
+      ['an attribution with a short or non-hex salt', { ...valid, salt: 'not-random' }],
     ];
     for (const [label, attribution] of refusals) {
       it(`${label}: GOVERNANCE_STORE_VALIDATION_ERROR, nothing appended`, async () => {
@@ -896,8 +907,8 @@ describe('G-01A — a replay signal without its record fails closed', () => {
 });
 
 describe('G-01A — the replay rule, stated directly', () => {
-  const customer = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID } as const;
-  const legacy = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: ORG, evaluatedActorId: PMFREAK_ACTOR_ID } as const;
+  const customer = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT } as const;
+  const legacy = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: ORG, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT } as const;
 
   function recordWith(events: GovernanceRecord['events']): GovernanceRecord {
     return { request: { actorId: PMFREAK_ACTOR_ID, organizationId: ORG }, events } as unknown as GovernanceRecord;
@@ -929,4 +940,273 @@ describe('G-01A — the replay rule, stated directly', () => {
     assert.equal(mayReplayTo(recordWith([sealed({ ...customer, evaluatedActorId: OTHER_ACTOR })]), { ...customer, evaluatedActorId: OTHER_ACTOR }), false, 'an attribution contradicting its request is unreadable');
     assert.equal(mayReplayTo(recordWith([sealed({ ...customer, version: 'v0' })]), customer), false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// P1 — raw Governance Record reads: an ordinary organization-scoped reader gets
+// a marked projection; an auditor of the record's organization gets the
+// canonical record; the stored record is never touched.
+
+const READ_ROUTES = [
+  { name: 'evaluations', path: (record: GovernanceRecord) => `/api/governance/evaluations/${record.evaluation.evaluationId}` },
+  { name: 'decisions', path: (record: GovernanceRecord) => `/api/governance/decisions/${record.evaluation.decisionId}` },
+  { name: 'requests', path: (record: GovernanceRecord) => `/api/governance/requests/${encodeURIComponent(record.request.requestId)}` },
+] as const;
+
+const canonicalJson = (record: GovernanceRecord): unknown => JSON.parse(JSON.stringify(record));
+
+for (const provider of PROVIDERS) {
+  describe(`G-01A P1 — ${provider.name} Store — raw record reads disclose attribution only to an auditor of its organization`, () => {
+    let pending: Promise<Harness> | undefined;
+    const ready = (): Promise<Harness> => (pending ??= harness(provider));
+
+    async function attributed(h: Harness, secret: string): Promise<GovernanceRecord> {
+      const reply = await evaluate(h, secret, body({ requestId: fresh('p1') }));
+      assert.equal(reply.status, 200, reply.text);
+      return storedRecord(h, reply);
+    }
+
+    for (const route of READ_ROUTES) {
+      it(`${route.name}: an ordinary organization-scoped reader (legacy or customer key) receives a marked projection with the attribution payload withheld`, async () => {
+        const h = await ready();
+        const record = await attributed(h, SERVICE_KEY);
+        const before = canonicalJson(record);
+        for (const reader of [LEGACY_KEY, CUSTOMER_KEY, OTHER_CUSTOMER_KEY]) {
+          const reply = await call(h, 'GET', route.path(record), reader);
+          assert.equal(reply.status, 200, reply.text);
+          assert.equal(reply.text.includes(SERVICE_PRINCIPAL), false, 'the requesting principal is not disclosed');
+          assert.equal(reply.text.includes('"salt"'), false, 'nor the salt that would let its digests confirm a guess');
+          const projection = reply.body['projection'] as Record<string, unknown>;
+          assert.equal(projection['version'], GOVERNANCE_RECORD_PROJECTION_VERSION);
+          assert.equal(projection['canonical'], false);
+          const attributionEvent = record.events.find((event) => event.eventType === GOVERNANCE_ATTRIBUTION_EVENT_TYPE);
+          assert.deepEqual(projection['withheld'], [{ eventId: attributionEvent?.eventId, eventType: GOVERNANCE_ATTRIBUTION_EVENT_TYPE, field: 'eventPayload', reason: 'auditor-authorization-required' }]);
+          assert.match(String(projection['verification']), /not the canonical record/);
+          // Everything else is exactly the canonical record.
+          const { projection: _marker, events, ...rest } = reply.body;
+          const { events: canonicalEvents, ...canonicalRest } = before as Record<string, unknown>;
+          assert.deepEqual(rest, canonicalRest);
+          const shown = events as Record<string, unknown>[];
+          (canonicalEvents as Record<string, unknown>[]).forEach((event, index) => {
+            if (event['eventType'] === GOVERNANCE_ATTRIBUTION_EVENT_TYPE) assert.deepEqual(shown[index], { ...event, eventPayload: { withheld: 'attribution' } });
+            else assert.deepEqual(shown[index], event);
+          });
+        }
+        assert.deepEqual(canonicalJson((await h.raw.getByEvaluationId(SYSTEM, record.evaluation.evaluationId)) as GovernanceRecord), before, 'the stored record is unchanged');
+      });
+
+      it(`${route.name}: the auditor of the record's organization receives the complete canonical record`, async () => {
+        const h = await ready();
+        const record = await attributed(h, CUSTOMER_KEY);
+        const reply = await call(h, 'GET', route.path(record), AUDITOR_KEY);
+        assert.equal(reply.status, 200, reply.text);
+        assert.equal('projection' in reply.body, false);
+        assert.deepEqual(reply.body, canonicalJson(record));
+        assert.equal(reply.text.includes(PRINCIPAL), true, 'the authenticated attribution is disclosed to the auditor');
+      });
+    }
+
+    it('a legacy key’s asserted attribution names no principal: an ordinary reader receives that record canonical and unmarked', async () => {
+      const h = await ready();
+      const record = await attributed(h, LEGACY_KEY);
+      for (const route of READ_ROUTES) {
+        const reply = await call(h, 'GET', route.path(record), CUSTOMER_KEY);
+        assert.equal(reply.status, 200, reply.text);
+        assert.deepEqual(reply.body, canonicalJson(record), route.name);
+      }
+    });
+
+    it('server-side verification checks the complete stored record, for an ordinary reader and an auditor alike', async () => {
+      const h = await ready();
+      const record = await attributed(h, SERVICE_KEY);
+      for (const reader of [LEGACY_KEY, AUDITOR_KEY]) {
+        const verified = await call(h, 'GET', `/api/governance/evaluations/${record.evaluation.evaluationId}/verify`, reader);
+        assert.equal(verified.status, 200, verified.text);
+        assert.equal(verified.body['valid'], true);
+        assert.equal((verified.body['checks'] as Record<string, unknown>)['eventsDigest'], true);
+        assert.equal(verified.text.includes(SERVICE_PRINCIPAL), false);
+      }
+    });
+
+    it('a historical record without attribution reads exactly as before G-01A, unmarked, for every reader', async () => {
+      const h = await ready();
+      const requestBody = body({ requestId: fresh('p1-historical'), requestedAt: '2026-01-01T00:00:00.000Z' });
+      const request = toKernelEvaluationRequest(requestBody, { now: () => 'unused' }, { nextId: () => 'unused' });
+      const planted = await h.raw.appendEvaluation({
+        request,
+        result: await h.enterprise.kernel.evaluate(request),
+        receivedAt: '2026-01-01T00:00:00.000Z',
+        enterpriseContext: { enterpriseVersion: 'pre-g01a', lifecycleState: 'ready', modules: [] },
+        events: [],
+        accessContext: { system: true, organizationId: ORG, actorId: PMFREAK_ACTOR_ID },
+      });
+      const record = await h.raw.getByEvaluationId(SYSTEM, planted.evaluationId);
+      assert.ok(record !== null);
+      for (const route of READ_ROUTES) {
+        for (const reader of [LEGACY_KEY, CUSTOMER_KEY, AUDITOR_KEY]) {
+          const reply = await call(h, 'GET', route.path(record), reader);
+          assert.equal(reply.status, 200, reply.text);
+          assert.deepEqual(reply.body, canonicalJson(record), `${route.name} via ${reader.slice(0, 12)}`);
+        }
+      }
+    });
+
+    it('an auditor cannot read another organization’s record; the system scope still can', async () => {
+      const h = await ready();
+      const foreign = await evaluate(h, BARE_KEY, buildAllowedRequestBody({ requestId: fresh('p1-foreign'), organization: { id: 'org-g01a-other' } }));
+      assert.ok([200, 422].includes(foreign.status), foreign.text);
+      const evaluationId = evaluationIdOf(foreign);
+      const auditor = await call(h, 'GET', `/api/governance/evaluations/${evaluationId}`, AUDITOR_KEY);
+      assert.equal(auditor.status, 404, auditor.text);
+      const verify = await call(h, 'GET', `/api/governance/evaluations/${evaluationId}/verify`, AUDITOR_KEY);
+      assert.notEqual(verify.status, 200);
+      const system = await call(h, 'GET', `/api/governance/evaluations/${evaluationId}`, BARE_KEY);
+      assert.equal(system.status, 200, system.text);
+      assert.equal('projection' in system.body, false);
+    });
+
+    it('an auditor is read-only: it cannot evaluate, execute, build evidence, approve, operate or administer, and nothing is written', async () => {
+      const h = await ready();
+      const before = h.appends();
+      const attempts: readonly [string, string, unknown][] = [
+        ['POST', '/api/governance/evaluate', body({ requestId: fresh('auditor-evaluate') })],
+        ['POST', '/api/governed-actions', { ...ALLOWED_INTENT, idempotencyKey: fresh('auditor-governed') }],
+        ['POST', '/api/evidence/build', { evaluationId: 'gov-evaluation-any', level: 'AUDITOR' }],
+        ['POST', '/api/passports', { organization: { organizationId: ORG, recognizedBy: 'g01a' }, actorId: PMFREAK_ACTOR_ID }],
+        ['POST', '/api/assurance/signals', {}],
+        ['GET', '/api/admin/agents', undefined],
+        ['GET', '/api/admin/approvals', undefined],
+        ['POST', '/api/admin/approvals/any/approve', {}],
+      ];
+      for (const [method, path, payload] of attempts) {
+        const reply = await call(h, method, path, AUDITOR_KEY, payload);
+        assert.ok([401, 403, 404].includes(reply.status), `${method} ${path}: ${reply.status} ${reply.text}`);
+      }
+      assert.equal(h.appends(), before, 'an auditor writes nothing');
+    });
+
+    it('no alternative read surface discloses the principal to an ordinary reader: query, evidence and the legacy event list', async () => {
+      const h = await ready();
+      const record = await attributed(h, SERVICE_KEY);
+      const page = await h.enterprise.governanceReads.query(`Bearer ${LEGACY_KEY}`, {});
+      assert.ok(page.records.some((summary) => summary.evaluationId === record.evaluation.evaluationId));
+      assert.equal(JSON.stringify(page).includes(SERVICE_PRINCIPAL), false);
+      for (const level of ['AUDITOR', 'PARTNER']) {
+        const reply = await evaluate(h, SERVICE_KEY, body({ requestId: fresh(`p1-evidence-${level}`) }));
+        const bundle = await h.enterprise.evidence.build(`Bearer ${LEGACY_KEY}`, { evaluationId: evaluationIdOf(reply), level });
+        assert.equal(JSON.stringify(bundle).includes(SERVICE_PRINCIPAL), false, level);
+      }
+      assert.equal(JSON.stringify(await h.raw.listEnterpriseEvents()).includes(SERVICE_PRINCIPAL), false);
+    });
+  });
+}
+
+describe('G-01A P1 — auditors are configured explicitly and validated identically for the Host and embedders', () => {
+  const SERVICE_SECRET = 'G01A_FILE_SERVICE_SECRET_0123456789abcdef0123';
+  const CUSTOMER_SECRET = 'G01A_FILE_CUSTOMER_SECRET_0123456789abcdef012';
+  const AUDITOR_SECRET = 'G01A_FILE_AUDITOR_SECRET_0123456789abcdef0123';
+  const OPERATOR_SECRET = 'G01A_FILE_OPERATOR_SECRET_0123456789abcdef012';
+
+  function file(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 1,
+      trustDomainId: TRUST_DOMAIN_ID,
+      grantLifetimeSeconds: 300,
+      customerPrincipals: [{ principalId: PRINCIPAL, externalSubject: SUBJECT, apiKeyEnv: 'G01A_CUSTOMER_KEY' }],
+      servicePrincipals: [{ principalId: SERVICE_PRINCIPAL, apiKeyEnv: 'G01A_SERVICE_KEY', onBehalfOf: { actors: [PMFREAK_ACTOR_ID] } }],
+      operators: [{ operatorId: 'ops-g01a-observer', role: 'observer', apiKeyEnv: 'G01A_OPERATOR_KEY' }],
+      auditors: [{ auditorId: AUDITOR_ID, apiKeyEnv: 'G01A_AUDITOR_KEY' }],
+      routes: [{ action: 'draft_closure_email', adapterId: 'adapter-g01a' }],
+      ...overrides,
+    };
+  }
+
+  function env(governed: Record<string, unknown>, overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
+    const directory = mkdtempSync(join(tmpdir(), 'frontera-g01a-auditor-'));
+    directories.push(directory);
+    const path = join(directory, 'governed-actions.json');
+    writeFileSync(path, JSON.stringify(governed));
+    return {
+      AOC_ENTERPRISE_REQUIRE_AUTH: 'true',
+      AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1',
+      AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
+      AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG,
+      AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE: path,
+      G01A_CUSTOMER_KEY: CUSTOMER_SECRET,
+      G01A_SERVICE_KEY: SERVICE_SECRET,
+      G01A_AUDITOR_KEY: AUDITOR_SECRET,
+      G01A_OPERATOR_KEY: OPERATOR_SECRET,
+      ...overrides,
+    };
+  }
+
+  function refusalCode(environment: Record<string, string | undefined>): string {
+    try {
+      loadEnterpriseHostConfiguration(environment);
+    } catch (error) {
+      assert.ok(error instanceof EnterpriseHostConfigurationError, String(error));
+      for (const secret of [SERVICE_SECRET, CUSTOMER_SECRET, AUDITOR_SECRET, OPERATOR_SECRET]) assert.equal(error.message.includes(secret), false, 'no refusal names a secret');
+      return error.code;
+    }
+    return assert.fail('the Host must refuse this configuration');
+  }
+
+  it('a valid auditor resolves to the served organization, apart from every ordinary key', () => {
+    const { configuration: resolved } = loadEnterpriseHostConfiguration(env(file()));
+    assert.deepEqual(resolved.authentication.auditors, [{ auditorId: AUDITOR_ID, organizationId: ORG, key: AUDITOR_SECRET }]);
+    assert.equal(resolved.authentication.apiKeys.some((apiKey) => apiKey.key === AUDITOR_SECRET), false);
+  });
+
+  const refusals: readonly [string, Record<string, unknown>, Record<string, string | undefined>, string][] = [
+    ['an organization field', file({ auditors: [{ auditorId: AUDITOR_ID, apiKeyEnv: 'G01A_AUDITOR_KEY', organizationId: 'org-other' }] }), {}, 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['a role or permission field', file({ auditors: [{ auditorId: AUDITOR_ID, apiKeyEnv: 'G01A_AUDITOR_KEY', role: 'organization-administrator' }] }), {}, 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['an inline secret', file({ auditors: [{ auditorId: AUDITOR_ID, apiKey: AUDITOR_SECRET }] }), {}, 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['an empty list', file({ auditors: [] }), {}, 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['a short secret', file(), { G01A_AUDITOR_KEY: 'short' }, 'HOST_AUDITOR_INVALID'],
+    ['an id shared with a service principal', file({ auditors: [{ auditorId: SERVICE_PRINCIPAL, apiKeyEnv: 'G01A_AUDITOR_KEY' }] }), {}, 'HOST_AUDITOR_INVALID'],
+    ['an id shared with a customer principal', file({ auditors: [{ auditorId: PRINCIPAL, apiKeyEnv: 'G01A_AUDITOR_KEY' }] }), {}, 'HOST_AUDITOR_INVALID'],
+    ['an id shared with an operator', file({ auditors: [{ auditorId: 'ops-g01a-observer', apiKeyEnv: 'G01A_AUDITOR_KEY' }] }), {}, 'HOST_AUDITOR_INVALID'],
+    ['the reserved agent: prefix', file({ auditors: [{ auditorId: 'agent:g01a', apiKeyEnv: 'G01A_AUDITOR_KEY' }] }), {}, 'HOST_AUDITOR_INVALID'],
+    ['a secret shared with a service principal', file(), { G01A_AUDITOR_KEY: SERVICE_SECRET }, 'HOST_CREDENTIALS_AMBIGUOUS'],
+    ['a secret shared with an operator', file(), { G01A_AUDITOR_KEY: OPERATOR_SECRET }, 'HOST_CREDENTIALS_AMBIGUOUS'],
+    ['a secret shared with a legacy key', file(), { AOC_ENTERPRISE_API_KEYS: `${AUDITOR_SECRET}:${ORG}` }, 'HOST_CREDENTIALS_AMBIGUOUS'],
+  ];
+  for (const [label, governed, overrides, code] of refusals) {
+    it(`Host: ${label} → ${code}`, () => {
+      assert.equal(refusalCode(env(governed, overrides)), code);
+    });
+  }
+
+  const ADMIN_SECRET = 'G01A_EMBEDDER_ADMIN_SECRET_0123456789abcdef';
+  const valid = { auditorId: 'auditor-embedder', organizationId: ORG, key: 'G01A_EMBEDDER_AUDITOR_SECRET_0123456789ab' };
+  const embedderVariants: readonly [string, typeof valid][] = [
+    ['another organization', { ...valid, organizationId: 'org-other' }],
+    ['a short secret', { ...valid, key: 'short' }],
+    ['a padded secret', { ...valid, key: ` ${valid.key}` }],
+    ['a secret shared with an API key', { ...valid, key: LEGACY_KEY }],
+    ['a secret shared with a service principal', { ...valid, key: SERVICE_KEY }],
+    ['a secret shared with an administrator', { ...valid, key: ADMIN_SECRET }],
+    ['a secret shared with an operator', { ...valid, key: OPERATOR_SECRET }],
+    ['a customer principal id', { ...valid, auditorId: PRINCIPAL }],
+    ['a service principal id', { ...valid, auditorId: SERVICE_PRINCIPAL }],
+    ['an operator id', { ...valid, auditorId: 'ops-g01a-observer' }],
+    ['an administrator id', { ...valid, auditorId: 'ops-g01a-admin' }],
+    ['the reserved agent: prefix', { ...valid, auditorId: 'agent:g01a' }],
+  ];
+  for (const [label, auditor] of embedderVariants) {
+    it(`embedder: ${label} is refused before anything is composed`, async () => {
+      const base = configuration();
+      await assert.rejects(
+        createEnterprise({
+          configuration: {
+            ...base,
+            administration: { administrators: [{ operatorId: 'ops-g01a-admin', key: ADMIN_SECRET }], operators: [{ operatorId: 'ops-g01a-observer', role: 'observer', key: OPERATOR_SECRET }] },
+            authentication: { ...base.authentication, auditors: [auditor] },
+          },
+          kernelProviders: buildTestKernelProviders(),
+        }),
+        (error: unknown) => error instanceof AuditorConfigurationError && !error.message.includes(auditor.key),
+      );
+    });
+  }
 });

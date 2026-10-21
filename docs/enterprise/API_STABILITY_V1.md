@@ -177,6 +177,11 @@ authentication disabled) never answers a customer or service principal. See
 
 No request bodies, no idempotency semantics (reads).
 
+**Canonical record vs. projection (G-01A, an approved v1 security tightening of the three record routes).** URLs, methods, error codes and every other response field are unchanged. What differs is who sees one event payload:
+
+- **Canonical** — the complete stored aggregate, exactly as before: system scope, and a configured **auditor** credential (governed-action file `auditors`) for records of its one organization. An auditor authenticates these read routes (record, decision, request, verify, query) and nothing else; it cannot evaluate, execute, build evidence, approve, operate or administer, and is never system scope. An auditor reading another organization's record gets `404`.
+- **Projection** — an ordinary organization-scoped key (legacy or customer principal) reading a record whose `GovernanceEvaluationAttributed` event names a requesting principal (customer or service) receives the record with that event's `eventPayload` replaced by `{"withheld":"attribution"}` and an additive top-level `projection` marker: `{ version: "aoc.governance-record-projection.v1", canonical: false, withheld: [{ eventId, eventType, field: "eventPayload", reason: "auditor-authorization-required" }], verification }`. A projection's digests describe the stored canonical record and cannot be recomputed from the projection; `GET /api/governance/evaluations/{id}/verify` verifies the complete stored record server-side. Records without such an event — every pre-G-01A record and every legacy key's asserted attribution — are returned canonical and unmarked to every reader.
+
 ### 2.3 Evidence Bundles
 
 | Method + Path | Purpose | Request fields | Success | Errors |

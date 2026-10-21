@@ -68,6 +68,25 @@ export interface EnterpriseServicePrincipal {
 }
 
 /**
+ * G-01A: one auditor — a read-only credential that may read the complete
+ * Governance Records of exactly one organization, including the
+ * authenticated attribution an ordinary organization-scoped key receives only
+ * as a marked projection.
+ *
+ * Deliberately **not** an `EnterpriseApiKey`, never merged into
+ * `authentication.apiKeys`: an auditor secret authenticates the Governance
+ * Record read routes (`GET /api/governance/...`) and nothing else — no
+ * evaluation, no governed action, no evidence, passport or assurance route, no
+ * operator, approval or administration plane — and never holds a system
+ * context. Supplied through the Host's governed-action file (`auditors`).
+ */
+export interface EnterpriseAuditor {
+  readonly auditorId: string;
+  readonly organizationId: string;
+  readonly key: string;
+}
+
+/**
  * G-01A: how legacy API keys (`AOC_ENTERPRISE_API_KEYS`) are treated.
  *
  * * `restricted` — the default in secure profiles (`staging`, `production`).
@@ -166,6 +185,8 @@ export interface EnterpriseConfiguration {
     readonly apiKeys: readonly EnterpriseApiKey[];
     /** G-01A: service principals for the advisory evaluate route only. Absent means none. */
     readonly servicePrincipals?: readonly EnterpriseServicePrincipal[];
+    /** G-01A: read-only auditors for the Governance Record read routes only. Absent means none. */
+    readonly auditors?: readonly EnterpriseAuditor[];
     /** G-01A: absent means the environment's default (`effectiveLegacyKeyMode`): `restricted` for staging and production, `compat` elsewhere. */
     readonly legacyKeyMode?: EnterpriseLegacyKeyMode;
   };

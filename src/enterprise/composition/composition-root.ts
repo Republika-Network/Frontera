@@ -12,6 +12,7 @@ import {
 } from '../orchestration/evaluate-governance-request.js';
 import { governGovernedActionRequest } from '../orchestration/govern-governed-action-request.js';
 import { assertLegacyKeyConfiguration, assertServicePrincipalConfiguration } from '../orchestration/advisory-identity.js';
+import { assertAuditorConfiguration } from '../orchestration/governance-record-disclosure.js';
 import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
@@ -1459,6 +1460,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // Host's loader applies, here, whoever built the configuration — before
   // anything is opened.
   assertServicePrincipalConfiguration(configuration, configuration.kernelAuthority.organizationId);
+  assertAuditorConfiguration(configuration, configuration.kernelAuthority.organizationId);
   assertLegacyKeyConfiguration(configuration);
   if (customerIdentityRequested) {
     if (options.kernelAuthorityStore === undefined && !configuration.kernelAuthority.enabled) {

@@ -55,7 +55,14 @@ Disclosure (founder decision 4):
 - **Never published.** The event is built inside the Store's projection; it never passes through the event publisher.
 - **Not on the legacy event surface.** It carries no `requestId`, so `listEnterpriseEvents` (both providers) never lists it.
 - **Not in evidence.** Evidence bundles project an aggregate's events as `{ eventType, occurredAt }` only (`evidence/projector.ts`); no disclosure level — PUBLIC through FULL — carries the principal id.
-- **Raw Governance Record reads — OPEN (P1).** `GET /api/governance/evaluations/{id}` (and by request/decision id) returns the complete canonical aggregate to any credential scoped to that organization, including the attribution payload. The founder has not waived this: organization scope alone does not imply AUDITOR authorization. Closing it changes those routes' response for organization-scoped callers and needs an AUDITOR authorization the read routes do not have today, so it awaits a bounded design decision (see the PR). Every other read surface was checked and discloses nothing: `query` returns summaries without events, `verify` returns digests and booleans, evidence v1/v2 project event types only, and the operator plane's decision view projects named fields.
+- **Raw Governance Record reads (P1, founder decision: option B).** The Store keeps the canonical aggregate complete and unchanged; disclosure is decided at read time (`orchestration/governance-record-disclosure.ts`), for `GET /api/governance/evaluations/{id}`, `/decisions/{id}` and `/requests/{id}` alike:
+  - **canonical** to system scope and to an **auditor** (`auditors: [{auditorId, apiKeyEnv}]` in the governed-action file; `authentication.auditors` for embedders) for records of its one organization — an auditor reading another organization's record gets 404;
+  - a **marked projection** to every ordinary organization-scoped key: each attribution event that names a requesting principal has its `eventPayload` replaced by `{"withheld":"attribution"}`, and the response carries `projection: { version: "aoc.governance-record-projection.v1", canonical: false, withheld: [...], verification }`. Organization scope alone is never auditor authority.
+  - A legacy key's asserted attribution names no principal and is not withheld; a payload this build cannot read is withheld (fail closed). Records with nothing to withhold are returned canonical and unmarked.
+  - **Digests.** Every attribution carries 128 random bits (`salt`), so the attribution event's `eventDigest`, the `eventsDigest` and the `aggregateDigest` a projection still shows cannot be used to confirm a guessed principal id. A projection's digests describe the canonical record and cannot be recomputed from it; `GET …/verify` checks the complete stored record server-side.
+  - **Auditor authority.** An auditor secret is not an API key: it authenticates the five Governance Record read methods only (record by evaluation, decision or request id; verify; query) — not evaluate, governed actions, evidence, passports, assurance, approvals, the operator or administration plane — and is never system scope. One shared validator (`assertAuditorConfiguration`), run by the Host loader (`HOST_AUDITOR_INVALID`) and at composition (`AuditorConfigurationError`): the served organization only; a canonical id outside `agent:` naming no customer or service principal, operator, administrator or other auditor; a ≥ 32-character trim-stable secret no other credential shares.
+
+  Every other read surface was checked and discloses nothing to an ordinary reader: `query` returns summaries without events, `verify` returns digests and booleans, evidence v1/v2 project event types only, the operator plane's decision view projects named fields, and `listEnterpriseEvents` never lists the attribution event.
 
 ## 4. Replay
 
@@ -73,7 +80,8 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 
 ## 6. Residual risks
 
-- **In-organization raw reads (open P1, blocking merge).** See §3.
+- **Auditor credential custody.** An auditor reads every complete record of its organization, including principal ids; its secret must be held as carefully as an operator's.
+- **Records committed by an earlier G-01A build of this PR** carry no salt and are unreadable to this build (`readRecordedAttribution` → unreadable): they replay to no one and are withheld from ordinary readers. No such records exist outside this branch's tests.
 - **Legacy keys within one organization are indistinguishable.** Two scoped legacy keys of one organization share `legacy-asserted / organization` attribution and may replay each other's decisions, as in v1. Configured legacy keys carry no identity to tell them apart.
 - **Unscoped keys under `compat`** keep cross-organization system access on the read routes — by explicit opt-in only.
 - **Request-id existence oracle.** `request_id` is unique store-wide, so a reused id still answers 409 across requesters and tenants (G-01B1).
@@ -81,4 +89,4 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 
 ## 7. Evidence
 
-Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (20 mutants over the compiled modules, each detected by its guard). Run IDs are reported on the PR.
+Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (32 mutants over the compiled modules, each detected by its guard). Run IDs are reported on the PR.

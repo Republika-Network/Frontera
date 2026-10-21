@@ -17,6 +17,7 @@ import { GovernanceStoreError } from './errors.js';
  */
 
 const BASES = ['customer-principal', 'service-principal', 'legacy-asserted'] as const;
+const SALT = /^[0-9a-f]{32}$/;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -29,16 +30,17 @@ function isWellFormedAttribution(value: unknown): value is GovernanceEvaluationA
   if (candidate['version'] !== GOVERNANCE_ATTRIBUTION_VERSION) return false;
   if (!BASES.includes(candidate['basis'] as (typeof BASES)[number])) return false;
   if (!isNonEmptyString(candidate['evaluatedActorId'])) return false;
+  if (typeof candidate['salt'] !== 'string' || !SALT.test(candidate['salt'])) return false;
   const keys = Object.keys(candidate).filter((key) => candidate[key] !== undefined).sort();
   if (candidate['basis'] === 'legacy-asserted') {
     if (candidate['legacyScope'] !== 'organization' && candidate['legacyScope'] !== 'unscoped') return false;
     if (candidate['organizationId'] !== undefined && !isNonEmptyString(candidate['organizationId'])) return false;
     if (candidate['legacyScope'] === 'organization' && candidate['organizationId'] === undefined) return false;
-    const allowed = ['basis', 'evaluatedActorId', 'legacyScope', 'organizationId', 'version'];
+    const allowed = ['basis', 'evaluatedActorId', 'legacyScope', 'organizationId', 'salt', 'version'];
     return keys.every((key) => allowed.includes(key));
   }
   if (!isNonEmptyString(candidate['organizationId']) || !isNonEmptyString(candidate['requestingPrincipalId'])) return false;
-  return JSON.stringify(keys) === JSON.stringify(['basis', 'evaluatedActorId', 'organizationId', 'requestingPrincipalId', 'version']);
+  return JSON.stringify(keys) === JSON.stringify(['basis', 'evaluatedActorId', 'organizationId', 'requestingPrincipalId', 'salt', 'version']);
 }
 
 /** Refuses, before anything is written, an attribution that is malformed or names another actor or organization than its request. */

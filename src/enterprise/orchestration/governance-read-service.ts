@@ -5,6 +5,7 @@ import { isGovernanceStoreError } from '../governance-store/errors.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import type { EnterpriseTelemetry } from '../telemetry/enterprise-telemetry.js';
 import { extractBearerToken, matchApiKey } from './credential-matching.js';
+import { projectGovernanceRecord, resolveGovernanceReadAccess, type GovernanceRecordDisclosure, type GovernanceRecordView } from './governance-record-disclosure.js';
 
 /**
  * The Enterprise Host's read/verify surface over the Governance Store.
@@ -18,11 +19,17 @@ import { extractBearerToken, matchApiKey } from './credential-matching.js';
  *
  * The Store itself enforces the resulting scope; handlers never build raw
  * queries.
+ *
+ * G-01A: a configured **auditor** also reads here (its one organization, the
+ * canonical record), and nowhere else. An organization-scoped API key reads a
+ * record carrying an authenticated attribution as a marked projection with
+ * that payload withheld (`governance-record-disclosure.ts`); `verify` always
+ * checks the complete stored record.
  */
 export interface GovernanceReadService {
-  getByEvaluationId(authorizationHeader: string | undefined, evaluationId: string): Promise<GovernanceRecord | null>;
-  getByDecisionId(authorizationHeader: string | undefined, decisionId: string): Promise<GovernanceRecord | null>;
-  getByRequestId(authorizationHeader: string | undefined, requestId: string): Promise<GovernanceRecord | null>;
+  getByEvaluationId(authorizationHeader: string | undefined, evaluationId: string): Promise<GovernanceRecordView | null>;
+  getByDecisionId(authorizationHeader: string | undefined, decisionId: string): Promise<GovernanceRecordView | null>;
+  getByRequestId(authorizationHeader: string | undefined, requestId: string): Promise<GovernanceRecordView | null>;
   query(authorizationHeader: string | undefined, query: GovernanceStoreQuery): Promise<GovernanceStoreQueryResult>;
   verify(authorizationHeader: string | undefined, evaluationId: string): Promise<GovernanceRecordVerificationResult>;
 }
@@ -39,15 +46,19 @@ export function resolveGovernanceAccessContext(authorizationHeader: string | und
   return matchedKey.organizationId !== undefined ? { system: false, organizationId: matchedKey.organizationId } : { system: true };
 }
 
+function view(record: GovernanceRecord | null, disclosure: GovernanceRecordDisclosure): GovernanceRecordView | null {
+  return record === null ? null : projectGovernanceRecord(record, disclosure);
+}
+
 export function createGovernanceReadService(
   store: GovernanceStore,
   configuration: EnterpriseConfiguration,
   telemetry: EnterpriseTelemetry,
 ): GovernanceReadService {
-  async function run<T>(authorizationHeader: string | undefined, callerInput: boolean, operation: (context: GovernanceStoreAccessContext) => Promise<T>): Promise<T> {
-    const context = resolveGovernanceAccessContext(authorizationHeader, configuration);
+  async function run<T>(authorizationHeader: string | undefined, callerInput: boolean, operation: (context: GovernanceStoreAccessContext, disclosure: GovernanceRecordDisclosure) => Promise<T>): Promise<T> {
+    const { context, disclosure } = resolveGovernanceReadAccess(authorizationHeader, configuration);
     try {
-      return await operation(context);
+      return await operation(context, disclosure);
     } catch (error) {
       if (isGovernanceStoreError(error)) {
         if (error.code === 'GOVERNANCE_RECORD_CORRUPTED') telemetry.recordStoreCorruptedRecord();
@@ -58,9 +69,9 @@ export function createGovernanceReadService(
   }
 
   return {
-    getByEvaluationId: (auth, evaluationId) => run(auth, false, (context) => store.getByEvaluationId(context, evaluationId)),
-    getByDecisionId: (auth, decisionId) => run(auth, false, (context) => store.getByDecisionId(context, decisionId)),
-    getByRequestId: (auth, requestId) => run(auth, false, (context) => store.getByRequestId(context, requestId)),
+    getByEvaluationId: (auth, evaluationId) => run(auth, false, async (context, disclosure) => view(await store.getByEvaluationId(context, evaluationId), disclosure)),
+    getByDecisionId: (auth, decisionId) => run(auth, false, async (context, disclosure) => view(await store.getByDecisionId(context, decisionId), disclosure)),
+    getByRequestId: (auth, requestId) => run(auth, false, async (context, disclosure) => view(await store.getByRequestId(context, requestId), disclosure)),
     query: (auth, query) =>
       run(auth, true, async (context) => {
         const startedAtMs = Date.now();
