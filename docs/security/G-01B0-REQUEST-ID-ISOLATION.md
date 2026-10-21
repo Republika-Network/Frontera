@@ -1,6 +1,6 @@
 # G-01B0 — Request-id cross-path isolation
 
-Status: implemented on Draft PR #194 (base `a378a14`). Not merged.
+Status: merged (#194, `1ea0368`). Follow-up: G-01B1 (`G-01B1-PROVENANCE-ISOLATION.md`).
 Invariants: SEC-INV-335, SEC-INV-336 (`docs/security/SECURITY_INVARIANTS.md` §4.34).
 
 ## 1. The problem

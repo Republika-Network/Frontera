@@ -464,13 +464,15 @@ for (const provider of PROVIDERS) {
 
 for (const provider of PROVIDERS) {
   describe(`G-01B1 hygiene — ${provider.name} Store: (scope, key) is one unambiguous index entry`, () => {
-    it('a key in one organization never collides with a shifted key in an organization whose id extends it', async () => {
+    // The in-memory index joined scope and key with a NUL separator, so a NUL inside an organization id or a key (never over
+    // HTTP, whose headers cannot carry one; reachable by an embedder) moved the boundary between them.
+    it('a key in one organization never collides with a shifted key in an organization whose id extends it across the separator', async () => {
       const store = await provider.open();
       const first: KernelEvaluationRequest = { requestId: fresh('collision-a'), actor: { id: PMFREAK_ACTOR_ID, trustDomainId: TRUST_DOMAIN_ID }, organization: { id: 'org-acme' }, action: { type: 'act', resourceScope: 'res' }, requestedAt: NOW };
-      await store.appendEvaluation({ request: first, result: refundResult(first.requestId, fresh('decision'), 'denied'), receivedAt: NOW, enterpriseContext: ENTERPRISE_CONTEXT, events: [], idempotency: { scope: 'org:org-acme', idempotencyKey: '-eu:K' }, accessContext: { system: false, organizationId: 'org-acme' } });
-      const second: KernelEvaluationRequest = { ...first, requestId: fresh('collision-b'), organization: { id: 'org-acme-eu' } };
-      const context: GovernanceStoreAccessContext = { system: false, organizationId: 'org-acme-eu' };
-      const idempotency = { scope: 'org:org-acme-eu', idempotencyKey: ':K' };
+      await store.appendEvaluation({ request: first, result: refundResult(first.requestId, fresh('decision'), 'denied'), receivedAt: NOW, enterpriseContext: ENTERPRISE_CONTEXT, events: [], idempotency: { scope: 'org:org-acme', idempotencyKey: '-eu\u0000K' }, accessContext: { system: false, organizationId: 'org-acme' } });
+      const second: KernelEvaluationRequest = { ...first, requestId: fresh('collision-b'), organization: { id: 'org-acme\u0000-eu' } };
+      const context: GovernanceStoreAccessContext = { system: false, organizationId: 'org-acme\u0000-eu' };
+      const idempotency = { scope: 'org:org-acme\u0000-eu', idempotencyKey: 'K' };
       assert.deepEqual(await store.resolveIdempotency(context, { requestId: second.requestId, payloadDigest: computeGovernanceRequestPayloadDigest(second), idempotency }), { kind: 'new' }, 'another organization’s claim is not this one');
       const appended = await store.appendEvaluation({ request: second, result: refundResult(second.requestId, fresh('decision'), 'denied'), receivedAt: NOW, enterpriseContext: ENTERPRISE_CONTEXT, events: [], idempotency, accessContext: context });
       assert.equal(appended.created, true);

@@ -12,6 +12,10 @@ import { createSqliteGovernanceStore } from '../governance-store/sqlite-governan
 import { toGovernanceRecordSummary } from '../governance-store/store-common.js';
 import { deriveGovernedActionRequestId } from '../governed-action/index.js';
 import { createInMemoryPaymentRefundLedger, paymentRefundOperationId, type PaymentRefundServiceOptions } from '../payment-settlement/index.js';
+import { createEnterprise, type AocEnterprise } from '../composition/composition-root.js';
+import { loadEnterpriseConfiguration, type EnterpriseApiKey, type EnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import type { EvaluateGovernanceRequestDependencies } from '../orchestration/evaluate-governance-request.js';
+import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js';
 import { ALLOWED_INTENT, DENIED_ACTOR, DENIED_INTENT, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID, buildGovernedWorld, identityFor } from './governed-action-support.js';
 import { BINDING, GOVERNED_ACCOUNT, IDENTITY, NOW, ORG, PAYMENT_ACTION, TEST_ASSETS, governed, payment, paymentWorld, settlementHarness } from './pay05-settlement-support.js';
 
@@ -62,7 +66,9 @@ async function qualify<M>(mutant: Mutant<M>): Promise<void> {
 }
 
 const opened: GovernanceStore[] = [];
+const enterprises: AocEnterprise[] = [];
 after(async () => {
+  await Promise.all(enterprises.map((enterprise) => enterprise.close().catch(() => {})));
   for (const store of opened) await store.close().catch(() => {});
 });
 
@@ -396,4 +402,111 @@ describe('G-01B1 mutations — a Passport governance reference states what its r
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Hygiene.
+
+type InMemoryStoreModule = typeof import('../governance-store/in-memory-governance-store.js');
+type EvaluateModule = typeof import('../orchestration/evaluate-governance-request.js');
+const EVALUATE = 'orchestration/evaluate-governance-request.js';
+
+const UNSCOPED_KEY = 'G01B1_MUTATION_UNSCOPED_KEY_0123456789ab';
+const SCOPED_KEY = 'G01B1_MUTATION_SCOPED_KEY_0123456789abcd';
+
+function evaluateConfiguration(apiKeys: readonly EnterpriseApiKey[]): EnterpriseConfiguration {
+  const base = loadEnterpriseConfiguration({
+    AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory',
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG,
+    AOC_ENTERPRISE_REQUIRE_AUTH: apiKeys.length > 0 ? 'true' : 'false',
+    AOC_ENTERPRISE_LOG_LEVEL: 'error',
+  });
+  return apiKeys.length > 0 ? { ...base, authentication: { apiKeys, legacyKeyMode: 'compat' } } : base;
+}
+
+/** The evaluate orchestrator's dependencies, over a composed Enterprise's Kernel and `store`. */
+async function evaluateDependencies(store: GovernanceStore, apiKeys: readonly EnterpriseApiKey[] = []): Promise<EvaluateGovernanceRequestDependencies> {
+  const providers = buildTestKernelProviders();
+  const configuration = evaluateConfiguration(apiKeys);
+  const enterprise = await createEnterprise({ configuration, kernelProviders: providers, persistence: store });
+  enterprises.push(enterprise);
+  return {
+    kernel: enterprise.kernel,
+    clock: providers.clock,
+    idGenerator: providers.idGenerator,
+    eventIdGenerator: { nextId: (prefix: string) => `${prefix}-${fresh('event')}` },
+    store,
+    eventPublisher: enterprise.eventPublisher,
+    telemetry: enterprise.telemetry,
+    logger: enterprise.logger,
+    configuration,
+    enterpriseContext: () => ENTERPRISE_CONTEXT as never,
+  };
+}
+
+async function refusalMessage(pending: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await pending;
+    return undefined;
+  } catch (error) {
+    return (error as { httpStatus?: unknown }).httpStatus === 409 ? String((error as Error).message) : undefined;
+  }
+}
+
+describe('G-01B1 mutations — hygiene', () => {
+  it('in-memory-index-joins-scope-and-key', () =>
+    qualify<InMemoryStoreModule>({
+      id: 'in-memory-index-joins-scope-and-key',
+      file: 'governance-store/in-memory-governance-store.js',
+      replacements: [['return JSON.stringify([scope, key]);', 'return `${scope}\\u0000${key}`;']],
+      guard: async (m) => {
+        const store = m.createInMemoryGovernanceStore();
+        const base = (organizationId: string): KernelEvaluationRequest => ({ requestId: fresh('collision'), actor: { id: PMFREAK_ACTOR_ID, trustDomainId: TRUST_DOMAIN_ID }, organization: { id: organizationId }, action: { type: 'act', resourceScope: 'res' }, requestedAt: NOW });
+        const result = (request: KernelEvaluationRequest, decisionId = fresh('decision')): KernelEvaluationResult =>
+          ({ requestId: request.requestId, decisionId, status: 'denied', reasonCodes: [], summary: 'Denied.', recognition: { performed: true, recognized: true }, authority: { performed: false }, policies: [], approval: { performed: false, status: 'not_applicable' }, evidence: [], trace: { steps: [{ sequence: 1, operator: 'policy_chain', status: 'failed', reasonCodes: [] }], decisionId, kernelVersion: '1.0.0' }, evaluatedAt: NOW, kernelVersion: '1.0.0' }) as unknown as KernelEvaluationResult;
+        const first = base('org-acme');
+        await store.appendEvaluation({ request: first, result: { ...result(first) }, receivedAt: NOW, enterpriseContext: ENTERPRISE_CONTEXT, events: [], idempotency: { scope: 'org:org-acme', idempotencyKey: '-eu\u0000K' }, accessContext: { system: false, organizationId: 'org-acme' } });
+        const second = base('org-acme\u0000-eu');
+        const { computeGovernanceRequestPayloadDigest } = await import('../governance-store/projection.js');
+        const resolution = await store.resolveIdempotency({ system: false, organizationId: 'org-acme\u0000-eu' }, { requestId: second.requestId, payloadDigest: computeGovernanceRequestPayloadDigest(second), idempotency: { scope: 'org:org-acme\u0000-eu', idempotencyKey: 'K' } });
+        return resolution.kind === 'new';
+      },
+    }));
+
+  it('evaluate-body-read-more-than-once', () =>
+    qualify<EvaluateModule>({
+      id: 'evaluate-body-read-more-than-once',
+      file: EVALUATE,
+      replacements: [['const rawBody = snapshotRequestBody(input.rawBody);', 'const rawBody = input.rawBody;']],
+      guard: async (m) => {
+        const store = createInMemoryGovernanceStore();
+        const deps = await evaluateDependencies(store);
+        const validated = fresh('validated');
+        const reserved = governedLookingId(IDENTITY.principal.principalId);
+        let reads = 0;
+        const body = buildAllowedRequestBody({ organization: { id: ORG } }) as unknown as Record<string, unknown>;
+        Object.defineProperty(body, 'requestId', { enumerable: true, get: () => ((reads += 1) <= 3 ? validated : reserved) });
+        try {
+          const response = await m.evaluateGovernanceRequest({ rawBody: body }, deps);
+          return response.body.requestId === validated && (await store.getByRequestId(SYSTEM, reserved)) === null;
+        } catch {
+          return false;
+        }
+      },
+    }));
+
+  it('conflict-text-says-another-requester', () =>
+    qualify<EvaluateModule>({
+      id: 'conflict-text-says-another-requester',
+      file: EVALUATE,
+      replacements: [["throw idempotencyConflictError(idempotency !== undefined ? 'idempotency-key' : 'request-id', requestId);", "throw Object.assign(new Error('requestId was already submitted by another requester.'), { httpStatus: 409, code: 'CONCURRENCY_CONFLICT' });"]],
+      guard: async (m) => {
+        const deps = await evaluateDependencies(createInMemoryGovernanceStore(), [{ key: UNSCOPED_KEY }, { key: SCOPED_KEY, organizationId: ORG }]);
+        const body = buildAllowedRequestBody({ requestId: fresh('uniform'), organization: { id: ORG }, requestedAt: NOW });
+        await m.evaluateGovernanceRequest({ rawBody: body, authorizationHeader: `Bearer ${UNSCOPED_KEY}` }, deps);
+        const otherRequester = await refusalMessage(m.evaluateGovernanceRequest({ rawBody: body, authorizationHeader: `Bearer ${SCOPED_KEY}` }, deps));
+        const otherPayload = await refusalMessage(m.evaluateGovernanceRequest({ rawBody: { ...body, correlationId: 'different' }, authorizationHeader: `Bearer ${SCOPED_KEY}` }, deps));
+        return otherRequester !== undefined && otherRequester === otherPayload;
+      },
+    }));
 });

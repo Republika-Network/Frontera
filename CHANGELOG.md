@@ -4,6 +4,16 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Security — G-01B1 governed-record provenance isolation
+- **One fail-closed provenance resolver** (`governance-store/governed-provenance.ts`): a record is a governed decision only if it holds the governed-action path's own claim, as the Store's scoped `governed-action` query answers it for exactly that record. Request-id shape, integrity and attribution are never evidence. No schema change or migration.
+- **Reconsideration**: an original without governed provenance (advisory, pre-G-01A, or planted at a governed-looking id before G-01B0) is the existing `GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_FOUND`; same-actor rule unchanged.
+- **ASSURE-01 traces**: a record without governed provenance has no trace (existing `404 EVIDENCE_TRACE_NOT_FOUND`, on the public and operator routes — a historical evaluation-only record previously returned a 200 operator trace); a lineage whose original lacks it fails `lineage.original-identity`. Genuine traces unchanged.
+- **PAY-05 refunds**: a release basis is read only from a governed record; otherwise `basis-unavailable`, reservation kept. The refund service's `governance` dependency now also needs `query`.
+- **Passports**: `linkGovernanceRecord` refuses (`PASSPORT_REFERENCE_INVALID`) a reference whose `evaluationId`, `requestId`, `decisionId` or `status` differs from its record; advisory records stay linkable. Existing references are not re-checked.
+- **Hygiene**: evaluate-route 409 texts no longer distinguish "another requester" from "different payload"; the evaluate body is read once (JSON snapshot); the in-memory Store's claim index is an unambiguous tuple encoding.
+- **Not removed**: the cross-tenant request-id existence oracle and deterministic-id squatting (store-wide `request_id` uniqueness) — proposed follow-up `docs/security/G-01B2-SCOPED-REQUEST-NAMESPACES.md`.
+- SEC-INV-347 … SEC-INV-351; `docs/security/G-01B1-PROVENANCE-ISOLATION.md`.
+
 ### Security — G-01A trusted identity and attribution (advisory evaluate route)
 - **`POST /api/governance/evaluate` checks the actor and organization a request names against the credential** (an intentional v1 security tightening; request/response shapes and error codes unchanged). A customer-principal key evaluates only as the actor customer identity admission binds it to, in its organization and the Host's trust domain; an organization-scoped key must state its organization (omission was an implicit match); every refusal is 401/403/503 with nothing written.
 - **Service principals**: new optional governed-action file key `servicePrincipals` (`{principalId, apiKeyEnv, onBehalfOf: {actors: [...]}}`) — organization-scoped, explicit actor allow-list (no wildcard), advisory evaluate route only, never an API key, never system. New Host refusal `HOST_SERVICE_PRINCIPAL_INVALID`.

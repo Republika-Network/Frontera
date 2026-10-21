@@ -1,6 +1,6 @@
 # G-01A — Trusted identity and attribution on the advisory evaluate route
 
-Status: implemented on a Draft PR (base `1ea0368`). Not merged.
+Status: merged (#195, `6c1f6b4`).
 Invariants: SEC-INV-337 … SEC-INV-346 (`docs/security/SECURITY_INVARIANTS.md` §4.35).
 
 ## 1. The problem
