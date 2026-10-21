@@ -70,4 +70,4 @@ Trade-off, for a founder decision (not made here): for an agent or passport subj
 
 ## 7. Evidence
 
-Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01b1-provenance-isolation.test.ts` (both providers; pre-G-01A unattributed, G-01A legacy-asserted and pre-G-01B0 records; residual P2-1 characterized) and `src/enterprise/__tests__/g01b1-mutation.test.ts` (17 mutants over the compiled modules). Commits are ordered tests-first; run IDs are recorded on the PR.
+Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01b1-provenance-isolation.test.ts` (both providers; pre-G-01A unattributed, G-01A legacy-asserted and pre-G-01B0 records; residual P2-1 characterized) and `src/enterprise/__tests__/g01b1-mutation.test.ts` (15 mutants over the compiled modules: 4 resolver, 2 reconsideration, 2 trace, 1 refund, 3 Passport, 3 hygiene). Commits are ordered tests-first; run IDs are recorded on the PR.
