@@ -26,6 +26,24 @@ export function deriveGovernedActionRequestId(input: { readonly organizationId: 
   return `aoc.gar:${digest(['aoc.governed-action.request.v1', input.organizationId, input.principalId, input.idempotencyKey])}`;
 }
 
+/**
+ * G-01B0 — the namespace the server derives its own identifiers in
+ * (`aoc.gar:`, `aoc.exec:`, `aoc.intent:`, …). Every one of them is
+ * lowercase; the Governance Store compares request ids byte for byte.
+ */
+export const SERVER_DERIVED_IDENTIFIER_PREFIX = 'aoc.';
+
+/**
+ * G-01B0 — whether a caller-supplied request id falls in the server-derived
+ * namespace. Refused at caller ingress, so no caller can occupy, replay or
+ * collide with a governed request identity. Checked after `trim()` and
+ * case-insensitively: a variant cannot collide with a derived id, but it
+ * would still pass for one wherever ids are displayed.
+ */
+export function isServerDerivedIdentifierNamespace(requestId: string): boolean {
+  return requestId.trim().toLowerCase().startsWith(SERVER_DERIVED_IDENTIFIER_PREFIX);
+}
+
 /** The Governance Store idempotency scope for one principal. Distinct from the `org:` / `global` scopes the evaluate route uses, so the two paths can never share a claim. */
 export function governedActionIdempotencyScope(input: { readonly organizationId: string; readonly principalId: string }): string {
   return `governed-action:${JSON.stringify([input.organizationId, input.principalId])}`;
