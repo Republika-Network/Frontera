@@ -21,7 +21,7 @@ Reachability: `reconsideration.of` must have the governed id shape (`aoc.gar:<32
 
 ## 2. The model
 
-**One provenance answer** (`governance-store/governed-provenance.ts`): a record is governed iff it holds the governed-action path's own idempotency claim — the PROD-03-01 `governed-action` predicate (`isGovernedActionIdempotencyClaim`), which both Store providers already evaluate (in SQL for SQLite, in `matchesGovernedPath` in memory). The resolver asks the Store's scoped query for that predicate at the record's request id and accepts only an answer naming exactly that record — same evaluation, request id and organization. No hit, another evaluation, another request id, another organization, more than one hit, or a malformed answer: not governed. A Store failure propagates and each consumer treats it as unavailable. Never fail open.
+**One provenance answer** (`governance-store/governed-provenance.ts`): a record is governed iff it holds the governed-action path's own idempotency claim — the PROD-03-01 `governed-action` predicate (`isGovernedActionIdempotencyClaim`), which both Store providers already evaluate (in SQL for SQLite, in `matchesGovernedPath` in memory). The resolver asks the Store's scoped query for that predicate at the record's request id and accepts only an answer naming exactly that record — same evaluation, request id and organization. No hit, another evaluation, another request id, another organization, more than one hit, or a malformed answer: not governed. A Store failure propagates and each consumer fails closed: reconsideration answers `system_error`, a refund basis is unavailable, a trace is not built, and a lineage original that cannot be resolved fails its lineage checks. Never fail open.
 
 What is not evidence: the `aoc.gar:` shape, integrity (a planted record verifies), and G-01A attribution (an advisory actor may be asserted). No second provenance model, no schema change, no new index — the claim is written in the same transaction as the record, so the two reads cannot disagree about a committed record, and both providers persist it.
 
@@ -37,7 +37,7 @@ What is not evidence: the `aoc.gar:` shape, integrity (a planted record verifies
 | PAY-05 `reconcileRefund` | `basis-unavailable`; the reservation stays counted | unchanged |
 | Passport link | `PASSPORT_REFERENCE_INVALID` when `evaluationId`, `requestId`, `decisionId` or `status` differs from the record | advisory records are linkable when the reference matches — fidelity, not governed provenance |
 
-**PROD-03-01 behaviour change (decision 6).** A historical evaluate-route record at a governed-shaped id used to return a 200 operator trace classified `evaluation-only` (review fix #170). It now returns the existing 404 on `GET /api/admin/operations/traces/{id}` (and on the public trace route). The operator execution list still shows it, classified `evaluation-only`.
+**PROD-03-01 behaviour change (decision 6).** A historical evaluate-route record at a governed-shaped id used to return a 200 operator trace classified `evaluation-only` (review fix #170). It now returns the existing 404 on `GET /api/admin/operations/traces/{id}` (and on the public trace route). The operator execution list still shows it, classified `evaluation-only`. Verifying a stored v2 evidence bundle rebuilds the trace, so a bundle built before G-01B1 over such a record now fails verification (record unavailable).
 
 ## 4. Hygiene (decision 7)
 
@@ -52,6 +52,8 @@ What is not evidence: the `aoc.gar:` shape, integrity (a planted record verifies
 - **Reconsideration binds the actor, not the principal** (decision 3): another principal bound to the same actor may reconsider.
 - **Operator `inspectDecisionEvidence`** shows any record of the served organization as a "decision" without a provenance mark (operator credential, read only).
 - **Embedder Stores** are trusted: one whose `query` lies about the predicate is believed.
+- **Embedder-only domain services** (transfer, license, tokenization and similar) accept caller request ids without G-01B0's `aoc.` refusal. Their records are not governed, but one can still occupy a governed request id and refuse the governed path there — part of the P2-1 / G-01B2 residual.
+- **Passport `occurredAt`** is not cross-checked against the record (outside decision 5).
 - **Records occupying governed ids before G-01B0** stay in place (append-only); they are now consistently treated as not governed. Operator reporting of them is not added.
 
 ## 6. Assurance (decision 7 assessment — no code change)

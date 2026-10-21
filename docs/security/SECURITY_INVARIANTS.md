@@ -675,7 +675,7 @@ The Governance Store holds one request-id space (`request_id` is UNIQUE across t
 
 ### 4.36 Governed-record provenance isolation (G-01B1)
 
-A Governance Record's request id, integrity or attribution never proves it came through the governed-action path; only that path's own idempotency claim does. Every consumer that treats a record as a governed decision resolves that claim through one fail-closed resolver (`governance-store/governed-provenance.ts`), over the Store's own `governed-action` query predicate. `docs/security/G-01B1-PROVENANCE-ISOLATION.md`.
+A Governance Record's request id, integrity or attribution never proves it came through the governed-action path; only that path's own idempotency claim does. The consumers that read a record by request id as a governed decision — a reconsideration's original, a governed trace and its lineage, a refund's release basis — resolve that claim through one fail-closed resolver (`governance-store/governed-provenance.ts`), over the Store's own `governed-action` query predicate. Readers keyed on governed-only references (`execution_record` references, P11 attempts: settlement basis, execution ledger, P12, x402 invoices) are gated by those references, not by the resolver. `docs/security/G-01B1-PROVENANCE-ISOLATION.md`.
 
 | ID | Invariant | Scope | Enforcement | Evidence | Residual |
 |---|---|---|---|---|---|

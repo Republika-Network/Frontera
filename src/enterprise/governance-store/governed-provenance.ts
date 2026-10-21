@@ -51,7 +51,8 @@ export async function hasGovernedActionProvenance(reader: Pick<GovernedProvenanc
   const organizationId = record.request.organizationId;
   // The governed path always binds a request to an organization, under one request id.
   if (organizationId === undefined || record.request.requestId !== requestId) return false;
-  const result = await reader.query(context, { organizationId, requestId, governedPath: 'governed-action', limit: 1 });
+  // Two, not one: an answer naming more than one record is ambiguous and refused, not truncated into a match.
+  const result = await reader.query(context, { organizationId, requestId, governedPath: 'governed-action', limit: 2 });
   const records = Array.isArray(result?.records) ? result.records : [];
   if (records.length !== 1) return false;
   const [hit] = records;
