@@ -1,6 +1,6 @@
 # TRADE-04D — Durable Recovery, Validated-Ledger Reconciliation & Delegated Signer Crash Safety
 
-> **Status:** IMPLEMENTED (offline; fake-ledger qualified). §1 is the Phase 1 architecture checkpoint, written before any production edit and unchanged in substance; §2–§16 record what was built and qualified.
+> **Status:** IMPLEMENTED (offline; fake-ledger qualified) — merged as `71c19fc` (PR #192, 2026-10-20); post-merge hardening in §22 (P1 fixed; P2 deferred). §1 is the Phase 1 architecture checkpoint, written before any production edit and unchanged in substance; §2–§16 record what was built and qualified.
 > **Baseline:** `origin/main` @ `66ca5b8` (TRADE-04C-S1, PR #191), with TRADE-04A `11db917`, 04B `d9339a5` and 04C `ffcf599` as ancestors.
 > **Network:** none. No live XRPL access and no transactions. TRADE-04D is offline-qualified; TRADE-05 is separately authorized.
 
@@ -771,18 +771,25 @@ This is pinned structurally in `trade04d-recovery-structure.test.ts` and recorde
 
 ### 20.6 Validation status
 
-**Not executed.** The change and its tests were written on 2026-10-20 in the `Frontera-trade-04d` worktree on `/mnt/c` (Windows host, WSL2). The founder's direction is that project code is not run in that environment without an isolated workspace, and none had been provisioned. Nothing here is a test result.
+**Executed on GitHub Actions; not run locally.** The change and its tests were written on 2026-10-20 in the `Frontera-trade-04d` worktree on `/mnt/c` (Windows host, WSL2). The founder's direction is that project code is not run in that environment without an isolated workspace, so none of it ran there. The isolated workspace was GitHub Actions: a fresh `ubuntu-latest` runner per job, Node 22, a clean checkout of the commit (LF), `npm ci`.
 
-Required before merge, in an isolated workspace, on a clean LF export:
+The first run failed to compile: the H-1 suite built an `ExecutionResolutionQuery` without its required `basis` (4 × TS2345). `a0ffbce` supplied `'initial-observation-unconfirmed'` in the test helper only. A PROD-03-04 documentation guard then failed on a rail named in the pilot runbook; `2e65716` moved that paragraph to §21. No production code changed between the first run and the qualified head.
 
-- `npm ci`, typecheck, build, lint;
-- the two H-1 suites;
-- the four updated suites;
-- TRADE-04A/B/C/S1/04D and their mutation suites;
-- CORE-02, CORE-07, P11/P12, PAY-0x, NO_BYPASS / security invariants / CORE-06, PROD-02/03, and backup/restore;
-- the full root suite, workspaces, release coherence, publishability and the clean-room consumer.
+| Commit | Workflow | Run | Result |
+|---|---|---|---|
+| `2e65716` (PR #192 head) | CI — `validate`, `pilot-deployment`, `pilot-acceptance`, `pilot-operations` | 39499321298 | all succeeded |
+| `2e65716` | Publishability — `publishability`, `clean-room-consumer`, `protocol-tarball-consumption` | 39499321299 | all succeeded |
+| `2e65716` | CodeQL — `javascript-typescript`, `actions` | 39499316501 | succeeded |
+| `71c19fc` (squash merge, tree identical to `2e65716`) | CI / Publishability / CodeQL | 39500613663 / 39500613626 / 39500613439 | all succeeded |
 
-Each must be recorded with its exact command, counts, failures and SHA.
+`validate` ran `npm ci`, `npm run typecheck`, `npm run build`, `npm run lint`, `npm test` (root suite, then workspaces), `npm run legal:check` and `npm run check:release-coherence`.
+
+- **Root suite:** 12 226 tests: 12 212 passed, 0 failed, 10 skipped, 4 todo. The 4 todo are the known PROD-01 F1 SQLite classification items, which do not fail the run.
+- **Workspaces:** 1 103 passed, 0 failed.
+- **Suite coverage:** the run includes all 150 top-level TRADE-04 suites — TRADE-04A/B/C/S1/04D with their mutation suites, the two H-1 suites (6 top-level, including `trade04d-h1-mutation`, 5 mutants) and the four updated suites — together with CORE-02, CORE-07, P11/P12, PAY-0x, NO_BYPASS, CORE-06, PROD-02/03 and backup/restore.
+- **L-2:** the read-only WAL inspection (§20.5) passed in `trade04d-signer-recovery.test.ts` and Scenario D.
+
+What this does not cover: a real XRPL ledger (TRADE-05), and the post-merge P1 correction of §22, which its own PR's runs qualify.
 
 ## 21. Upgrade, backup and downgrade — the forward-only interlock schema (accepted 2026-10-20)
 
@@ -793,3 +800,79 @@ Each must be recorded with its exact command, counts, failures and SHA.
 - **No supported binary downgrade after the first v2 intent.** The migration leaves the witnessed head unchanged, so the v1 backup and the old release remain usable **only until the upgraded Host records its first intent**. Every intent, signing marker, reservation and claim advances the CORE-07 history. After that, a restored v1 backup is behind the witness and is refused (`AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`, §17.4). Rolling back then means losing every trade record since the backup, and that is refused by design.
 - **Never.** Never reset, rescope or re-enroll the witness to make an older interlock open. It would reopen Sequences whose transactions may still be included.
 - **Operations.** This section is the operator reference. The pilot runbook (`docs/pilot/OPERATIONS_RUNBOOK.md`) stays rail-neutral: governed trading is outside the pilot scope, and the PROD-03-04 documentation guard forbids naming a rail there.
+
+## 22. Post-merge hardening — P1 fixed, P2 deferred (2026-10-20)
+
+After PR #192 merged (`71c19fc`), an adversarial review confirmed two findings an automated reviewer had left open on the PR. PR #193 fixes P1. A correction for P2 was written and then **withdrawn** on security review (§22.2), so P2 is deferred to a separate milestone.
+
+### 22.1 P1 — the resolver's ledger client was never connected (fixed)
+
+**Finding.** `host-composition.ts` builds a dedicated `resolverClient` for the P12 trade authority and the recovery coordinator. Only `readTradeLedgerEvidence` — the lookup by transaction hash, for an execution with a reservation — called `connect()`. An intent-only execution has no hash. Its owner-`Sequence` read goes through the shared validated reader, whose three reads never connect. The SDK client refuses a request before `connect()`, so in production that read failed (`ledger-unavailable`). P12 answered `unresolved` past `LastLedgerSequence`, and the intent kept holding the owner's `Sequence`. The only way out was an unrelated reservation lookup connecting the shared client first.
+
+**Why the tests missed it.** `FakeXrplLedger` served reads without a connection, and its `connected` flag was shared by every client.
+
+**Correction.** Both validated-read ports — the composition's `ownerSequenceReader` and the coordinator's internal reader — call `connect()` before `server_info`. Every validated read asks `server_info` first, so the client a read uses is connected by that read, never by another client.
+
+- **Connection count:** `connect()` is idempotent (a no-op once connected), so one connection is opened and reused.
+- **Failure semantics:** a failed or timed-out connect is a failed read inside the reader's existing time bound: `ledger-unavailable` → `unresolved`. It is never proof of non-inclusion, and the window stays held.
+- **Unchanged:** the ports stay read-only (no submit, claim, reserve or settle is reachable through them), and the shared transport reader, its port contract, the executor's client and the submit path are untouched.
+
+### 22.2 P2 — an expired intent and the reuse of its Sequence (deferred)
+
+**Finding.** `expired` is recorded only on a qualified owner-`Sequence` proof. That releases the `Sequence`, which the owner's next transaction may legitimately consume. Two consequences:
+
+- The recovery assessment then reports `intent-settlement-contradicts-ledger` for the old execution (a false alarm).
+- If the process stops between the expiry and P12 recording its answer, a later reconcile re-reads the ledger, sees the `Sequence` consumed, and answers `unresolved`.
+
+**Withdrawn correction.** PR #193 first let P12 answer `confirmed-not-completed` from the recorded `expired` transition, without a ledger read, and let the assessment accept a later consumption. Security review rejected it:
+
+- **The record is not tamper-evident.** `expired` is a local, unanchored transition (§17), and its state digest is unkeyed.
+- **The forgery is easy.** A writer of the interlock file can produce one with two statements the schema's triggers allow, plus a digest recomputed from the row's own columns. It passes the store's integrity checks.
+- **The consequence:** the forgery would have become a Host-written P12 resolution attributed to the ledger authority, returning P7 capacity for a trade that may have executed.
+
+That breaks this authority's rule that an uncertain trade "is resolved from the ledger or stays uncertain" (SEC-INV-332). PR #193 therefore restores the merged semantics: P12 closes an intent-only execution only on the owner-`Sequence` proof read in the resolving call.
+
+**Residual limitation (accepted for now).** Suppose the process crashes, or P12's store write fails, after a genuine expiry but before P12 persists its answer, and the owner's `Sequence` is then reused before the next reconcile. That execution stays `unresolved`, and the assessment raises `intent-settlement-contradicts-ledger`. Its P7 capacity stays consumed: the safe direction, and a capacity leak for that one execution.
+
+**No in-product recovery route exists today.**
+
+- **Operator resolution does not apply.** P12's operator resolution (`recordOperatorResolution`, PROD-03-02) refuses an execution bound to another authority (`authority-mismatch`, "the binding decides"). Every governed trade execution is bound to `frontera.xrpl-trade-ledger` before its claim.
+- **The assessment's suggestion is misleading.** It lists `operator-attestation` among the existing paths for `inconsistent-evidence`, but for a trade execution P12 refuses that path. This predates PR #193 and is recorded here, not changed.
+- **What remains:** the stranded execution stays visible to the recovery diagnostic and stays uncertain. Resolving it needs the historical-ledger follow-up below, or a separately decided operator procedure. Nothing in PR #193 adds or relaxes a path.
+
+**Proposed follow-up (not in PR #193).** Re-verify against the ledger's history: read the owner's `AccountRoot` at the validated ledger `LastLedgerSequence`, bound to that ledger's validated header hash. A `Sequence` still unconsumed there proves the transaction can never be included, whatever happened later, with no trust in the local record. It needs a historical read in the shared validated reader (a TRADE-04A protected boundary, separately approved). Where the node no longer holds that history, the answer stays `unresolved`.
+
+### 22.3 The forged-expiry regression
+
+`trade04d-forged-expiry.test.ts` forges `expired` exactly as a file writer could: the production schema, the public digest function, no trigger dropped, no private hook. It does so in two places:
+
+- **A real interlock file, reopened by the production store:** the store accepts the forged row (the residual). P12 still answers `unresolved` on a consumed `Sequence`, an unreadable owner entry and an unavailable server. The assessment raises `intent-settlement-contradicts-ledger`. No capability, signature or submission is added.
+- **The shipped Host, while it runs:** P12 `reconcile` stays `unresolved`, no P7 resolution row is written, and the P7 reservation stays `settled` (`execution-unconfirmed`).
+
+The same forgery also releases the intent's window in the interlock's blocking rule: a local release, like reservation `settle`. That predates PR #193. It is the accepted residual for writers who recompute unkeyed digests (THREAT_MODEL_V1 §8; CORE-06 accepted risk 8), and anchoring `expire` in CORE-07 would close it (a separate decision).
+
+### 22.4 Tests
+
+| Suite | What it proves |
+|---|---|
+| `trade04d-p1-resolver-connection.test.ts` | On the shipped Host with every fake client refusing reads until **it** connected (`strictConnections`), an H-1 intent-only execution: stays `unresolved` while the resolver cannot connect; stays `unresolved` while the server cannot answer; then resolves on the owner-Sequence proof once (`established: now`, then `previously`), with no signature or send added. The coordinator over a never-connected client: a failed connect is `ledger-unavailable` (Sequence `unknown`, intent still `signing`); connected, `proven-not-included`, one connection for two assessments. A structural pin covers both ports and their read-only views |
+| `trade04d-p1-mutation.test.ts` | The coordinator reading before connecting is detected |
+| `trade04d-forged-expiry.test.ts` | §22.3 |
+
+`FakeXrplLedger` gains `strictConnections` (off by default), `connectionsOpened` and a `connectThrows` fault. Existing suites are unchanged.
+
+### 22.5 Validation status
+
+**Not run locally** (§20.6). Executed on GitHub Actions for PR #193 at `930690c` (P1 kept, P2 withdrawn):
+
+| Workflow | Run | Result |
+|---|---|---|
+| CI — `validate`, `pilot-deployment`, `pilot-acceptance`, `pilot-operations` | 39516147137 | all succeeded |
+| Publishability — `publishability`, `clean-room-consumer`, `protocol-tarball-consumption` | 39516147155 | all succeeded |
+| CodeQL — `javascript-typescript`, `actions` | 39516141969 | succeeded |
+
+- **Root suite:** 12 232 tests: 12 218 passed, 0 failed, 10 skipped, 4 todo (+6 over §20.6).
+- **New suites:** `trade04d-p1-resolver-connection` 3 of 3; `trade04d-p1-mutation` 1 of 1 mutant detected; `trade04d-forged-expiry` 2 of 2.
+- **Existing suites:** TRADE-04D recovery, H-1, D-1 and their mutation suites, P7, P11/P12 and CORE-07 all passed.
+
+The next commit adds a verification-mode check that the Host's own store accepts the forged row (independent review, finding 3); its runs are listed on the PR. No live XRPL validation is claimed.

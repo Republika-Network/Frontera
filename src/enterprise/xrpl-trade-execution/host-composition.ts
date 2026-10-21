@@ -186,8 +186,17 @@ export async function composeXrplTradeExecution(options: ComposeXrplTradeExecuti
 
     // TRADE-04D D-1: the resolver also reads the owner's validated AccountRoot — the shared validated reader over the read-only six-read view — to close a signing intent on the owner-Sequence proof.
     const resolverReads = readOnlyTradeRecoveryLedger(resolverClient);
+    // P1: the resolver's client is connected by its own validated reads (server_info comes first in each; connect is
+    // idempotent), never by a reservation lookup or the executor's client. A failed connect is `ledger-unavailable`.
     const ownerSequenceReader = createXrplValidatedLedgerReader({
-      port: Object.freeze({ serverInfo: () => resolverReads.serverInfo(), ledgerHeader: (index: number) => resolverReads.ledgerHeader(index), ledgerEntry: (request: Readonly<Record<string, unknown>>) => resolverReads.ledgerEntry(request) }),
+      port: Object.freeze({
+        serverInfo: async () => {
+          await resolverReads.connect();
+          return resolverReads.serverInfo();
+        },
+        ledgerHeader: (index: number) => resolverReads.ledgerHeader(index),
+        ledgerEntry: (request: Readonly<Record<string, unknown>>) => resolverReads.ledgerEntry(request),
+      }),
       networkId,
       maxValidatedLedgerAgeSeconds: configuration.executor.maxValidatedLedgerAgeSeconds,
       requestTimeoutMs: configuration.executor.requestTimeoutMs,

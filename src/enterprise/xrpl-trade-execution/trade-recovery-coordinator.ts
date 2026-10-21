@@ -160,8 +160,18 @@ export function createTradeRecoveryCoordinator(options: TradeRecoveryCoordinator
     if (typeof ledger?.[method] !== 'function') throw new TypeError(`The trade recovery coordinator's ledger must implement ${method}.`);
   }
   if (typeof interlock?.read !== 'function') throw new TypeError('The trade recovery coordinator needs the trade interlock read.');
+  // P1: every validated read asks server_info first, so connecting there (idempotent) gives the owner-Sequence
+  // and offer reads this coordinator's own connection. An intent has no hash to look up, so nothing else would
+  // connect it first. A failed connect is the read's failure, `ledger-unavailable` — never evidence.
   const reader: XrplValidatedLedgerReader = createXrplValidatedLedgerReader({
-    port: Object.freeze({ serverInfo: () => ledger.serverInfo(), ledgerHeader: (index: number) => ledger.ledgerHeader(index), ledgerEntry: (request: Readonly<Record<string, unknown>>) => ledger.ledgerEntry(request) }),
+    port: Object.freeze({
+      serverInfo: async () => {
+        await ledger.connect();
+        return ledger.serverInfo();
+      },
+      ledgerHeader: (index: number) => ledger.ledgerHeader(index),
+      ledgerEntry: (request: Readonly<Record<string, unknown>>) => ledger.ledgerEntry(request),
+    }),
     networkId,
     maxValidatedLedgerAgeSeconds: options.maxValidatedLedgerAgeSeconds,
     requestTimeoutMs,
