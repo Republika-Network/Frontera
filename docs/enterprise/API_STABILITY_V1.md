@@ -130,9 +130,10 @@ Errors:
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | Shape validation failure, Kernel validation failure, malformed JSON, body over 1 MiB |
 | 401 | `AUTHENTICATION_FAILED` | Auth enabled and token missing/unrecognized |
-| 403 | `AUTHORIZATION_FAILED` | Org-scoped key used for a request naming a different `organization.id` |
-| 409 | `CONCURRENCY_CONFLICT` | Same `requestId` resubmitted with a different payload |
-| 409 | `GOVERNANCE_IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload |
+| 403 | `AUTHORIZATION_FAILED` | Org-scoped key used for a request naming a different `organization.id`; since G-01A also: an organization-bound credential whose request omits `organization`, a customer principal naming an actor other than its bound actor, a service principal naming an actor outside its allow-list, a customer or service principal naming another `actor.trustDomainId` than the Host's, and an unscoped key while legacy keys are `restricted` |
+| 409 | `CONCURRENCY_CONFLICT` | Same `requestId` resubmitted with a different payload, or (G-01A) by a different requester |
+| 409 | `GOVERNANCE_IDEMPOTENCY_CONFLICT` | Same `Idempotency-Key` reused with a different payload, or (G-01A) by a different requester |
+| 503 | `PROVIDER_UNAVAILABLE` | (G-01A) a customer principal's identity could not be resolved |
 | 413 | `GOVERNANCE_RECORD_TOO_LARGE` | Store-level payload/trace/event caps exceeded |
 | 500 | `INFRASTRUCTURE_FAILURE`, `GOVERNANCE_STORE_TRANSACTION_FAILED`, `GOVERNANCE_STORE_VALIDATION_ERROR`, `GOVERNANCE_RECORD_CORRUPTED` | Kernel/commit/store faults |
 | 503 | `ENTERPRISE_NOT_READY` (with `lifecycleState` in the error body), `GOVERNANCE_STORE_UNAVAILABLE` | Lifecycle not ready; store unreachable |
@@ -145,6 +146,25 @@ the originally persisted decision without re-running the Kernel; the same
 key with a different payload is `409 GOVERNANCE_IDEMPOTENCY_CONFLICT`. No
 successful response is ever returned unless the Governance Store commit
 succeeded.
+
+**Identity and attribution (G-01A, an intentional v1 security tightening).**
+The request and response shapes and the error codes are unchanged; what the
+body's `actor` and `organization` may claim is not. They are checked against
+the credential: a customer-principal key evaluates only as the actor customer
+identity admission binds it to, in its organization and the Host's trust
+domain; a service principal (governed-action file `servicePrincipals`, never
+`AOC_ENTERPRISE_API_KEYS`) only for the actors on its explicit allow-list; an
+organization-scoped legacy key only in the organization it now must state; an
+unscoped key only where `AOC_ENTERPRISE_LEGACY_KEY_MODE=compat` (the
+non-secure default, an explicit opt-in in `staging`/`production`). Each new
+record is sealed with who requested it (`GovernanceEvaluationAttributed`, a
+store-only event inside the aggregate, covered by its digests, never
+published, not projected into any evidence bundle): the requesting principal
+and the evaluated actor for customer and service principals, the asserted
+actor for legacy keys. A decision replays only to the requester that committed
+it; a record without attribution (committed before G-01A, or with
+authentication disabled) never answers a customer or service principal. See
+`docs/security/G-01A-TRUSTED-IDENTITY-ATTRIBUTION.md`.
 
 #### Governance reads
 
