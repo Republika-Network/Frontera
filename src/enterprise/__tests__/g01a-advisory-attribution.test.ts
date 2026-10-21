@@ -1249,7 +1249,7 @@ async function liveHarness(provider: Provider): Promise<{ readonly h: Harness; r
 
 /** A record of another organization, written straight to the Store (no credential of this Host may evaluate there). */
 async function foreignRecord(h: Harness): Promise<GovernanceRecord> {
-  const request = toKernelEvaluationRequest(buildAllowedRequestBody({ requestId: fresh('p3-foreign'), organization: { id: 'org-g01a-other' } }), { now: () => 'unused' }, { nextId: () => 'unused' });
+  const request = toKernelEvaluationRequest(buildAllowedRequestBody({ requestId: fresh('p3-foreign'), organization: { id: 'org-g01a-other' }, requestedAt: '2026-01-01T00:00:00.000Z' }), { now: () => 'unused' }, { nextId: () => 'unused' });
   const planted = await h.raw.appendEvaluation({
     request,
     result: await h.enterprise.kernel.evaluate(request),
