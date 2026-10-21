@@ -24,7 +24,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /** Closed shape of a well-formed attribution: exactly the fields its basis names, every one a non-empty string. */
-function isWellFormedAttribution(value: unknown): value is GovernanceEvaluationAttribution {
+export function isWellFormedAttribution(value: unknown): value is GovernanceEvaluationAttribution {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   if (candidate['version'] !== GOVERNANCE_ATTRIBUTION_VERSION) return false;

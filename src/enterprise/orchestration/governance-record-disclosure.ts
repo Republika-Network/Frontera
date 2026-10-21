@@ -1,6 +1,7 @@
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
 import type { EnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/identifiers.js';
+import { isWellFormedAttribution } from '../governance-store/attribution.js';
 import { GOVERNANCE_ATTRIBUTION_EVENT_TYPE, type GovernanceRecord, type GovernanceStoreAccessContext } from '../governance-store/contracts.js';
 import { AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
 import { SERVICE_PRINCIPAL_MIN_SECRET_LENGTH } from './advisory-identity.js';
@@ -21,8 +22,8 @@ import { extractBearerToken, matchApiKey } from './credential-matching.js';
  *   with the payload of each `GovernanceEvaluationAttributed` event that names
  *   a requesting principal withheld, and an explicit `projection` marker saying
  *   so. A record with nothing to withhold — every pre-G-01A record, and a
- *   legacy key's asserted attribution, which names no principal — is returned
- *   unchanged and unmarked.
+ *   legacy key's well-formed asserted attribution, which names no principal —
+ *   is returned unchanged and unmarked.
  *
  * Organization scope alone is never auditor authority: an auditor is a
  * separate, explicitly configured credential.
@@ -66,7 +67,7 @@ export function projectGovernanceRecord(record: GovernanceRecord, disclosure: Go
   if (disclosure === 'canonical') return record;
   const withheld: GovernanceRecordWithheldField[] = [];
   const events = record.events.map((event) => {
-    if (event.eventType !== GOVERNANCE_ATTRIBUTION_EVENT_TYPE || namesNoPrincipal(event.eventPayload)) return event;
+    if (event.eventType !== GOVERNANCE_ATTRIBUTION_EVENT_TYPE || isDisclosableLegacyAttribution(event.eventPayload, record)) return event;
     withheld.push({ eventId: event.eventId, eventType: event.eventType, field: 'eventPayload', reason: 'auditor-authorization-required' });
     return { ...event, eventPayload: WITHHELD_ATTRIBUTION_PAYLOAD };
   });
@@ -75,16 +76,26 @@ export function projectGovernanceRecord(record: GovernanceRecord, disclosure: Go
 }
 
 /**
- * Whether an attribution payload is a legacy key's asserted attribution, which
- * names no requesting principal and so has nothing to withhold. Anything else
- * — a customer or service principal, or a payload this build cannot read — is
- * withheld: unreadable fails closed.
+ * The one payload an ordinary reader is shown: exactly `{ attribution }`, where
+ * the attribution is a complete, well-formed `aoc.governance-attribution.v1`
+ * legacy-asserted value (the Store's own closed shape, nothing more) naming
+ * this record's actor and organization. It names no requesting principal, so
+ * there is nothing to withhold. Every other payload — a customer or service
+ * principal, an unknown version, a missing or extra field at either level, a
+ * value contradicting its record — is withheld whole: allow, never deny, so
+ * what this build cannot recognize is never shown.
  */
-function namesNoPrincipal(payload: Readonly<Record<string, unknown>>): boolean {
+function isDisclosableLegacyAttribution(payload: Readonly<Record<string, unknown>>, record: GovernanceRecord): boolean {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const keys = Object.keys(payload);
+  if (keys.length !== 1 || keys[0] !== 'attribution') return false;
   const attribution = payload['attribution'];
-  if (attribution === null || typeof attribution !== 'object' || Array.isArray(attribution)) return false;
-  const fields = attribution as Record<string, unknown>;
-  return fields['basis'] === 'legacy-asserted' && !('requestingPrincipalId' in fields);
+  return (
+    isWellFormedAttribution(attribution) &&
+    attribution.basis === 'legacy-asserted' &&
+    attribution.evaluatedActorId === record.request.actorId &&
+    attribution.organizationId === record.request.organizationId
+  );
 }
 
 /** Who is reading, the tenant scope the Store enforces for them, and the view they receive. */

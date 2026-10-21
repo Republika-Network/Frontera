@@ -11,9 +11,10 @@ import type { CustomerIdentityAdmissionService } from '../customer-identity/cont
 import { GOVERNANCE_ATTRIBUTION_EVENT_TYPE, GOVERNANCE_ATTRIBUTION_VERSION, type GovernanceEvaluationAttribution, type GovernanceRecord } from '../governance-store/contracts.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
+import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
-import type { EvaluateGovernanceRequestDependencies } from '../orchestration/evaluate-governance-request.js';
+import { evaluateGovernanceRequest, type EvaluateGovernanceRequestDependencies } from '../orchestration/evaluate-governance-request.js';
 import { ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
 import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js';
 
@@ -109,6 +110,8 @@ const ADMISSION: CustomerIdentityAdmissionService = {
   admit: async () => ({ status: 'bound', identity: { principal: { plane: 'customer', principalId: PRINCIPAL, organizationId: ORG, externalSubject: SUBJECT }, actor: { actorId: PMFREAK_ACTOR_ID } } }),
 };
 const IDENTITY_DEPS = { configuration: configuration(), customerIdentityAdmission: ADMISSION, trustDomainId: TRUST_DOMAIN_ID };
+/** The caller `authenticateAdvisoryCaller` resolves for CUSTOMER_KEY: its organization and its configured customer identity. */
+const CUSTOMER_CALLER = { kind: 'customer', organizationId: ORG, customerIdentity: { principalId: PRINCIPAL, externalSubject: SUBJECT } } as const;
 
 type IdentityModule = typeof import('../orchestration/advisory-identity.js');
 type AttributionModule = typeof import('../governance-store/attribution.js');
@@ -129,7 +132,7 @@ describe('G-01A mutations — identity binding', () => {
       id: 'customer-evaluates-as-any-actor',
       file: IDENTITY,
       replacements: [['if (actorId !== actor.actorId)', 'if (false)']],
-      guard: (m) => refusedWith(403, m.establishAdvisoryIdentity({ kind: 'customer', organizationId: ORG }, `Bearer ${CUSTOMER_KEY}`, request({ actor: { id: OTHER_ACTOR, trustDomainId: TRUST_DOMAIN_ID } }), IDENTITY_DEPS)),
+      guard: (m) => refusedWith(403, m.establishAdvisoryIdentity(CUSTOMER_CALLER, `Bearer ${CUSTOMER_KEY}`, request({ actor: { id: OTHER_ACTOR, trustDomainId: TRUST_DOMAIN_ID } }), IDENTITY_DEPS)),
     },
     {
       id: 'omitted-organization-is-an-implicit-match',
@@ -159,7 +162,7 @@ describe('G-01A mutations — identity binding', () => {
       id: 'caller-chooses-the-trust-domain',
       file: IDENTITY,
       replacements: [['if (trustDomainId === undefined || request.actor.trustDomainId !== trustDomainId) {', 'if (false) {']],
-      guard: (m) => refusedWith(403, m.establishAdvisoryIdentity({ kind: 'customer', organizationId: ORG }, `Bearer ${CUSTOMER_KEY}`, request({ actor: { id: PMFREAK_ACTOR_ID, trustDomainId: 'trust-domain-attacker' } }), IDENTITY_DEPS)),
+      guard: (m) => refusedWith(403, m.establishAdvisoryIdentity(CUSTOMER_CALLER, `Bearer ${CUSTOMER_KEY}`, request({ actor: { id: PMFREAK_ACTOR_ID, trustDomainId: 'trust-domain-attacker' } }), IDENTITY_DEPS)),
     },
     {
       id: 'unscoped-key-accepted-while-restricted',
@@ -527,7 +530,7 @@ describe('G-01A mutations — P1 read authorization and projection', () => {
     {
       id: 'principal-bearing-attribution-treated-as-legacy',
       file: DISCLOSURE,
-      replacements: [["return fields['basis'] === 'legacy-asserted' && !('requestingPrincipalId' in fields);", 'return true;']],
+      replacements: [["attribution.basis === 'legacy-asserted' &&", 'true &&']],
       guard: async (m) => !discloses(m.projectGovernanceRecord(await serviceAttributedRecord(), 'projected')),
     },
     {
@@ -634,4 +637,227 @@ describe('G-01A mutations — P1 read authorization and projection', () => {
         }
       },
     }));
+});
+
+// ---------------------------------------------------------------------------
+// Final hardening (P3-1, P3-2, P3-3): an immutable identity snapshot, admission
+// held to the credential's own identity, and allow-only disclosure.
+
+/** A configuration the test keeps writing to after composition, as an embedder could. */
+interface LiveConfiguration {
+  environment: string;
+  features: { requireAuthentication: boolean };
+  authentication: { apiKeys: { key: string; organizationId?: string }[]; servicePrincipals: { principalId: string; organizationId: string; key: string; onBehalfOfActors: string[] }[]; legacyKeyMode?: string };
+  administration?: { administrators: { operatorId: string; key: string }[]; operators: { operatorId: string; role: string; key: string }[] };
+}
+const LATE_SERVICE_KEY = 'G01A_MUTATION_LATE_SERVICE_KEY_0123456789ab';
+function liveConfiguration(): EnterpriseConfiguration {
+  const base = configuration();
+  return { ...base, features: JSON.parse(JSON.stringify(base.features)), authentication: JSON.parse(JSON.stringify(base.authentication)) } as EnterpriseConfiguration;
+}
+
+describe('G-01A mutations — P3-1 an immutable, validated identity snapshot', () => {
+  it('composition-serves-the-callers-objects is detected', () =>
+    qualify<CompositionModule>({
+      id: 'composition-serves-the-callers-objects',
+      file: COMPOSITION,
+      replacements: [['(0, enterprise_configuration_js_1.snapshotIdentityConfiguration)(options.configuration ?? (0, enterprise_configuration_js_1.loadEnterpriseConfiguration)());', 'options.configuration ?? (0, enterprise_configuration_js_1.loadEnterpriseConfiguration)();']],
+      guard: async (m) => {
+        const live = liveConfiguration();
+        const enterprise = await m.createEnterprise({ configuration: live, kernelProviders: buildTestKernelProviders() });
+        try {
+          (live as unknown as LiveConfiguration).authentication.servicePrincipals.push({ principalId: 'svc-g01a-late', organizationId: ORG, key: LATE_SERVICE_KEY, onBehalfOfActors: [PMFREAK_ACTOR_ID] });
+          return await refusedWith(401, enterprise.evaluate(buildAllowedRequestBody({ requestId: `g01a-mutation-late-${(sequence += 1)}`, organization: { id: ORG } }), { authorizationHeader: `Bearer ${LATE_SERVICE_KEY}` }));
+        } finally {
+          await enterprise.close().catch(() => {});
+        }
+      },
+    }));
+
+  const snapshotMutants: readonly Mutant<ConfigurationModule>[] = [
+    {
+      id: 'snapshot-shares-the-credentials',
+      file: CONFIGURATION,
+      replacements: [['authentication: deepFreeze(structuredClone(configuration.authentication)),', 'authentication: configuration.authentication,']],
+      guard: (m) => {
+        const live = liveConfiguration();
+        const snapshot = m.snapshotIdentityConfiguration(live);
+        (live as unknown as LiveConfiguration).authentication.apiKeys.push({ key: 'G01A_MUTATION_LATE_KEY_0123456789abcdef0' });
+        (live as unknown as LiveConfiguration).authentication.servicePrincipals[0]?.onBehalfOfActors.push(OTHER_ACTOR);
+        (live as unknown as LiveConfiguration).authentication.legacyKeyMode = 'restricted';
+        return snapshot.authentication.apiKeys.length === KEYS.length && snapshot.authentication.servicePrincipals?.[0]?.onBehalfOfActors.length === 1 && snapshot.authentication.legacyKeyMode === 'compat';
+      },
+    },
+    {
+      id: 'snapshot-shares-the-feature-flags',
+      file: CONFIGURATION,
+      replacements: [['features: deepFreeze(structuredClone(configuration.features)),', 'features: configuration.features,']],
+      guard: (m) => {
+        const live = liveConfiguration();
+        const snapshot = m.snapshotIdentityConfiguration(live);
+        (live as unknown as LiveConfiguration).features.requireAuthentication = false;
+        return snapshot.features.requireAuthentication === true;
+      },
+    },
+    {
+      id: 'snapshot-shares-the-operator-credentials',
+      file: CONFIGURATION,
+      replacements: [['{ administration: deepFreeze(structuredClone(configuration.administration)) }', '{ administration: configuration.administration }']],
+      guard: (m) => {
+        const live = { ...configuration(), administration: { administrators: [], operators: [{ operatorId: 'ops-g01a-mutation', role: 'observer', key: OPERATOR_SECRET }] } };
+        const snapshot = m.snapshotIdentityConfiguration(live);
+        (live as unknown as LiveConfiguration).administration?.operators.push({ operatorId: 'ops-g01a-late', role: 'observer', key: 'G01A_MUTATION_LATE_OPERATOR_KEY_0123456789' });
+        return snapshot.administration?.operators?.length === 1;
+      },
+    },
+    {
+      id: 'snapshot-is-not-frozen',
+      file: CONFIGURATION,
+      replacements: [['        Object.freeze(value);', '']],
+      guard: (m) => {
+        const snapshot = m.snapshotIdentityConfiguration(liveConfiguration());
+        return Object.isFrozen(snapshot.authentication.apiKeys) && snapshot.authentication.apiKeys.every((apiKey) => Object.isFrozen(apiKey)) && Object.isFrozen(snapshot.features);
+      },
+    },
+  ];
+  for (const mutant of snapshotMutants) it(`${mutant.id} is detected`, () => qualify(mutant));
+});
+
+/** An admission that answers with `identity` (and serves `organizationId`), whatever credential it is shown. */
+function admissionAnswering(identity: { readonly principalId?: string; readonly organizationId?: string; readonly subjectId?: string; readonly actorId?: string }, organizationId: string = ORG): CustomerIdentityAdmissionService {
+  return {
+    organizationId,
+    admit: async () => ({
+      status: 'bound',
+      identity: {
+        principal: { plane: 'customer', principalId: identity.principalId ?? PRINCIPAL, organizationId: identity.organizationId ?? ORG, externalSubject: { system: SUBJECT.system, subjectId: identity.subjectId ?? SUBJECT.subjectId } },
+        actor: { actorId: identity.actorId ?? PMFREAK_ACTOR_ID },
+      },
+    }),
+  };
+}
+
+const refusedByAdmission = (m: IdentityModule, admission: CustomerIdentityAdmissionService, overrides: Partial<KernelEvaluationRequest> = {}): Promise<boolean> =>
+  refusedWith(403, m.establishAdvisoryIdentity(CUSTOMER_CALLER, `Bearer ${CUSTOMER_KEY}`, request(overrides), { ...IDENTITY_DEPS, customerIdentityAdmission: admission }));
+
+describe('G-01A mutations — P3-2 admission must agree with the credential', () => {
+  const mutants: readonly Mutant<IdentityModule>[] = [
+    {
+      id: 'admission-consistency-never-checked',
+      file: IDENTITY,
+      replacements: [['requireAdmissionMatchesCredential(admitted.identity, admission.organizationId, caller);', '']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({ principalId: OTHER_PRINCIPAL })),
+    },
+    {
+      id: 'admission-principal-unchecked',
+      file: IDENTITY,
+      replacements: [['principal.principalId === expected.principalId &&', '']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({ principalId: OTHER_PRINCIPAL })),
+    },
+    {
+      id: 'admission-subject-unchecked',
+      file: IDENTITY,
+      replacements: [['principal.externalSubject.subjectId === expected.externalSubject.subjectId &&', '']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({ subjectId: 'user-someone-else' })),
+    },
+    {
+      id: 'admission-organization-unchecked',
+      file: IDENTITY,
+      // The request names the admitted organization, so only the credential's own organization can refuse it.
+      replacements: [['principal.organizationId === caller.organizationId &&', '']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({ organizationId: 'org-g01a-other' }), { organization: { id: 'org-g01a-other' } }),
+    },
+    {
+      id: 'admission-served-organization-unchecked',
+      file: IDENTITY,
+      replacements: [['admissionOrganizationId === caller.organizationId &&', '']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({}, 'org-g01a-other')),
+    },
+    {
+      id: 'admission-actor-binding-unchecked',
+      file: IDENTITY,
+      replacements: [['actor.actorId.length > 0;', 'true;']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({ actorId: '' }), { actor: { id: '', trustDomainId: TRUST_DOMAIN_ID } }),
+    },
+  ];
+  for (const mutant of mutants) it(`${mutant.id} is detected`, () => qualify(mutant));
+});
+
+describe('G-01A P3-2 — an admission that disagrees with the credential writes nothing (both Store providers)', () => {
+  const disagreements: readonly [string, CustomerIdentityAdmissionService][] = [
+    ['another principal', admissionAnswering({ principalId: OTHER_PRINCIPAL })],
+    ['another external subject', admissionAnswering({ subjectId: 'user-someone-else' })],
+    ['another organization', admissionAnswering({ organizationId: 'org-g01a-other' })],
+    ['an admission serving another organization', admissionAnswering({}, 'org-g01a-other')],
+    ['another actor', admissionAnswering({ actorId: OTHER_ACTOR })],
+  ];
+  for (const providerName of ['in-memory', 'sqlite'] as const) {
+    for (const [label, admission] of disagreements) {
+      it(`${providerName}: ${label} → the existing 403 AUTHORIZATION_FAILED, no record`, async () => {
+        const store = providerName === 'in-memory' ? createInMemoryGovernanceStore() : await createSqliteGovernanceStore(':memory:');
+        try {
+          const deps = { ...(await dependencies(store)), customerIdentityAdmission: admission };
+          const rawBody = buildAllowedRequestBody({ requestId: `g01a-mutation-disagree-${(sequence += 1)}`, organization: { id: ORG } });
+          await assert.rejects(
+            evaluateGovernanceRequest({ rawBody, authorizationHeader: `Bearer ${CUSTOMER_KEY}` }, deps),
+            (error: unknown) => (error as { httpStatus?: unknown }).httpStatus === 403 && (error as { code?: unknown }).code === 'AUTHORIZATION_FAILED',
+          );
+          assert.equal((await store.query({ system: true }, {})).records.length, 0, 'no evaluation record was created');
+        } finally {
+          await store.close().catch(() => {});
+        }
+      });
+    }
+    it(`${providerName}: the real admission, agreeing with the credential, still evaluates and attributes the principal`, async () => {
+      const store = providerName === 'in-memory' ? createInMemoryGovernanceStore() : await createSqliteGovernanceStore(':memory:');
+      try {
+        const outcome = await evaluateGovernanceRequest(
+          { rawBody: buildAllowedRequestBody({ requestId: `g01a-mutation-agree-${(sequence += 1)}`, organization: { id: ORG } }), authorizationHeader: `Bearer ${CUSTOMER_KEY}` },
+          await dependencies(store),
+        );
+        assert.equal(outcome.httpStatus, 200);
+        const record = await store.getByEvaluationId({ system: true }, outcome.body.governanceRecord?.evaluationId ?? '');
+        assert.equal(JSON.stringify(record?.events).includes(PRINCIPAL), true);
+      } finally {
+        await store.close().catch(() => {});
+      }
+    });
+  }
+});
+
+/** A record whose one attribution event carries `payload` — what an unknown build or a damaged row could hold; the Store would refuse to write it. */
+function recordCarrying(payload: unknown): GovernanceRecord {
+  return {
+    request: { actorId: PMFREAK_ACTOR_ID, organizationId: ORG },
+    events: [{ eventId: 'event-g01a-p3', eventType: GOVERNANCE_ATTRIBUTION_EVENT_TYPE, eventContract: 'aoc.governance-event-record.v1', eventPayload: payload }],
+  } as unknown as GovernanceRecord;
+}
+const LEGACY_ATTRIBUTION = { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: ORG, evaluatedActorId: PMFREAK_ACTOR_ID, salt: SALT } as const;
+const withheld = (m: DisclosureModule, payload: unknown): boolean => {
+  const view = m.projectGovernanceRecord(recordCarrying(payload), 'projected');
+  return view.projection?.withheld.length === 1 && !discloses(view);
+};
+
+describe('G-01A mutations — P3-3 disclosure allows only the known-safe shape', () => {
+  const mutants: readonly Mutant<DisclosureModule>[] = [
+    {
+      id: 'disclosure-trusts-an-unrecognized-attribution',
+      file: DISCLOSURE,
+      replacements: [['(0, attribution_js_1.isWellFormedAttribution)(attribution) &&', '']],
+      guard: (m) => withheld(m, { attribution: { ...LEGACY_ATTRIBUTION, note: 'svc-g01a-mutation' } }),
+    },
+    {
+      id: 'disclosure-ignores-extra-payload-fields',
+      file: DISCLOSURE,
+      replacements: [["if (keys.length !== 1 || keys[0] !== 'attribution')", 'if (false)']],
+      guard: (m) => withheld(m, { attribution: LEGACY_ATTRIBUTION, requester: 'svc-g01a-mutation' }),
+    },
+    {
+      id: 'disclosure-ignores-the-records-actor',
+      file: DISCLOSURE,
+      replacements: [['attribution.evaluatedActorId === record.request.actorId &&', '']],
+      guard: (m) => withheld(m, { attribution: { ...LEGACY_ATTRIBUTION, evaluatedActorId: 'svc-g01a-mutation' } }),
+    },
+  ];
+  for (const mutant of mutants) it(`${mutant.id} is detected`, () => qualify(mutant));
 });

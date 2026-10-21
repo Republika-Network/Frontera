@@ -2,8 +2,8 @@ import { randomBytes } from 'node:crypto';
 
 import type { KernelEvaluationRequest } from '../../kernel/index.js';
 import { EnterpriseHttpErrors } from '../api/enterprise-http-errors.js';
-import { effectiveLegacyKeyMode, type EnterpriseConfiguration, type EnterpriseServicePrincipal } from '../configuration/enterprise-configuration.js';
-import { CUSTOMER_IDENTITY_REFUSAL_REASONS, type CustomerIdentityAdmissionService } from '../customer-identity/contracts.js';
+import { effectiveLegacyKeyMode, type EnterpriseApiKeyCustomerIdentity, type EnterpriseConfiguration, type EnterpriseServicePrincipal } from '../configuration/enterprise-configuration.js';
+import { CUSTOMER_IDENTITY_REFUSAL_REASONS, type BoundCustomerIdentity, type CustomerIdentityAdmissionService } from '../customer-identity/contracts.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/identifiers.js';
 import { readRecordedAttribution, sameRequester } from '../governance-store/attribution.js';
 import { AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
@@ -43,7 +43,8 @@ import { extractBearerToken, matchApiKey } from './credential-matching.js';
 export type AdvisoryCaller =
   | { readonly kind: 'unauthenticated' }
   | { readonly kind: 'legacy'; readonly organizationId?: string }
-  | { readonly kind: 'customer'; readonly organizationId: string }
+  /** `customerIdentity` is the matched key's configured identity: what admission must agree with. */
+  | { readonly kind: 'customer'; readonly organizationId: string; readonly customerIdentity: EnterpriseApiKeyCustomerIdentity }
   | { readonly kind: 'service'; readonly principal: EnterpriseServicePrincipal };
 
 /** The scope a caller's evaluation is stored under, and the attribution sealed with it. */
@@ -98,7 +99,7 @@ export function authenticateAdvisoryCaller(authorizationHeader: string | undefin
   } else if (matchedKey === undefined) {
     throw EnterpriseHttpErrors.authenticationFailed('The provided credential is not recognized.');
   } else if (matchedKey.customerIdentity !== undefined && matchedKey.organizationId !== undefined && matchedKey.organizationId.length > 0) {
-    caller = { kind: 'customer', organizationId: matchedKey.organizationId };
+    caller = { kind: 'customer', organizationId: matchedKey.organizationId, customerIdentity: matchedKey.customerIdentity };
   } else if (matchedKey.customerIdentity !== undefined) {
     // A customer identity without an organization is malformed configuration; it is never a legacy key.
     throw EnterpriseHttpErrors.authorizationFailed('This credential is not authorized to evaluate.');
@@ -136,6 +137,30 @@ function requireTrustedTrustDomain(request: KernelEvaluationRequest, trustDomain
   if (trustDomainId === undefined || request.actor.trustDomainId !== trustDomainId) {
     throw EnterpriseHttpErrors.authorizationFailed('The request must name this Host’s trust domain.');
   }
+}
+
+/**
+ * Admission's answer must be the identity the credential itself was matched
+ * to: the same customer principal and external subject, in the organization
+ * the key is scoped to and the admission serves, bound to one actor. Anything
+ * else — a principal, subject or organization admission resolved differently,
+ * or a missing actor binding — is the existing 403 and nothing is written.
+ * Admission carries no trust domain of its own; the one trust domain is the
+ * Host's, which `requireTrustedTrustDomain` holds the request to.
+ */
+function requireAdmissionMatchesCredential(identity: BoundCustomerIdentity, admissionOrganizationId: string, caller: Extract<AdvisoryCaller, { kind: 'customer' }>): void {
+  const { principal, actor } = identity;
+  const expected = caller.customerIdentity;
+  const consistent =
+    principal.plane === 'customer' &&
+    principal.principalId === expected.principalId &&
+    principal.externalSubject.system === expected.externalSubject.system &&
+    principal.externalSubject.subjectId === expected.externalSubject.subjectId &&
+    principal.organizationId === caller.organizationId &&
+    admissionOrganizationId === caller.organizationId &&
+    typeof actor.actorId === 'string' &&
+    actor.actorId.length > 0;
+  if (!consistent) throw EnterpriseHttpErrors.authorizationFailed('The caller has no bound identity to evaluate as.');
 }
 
 /**
@@ -177,10 +202,8 @@ export async function establishAdvisoryIdentity(caller: AdvisoryCaller, authoriz
           admitted.reason === CUSTOMER_IDENTITY_REFUSAL_REASONS.CUSTOMER_AUTH_INVALID;
         throw unauthenticated ? EnterpriseHttpErrors.authenticationFailed('The provided credential is not recognized.') : EnterpriseHttpErrors.authorizationFailed('The caller has no bound identity to evaluate as.');
       }
+      requireAdmissionMatchesCredential(admitted.identity, admission.organizationId, caller);
       const { principal, actor } = admitted.identity;
-      if (principal.plane !== 'customer' || principal.organizationId !== caller.organizationId) {
-        throw EnterpriseHttpErrors.authorizationFailed('The caller has no bound identity to evaluate as.');
-      }
       requireStatedOrganization(request, principal.organizationId);
       if (actorId !== actor.actorId) throw EnterpriseHttpErrors.authorizationFailed('A customer principal may evaluate only as the actor it is bound to.');
       requireTrustedTrustDomain(request, deps.trustDomainId);

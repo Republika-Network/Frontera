@@ -1,7 +1,7 @@
 # G-01A — Trusted identity and attribution on the advisory evaluate route
 
 Status: implemented on a Draft PR (base `1ea0368`). Not merged.
-Invariants: SEC-INV-337 … SEC-INV-343 (`docs/security/SECURITY_INVARIANTS.md` §4.35).
+Invariants: SEC-INV-337 … SEC-INV-346 (`docs/security/SECURITY_INVARIANTS.md` §4.35).
 
 ## 1. The problem
 
@@ -20,7 +20,7 @@ The governed-action path (`POST /api/governed-actions`) already derived actor an
 
 ## 2. The model
 
-**Customer principals** (keys carrying `customerIdentity`). The advisory route now calls the existing `CustomerIdentityAdmissionService.admit()` — credential → principal → organization → Kernel Authority binding → actor. The body must name exactly that organization, that actor, and the Host's trust domain (the governed-action configuration's `trustDomainId`). Admission absent → the key cannot evaluate (403), never downgraded to a legacy key. Admission unavailable → 503 `PROVIDER_UNAVAILABLE`.
+**Customer principals** (keys carrying `customerIdentity`). The advisory route now calls the existing `CustomerIdentityAdmissionService.admit()` — credential → principal → organization → Kernel Authority binding → actor. The body must name exactly that organization, that actor, and the Host's trust domain (the governed-action configuration's `trustDomainId`). Admission absent → the key cannot evaluate (403), never downgraded to a legacy key. Admission unavailable → 503 `PROVIDER_UNAVAILABLE`. Admission's answer must agree with the credential that was matched: the same principal id, external subject and organization as the key's configured `customerIdentity` and scope, from an admission serving that organization, naming a bound actor — otherwise the existing 403, and no record is created (SEC-INV-345). Admission returns no trust domain; the one trust domain is the Host's, and the request is held to it.
 
 **Service principals** (`servicePrincipals` in the governed-action file; `EnterpriseConfiguration.authentication.servicePrincipals` for embedders). A named principal with its own secret (≥ 32 characters, unique across every credential), scoped to the one organization this instance serves, with `onBehalfOf: { actors: [...] }` — explicit, non-empty, exact ids. `onBehalfOf` accepts no other field, so no wildcard or "any bound actor" form can be written; `*` is refused. A service secret is **not** an `EnterpriseApiKey`: it authenticates the advisory evaluate route only — no read, no customer route, no operator or administration plane — and never holds a system context. The principal id may not collide with a customer principal, an operator, an administrator or the operator-issued `agent:` namespace.
 
@@ -36,6 +36,8 @@ The mode in force is `effectiveLegacyKeyMode`: an explicit mode wins, otherwise 
 In both modes a scoped key must now state its own organization, and its store context is the tenant scope, not `system`. The actor it names is recorded as **asserted**.
 
 **Authentication disabled** (development, loopback only) is unchanged: no identity exists, no attribution is written.
+
+**One immutable snapshot (SEC-INV-344).** `createEnterprise` first replaces every identity-bearing setting of the configuration it is handed — the environment, the feature flags (`requireAuthentication`), `authentication` (API keys and their customer identities, service principals and their allow-lists, auditors, `legacyKeyMode`) and `administration` (operators, administrators) — with a deep, frozen copy, then validates that copy and serves every route from it. An embedder that mutates its own objects afterwards changes nothing that authenticates or authorizes a caller; changing a credential means recomposing. The caller's objects are never frozen, and settings that carry no identity (stores, paths, limits, signers) are still the caller's, by reference.
 
 ## 3. Attribution
 
@@ -58,7 +60,7 @@ Disclosure (founder decision 4):
 - **Raw Governance Record reads (P1, founder decision: option B).** The Store keeps the canonical aggregate complete and unchanged; disclosure is decided at read time (`orchestration/governance-record-disclosure.ts`), for `GET /api/governance/evaluations/{id}`, `/decisions/{id}` and `/requests/{id}` alike:
   - **canonical** to system scope and to an **auditor** (`auditors: [{auditorId, apiKeyEnv}]` in the governed-action file; `authentication.auditors` for embedders) for records of its one organization — an auditor reading another organization's record gets 404;
   - a **marked projection** to every ordinary organization-scoped key: each attribution event that names a requesting principal has its `eventPayload` replaced by `{"withheld":"attribution"}`, and the response carries `projection: { version: "aoc.governance-record-projection.v1", canonical: false, withheld: [...], verification }`. Organization scope alone is never auditor authority.
-  - A legacy key's asserted attribution names no principal and is not withheld; a payload this build cannot read is withheld (fail closed). Records with nothing to withhold are returned canonical and unmarked.
+  - **Allow, never deny (SEC-INV-346).** A payload is shown to an ordinary reader only when it is exactly `{ attribution }` holding a well-formed `aoc.governance-attribution.v1` legacy-asserted value — the Store's own closed shape — that names the record's actor and organization: it names no principal. Every other payload — a principal, an unknown version, a missing or unsupported field at either level, an unsalted value, one contradicting its record — is withheld whole. Records with nothing to withhold are returned canonical and unmarked.
   - **Digests.** Every attribution carries 128 random bits (`salt`), so the attribution event's `eventDigest`, the `eventsDigest` and the `aggregateDigest` a projection still shows cannot be used to confirm a guessed principal id. A projection's digests describe the canonical record and cannot be recomputed from it; `GET …/verify` checks the complete stored record server-side.
   - **Auditor authority.** An auditor secret is not an API key: it authenticates only the Governance Record read service — over HTTP the record routes by evaluation, decision or request id and `…/verify` (query is an in-process method with no HTTP route) — not evaluate, governed actions, evidence, passports, assurance, approvals, the operator or administration plane — and is never system scope. One shared validator (`assertAuditorConfiguration`), run by the Host loader (`HOST_AUDITOR_INVALID`) and at composition (`AuditorConfigurationError`): the served organization only; a canonical id outside `agent:` naming no customer or service principal, operator, administrator or other auditor; a ≥ 32-character trim-stable secret no other credential shares.
 
@@ -74,12 +76,14 @@ Historical records (no attribution): never answer a customer or service principa
 
 ## 5. Scope
 
-Changed: `orchestration/advisory-identity.ts` (new), `orchestration/evaluate-governance-request.ts`, `orchestration/credential-matching.ts` (`matchApiKey` generic, same comparison), `governance-store/attribution.ts` (new), `governance-store/contracts.ts`, `governance-store/projection.ts`, `configuration/enterprise-configuration.ts`, `host/host-configuration.ts`, `composition/composition-root.ts`, `orchestration/governance-record-disclosure.ts` (new), `orchestration/governance-read-service.ts`.
+Changed: `configuration/enterprise-configuration.ts` (`snapshotIdentityConfiguration`), `orchestration/advisory-identity.ts` (new), `orchestration/evaluate-governance-request.ts`, `orchestration/credential-matching.ts` (`matchApiKey` generic, same comparison), `governance-store/attribution.ts` (new), `governance-store/contracts.ts`, `governance-store/projection.ts`, `configuration/enterprise-configuration.ts`, `host/host-configuration.ts`, `composition/composition-root.ts`, `orchestration/governance-record-disclosure.ts` (new), `orchestration/governance-read-service.ts`.
 
 Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` delegation, which the Kernel verifies against provisioned capability tokens and delegation grants), CORE-07, grants and their signatures, P7 / P11 / P12, the governed-action path, the customer-identity layer, the Store schema, every error code catalogued. The three Governance Record read routes keep their URLs, methods, error codes and fields, and gain only the approved `projection` marker and the withheld attribution payload for ordinary readers (§3).
 
 ## 6. Residual risks
 
+- **Credential changes need recomposition.** Identity configuration is snapshotted at composition; an embedder that rotated credentials by mutating its configuration in place must now recompose (the Host already restarts).
+- **Admission carries no trust domain.** Trust-domain consistency is the request against the Host's trust domain; binding a trust domain into admission's result would change the customer-identity contract.
 - **Auditor credential custody.** An auditor reads every complete record of its organization, including principal ids; its secret must be held as carefully as an operator's.
 - **Records committed by an earlier G-01A build of this PR** carry no salt and are unreadable to this build (`readRecordedAttribution` → unreadable): they replay to no one and are withheld from ordinary readers. No such records exist outside this branch's tests.
 - **Legacy keys within one organization are indistinguishable.** Two scoped legacy keys of one organization share `legacy-asserted / organization` attribution and may replay each other's decisions, as in v1. Configured legacy keys carry no identity to tell them apart.
@@ -89,4 +93,4 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 
 ## 7. Evidence
 
-Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (32 mutants over the compiled modules, each detected by its guard). Run IDs are reported on the PR.
+Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (46 mutants over the compiled modules, each detected by its guard; 14 of them for the final P3-1/P3-2/P3-3 hardening). Run IDs are reported on the PR.

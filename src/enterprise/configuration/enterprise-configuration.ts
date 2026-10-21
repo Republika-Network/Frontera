@@ -615,6 +615,36 @@ export function effectiveLegacyKeyMode(configuration: Pick<EnterpriseConfigurati
   return configuration.authentication.legacyKeyMode ?? defaultLegacyKeyMode(configuration.environment);
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const member of Object.values(value)) deepFreeze(member);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * G-01A — the configuration composition validates and serves from: the
+ * caller's own configuration with every identity-bearing part replaced by a
+ * deep, frozen copy taken once — the environment (which decides the legacy-key
+ * mode), the feature flags (which decide whether authentication is required),
+ * every credential under `authentication` (API keys and their customer
+ * identities, service principals and their allow-lists, auditors, the
+ * legacy-key mode) and the operator and administrator credentials. An
+ * embedder that mutates its own objects after `createEnterprise` changes
+ * nothing that authenticates or authorizes a caller. Everything else (stores,
+ * paths, limits, signers) is still the caller's object, by reference, as
+ * before; the caller's objects are never frozen.
+ */
+export function snapshotIdentityConfiguration(configuration: EnterpriseConfiguration): EnterpriseConfiguration {
+  return Object.freeze({
+    ...configuration,
+    features: deepFreeze(structuredClone(configuration.features)),
+    authentication: deepFreeze(structuredClone(configuration.authentication)),
+    ...(configuration.administration !== undefined ? { administration: deepFreeze(structuredClone(configuration.administration)) } : {}),
+  });
+}
+
 const ENVIRONMENT_VALUES: readonly EnterpriseEnvironment[] = ['development', 'test', 'staging', 'production'];
 const PERSISTENCE_PROVIDER_VALUES: readonly EnterprisePersistenceProviderKind[] = ['memory', 'sqlite'];
 const LOG_LEVEL_VALUES: readonly EnterpriseConfiguration['logLevel'][] = ['debug', 'info', 'warn', 'error'];

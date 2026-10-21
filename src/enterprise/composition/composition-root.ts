@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 
 import { AOC_KERNEL_VERSION, createAocKernel, type AocKernel, type KernelIdGenerator, type PolicyPackProvider } from '../../kernel/index.js';
 import { computeEnterpriseHealth, type EnterpriseHealthPosture, type EnterpriseHealthReport } from '../health/health-check.js';
-import { loadEnterpriseConfiguration, toPublicEnterpriseConfiguration, type EnterpriseConfiguration, type PublicEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import { loadEnterpriseConfiguration, snapshotIdentityConfiguration, toPublicEnterpriseConfiguration, type EnterpriseConfiguration, type PublicEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { createInProcessEventPublisher, type EnterpriseEventPublisher } from '../events/enterprise-events.js';
 import {
   evaluateGovernanceRequest,
@@ -1448,7 +1448,10 @@ export async function createEnterprise(options: CreateEnterpriseOptions = {}): P
 }
 
 async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() => Promise<void>)[]): Promise<AocEnterprise> {
-  const configuration = options.configuration ?? loadEnterpriseConfiguration();
+  // G-01A: validated and served from one frozen snapshot of every
+  // identity-bearing setting, so the caller's later mutations of its own
+  // objects never reach authentication or authorization.
+  const configuration = snapshotIdentityConfiguration(options.configuration ?? loadEnterpriseConfiguration());
   const eventIdGenerator = createEnterpriseIdGenerator();
 
   // Customer identity admission is checked before anything is opened: a

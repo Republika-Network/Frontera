@@ -14,7 +14,7 @@ import { createInMemoryBoundedGrantStore } from '../../features/grant-runtime/in
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
 import { EnterpriseHttpError } from '../api/enterprise-http-errors.js';
 import { toKernelEvaluationRequest, type GovernanceEvaluateRequestBody } from '../api/governance-evaluate-contract.js';
-import { createEnterprise, type AocEnterprise, type CreateEnterpriseOptions } from '../composition/composition-root.js';
+import { createEnterprise, getInternalEnterpriseConfiguration, type AocEnterprise, type CreateEnterpriseOptions } from '../composition/composition-root.js';
 import {
   loadEnterpriseConfiguration,
   validateEnterpriseEnvironment,
@@ -1210,3 +1210,239 @@ describe('G-01A P1 — auditors are configured explicitly and validated identica
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Final hardening P3-1 — post-composition mutation of the caller's own
+// configuration objects never changes who is authenticated or what they may do.
+
+/** The parts of a configuration an embedder could keep writing to after composition. */
+interface LiveIdentity {
+  environment: string;
+  persistence: object;
+  features: { requireAuthentication: boolean };
+  authentication: {
+    apiKeys: { key: string; organizationId?: string; customerIdentity?: { principalId: string } }[];
+    servicePrincipals: { principalId: string; organizationId: string; key: string; onBehalfOfActors: string[] }[];
+    auditors: { auditorId: string; organizationId: string; key: string }[];
+    legacyKeyMode?: string;
+  };
+}
+
+const LATE_SERVICE_KEY = 'G01A_LATE_SERVICE_KEY_SENTINEL_0123456789ab';
+const ROTATED_SERVICE_KEY = 'G01A_ROTATED_SERVICE_KEY_SENTINEL_012345678';
+const LATE_AUDITOR_KEY = 'G01A_LATE_AUDITOR_KEY_SENTINEL_0123456789ab';
+const ROTATED_AUDITOR_KEY = 'G01A_ROTATED_AUDITOR_KEY_SENTINEL_012345678';
+const ROTATED_CUSTOMER_KEY = 'G01A_ROTATED_CUSTOMER_KEY_SENTINEL_01234567';
+
+/** A composed Host (restricted legacy keys) whose configuration object the test still holds and mutates. */
+async function liveHarness(provider: Provider): Promise<{ readonly h: Harness; readonly live: LiveIdentity }> {
+  const raw = await provider.open();
+  const { store, appends } = counting(raw);
+  const options = await hostOptions(store, 'restricted');
+  const base = options.configuration ?? configuration('restricted');
+  const owned = { ...base, features: JSON.parse(JSON.stringify(base.features)), authentication: JSON.parse(JSON.stringify(base.authentication)) } as EnterpriseConfiguration;
+  const server = await createEnterpriseServer({ ...options, configuration: owned });
+  servers.push(server);
+  const { port } = await server.listen();
+  return { h: { enterprise: server.enterprise, raw, appends, baseUrl: `http://127.0.0.1:${port}` }, live: owned as unknown as LiveIdentity };
+}
+
+/** A record of another organization, written straight to the Store (no credential of this Host may evaluate there). */
+async function foreignRecord(h: Harness): Promise<GovernanceRecord> {
+  const request = toKernelEvaluationRequest(buildAllowedRequestBody({ requestId: fresh('p3-foreign'), organization: { id: 'org-g01a-other' } }), { now: () => 'unused' }, { nextId: () => 'unused' });
+  const planted = await h.raw.appendEvaluation({
+    request,
+    result: await h.enterprise.kernel.evaluate(request),
+    receivedAt: '2026-01-01T00:00:00.000Z',
+    enterpriseContext: { enterpriseVersion: 'g01a-p3', lifecycleState: 'ready', modules: [] },
+    events: [],
+    accessContext: { system: true, organizationId: 'org-g01a-other', actorId: PMFREAK_ACTOR_ID },
+  });
+  const record = await h.raw.getByEvaluationId(SYSTEM, planted.evaluationId);
+  assert.ok(record !== null);
+  return record;
+}
+
+for (const provider of PROVIDERS) {
+  describe(`G-01A P3-1 — ${provider.name} Store — the caller's configuration objects are not live authority after composition`, () => {
+    it('service principals: a renamed or re-scoped principal, a widened allow-list, an added principal and a rotated secret change nothing', async () => {
+      const { h, live } = await liveHarness(provider);
+      const [wide, narrow] = live.authentication.servicePrincipals;
+      assert.ok(wide !== undefined && narrow !== undefined);
+      wide.principalId = 'svc-g01a-renamed';
+      wide.organizationId = 'org-g01a-other';
+      narrow.onBehalfOfActors.push(PMFREAK_ACTOR_ID);
+      narrow.key = ROTATED_SERVICE_KEY;
+      live.authentication.servicePrincipals.push({ principalId: 'svc-g01a-late', organizationId: ORG, key: LATE_SERVICE_KEY, onBehalfOfActors: [PMFREAK_ACTOR_ID] });
+
+      await refusedWithoutWrite(h, evaluate(h, NARROW_SERVICE_KEY, body({ requestId: fresh('p3-widened') })), 403, 'AUTHORIZATION_FAILED');
+      await refusedWithoutWrite(h, evaluate(h, LATE_SERVICE_KEY, body({ requestId: fresh('p3-late-service') })), 401, 'AUTHENTICATION_FAILED');
+      await refusedWithoutWrite(h, evaluate(h, ROTATED_SERVICE_KEY, body({ requestId: fresh('p3-rotated-service') })), 401, 'AUTHENTICATION_FAILED');
+      const reply = await evaluate(h, SERVICE_KEY, body({ requestId: fresh('p3-service') }));
+      assert.equal(reply.status, 200, reply.text);
+      assert.deepEqual(await attributionOf(h, reply), { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'service-principal', organizationId: ORG, requestingPrincipalId: SERVICE_PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID });
+    });
+
+    it('auditors: a re-bound organization, an added auditor and a rotated secret change nothing', async () => {
+      const { h, live } = await liveHarness(provider);
+      const record = await storedRecord(h, await evaluate(h, CUSTOMER_KEY, body({ requestId: fresh('p3-auditor') })));
+      const foreign = await foreignRecord(h);
+      const [auditor] = live.authentication.auditors;
+      assert.ok(auditor !== undefined);
+      auditor.organizationId = 'org-g01a-other';
+      auditor.auditorId = 'auditor-g01a-renamed';
+      auditor.key = ROTATED_AUDITOR_KEY;
+      live.authentication.auditors.push({ auditorId: 'auditor-g01a-late', organizationId: ORG, key: LATE_AUDITOR_KEY });
+
+      const canonical = await call(h, 'GET', `/api/governance/evaluations/${record.evaluation.evaluationId}`, AUDITOR_KEY);
+      assert.equal(canonical.status, 200, canonical.text);
+      assert.deepEqual(canonical.body, canonicalJson(record), 'the configured auditor still reads its own organization canonically');
+      assert.equal((await call(h, 'GET', `/api/governance/evaluations/${foreign.evaluation.evaluationId}`, AUDITOR_KEY)).status, 404, 'and still not the organization it was re-bound to');
+      for (const secret of [LATE_AUDITOR_KEY, ROTATED_AUDITOR_KEY]) {
+        const reply = await call(h, 'GET', `/api/governance/evaluations/${record.evaluation.evaluationId}`, secret);
+        assert.equal(reply.status, 401, reply.text);
+        assert.equal(reply.text.includes(PRINCIPAL), false);
+      }
+      const ordinary = await call(h, 'GET', `/api/governance/evaluations/${record.evaluation.evaluationId}`, LEGACY_KEY);
+      assert.equal((ordinary.body['projection'] as Record<string, unknown> | undefined)?.['canonical'], false, 'an ordinary reader is still projected');
+    });
+
+    it('legacy keys: switching to compat, changing the environment, adding an unscoped key or unscoping a key changes nothing', async () => {
+      const { h, live } = await liveHarness(provider);
+      const foreign = await foreignRecord(h);
+      live.environment = 'development';
+      live.authentication.legacyKeyMode = 'compat';
+      live.authentication.apiKeys.push({ key: BARE_KEY });
+      const scoped = live.authentication.apiKeys.find((apiKey) => apiKey.key === LEGACY_KEY);
+      assert.ok(scoped !== undefined);
+      delete scoped.organizationId;
+
+      await refusedWithoutWrite(h, evaluate(h, BARE_KEY, body({ requestId: fresh('p3-bare') })), 401, 'AUTHENTICATION_FAILED');
+      assert.equal((await call(h, 'GET', `/api/governance/evaluations/${foreign.evaluation.evaluationId}`, BARE_KEY)).status, 401, 'no system read for a late unscoped key');
+      await refusedWithoutWrite(h, evaluate(h, LEGACY_KEY, buildAllowedRequestBody({ requestId: fresh('p3-unscoped') })), 403, 'AUTHORIZATION_FAILED');
+      assert.equal((await call(h, 'GET', `/api/governance/evaluations/${foreign.evaluation.evaluationId}`, LEGACY_KEY)).status, 404, 'the scoped key is still tenant-scoped, never system');
+      const reply = await evaluate(h, LEGACY_KEY, body({ requestId: fresh('p3-scoped') }));
+      assert.equal(reply.status, 200, reply.text);
+      assert.deepEqual(await attributionOf(h, reply), { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'legacy-asserted', legacyScope: 'organization', organizationId: ORG, evaluatedActorId: PMFREAK_ACTOR_ID });
+    });
+
+    it('credential secrets and identities: a rotated secret, a re-pointed principal or organization, and disabling authentication change nothing', async () => {
+      const { h, live } = await liveHarness(provider);
+      const customer = live.authentication.apiKeys.find((apiKey) => apiKey.key === CUSTOMER_KEY);
+      assert.ok(customer?.customerIdentity !== undefined);
+      customer.key = ROTATED_CUSTOMER_KEY;
+      customer.organizationId = 'org-g01a-other';
+      customer.customerIdentity.principalId = OTHER_PRINCIPAL;
+      live.features.requireAuthentication = false;
+
+      await refusedWithoutWrite(h, evaluate(h, undefined, body({ requestId: fresh('p3-anonymous') })), 401, 'AUTHENTICATION_FAILED');
+      assert.equal((await call(h, 'GET', '/api/governance/evaluations/gov-evaluation-g01a-none', undefined)).status, 401, 'reads still require a credential');
+      await refusedWithoutWrite(h, evaluate(h, ROTATED_CUSTOMER_KEY, body({ requestId: fresh('p3-rotated-customer') })), 401, 'AUTHENTICATION_FAILED');
+      const reply = await evaluate(h, CUSTOMER_KEY, body({ requestId: fresh('p3-customer') }));
+      assert.equal(reply.status, 200, reply.text);
+      assert.deepEqual(await attributionOf(h, reply), { version: GOVERNANCE_ATTRIBUTION_VERSION, basis: 'customer-principal', organizationId: ORG, requestingPrincipalId: PRINCIPAL, evaluatedActorId: PMFREAK_ACTOR_ID });
+    });
+
+    it('the Host serves a frozen copy; the caller’s own objects are never frozen, and unrelated settings stay shared', async () => {
+      const { h, live } = await liveHarness(provider);
+      const served = getInternalEnterpriseConfiguration(h.enterprise);
+      assert.notEqual(served.authentication, live.authentication);
+      assert.equal(Object.isFrozen(served.authentication) && Object.isFrozen(served.authentication.apiKeys) && Object.isFrozen(served.features), true);
+      assert.equal(served.authentication.servicePrincipals?.every((principal) => Object.isFrozen(principal) && Object.isFrozen(principal.onBehalfOfActors)), true);
+      assert.equal(served.authentication.auditors?.every((auditor) => Object.isFrozen(auditor)), true);
+      assert.equal(Object.isFrozen(live.authentication) || Object.isFrozen(live.authentication.apiKeys) || Object.isFrozen(live.features), false, 'the caller’s objects stay writable');
+      assert.equal(served.persistence, live.persistence, 'settings that carry no identity are still the caller’s, by reference');
+      assert.equal(Object.isFrozen(live.persistence), false);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Final hardening P3-3 — an ordinary reader is shown an attribution payload only
+// when it is exactly the known-safe legacy shape; everything else is withheld
+// whole. The auditor still reads the canonical record.
+
+const LEGACY_PAYLOAD = (record: GovernanceRecord): Record<string, unknown> => {
+  const event = record.events.find((candidate) => candidate.eventType === GOVERNANCE_ATTRIBUTION_EVENT_TYPE);
+  return JSON.parse(JSON.stringify(event?.eventPayload)) as Record<string, unknown>;
+};
+
+/** Payloads this build must not show an ordinary reader, each built from the record's real legacy attribution. */
+const UNSAFE_PAYLOADS: readonly [string, (legacy: Record<string, unknown>) => unknown][] = [
+  ['a legacy attribution carrying a principal', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), requestingPrincipalId: SERVICE_PRINCIPAL } })],
+  ['a legacy attribution with an unsupported field', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), note: SERVICE_PRINCIPAL } })],
+  ['an extra field beside the attribution', (legacy) => ({ ...legacy, requester: SERVICE_PRINCIPAL })],
+  ['an unknown attribution version', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), version: 'aoc.governance-attribution.v2', evaluatedActorId: SERVICE_PRINCIPAL } })],
+  ['an unsalted attribution (an earlier build)', (legacy) => {
+    const { salt: _salt, ...unsalted } = legacy['attribution'] as Record<string, unknown>;
+    return { attribution: { ...unsalted, organizationId: SERVICE_PRINCIPAL } };
+  }],
+  ['a legacy attribution naming another actor than its record', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), evaluatedActorId: SERVICE_PRINCIPAL } })],
+  ['a non-object attribution', () => ({ attribution: [SERVICE_PRINCIPAL] })],
+];
+
+for (const provider of PROVIDERS) {
+  describe(`G-01A P3-3 — ${provider.name} Store — malformed or unrecognized attribution payloads are withheld whole from ordinary readers`, () => {
+    for (const [label, damage] of UNSAFE_PAYLOADS) {
+      it(`${label}: withheld on every record route for an ordinary reader; canonical for the auditor`, async () => {
+        const directory = mkdtempSync(join(tmpdir(), 'frontera-g01a-p3-'));
+        directories.push(directory);
+        const raw = provider.name === 'sqlite' ? await createSqliteGovernanceStore(join(directory, 'governance.sqlite')) : createInMemoryGovernanceStore();
+        let damaged: unknown;
+        // In memory, the damage is injected on read; on SQLite it is written into the stored row itself.
+        const persistence =
+          provider.name === 'sqlite'
+            ? raw
+            : new Proxy(raw, {
+                get(target, property, receiver) {
+                  const value = Reflect.get(target, property, receiver) as unknown;
+                  if (typeof value !== 'function') return value;
+                  if (typeof property === 'string' && property.startsWith('getBy')) {
+                    return async (...args: unknown[]) => {
+                      const record = (await (value as (...inner: unknown[]) => Promise<GovernanceRecord | null>).apply(target, args)) as GovernanceRecord | null;
+                      if (record === null || damaged === undefined) return record;
+                      return { ...record, events: record.events.map((event) => (event.eventType === GOVERNANCE_ATTRIBUTION_EVENT_TYPE ? { ...event, eventPayload: damaged } : event)) };
+                    };
+                  }
+                  return (value as (...inner: unknown[]) => unknown).bind(target);
+                },
+              });
+        try {
+          const local = await createEnterprise({ configuration: configuration(), kernelProviders: buildTestKernelProviders(), persistence });
+          enterprises.push(local);
+          const committed = await local.evaluate(body({ requestId: fresh('p3-damaged') }), { authorizationHeader: `Bearer ${LEGACY_KEY}` });
+          const evaluationId = committed.body.governanceRecord?.evaluationId ?? '';
+          const original = await raw.getByEvaluationId(SYSTEM, evaluationId);
+          assert.ok(original !== null);
+          const legacy = LEGACY_PAYLOAD(original);
+          const shownBefore = await local.governanceReads.getByEvaluationId(`Bearer ${LEGACY_KEY}`, evaluationId);
+          assert.equal(shownBefore?.projection, undefined, 'the well-formed legacy attribution is shown, unmarked');
+          damaged = damage(legacy);
+          if (provider.name === 'sqlite') {
+            const db = new Database(join(directory, 'governance.sqlite'));
+            try {
+              assert.equal(db.prepare('UPDATE governance_events SET event_payload_json = ? WHERE event_type = ? AND aggregate_id = ?').run(JSON.stringify(damaged), GOVERNANCE_ATTRIBUTION_EVENT_TYPE, evaluationId).changes, 1);
+            } finally {
+              db.close();
+            }
+          }
+          const reads = local.governanceReads;
+          for (const read of [() => reads.getByEvaluationId(`Bearer ${LEGACY_KEY}`, evaluationId), () => reads.getByDecisionId(`Bearer ${LEGACY_KEY}`, original.evaluation.decisionId), () => reads.getByRequestId(`Bearer ${LEGACY_KEY}`, original.request.requestId)]) {
+            const view = await read();
+            assert.ok(view !== null);
+            assert.equal(JSON.stringify(view).includes(SERVICE_PRINCIPAL), false, 'nothing of the unrecognized payload is shown');
+            assert.equal(view.projection?.canonical, false);
+            assert.equal(view.projection?.withheld.length, 1);
+            assert.deepEqual(view.events.find((event) => event.eventType === GOVERNANCE_ATTRIBUTION_EVENT_TYPE)?.eventPayload, { withheld: 'attribution' });
+          }
+          const audited = await reads.getByEvaluationId(`Bearer ${AUDITOR_KEY}`, evaluationId);
+          assert.equal(audited?.projection, undefined, 'the auditor reads the canonical record');
+          assert.deepEqual(audited?.events.find((event) => event.eventType === GOVERNANCE_ATTRIBUTION_EVENT_TYPE)?.eventPayload, damaged);
+          if (provider.name === 'sqlite') assert.equal((await reads.verify(`Bearer ${LEGACY_KEY}`, evaluationId)).valid, false, 'and the damage still fails verification');
+        } finally {
+          await raw.close().catch(() => {});
+        }
+      });
+    }
+  });
+}
