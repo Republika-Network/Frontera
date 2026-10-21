@@ -724,13 +724,13 @@ describe('G-01A mutations — P3-1 an immutable, validated identity snapshot', (
 });
 
 /** An admission that answers with `identity` (and serves `organizationId`), whatever credential it is shown. */
-function admissionAnswering(identity: { readonly principalId?: string; readonly organizationId?: string; readonly subjectId?: string; readonly actorId?: string }, organizationId: string = ORG): CustomerIdentityAdmissionService {
+function admissionAnswering(identity: { readonly principalId?: string; readonly organizationId?: string; readonly system?: string; readonly subjectId?: string; readonly actorId?: string }, organizationId: string = ORG): CustomerIdentityAdmissionService {
   return {
     organizationId,
     admit: async () => ({
       status: 'bound',
       identity: {
-        principal: { plane: 'customer', principalId: identity.principalId ?? PRINCIPAL, organizationId: identity.organizationId ?? ORG, externalSubject: { system: SUBJECT.system, subjectId: identity.subjectId ?? SUBJECT.subjectId } },
+        principal: { plane: 'customer', principalId: identity.principalId ?? PRINCIPAL, organizationId: identity.organizationId ?? ORG, externalSubject: { system: identity.system ?? SUBJECT.system, subjectId: identity.subjectId ?? SUBJECT.subjectId } },
         actor: { actorId: identity.actorId ?? PMFREAK_ACTOR_ID },
       },
     }),
@@ -761,6 +761,12 @@ describe('G-01A mutations — P3-2 admission must agree with the credential', ()
       guard: (m) => refusedByAdmission(m, admissionAnswering({ subjectId: 'user-someone-else' })),
     },
     {
+      id: 'admission-subject-system-unchecked',
+      file: IDENTITY,
+      replacements: [['principal.externalSubject.system === expected.externalSubject.system &&', '']],
+      guard: (m) => refusedByAdmission(m, admissionAnswering({ system: 'another-identity-system' })),
+    },
+    {
       id: 'admission-organization-unchecked',
       file: IDENTITY,
       // The request names the admitted organization, so only the credential's own organization can refuse it.
@@ -787,6 +793,7 @@ describe('G-01A P3-2 — an admission that disagrees with the credential writes 
   const disagreements: readonly [string, CustomerIdentityAdmissionService][] = [
     ['another principal', admissionAnswering({ principalId: OTHER_PRINCIPAL })],
     ['another external subject', admissionAnswering({ subjectId: 'user-someone-else' })],
+    ['another external subject system', admissionAnswering({ system: 'another-identity-system' })],
     ['another organization', admissionAnswering({ organizationId: 'org-g01a-other' })],
     ['an admission serving another organization', admissionAnswering({}, 'org-g01a-other')],
     ['another actor', admissionAnswering({ actorId: OTHER_ACTOR })],
@@ -859,5 +866,15 @@ describe('G-01A mutations — P3-3 disclosure allows only the known-safe shape',
       guard: (m) => withheld(m, { attribution: { ...LEGACY_ATTRIBUTION, evaluatedActorId: 'svc-g01a-mutation' } }),
     },
   ];
+
   for (const mutant of mutants) it(`${mutant.id} is detected`, () => qualify(mutant));
+
+  // The shape check the projection allows through is the Store's own; its version and salt clauses are what keep an unknown or unsalted attribution withheld.
+  it('attribution-accepts-an-unknown-version is detected', () =>
+    qualify<AttributionModule>({
+      id: 'attribution-accepts-an-unknown-version',
+      file: ATTRIBUTION,
+      replacements: [["if (candidate['version'] !== contracts_js_1.GOVERNANCE_ATTRIBUTION_VERSION)", 'if (false)']],
+      guard: (m) => m.isWellFormedAttribution({ ...LEGACY_ATTRIBUTION, version: 'aoc.governance-attribution.v2' }) === false,
+    }));
 });

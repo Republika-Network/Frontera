@@ -616,7 +616,8 @@ export function effectiveLegacyKeyMode(configuration: Pick<EnterpriseConfigurati
 }
 
 function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
+  // Already frozen means already visited: a cyclic value terminates instead of recursing.
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const member of Object.values(value)) deepFreeze(member);
     Object.freeze(value);
   }

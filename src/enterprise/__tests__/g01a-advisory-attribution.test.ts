@@ -1372,10 +1372,10 @@ const UNSAFE_PAYLOADS: readonly [string, (legacy: Record<string, unknown>) => un
   ['a legacy attribution carrying a principal', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), requestingPrincipalId: SERVICE_PRINCIPAL } })],
   ['a legacy attribution with an unsupported field', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), note: SERVICE_PRINCIPAL } })],
   ['an extra field beside the attribution', (legacy) => ({ ...legacy, requester: SERVICE_PRINCIPAL })],
-  ['an unknown attribution version', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), version: 'aoc.governance-attribution.v2', evaluatedActorId: SERVICE_PRINCIPAL } })],
+  ['an unknown attribution version', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), version: 'aoc.governance-attribution.v2' } })],
   ['an unsalted attribution (an earlier build)', (legacy) => {
     const { salt: _salt, ...unsalted } = legacy['attribution'] as Record<string, unknown>;
-    return { attribution: { ...unsalted, organizationId: SERVICE_PRINCIPAL } };
+    return { attribution: unsalted };
   }],
   ['a legacy attribution naming another actor than its record', (legacy) => ({ attribution: { ...(legacy['attribution'] as object), evaluatedActorId: SERVICE_PRINCIPAL } })],
   ['a non-object attribution', () => ({ attribution: [SERVICE_PRINCIPAL] })],
@@ -1430,6 +1430,7 @@ for (const provider of PROVIDERS) {
           for (const read of [() => reads.getByEvaluationId(`Bearer ${LEGACY_KEY}`, evaluationId), () => reads.getByDecisionId(`Bearer ${LEGACY_KEY}`, original.evaluation.decisionId), () => reads.getByRequestId(`Bearer ${LEGACY_KEY}`, original.request.requestId)]) {
             const view = await read();
             assert.ok(view !== null);
+            // Withheld on its own shape: the version and salt cases keep the record's real actor and organization.
             assert.equal(JSON.stringify(view).includes(SERVICE_PRINCIPAL), false, 'nothing of the unrecognized payload is shown');
             assert.equal(view.projection?.canonical, false);
             assert.equal(view.projection?.withheld.length, 1);

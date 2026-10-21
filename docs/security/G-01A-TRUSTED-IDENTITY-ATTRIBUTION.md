@@ -93,4 +93,4 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 
 ## 7. Evidence
 
-Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (46 mutants over the compiled modules, each detected by its guard; 14 of them for the final P3-1/P3-2/P3-3 hardening). Run IDs are reported on the PR.
+Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01a-advisory-attribution.test.ts` (in-memory and SQLite; HTTP end to end on a composed Host) and `src/enterprise/__tests__/g01a-mutation.test.ts` (48 mutants over the compiled modules, each detected by its guard; 16 of them for the final P3-1/P3-2/P3-3 hardening). Run IDs are reported on the PR.
