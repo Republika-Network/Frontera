@@ -149,7 +149,7 @@ async function plant(store: GovernanceStore, captured: Captured, requestId: stri
   return record;
 }
 
-/** The request id a plant of `kind` stands at: any caller id, or — before G-01B0 — the governed id of a key the principal had not used yet. */
+/** The request id a plant of `kind` stands at: a caller-chosen id, or — before G-01B0 — the governed id of a key the principal had not used yet. */
 function plantedRequestId(kind: PlantKind, principalId: string): string {
   return kind === 'pre-G-01B0 at a governed-looking id' ? deriveGovernedActionRequestId({ organizationId: ORG, principalId, idempotencyKey: fresh('squatted-key') }) : fresh('advisory-request');
 }
