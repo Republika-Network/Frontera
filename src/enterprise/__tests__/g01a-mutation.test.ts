@@ -164,7 +164,7 @@ describe('G-01A mutations — identity binding', () => {
     {
       id: 'unscoped-key-accepted-while-restricted',
       file: IDENTITY,
-      replacements: [["if (organizationId === undefined && configuration.authentication.legacyKeyMode === 'restricted') {", 'if (false) {']],
+      replacements: [["if (organizationId === undefined && (0, enterprise_configuration_js_1.effectiveLegacyKeyMode)(configuration) === 'restricted') {", 'if (false) {']],
       guard: (m) => refusedWith(403, () => m.authenticateAdvisoryCaller(`Bearer ${BARE_KEY}`, undefined, configuration('restricted'))),
     },
     {
@@ -277,7 +277,7 @@ describe('G-01A mutations — orchestrator wiring', () => {
     qualify<OrchestratorModule>({
       id: 'pre-kernel-replay-unchecked',
       file: ORCHESTRATOR,
-      replacements: [['assertReplayableTo(resolution.record, attribution, idempotency, request.requestId, deps);', '']],
+      replacements: [['return replayResponse(replayableRecord(resolution.record, attribution, idempotency, request.requestId, deps), deps, Date.now() - startedAtMs);', 'return replayResponse(resolution.record, deps, Date.now() - startedAtMs);']],
       guard: (m) => crossPrincipalReplayRefused(m, createInMemoryGovernanceStore()),
     }));
 
@@ -285,7 +285,7 @@ describe('G-01A mutations — orchestrator wiring', () => {
     qualify<OrchestratorModule>({
       id: 'append-transaction-replay-unchecked',
       file: ORCHESTRATOR,
-      replacements: [['assertReplayableTo(appended.existingRecord, attribution, idempotency, request.requestId, deps);', '']],
+      replacements: [['const existing = replayableRecord(appended.existingRecord, attribution, idempotency, request.requestId, deps);', 'const existing = appended.existingRecord;']],
       guard: (m) => {
         // The pre-Kernel probe is blinded after the first commit, so only the append transaction can find the earlier record.
         const raw = createInMemoryGovernanceStore();

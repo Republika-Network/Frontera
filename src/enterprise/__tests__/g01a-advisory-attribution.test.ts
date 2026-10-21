@@ -644,18 +644,14 @@ describe('G-01A — legacy keys: restricted by default in secure profiles, compa
   });
 
   for (const provider of PROVIDERS) {
-    it(`${provider.name}: restricted — an unscoped key cannot evaluate; a scoped key still can`, async () => {
+    it(`${provider.name}: restricted — an unscoped key cannot even be composed; a scoped key still evaluates`, async () => {
       const raw = await provider.open();
-      const enterprise = await createEnterprise({
-        ...(await hostOptions(raw, 'restricted')),
-        configuration: { ...configuration('restricted'), authentication: { apiKeys: KEYS, servicePrincipals: SERVICES, legacyKeyMode: 'restricted' } },
-      });
-      enterprises.push(enterprise);
       await assert.rejects(
-        enterprise.evaluate(buildAllowedRequestBody({ requestId: fresh('restricted-bare') }), { authorizationHeader: `Bearer ${BARE_KEY}` }),
-        (error: unknown) => error instanceof EnterpriseHttpError && error.httpStatus === 403 && error.code === 'AUTHORIZATION_FAILED',
+        createEnterprise({ ...(await hostOptions(raw, 'restricted')), configuration: { ...configuration('restricted'), authentication: { apiKeys: KEYS, servicePrincipals: SERVICES, legacyKeyMode: 'restricted' } } }),
+        (error: unknown) => error instanceof LegacyKeyConfigurationError && !error.message.includes(BARE_KEY),
       );
-      assert.equal((await raw.query(SYSTEM, {})).records.length, 0);
+      const enterprise = await createEnterprise(await hostOptions(raw, 'restricted'));
+      enterprises.push(enterprise);
       const scoped = await enterprise.evaluate(body({ requestId: fresh('restricted-scoped') }), { authorizationHeader: `Bearer ${LEGACY_KEY}` });
       assert.equal(scoped.httpStatus, 200);
     });
