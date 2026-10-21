@@ -348,3 +348,52 @@ describe('G-01B1 mutations — a refund is released only on a governed decision'
       },
     }));
 });
+
+// ---------------------------------------------------------------------------
+// P2-3 — Passport governance references.
+
+type PassportModule = typeof import('../passport/service.js');
+
+describe('G-01B1 mutations — a Passport governance reference states what its record states', () => {
+  const PASSPORT_SCOPE = { organizationId: ORG, system: false } as const;
+  const forgeries: readonly (readonly [string, string, (record: GovernanceRecord) => Record<string, unknown>])[] = [
+    ['passport-link-trusts-the-asserted-status', "reference.status !== record.evaluation.status ? 'status' : undefined,", (record) => ({ status: record.evaluation.status === 'allowed' ? 'denied' : 'allowed' })],
+    ['passport-link-trusts-the-asserted-decision', "reference.decisionId !== record.evaluation.decisionId ? 'decisionId' : undefined,", (record) => ({ decisionId: `${record.evaluation.decisionId}-forged` })],
+    [
+      'passport-link-trusts-the-asserted-request',
+      "reference.requestId !== record.evaluation.requestId || reference.requestId !== record.request.requestId ? 'requestId' : undefined,",
+      () => ({ requestId: deriveGovernedActionRequestId({ organizationId: ORG, principalId: 'principal-forged', idempotencyKey: 'forged' }) }),
+    ],
+  ];
+  for (const [id, site, forge] of forgeries) {
+    it(id, async () => {
+      const store = await sqlite();
+      const record = await plant(store, IDENTITY, ALLOWED_INTENT, fresh('advisory'));
+      const { createInMemoryPassportStore } = await import('../passport/in-memory-passport-store.js');
+      await qualify<PassportModule>({
+        id,
+        file: 'passport/service.js',
+        replacements: [[site, 'undefined,']],
+        guard: async (m) => {
+          const passports = m.createAgentPassportService({ store: createInMemoryPassportStore(), governanceStore: store, now: () => NOW, nextId: (prefix: string) => `${prefix}-${fresh('id')}` });
+          const { passport } = await passports.issuePassport(PASSPORT_SCOPE, { subject: { agentId: fresh('agent'), agentType: 'autonomous_agent' }, organization: { organizationId: ORG, recognizedBy: 'org-registry' }, actorId: 'user-1' });
+          const reference = {
+            evaluationId: record.evaluation.evaluationId,
+            decisionId: record.evaluation.decisionId,
+            requestId: record.request.requestId,
+            status: record.evaluation.status,
+            occurredAt: record.evaluation.evaluatedAt,
+            governanceRecordDigest: record.integrity.aggregateDigest,
+            ...forge(record),
+          };
+          try {
+            await passports.linkGovernanceRecord(PASSPORT_SCOPE, passport.passportId, reference as never, 'user-1');
+            return false;
+          } catch (error) {
+            return (error as { code?: unknown }).code === 'PASSPORT_REFERENCE_INVALID';
+          }
+        },
+      });
+    });
+  }
+});
