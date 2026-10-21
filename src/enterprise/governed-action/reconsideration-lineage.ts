@@ -138,6 +138,13 @@ export const RECONSIDERATION_REALIZED_URI = 'urn:aoc:reconsideration:realized';
 export function assessReconsiderationTarget(input: {
   readonly original: GovernanceRecord | null;
   readonly originalVerified: boolean;
+  /**
+   * G-01B1: whether the original holds the governed-action path's own claim, as
+   * the Store's provenance resolver answered it. A record without it — advisory,
+   * historical, or planted at a governed-looking id — is not a governed decision
+   * and cannot be an original. The request id's shape is never evidence.
+   */
+  readonly originalGoverned: boolean;
   readonly scope: { readonly organizationId: string; readonly actorId: string };
   readonly requestId: string;
   readonly reconsideration: ReconsiderationIntent;
@@ -148,6 +155,8 @@ export function assessReconsiderationTarget(input: {
   if (reconsideration.of === requestId) return { ok: false, refusal: 'RECONSIDERATION_TARGET_SELF' };
   // Tenant-scoped read upstream: another organization's request is simply not found.
   if (original === null || original.request.requestId !== reconsideration.of || original.request.organizationId !== scope.organizationId) return { ok: false, refusal: 'RECONSIDERATION_TARGET_NOT_FOUND' };
+  // G-01B1: only a governed decision is an original; any other record at that id is, for a reconsideration, not found.
+  if (input.originalGoverned !== true) return { ok: false, refusal: 'RECONSIDERATION_TARGET_NOT_FOUND' };
   if (!input.originalVerified) return { ok: false, refusal: 'RECONSIDERATION_TARGET_UNVERIFIABLE' };
   if (original.request.actorId !== scope.actorId) return { ok: false, refusal: 'RECONSIDERATION_TARGET_OTHER_ACTOR' };
   // Only an original may be reconsidered: a lineage has one root, so no chain and no cycle can form.

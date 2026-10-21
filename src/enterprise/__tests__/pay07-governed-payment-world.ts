@@ -349,7 +349,11 @@ async function openWorld(edge: PaymentRailEdge, scenario: ConformanceScenario): 
     const { world, outcomes, resolutions } = current;
     // Exactly the composition root's narrow reads (`composition-root.ts`, ASSURE-01): one read method per source.
     return {
-      governance: { getByRequestId: (context, requestId) => world.rawStore.getByRequestId(context, requestId), verify: (context, evaluationId) => world.rawStore.verify(context, evaluationId) },
+      governance: {
+        getByRequestId: (context, requestId) => world.rawStore.getByRequestId(context, requestId),
+        verify: (context, evaluationId) => world.rawStore.verify(context, evaluationId),
+        query: (context, query) => world.rawStore.query(context, query),
+      },
       grants: { kind: 'unauthenticated', read: (grantId: string) => grantStore.read(grantId) },
       reservations: { read: (reservationId: string) => reservationLedger.read(reservationId) },
       outcomes: { read: (context: { readonly organizationId: string }, executionId: string) => outcomes.read(context, executionId) },

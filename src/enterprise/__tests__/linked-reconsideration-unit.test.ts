@@ -41,9 +41,9 @@ function record(overrides: { readonly status?: string; readonly actorId?: string
   } as unknown as GovernanceRecord;
 }
 
-/** The pure assessment, given what the commit phase read (the original record, and whether it verified). */
-const verify = async (found: GovernanceRecord | null, options: { readonly valid?: boolean; readonly of?: string; readonly requestId?: string; readonly newPayload?: Readonly<Record<string, unknown>> } = {}) =>
-  assessReconsiderationTarget({ original: found, originalVerified: found !== null && (options.valid ?? true), scope, requestId: options.requestId ?? NEW, reconsideration: { of: options.of ?? ORIGINAL, reason: 'policy-changed' }, requestPayload: options.newPayload ?? payload() });
+/** The pure assessment, given what the commit phase read (the original record, whether it verified, and — G-01B1 — whether it holds the governed-action claim). */
+const verify = async (found: GovernanceRecord | null, options: { readonly valid?: boolean; readonly governed?: boolean; readonly of?: string; readonly requestId?: string; readonly newPayload?: Readonly<Record<string, unknown>> } = {}) =>
+  assessReconsiderationTarget({ original: found, originalVerified: found !== null && (options.valid ?? true), originalGoverned: found !== null && (options.governed ?? true), scope, requestId: options.requestId ?? NEW, reconsideration: { of: options.of ?? ORIGINAL, reason: 'policy-changed' }, requestPayload: options.newPayload ?? payload() });
 
 describe('LAND-01 — the business intent is who wants what, not how the attempt was made', () => {
   it('ignores request id, time, the caller correlation label and asserted context', () => {
@@ -96,6 +96,14 @@ describe('LAND-01 — who may reconsider what', () => {
     assert.equal(await refusal(verify(record(), { of: NEW, requestId: NEW })), 'RECONSIDERATION_TARGET_SELF');
     assert.equal(await refusal(verify(null)), 'RECONSIDERATION_TARGET_NOT_FOUND');
     assert.equal(await refusal(verify(record({ organizationId: 'org-elsewhere' }))), 'RECONSIDERATION_TARGET_NOT_FOUND');
+  });
+
+  it('G-01B1: refuses, as not found, an original without governed-action provenance — whatever its id shape, status, actor or intent', async () => {
+    assert.equal(await refusal(verify(record(), { governed: false })), 'RECONSIDERATION_TARGET_NOT_FOUND');
+    assert.equal(await refusal(verify(record({ status: 'indeterminate' }), { governed: false })), 'RECONSIDERATION_TARGET_NOT_FOUND');
+    assert.equal(await refusal(verify(record({ requestId: 'advisory-request-1' }), { governed: false, of: 'advisory-request-1' })), 'RECONSIDERATION_TARGET_NOT_FOUND');
+    // Not found comes before every other judgement: a non-governed record discloses nothing about its integrity or actor.
+    assert.equal(await refusal(verify(record({ actorId: 'actor-other' }), { governed: false, valid: false })), 'RECONSIDERATION_TARGET_NOT_FOUND');
   });
 
   it('refuses an unverifiable original and another actor’s original', async () => {

@@ -18,6 +18,7 @@ import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { computeGovernanceRequestPayloadDigest } from '../governance-store/projection.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
+import { hasGovernedActionProvenance, resolveGovernedRecord, type GovernedProvenanceReader } from '../governance-store/governed-provenance.js';
 import { toGovernanceRecordSummary } from '../governance-store/store-common.js';
 import { GOVERNED_ACTION_REASON_CODES as R, deriveGovernedActionRequestId, type GovernedActionResult } from '../governed-action/index.js';
 import { reconsiderationLinkReferenceId } from '../governed-action/identifiers.js';
@@ -163,6 +164,54 @@ function assertTargetNotFound(result: GovernedActionResult, world: ReturnType<ty
   assert.deepEqual([...result.reasonCodes], [R.GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_FOUND], 'the existing refusal code, no new public code');
   assert.equal(world.kernelRequests.length, kernelRuns, 'refused before anything is evaluated');
   assert.equal(world.adapter.callCount, 0, 'nothing executes');
+}
+
+// ---------------------------------------------------------------------------
+// The shared resolver — identical semantics on both providers.
+
+for (const provider of PROVIDERS) {
+  describe(`G-01B1 resolver — ${provider.name} Store: governed provenance is the governed-action claim, nothing else`, () => {
+    it('a governed record is governed; every non-governed shape is not; an unknown id is absent', async () => {
+      const store = await provider.open();
+      const world = buildGovernedWorld({ store });
+      const executed = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+      const governedResolution = await resolveGovernedRecord(store, SYSTEM, executed.requestId ?? '');
+      assert.equal(governedResolution.kind, 'governed');
+      assert.equal((await resolveGovernedRecord(store, TENANT, executed.requestId ?? '')).kind, 'governed', 'in the tenant scope too');
+      const captured = await captureGoverned(IDENTITY, ALLOWED_INTENT);
+      for (const kind of PLANT_KINDS) {
+        const planted = await plant(store, captured, plantedRequestId(kind, IDENTITY.principal.principalId), kind);
+        for (const context of [SYSTEM, TENANT]) {
+          const resolution = await resolveGovernedRecord(store, context, planted.request.requestId);
+          assert.equal(resolution.kind, 'not-governed', `${kind}: a structurally valid record without the claim`);
+          assert.equal(await hasGovernedActionProvenance(store, context, planted), false, kind);
+        }
+      }
+      assert.equal((await resolveGovernedRecord(store, SYSTEM, fresh('unknown'))).kind, 'absent');
+      assert.equal((await resolveGovernedRecord(store, { system: false, organizationId: 'org-g01b1-elsewhere' }, executed.requestId ?? '')).kind, 'absent', 'another organization’s governed record is not visible at all');
+    });
+
+    it('fails closed on a Store that cannot answer the predicate truthfully', async () => {
+      const store = await provider.open();
+      const world = buildGovernedWorld({ store });
+      const executed = await world.orchestrator.govern(IDENTITY, ALLOWED_INTENT);
+      const record = await store.getByRequestId(SYSTEM, executed.requestId ?? '');
+      assert.ok(record !== null);
+      const summary = toGovernanceRecordSummary(record);
+      const answering = (answer: () => Promise<GovernanceStoreQueryResult>): GovernedProvenanceReader => ({ getByRequestId: (context, requestId) => store.getByRequestId(context, requestId), query: answer });
+      const cases: readonly (readonly [string, () => Promise<GovernanceStoreQueryResult>])[] = [
+        ['no hit', async () => ({ records: [] })],
+        ['a hit for another evaluation', async () => ({ records: [{ ...summary, evaluationId: `${summary.evaluationId}-other` }] })],
+        ['a hit for another request id', async () => ({ records: [{ ...summary, requestId: `${summary.requestId}-other` }] })],
+        ['a hit in another organization', async () => ({ records: [{ ...summary, organizationId: 'org-g01b1-elsewhere' }] })],
+        ['two hits', async () => ({ records: [summary, summary] })],
+        ['a malformed answer', async () => ({}) as unknown as GovernanceStoreQueryResult],
+      ];
+      for (const [label, answer] of cases) assert.equal((await resolveGovernedRecord(answering(answer), SYSTEM, record.evaluation.requestId)).kind, 'not-governed', label);
+      await assert.rejects(resolveGovernedRecord(answering(async () => { throw new Error('store down'); }), SYSTEM, record.evaluation.requestId), /store down/, 'a Store failure propagates; it is never read as governed');
+      assert.equal((await resolveGovernedRecord(answering(async () => ({ records: [summary] })), SYSTEM, record.evaluation.requestId)).kind, 'governed', 'the honest answer');
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

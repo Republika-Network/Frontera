@@ -13,6 +13,7 @@ import type {
 import { isGovernanceStoreError } from '../governance-store/errors.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import { computeGovernanceRequestPayloadDigest, projectRequestPayload } from '../governance-store/projection.js';
+import { hasGovernedActionProvenance } from '../governance-store/governed-provenance.js';
 import { deepFreeze, toKernelEvaluationResult } from '../governance-store/store-common.js';
 import { buildGovernanceEvaluationOutcomeEvent } from '../orchestration/governance-evaluation-events.js';
 import { GOVERNED_ACTION_REASON_CODES as R, type ClassifiedGovernedActionIntent, type GovernedActionReasonCode } from './contracts.js';
@@ -72,9 +73,10 @@ export interface DecisionCommitter {
   /**
    * LAND-01 — read, before any evaluation, the original a reconsideration
    * names: its committed record under the caller's tenant scope (another
-   * organization's request is simply not found) and whether that record
-   * verifies, plus the new request projected exactly as the Store projects
-   * requests. Reads only; nothing is evaluated or written.
+   * organization's request is simply not found), whether that record
+   * verifies and — G-01B1 — whether it came through the governed-action path,
+   * plus the new request projected exactly as the Store projects requests.
+   * Reads only; nothing is evaluated or written.
    */
   readReconsiderationOriginal(input: { readonly scope: BoundActorScope; readonly intent: ClassifiedGovernedActionIntent; readonly requestId: string; readonly accessContext: GovernanceStoreAccessContext; readonly originalRequestId: string }): Promise<ReconsiderationOriginalRead>;
 }
@@ -83,6 +85,8 @@ export interface DecisionCommitter {
 export interface ReconsiderationOriginalRead {
   readonly original: GovernanceRecord | null;
   readonly originalVerified: boolean;
+  /** G-01B1: the original holds the governed-action path's own claim (`hasGovernedActionProvenance`). An advisory, historical or planted record never does. */
+  readonly originalGoverned: boolean;
   readonly requestPayload: Readonly<Record<string, unknown>>;
 }
 
@@ -287,9 +291,10 @@ export function createDecisionCommitter(options: DecisionCommitterOptions): Deci
       const request = buildGovernedActionKernelRequest({ scope: input.scope, intent: input.intent, trustDomainId, requestId: input.requestId, requestedAt: now() });
       const requestPayload = projectRequestPayload(request);
       const original = await store.getByRequestId(input.accessContext, input.originalRequestId);
-      if (original === null) return { original: null, originalVerified: false, requestPayload };
+      if (original === null) return { original: null, originalVerified: false, originalGoverned: false, requestPayload };
+      const originalGoverned = await hasGovernedActionProvenance(store, input.accessContext, original);
       const verification = await store.verify(input.accessContext, original.evaluation.evaluationId);
-      return { original, originalVerified: verification.valid, requestPayload };
+      return { original, originalVerified: verification.valid, originalGoverned, requestPayload };
     },
   };
 }

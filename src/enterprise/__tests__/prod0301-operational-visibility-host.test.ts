@@ -634,15 +634,13 @@ describe('PROD-03-01 review fixes — evaluation-only identity and the disclosed
     // The governed requests beside it are still classified from their traces.
     assert.equal((await viewOf(requestIdOf('denied'))).classification, 'decision-denied');
     assert.equal((await viewOf(requestIdOf('executed'))).classification, 'executed-succeeded');
-    // Review fix (#170): the trace builds, so the sidecar says the trace is available — and the record is still evaluation-only.
-    const traced = expectStatus(await call(booted.baseUrl, 'GET', ops.trace(spoofed), { authorization: auth.observer }), 200, 'the trace of an evaluate-route record');
-    const tracedOperational = traced.body['operational'] as View;
-    assert.equal(tracedOperational.classification, 'evaluation-only', 'the trace read classifies it exactly as the list does');
-    const sidecarTrace = tracedOperational['trace'] as Record<string, unknown>;
-    assert.equal(sidecarTrace['available'], true);
-    assert.equal(sidecarTrace['failure'], null, 'no NOT_A_GOVERNED_REQUEST failure beside a trace that was returned');
-    assert.equal(sidecarTrace['finalState'], ((traced.body['trace'] as Record<string, unknown>)['summary'] as Record<string, unknown>)['finalState'], 'the final state is the returned trace’s');
-    assert.doesNotMatch(traced.text, /NOT_A_GOVERNED_REQUEST/);
+    // G-01B1 (founder decision 6): a governed trace needs the governed-action claim. A historical evaluate-route record at a
+    // governed-shaped id has none, so it has no ASSURE-01 trace: the existing not-found (it was a 200 evaluation-only trace
+    // under review fix #170). The list above still shows it, classified evaluation-only.
+    const traced = await call(booted.baseUrl, 'GET', ops.trace(spoofed), { authorization: auth.observer });
+    assert.equal(traced.status, 404, traced.text);
+    assert.equal((traced.body['error'] as Record<string, unknown>)['code'], 'EVIDENCE_TRACE_NOT_FOUND');
+    assert.doesNotMatch(traced.text, /"trace"\s*:/, 'no trace is disclosed for a record without governed provenance');
     assertAgree(await counts(), 'after an evaluation-only decision');
   });
 

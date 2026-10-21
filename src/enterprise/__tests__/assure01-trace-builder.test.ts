@@ -153,6 +153,9 @@ function sources(world: World, options: { readonly composed?: Partial<Record<key
     governance: {
       getByRequestId: async (context, requestId) => (requestId === REQUEST && (context.system || context.organizationId === ORG) ? record() : null),
       verify: async () => ({ valid: world.governanceValid, failures: world.governanceValid ? [] : [{ check: 'aggregateDigest', message: 'x' }] }) as never,
+      // G-01B1: the world's record is a governed request — the Store's `governed-action` predicate holds for it, in its scope.
+      query: async (context, query) =>
+        ({ records: query.governedPath === 'governed-action' && query.requestId === REQUEST && (context.system || context.organizationId === ORG) ? [{ evaluationId: EVALUATION, requestId: REQUEST, organizationId: ORG }] : [] }) as never,
     },
     grants: { kind: 'authenticated-durable', read: async () => (fail('grant'), { ...(world.grant !== undefined ? { grant: world.grant as never } : {}), ...(world.revocation !== undefined ? { revocation: world.revocation as never } : {}) }) },
     approvals: { kind: 'durable-authenticated', read: async () => (fail('approval'), world.approvals as never) },

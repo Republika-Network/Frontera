@@ -288,6 +288,8 @@ describe('Structural boundary of src/enterprise/governed-action (§30, §31, §4
       '../governance-store/contracts.js',
       '../governance-store/errors.js',
       '../governance-store/governance-store.js',
+      // G-01B1: the one governed-provenance resolver — two reads over the Store's own `governed-action` predicate, no write.
+      '../governance-store/governed-provenance.js',
       '../governance-store/projection.js',
       '../governance-store/store-common.js',
       '../orchestration/governance-evaluation-events.js',
