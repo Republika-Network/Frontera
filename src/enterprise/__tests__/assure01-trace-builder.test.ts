@@ -674,8 +674,13 @@ describe('ASSURE-01 second review — read order, degraded stores, summaries and
       ]),
     ) as unknown as AuthorityTraceSources;
     assert.ok((await buildAuthorityTrace(recorded, SYSTEM, REQUEST)) !== null);
-    const firstCanonical = order.findIndex((entry) => !entry.startsWith('events.') && entry !== 'governance.getByRequestId');
+    // Locating is the record read plus G-01B1's governed-action provenance query; the claim commits in the record's own
+    // transaction and no event reports it, so it precedes the stream like the located record.
+    const locating = new Set(['governance.getByRequestId', 'governance.query']);
+    const firstCanonical = order.findIndex((entry) => !entry.startsWith('events.') && !locating.has(entry));
     assert.ok(order.indexOf('events.readStreamBounded') >= 0 && order.indexOf('events.readStreamBounded') < firstCanonical, order.join(' '));
+    assert.deepEqual(order.filter((entry) => entry === 'governance.query'), ['governance.query'], 'one provenance query');
+    assert.ok(order.indexOf('governance.query') < order.indexOf('events.readStreamBounded'), 'provenance is settled before the trace reads anything else');
     assert.equal(order.filter((entry) => entry === 'governance.getByRequestId').length, 2, 'located, then re-read after the stream');
     assert.ok(order.lastIndexOf('governance.getByRequestId') > order.indexOf('events.readStreamBounded'));
   });

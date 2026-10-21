@@ -12,12 +12,12 @@ The Governance Store holds one request-id space written by two paths: the adviso
 
 | Finding | Consumer | Before G-01B1 |
 |---|---|---|
-| P2-2 | Reconsideration (`POST /api/governed-actions` with `reconsideration.of`) | The original was checked for organization, actor, integrity, status and business intent — not provenance. An advisory record (its actor possibly only asserted by a legacy key), a pre-G-01A record or a pre-G-01B0 planted record with the same intent rooted a governed lineage, and ASSURE-01 lineage checks passed. |
+| P2-2 | Reconsideration (`POST /api/governed-actions` with `reconsideration.of`) | The original was checked for organization, actor, integrity, status and business intent — not provenance. Any non-governed record at the governed id named by `reconsideration.of` — unattributed (pre-G-01A), legacy-asserted (an actor only asserted by a legacy key) or system-written — with the same actor and intent rooted a governed lineage, and ASSURE-01 lineage checks passed. |
 | ASSURE-01 | `buildAuthorityTrace` (public and operator trace routes, evidence v2) | Any record at an `aoc.gar:` id was traced as a governed request; a lineage to a non-governed original passed `lineage.original-identity`. |
 | PAY-05 | Refund `releaseBasis` | A non-governed record at the refund's request id was read as its decision: `denied` released the reservation as `decision-denied`; `allowed` left it pending forever. |
 | P2-3 | Passport `linkGovernanceRecord` | Only `evaluationId` and the aggregate digest were checked; the reference's `requestId`, `decisionId` and `status` (counted by the Passport summary) were the caller's assertion. |
 
-Reachability: the PAY-05 and pre-G-01B0 cases need records planted before G-01B0 (or written by an embedder); P2-2 with an advisory record and P2-3 were reachable on the shipped Host by organization-scoped credentials. None grants execution authority — the Kernel re-evaluates a reconsideration, and a Passport reference grants nothing — but each is an integrity failure of an artifact or a decision the platform presents as governed.
+Reachability: `reconsideration.of` must have the governed id shape (`aoc.gar:<32 hex>`, intent validation) and G-01B0 refuses `aoc.` ids on the evaluate route, so P2-2, ASSURE-01 and PAY-05 need a non-governed record at a governed id — committed before G-01B0 or written by an embedder; on a Host started after G-01B0 none can be created. (The Phase 0 report stated P2-2 was reachable with a current advisory record; that was wrong — an advisory id fails intent validation first.) P2-3 was reachable on the shipped Host by organization-scoped credentials. None grants execution authority — the Kernel re-evaluates a reconsideration, and a Passport reference grants nothing — but each is an integrity failure of an artifact or a decision the platform presents as governed.
 
 ## 2. The model
 

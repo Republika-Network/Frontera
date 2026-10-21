@@ -155,6 +155,15 @@ function plantedRequestId(kind: PlantKind, principalId: string): string {
   return kind === 'pre-G-01B0 at a governed-looking id' ? deriveGovernedActionRequestId({ organizationId: ORG, principalId, idempotencyKey: fresh('squatted-key') }) : fresh('advisory-request');
 }
 
+/**
+ * The governed request id a non-governed record stands at when it is a candidate original: `reconsideration.of` must have
+ * the governed id shape (intent validation), and since G-01B0 the evaluate route refuses `aoc.` ids, so such a record was
+ * committed before G-01B0 or by an embedder. Its attribution is still the plant kind's.
+ */
+function governedShapedId(principalId: string): string {
+  return deriveGovernedActionRequestId({ organizationId: ORG, principalId, idempotencyKey: fresh('squatted-key') });
+}
+
 function reconsider(of: string): Record<string, unknown> {
   return { ...DENIED_INTENT, idempotencyKey: fresh('reconsideration-key'), reconsideration: { of, reason: 'context-changed' } };
 }
@@ -220,11 +229,11 @@ for (const provider of PROVIDERS) {
 for (const provider of PROVIDERS) {
   describe(`G-01B1 P2-2 — ${provider.name} Store: only a governed decision can be reconsidered`, () => {
     for (const kind of PLANT_KINDS) {
-      it(`a ${kind} record with the same actor and business intent is not an original: RECONSIDERATION_TARGET_NOT_FOUND`, async () => {
+      it(`a ${kind} record at a governed request id, with the same actor and business intent, is not an original: RECONSIDERATION_TARGET_NOT_FOUND`, async () => {
         const store = await provider.open();
         const captured = await captureGoverned(DENIED_IDENTITY, DENIED_INTENT);
         assert.equal(captured.result.status, 'denied', 'the planted record is withheld, the only kind a reconsideration may follow');
-        const original = await plant(store, captured, plantedRequestId(kind, DENIED_PRINCIPAL), kind);
+        const original = await plant(store, captured, governedShapedId(DENIED_PRINCIPAL), kind);
         const world = buildGovernedWorld({ store });
         const result = await world.orchestrator.govern(DENIED_IDENTITY, reconsider(original.request.requestId));
         assertTargetNotFound(result, world, 0);
@@ -298,7 +307,7 @@ for (const provider of PROVIDERS) {
     it('a lineage whose original is not a governed decision fails lineage.original-identity; a governed lineage passes', async () => {
       const store = await provider.open();
       const captured = await captureGoverned(DENIED_IDENTITY, DENIED_INTENT);
-      const advisoryOriginal = await plant(store, captured, fresh('advisory-original'), 'G-01A advisory (legacy-asserted)');
+      const advisoryOriginal = await plant(store, captured, governedShapedId(DENIED_PRINCIPAL), 'G-01A advisory (legacy-asserted)');
       // The orchestrator is handed a Store that lies about the predicate, so the lineage is committed; the trace reads the honest Store.
       const world = buildGovernedWorld({ store: claimingGoverned(store, advisoryOriginal) });
       const forged = await world.orchestrator.govern(DENIED_IDENTITY, reconsider(advisoryOriginal.request.requestId));

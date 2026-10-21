@@ -149,7 +149,7 @@ describe('G-01B1 mutations — the governed-provenance resolver', () => {
     {
       id: 'provenance-accepts-an-ambiguous-answer',
       file: PROVENANCE,
-      replacements: [['if (records.length !== 1) return false;', 'if (records.length === 0) return false;']],
+      replacements: [['records.length !== 1', 'records.length === 0']],
       guard: async (m) => {
         const { record, answering } = await governedFixture(await sqlite());
         const summary = toGovernanceRecordSummary(record);
@@ -266,14 +266,15 @@ describe('G-01B1 mutations — a governed trace needs a governed record', () => 
     await qualify<TraceModule>({
       id: 'trace-built-over-a-non-governed-record',
       file: TRACE,
-      replacements: [['context, located))) return null;', 'context, located)) && false) return null;']],
+      replacements: [['context, located)))', 'context, located)) && false)']],
       guard: async (m) => (await m.buildAuthorityTrace({ governance: store }, SYSTEM, planted.request.requestId)) === null && (await m.buildAuthorityTrace({ governance: store }, TENANT, planted.request.requestId)) === null,
     });
   });
 
   it('lineage-original-provenance-unchecked', async () => {
     const store = await sqlite();
-    const original = await plant(store, DENIED_IDENTITY, DENIED_INTENT, fresh('advisory-original'));
+    // `reconsideration.of` must have the governed id shape, so a non-governed original stands at one (written before G-01B0 or by an embedder).
+    const original = await plant(store, DENIED_IDENTITY, DENIED_INTENT, governedLookingId(DENIED_IDENTITY.principal.principalId));
     const world = buildGovernedWorld({ store: claimingGoverned(store, original) });
     const reconsideration = await world.orchestrator.govern(DENIED_IDENTITY, { ...DENIED_INTENT, idempotencyKey: fresh('key'), reconsideration: { of: original.request.requestId, reason: 'context-changed' } });
     assert.equal(reconsideration.status, 'denied', JSON.stringify(reconsideration));
@@ -346,7 +347,7 @@ describe('G-01B1 mutations — a refund is released only on a governed decision'
     qualify<RefundModule>({
       id: 'refund-basis-read-from-a-non-governed-record',
       file: 'payment-settlement/refund-service.js',
-      replacements: [["if (resolution.kind === 'not-governed') return { kind: 'unavailable' };", "if (false) return { kind: 'unavailable' };"]],
+      replacements: [["resolution.kind === 'not-governed'", 'false']],
       guard: async (m) => {
         const { options, refundOperationId } = await plantedRefund();
         const reconciled = await m.createPaymentRefundService(options).reconcileRefund(refundOperationId);
