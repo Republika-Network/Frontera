@@ -1181,7 +1181,7 @@ describe('G-01A P1 — auditors are configured explicitly and validated identica
   const valid = { auditorId: 'auditor-embedder', organizationId: ORG, key: 'G01A_EMBEDDER_AUDITOR_SECRET_0123456789ab' };
   const embedderVariants: readonly [string, typeof valid][] = [
     ['another organization', { ...valid, organizationId: 'org-other' }],
-    ['a short secret', { ...valid, key: 'short' }],
+    ['a short secret', { ...valid, key: 'Zq9-tiny-7' }],
     ['a padded secret', { ...valid, key: ` ${valid.key}` }],
     ['a secret shared with an API key', { ...valid, key: LEGACY_KEY }],
     ['a secret shared with a service principal', { ...valid, key: SERVICE_KEY }],
