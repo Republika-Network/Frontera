@@ -350,11 +350,11 @@ describe('G-01C §1 — SQLite — attribution, replay and governed provenance s
 
     const second = await createSqliteGovernanceStore(path);
     stores.push(second);
-    const after = await harness(second);
-    const replayed = await evaluate(after, CUSTOMER_KEY, payload, key);
+    const restarted = await harness(second);
+    const replayed = await evaluate(restarted, CUSTOMER_KEY, payload, key);
     assert.equal(replayed.status, 200, replayed.text);
     assert.equal(evaluationIdOf(replayed), evaluationIdOf(committed), 'the same requester is replayed its own decision');
-    const other = await evaluate(after, OTHER_CUSTOMER_KEY, payload, key);
+    const other = await evaluate(restarted, OTHER_CUSTOMER_KEY, payload, key);
     assert.equal(other.status, 409, other.text);
 
     const advisory = await second.getByEvaluationId(SYSTEM, evaluationIdOf(committed));
@@ -484,6 +484,32 @@ for (const provider of PROVIDERS) {
       assert.equal(await store.getByRequestId(SYSTEM, requestId), null);
     });
 
+    it('…also when an accessor shows the check a harmless type and the record the attribution type', async () => {
+      const store = await provider.open();
+      stores.push(store);
+      const requestId = fresh('injected-accessor');
+      const template = forged(requestId) as unknown as Record<string, unknown>;
+      let reads = 0;
+      const shifting = Object.defineProperty({ ...template }, 'type', {
+        enumerable: true,
+        get: () => {
+          reads += 1;
+          return reads === 1 ? 'GovernanceEvaluationRequested' : GOVERNANCE_ATTRIBUTION_EVENT_TYPE;
+        },
+      }) as unknown as EnterpriseEvent;
+      let appended: { readonly evaluationId: string } | undefined;
+      try {
+        appended = await store.appendEvaluation(appendInput(requestId, { events: [shifting] }));
+      } catch (error) {
+        assert.ok(isStoreError('GOVERNANCE_STORE_VALIDATION_ERROR')(error), String(error));
+      }
+      if (appended !== undefined) {
+        const record = await store.getByEvaluationId(SYSTEM, appended.evaluationId);
+        assert.ok(record !== null);
+        assert.notEqual(readRecordedAttribution(record).status, 'attributed', 'what the check saw is what was recorded');
+      }
+    });
+
     it('control: the validated attribution field still seals one readable attribution', async () => {
       const store = await provider.open();
       stores.push(store);
@@ -560,6 +586,30 @@ describe('G-01C §2 — SQLite — tenant visibility is decided before integrity
     assert.deepEqual(await store.getByEvaluationId(TENANT, intact.evaluation.evaluationId), intact, 'the stored aggregate is returned complete and unchanged');
   });
 
+  it('an aggregate whose request row is missing proves no owner: absent to every organization, the integrity error to system scope', async () => {
+    const { store, corrupted, path } = await corruptedWorld();
+    await store.close();
+    const db = new Database(path);
+    db.pragma('foreign_keys = OFF');
+    db.prepare('DELETE FROM governance_requests WHERE request_id = ?').run(corrupted.request.requestId);
+    db.close();
+    const reopened = await createSqliteGovernanceStore(path);
+    stores.push(reopened);
+    for (const context of [TENANT, FOREIGN_TENANT]) {
+      assert.equal(await reopened.getByEvaluationId(context, corrupted.evaluation.evaluationId), null);
+      await assert.rejects(reopened.verify(context, corrupted.evaluation.evaluationId), isStoreError('GOVERNANCE_RECORD_NOT_FOUND'));
+      await assert.rejects(reopened.reconstruct(context, corrupted.evaluation.evaluationId), isStoreError('GOVERNANCE_RECORD_NOT_FOUND'));
+    }
+    await assert.rejects(reopened.getByEvaluationId(SYSTEM, corrupted.evaluation.evaluationId), isStoreError('GOVERNANCE_RECORD_CORRUPTED'));
+    assert.equal((await reopened.reconstruct(SYSTEM, corrupted.evaluation.evaluationId)).status, 'incomplete');
+  });
+
+  it('a foreign idempotency probe at another tenant’s corrupted record is the ordinary conflict, not the integrity error', async () => {
+    const { store, corrupted } = await corruptedWorld();
+    const resolution = await store.resolveIdempotency(FOREIGN_TENANT, { requestId: corrupted.request.requestId, payloadDigest: corrupted.request.payloadDigest });
+    assert.equal(resolution.kind, 'conflict');
+  });
+
   it('over HTTP on a composed Host: another organization’s key is the ordinary 404, the owner’s key the integrity error', async () => {
     const { store, corrupted } = await corruptedWorld();
     const base = loadEnterpriseConfiguration({ AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_REQUIRE_AUTH: 'true', AOC_ENTERPRISE_LOG_LEVEL: 'error' });
@@ -576,7 +626,7 @@ describe('G-01C §2 — SQLite — tenant visibility is decided before integrity
     const absent = await call(baseUrl, 'GET', `/api/governance/requests/${encodeURIComponent(fresh('never-committed'))}`, FOREIGN_LEGACY_KEY);
     assert.equal(foreign.status, 404, foreign.text);
     assert.equal(errorCode(foreign), errorCode(absent), 'indistinguishable from an id that was never committed');
-    assert.equal(foreign.text.toLowerCase().includes('corrupt'), false);
+    assert.equal(foreign.text.includes('GOVERNANCE_RECORD_CORRUPTED'), false, 'no integrity verdict crosses the tenant boundary');
     const owner = await call(baseUrl, 'GET', path, LEGACY_KEY);
     assert.equal(owner.status, 500, owner.text);
   });
