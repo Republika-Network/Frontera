@@ -34,11 +34,13 @@ const GATED = 'payables.http';
 const HOSTNAME = 'payables-gateway.example';
 
 const workspace = new Workspace();
+// Requests to the gated provider only: the test's own HTTP calls to the Host are client requests too.
 const network = { lookups: [] as string[], sockets: 0 };
-const onSocket = (): void => {
-  network.sockets += 1;
+const onRequest = (message: unknown): void => {
+  const request = (message as { readonly request?: { readonly host?: unknown } }).request;
+  if (request?.host === HOSTNAME) network.sockets += 1;
 };
-diagnosticsChannel.subscribe('net.client.socket', onSocket);
+diagnosticsChannel.subscribe('http.client.request.start', onRequest);
 const realLookup = dns.promises.lookup;
 beforeEach(() => {
   network.lookups.length = 0;
@@ -52,7 +54,7 @@ afterEach(() => {
   (dns.promises as { lookup: unknown }).lookup = realLookup;
 });
 after(async () => {
-  diagnosticsChannel.unsubscribe('net.client.socket', onSocket);
+  diagnosticsChannel.unsubscribe('http.client.request.start', onRequest);
   await workspace.cleanup();
 });
 
@@ -110,7 +112,7 @@ describe('G-02C0 on the shipped Host — a listed Generic HTTP adapter binds eve
     assert.equal(reply.body['status'], 'execution_failed', reply.text);
     assert.equal(reply.body['failure'], 'ADAPTER_ERROR');
     assert.deepEqual(network.lookups, [HOSTNAME], 'the gate proceeded: the adapter resolved its pinned hostname once');
-    assert.equal(network.sockets, 0, 'the private answer was refused: nothing left the process');
+    assert.equal(network.sockets, 0, 'the private answer was refused: no request to the provider was started');
     assert.equal(JSON.stringify(reply.body).toLowerCase().includes('capabilit'), false, 'the response carries no capability');
 
     const executionId = reply.body['executionId'] as string;

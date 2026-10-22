@@ -267,7 +267,7 @@ describe('G-02C0 gate — issue for the exact request, verify as the executor wo
     const consumption = await openExecutionCapabilityConsumptionLedger(join(ledgers.dir, 'g02c0-consumption.sqlite'), { audience: G02B_AUDIENCE, clock: () => NOW + 1_000, create: true });
     try {
       assert.equal(consumption.claim(verdict).outcome, 'claimed');
-      assert.deepEqual(consumption.claim(executor.verify({ presentation, action: action.action, resource: action.resource, actionBinding: received })), { outcome: 'refused', reason: 'EXECUTION_CONSUMED' });
+      assert.deepEqual(consumption.claim(executor.verify({ presentation, action: action.action, resource: action.resource, actionBinding: received })), { outcome: 'refused', reason: 'CAPABILITY_CONSUMED' });
     } finally {
       consumption.close();
     }
@@ -402,9 +402,10 @@ describe('G-02C0 gate — issue for the exact request, verify as the executor wo
 
 describe('G-02C0 gate — post-issuance verification refuses any capability that is not exactly this request', () => {
   /** An issuer that returns `capability`, signed by `key` (a compromised boundary, or a bug), without any ledger. */
-  function forgedIssuer(capability: ExecutionCapability, key = AUTHORITY_KEY_A, signature?: unknown): ExecutionCapabilityIssuer {
+  const GENUINE = Symbol('genuine signature');
+  function forgedIssuer(capability: ExecutionCapability, key = AUTHORITY_KEY_A, signature: unknown = GENUINE): ExecutionCapabilityIssuer {
     return {
-      issue: async () => ({ capability, canonical: serializeExecutionCapability(capability), signature: (signature ?? signCapabilityBytes(capability, key)) as AuthoritySignature }),
+      issue: async () => ({ capability, canonical: serializeExecutionCapability(capability), signature: (signature === GENUINE ? signCapabilityBytes(capability, key) : signature) as AuthoritySignature }),
       inspect: () => 'absent',
     };
   }
