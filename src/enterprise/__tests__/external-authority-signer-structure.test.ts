@@ -153,7 +153,9 @@ describe('CORE-02 — the custody boundary stays structured: no generic signing,
     // CORE-02R: one bounded-attempt loop for signing and the startup handshake; it retries the availability family only.
     const attempts = block(adapter, 'async function withBoundedAttempts');
     assert.equal(/if \(!isRetryableAuthoritySigningFailure\(reason\)\) break;/.test(attempts), true, 'only the availability family is retried');
-    assert.ok(/withBoundedAttempts\(maxAttempts,/.test(sign), 'signing uses the shared loop');
+    assert.ok(/withBoundedAttempts\(attemptsFor\(request\),/.test(sign), 'signing uses the shared loop');
+    // G-02B: an execution capability is sent once — the only operation without the availability retry; every other keeps maxAttempts.
+    assert.ok(/return request\.operation === 'signExecutionCapability' \? 1 : maxAttempts;/.test(block(adapter, 'function attemptsFor(')));
     assert.ok(/withBoundedAttempts\(maxAttempts, \(\) => transport\.identity/.test(block(adapter, 'export async function establishExternalAuthorityArtifactSigner(')), 'the startup handshake uses the shared loop');
   });
 

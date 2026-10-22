@@ -96,7 +96,7 @@ describe('G-02A structure — the verifier is standalone', () => {
   });
 });
 
-describe('G-02A structure — nothing can sign a capability before G-02B', () => {
+describe('G-02A structure — the capability module itself never signs (G-02B signs only in custody)', () => {
   it('the module holds no private material and no signing call', () => {
     for (const file of sourcesUnder(ROOT)) {
       const code = codeOf(file);
@@ -104,11 +104,13 @@ describe('G-02A structure — nothing can sign a capability before G-02B', () =>
     }
   });
 
-  it('the authority signer and the external custody protocol offer no execution-capability operation', () => {
+  it('G-02B: the only signing operation is the structured custody extension, after its issuance rule — never a core operation', () => {
     const signer = readFileSync('src/enterprise/authority-authenticity/signer.ts', 'utf8');
-    assert.equal(/ExecutionCapability|executionCapability/.test(signer), false);
+    // The one execution-capability signing path: optional, structured, guarded by the in-custody rule.
+    assert.ok(/signExecutionCapability\?\(request: ExecutionCapabilityIssuanceRequest\): Promise<AuthoritySignature>;/.test(signer));
+    assert.ok(signer.includes('assessExecutionCapabilityIssuance(request,') && signer.includes('signBytes(executionCapabilitySigningBytes(ruling.capability))'));
     assert.deepEqual([...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS], ['signGrant', 'signRevocation', 'signRevocationState', 'signObligationDischargeState', 'signApprovalState']);
-    assert.deepEqual([...EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS], ['signDelegatedOfferCapability']);
+    assert.deepEqual([...EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS], ['signDelegatedOfferCapability', 'signExecutionCapability']);
   });
 
   it('the signing domain is registered once, with every other CORE-02 domain, and is prefix-free against them', () => {
