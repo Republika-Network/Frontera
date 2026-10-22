@@ -158,7 +158,7 @@ describe('G-02A ledger — outcomes move forward only, and uncertainty is explic
     const capabilityId = claim.outcome === 'claimed' ? claim.capabilityId : '';
     const record = ledger.read(capabilityId);
     assert.equal(record.state, 'claimed');
-    assert.equal(record.state !== 'absent' && record.outcomeRecorded, false);
+    assert.equal(record.outcomeRecorded, false);
     assert.equal(ledger.recordOutcome(capabilityId, 'outcome-unknown'), 'recorded');
     assert.equal(ledger.recordOutcome(capabilityId, 'outcome-unknown'), 'not-forward');
     assert.equal(ledger.recordOutcome(capabilityId, 'completed'), 'recorded');
@@ -224,7 +224,7 @@ describe('G-02A ledger — a simulated executor: claim before the side effect, n
     const restarted = await reopen(path);
     const record = restarted.readExecution(G02A_ISSUER, capability.executionId);
     assert.equal(record.state, 'claimed');
-    assert.equal(record.state !== 'absent' && record.outcomeRecorded, false, 'authorized and possibly attempted, outcome not recorded');
+    assert.equal(record.outcomeRecorded, false, 'authorized and possibly attempted, outcome not recorded');
     assert.equal(execute(restarted, presentation, sideEffects), 'refused:CAPABILITY_CONSUMED');
     assert.equal(sideEffects.count, 1);
   });
