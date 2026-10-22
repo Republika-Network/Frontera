@@ -137,6 +137,7 @@ import {
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
 import { createExecutionAdapterRegistry, type ExecutionAdapter, type ExecutionAdapterSelector } from '../../features/execution-runtime/index.js';
 import { GenericHttpConfigurationError, createGenericHttpExecutionAdapter, type EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
+import { createGenericHttpExecutionAdapterWithPreSendGates, type GenericHttpPreSendGate } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
 import type { EmergencyControlReaderPort, EmergencyControlStorePort } from '../../features/emergency-control-runtime/index.js';
 import { createEmergencyControlReader, createInMemoryEmergencyControlStore } from '../../features/emergency-control-runtime/index.js';
 import { createSqliteEmergencyControlStore } from '../emergency-control/sqlite-emergency-control-store.js';
@@ -184,6 +185,7 @@ import {
   type ExternalAuthoritySignerMonitor,
 } from '../external-authority-signer/index.js';
 import { createExecutionCapabilityIssuer, openExecutionCapabilityIssuanceLedger, type ExecutionCapabilityIssuerSlot } from '../execution-capability-issuance/index.js';
+import { ExecutionCapabilityGateConfigurationError, createExecutionCapabilityGate, type ExecutionCapabilityGate } from '../execution-capability-gate/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -638,13 +640,23 @@ export interface EnterpriseAuthorityControlledExecutionOptions
    * issuance ledger at `ledgerPath` (never creating one), and (c) binds, once,
    * an issuer over the **authenticated durable** grant store it opened, that
    * signer and that ledger. The policy's organization and trust domain must be
-   * this deployment's. Nothing is presented, routed or connected to an adapter:
-   * the slot has no caller until G-02C. Composed by the Host alone.
+   * this deployment's. Nothing is presented or routed. Composed by the Host
+   * alone.
+   *
+   * G-02C0: `adapters` names the Generic HTTP adapters whose every request must
+   * first be bound: each listed adapter gets a pre-send gate that issues a
+   * capability for the exact request (audience as given) and verifies it
+   * before any DNS lookup or socket, and sends nothing if either fails. An
+   * adapter not listed is unchanged. Each id must name a configured Generic
+   * HTTP adapter, at most once, and each audience must be registered in
+   * `policy` with the `frontera.http-request-binding.v1` format; otherwise
+   * composition refuses.
    */
   readonly executionCapabilities?: {
     readonly policy: ExecutionCapabilityIssuancePolicy;
     readonly ledgerPath: string;
     readonly slot: ExecutionCapabilityIssuerSlot;
+    readonly adapters?: readonly { readonly adapterId: string; readonly audience: string }[];
   };
   /**
    * P7 — aggregate / velocity exercise controls, a durable reservation ledger
@@ -1639,7 +1651,32 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   if (genericHttpOptions !== undefined && !Array.isArray(genericHttpOptions)) {
     throw new GenericHttpConfigurationError('GENERIC_HTTP_OPTIONS_INVALID', 'executionAdapterRouting.genericHttpAdapters must be an array of Generic HTTP adapter options.');
   }
-  const genericHttpAdapters: readonly ExecutionAdapter[] = Object.freeze((genericHttpOptions ?? []).map((entry) => createGenericHttpExecutionAdapter(entry)));
+  // G-02C0: the pre-send gates, one per adapter the issuance section lists. Built here, with the adapters, so a bad
+  // list fails startup before any store exists; each gate refuses until it is bound below, once the authority key and
+  // the emergency-control world exist, and its issuer is the Host's write-once slot, which refuses until bound too.
+  const capabilityGates = new Map<string, ExecutionCapabilityGate>();
+  const gatedAdapterOptions = options.authorityControlledExecution?.executionCapabilities?.adapters;
+  if (gatedAdapterOptions !== undefined) {
+    const issuance = options.authorityControlledExecution?.executionCapabilities;
+    if (!Array.isArray(gatedAdapterOptions) || issuance === undefined) throw new ExecutionCapabilityGateConfigurationError('executionCapabilities.adapters must be an array of { adapterId, audience }.');
+    for (const entry of gatedAdapterOptions as readonly unknown[]) {
+      const fields = entry !== null && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
+      if (fields === undefined || Object.keys(fields).sort().join(',') !== 'adapterId,audience' || typeof fields['adapterId'] !== 'string' || typeof fields['audience'] !== 'string') {
+        throw new ExecutionCapabilityGateConfigurationError('Each executionCapabilities.adapters entry is exactly { adapterId, audience }.');
+      }
+      if (capabilityGates.has(fields['adapterId'])) throw new ExecutionCapabilityGateConfigurationError(`executionCapabilities.adapters names '${fields['adapterId']}' twice.`);
+      capabilityGates.set(fields['adapterId'], createExecutionCapabilityGate({ adapterId: fields['adapterId'], audience: fields['audience'], policy: issuance.policy, issuer: issuance.slot }));
+    }
+  }
+  const preSendGates: ReadonlyMap<string, GenericHttpPreSendGate> = new Map([...capabilityGates].map(([adapterId, gate]) => [adapterId, gate.beforeSend]));
+  const genericHttpAdapters: readonly ExecutionAdapter[] = Object.freeze(
+    (genericHttpOptions ?? []).map((entry) => (preSendGates.size === 0 ? createGenericHttpExecutionAdapter(entry) : createGenericHttpExecutionAdapterWithPreSendGates(entry, preSendGates))),
+  );
+  for (const adapterId of capabilityGates.keys()) {
+    if (!genericHttpAdapters.some((adapter) => adapter.adapterId === adapterId)) {
+      throw new ExecutionCapabilityGateConfigurationError(`executionCapabilities.adapters names '${adapterId}', which is not a configured Generic HTTP adapter.`);
+    }
+  }
 
   // P7 exercise controls are checked just as early: a block with no policy, no
   // exercise-time binding resolver, a ledger that is not a ledger, or no usable
@@ -1983,9 +2020,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     capabilitySlot.bind(createDelegatedOfferCapabilityIssuer({ grants: grantStore, signer: authenticity.signer, verifier: authenticity.verifier }));
   }
 
+  let capabilityGateIssuerKey: TrustedVerificationKey | undefined;
   // G-02B: the execution-capability issuer reads only the authenticated durable store this root opened, reserves in the
   // issuance ledger the operator initialized (never created here), and signs only through this root's authority signer —
-  // which was built with (or proved to offer) the same policy. It is bound to a slot that nothing calls before G-02C.
+  // which was built with (or proved to offer) the same policy. It is bound to a slot whose one caller is the G-02C0 gate.
   if (executionCapabilities !== undefined) {
     const { policy } = executionCapabilities;
     if (!grantStoreOpenedHere || !isAuthenticatedDurableBoundedGrantStore(grantStore)) {
@@ -2001,6 +2039,12 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     const issuanceLedger = await openExecutionCapabilityIssuanceLedger(executionCapabilities.ledgerPath, { issuer: policy.issuer, clock: Date.now, busyTimeoutMs: Math.min(configuration.persistence.busyTimeoutMs, 60_000) });
     opened.push(async () => issuanceLedger.close());
     executionCapabilities.slot.bind(createExecutionCapabilityIssuer({ grants: grantStore, signer: authenticity.signer, verifier: authenticity.verifier, policy, ledger: issuanceLedger }));
+    // G-02C0: the gates verify what was issued as an executor would — pinned to this deployment's active key alone.
+    const active = configuration.authorityAuthenticity.verificationKeys.find((entry) => entry.keyId === authenticity.signer.activeKeyId);
+    if (active === undefined || !isSupportedAuthoritySignatureAlgorithm(active.algorithm)) {
+      throw new AuthorityAuthenticityConfigurationError('The active authority key is not in the trusted verification set; issued execution capabilities could not be verified.');
+    }
+    capabilityGateIssuerKey = { keyId: active.keyId, algorithm: active.algorithm, publicKeyPem: active.publicKeyPem };
   }
 
   // The exercise-control ledger (P7), opened **only** when exercise controls
@@ -2192,6 +2236,12 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // emergency-control world behind all four checkpoints.
   const emergencyControl: EmergencyControlReaderPort | undefined =
     emergencyControlStore === undefined ? undefined : createEmergencyControlReader(emergencyControlStore);
+
+  // G-02C0: every gate is bound to the same emergency-control reader as the four checkpoints, and to the active key.
+  for (const gate of capabilityGates.values()) {
+    if (capabilityGateIssuerKey === undefined) throw new ExecutionCapabilityGateConfigurationError('Execution capability gates need the composed issuer.');
+    gate.bind({ issuerKey: capabilityGateIssuerKey, emergencyControl });
+  }
 
   // The execution boundary: one provider adapter, or the composite registry
   // built from the host's trusted routing table. The registry is built *here*

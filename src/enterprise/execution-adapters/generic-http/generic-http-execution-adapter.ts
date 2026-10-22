@@ -3,6 +3,7 @@ import { GENERIC_HTTP_LIMITS as LIMITS, type EnterpriseGenericHttpExecutionAdapt
 import { snapshotGenericHttpOptions, type GenericHttpPlan } from './configuration.js';
 import { NODE_GENERIC_HTTP_RUNTIME, type GenericHttpNetworkRuntime, type GenericHttpTransportObservation } from './node-https-transport.js';
 import { selectApprovedAddress } from './public-address-policy.js';
+import { genericHttpRequestBinding, type GenericHttpRequestBinding } from './request-binding.js';
 import { mapGenericHttpRequest } from './request-mapper.js';
 
 /**
@@ -14,6 +15,7 @@ import { mapGenericHttpRequest } from './request-mapper.js';
  * ExecutionAdapterRegistry (trusted routing, adapter-scoped emergency check)
  *   -> execute(action)
  *   -> map        plan + action -> complete request, or ADAPTER_ERROR (no I/O)
+ *   -> gate       (G-02C0, only when composed) proceed, or ADAPTER_ERROR (nothing sent)
  *   -> resolve    the pinned hostname, fresh, every execution
  *   -> policy     every answer public, or ADAPTER_ERROR; pick one
  *   -> send       one connection to that one address; no reuse, no redirect, no retry
@@ -32,6 +34,7 @@ import { mapGenericHttpRequest } from './request-mapper.js';
  * | Observation | Result |
  * |---|---|
  * | request could not be built from the action | `failed` / `ADAPTER_ERROR` |
+ * | a composed pre-send gate did not answer `proceed` | `failed` / `ADAPTER_ERROR` |
  * | DNS failed, no answers, or timed out | `failed` / `PROVIDER_UNAVAILABLE` |
  * | an answer is not publicly routable | `failed` / `ADAPTER_ERROR` |
  * | TCP refused, TLS/certificate failure, budget spent before `secureConnect` | `failed` / `PROVIDER_UNAVAILABLE` |
@@ -54,6 +57,7 @@ import { mapGenericHttpRequest } from './request-mapper.js';
 
 const DETAIL = Object.freeze({
   unbuildable: 'Generic HTTP request could not be constructed from the validated action.',
+  withheld: 'Generic HTTP request was withheld before transmission by the pre-send gate.',
   unresolvable: 'Generic HTTP destination could not be resolved.',
   notPublic: 'Generic HTTP destination is not publicly routable.',
   notSent: 'Generic HTTP request could not connect before transmission.',
@@ -136,18 +140,70 @@ function fromObservation(observation: GenericHttpTransportObservation, credentia
 }
 
 /**
- * The adapter over a frozen plan and a network runtime. **Internal**: the only
- * production caller is `createGenericHttpExecutionAdapter` below, which always
- * binds the Node runtime. Tests reach this directly with a fake runtime; no
- * public option, barrel export or `CreateEnterpriseOptions` field reaches it.
+ * G-02C0 — what a pre-send gate is shown: the adapter's snapshotted identity,
+ * the validated action, and the binding record of the exact request about to
+ * be sent (`request-binding.ts`). Never the request object, and never the
+ * credential value: the record excludes it.
  */
-export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, runtime: GenericHttpNetworkRuntime): ExecutionAdapter {
+export interface GenericHttpPreSendSubject {
+  readonly adapterId: string;
+  readonly action: ValidatedExecutionAction;
+  readonly binding: GenericHttpRequestBinding;
+}
+
+/**
+ * A gate's whole vocabulary: proceed, or do not. There is no member that
+ * carries a request, a header, a body or a destination, so a gate can stop a
+ * request and can never change, replace or add to one.
+ */
+export type GenericHttpPreSendVerdict = { readonly proceed: true } | { readonly proceed: false };
+
+/**
+ * G-02C0 — an internal hook run **after** the request is final and frozen and
+ * **before** a DNS lookup or a socket. Composed by the composition root alone,
+ * per adapter, and never reachable from configuration, a route or a caller.
+ * Anything but a returned `{ proceed: true }` — `false`, a throw, a rejection,
+ * every other value — withholds the request.
+ */
+export type GenericHttpPreSendGate = (subject: GenericHttpPreSendSubject) => Promise<GenericHttpPreSendVerdict>;
+
+/** Exactly `{ proceed: true }` as an own data property; everything else is a refusal. */
+function proceeds(verdict: unknown): boolean {
+  if (verdict === null || typeof verdict !== 'object') return false;
+  const descriptor = Object.getOwnPropertyDescriptor(verdict, 'proceed');
+  return descriptor !== undefined && 'value' in descriptor && descriptor.value === true;
+}
+
+/**
+ * The adapter over a frozen plan and a network runtime. **Internal**: the only
+ * production callers are the two factories below, which always bind the Node
+ * runtime. Tests reach this directly with a fake runtime; no public option,
+ * barrel export or `CreateEnterpriseOptions` field reaches it.
+ *
+ * Without a `gate` it behaves exactly as before G-02C0: the gate step is
+ * skipped and nothing else differs.
+ */
+export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, runtime: GenericHttpNetworkRuntime, gate?: GenericHttpPreSendGate): ExecutionAdapter {
   const adapterId = plan.adapterId;
 
   async function execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult> {
     // 1. The complete request, before any I/O. Unbuildable means nothing is sent.
     const mapped = mapGenericHttpRequest(plan, action);
     if (!mapped.ok) return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.unbuildable };
+
+    // 1a. G-02C0: the composed gate sees the binding of `mapped.request` — the
+    //     frozen object sent in step 4, not a copy — and may only stop it.
+    //     Nothing has touched the network yet, so a refusal is a definite
+    //     `failed`: the request was never sent.
+    if (gate !== undefined) {
+      let verdict: unknown;
+      try {
+        verdict = await gate(Object.freeze({ adapterId, action, binding: genericHttpRequestBinding(plan, mapped.request) }));
+      } catch {
+        verdict = undefined;
+      }
+      if (!proceeds(verdict)) return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.withheld };
+    }
 
     const started = performance.now();
 
@@ -202,4 +258,15 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
  */
 export function createGenericHttpExecutionAdapter(options: EnterpriseGenericHttpExecutionAdapterOptions): ExecutionAdapter {
   return createGenericHttpExecutionAdapterCore(snapshotGenericHttpOptions(options), NODE_GENERIC_HTTP_RUNTIME);
+}
+
+/**
+ * G-02C0: the same production factory with a pre-send gate chosen by the
+ * snapshotted adapter id. Called only by `createEnterprise`; not re-exported
+ * from this module's index or the Enterprise barrel. An id with no gate in
+ * `gates` is built exactly as `createGenericHttpExecutionAdapter` builds it.
+ */
+export function createGenericHttpExecutionAdapterWithPreSendGates(options: EnterpriseGenericHttpExecutionAdapterOptions, gates: ReadonlyMap<string, GenericHttpPreSendGate>): ExecutionAdapter {
+  const plan = snapshotGenericHttpOptions(options);
+  return createGenericHttpExecutionAdapterCore(plan, NODE_GENERIC_HTTP_RUNTIME, gates.get(plan.adapterId));
 }
