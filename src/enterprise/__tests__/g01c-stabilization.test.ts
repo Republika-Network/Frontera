@@ -172,6 +172,32 @@ for (const provider of PROVIDERS) {
       });
     }
 
+    it('Store: a request id that changes between reads is validated and persisted as one value — never a malformed one', async () => {
+      const store = await provider.open();
+      stores.push(store);
+      const input = appendInput(fresh('shifting'));
+      const wellFormed = input.request.requestId;
+      let reads = 0;
+      const request = Object.defineProperty({ ...input.request }, 'requestId', {
+        enumerable: true,
+        get: () => ((reads += 1) === 1 ? wellFormed : 'req-\uD800-x'),
+      }) as KernelEvaluationRequest;
+      let appended: { readonly evaluationId: string } | undefined;
+      try {
+        appended = await store.appendEvaluation({ ...input, request });
+      } catch (error) {
+        assert.ok(error instanceof GovernanceStoreError, String(error));
+      }
+      for (const record of (await store.query(SYSTEM, { limit: 200 })).records) {
+        assert.equal(hasUnpairedSurrogate(record.requestId), false, 'no malformed request id was persisted');
+      }
+      if (appended !== undefined) {
+        const record = await store.getByEvaluationId(SYSTEM, appended.evaluationId);
+        assert.ok(record !== null);
+        assert.equal(hasUnpairedSurrogate(record.request.requestId), false);
+      }
+    });
+
     for (const [label, value] of WELL_FORMED) {
       it(`unchanged: ${label} is evaluated, stored exactly, found by itself and verified`, async () => {
         const store = await provider.open();
@@ -265,6 +291,24 @@ describe('G-01C stabilization — Host test fixtures never share an Evidence Bun
       return source.includes(PROVIDER_LINE) && source.includes(GOVERNANCE_PATH_KEY) && !source.includes(EVIDENCE_PATH_VARIABLE) && !source.includes('storeEnvironmentFor(');
     });
     assert.deepEqual(offenders, [], 'these fixtures would share the default evidence file with every other concurrently running Host test');
+  });
+
+  it('every test that composes an Enterprise over a SQLite provider — in any spelling — names its own evidence store', () => {
+    const sqliteProvider = /(?:PERSISTENCE_PROVIDER|\bprovider)\s*:[^,\n]*\x27sqlite\x27/;
+    const composes = /createEnterprise|createEnterpriseServer|bootEnterpriseHost/;
+    const namesEvidence = /AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH|evidence: \{|storeEnvironmentFor\(/;
+    /** Reviewed exceptions, each with why the shared default is never opened. */
+    const exempt = new Map<string, string>([
+      ['g01c-security-qualification.test.ts', 'its only SQLite provider is a Host-loader refusal; no SQLite Host is composed'],
+      ['prod02-backup-integrity-host.test.ts', 'every store path comes from deployment.envFor, i.e. storeEnvironmentFor (the store registry), which names the evidence store'],
+    ]);
+    const offenders = testSources('src').filter((path) => {
+      const name = path.split(/[\\/]/).pop() ?? path;
+      if (exempt.has(name)) return false;
+      const source = readFileSync(path, 'utf8');
+      return sqliteProvider.test(source) && composes.test(source) && !namesEvidence.test(source);
+    });
+    assert.deepEqual(offenders, [], 'these compositions would open the repository-relative default evidence file');
   });
 
   it('two independent CTRL-02 and CORE-04 fixture workspaces resolve distinct evidence paths, each inside its own workspace', () => {

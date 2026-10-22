@@ -358,6 +358,7 @@ describe('Authority authenticity — composition wires the two halves separately
     const configuration = {
       ...loadEnterpriseConfiguration({}),
       persistence: { ...loadEnterpriseConfiguration({}).persistence, provider: 'sqlite' as const },
+      evidence: { sqlitePath: ':memory:' },
     };
 
     await assert.rejects(

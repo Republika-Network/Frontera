@@ -223,7 +223,7 @@ describe('Emergency control composition — store ownership and durability selec
     const enterprise = await track(
       createEnterprise(
         await options({
-          configuration: { ...configuration(), persistence: { ...configuration().persistence, provider: 'sqlite', sqlitePath: join(workDir, 'gov.sqlite') }, emergencyControl: { sqlitePath: join(workDir, 'composed.sqlite') }, executionOutcome: { sqlitePath: join(workDir, 'execution-outcomes.sqlite') }, boundedGrant: { sqlitePath: join(workDir, 'grants.sqlite') }, authorityAuthenticity: { activeSigningKeyId: AUTHORITY_KEY_A.keyId, signingKeyPem: AUTHORITY_KEY_A.privateKeyPem, verificationKeys: [trustedKeyOf(AUTHORITY_KEY_A)] } },
+          configuration: { ...configuration(), persistence: { ...configuration().persistence, provider: 'sqlite', sqlitePath: join(workDir, 'gov.sqlite') }, evidence: { sqlitePath: join(workDir, 'evidence-bundles.sqlite') }, emergencyControl: { sqlitePath: join(workDir, 'composed.sqlite') }, executionOutcome: { sqlitePath: join(workDir, 'execution-outcomes.sqlite') }, boundedGrant: { sqlitePath: join(workDir, 'grants.sqlite') }, authorityAuthenticity: { activeSigningKeyId: AUTHORITY_KEY_A.keyId, signingKeyPem: AUTHORITY_KEY_A.privateKeyPem, verificationKeys: [trustedKeyOf(AUTHORITY_KEY_A)] } },
           emergencyControl: { enabled: true },
         }),
       ),
