@@ -153,6 +153,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'encumbrance-release-governance': 'outside the governed payment path',
       events: 'Host event publisher',
       'execution-adapters': 'non-payment execution adapters',
+      'execution-capability': 'G-02A executor-side capability contract, verifier and reference ledger; the Host loads only its signing-domain constant and issues nothing',
       'external-authority-signer': 'CORE-02 external signer; not composed by the qualified runs',
       health: 'Host health surface',
       lifecycle: 'Host lifecycle',
