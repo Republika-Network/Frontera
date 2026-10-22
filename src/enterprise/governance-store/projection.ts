@@ -239,10 +239,16 @@ function toEvaluationEventRecord(
  * the store implementations — commit the result atomically.
  */
 export function buildGovernanceAggregate(
-  input: AppendGovernanceEvaluationInput,
+  callerInput: AppendGovernanceEvaluationInput,
   deps: GovernanceProjectionDependencies,
   chain: { readonly previousAggregateDigest?: string; readonly chainPosition: number },
 ): GovernanceAggregate {
+  // G-01C: the caller's events are read exactly once; validation and projection
+  // see the same copy, so an accessor cannot show one event type to the check
+  // and another to the record.
+  const input: AppendGovernanceEvaluationInput = Array.isArray(callerInput.events)
+    ? { ...callerInput, events: Array.from(callerInput.events, (event) => ({ ...event }) as EnterpriseEvent) }
+    : callerInput;
   validateAppendInput(input);
   const { request, result, enterpriseContext } = input;
   const persistedAt = deps.now();
