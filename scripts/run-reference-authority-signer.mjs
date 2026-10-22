@@ -16,9 +16,18 @@
 //   FRONTERA_REFERENCE_SIGNER_HOST      default 127.0.0.1; loopback only.
 //   FRONTERA_REFERENCE_SIGNER_EXTENSIONS optional, comma-separated extension operations to offer
 //                                       (TRADE-04C-S1: signDelegatedOfferCapability — required by a
-//                                       Host that composes the governed trade executor).
+//                                       Host that composes the governed trade executor; G-02B:
+//                                       signExecutionCapability — required by a Host that composes
+//                                       execution-capability issuance).
+//   FRONTERA_REFERENCE_SIGNER_EXECUTION_CAPABILITY_POLICY_FILE
+//                                       required exactly when signExecutionCapability is offered: a JSON
+//                                       file holding this service's own issuance policy { issuer,
+//                                       organizationId, trustDomain, lifetimeMs, audiences }. The rule runs
+//                                       against it, never against what a request says.
 //
 // See docs/architecture/ADR-EXTERNAL-AUTHORITY-SIGNER-AND-KEY-CUSTODY.md.
+import { readFileSync } from 'node:fs';
+
 import { loadOrCreateReferenceSignerKey, startReferenceAuthoritySigner } from '../dist/src/enterprise/external-authority-signer/reference/reference-signer-service.js';
 
 function required(name) {
@@ -37,10 +46,13 @@ const port = Number.parseInt(process.env.FRONTERA_REFERENCE_SIGNER_PORT ?? '0', 
 const host = process.env.FRONTERA_REFERENCE_SIGNER_HOST ?? '127.0.0.1';
 const extensions = (process.env.FRONTERA_REFERENCE_SIGNER_EXTENSIONS ?? '').split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0);
 
+const policyFile = process.env.FRONTERA_REFERENCE_SIGNER_EXECUTION_CAPABILITY_POLICY_FILE;
+
 let signer;
 try {
+  const executionCapabilityIssuance = policyFile === undefined || policyFile.length === 0 ? undefined : JSON.parse(readFileSync(policyFile, 'utf8'));
   const { privateKeyPem } = loadOrCreateReferenceSignerKey(keyFile);
-  signer = await startReferenceAuthoritySigner({ keyId, privateKeyPem, credential, host, port, extensions });
+  signer = await startReferenceAuthoritySigner({ keyId, privateKeyPem, credential, host, port, extensions, ...(executionCapabilityIssuance !== undefined ? { executionCapabilityIssuance } : {}) });
 } catch (error) {
   // Never the key, never the credential: a code-free, value-free line.
   console.error(`reference authority signer refused to start: ${error instanceof Error ? error.message.split('\n')[0] : 'startup failed'}`);

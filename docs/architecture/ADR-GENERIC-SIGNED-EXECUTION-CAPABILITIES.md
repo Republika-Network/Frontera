@@ -64,6 +64,13 @@ carries the same value, and one executor, or colluding executors, can link
 executions that share a grant (it reveals nothing about the grant itself).
 Policy, decision and evidence content never leave the Host in a capability.
 
+*G-02B amendment:* capabilities the Host issues carry the per-capability
+`grantReference` v2 (a fresh 32-byte nonce, kept in the Host's issuance
+ledger, digested with the grant identity under
+`frontera.execution-capability.grant-reference.v2`). The wire field and every
+other part of this contract are unchanged; what v2 does and does not hide is in
+`docs/security/G-02B-EXECUTION-CAPABILITY-ISSUANCE.md` §4.
+
 ### 3. Canonical form and signature: CORE-02, unchanged
 
 - Canonical text: `aoc.canonical-json.v1` (`canonicalSerialize`) of the closed
@@ -148,7 +155,7 @@ Nothing makes an external side effect happen exactly once.
 
 | Milestone | Scope |
 |---|---|
-| G-02B | In-custody issuance rule, signer extension operation, issuer, Host audience configuration and issuer registration, grant-bound lifetime |
+| G-02B | In-custody issuance rule, signer extension operation, issuer, Host audience configuration and issuer registration, grant-bound lifetime — **shipped**, `ADR-EXECUTION-CAPABILITY-ISSUANCE.md` |
 | G-02C | Executor integration; execution receipts signed by pinned executor keys, linked to P11 observations (P11/P12 semantics unchanged) |
 | G-02D | Authoritative online status (signed, challenge-bound) for `online-status-required` |
 

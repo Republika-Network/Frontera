@@ -98,6 +98,10 @@ export function signWith(signer: AuthorityArtifactSigner, request: ExternalAutho
       // TRADE-04C-S1 extension: only a signer that offers it can answer it.
       if (signer.signDelegatedOfferCapability === undefined) throw new Error('This signer offers no delegated-offer capability operation.');
       return signer.signDelegatedOfferCapability({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature });
+    case 'signExecutionCapability':
+      // G-02B extension: likewise, only a signer configured with an issuance policy can answer it.
+      if (signer.signExecutionCapability === undefined) throw new Error('This signer offers no execution capability operation.');
+      return signer.signExecutionCapability({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature, grantReferenceNonce: request.grantReferenceNonce });
   }
 }
 
@@ -175,7 +179,7 @@ export function signerKeyDirectory(): { readonly dir: string; cleanup(): void } 
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-export async function spawnReferenceSigner(options: { readonly keyFile: string; readonly keyId: string; readonly port?: number; readonly credential?: string }): Promise<SpawnedSigner> {
+export async function spawnReferenceSigner(options: { readonly keyFile: string; readonly keyId: string; readonly port?: number; readonly credential?: string; readonly env?: Readonly<Record<string, string>> }): Promise<SpawnedSigner> {
   const credential = options.credential ?? SIGNER_TOKEN;
   // The signer's environment is its own: PATH plus its four variables. Nothing
   // of the Host's configuration, and the Host is never given any of this.
@@ -186,6 +190,8 @@ export async function spawnReferenceSigner(options: { readonly keyFile: string; 
       FRONTERA_REFERENCE_SIGNER_KEY_ID: options.keyId,
       FRONTERA_REFERENCE_SIGNER_TOKEN: credential,
       FRONTERA_REFERENCE_SIGNER_PORT: String(options.port ?? 0),
+      // G-02B: a qualification may add the signer's own extension variables (never the Host's configuration).
+      ...options.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

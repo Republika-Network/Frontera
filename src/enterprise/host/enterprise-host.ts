@@ -21,6 +21,7 @@ import {
 } from './host-configuration.js';
 import { currentReleaseIdentity, type FronteraReleaseIdentity } from './release-identity.js';
 import { createApprovalPolicyPackProvider } from './approval-policy.js';
+import { createExecutionCapabilityIssuerSlot, type ExecutionCapabilityIssuerSlot } from '../execution-capability-issuance/index.js';
 
 /**
  * The Enterprise Host bootstrap: the one supported way to start Frontera as a
@@ -151,7 +152,13 @@ function policyPackProviderOf(host: EnterpriseHostConfiguration, options: BootEn
   return createApprovalPolicyPackProvider(declared, host.governedActions!.trustDomainId);
 }
 
-function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: BootEnterpriseHostOptions, xrpl?: ComposedXrplPaymentRail, trade?: ComposedXrplTradeExecution): CreateEnterpriseOptions {
+function toCreateEnterpriseOptions(
+  host: EnterpriseHostConfiguration,
+  options: BootEnterpriseHostOptions,
+  xrpl?: ComposedXrplPaymentRail,
+  trade?: ComposedXrplTradeExecution,
+  executionCapabilities?: ExecutionCapabilityIssuerSlot,
+): CreateEnterpriseOptions {
   const governed = host.governedActions;
   const policyPackProvider = policyPackProviderOf(host, options);
   const base: CreateEnterpriseOptions = {
@@ -192,6 +199,11 @@ function toCreateEnterpriseOptions(host: EnterpriseHostConfiguration, options: B
       exerciseControls: { policy: () => [], revalidateAuthorityBinding: () => HOST_ORGANIZATIONAL_AUTHORITY_BINDING },
       // TRADE-04C-S1: the executor's capability-issuer slot, bound by the composition over the authenticated grant store and authority signer.
       ...(trade !== undefined ? { delegatedOfferCapabilities: trade.capabilities } : {}),
+      // G-02B: the opt-in execution-capability issuer, bound by the composition over the authenticated grant store, the
+      // authority signer (with this policy) and the operator-initialized issuance ledger. Nothing calls it before G-02C.
+      ...(executionCapabilities !== undefined && governed.executionCapabilities !== undefined
+        ? { executionCapabilities: { policy: governed.executionCapabilities.policy, ledgerPath: governed.executionCapabilities.issuanceLedgerPath, slot: executionCapabilities } }
+        : {}),
     },
     governedActionOrchestrator: {
       enabled: true,
@@ -489,9 +501,12 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
       throw error;
     }
   }
+  // G-02B: a write-once slot only when the file opts in; the composition binds it or refuses. The Host keeps it: no option,
+  // route or response hands the issuer out (CORE-06 §23), and nothing calls it before G-02C.
+  const executionCapabilities = host.governedActions?.executionCapabilities !== undefined ? createExecutionCapabilityIssuerSlot() : undefined;
   let server: EnterpriseServer;
   try {
-    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }, xrpl, trade));
+    server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }, xrpl, trade, executionCapabilities));
   } catch (error) {
     logger.error('enterprise.host.refused', { phase: 'composition', errorCode: refusalCode(error) });
     await trade?.close();
@@ -514,6 +529,10 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
     // TRADE-04C-S1: a trade executor whose signing capabilities cannot be issued is not served — never a bearer-only signer.
     if (trade !== undefined && !trade.capabilities.bound()) {
       throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'The governed trade executor was composed but no delegated-offer capability issuer was bound; it would refuse every order.');
+    }
+    // G-02B: an opted-in issuer that was not bound is a composition defect, never a silently absent feature.
+    if (executionCapabilities !== undefined && !executionCapabilities.bound()) {
+      throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'Execution-capability issuance was configured but no issuer was bound.');
     }
     // CORE-02: a Host configured for external custody runs on an external
     // signer, or not at all — in any profile. Checked against the composed

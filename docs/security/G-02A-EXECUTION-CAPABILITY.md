@@ -65,7 +65,7 @@ Forged execution receipts and invalid or missing provenance belong to G-02C (rec
 | G02A-R2 | Executor ledger rollback or deletion forgets consumptions | executor deployment; not anchored |
 | G02A-R3 | Separate ledgers are separate consumption domains | executor deployment (shared ledger) |
 | G02A-R4 | The CORE-02 trust caveats apply unchanged: AA-001 (software custody), AA-002 (configuration controls trust — now also each executor's pinned issuer keys), AA-010 (a compromised Host may request signatures once G-02B exists) | CORE-02 / G-02B |
-| G02A-R5 | `subjectActorId` lets an executor correlate one actor's actions over time; `grantReference` is per grant (unsalted), so executions sharing a grant are linkable by one executor or colluding executors | inherent / documented; salting is a G-02B option |
+| G02A-R5 | `subjectActorId` lets an executor correlate one actor's actions over time; `grantReference` is per grant (unsalted), so executions sharing a grant are linkable by one executor or colluding executors | inherent / documented; G-02B issues a per-capability (nonce-salted) reference — the execution id and subject still correlate (`G-02B-EXECUTION-CAPABILITY-ISSUANCE.md` §4) |
 | G02A-R8 | The ledger accepts a `verified` result from any verifier instance in the process and itself re-checks only audience, status eligibility and expiry; under lock contention past the busy timeout `claim` throws (nothing consumed) | in-process code is trusted; executor composition |
 | G02A-R6 | Executor-recorded outcomes are unauthenticated statements | G-02C (signed receipts) |
 | G02A-R7 | Exactly-once external execution is not provided | reconciliation (P11/P12) |

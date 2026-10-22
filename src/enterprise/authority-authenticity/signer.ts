@@ -7,6 +7,14 @@ import type { ObligationDischargeStateCommitment } from '../obligation-discharge
 import { registerAuthoritySignerCustody } from './custody.js';
 import { assessDelegatedOfferCapabilityIssuance, type DelegatedOfferCapabilityIssuanceRequest } from './delegated-offer-capability.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
+import {
+  ExecutionCapabilityPolicyError,
+  assessExecutionCapabilityIssuance,
+  createExecutionCapabilityIssuancePolicy,
+  type ExecutionCapabilityIssuancePolicy,
+  type ExecutionCapabilityIssuanceRequest,
+} from './execution-capability-issuance.js';
+import { executionCapabilitySigningBytes } from '../execution-capability/capability.js';
 import { createAuthorityArtifactVerifier } from './verifier.js';
 import {
   AUTHORITY_ARTIFACT_VERSION,
@@ -106,6 +114,20 @@ export interface AuthorityArtifactSigner {
    * when the assessment refuses.
    */
   signDelegatedOfferCapability?(request: DelegatedOfferCapabilityIssuanceRequest): Promise<AuthoritySignature>;
+  /**
+   * G-02B: signs a generic execution capability — **only** after
+   * `assessExecutionCapabilityIssuance` accepts it inside this custody
+   * boundary, against the boundary's **own** policy (issuer, organization,
+   * trust domain, lifetime, audience registry): the presented grant must
+   * verify under this signer's own key, the execution must be the one derived
+   * from that grant, and the capability must name exactly what the grant and
+   * the policy allow. Signs `executionCapabilitySigningBytes` of the frozen
+   * canonical record the rule accepted — never text as presented. Optional:
+   * present only on a signer configured with an issuance policy. Rejects with
+   * `AuthoritySigningUnavailableError` (`EXTERNAL_SIGNER_REFUSED`) when the
+   * rule refuses.
+   */
+  signExecutionCapability?(request: ExecutionCapabilityIssuanceRequest): Promise<AuthoritySignature>;
 }
 
 export interface SoftwareAuthorityArtifactSignerOptions {
@@ -115,6 +137,12 @@ export interface SoftwareAuthorityArtifactSignerOptions {
   readonly privateKeyPem: string;
   /** The clock the capability issuance rule reads (ms since the epoch). Defaults to `Date.now`. For tests. */
   readonly now?: () => number;
+  /**
+   * G-02B: this custody boundary's own execution-capability issuance policy
+   * (`createExecutionCapabilityIssuancePolicy`). Absent: the signer offers no
+   * `signExecutionCapability`. Present: validated and frozen here, once.
+   */
+  readonly executionCapabilityIssuance?: unknown;
 }
 
 /**
@@ -169,6 +197,14 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
   // The issuance rule verifies a presented grant under this key alone: never a registry the request could influence.
   const ownVerifier = createAuthorityArtifactVerifier([{ keyId, algorithm, publicKeyPem: createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }).toString() }]);
   const now = options.now ?? Date.now;
+  let executionPolicy: ExecutionCapabilityIssuancePolicy | undefined;
+  if (options.executionCapabilityIssuance !== undefined) {
+    try {
+      executionPolicy = createExecutionCapabilityIssuancePolicy(options.executionCapabilityIssuance);
+    } catch (error) {
+      throw new AuthorityAuthenticityConfigurationError(`The authority signing key '${keyId}' was given an invalid execution capability issuance policy: ${error instanceof ExecutionCapabilityPolicyError ? error.message : 'not a policy'}`);
+    }
+  }
 
   const signer: AuthorityArtifactSigner = Object.freeze({
     activeKeyId: keyId,
@@ -193,6 +229,18 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
       if (!assessment.issuable) throw new AuthoritySigningUnavailableError(`The authority signing key '${keyId}' refused the delegated-offer capability (${assessment.failure}).`, 'EXTERNAL_SIGNER_REFUSED');
       return signBytes(delegatedOfferCapabilitySigningBytes(request.capability));
     },
+    // G-02B: present only when this boundary was configured with its own issuance policy.
+    ...(executionPolicy !== undefined
+      ? {
+          async signExecutionCapability(request: ExecutionCapabilityIssuanceRequest): Promise<AuthoritySignature> {
+            const policy = executionPolicy as ExecutionCapabilityIssuancePolicy;
+            const ruling = assessExecutionCapabilityIssuance(request, { verifyGrant: (grant, storeId, signature) => ownVerifier.verifyGrant(grant, storeId, signature), activeKeyId: keyId, policy, now: now() });
+            if (!ruling.issuable) throw new AuthoritySigningUnavailableError(`The authority signing key '${keyId}' refused the execution capability (${ruling.failure}).`, 'EXTERNAL_SIGNER_REFUSED');
+            // The frozen canonical record the rule accepted, under the G-02A domain: never the text as presented.
+            return signBytes(executionCapabilitySigningBytes(ruling.capability));
+          },
+        }
+      : {}),
   });
   registerAuthoritySignerCustody(signer, 'software');
   return signer;

@@ -13,6 +13,7 @@ import {
   type AuthoritySignature,
 } from './authority-signature.js';
 import { createAuthoritySignatureRegistry, type AuthoritySignatureVerification, type TrustedVerificationKey } from './signature-verification.js';
+import { executionCapabilitySigningBytes, isWellFormedExecutionCapability, type ExecutionCapability } from '../execution-capability/capability.js';
 
 export type { AuthoritySignatureVerification, TrustedVerificationKey } from './signature-verification.js';
 
@@ -72,6 +73,12 @@ export interface AuthorityArtifactVerifier {
    * that is the delegated signer's to check.
    */
   verifyDelegatedOfferCapability(capability: DelegatedOfferCapability, signature: unknown): AuthoritySignatureVerification;
+  /**
+   * G-02B: verifies a generic execution capability's signature under its own domain, over its canonical text. A capability
+   * that is not well formed is refused as malformed before any key is consulted. Signature only — audience, window, binding
+   * and consumption are the standalone verifier's and the executor's (`execution-capability/verifier.ts`).
+   */
+  verifyExecutionCapability(capability: ExecutionCapability, signature: unknown): AuthoritySignatureVerification;
   /** The key ids this verifier trusts, for composition checks and diagnostics. Ids only — never key material. */
   readonly trustedKeyIds: readonly string[];
 }
@@ -102,6 +109,10 @@ export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificati
     verifyDelegatedOfferCapability(capability: DelegatedOfferCapability, signature: unknown): AuthoritySignatureVerification {
       if (!isWellFormedDelegatedOfferCapability(capability)) return { verified: false, failure: 'AUTHORITY_SIGNATURE_MALFORMED' };
       return verify(delegatedOfferCapabilitySigningBytes(capability), signature);
+    },
+    verifyExecutionCapability(capability: ExecutionCapability, signature: unknown): AuthoritySignatureVerification {
+      if (!isWellFormedExecutionCapability(capability)) return { verified: false, failure: 'AUTHORITY_SIGNATURE_MALFORMED' };
+      return verify(executionCapabilitySigningBytes(capability), signature);
     },
   });
 }

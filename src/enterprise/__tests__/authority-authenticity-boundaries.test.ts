@@ -178,9 +178,12 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
     // CORE-05 added exactly one more: the approval store's signed state (it
     // resumes a withheld decision into a grant).
     // TRADE-04C-S1 adds one verification — of the delegated-offer signing capability, under its own domain. Still no signing member.
-    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyDelegatedOfferCapability', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
+    // G-02B adds one more verification — of a generic execution capability, under its own domain.
+    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyDelegatedOfferCapability', 'verifyExecutionCapability', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
     // TRADE-04C-S1: and one structured signing operation — a capability, signed only after the issuance rule accepts it. No key member, no byte signing.
     assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signApprovalState', 'signDelegatedOfferCapability', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
+    // G-02B: the execution-capability operation exists only on a signer built with its own issuance policy.
+    assert.equal('signExecutionCapability' in signer, false);
   });
 
   it('the signer offers no generic "sign arbitrary bytes" capability', () => {

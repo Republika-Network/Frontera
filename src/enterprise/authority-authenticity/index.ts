@@ -76,3 +76,23 @@ export type {
   IssuedDelegatedOfferCapability,
   SignedGrantReader,
 } from './delegated-offer-capability-issuer.js';
+
+export {
+  EXECUTION_CAPABILITY_EXECUTION_DERIVATION,
+  EXECUTION_CAPABILITY_GRANT_REFERENCE_V2_DOMAIN,
+  EXECUTION_CAPABILITY_ISSUANCE_FAILURES,
+  ExecutionCapabilityPolicyError,
+  assessExecutionCapabilityIssuance,
+  createExecutionCapabilityIssuancePolicy,
+  executionCapabilityGrantReferenceV2,
+  executionIdForGrant,
+  isExecutionCapabilityGrantReferenceNonce,
+} from './execution-capability-issuance.js';
+export type {
+  ExecutionCapabilityAudienceRegistration,
+  ExecutionCapabilityIssuanceAssessment,
+  ExecutionCapabilityIssuanceContext,
+  ExecutionCapabilityIssuanceFailure,
+  ExecutionCapabilityIssuancePolicy,
+  ExecutionCapabilityIssuanceRequest,
+} from './execution-capability-issuance.js';

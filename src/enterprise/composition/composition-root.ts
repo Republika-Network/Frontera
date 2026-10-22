@@ -174,9 +174,16 @@ import {
   type AuthorityArtifactVerifier,
   type AuthoritySignerCustody,
   type DelegatedOfferCapabilityIssuerSlot,
+  type ExecutionCapabilityIssuancePolicy,
   type TrustedVerificationKey,
 } from '../authority-authenticity/index.js';
-import { createHttpExternalAuthoritySignerTransport, establishExternalAuthorityArtifactSigner, type ExternalAuthoritySignerMonitor } from '../external-authority-signer/index.js';
+import {
+  createHttpExternalAuthoritySignerTransport,
+  establishExternalAuthorityArtifactSigner,
+  type ExternalAuthoritySignerExtensionOperation,
+  type ExternalAuthoritySignerMonitor,
+} from '../external-authority-signer/index.js';
+import { createExecutionCapabilityIssuer, openExecutionCapabilityIssuanceLedger, type ExecutionCapabilityIssuerSlot } from '../execution-capability-issuance/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -622,6 +629,23 @@ export interface EnterpriseAuthorityControlledExecutionOptions
    * unbound slot. Composed by the Host alone.
    */
   readonly delegatedOfferCapabilities?: DelegatedOfferCapabilityIssuerSlot;
+  /**
+   * G-02B — opt-in, in-custody issuance of generic execution capabilities.
+   * When present, this root (a) requires the authority signer to offer
+   * `signExecutionCapability` under this same policy — the software signer is
+   * built with it; an external custody service must answer with exactly the
+   * five core operations plus the required extensions — (b) opens the existing
+   * issuance ledger at `ledgerPath` (never creating one), and (c) binds, once,
+   * an issuer over the **authenticated durable** grant store it opened, that
+   * signer and that ledger. The policy's organization and trust domain must be
+   * this deployment's. Nothing is presented, routed or connected to an adapter:
+   * the slot has no caller until G-02C. Composed by the Host alone.
+   */
+  readonly executionCapabilities?: {
+    readonly policy: ExecutionCapabilityIssuancePolicy;
+    readonly ledgerPath: string;
+    readonly slot: ExecutionCapabilityIssuerSlot;
+  };
   /**
    * P7 — aggregate / velocity exercise controls, a durable reservation ledger
    * and exercise-time authority-binding revalidation on this path.
@@ -1149,9 +1173,10 @@ interface AuthorityAuthenticityBoundary {
   readonly monitor: ExternalAuthoritySignerMonitor | undefined;
 }
 
-/** TRADE-04C-S1: what the composition needs from the authority signer beyond the five core operations. */
+/** TRADE-04C-S1: what the composition needs from the authority signer beyond the five core operations. G-02B: and the execution-capability issuance policy custody applies, when issuance is composed. */
 interface AuthorityAuthenticityRequirements {
   readonly delegatedOfferCapabilities: boolean;
+  readonly executionCapabilityIssuance?: ExecutionCapabilityIssuancePolicy;
 }
 const NO_AUTHORITY_REQUIREMENTS: AuthorityAuthenticityRequirements = Object.freeze({ delegatedOfferCapabilities: false });
 
@@ -1209,6 +1234,10 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
     // algorithm and public key together. The custody service's identity is
     // checked against it before this returns (no TOFU), and every signature it
     // later returns is verified locally under it before any store sees it.
+    // TRADE-04C-S1 and G-02B: extensions are required only when their feature is composed; then the service must offer them, exactly.
+    const extensions: ExternalAuthoritySignerExtensionOperation[] = [];
+    if (requirements.delegatedOfferCapabilities) extensions.push('signDelegatedOfferCapability');
+    if (requirements.executionCapabilityIssuance !== undefined) extensions.push('signExecutionCapability');
     const { signer, monitor } = await establishExternalAuthorityArtifactSigner({
       transport: createHttpExternalAuthoritySignerTransport({ endpoint: authenticity.externalSigner.endpoint, credential: authenticity.externalSigner.credential }),
       pinned: { keyId: active.keyId, algorithm: active.algorithm, publicKeyPem: active.publicKeyPem },
@@ -1216,8 +1245,7 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
       timeoutMs: authenticity.externalSigner.timeoutMs,
       maxAttempts: authenticity.externalSigner.maxAttempts,
       probeIntervalMs: authenticity.externalSigner.probeIntervalMs,
-      // TRADE-04C-S1: required only when the trade executor is composed; then the service must offer it, exactly.
-      ...(requirements.delegatedOfferCapabilities ? { extensions: ['signDelegatedOfferCapability'] as const } : {}),
+      ...(extensions.length > 0 ? { extensions } : {}),
     });
     return { signer, verifier, custody: 'external', monitor };
   }
@@ -1234,7 +1262,13 @@ async function buildAuthorityAuthenticity(configuration: EnterpriseConfiguration
   }
 
   return {
-    signer: createSoftwareAuthorityArtifactSigner({ keyId: activeSigningKeyId as string, algorithm: active.algorithm, privateKeyPem: signingKeyPem }),
+    signer: createSoftwareAuthorityArtifactSigner({
+      keyId: activeSigningKeyId as string,
+      algorithm: active.algorithm,
+      privateKeyPem: signingKeyPem,
+      // G-02B: the in-process custody boundary applies its own copy of the policy.
+      ...(requirements.executionCapabilityIssuance !== undefined ? { executionCapabilityIssuance: requirements.executionCapabilityIssuance } : {}),
+    }),
     verifier,
     custody: 'software',
     monitor: undefined,
@@ -1740,8 +1774,12 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // this root opens shares one boundary.
   let authorityAuthenticityOnce: Promise<AuthorityAuthenticityBoundary> | undefined;
   const capabilitySlot = options.authorityControlledExecution?.delegatedOfferCapabilities;
+  const executionCapabilities = options.authorityControlledExecution?.executionCapabilities;
   const resolveAuthorityAuthenticity = (): Promise<AuthorityAuthenticityBoundary> =>
-    (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration, { delegatedOfferCapabilities: capabilitySlot !== undefined }));
+    (authorityAuthenticityOnce ??= buildAuthorityAuthenticity(configuration, {
+      delegatedOfferCapabilities: capabilitySlot !== undefined,
+      ...(executionCapabilities !== undefined ? { executionCapabilityIssuance: executionCapabilities.policy } : {}),
+    }));
   if (options.authorityControlledExecution !== undefined && options.authorityControlledExecution.grantStore === undefined && configuration.persistence.provider === 'sqlite') {
     await resolveAuthorityAuthenticity();
   }
@@ -1943,6 +1981,26 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       throw new AuthorityAuthenticityConfigurationError('The composed authority signer offers no delegated-offer capability operation; the governed trade executor cannot be authorized.');
     }
     capabilitySlot.bind(createDelegatedOfferCapabilityIssuer({ grants: grantStore, signer: authenticity.signer, verifier: authenticity.verifier }));
+  }
+
+  // G-02B: the execution-capability issuer reads only the authenticated durable store this root opened, reserves in the
+  // issuance ledger the operator initialized (never created here), and signs only through this root's authority signer —
+  // which was built with (or proved to offer) the same policy. It is bound to a slot that nothing calls before G-02C.
+  if (executionCapabilities !== undefined) {
+    const { policy } = executionCapabilities;
+    if (!grantStoreOpenedHere || !isAuthenticatedDurableBoundedGrantStore(grantStore)) {
+      throw new AuthorityAuthenticityConfigurationError('The execution capability issuer needs the authenticated durable bounded-grant store this composition opens (persistence sqlite, no host-supplied store).');
+    }
+    if (policy.organizationId !== configuration.kernelAuthority.organizationId || governedActionOptions === undefined || policy.trustDomain !== governedActionOptions.trustDomainId) {
+      throw new AuthorityAuthenticityConfigurationError("The execution capability issuance policy must name this deployment's one organization and its governed-action trust domain.");
+    }
+    const authenticity = await resolveAuthorityAuthenticity();
+    if (typeof authenticity.signer.signExecutionCapability !== 'function') {
+      throw new AuthorityAuthenticityConfigurationError('The composed authority signer offers no execution capability operation; execution capabilities cannot be issued.');
+    }
+    const issuanceLedger = await openExecutionCapabilityIssuanceLedger(executionCapabilities.ledgerPath, { issuer: policy.issuer, clock: Date.now, busyTimeoutMs: Math.min(configuration.persistence.busyTimeoutMs, 60_000) });
+    opened.push(async () => issuanceLedger.close());
+    executionCapabilities.slot.bind(createExecutionCapabilityIssuer({ grants: grantStore, signer: authenticity.signer, verifier: authenticity.verifier, policy, ledger: issuanceLedger }));
   }
 
   // The exercise-control ledger (P7), opened **only** when exercise controls

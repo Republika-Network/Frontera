@@ -8,7 +8,7 @@ import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime
 import { serializeApprovalStateCommitment, type ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import { serializeObligationDischargeStateCommitment, type ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { serializeDelegatedOfferCapability, type DelegatedOfferCapability } from './delegated-offer-capability.js';
-import { EXECUTION_CAPABILITY_SIGNING_DOMAIN } from '../execution-capability/capability.js';
+import { EXECUTION_CAPABILITY_SIGNING_DOMAIN, executionCapabilitySigningBytes, type ExecutionCapability } from '../execution-capability/capability.js';
 import type { AuthoritySignatureAlgorithm } from './signature-envelope.js';
 
 // The envelope's dependency-free primitives live in `signature-envelope.ts` (G-02A), so a standalone verifier can use them
@@ -94,7 +94,7 @@ export const AUTHORITY_SIGNING_DOMAINS = {
   approvalState: 'frontera:authority-artifact:approval-state:v1\n',
   /** TRADE-04C-S1: a single-use authorization for one delegated XRPL OfferCreate signature, issued only for a grant this key signed (`delegated-offer-capability.ts`). */
   delegatedOfferCapability: 'frontera:authority-artifact:xrpl-delegated-offer-capability:v1\n',
-  /** G-02A: a generic, single-use execution capability presented to an independent executor (`execution-capability/capability.ts`). Verified by the standalone execution-capability verifier; no signing operation exists for it before G-02B. */
+  /** G-02A: a generic, single-use execution capability presented to an independent executor (`execution-capability/capability.ts`). Verified by the standalone execution-capability verifier; signed only in custody, after the G-02B issuance rule (`execution-capability-issuance.ts`). */
   executionCapability: EXECUTION_CAPABILITY_SIGNING_DOMAIN,
 } as const;
 
@@ -152,7 +152,7 @@ export function delegatedOfferCapabilitySigningBytes(capability: DelegatedOfferC
   return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.delegatedOfferCapability}${serializeDelegatedOfferCapability(capability)}`, 'utf8');
 }
 
-/** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. The execution capability (G-02A) has no Host signing path yet; its bytes are `executionCapabilitySigningBytes` (`execution-capability/capability.ts`), and it joins this dispatcher with its signing operation in G-02B. */
+/** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. The execution capability's bytes are G-02A's own `executionCapabilitySigningBytes` (`execution-capability/capability.ts`), unchanged. */
 export function authoritySigningBytes(
   artifact:
     | { readonly kind: 'grant'; readonly grant: BoundedGrant; readonly storeId: string }
@@ -160,7 +160,8 @@ export function authoritySigningBytes(
     | { readonly kind: 'revocationState'; readonly state: RevocationStateCommitment }
     | { readonly kind: 'obligationDischargeState'; readonly state: ObligationDischargeStateCommitment }
     | { readonly kind: 'approvalState'; readonly state: ApprovalStateCommitment }
-    | { readonly kind: 'delegatedOfferCapability'; readonly capability: DelegatedOfferCapability },
+    | { readonly kind: 'delegatedOfferCapability'; readonly capability: DelegatedOfferCapability }
+    | { readonly kind: 'executionCapability'; readonly capability: ExecutionCapability },
 ): Buffer {
   switch (artifact.kind) {
     case 'grant':
@@ -175,5 +176,7 @@ export function authoritySigningBytes(
       return approvalStateSigningBytes(artifact.state);
     case 'delegatedOfferCapability':
       return delegatedOfferCapabilitySigningBytes(artifact.capability);
+    case 'executionCapability':
+      return executionCapabilitySigningBytes(artifact.capability);
   }
 }
