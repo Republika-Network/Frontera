@@ -43,7 +43,8 @@ import { EnterpriseHostConfigurationError, loadEnterpriseHostConfiguration } fro
 import { createInMemoryKernelAuthorityStore } from '../kernel-authority/in-memory-kernel-authority-store.js';
 import { createKernelAuthorityProvisioningService } from '../kernel-authority/provisioning-service.js';
 import { AgentPassportError } from '../passport/errors.js';
-import { ALLOWED_INTENT, EVALUATED_AT_POLICY, IDENTITY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID, buildGovernedWorld } from './governed-action-support.js';
+import { deriveGovernedActionRequestId } from '../governed-action/index.js';
+import { ALLOWED_INTENT, EVALUATED_AT_POLICY, NO_TEMPORAL_BOUND, ORG, PMFREAK_ACTOR_ID, TRUST_DOMAIN_ID } from './governed-action-support.js';
 import { buildAllowedRequestBody, buildTestKernelProviders } from './support.js';
 
 /**
@@ -340,9 +341,10 @@ describe('G-01C §1 — SQLite — attribution, replay and governed provenance s
     const before = await harness(first);
     const committed = await evaluate(before, CUSTOMER_KEY, payload, key);
     assert.equal(committed.status, 200, committed.text);
-    const world = buildGovernedWorld({ store: first });
-    const governed = await world.orchestrator.govern(IDENTITY, { ...ALLOWED_INTENT, idempotencyKey: fresh('restart-governed') });
-    assert.ok(governed.requestId !== undefined);
+    const governedKey = fresh('restart-governed');
+    const governedReply = await call(before.baseUrl, 'POST', '/api/governed-actions', CUSTOMER_KEY, { ...ALLOWED_INTENT, idempotencyKey: governedKey });
+    const governedRequestId = deriveGovernedActionRequestId({ organizationId: ORG, principalId: PRINCIPAL, idempotencyKey: governedKey });
+    assert.ok((await first.getByRequestId(SYSTEM, governedRequestId)) !== null, `the governed path committed its record: ${governedReply.status} ${governedReply.text}`);
     await before.server.close();
     await first.close();
 
@@ -366,7 +368,7 @@ describe('G-01C §1 — SQLite — attribution, replay and governed provenance s
     assert.equal((await second.verify(SYSTEM, advisory.evaluation.evaluationId)).valid, true);
     assert.equal(await hasGovernedActionProvenance(second, TENANT, advisory), false, 'an advisory record is not governed after a restart');
 
-    const governedRecord = await second.getByRequestId(SYSTEM, governed.requestId);
+    const governedRecord = await second.getByRequestId(SYSTEM, governedRequestId);
     assert.ok(governedRecord !== null);
     assert.equal(await hasGovernedActionProvenance(second, TENANT, governedRecord), true, 'a governed record is still governed after a restart');
   });
