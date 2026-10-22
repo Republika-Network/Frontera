@@ -38,7 +38,6 @@ describe('G-02B issuance ledger — the schema and its transitions', () => {
     assert.deepEqual(ledger.reserve(reservation), { outcome: 'reserved', reservedAt: new Date(NOW).toISOString() });
     const reserved = ledger.read(capability.executionId);
     assert.equal(reserved.state, 'reserved');
-    if (reserved.state === 'absent') return;
     assert.equal(reserved.canonical, serializeExecutionCapability(capability));
     assert.equal(reserved.grantReferenceNonce, reservation.grantReferenceNonce);
     assert.equal(reserved.signature, undefined);

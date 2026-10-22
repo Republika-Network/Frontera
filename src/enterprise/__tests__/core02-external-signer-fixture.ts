@@ -98,6 +98,10 @@ export function signWith(signer: AuthorityArtifactSigner, request: ExternalAutho
       // TRADE-04C-S1 extension: only a signer that offers it can answer it.
       if (signer.signDelegatedOfferCapability === undefined) throw new Error('This signer offers no delegated-offer capability operation.');
       return signer.signDelegatedOfferCapability({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature });
+    case 'signExecutionCapability':
+      // G-02B extension: likewise, only a signer configured with an issuance policy can answer it.
+      if (signer.signExecutionCapability === undefined) throw new Error('This signer offers no execution capability operation.');
+      return signer.signExecutionCapability({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature, grantReferenceNonce: request.grantReferenceNonce });
   }
 }
 

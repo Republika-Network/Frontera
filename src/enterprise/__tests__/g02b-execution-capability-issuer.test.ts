@@ -111,7 +111,6 @@ describe('G-02B issuer — issuance', () => {
     const issued = await issuer.issue(inputFor(signed));
     const record = ledger.read(issued.capability.executionId);
     assert.ok(record.state !== 'absent');
-    if (record.state === 'absent') return;
     assert.equal(issued.canonical.includes(record.grantReferenceNonce), false);
     assert.equal(JSON.stringify(issued).includes(record.grantReferenceNonce), false);
     assert.equal(executionCapabilityGrantReferenceV2({ nonce: record.grantReferenceNonce, grantStoreId: record.grantStoreId, boundedGrantId: record.boundedGrantId, grantDigest: record.grantDigest }), issued.capability.grantReference);
@@ -234,10 +233,11 @@ describe('G-02B issuer — after the reservation, nothing is ever issued twice',
     const { issuer, ledger } = await issuerOver({ grants: readerOf([signed]), signer: custody.signer });
     await issuer.issue(inputFor(signed));
     const record = ledger.read(inputFor(signed).executionId);
-    assert.ok(seen !== undefined && record.state !== 'absent');
-    if (seen === undefined || record.state === 'absent') return;
-    assert.equal(serializeExecutionCapability(seen.capability), record.canonical);
-    assert.equal(seen.grantReferenceNonce, record.grantReferenceNonce);
+    // Assigned inside the custody callback, which control-flow analysis does not follow.
+    const observed = seen as ExecutionCapabilityIssuanceRequest | undefined;
+    assert.ok(observed !== undefined && record.state !== 'absent');
+    assert.equal(serializeExecutionCapability(observed.capability), record.canonical);
+    assert.equal(observed.grantReferenceNonce, record.grantReferenceNonce);
   });
 
   it('crash after reservation (custody never answers, the process stops): the restarted Host finds outcome unknown and issues nothing', async () => {

@@ -91,6 +91,8 @@ function verifyLocally(request: ExternalAuthoritySigningRequest, signature: unkn
       return verifier.verifyApprovalState(request.state, signature);
     case 'signDelegatedOfferCapability':
       return verifier.verifyDelegatedOfferCapability(request.capability, signature);
+    case 'signExecutionCapability':
+      return verifier.verifyExecutionCapability(request.capability, signature);
   }
 }
 
