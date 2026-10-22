@@ -4,6 +4,10 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Security — G-01C stabilization
+- **Request ids must be well-formed Unicode**: `POST /api/governance/evaluate` refuses a `requestId` containing an unpaired surrogate code unit (existing `400 INVALID_REQUEST`), and the Governance Store refuses such a request id on every append path (`GOVERNANCE_STORE_VALIDATION_ERROR`). Such an id previously committed a SQLite aggregate that could never be read back whole. Every well-formed identifier is unchanged. SEC-INV-356.
+- **Tests**: every Host test fixture that composes a SQLite Host names its own Evidence Bundle Store path instead of sharing the repository-relative default.
+
 ### Security — G-01C cross-surface security qualification
 - **Qualified deployment profile**: the single-organization secure Host (authentication required, scoped credentials, `restricted` legacy mode, SQLite with one Host process per database file, trusted configuration, explicit service and auditor permissions). Multi-organization shared hosting remains blocked by G-01B2; programmatic composition is documented as a trusted-code integration profile.
 - **Store**: an append whose ordinary `events[]` carries a `GovernanceEvaluationAttributed` event is refused (`GOVERNANCE_STORE_VALIDATION_ERROR`); authenticated attribution enters only through the validated `attribution` field.

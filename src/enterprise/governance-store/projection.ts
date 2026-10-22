@@ -5,6 +5,7 @@ import { canonicalSerialize } from './canonical-json.js';
 import { redactSensitiveValues } from './redaction.js';
 import { GovernanceStoreError } from './errors.js';
 import { assertAttributionMatchesRequest, attributionEventPayload } from './attribution.js';
+import { hasUnpairedSurrogate } from '../governed-action/identifiers.js';
 import {
   GOVERNANCE_ATTRIBUTION_EVENT_TYPE,
   GOVERNANCE_STORE_CONTRACT_IDS,
@@ -166,6 +167,8 @@ function isReservedAttributionEvent(event: unknown): boolean {
 function validateAppendInput(input: AppendGovernanceEvaluationInput): void {
   const problems: string[] = [];
   if (typeof input.request?.requestId !== 'string' || input.request.requestId.length === 0) problems.push('request.requestId must be a non-empty string');
+  // G-01C stabilization: a request id with no UTF-8 form would be persisted under a lossy spelling (SQLite), leaving an aggregate that can never be read back whole.
+  else if (hasUnpairedSurrogate(input.request.requestId)) problems.push('request.requestId must be well-formed Unicode (no unpaired surrogate code unit)');
   if (typeof input.result?.decisionId !== 'string' || input.result.decisionId.length === 0) problems.push('result.decisionId must be a non-empty string');
   if (input.result?.requestId !== input.request?.requestId) problems.push('result.requestId must match request.requestId');
   if (typeof input.receivedAt !== 'string' || input.receivedAt.length === 0) problems.push('receivedAt must be a non-empty ISO timestamp');
