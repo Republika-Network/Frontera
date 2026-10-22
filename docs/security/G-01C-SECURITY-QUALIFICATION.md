@@ -17,7 +17,7 @@ No path leads from a spoofed, forged or absent identity to execution authority: 
 | C | The SQLite Store loaded and judged an aggregate before deciding tenant visibility, so another organization's corrupted record answered `500 GOVERNANCE_RECORD_CORRUPTED` instead of the ordinary 404 (and `reconstruct` returned its load result) | any organization-scoped reader, given a corrupted record of another tenant | SEC-INV-354 |
 | D | `linkGovernanceRecord` never compared the record's organization with the Passport's: a system-scope caller could link a record the Passport can never verify | authentication off, `compat` unscoped keys, embedders | SEC-INV-355 |
 
-Everything else found is either an accepted limitation (§4), outside the qualified profile (§3), or a hypothesis (§7).
+Everything else found is either an accepted limitation (§4), outside the qualified profile (§3), or a hypothesis (§7). Residual sibling of D: `linkEvidenceBundle` does not compare the bundle's organization with the Passport's either (such a link never verifies; system-scope callers only); not changed here.
 
 ## 2. Trust-boundary map (shipped Host)
 
@@ -95,7 +95,7 @@ An unscoped key under `compat` holds system scope on reads **and writes**: evalu
 | `kernelAuthorityProvisioning`, `emergencyControlAdministration`, `authorityControlledExecution`, `obligationDischarges` | the operator / system context |
 | configuration | `environment`, `requireAuthentication`, persistence provider and bind address are not gated: a `production`, in-memory, authentication-off composition is accepted (`g01c-security-qualification.test.ts` §1) |
 
-The Host's security guarantee covers HTTP callers of a Host started by `bootEnterpriseHost` / the launcher. Code that holds an `AocEnterprise` is inside the trust boundary. Fixes A and B remove the two places where that code could change authentication outcomes *after* validation without calling a privileged API; nothing else in the embedder API is redesigned.
+The Host's security guarantee covers HTTP callers of a Host started by `bootEnterpriseHost` / the launcher. Code that holds an `AocEnterprise` is inside the trust boundary. Fixes A and B remove the two places found where that code could change authentication outcomes *after* validation without calling a privileged API (fix A also reads the caller's events once, so accessors cannot split the check from the record); nothing else in the embedder API is redesigned, and trusted code remains able to write any record through the raw Store.
 
 ## 6. SQLite (decision 8)
 
@@ -104,24 +104,25 @@ The Host's security guarantee covers HTTP callers of a Host started by `bootEnte
 **The post-merge CI lock failure** (run 39702150821, attempt 1: `ctrl03-web-roles-host` `before` hook, "The Evidence Bundle Store could not be opened: database is locked"; attempt 2 green, 12 577 tests, 0 failures):
 
 - Many Host-booting test fixtures (including the CTRL-02/03 fixture) set every SQLite path except `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH`, so concurrently running test processes share the repository-relative default `.data/evidence-bundles.sqlite`.
-- better-sqlite3 opens connections with a 5 s busy timeout, so the order of `journal_mode = WAL` and `busy_timeout` in `createSqliteEvidenceStore` is not by itself the cause (the Phase 0 hypothesis is withdrawn).
-- Hypotheses H-3 and H-4 (§7) test the remaining mechanism — the WAL conversion of a fresh shared file not waiting on the busy handler — in CI.
-- Classification: **intermittent, not root-cause-resolved** in production code. The proposed remedy is test isolation (a per-workspace evidence path in every Host fixture), not a production change.
+- better-sqlite3 opens connections with a 5 s busy timeout. H-3 (§7) measured it: a contended open waited **5 013 ms and then failed** although `busyTimeoutMs: 2000` was configured — the WAL conversion runs before `busy_timeout` is applied, so it waits the library default, not the configured value. The conversion does wait; it does not fail at once. The Phase 0 hypothesis (fail at once because of the pragma order) is refuted.
+- H-4 (§7): 18 concurrent processes opening one fresh file all opened. The collision did not reproduce.
+- What remains consistent with the evidence: another process held the shared file's lock for more than 5 s while the CTRL-03 Host booted. Not reproduced; the holder is not identified.
+- Classification: **intermittent, not root-cause-resolved**. No production change. Proposed remedy, not implemented: a per-workspace `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH` in every Host test fixture (test isolation), and — as a separate, reviewable change — applying the configured busy timeout before the WAL conversion (`new Database(path, { timeout })`).
 
 ## 7. Hypotheses (TODO cases, recorded by CI)
 
 | | Hypothesis | Outcome |
 |---|---|---|
-| H-1 | A lone-surrogate `requestId` is stored and verified identically by both providers | _pending CI_ |
-| H-2 | A deferred Governance Store append under another writer is refused without waiting for its busy timeout (the PROD-01 F1 pattern) | _pending CI_ |
-| H-3 | The Evidence Store's WAL conversion fails at once while another connection holds a fresh file | _pending CI_ |
-| H-4 | Concurrent processes opening one fresh Evidence Store file collide ("database is locked") | _pending CI_ |
+| H-1 | A lone-surrogate `requestId` is stored and verified identically by both providers | **Confirmed divergence.** In memory: stored exactly, verifies. SQLite: the request row is stored under a lossy UTF-8 encoding, so the committed aggregate is thereafter `incomplete` (its request row can no longer be found) — a false integrity alarm any evaluate caller can plant in its own organization: system scope reads `GOVERNANCE_RECORD_CORRUPTED`; with fix C every organization, the owner included, reads it as absent, since the missing request row proves no owner. P3; proposed remedy: refuse ill-formed UTF-16 `requestId` at ingress. Not fixed (outside the approved fixes) |
+| H-2 | A deferred Governance Store append under another writer is refused without waiting for its busy timeout (the PROD-01 F1 pattern) | **Confirmed.** Refused after 0 ms of a 2 000 ms timeout, classified `GOVERNANCE_STORE_UNAVAILABLE`, nothing written (§1). Safety holds; multi-process is unqualified (§6) |
+| H-3 | The Evidence Store's WAL conversion fails at once while another connection holds a fresh file | **Refuted.** It waited 5 013 ms (the library default, not the configured 2 000 ms), then failed closed |
+| H-4 | Concurrent processes opening one fresh Evidence Store file collide ("database is locked") | **Not reproduced** (18/18 opened) |
 
 Not reproduced, deferred: historical records adopted by the governed path before G-01B0 that carry execution references (T11) — reproducing one needs pre-G-01B0 code paths; consumers keyed on execution references (reconciliation, x402, settlement basis) would act on them while the resolver calls the record not governed.
 
 ## 8. Evidence
 
-Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01c-security-qualification.test.ts` and `src/enterprise/__tests__/g01c-mutation.test.ts` (nine mutants: M1 Passport organization, M2 injected attribution, M3 live trust domain, M4 SQL `governed-action` clause, M5 SQLite visibility order, M6a–c G-01B0 L1 and L2 in both providers). Commits are ordered tests first; run IDs are recorded on the PR.
+Suites (root suite, GitHub Actions): `src/enterprise/__tests__/g01c-security-qualification.test.ts` and `src/enterprise/__tests__/g01c-mutation.test.ts` (eight mutants: M1 Passport organization, M2 injected attribution, M3 live trust domain, M4 SQL `governed-action` clause, M5 SQLite visibility order, M6a–c G-01B0 L1 and L2 in both providers). Commits are ordered tests first; run IDs are recorded on the PR.
 
 ## 9. Deferred
 
