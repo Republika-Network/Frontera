@@ -249,9 +249,13 @@ export function buildGovernanceAggregate(
   // G-01C: the caller's events are read exactly once; validation and projection
   // see the same copy, so an accessor cannot show one event type to the check
   // and another to the record.
-  const input: AppendGovernanceEvaluationInput = Array.isArray(callerInput.events)
-    ? { ...callerInput, events: Array.from(callerInput.events, (event) => ({ ...event }) as EnterpriseEvent) }
-    : callerInput;
+  // G-01C stabilization: the request's own fields likewise, so the request id
+  // validated is the request id persisted.
+  const input: AppendGovernanceEvaluationInput = {
+    ...callerInput,
+    ...(Array.isArray(callerInput.events) ? { events: Array.from(callerInput.events, (event) => ({ ...event }) as EnterpriseEvent) } : {}),
+    ...(typeof callerInput.request === 'object' && callerInput.request !== null ? { request: { ...callerInput.request } } : {}),
+  };
   validateAppendInput(input);
   const { request, result, enterpriseContext } = input;
   const persistedAt = deps.now();
