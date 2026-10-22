@@ -31,6 +31,7 @@ import {
   issuerPinning,
   present,
   requestFor,
+  respaced,
   signCapability,
   signText,
   verifierFor,
@@ -262,6 +263,14 @@ describe('G-02A — the validity window', () => {
     assert.throws(() => verifierFor({ maximumClockSkewMs: 5_001 }), /maximumClockSkewMs/);
   });
 
+  it('a well-shaped but impossible instant is malformed — never a throw, never a verifier failure', () => {
+    for (const impossible of ['2026-13-01T00:00:00.000Z', '2026-10-22T25:00:00.000Z', '2026-10-22T12:61:00.000Z']) {
+      assert.equal(isWellFormedExecutionCapability(capabilityFor({ issuedAt: impossible })), false, impossible);
+      const text = serializeExecutionCapability(capabilityFor()).replace(/"issuedAt":"[^"]+"/, `"issuedAt":"${impossible}"`);
+      rejected(verifyPresentation({ capability: text, signature: signText(text) }), 'CAPABILITY_MALFORMED');
+    }
+  });
+
   it('a clock that cannot answer refuses; a clock that throws fails closed', () => {
     rejected(verifyPresentation(present(capabilityFor()), {}, verifierFor({ clock: () => Number.NaN })), 'CLOCK_UNAVAILABLE');
     const throwing = verifierFor({
@@ -305,6 +314,15 @@ describe('G-02A — what is about to be executed: action, resource and the actio
     assert.equal(digest({ n: JSON.parse('4.0') as number }), digest({ n: 4 }), 'a parsed "4.0" is the number 4');
     assert.throws(() => digest({ n: Number.POSITIVE_INFINITY }));
     assert.throws(() => digest({ n: Number.NaN }));
+  });
+
+  it('an own __proto__ key is digested as a property — never dropped, never applied as a prototype', () => {
+    const digest = (value: unknown) => executionCapabilityActionBindingDigest({ format: G02A_BINDING_FORMAT, value });
+    assert.notEqual(digest(JSON.parse('{"amount":1,"__proto__":7}') as unknown), digest({ amount: 1 }));
+    assert.notEqual(digest(JSON.parse('{"amount":1,"__proto__":{"b":2}}') as unknown), digest({ amount: 1 }));
+    // A request carrying an unsigned __proto__ field does not verify against the capability issued for the request without it.
+    const withProto = { ...bindingValue(), ...(JSON.parse('{"__proto__":7}') as object) };
+    rejected(verifyPresentation(present(capabilityFor()), { value: withProto }), 'ACTION_BINDING_MISMATCH');
   });
 
   it('a binding that is not plain JSON data is malformed, never digested', () => {
@@ -357,7 +375,7 @@ describe('G-02A — canonical form: what was signed is exactly what is verified'
 
   it('whitespace and escape re-spellings are refused', () => {
     const text = serializeExecutionCapability(capabilityFor());
-    rejected(verifyPresentation(signedVariant(text.replace('{', '{ '))), 'CAPABILITY_NONCANONICAL');
+    rejected(verifyPresentation(signedVariant(respaced(text))), 'CAPABILITY_NONCANONICAL');
     rejected(verifyPresentation(signedVariant(`${text}\n`)), 'CAPABILITY_NONCANONICAL');
     rejected(verifyPresentation(signedVariant(text.replace('"deploy-release"', '"\\u0064eploy-release"'))), 'CAPABILITY_NONCANONICAL');
   });
@@ -373,7 +391,7 @@ describe('G-02A — canonical form: what was signed is exactly what is verified'
     const capability = capabilityFor();
     const genuine = present(capability);
     // The original signature, presented with a re-spaced text of the same logical capability.
-    rejected(verifyPresentation({ capability: genuine.capability.replace('{', '{ '), signature: genuine.signature }), 'CAPABILITY_NONCANONICAL');
+    rejected(verifyPresentation({ capability: respaced(genuine.capability), signature: genuine.signature }), 'CAPABILITY_NONCANONICAL');
   });
 
   it('numbers are not representable in the capability', () => {

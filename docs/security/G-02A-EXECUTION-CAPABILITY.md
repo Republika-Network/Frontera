@@ -44,8 +44,8 @@ No Kernel, CORE-07, v1 route, P11/P12, TRADE-04C-S1, adapter or schema change. N
 | Wrong audience, audience pattern, cross-executor replay | `AUDIENCE_MISMATCH`; `*` unrepresentable | same |
 | Cross-organization, cross-trust-domain replay | `ORGANIZATION_MISMATCH`, `TRUST_DOMAIN_MISMATCH` | same |
 | Any signed field modified after signing | `SIGNATURE_INVALID` (every field) | same |
-| Modified request, other binding format, non-JSON binding (accessor, `undefined`, class, sparse array, symbol, bigint, malformed Unicode) | `ACTION_BINDING_MISMATCH` / `_FORMAT_MISMATCH` / `_MALFORMED`; an accessor is never invoked | same |
-| Expired, not yet valid, lifetime > 60 s or ≤ 0 | `CAPABILITY_EXPIRED` / `_NOT_YET_VALID` / `_LIFETIME_INVALID` (boundaries tested) | same |
+| Modified request, other binding format, an unsigned own `__proto__` key, non-JSON binding (accessor, `undefined`, class, sparse array, symbol, bigint, malformed Unicode) | `ACTION_BINDING_MISMATCH` / `_FORMAT_MISMATCH` / `_MALFORMED`; an accessor is never invoked | same |
+| Expired, not yet valid, lifetime > 60 s or ≤ 0, impossible instants (month 13, hour 25) | `CAPABILITY_EXPIRED` / `_NOT_YET_VALID` / `_LIFETIME_INVALID` (boundaries tested) | same |
 | Non-canonical text: reordering (top level and nested binding), whitespace, escape, duplicate keys (agreeing or not), numbers, NFC/NFD, raw and escaped unpaired surrogates, extra/missing fields, other format version | refused, never normalized | same |
 | Key rotation | overlap verifies; unpinning refuses only the old key's capabilities | same |
 | Duplicate consumption, second capability for one execution, restart, re-initialization, missing file, foreign file, stripped triggers, other audience | refused | `g02a-execution-capability-ledger.test.ts` |
@@ -53,7 +53,7 @@ No Kernel, CORE-07, v1 route, P11/P12, TRADE-04C-S1, adapter or schema change. N
 | Retry after timeout; crash after execution before acknowledgment | one side effect; outcome visibly unrecorded | same |
 | Shape-alike or rejected verification presented to the ledger | `NOT_VERIFIED` | same |
 | Verifier import closure; no signing material or operation; S1 untouched; no grant import | pinned | `g02a-execution-capability-structure.test.ts` |
-| Removal of each load-bearing check | 24 mutants detected | `g02a-execution-capability-mutation.test.ts` |
+| Removal of each load-bearing check | 25 mutants detected | `g02a-execution-capability-mutation.test.ts` |
 
 Forged execution receipts and invalid or missing provenance belong to G-02C (receipts) and G-02B (issuance from a governed decision); G-02A has neither surface.
 
@@ -65,6 +65,7 @@ Forged execution receipts and invalid or missing provenance belong to G-02C (rec
 | G02A-R2 | Executor ledger rollback or deletion forgets consumptions | executor deployment; not anchored |
 | G02A-R3 | Separate ledgers are separate consumption domains | executor deployment (shared ledger) |
 | G02A-R4 | The CORE-02 trust caveats apply unchanged: AA-001 (software custody), AA-002 (configuration controls trust — now also each executor's pinned issuer keys), AA-010 (a compromised Host may request signatures once G-02B exists) | CORE-02 / G-02B |
-| G02A-R5 | `subjectActorId` lets an executor correlate one actor's actions over time | inherent; documented |
+| G02A-R5 | `subjectActorId` lets an executor correlate one actor's actions over time; `grantReference` is per grant (unsalted), so executions sharing a grant are linkable by one executor or colluding executors | inherent / documented; salting is a G-02B option |
+| G02A-R8 | The ledger accepts a `verified` result from any verifier instance in the process and itself re-checks only audience, status eligibility and expiry; under lock contention past the busy timeout `claim` throws (nothing consumed) | in-process code is trusted; executor composition |
 | G02A-R6 | Executor-recorded outcomes are unauthenticated statements | G-02C (signed receipts) |
 | G02A-R7 | Exactly-once external execution is not provided | reconciliation (P11/P12) |

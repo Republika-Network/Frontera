@@ -41,7 +41,15 @@ import { readVerifiedExecutionCapability } from '../verifier.js';
  * ## What it is not
  *
  * As trustworthy as the host that keeps it: whoever can rewrite or restore the
- * file can forget a consumption. It is not anchored against rollback. A missing
+ * file can forget a consumption. The triggers refuse a `DELETE` or a backward
+ * `UPDATE`; a raw writer can still remove rows by other means (an
+ * `INSERT OR REPLACE`, a rewritten file). It is not anchored against rollback.
+ *
+ * `claim` accepts any `verified` result of this runtime's verifier and itself
+ * re-checks only the audience, status eligibility and expiry: the issuers,
+ * organizations and trust domain accepted are the composed verifier's. A claim
+ * that cannot take the write lock within the busy timeout throws (nothing is
+ * consumed); the executor must then not act. A missing
  * file is never an empty ledger — it is created only by an explicit
  * `create: true`, which refuses to overwrite any existing file.
  */

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { executionCapabilityActionBindingDigest, serializeExecutionCapability, type ExecutionCapability, type ExecutionCapabilityVerifierOptions } from '../execution-capability/index.js';
 import { AUTHORITY_KEY_A, AUTHORITY_KEY_B } from './authority-authenticity-fixture.js';
-import { G02A_AUDIENCE, G02A_BINDING_FORMAT, G02A_ORGANIZATION, G02A_TRUST_DOMAIN, NOW, bindingValue, capabilityFor, iso, issuerPinning, present, requestFor, signCapability, signText, verifierFor } from './g02a-execution-capability-fixture.js';
+import { G02A_AUDIENCE, G02A_BINDING_FORMAT, G02A_ORGANIZATION, G02A_TRUST_DOMAIN, NOW, bindingValue, capabilityFor, iso, issuerPinning, present, requestFor, respaced, signCapability, signText, verifierFor } from './g02a-execution-capability-fixture.js';
 
 /**
  * G-02A mutation qualification, in TRADE-04C-S1's manner: each load-bearing
@@ -134,7 +134,7 @@ describe('G-02A mutation — the canonical codec', () => {
       replacements: [['=== canonical ? { ok: true, capability }', '!== undefined ? { ok: true, capability }']],
       guard: (m) => {
         const text = serializeExecutionCapability(capabilityFor());
-        return m.parseExecutionCapability(text.replace('{', '{ ')).ok === false && m.parseExecutionCapability(text.replace('"action":"deploy-release",', '"action":"rollback-release","action":"deploy-release",')).ok === false;
+        return m.parseExecutionCapability(respaced(text)).ok === false && m.parseExecutionCapability(text.replace('"action":"deploy-release",', '"action":"rollback-release","action":"deploy-release",')).ok === false;
       },
     },
     {
@@ -150,9 +150,14 @@ describe('G-02A mutation — the canonical codec', () => {
       guard: (m) => m.isWellFormedExecutionCapability(capabilityFor({ audience: '*' })) === false,
     },
     {
+      // Layered: the explicit undefined refusal, and the general refusal of any value that is not JSON data, which would
+      // otherwise still throw on `undefined`. Removed together, `{ a: undefined }` digests as `{}`.
       id: 'drop-undefined-binding-value',
       file: CAPABILITY,
-      replacements: [['if (descriptor.value === undefined)', 'if (false)']],
+      replacements: [
+        ['if (descriptor.value === undefined)', 'if (false)'],
+        ["throw new ExecutionCapabilityBindingError('The action binding holds a value that is not JSON data.');", 'return value;'],
+      ],
       guard: (m) => {
         try {
           m.executionCapabilityActionBindingDigest({ format: G02A_BINDING_FORMAT, value: { a: undefined } });
@@ -160,6 +165,15 @@ describe('G-02A mutation — the canonical codec', () => {
         } catch {
           return true;
         }
+      },
+    },
+    {
+      id: 'proto-key-assigned',
+      file: CAPABILITY,
+      replacements: [['Object.defineProperty(out, key, { value: plainJsonData(descriptor.value, depth + 1), enumerable: true, writable: true, configurable: true });', 'out[key] = plainJsonData(descriptor.value, depth + 1);']],
+      guard: (m) => {
+        const digest = (value: unknown) => m.executionCapabilityActionBindingDigest({ format: G02A_BINDING_FORMAT, value });
+        return digest(JSON.parse('{"amount":1,"__proto__":7}') as unknown) !== digest({ amount: 1 });
       },
     },
     {
@@ -171,7 +185,7 @@ describe('G-02A mutation — the canonical codec', () => {
   ];
   for (const mutant of mutants) it(`detected: ${mutant.id}`, () => qualify(mutant));
   it('control: a non-canonical text is still validly signed by the attacker — only the codec refuses it', () => {
-    const text = serializeExecutionCapability(capabilityFor()).replace('{', '{ ');
+    const text = respaced(serializeExecutionCapability(capabilityFor()));
     assert.equal(verifierFor().verify(requestFor({ capability: text, signature: signText(text) })).verification, 'rejected');
   });
 });

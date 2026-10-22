@@ -176,7 +176,11 @@ export class ExecutionCapabilityVerifierConfigurationError extends Error {
   }
 }
 
-/** Results this runtime's verifier produced as `verified`. A shape-alike object is not one: the consumption ledger accepts only these. */
+/**
+ * Results this runtime's verifier produced as `verified`. A shape-alike object is not one: the consumption ledger accepts
+ * only these. The set is module-wide: a result from **any** verifier instance in the process qualifies, so an executor
+ * composes the verifier it means to rely on — in-process code is trusted, as everywhere in an embedding.
+ */
 const VERIFIED = new WeakSet<object>();
 
 /** The verified capability and its consumption eligibility, if `value` is a `verified` result this verifier produced; otherwise `undefined`. */
@@ -234,8 +238,9 @@ export function createExecutionCapabilityVerifier(options: ExecutionCapabilityVe
   }
   const organizations = new Set(organizationIds);
 
-  // One CORE-02 registry per pinned issuer. A key id names one key across the whole verifier, so a key pinned for one
-  // issuer can never be read as another's.
+  // One CORE-02 registry per pinned issuer. A key id names one key across the whole verifier, so a key id pinned for one
+  // issuer can never be read as another's. (The same public material pinned under two ids for two issuers is two
+  // deliberate pinnings, and each id still vouches only for its own issuer.)
   const issuers = new Map<string, AuthoritySignatureRegistry>();
   const keyOwners = new Map<string, string>();
   const trusted = Array.isArray(options.trustedIssuers) ? options.trustedIssuers : [];

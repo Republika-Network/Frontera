@@ -179,7 +179,10 @@ function isAudience(value: unknown): value is string {
 }
 
 function isInstant(value: unknown): value is string {
-  return typeof value === 'string' && INSTANT.test(value) && new Date(Date.parse(value)).toISOString() === value;
+  if (typeof value !== 'string' || !INSTANT.test(value)) return false;
+  // A well-shaped but impossible instant (month 13, hour 25) parses to NaN: malformed, never a throw.
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === value;
 }
 
 /** Exactly these own, enumerable data properties on a plain object — no accessor, no symbol, no inherited or extra key. */
@@ -325,7 +328,8 @@ function plainJsonData(value: unknown, depth: number): unknown {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) throw new ExecutionCapabilityBindingError('The action binding holds an accessor or a hidden property.');
     if (descriptor.value === undefined) throw new ExecutionCapabilityBindingError('The action binding holds an undefined value.');
-    out[key] = plainJsonData(descriptor.value, depth + 1);
+    // Defined, never assigned: an own `__proto__` key (which JSON.parse produces) must stay a property, not reach the prototype setter.
+    Object.defineProperty(out, key, { value: plainJsonData(descriptor.value, depth + 1), enumerable: true, writable: true, configurable: true });
   }
   return Object.freeze(out);
 }

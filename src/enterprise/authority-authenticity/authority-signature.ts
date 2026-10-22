@@ -94,7 +94,7 @@ export const AUTHORITY_SIGNING_DOMAINS = {
   approvalState: 'frontera:authority-artifact:approval-state:v1\n',
   /** TRADE-04C-S1: a single-use authorization for one delegated XRPL OfferCreate signature, issued only for a grant this key signed (`delegated-offer-capability.ts`). */
   delegatedOfferCapability: 'frontera:authority-artifact:xrpl-delegated-offer-capability:v1\n',
-  /** G-02A: a generic, single-use execution capability presented to an independent executor (`execution-capability/capability.ts`). Verified here and by the standalone verifier; no signing operation exists for it before G-02B. */
+  /** G-02A: a generic, single-use execution capability presented to an independent executor (`execution-capability/capability.ts`). Verified by the standalone execution-capability verifier; no signing operation exists for it before G-02B. */
   executionCapability: EXECUTION_CAPABILITY_SIGNING_DOMAIN,
 } as const;
 
@@ -152,7 +152,7 @@ export function delegatedOfferCapabilitySigningBytes(capability: DelegatedOfferC
   return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.delegatedOfferCapability}${serializeDelegatedOfferCapability(capability)}`, 'utf8');
 }
 
-/** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. */
+/** Dispatches to the one signing-bytes function for a kind. Exhaustive by type, so a new artifact kind cannot be added without being given a domain. The execution capability (G-02A) has no Host signing path yet; its bytes are `executionCapabilitySigningBytes` (`execution-capability/capability.ts`), and it joins this dispatcher with its signing operation in G-02B. */
 export function authoritySigningBytes(
   artifact:
     | { readonly kind: 'grant'; readonly grant: BoundedGrant; readonly storeId: string }

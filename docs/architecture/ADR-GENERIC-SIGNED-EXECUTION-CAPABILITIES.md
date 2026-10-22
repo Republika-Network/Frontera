@@ -57,10 +57,12 @@ There is no numeric field, so there is no numeric spelling to disagree about.
 
 **Privacy and correlation.** `subjectActorId` is stable across capabilities:
 an executor can correlate one actor's actions over time, which is inherent in
-telling it who acts. `executionId`, `grantReference` and `capabilityId` are
-opaque and per execution. Two executors never receive the same capability
-(one audience each), so they cannot correlate through it. Policy, decision and
-evidence content never leave the Host in a capability.
+telling it who acts. `capabilityId` is random per capability and `executionId`
+is opaque and per execution. `grantReference` is opaque but **per grant** — a
+deterministic, unsalted digest — so every capability derived from one grant
+carries the same value, and one executor, or colluding executors, can link
+executions that share a grant (it reveals nothing about the grant itself).
+Policy, decision and evidence content never leave the Host in a capability.
 
 ### 3. Canonical form and signature: CORE-02, unchanged
 

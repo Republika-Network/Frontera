@@ -86,6 +86,12 @@ export function signText(text: string, key: TestAuthorityKey = AUTHORITY_KEY_A, 
   return envelope(Buffer.from(`${domain}${text}`, 'utf8'), key);
 }
 
+/** The same canonical text with one space after its opening brace: the smallest non-canonical spelling of a capability. */
+export function respaced(canonical: string): string {
+  if (!canonical.startsWith('{')) throw new Error('a canonical capability starts with an opening brace');
+  return `{ ${canonical.slice(1)}`;
+}
+
 export function present(capability: ExecutionCapability, key: TestAuthorityKey = AUTHORITY_KEY_A): { readonly capability: string; readonly signature: AuthoritySignature } {
   return { capability: serializeExecutionCapability(capability), signature: signCapability(capability, key) };
 }
