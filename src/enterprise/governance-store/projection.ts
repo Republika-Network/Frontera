@@ -159,6 +159,10 @@ export function computeAggregateDigest(parts: {
 // Aggregate builder
 // ---------------------------------------------------------------------------
 
+function isReservedAttributionEvent(event: unknown): boolean {
+  return typeof event === 'object' && event !== null && (event as { readonly type?: unknown }).type === GOVERNANCE_ATTRIBUTION_EVENT_TYPE;
+}
+
 function validateAppendInput(input: AppendGovernanceEvaluationInput): void {
   const problems: string[] = [];
   if (typeof input.request?.requestId !== 'string' || input.request.requestId.length === 0) problems.push('request.requestId must be a non-empty string');
@@ -167,6 +171,8 @@ function validateAppendInput(input: AppendGovernanceEvaluationInput): void {
   if (typeof input.receivedAt !== 'string' || input.receivedAt.length === 0) problems.push('receivedAt must be a non-empty ISO timestamp');
   if (typeof input.enterpriseContext?.enterpriseVersion !== 'string') problems.push('enterpriseContext.enterpriseVersion is required');
   if (typeof input.enterpriseContext?.lifecycleState !== 'string') problems.push('enterpriseContext.lifecycleState is required');
+  // G-01C: an attribution event is sealed only from the validated `attribution` field, never from a caller's event.
+  if (Array.isArray(input.events) && input.events.some(isReservedAttributionEvent)) problems.push(`events must not carry a '${GOVERNANCE_ATTRIBUTION_EVENT_TYPE}' event`);
   if (problems.length > 0) {
     throw new GovernanceStoreError('GOVERNANCE_STORE_VALIDATION_ERROR', `Invalid append input: ${problems.join('; ')}.`);
   }
@@ -233,10 +239,16 @@ function toEvaluationEventRecord(
  * the store implementations — commit the result atomically.
  */
 export function buildGovernanceAggregate(
-  input: AppendGovernanceEvaluationInput,
+  callerInput: AppendGovernanceEvaluationInput,
   deps: GovernanceProjectionDependencies,
   chain: { readonly previousAggregateDigest?: string; readonly chainPosition: number },
 ): GovernanceAggregate {
+  // G-01C: the caller's events are read exactly once; validation and projection
+  // see the same copy, so an accessor cannot show one event type to the check
+  // and another to the record.
+  const input: AppendGovernanceEvaluationInput = Array.isArray(callerInput.events)
+    ? { ...callerInput, events: Array.from(callerInput.events, (event) => ({ ...event }) as EnterpriseEvent) }
+    : callerInput;
   validateAppendInput(input);
   const { request, result, enterpriseContext } = input;
   const persistedAt = deps.now();

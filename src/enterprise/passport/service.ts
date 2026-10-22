@@ -395,6 +395,11 @@ export function createAgentPassportService(deps: AgentPassportServiceDependencie
         if (record === null) {
           throw new AgentPassportError('PASSPORT_GOVERNANCE_RECORD_NOT_FOUND', `No Governance Record for evaluationId '${reference.evaluationId}' within this scope.`);
         }
+        // G-01C: a Passport references only its own organization's records -- the scope verification checks them in. A
+        // system-scope caller could otherwise link another organization's record that the Passport can never verify.
+        if (record.request.organizationId !== passport.organization.organizationId) {
+          throw new AgentPassportError('PASSPORT_GOVERNANCE_RECORD_NOT_FOUND', `No Governance Record for evaluationId '${reference.evaluationId}' within this Passport's organization.`);
+        }
         if (record.integrity.aggregateDigest !== reference.governanceRecordDigest) {
           throw new AgentPassportError('PASSPORT_REFERENCE_INVALID', `governanceRecordDigest does not match the stored Governance Record's aggregateDigest.`);
         }

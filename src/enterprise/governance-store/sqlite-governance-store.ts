@@ -856,9 +856,24 @@ export async function createSqliteGovernanceStore(dbPath: string, options: Creat
     return { status: 'complete', record, missingComponents: [], integrityFailures: [] };
   }
 
+  /**
+   * G-01C: tenant visibility, decided from the stored request row before any
+   * integrity verdict, so another organization's corrupted or incomplete
+   * aggregate reads exactly as an absent one. An aggregate whose owning
+   * request row is missing is visible to system scope only.
+   */
+  function mayDiscloseAggregate(context: GovernanceStoreAccessContext, evaluationId: string): boolean {
+    if (context.system) return true;
+    const evaluationRow = selectEvaluationByEvaluationId.get(evaluationId) as EvaluationRow | undefined;
+    if (evaluationRow === undefined) return false;
+    const requestRow = selectRequestByRequestId.get(evaluationRow.request_id) as RequestRow | undefined;
+    return requestRow !== undefined && canSeeRecord(context, requestRow.organization_id ?? undefined);
+  }
+
   function loadVisibleRecord(context: GovernanceStoreAccessContext, evaluationId: string | undefined): GovernanceRecord | null {
     requireReadScope(context);
     if (evaluationId === undefined) return null;
+    if (!mayDiscloseAggregate(context, evaluationId)) return null;
     const loaded = loadAggregate(evaluationId);
     if (loaded.status === 'incomplete' && loaded.missingComponents.length === 1 && loaded.missingComponents[0] === 'evaluation') return null;
     if (loaded.status !== 'complete' || loaded.record === undefined) {
@@ -1315,6 +1330,9 @@ export async function createSqliteGovernanceStore(dbPath: string, options: Creat
     async reconstruct(context, evaluationId) {
       assertOpen();
       requireReadScope(context);
+      if (!mayDiscloseAggregate(context, evaluationId)) {
+        throw new GovernanceStoreError('GOVERNANCE_RECORD_NOT_FOUND', `No governance record for evaluationId '${evaluationId}' within this scope.`);
+      }
       const loaded = loadAggregate(evaluationId);
       if (loaded.status === 'incomplete' && loaded.missingComponents.length === 1 && loaded.missingComponents[0] === 'evaluation') {
         throw new GovernanceStoreError('GOVERNANCE_RECORD_NOT_FOUND', `No governance record for evaluationId '${evaluationId}' within this scope.`);
