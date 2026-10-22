@@ -15,7 +15,9 @@ signed, for exactly what that grant and the boundary's own policy allow, and
 only after the Host has durably reserved the capability.
 
 Nothing presents, transmits or delivers a capability yet. Where in the
-execution path issuance happens is G-02C.
+execution path issuance happens is G-02C — decided by G-02C0
+(`ADR-GOVERNED-EXECUTION-BINDING.md`): inside a listed Generic HTTP adapter,
+after the request is final and before DNS.
 
 ## Decision
 

@@ -249,6 +249,27 @@ trusted registry selects the generic child → adapter-scoped emergency check �
 
 A stop on `{ scope: 'adapter', value: '<generic adapterId>' }` withholds before any DNS query or socket (`generic-http-composition.test.ts` K). The adapter holds no `EmergencyControlReaderPort`; the one checkpoint stays in the registry.
 
+## 13a. The pre-send gate (G-02C0)
+
+When the Host's `executionCapabilities.adapters` lists an adapter, the
+composition root gives it an internal **pre-send gate**, run after the request
+is mapped and frozen and before any DNS lookup or socket:
+
+```
+map → gate (issue a capability for this exact request, verify it, re-check the stop) → resolve → policy → send
+```
+
+The gate is shown the adapter id, the validated action and the
+`frontera.http-request-binding.v1` record of the request — every mapped header,
+the method, origin, target and exact body, **minus the credential value** (its
+header name stays bound). It answers `{ proceed: true }` or `{ proceed: false }`
+and nothing else, so it can stop a request and can never change one; anything
+but an own `proceed: true` — a throw, a rejection, any other value — is
+`failed` / `ADAPTER_ERROR` with nothing sent. An adapter without a gate is
+built exactly as before. Under external custody, a gated `execute()` makes one
+custody request (EP-056, never retried) before its one provider request. See
+`docs/architecture/ADR-GOVERNED-EXECUTION-BINDING.md`.
+
 ## 14. Security boundaries — and what this is not
 
 Correct claim:
