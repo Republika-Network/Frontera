@@ -34,7 +34,7 @@ import { serializeGrantSourceAuthorization, type GrantSourceAuthorization } from
  * **No token.** Not a JWT, macaroon, UCAN, OAuth token, signed URL, capability
  * token or ledger object. `ADR-ACCESS-GRANT.md` lists every one of those as an
  * explicit non-responsibility and enforces it with `@ts-expect-error` proofs,
- * and no accepted ADR has since chosen an external serialized token format. A
+ * and no ADR has made a grant one (G-02A signs a separate, derived capability). A
  * bounded grant is an internal, typed record held by a trusted store; a caller
  * never holds one and therefore never presents one. See the README's
  * "Integrity" section for exactly where signing would attach if a later ADR

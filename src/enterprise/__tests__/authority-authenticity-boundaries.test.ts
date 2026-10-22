@@ -145,9 +145,15 @@ describe('Authority authenticity — signing capability never reaches the exerci
 
 describe('Authority authenticity — signer and verifier are distinct capabilities', () => {
   it('the verifier module never imports, derives or returns private key material', () => {
+    // G-02A moved the registry and the verification routine, unchanged, into `signature-verification.ts`, which
+    // `verifier.ts` builds every verifier from; the public-material rule covers both files.
     const verifier = codeOf(`${AUTHENTICITY_ROOT}/verifier.ts`);
-    assert.equal(/createPrivateKey|privateKeyPem|crypto\.sign\b|[^a-zA-Z]sign\(/.test(verifier), false, 'the verifier must hold only public material');
-    assert.ok(verifier.includes('createPublicKey'), 'the verifier resolves public material');
+    const verification = codeOf(`${AUTHENTICITY_ROOT}/signature-verification.ts`);
+    for (const code of [verifier, verification]) {
+      assert.equal(/createPrivateKey|privateKeyPem|crypto\.sign\b|[^a-zA-Z]sign\(/.test(code), false, 'the verifier must hold only public material');
+    }
+    assert.ok(verification.includes('createPublicKey'), 'the verifier resolves public material');
+    assert.ok(verifier.includes('createAuthoritySignatureRegistry(keys)'), 'every verifier is built on that registry');
   });
 
   it('createPrivateKey appears in exactly one production file, and it is the signer', () => {
@@ -289,9 +295,11 @@ describe('Authority authenticity — no unsigned path exists', () => {
   });
 
   it('the supported-algorithm registry is closed, and nothing tries algorithms until one works', () => {
-    const code = codeOf(`${AUTHENTICITY_ROOT}/verifier.ts`);
-    assert.equal(/for\s*\(.*algorithm/i.test(code), false, 'a verifier must not iterate algorithms');
-    assert.equal(/catch[\s\S]{0,120}verify\(/.test(code.replace(/\n/g, ' ')), false, 'a failed verification must not be retried under another algorithm');
+    for (const file of ['verifier.ts', 'signature-verification.ts']) {
+      const code = codeOf(`${AUTHENTICITY_ROOT}/${file}`);
+      assert.equal(/for\s*\(.*algorithm/i.test(code), false, `${file}: a verifier must not iterate algorithms`);
+      assert.equal(/catch[\s\S]{0,120}verify\(/.test(code.replace(/\n/g, ' ')), false, `${file}: a failed verification must not be retried under another algorithm`);
+    }
   });
 });
 

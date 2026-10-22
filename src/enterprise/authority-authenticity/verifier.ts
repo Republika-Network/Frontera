@@ -1,26 +1,20 @@
-import { createPublicKey, verify as cryptoVerify, type KeyObject } from 'node:crypto';
-
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { isWellFormedDelegatedOfferCapability, type DelegatedOfferCapability } from './delegated-offer-capability.js';
-import { AuthorityAuthenticityConfigurationError, type AuthoritySignatureFailure } from './errors.js';
 import {
-  AUTHORITY_ARTIFACT_VERSION,
-  SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS,
-  decodeAuthoritySignatureBytes,
   delegatedOfferCapabilitySigningBytes,
   grantSigningBytes,
-  isSupportedAuthoritySignatureAlgorithm,
-  isWellFormedAuthoritySignature,
   revocationSigningBytes,
   approvalStateSigningBytes,
   obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
-  type AuthoritySignatureAlgorithm,
 } from './authority-signature.js';
+import { createAuthoritySignatureRegistry, type AuthoritySignatureVerification, type TrustedVerificationKey } from './signature-verification.js';
+
+export type { AuthoritySignatureVerification, TrustedVerificationKey } from './signature-verification.js';
 
 /**
  * The verification half of the authority-authenticity boundary, and the trusted
@@ -56,20 +50,10 @@ import {
  * this deployment trusts for X. An artifact that supplied its own key would be
  * asserting its own authenticity, which is not a property. There is no network
  * lookup, no JWKS fetch and no discovery: the registry is built once, from
- * configuration, at the composition boundary, and frozen.
+ * configuration, at the composition boundary, and frozen. The registry and the
+ * one verification routine live in `signature-verification.ts` (G-02A), so the
+ * standalone execution-capability verifier applies exactly these rules.
  */
-
-/** One trusted verification key, as a deployment configures it. Public material only — there is no field here a private key could be placed in. */
-export interface TrustedVerificationKey {
-  readonly keyId: string;
-  readonly algorithm: AuthoritySignatureAlgorithm;
-  /** SPKI PEM. A public key; never a private key, and rejected at composition if it is one. */
-  readonly publicKeyPem: string;
-}
-
-export type AuthoritySignatureVerification =
-  | { readonly verified: true; readonly keyId: string; readonly algorithm: AuthoritySignatureAlgorithm }
-  | { readonly verified: false; readonly failure: AuthoritySignatureFailure };
 
 export interface AuthorityArtifactVerifier {
   /** Whether this grant's signature was produced, for the store named by `storeId`, over *these* canonical bytes by a key this deployment trusts. */
@@ -92,148 +76,11 @@ export interface AuthorityArtifactVerifier {
   readonly trustedKeyIds: readonly string[];
 }
 
-interface RegisteredKey {
-  readonly algorithm: AuthoritySignatureAlgorithm;
-  readonly key: KeyObject;
-}
-
-/**
- * Builds the trusted registry, refusing every shape that would make trust
- * ambiguous.
- *
- * A duplicate key id is refused rather than resolved by last-wins or
- * first-wins: two conflicting public keys under one id means an artifact's
- * `keyId` no longer names one key, and silently picking either would make which
- * one a matter of configuration order. An empty registry is refused too — a
- * verifier that trusts nothing would fail every read closed, which is safe, but
- * it is a misconfiguration and it is better found at startup than at the first
- * exercise.
- */
-function buildRegistry(keys: readonly TrustedVerificationKey[]): ReadonlyMap<string, RegisteredKey> {
-  if (keys.length === 0) {
-    throw new AuthorityAuthenticityConfigurationError(
-      'No trusted authority verification keys were configured. A durable authority store without a verification key would refuse every read; configure at least one key.',
-    );
-  }
-
-  const registry = new Map<string, RegisteredKey>();
-  for (const entry of keys) {
-    if (typeof entry.keyId !== 'string' || entry.keyId.length === 0) {
-      throw new AuthorityAuthenticityConfigurationError('A trusted authority verification key was configured without a key id.');
-    }
-    if (registry.has(entry.keyId)) {
-      throw new AuthorityAuthenticityConfigurationError(
-        `Duplicate trusted authority verification key id '${entry.keyId}'. A key id must name exactly one key; refusing to choose between conflicting entries.`,
-      );
-    }
-    if (!isSupportedAuthoritySignatureAlgorithm(entry.algorithm)) {
-      throw new AuthorityAuthenticityConfigurationError(
-        `Trusted authority verification key '${entry.keyId}' names algorithm '${String(entry.algorithm)}', which is outside the supported registry.`,
-      );
-    }
-
-    // Checked on the PEM text, before `createPublicKey` ever sees it.
-    //
-    // `createPublicKey` accepts a *private* key and silently derives the public
-    // half from it, so a deployment that pasted the wrong half into the trusted
-    // set would work perfectly and never be told. That matters more than it
-    // looks: `verificationKeys` is public-by-construction and is exposed on
-    // `PublicEnterpriseConfiguration`, so the successful case would publish a
-    // private authority signing key on a surface designed to be safe to show.
-    // The refusal is here rather than after parsing because after parsing the
-    // evidence is gone — a derived public key is indistinguishable from one
-    // that was configured directly.
-    if (/-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/.test(entry.publicKeyPem)) {
-      throw new AuthorityAuthenticityConfigurationError(
-        `Trusted authority verification key '${entry.keyId}' was supplied as a private key. The verification registry holds public material only.`,
-      );
-    }
-
-    let key: KeyObject;
-    try {
-      key = createPublicKey(entry.publicKeyPem);
-    } catch {
-      // The underlying error is not propagated: it can quote the material it
-      // failed to parse, and a configuration error is not a place to echo key
-      // bytes into a log.
-      throw new AuthorityAuthenticityConfigurationError(`Trusted authority verification key '${entry.keyId}' could not be parsed as a public key.`);
-    }
-    if (key.type !== 'public') {
-      throw new AuthorityAuthenticityConfigurationError(`Trusted authority verification key '${entry.keyId}' is not a public key.`);
-    }
-    if (key.asymmetricKeyType !== SUPPORTED_AUTHORITY_SIGNATURE_ALGORITHMS[entry.algorithm].keyType) {
-      throw new AuthorityAuthenticityConfigurationError(
-        `Trusted authority verification key '${entry.keyId}' is registered under algorithm '${entry.algorithm}' but its material is '${String(key.asymmetricKeyType)}'.`,
-      );
-    }
-    registry.set(entry.keyId, { algorithm: entry.algorithm, key });
-  }
-  return registry;
-}
-
 export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificationKey[]): AuthorityArtifactVerifier {
-  const registry = buildRegistry(keys);
-  const trustedKeyIds = Object.freeze([...registry.keys()]);
-
-  /**
-   * The one verification routine, parameterized only by the bytes the caller's
-   * artifact kind produced.
-   *
-   * Order matters and is fixed: envelope shape, then artifact version, then the
-   * algorithm, then the key the registry trusts, then the algorithm the
-   * registry trusts that key *for*, and only then the cryptographic check.
-   * Each step refuses outright; none falls through to a weaker one.
-   */
-  function verify(signingBytes: Buffer, signature: unknown): AuthoritySignatureVerification {
-    if (signature === undefined || signature === null) {
-      return { verified: false, failure: 'AUTHORITY_SIGNATURE_MISSING' };
-    }
-    if (typeof signature === 'object' && !Array.isArray(signature)) {
-      const candidate = signature as Record<string, unknown>;
-      // Separated from the general malformed case so that an envelope naming an
-      // algorithm outside the registry is reported as exactly that, rather than
-      // as a shape problem. It is the algorithm-confusion probe, and an
-      // operator should be able to see it by name.
-      if (typeof candidate.algorithm === 'string' && !isSupportedAuthoritySignatureAlgorithm(candidate.algorithm)) {
-        return { verified: false, failure: 'AUTHORITY_SIGNATURE_ALGORITHM_UNSUPPORTED' };
-      }
-    }
-    if (!isWellFormedAuthoritySignature(signature)) {
-      return { verified: false, failure: 'AUTHORITY_SIGNATURE_MALFORMED' };
-    }
-    if (signature.artifactVersion !== AUTHORITY_ARTIFACT_VERSION) {
-      return { verified: false, failure: 'AUTHORITY_ARTIFACT_VERSION_UNSUPPORTED' };
-    }
-
-    const registered = registry.get(signature.keyId);
-    if (registered === undefined) {
-      return { verified: false, failure: 'AUTHORITY_SIGNING_KEY_UNKNOWN' };
-    }
-    // A key is trusted for one algorithm. An envelope that names a different
-    // one is refused rather than verified under the registry's — otherwise the
-    // envelope's algorithm field would be decorative, and a future second
-    // algorithm could be requested against a key registered for the first.
-    if (registered.algorithm !== signature.algorithm) {
-      return { verified: false, failure: 'AUTHORITY_SIGNATURE_KEY_ALGORITHM_MISMATCH' };
-    }
-
-    const bytes = decodeAuthoritySignatureBytes(signature.signature, signature.algorithm);
-    if (bytes === undefined) {
-      return { verified: false, failure: 'AUTHORITY_SIGNATURE_MALFORMED' };
-    }
-
-    let ok: boolean;
-    try {
-      ok = cryptoVerify(null, signingBytes, registered.key, bytes);
-    } catch {
-      // A throw from the primitive is a refusal, never an escape: anything the
-      // library declines to process is something this must not accept.
-      return { verified: false, failure: 'AUTHORITY_SIGNATURE_INVALID' };
-    }
-    return ok
-      ? { verified: true, keyId: signature.keyId, algorithm: signature.algorithm }
-      : { verified: false, failure: 'AUTHORITY_SIGNATURE_INVALID' };
-  }
+  const registry = createAuthoritySignatureRegistry(keys);
+  const trustedKeyIds = registry.keyIds;
+  // The one verification routine (`signature-verification.ts`), parameterized only by the bytes each artifact kind produces.
+  const verify = registry.verify;
 
   return Object.freeze({
     trustedKeyIds,
