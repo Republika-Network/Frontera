@@ -1530,7 +1530,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
 // ---------------------------------------------------------------------------
 
 describe('Generic HTTP — structural boundaries (§5, §29, §52)', () => {
-  const FILES = ['contracts.ts', 'configuration.ts', 'request-mapper.ts', 'public-address-policy.ts', 'node-https-transport.ts', 'generic-http-execution-adapter.ts', 'index.ts'].map((name) => `${MODULE_DIR}/${name}`);
+  const FILES = ['contracts.ts', 'configuration.ts', 'request-mapper.ts', 'request-binding.ts', 'public-address-policy.ts', 'node-https-transport.ts', 'generic-http-execution-adapter.ts', 'index.ts'].map((name) => `${MODULE_DIR}/${name}`);
 
   it('imports no Kernel, policy, Governance Store, grant store, customer identity, obligation, approval or emergency-control module', () => {
     for (const file of FILES) {
@@ -1566,7 +1566,7 @@ describe('Generic HTTP — structural boundaries (§5, §29, §52)', () => {
   });
 
   it('the mapper, the configuration snapshot and the address policy perform no I/O and read no environment', () => {
-    for (const name of ['request-mapper.ts', 'configuration.ts', 'public-address-policy.ts', 'contracts.ts']) {
+    for (const name of ['request-mapper.ts', 'request-binding.ts', 'configuration.ts', 'public-address-policy.ts', 'contracts.ts']) {
       const code = codeOf(`${MODULE_DIR}/${name}`);
       for (const forbidden of [/node:(fs|http|https|dns|child_process|tls)/, /\bfetch\s*\(/, /process\.env/, /\brequire\s*\(/, /\bimport\s*\(/, /setTimeout|setInterval/, /Date\.now|new Date\(/, /Math\.random|randomUUID/, /\beval\s*\(|new\s+Function\s*\(/]) {
         assert.equal(forbidden.test(code), false, `${name} must stay pure (${String(forbidden)})`);

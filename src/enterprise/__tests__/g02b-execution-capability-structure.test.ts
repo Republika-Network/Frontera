@@ -7,8 +7,9 @@ import { AUTHORITY_SIGNING_DOMAINS } from '../authority-authenticity/index.js';
 import { EXECUTION_CAPABILITY_FIELDS, EXECUTION_CAPABILITY_FORMAT, EXECUTION_CAPABILITY_SIGNING_DOMAIN } from '../execution-capability/index.js';
 
 /**
- * G-02B structure: issuance is an internal, opt-in service with no caller —
- * no route, no adapter, no governed-path call site, no public export — the
+ * G-02B structure: issuance is an internal, opt-in service whose one caller
+ * is the G-02C0 pre-send gate — no route, no adapter, no governed-path call
+ * site, no public export — the
  * custody operation is structured, the G-02A wire contract is unchanged and
  * the issuance modules load nothing beyond the database. Measured against
  * source (comments stripped), never a line number.
@@ -69,12 +70,12 @@ function closureOf(entries: readonly string[]): { readonly files: ReadonlySet<st
   return { files, bare };
 }
 
-describe('G-02B structure — issuance has no caller, no route and no public surface', () => {
+describe('G-02B structure — issuance has one caller (the G-02C0 gate), no route and no public surface', () => {
   it('the measured sources exist', () => {
     assert.deepEqual(sourcesUnder(ISSUANCE), [`${ISSUANCE}/index.ts`, `${ISSUANCE}/issuance-ledger.ts`, `${ISSUANCE}/issuer.ts`]);
   });
 
-  it('only the Host composition imports the issuer: no governed path, exercise gate, adapter, API or orchestration module reaches it', () => {
+  it('only the Host composition and the G-02C0 gate import the issuer: no governed path, exercise gate, adapter, API or orchestration module reaches it', () => {
     const importers: string[] = [];
     for (const root of ['src/enterprise', 'src/features', 'src/kernel', 'src/runtime']) {
       for (const file of sourcesUnder(root)) {
@@ -82,7 +83,9 @@ describe('G-02B structure — issuance has no caller, no route and no public sur
         if (runtimeSpecifiers(file).some((specifier) => specifier.includes('execution-capability-issuance/')) || /from ['"][^'"]*execution-capability-issuance\//.test(codeOf(file))) importers.push(file);
       }
     }
-    assert.deepEqual(importers.sort(), ['src/enterprise/composition/composition-root.ts', 'src/enterprise/host/enterprise-host.ts']);
+    // G-02C0: the gate imports the issuer's *types* only; the issuer it calls is the Host's slot, handed to it by the composition root.
+    assert.deepEqual(importers.sort(), ['src/enterprise/composition/composition-root.ts', 'src/enterprise/execution-capability-gate/gate.ts', 'src/enterprise/host/enterprise-host.ts']);
+    assert.equal(runtimeSpecifiers('src/enterprise/execution-capability-gate/gate.ts').some((specifier) => specifier.includes('execution-capability-issuance/')), false, 'type-only');
   });
 
   it('no HTTP route, API contract or enterprise export names an execution capability', () => {
