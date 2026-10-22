@@ -45,6 +45,7 @@ function sqliteEnv(directory: string): Record<string, string> {
     AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
     AOC_ENTERPRISE_LOG_LEVEL: 'error',
     AOC_ENTERPRISE_SQLITE_PATH: join(directory, 'governance.sqlite'),
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(directory, 'evidence-bundles.sqlite'),
     AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(directory, 'passport.sqlite'),
     AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(directory, 'assurance.sqlite'),
     AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: join(directory, 'bounded-grants.sqlite'),

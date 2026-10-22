@@ -5,6 +5,7 @@ import { canonicalSerialize } from './canonical-json.js';
 import { redactSensitiveValues } from './redaction.js';
 import { GovernanceStoreError } from './errors.js';
 import { assertAttributionMatchesRequest, attributionEventPayload } from './attribution.js';
+import { hasUnpairedSurrogate } from '../governed-action/identifiers.js';
 import {
   GOVERNANCE_ATTRIBUTION_EVENT_TYPE,
   GOVERNANCE_STORE_CONTRACT_IDS,
@@ -166,6 +167,8 @@ function isReservedAttributionEvent(event: unknown): boolean {
 function validateAppendInput(input: AppendGovernanceEvaluationInput): void {
   const problems: string[] = [];
   if (typeof input.request?.requestId !== 'string' || input.request.requestId.length === 0) problems.push('request.requestId must be a non-empty string');
+  // G-01C stabilization: a request id with no UTF-8 form would be persisted under a lossy spelling (SQLite), leaving an aggregate that can never be read back whole.
+  else if (hasUnpairedSurrogate(input.request.requestId)) problems.push('request.requestId must be well-formed Unicode (no unpaired surrogate code unit)');
   if (typeof input.result?.decisionId !== 'string' || input.result.decisionId.length === 0) problems.push('result.decisionId must be a non-empty string');
   if (input.result?.requestId !== input.request?.requestId) problems.push('result.requestId must match request.requestId');
   if (typeof input.receivedAt !== 'string' || input.receivedAt.length === 0) problems.push('receivedAt must be a non-empty ISO timestamp');
@@ -246,9 +249,13 @@ export function buildGovernanceAggregate(
   // G-01C: the caller's events are read exactly once; validation and projection
   // see the same copy, so an accessor cannot show one event type to the check
   // and another to the record.
-  const input: AppendGovernanceEvaluationInput = Array.isArray(callerInput.events)
-    ? { ...callerInput, events: Array.from(callerInput.events, (event) => ({ ...event }) as EnterpriseEvent) }
-    : callerInput;
+  // G-01C stabilization: the request's own fields likewise, so the request id
+  // validated is the request id persisted.
+  const input: AppendGovernanceEvaluationInput = {
+    ...callerInput,
+    ...(Array.isArray(callerInput.events) ? { events: Array.from(callerInput.events, (event) => ({ ...event }) as EnterpriseEvent) } : {}),
+    ...(typeof callerInput.request === 'object' && callerInput.request !== null ? { request: { ...callerInput.request } } : {}),
+  };
   validateAppendInput(input);
   const { request, result, enterpriseContext } = input;
   const persistedAt = deps.now();

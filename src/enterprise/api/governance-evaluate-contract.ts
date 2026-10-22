@@ -1,5 +1,5 @@
 import type { ActionDescriptor, ActorReference, KernelDecisionStatus, KernelEvaluationOptions, KernelEvaluationRequest, KernelEvaluationResult, KernelIdGenerator, KernelClock } from '../../kernel/index.js';
-import { SERVER_DERIVED_IDENTIFIER_PREFIX, isServerDerivedIdentifierNamespace } from '../governed-action/identifiers.js';
+import { SERVER_DERIVED_IDENTIFIER_PREFIX, hasUnpairedSurrogate, isServerDerivedIdentifierNamespace } from '../governed-action/identifiers.js';
 import { EnterpriseHttpErrors } from './enterprise-http-errors.js';
 
 /** Wire shape for `POST /api/governance/evaluate`. A structural subset of `KernelEvaluationRequest` -- the Enterprise Host never adds fields the Kernel doesn't already define, per "No Enterprise module may manipulate governance semantics." */
@@ -87,6 +87,8 @@ export function validateGovernanceEvaluateRequestBody(body: unknown): Governance
       violations.push('requestId, when present, must be a non-empty string.');
     } else if (isServerDerivedIdentifierNamespace(body.requestId)) {
       violations.push(`requestId may not begin with the reserved '${SERVER_DERIVED_IDENTIFIER_PREFIX}' prefix; that namespace is server-derived.`);
+    } else if (hasUnpairedSurrogate(body.requestId)) {
+      violations.push('requestId must be well-formed Unicode: it may not contain an unpaired surrogate code unit.');
     }
   }
 

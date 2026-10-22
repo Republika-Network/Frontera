@@ -143,6 +143,7 @@ function secureEnv(dir: string, overrides: Record<string, string | undefined> = 
     AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
     AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG,
     AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'governance.sqlite'),
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(dir, 'evidence-bundles.sqlite'),
     AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(dir, 'passport.sqlite'),
     AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(dir, 'assurance.sqlite'),
     AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: join(dir, 'kernel-authority.sqlite'),
@@ -307,7 +308,7 @@ describe('PROD-01 reproduction — the pre-PROD-01 shipped host path composed no
     const dir = workDir();
     // Exactly the old launcher: `createEnterpriseServer()` over the process
     // environment, here a production + SQLite one with nothing else configured.
-    const env = { AOC_ENTERPRISE_ENV: 'production', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite', AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'governance.sqlite'), AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(dir, 'passport.sqlite'), AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(dir, 'assurance.sqlite'), AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1', AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' };
+    const env = { AOC_ENTERPRISE_ENV: 'production', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite', AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'governance.sqlite'), AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(dir, 'evidence-bundles.sqlite'), AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(dir, 'passport.sqlite'), AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(dir, 'assurance.sqlite'), AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1', AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' };
     const server = await createEnterpriseServer({ configuration: loadEnterpriseConfiguration(env) });
     try {
       const { port } = await server.listen();
