@@ -612,7 +612,7 @@ describe('G-01C §2 — SQLite — tenant visibility is decided before integrity
 
   it('over HTTP on a composed Host: another organization’s key is the ordinary 404, the owner’s key the integrity error', async () => {
     const { store, corrupted } = await corruptedWorld();
-    const base = loadEnterpriseConfiguration({ AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_REQUIRE_AUTH: 'true', AOC_ENTERPRISE_LOG_LEVEL: 'error' });
+    const base = loadEnterpriseConfiguration({ AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_REQUIRE_AUTH: 'true', AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' });
     const server = await createEnterpriseServer({
       configuration: { ...base, authentication: { apiKeys: [{ key: LEGACY_KEY, organizationId: ORG }, { key: FOREIGN_LEGACY_KEY, organizationId: FOREIGN_ORG }], legacyKeyMode: 'restricted' } },
       kernelProviders: buildTestKernelProviders(),

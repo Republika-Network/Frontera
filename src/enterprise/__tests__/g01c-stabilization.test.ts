@@ -221,7 +221,7 @@ describe('G-01C stabilization — over HTTP and across a SQLite restart', () => 
     const store = await createSqliteGovernanceStore(':memory:');
     stores.push(store);
     const server = await createEnterpriseServer({
-      configuration: loadEnterpriseConfiguration({ AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1', AOC_ENTERPRISE_LOG_LEVEL: 'error' }),
+      configuration: loadEnterpriseConfiguration({ AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1', AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_LOG_LEVEL: 'error' }),
       kernelProviders: buildTestKernelProviders(),
       persistence: store,
     });
