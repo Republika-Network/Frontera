@@ -5,7 +5,7 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 ## [Unreleased]
 
 ### Security — G-01C stabilization
-- **Request ids must be well-formed Unicode**: `POST /api/governance/evaluate` refuses a `requestId` containing an unpaired surrogate code unit (existing `400 INVALID_REQUEST`), and the Governance Store never commits an aggregate under such a request id (`GOVERNANCE_STORE_VALIDATION_ERROR`; the request is read once). Such an id previously committed a SQLite aggregate that could never be read back whole. Every well-formed identifier is unchanged. SEC-INV-356.
+- **Request ids must be well-formed Unicode**: `POST /api/governance/evaluate` refuses a `requestId` containing an unpaired surrogate code unit (existing `400 INVALID_REQUEST`), and the Governance Store never commits an aggregate under such a request id (`GOVERNANCE_STORE_VALIDATION_ERROR`; the aggregate is validated and persisted from one top-level copy of the request — earlier Store reads and nested values are not snapshotted, which matters only to in-process embedders controlling getters). Such an id previously committed a SQLite aggregate that could never be read back whole. Every well-formed identifier is unchanged. SEC-INV-356.
 - **Tests**: every test that composes an Enterprise or Host over SQLite names its own Evidence Bundle Store path instead of sharing the repository-relative default (enforced by a source scan with two reviewed exceptions). Other stores some fixtures leave on `.data/` defaults are unchanged.
 
 ### Security — G-01C cross-surface security qualification
