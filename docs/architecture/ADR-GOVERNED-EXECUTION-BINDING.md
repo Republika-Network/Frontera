@@ -62,6 +62,9 @@ operator configuration, never governed input. Headers that Node adds itself
 origin, method and body. The digest is G-02A's
 `executionCapabilityActionBindingDigest` over that record.
 
+Headers are bound sorted by name, not in send order. Names are lower-case and
+unique, so order carries no meaning.
+
 Other adapter kinds define their own format under the same rule: the adapter's
 final immutable request, minus defined secrets, recomputable by the executor.
 
@@ -116,7 +119,7 @@ binding digest, plus signature). Neither schema changes.
 
 - A gated adapter sends a request only when a capability exists whose signed
   binding is that exact request: for that action, resource, execution and
-  subject, under this deployment's key, with no stop read after issuance. The
+  subject, under this deployment's key, and no stop is observed on the re-read after issuance. The
   request is a pure function of the action the exercise gate contained, so the
   capability cannot authorize anything broader than what governance admitted.
   That containment is the exercise gate's, and custody still does not check
@@ -125,8 +128,9 @@ binding digest, plus signature). Neither schema changes.
 - Under external custody, a gated `execute()` makes one custody request
   (EP-056, single attempt) before its one provider request.
 - Issuance costs latency before the send and adds an await, in the same class
-  as the adapter's existing DNS await. A revocation that lands during the
-  custody call is bounded by the capability window.
+  as the adapter's existing DNS await. A revocation committed during the
+  custody call is not observed. The window bounds nothing until presentation
+  exists (G-02C1).
 - Nothing is presented. Executor-side verification and consumption are only
   **simulated** in tests, over the request a fake network received.
 

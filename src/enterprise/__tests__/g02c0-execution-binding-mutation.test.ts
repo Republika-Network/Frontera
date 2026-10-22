@@ -304,6 +304,15 @@ describe('G-02C0 mutation — the binding record', () => {
       },
     },
     {
+      id: 'hostname-unbound',
+      file: BINDING,
+      replacements: [['hostname: request.hostname,', "hostname: '',"]],
+      guard: async (m) => {
+        const request = await baseRequest();
+        return digestUnder(m, request) !== digestUnder(m, { ...request, hostname: 'api.attacker.example' });
+      },
+    },
+    {
       id: 'method-unbound',
       file: BINDING,
       replacements: [['method: request.method,', "method: 'POST',"]],

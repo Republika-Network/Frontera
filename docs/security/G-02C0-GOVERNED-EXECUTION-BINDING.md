@@ -34,8 +34,11 @@ They are not in the wire request, and they are fixed functions of the bound
 origin, method and body. Rotating the provider credential leaves the record
 unchanged, which is deliberate and tested. Every governed value (amount, unit,
 counterparty, resource, typed parameters, subject, execution id) changes the
-digest, and each of these is tested. Removing any field from the record is
-detected by a mutant.
+digest, and each of these is tested. Removing method, hostname, port, target,
+headers, body or the excluded header's name from the record is detected by a
+mutant (the scheme is the constant `https`). Headers are bound sorted by name,
+not in send order. Names are lower-case and unique, so order carries no
+meaning, and an executor must sort the same way.
 
 ## 3. The gate's guarantee, and its source
 
@@ -58,6 +61,13 @@ action was contained in the grant by the exercise gate: action, resource,
 organization, amount ceiling and typed parameters (CORE-08). So the capability
 can authorize nothing broader or different from what governance admitted.
 Substituting a value changes the request, and therefore the digest.
+
+**What the gate cannot see:** a defective or compromised in-process issuer
+that skipped the authenticated re-read or the ledger reservation could still
+hand it a validly signed capability for the exact request, for example for a
+revoked grant or a re-issued execution. The gate then lets that exact request
+leave. Revocation and replay refusal rest on the real G-02B issuer. The gate
+guarantees only that nothing different, broader or unsigned leaves.
 
 **What this does not change:** custody still does not compare amount,
 counterparty or parameters (G02B-R5). A caller of custody other than this gate
@@ -95,7 +105,7 @@ exactly-once is **not** claimed:
 | Two Hosts with independent ledgers | Executes twice only if both exercise one execution; an executor refuses the duplicate within one consumption domain only |
 | Crash after issuance, before send | The claim exists and the outcome is unknown; nothing re-runs, and the capability was never presented |
 | Custody-credential holder signing directly | Unchanged (G02B-R3, AA-010) |
-| Revocation | Read by the issuer before reservation. A revocation during the custody call is bounded by the window (≤ 60 s). Offline executors never observe it |
+| Revocation | Read by the issuer before reservation. A revocation committed during the custody call is **not observed**: the request is sent within the same execution. The capability window becomes a bound only once presentation exists (G-02C1) |
 | Uncertain provider outcome | `unconfirmed` → P11 → P12, unchanged |
 
 **Enforced in G-02C0:** the binding over the exact sent request; issuance
@@ -129,7 +139,7 @@ G-02A's reference ledger.
 | Governed path end to end; replay; custody refusal | one send and one issuance; no second; `ADAPTER_ERROR` | §5 |
 | Shipped Host (authenticated store, custody, ledger) | one issued row bound to the recomputed request; no socket | `g02c0-execution-binding-host.test.ts` |
 | Bad `executionCapabilities.adapters` | startup refused | same |
-| Removal of each load-bearing control | 19 mutants detected | `g02c0-execution-binding-mutation.test.ts` |
+| Removal of each load-bearing control | 20 mutants detected | `g02c0-execution-binding-mutation.test.ts` |
 | Ordering, purity, surface and protected contracts | pinned | `g02c0-execution-binding-structure.test.ts` |
 
 ## 7. Residual risks
@@ -137,9 +147,10 @@ G-02A's reference ledger.
 | ID | Risk | Owner |
 |---|---|---|
 | G02C0-R1 | Issuance is awaited between the registry's emergency read and the send. The gate re-reads the stop after issuance, but a stop declared during the following DNS await is not observed. That window existed before G-02C0 | documented |
-| G02C0-R2 | A revocation committed during the custody call is not observed before sending; it is bounded by the capability window | G-02D |
+| G02C0-R2 | A revocation committed during the custody call is not observed before sending. With no presentation, nothing checks the window, so the window is no bound in G-02C0 | G-02C1 / G-02D |
 | G02C0-R3 | Under external custody, a gated `execute()` makes one custody request (EP-056) before the provider request. Custody latency counts toward the request path, but not the adapter's provider timeout | documented |
 | G02C0-R4 | A gated adapter reached by a path whose execution id is not the governed derivation (for example the legacy authority-controlled execution service) is always withheld: custody refuses the derivation | fail closed; documented |
 | G02C0-R5 | The credential value is not bound. Swapping the provider credential (operator configuration) does not change the digest | by design |
+| G02C0-R7 | An emergency stop caught by the gate's re-check is reported as `failed` / `ADAPTER_ERROR` (the pre-send-gate detail), not as `withheld` / `emergency-control` as the registry and service checkpoints report it. It fails closed, but operators lose that signal | G-02C1 (a distinct reason needs a wider verdict) |
 | G02C0-R6 | The capability is discarded after verification. An executor cannot yet check it (no presentation), so G-02C0 protects against Host-internal substitution, not a compromised Host | G-02C1 |
 | G02B-R1 … R12 | Unchanged; R5 is narrowed for this caller only | as in G-02B |
