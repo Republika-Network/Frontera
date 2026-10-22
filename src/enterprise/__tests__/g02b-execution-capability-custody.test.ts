@@ -108,7 +108,6 @@ describe('G-02B custody rule — what is issuable', () => {
     ['an action the audience is not registered for', async () => requestFor(await signedGrant({ action: 'export-records' })), 'AUDIENCE_ACTION_NOT_PERMITTED'],
     ['a binding format the audience does not accept', async () => requestFor(await signedGrant(), { actionBinding: { format: 'frontera.other-binding.v1', digest: bindingDigest() } }), 'AUDIENCE_BINDING_FORMAT_NOT_PERMITTED'],
     ['a forged grant (signed by an untrusted key)', async () => requestFor(await signedGrant({ key: AUTHORITY_KEY_UNTRUSTED })), 'GRANT_SIGNATURE_INVALID'],
-    ['a grant signed by another trusted key (not the custody key)', async () => requestFor(await signedGrant({ key: AUTHORITY_KEY_B })), 'GRANT_SIGNATURE_INVALID'],
     ['a grant presented with no signature', async () => ({ ...requestFor(await signedGrant()), grantSignature: undefined }), 'GRANT_SIGNATURE_INVALID'],
     ['a grant presented under another store id', async () => ({ ...requestFor(await signedGrant()), storeId: 'grant-store-other' }), 'GRANT_SIGNATURE_INVALID'],
     ['a grant whose digest does not match', async () => {
@@ -151,6 +150,13 @@ describe('G-02B custody rule — what is issuable', () => {
       assert.deepEqual(assessExecutionCapabilityIssuance(await build(), rule()), { issuable: false, failure });
     });
   }
+
+  it('a grant signed by another key the verifier trusts is still refused: custody accepts only its own active key', async () => {
+    const both = { ...rule(), verifyGrant: testVerifier([AUTHORITY_KEY_A, AUTHORITY_KEY_B]).verifyGrant };
+    const request = requestFor(await signedGrant({ key: AUTHORITY_KEY_B }));
+    assert.equal(testVerifier([AUTHORITY_KEY_A, AUTHORITY_KEY_B]).verifyGrant(request.grant, request.storeId, request.grantSignature).verified, true, 'the signature itself verifies');
+    assert.deepEqual(assessExecutionCapabilityIssuance(request, both), { issuable: false, failure: 'GRANT_SIGNATURE_INVALID' });
+  });
 
   it('a grant expired by the custody clock is refused even when the capability is otherwise in bounds', async () => {
     const signed = await signedGrant({ expiresAt: NOW + 20_000 });

@@ -403,7 +403,8 @@ function parseExecutionCapabilitiesSection(section: unknown, deployment: { reado
       issuer: section.issuer,
       organizationId: deployment.organizationId,
       trustDomain: deployment.trustDomainId,
-      lifetimeMs: section.lifetimeMs ?? EXECUTION_CAPABILITY_LIMITS.defaultLifetimeMs,
+      // Absent means the default; present (even `null`) must be a valid lifetime.
+      lifetimeMs: 'lifetimeMs' in section ? section.lifetimeMs : EXECUTION_CAPABILITY_LIMITS.defaultLifetimeMs,
       audiences,
     });
     return Object.freeze({ policy, issuanceLedgerPath });

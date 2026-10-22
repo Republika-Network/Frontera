@@ -88,8 +88,9 @@ The ledger (`execution-capability-issuance/issuance-ledger.ts`,
 `frontera.execution-capability-issuance-ledger.v1`) is its own SQLite file:
 `execution_id` primary key, `capability_id` and nonce unique, pinned issuer,
 states `reserved → issued | uncertain`, triggers for reserved-first insertion,
-forward-only immutable rows and no delete, `quick_check` and trigger checks on
-open, per-row re-derivation on every read, `IMMEDIATE` reservations with
+forward-only immutable rows and no delete, `quick_check` and a check that those
+triggers exist **by name** on open (a raw writer could replace one with a no-op
+of the same name; per-row re-derivation still refuses a tampered row), per-row re-derivation on every read, `IMMEDIATE` reservations with
 `synchronous = FULL`. A missing file is never created by the Host.
 
 ### 4. The capability-specific grant reference (D2)
@@ -114,8 +115,17 @@ unchanged).
 ## Consequences
 
 - An executor can now receive Frontera-signed capabilities — once G-02C
-  connects a caller — with every field bound to an authenticated grant and a
-  deployment policy custody enforces independently.
+  connects a caller. Custody binds the issuer, organization, trust domain,
+  subject, action, resource, execution and window to an authenticated grant
+  and its own policy. It does **not** check the action-binding digest's
+  content (the request itself) or the grant's amount, counterparty, parameter,
+  action-class, resource-class or profile bounds: containment at issuance is
+  action, resource, organization and subject only. The G-02C caller must bind
+  only a request that the governed exercise has already admitted within those
+  bounds (G02B-R5).
+- "≤ 60 s" is measured from the capability's own `issuedAt`, which custody
+  lets sit up to 5 s ahead of its clock: from custody's view a capability can
+  stay valid for at most about 65 s.
 - The issuance ledger is **not anchored against rollback** (D7): a restored or
   duplicated ledger lets the Host obtain a second valid capability for an
   execution. The G-02A executor ledger refuses it within one consumption

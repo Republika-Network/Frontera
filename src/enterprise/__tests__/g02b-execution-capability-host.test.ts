@@ -10,7 +10,7 @@ import { AUTHORITY_ARTIFACT_VERSION, createAuthorityArtifactVerifier, createExec
 import { createExecutionCapabilityVerifier, executionCapabilityActionBindingDigest } from '../execution-capability/index.js';
 import { ExecutionCapabilityIssuanceError, createExecutionCapabilityIssuer, openExecutionCapabilityIssuanceLedger } from '../execution-capability-issuance/index.js';
 import { bootEnterpriseHost } from '../host/enterprise-host.js';
-import { EnterpriseHostConfigurationError } from '../host/host-configuration.js';
+import { EnterpriseHostConfigurationError, loadEnterpriseHostConfiguration } from '../host/host-configuration.js';
 import { AUTHORITY_KEY_A, trustedKeyOf } from './authority-authenticity-fixture.js';
 import { ADAPTER_ID, ADMIN, ORG, PAYABLES, PAYABLES_WORLD, SETTLE, TRUST_DOMAIN, Workspace, call, createContextTable, govern, governedFile, policyPackProvider, provision, secureEnv, settle, storedGrant } from './core04-host-fixture.js';
 import { withDeploymentWitness } from './core07-freshness-fixture.js';
@@ -158,6 +158,7 @@ describe('G-02B on the shipped Host — configuration and composition refusals',
     ['an action that is not routed', (dir) => section(dir, { audiences: [{ audience: AUDIENCE, actions: ['launch-rocket'], bindingFormats: [BINDING_FORMAT] }] })],
     ['no audiences', (dir) => section(dir, { audiences: [] })],
     ['a lifetime above 60 s', (dir) => section(dir, { lifetimeMs: 60_001 })],
+    ['a null lifetime', (dir) => section(dir, { lifetimeMs: null })],
     ['no ledger path', (dir) => Object.fromEntries(Object.entries(section(dir)).filter(([key]) => key !== 'issuanceLedgerPath'))],
   ];
   for (const [name, build] of invalid) {
@@ -169,9 +170,11 @@ describe('G-02B on the shipped Host — configuration and composition refusals',
     });
   }
 
-  it('memory persistence cannot issue (HOST_PERSISTENCE_NOT_DURABLE)', async () => {
+  it('memory persistence cannot issue, in any profile — the G-02B rule itself refuses (HOST_PERSISTENCE_NOT_DURABLE)', () => {
     const dir = workspace.dir();
-    const error = await refused({ ...secureEnv(dir, governedFile({ executionCapabilities: section(dir) })), AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory' });
-    assert.ok(error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_PERSISTENCE_NOT_DURABLE', String(error));
+    // A non-secure profile, so the secure profile's own sqlite rule cannot be what refuses.
+    const env = { ...secureEnv(dir, governedFile({ executionCapabilities: section(dir) })), AOC_ENTERPRISE_ENV: 'development', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory' };
+    assert.throws(() => loadEnterpriseHostConfiguration(env), (error: unknown) => error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_PERSISTENCE_NOT_DURABLE' && /executionCapabilities requires/.test(error.message));
+    assert.doesNotThrow(() => loadEnterpriseHostConfiguration({ ...env, AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite' }), 'the same development configuration over sqlite is accepted');
   });
 });
