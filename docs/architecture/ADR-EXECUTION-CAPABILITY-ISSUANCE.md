@@ -106,9 +106,10 @@ What this does and does not hide is analysed in the security statement §4.
 `authorityControlledExecution.executionCapabilities` is present: it requires
 the authenticated durable grant store it opened, a signer offering the
 operation, a policy naming the deployment's organization and trust domain,
-and the existing ledger; it binds a write-once slot. The Host creates the slot
-(or accepts an embedder's), refuses to serve if it was not bound, and exposes
-it to no route, response or adapter.
+and the existing ledger; it binds a write-once slot. The Host creates and keeps
+the slot, refuses to serve if it was not bound, and hands it to no route,
+response, adapter or boot option (CORE-06 §23 keeps the Host's option surface
+unchanged).
 
 ## Consequences
 

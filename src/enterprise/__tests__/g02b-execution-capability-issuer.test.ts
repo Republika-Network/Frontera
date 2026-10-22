@@ -125,7 +125,8 @@ describe('G-02B issuer — refusals before custody leave no record and ask nothi
     ['a revoked grant', (signed) => ({ grants: readerOf([signed], [signed.grant.id]) }), 'CAPABILITY_GRANT_REVOKED'],
     ['an unreadable grant store', () => ({ grants: { readSigned: () => Promise.reject(new Error('store unavailable')) } }), 'CAPABILITY_GRANT_UNAVAILABLE'],
     ['an unregistered audience', () => ({ input: { audience: 'executor-unknown' } }), 'CAPABILITY_REFUSED'],
-    ['a wildcard audience', () => ({ input: { audience: '*' } }), 'CAPABILITY_REFUSED'],
+    // `*` is not even a well-formed audience: the G-02A codec refuses it before the rule is consulted.
+    ['a wildcard audience', () => ({ input: { audience: '*' } }), 'CAPABILITY_REQUEST_INVALID'],
     ['another action', () => ({ input: { action: 'export-records' } }), 'CAPABILITY_REFUSED'],
     ['another resource', () => ({ input: { resource: 'production-cluster-us' } }), 'CAPABILITY_REFUSED'],
     ['an execution not derived from the grant', () => ({ input: { executionId: 'aoc.exec:0123456789abcdef0123456789abcdef' } }), 'CAPABILITY_REFUSED'],

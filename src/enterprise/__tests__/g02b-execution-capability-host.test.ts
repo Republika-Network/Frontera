@@ -3,13 +3,16 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+import Database from 'better-sqlite3';
+
 import type { ExecutionAdapter, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
+import { AUTHORITY_ARTIFACT_VERSION, createAuthorityArtifactVerifier, createExecutionCapabilityIssuancePolicy, createSoftwareAuthorityArtifactSigner, type AuthoritySignature } from '../authority-authenticity/index.js';
 import { createExecutionCapabilityVerifier, executionCapabilityActionBindingDigest } from '../execution-capability/index.js';
-import { ExecutionCapabilityIssuanceError, createExecutionCapabilityIssuerSlot, openExecutionCapabilityIssuanceLedger, type ExecutionCapabilityIssuerSlot } from '../execution-capability-issuance/index.js';
+import { ExecutionCapabilityIssuanceError, createExecutionCapabilityIssuer, openExecutionCapabilityIssuanceLedger } from '../execution-capability-issuance/index.js';
 import { bootEnterpriseHost } from '../host/enterprise-host.js';
 import { EnterpriseHostConfigurationError } from '../host/host-configuration.js';
 import { AUTHORITY_KEY_A, trustedKeyOf } from './authority-authenticity-fixture.js';
-import { ADAPTER_ID, ADMIN, ORG, PAYABLES, PAYABLES_WORLD, SETTLE, TRUST_DOMAIN, Workspace, call, createContextTable, govern, governedFile, policyPackProvider, provision, secureEnv, settle } from './core04-host-fixture.js';
+import { ADAPTER_ID, ADMIN, ORG, PAYABLES, PAYABLES_WORLD, SETTLE, TRUST_DOMAIN, Workspace, call, createContextTable, govern, governedFile, policyPackProvider, provision, secureEnv, settle, storedGrant } from './core04-host-fixture.js';
 import { withDeploymentWitness } from './core07-freshness-fixture.js';
 
 /**
@@ -18,8 +21,10 @@ import { withDeploymentWitness } from './core07-freshness-fixture.js';
  * `executionCapabilities` section composes an issuer over the authenticated
  * grant store, the software custody boundary built with the same policy and
  * the operator-initialized issuance ledger — and nothing else. No route, no
- * adapter, no response carries a capability; the issuer is reachable only
- * through the in-process slot (G-02C's caller, a test here).
+ * adapter, no response and no boot option carries or hands out a capability
+ * or the issuer (G-02C connects a caller). That a real governed grant is
+ * issuable is proven over the Host's own signed grant record, read from its
+ * file, through the same issuer and custody rule with the Host's key.
  */
 
 const ISSUER = 'frontera-deployment-g02b-host';
@@ -37,7 +42,7 @@ async function initializeLedger(dir: string, issuer = ISSUER): Promise<void> {
   (await openExecutionCapabilityIssuanceLedger(join(dir, 'execution-capability-issuance.sqlite'), { issuer, clock: Date.now, create: true })).close();
 }
 
-async function bootWith(env: Record<string, string | undefined>, slot?: ExecutionCapabilityIssuerSlot) {
+async function bootWith(env: Record<string, string | undefined>) {
   const calls: ValidatedExecutionAction[] = [];
   const adapter: ExecutionAdapter = {
     adapterId: ADAPTER_ID,
@@ -48,46 +53,69 @@ async function bootWith(env: Record<string, string | undefined>, slot?: Executio
   };
   const context = createContextTable();
   const host = workspace.track(
-    await bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter], contextProvider: context.provider, policyPackProvider: policyPackProvider(), ...(slot !== undefined ? { executionCapabilityIssuer: slot } : {}) }),
+    await bootEnterpriseHost({ env: await withDeploymentWitness(env), executionAdapters: [adapter], contextProvider: context.provider, policyPackProvider: policyPackProvider() }),
   );
   const { port } = await host.listen();
   return { host, calls, context, baseUrl: `http://127.0.0.1:${port}` };
 }
 
 describe('G-02B on the shipped Host — opt-in issuance over the governed grant', () => {
-  it('issues a capability for an executed governed action’s own grant and execution; the executor verifier accepts it; nothing is issued twice', async () => {
+  it('composes with the section; a real governed grant and execution, as the Host signed and filed them, are issuable — and nothing is issued twice', async () => {
     const dir = workspace.dir();
     await initializeLedger(dir);
-    const slot = createExecutionCapabilityIssuerSlot();
-    const booted = await bootWith(secureEnv(dir, governedFile({ executionCapabilities: section(dir) })), slot);
-    assert.equal(slot.bound(), true);
+    const booted = await bootWith(secureEnv(dir, governedFile({ executionCapabilities: section(dir) })));
+    // Boot succeeded: the composition bound the issuer (the Host refuses an unbound slot) over the authenticated store and the existing ledger.
     await provision(booted.host);
     booted.context.set(PAYABLES_WORLD);
     const reply = await govern(booted.baseUrl, settle());
     assert.equal(reply.body['status'], 'executed', reply.text);
-    assert.equal(JSON.stringify(reply.body).includes('capability'), false, 'the governed-action response carries no capability');
+    assert.equal(JSON.stringify(reply.body).toLowerCase().includes('capabilit'), false, 'the governed-action response carries no capability');
     const executionId = reply.body['executionId'] as string;
     const lookup = await call(booted.baseUrl, 'GET', `/api/admin/authority/executions/${encodeURIComponent(executionId)}`, { authorization: ADMIN });
     assert.equal(lookup.status, 200, lookup.text);
     const grantId = lookup.body['grantId'] as string;
 
-    const request = { method: 'POST', path: '/payables/settle', body: { invoiceTotal: 500, destination: 'supplier-x' } };
-    const input = { executionId, boundedGrantId: grantId, audience: AUDIENCE, action: SETTLE, resource: PAYABLES, actionBinding: { format: BINDING_FORMAT, digest: executionCapabilityActionBindingDigest({ format: BINDING_FORMAT, value: request }) } };
-    const issued = await slot.issue(input);
-    assert.equal(issued.capability.issuer, ISSUER);
-    assert.equal(issued.capability.organizationId, ORG);
-    assert.equal(issued.capability.trustDomain, TRUST_DOMAIN);
-    assert.equal(issued.capability.issuerKeyId, AUTHORITY_KEY_A.keyId);
-    const verifier = createExecutionCapabilityVerifier({ trustedIssuers: [{ issuer: ISSUER, keys: [trustedKeyOf(AUTHORITY_KEY_A)] }], executor: { audience: AUDIENCE, organizationIds: [ORG], trustDomain: TRUST_DOMAIN }, clock: Date.now });
-    assert.equal(verifier.verify({ presentation: { capability: issued.canonical, signature: issued.signature }, action: SETTLE, resource: PAYABLES, actionBinding: { format: BINDING_FORMAT, value: request } }).verification, 'verified');
-    assert.equal(slot.inspect(executionId), 'issued');
-    await assert.rejects(slot.issue(input), (error: unknown) => error instanceof ExecutionCapabilityIssuanceError && error.code === 'CAPABILITY_ALREADY_ISSUED');
-    // Another execution id for the same grant is refused in custody's rule: the execution is the grant's own.
-    await assert.rejects(slot.issue({ ...input, executionId: 'aoc.exec:00000000000000000000000000000000' }), (error: unknown) => error instanceof ExecutionCapabilityIssuanceError && error.rule === 'EXECUTION_DERIVATION_MISMATCH');
-    // No HTTP surface was added for any of it.
+    // The grant exactly as the Host signed and filed it, read from its file the way a qualification reads evidence.
+    const grant = storedGrant(dir, grantId);
+    const db = new Database(join(dir, 'bounded-grants.sqlite'), { readonly: true });
+    let storeId: string;
+    let signature: AuthoritySignature;
+    try {
+      storeId = (db.prepare('SELECT store_id FROM bounded_grant_revocation_state WHERE singleton = 1').get() as { store_id: string }).store_id;
+      const row = db.prepare('SELECT signature_algorithm, signing_key_id, signature, signature_version FROM bounded_grants WHERE grant_id = ?').get(grantId) as { signature_algorithm: 'ed25519-v1'; signing_key_id: string; signature: string; signature_version: string };
+      signature = { algorithm: row.signature_algorithm, keyId: row.signing_key_id, signature: row.signature, artifactVersion: row.signature_version };
+    } finally {
+      db.close();
+    }
+    assert.equal(signature.artifactVersion, AUTHORITY_ARTIFACT_VERSION);
+    const policy = createExecutionCapabilityIssuancePolicy({ issuer: ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, lifetimeMs: 30_000, audiences: [{ audience: AUDIENCE, actions: [SETTLE], bindingFormats: [BINDING_FORMAT] }] });
+    const ledger = await openExecutionCapabilityIssuanceLedger(join(dir, 'qualification-issuance.sqlite'), { issuer: ISSUER, clock: Date.now, create: true });
+    try {
+      const issuer = createExecutionCapabilityIssuer({
+        grants: { readSigned: async (id: string) => (id === grantId ? { storeId, grant, signature } : { storeId }) },
+        signer: createSoftwareAuthorityArtifactSigner({ keyId: AUTHORITY_KEY_A.keyId, algorithm: 'ed25519-v1', privateKeyPem: AUTHORITY_KEY_A.privateKeyPem, executionCapabilityIssuance: policy }),
+        verifier: createAuthorityArtifactVerifier([trustedKeyOf(AUTHORITY_KEY_A)]),
+        policy,
+        ledger,
+      });
+      const request = { method: 'POST', path: '/payables/settle', body: { invoiceTotal: 500, destination: 'supplier-x' } };
+      const input = { executionId, boundedGrantId: grantId, audience: AUDIENCE, action: SETTLE, resource: PAYABLES, actionBinding: { format: BINDING_FORMAT, digest: executionCapabilityActionBindingDigest({ format: BINDING_FORMAT, value: request }) } };
+      const issued = await issuer.issue(input);
+      assert.equal(issued.capability.executionId, executionId, 'the governed path’s execution id is the one custody derives from the grant');
+      assert.equal(issued.capability.subjectActorId, grant.subject);
+      assert.equal(issued.capability.organizationId, ORG);
+      assert.equal(issued.capability.trustDomain, TRUST_DOMAIN);
+      const verifier = createExecutionCapabilityVerifier({ trustedIssuers: [{ issuer: ISSUER, keys: [trustedKeyOf(AUTHORITY_KEY_A)] }], executor: { audience: AUDIENCE, organizationIds: [ORG], trustDomain: TRUST_DOMAIN }, clock: Date.now });
+      assert.equal(verifier.verify({ presentation: { capability: issued.canonical, signature: issued.signature }, action: SETTLE, resource: PAYABLES, actionBinding: { format: BINDING_FORMAT, value: request } }).verification, 'verified');
+      await assert.rejects(issuer.issue(input), (error: unknown) => error instanceof ExecutionCapabilityIssuanceError && error.code === 'CAPABILITY_ALREADY_ISSUED');
+      await assert.rejects(issuer.issue({ ...input, executionId: 'aoc.exec:00000000000000000000000000000000' }), (error: unknown) => error instanceof ExecutionCapabilityIssuanceError && error.rule === 'EXECUTION_DERIVATION_MISMATCH');
+    } finally {
+      ledger.close();
+    }
+    // No HTTP surface exists for any of it.
     for (const path of ['/api/execution-capabilities', '/api/governed-actions/capability', '/api/admin/execution-capabilities']) {
-      const answer = await call(booted.baseUrl, 'POST', path, { authorization: ADMIN, body: input });
-      assert.ok(answer.status >= 400 && !answer.text.includes(issued.capability.capabilityId), `${path}: ${answer.status}`);
+      const answer = await call(booted.baseUrl, 'POST', path, { authorization: ADMIN, body: { executionId } });
+      assert.ok(answer.status >= 400, `${path}: ${answer.status}`);
     }
   });
 
@@ -100,9 +128,9 @@ describe('G-02B on the shipped Host — opt-in issuance over the governed grant'
 });
 
 describe('G-02B on the shipped Host — configuration and composition refusals', () => {
-  async function refused(env: Record<string, string | undefined>, slot?: ExecutionCapabilityIssuerSlot): Promise<unknown> {
+  async function refused(env: Record<string, string | undefined>): Promise<unknown> {
     try {
-      await bootWith(env, slot);
+      await bootWith(env);
     } catch (error) {
       return error;
     }
@@ -145,11 +173,5 @@ describe('G-02B on the shipped Host — configuration and composition refusals',
     const dir = workspace.dir();
     const error = await refused({ ...secureEnv(dir, governedFile({ executionCapabilities: section(dir) })), AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory' });
     assert.ok(error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_PERSISTENCE_NOT_DURABLE', String(error));
-  });
-
-  it('an embedder slot without the section is refused (HOST_COMPOSITION_INCOMPLETE)', async () => {
-    const dir = workspace.dir();
-    const error = await refused(secureEnv(dir), createExecutionCapabilityIssuerSlot());
-    assert.ok(error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_COMPOSITION_INCOMPLETE', String(error));
   });
 });

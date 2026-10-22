@@ -124,15 +124,6 @@ export interface BootEnterpriseHostOptions {
    * execution refuses until an embedder composes the trade risk context.
    */
   readonly xrplTradeExecution?: Pick<ComposeXrplTradeExecutionOptions, 'attested' | 'ledgerClient' | 'simulation' | 'onTrace'>;
-  /**
-   * G-02B — trusted in-process composition: an unbound execution-capability
-   * issuer slot the composition binds when the governed-action file configures
-   * `executionCapabilities`, so in-process code (G-02C; qualification today)
-   * holds the issuer. Never reachable over HTTP. Supplied without the section,
-   * the Host refuses; omitted, the Host creates its own slot. The launcher
-   * passes none.
-   */
-  readonly executionCapabilityIssuer?: ExecutionCapabilityIssuerSlot;
   readonly logger?: EnterpriseLogger;
 }
 
@@ -510,13 +501,9 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
       throw error;
     }
   }
-  // G-02B: a write-once slot only when the file opts in; the composition binds it or refuses.
-  if (options.executionCapabilityIssuer !== undefined && host.governedActions?.executionCapabilities === undefined) {
-    await trade?.close();
-    await xrpl?.close();
-    throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', `An execution-capability issuer slot was supplied but ${GOVERNED_ACTIONS_FILE_VARIABLE} configures no executionCapabilities.`);
-  }
-  const executionCapabilities = host.governedActions?.executionCapabilities !== undefined ? (options.executionCapabilityIssuer ?? createExecutionCapabilityIssuerSlot()) : undefined;
+  // G-02B: a write-once slot only when the file opts in; the composition binds it or refuses. The Host keeps it: no option,
+  // route or response hands the issuer out (CORE-06 §23), and nothing calls it before G-02C.
+  const executionCapabilities = host.governedActions?.executionCapabilities !== undefined ? createExecutionCapabilityIssuerSlot() : undefined;
   let server: EnterpriseServer;
   try {
     server = await createEnterpriseServer(toCreateEnterpriseOptions(host, { ...options, logger }, xrpl, trade, executionCapabilities));

@@ -35,8 +35,9 @@ import {
  * original and fail for the mutant. Every guard presents a case whose every
  * *other* check agrees, so only the mutated control stands between it and
  * acceptance. Where two mechanisms guard one property they are removed
- * together. Mutation sites name only module-local identifiers, so they read
- * the same in TypeScript and in the emitted CommonJS.
+ * together. Mutation sites name only module-local identifiers and never span
+ * a line break the emitter introduces (tsc puts a brace-less `if` body on its
+ * own line), so they read the same in TypeScript and in the emitted CommonJS.
  */
 
 const load = createRequire(__filename);
@@ -82,52 +83,52 @@ const skip = (line: string): readonly [string, string] => [line, ';'];
 
 describe('G-02B mutation — the custody rule', () => {
   const mutants: readonly Mutant<RuleModule>[] = [
-    { id: 'skip-issuer', file: RULE, replacements: [skip("if (capability.issuerKeyId !== context.activeKeyId || capability.issuer !== policy.issuer) return refuse('CAPABILITY_ISSUER_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { issuer: 'frontera-deployment-other' })) },
-    { id: 'skip-organization', file: RULE, replacements: [skip("if (capability.organizationId !== policy.organizationId) return refuse('CAPABILITY_ORGANIZATION_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { organizationId: 'org-other' })) },
-    { id: 'skip-trust-domain', file: RULE, replacements: [skip("if (capability.trustDomain !== policy.trustDomain) return refuse('CAPABILITY_TRUST_DOMAIN_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { trustDomain: 'trust-domain-other' })) },
+    { id: 'skip-issuer', file: RULE, replacements: [skip("return refuse('CAPABILITY_ISSUER_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { issuer: 'frontera-deployment-other' })) },
+    { id: 'skip-organization', file: RULE, replacements: [skip("return refuse('CAPABILITY_ORGANIZATION_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { organizationId: 'org-other' })) },
+    { id: 'skip-trust-domain', file: RULE, replacements: [skip("return refuse('CAPABILITY_TRUST_DOMAIN_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { trustDomain: 'trust-domain-other' })) },
     {
       id: 'skip-terms',
       file: RULE,
-      replacements: [skip("if (capability.consumption !== 'single-use' || capability.statusRequirement !== 'offline-permitted' || capability.onBehalfOfActorId !== null) return refuse('CAPABILITY_TERMS_UNSUPPORTED');")],
+      replacements: [skip("return refuse('CAPABILITY_TERMS_UNSUPPORTED');")],
       guard: async (m) => refuses(m, requestFor(await signedGrant(), { statusRequirement: 'online-status-required' })) && refuses(m, requestFor(await signedGrant(), { onBehalfOfActorId: 'actor-principal' })),
     },
     { id: 'any-registered-audience', file: RULE, replacements: [['const registration = policy.audiences.find((entry) => entry.audience === capability.audience);', 'const registration = policy.audiences[0];']], guard: async (m) => refuses(m, requestFor(await signedGrant(), { audience: 'executor-unknown' })) },
-    { id: 'skip-audience-action', file: RULE, replacements: [skip("if (!registration.actions.includes(capability.action)) return refuse('AUDIENCE_ACTION_NOT_PERMITTED');")], guard: async (m) => refuses(m, requestFor(await signedGrant({ action: 'export-records' }))) },
+    { id: 'skip-audience-action', file: RULE, replacements: [skip("return refuse('AUDIENCE_ACTION_NOT_PERMITTED');")], guard: async (m) => refuses(m, requestFor(await signedGrant({ action: 'export-records' }))) },
     {
       id: 'skip-audience-binding-format',
       file: RULE,
-      replacements: [skip("if (!registration.bindingFormats.includes(capability.actionBinding.format)) return refuse('AUDIENCE_BINDING_FORMAT_NOT_PERMITTED');")],
+      replacements: [skip("return refuse('AUDIENCE_BINDING_FORMAT_NOT_PERMITTED');")],
       guard: async (m) => refuses(m, requestFor(await signedGrant(), { actionBinding: { format: 'frontera.other-binding.v1', digest: bindingDigest() } })),
     },
     {
       id: 'skip-grant-signature',
       file: RULE,
-      replacements: [skip("if (!verification.verified || verification.keyId !== context.activeKeyId) return refuse('GRANT_SIGNATURE_INVALID');")],
+      replacements: [skip("return refuse('GRANT_SIGNATURE_INVALID');")],
       // Signed by a key the verifier knows but that is not the custody key: only the "own key" half refuses.
       guard: async (m) => refuses(m, requestFor(await signedGrant({ key: AUTHORITY_KEY_UNTRUSTED }))),
     },
-    { id: 'skip-grant-reference', file: RULE, replacements: [skip("if (capability.grantReference !== reference) return refuse('GRANT_REFERENCE_MISMATCH');")], guard: async (m) => refuses(m, { ...requestFor(await signedGrant()), grantReferenceNonce: 'ab'.repeat(32) }) },
-    { id: 'skip-grant-organization', file: RULE, replacements: [skip("if (organization?.kind !== 'identity' || organization.value !== policy.organizationId) return refuse('GRANT_ORGANIZATION_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant({ organizationId: 'org-other' }))) },
-    { id: 'skip-subject', file: RULE, replacements: [skip("if (capability.subjectActorId !== grant.subject) return refuse('GRANT_SUBJECT_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { subjectActorId: 'actor-other' })) },
+    { id: 'skip-grant-reference', file: RULE, replacements: [['capability.grantReference !== reference)', 'false)']], guard: async (m) => refuses(m, { ...requestFor(await signedGrant()), grantReferenceNonce: 'ab'.repeat(32) }) },
+    { id: 'skip-grant-organization', file: RULE, replacements: [skip("return refuse('GRANT_ORGANIZATION_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant({ organizationId: 'org-other' }))) },
+    { id: 'skip-subject', file: RULE, replacements: [skip("return refuse('GRANT_SUBJECT_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { subjectActorId: 'actor-other' })) },
     {
       id: 'skip-grant-action',
       file: RULE,
-      replacements: [skip("if (capability.action !== grant.correlation.action || (action !== undefined && (action.kind !== 'identity' || action.value !== capability.action))) return refuse('GRANT_ACTION_MISMATCH');")],
+      replacements: [skip("return refuse('GRANT_ACTION_MISMATCH');")],
       // The second audience may receive both actions, so only the grant comparison refuses.
       guard: async (m) => refuses(m, requestFor(await signedGrant({ action: 'export-records' }), { action: 'deploy-release', audience: G02B_OTHER_AUDIENCE })),
     },
-    { id: 'skip-grant-resource', file: RULE, replacements: [skip("if (capability.resource !== grant.correlation.resourceScope || !boundIncludes(grant.scope.resources, capability.resource)) return refuse('GRANT_RESOURCE_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { resource: 'production-cluster-us' })) },
-    { id: 'skip-execution-derivation', file: RULE, replacements: [skip("if (capability.executionId !== executionIdForGrant(grant)) return refuse('EXECUTION_DERIVATION_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { executionId: 'aoc.exec:0123456789abcdef0123456789abcdef' })) },
+    { id: 'skip-grant-resource', file: RULE, replacements: [skip("return refuse('GRANT_RESOURCE_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { resource: 'production-cluster-us' })) },
+    { id: 'skip-execution-derivation', file: RULE, replacements: [skip("return refuse('EXECUTION_DERIVATION_MISMATCH');")], guard: async (m) => refuses(m, requestFor(await signedGrant(), { executionId: 'aoc.exec:0123456789abcdef0123456789abcdef' })) },
     {
       id: 'skip-grant-expiry',
       file: RULE,
-      replacements: [["|| !(context.now < grantExpiresAt)) return refuse('GRANT_EXPIRED');", ") return refuse('GRANT_EXPIRED');"]],
+      replacements: [['|| !(context.now < grantExpiresAt))', ')']],
       // The grant ends at the custody instant; the capability ends with it, so no window check refuses.
       guard: async (m) => refuses(m, requestFor(await signedGrant({ expiresAt: NOW }), {}, { now: NOW - 1_000, lifetimeMs: 1_000 })),
     },
     { id: 'skip-clock-skew', file: RULE, replacements: [['Math.abs(issuedAt - context.now) >', 'Math.abs(issuedAt - context.now) * 0 >']], guard: async (m) => refuses(m, requestFor(await signedGrant(), {}, { now: NOW - 5_001 })) },
     { id: 'skip-lifetime', file: RULE, replacements: [['expiresAt - issuedAt > Math.min(', 'expiresAt - issuedAt > Infinity + Math.min(']], guard: async (m) => refuses(m, requestFor(await signedGrant(), {}, { lifetimeMs: 30_001 })) },
-    { id: 'skip-outlive-grant', file: RULE, replacements: [skip("if (expiresAt > grantExpiresAt || issuedAt < grantIssuedAt) return refuse('CAPABILITY_TIME_INVALID');")], guard: async (m) => refuses(m, requestFor(await signedGrant({ expiresAt: NOW + 10_000 }))) },
+    { id: 'skip-outlive-grant', file: RULE, replacements: [['if (expiresAt > grantExpiresAt || issuedAt < grantIssuedAt)', 'if (false)']], guard: async (m) => refuses(m, requestFor(await signedGrant({ expiresAt: NOW + 10_000 }))) },
   ];
   for (const mutant of mutants) it(mutant.id, () => qualify(mutant));
 });
@@ -143,7 +144,7 @@ describe('G-02B mutation — software custody', () => {
       id: 'sign-despite-refusal',
       file: SIGNER,
       replacements: [
-        ['if (!ruling.issuable) throw', 'if (false) throw'],
+        ['if (!ruling.issuable)', 'if (false)'],
         ['(ruling.capability))', '(request.capability))'],
       ],
       guard: async (m) => {
@@ -187,7 +188,7 @@ describe('G-02B mutation — the issuer', () => {
     {
       id: 'skip-revocation',
       file: ISSUER,
-      replacements: [skip("if (read.revocation !== undefined) return fail('CAPABILITY_GRANT_REVOKED', 'never-requested', 'The bounded grant is revoked; no capability is issued.');")],
+      replacements: [['if (read.revocation !== undefined)', 'if (false)']],
       // Custody never sees revocation: this Host-side check is the only one.
       guard: async (m) => {
         const signed = await signedGrant();
@@ -203,7 +204,7 @@ describe('G-02B mutation — the issuer', () => {
     {
       id: 'ignore-existing-execution',
       file: ISSUER,
-      replacements: [skip('if (before !== \'absent\') return refuseExisting(before);'), skip("if (reserved.outcome === 'exists') return refuseExisting(reserved.record.state);")],
+      replacements: [["if (before !== 'absent')", 'if (false)'], ["if (reserved.outcome === 'exists')", 'if (false)']],
       guard: async (m) => {
         const signed = await signedGrant();
         const custody = counted();
@@ -216,7 +217,7 @@ describe('G-02B mutation — the issuer', () => {
     {
       id: 'ignore-concurrent-reservation',
       file: ISSUER,
-      replacements: [skip("if (reserved.outcome === 'exists') return refuseExisting(reserved.record.state);")],
+      replacements: [["if (reserved.outcome === 'exists')", 'if (false)']],
       guard: async (m) => {
         const signed = await signedGrant();
         const custody = counted();
@@ -261,7 +262,7 @@ describe('G-02B mutation — the issuance ledger', () => {
       id: 'replace-existing-reservation',
       file: LEDGER,
       replacements: [
-        ["if (existing !== undefined) return { outcome: 'exists', record: recordOf(existing, issuer)", "if (false) return { outcome: 'exists', record: recordOf(existing, issuer)"],
+        ['if (existing !== undefined)', 'if (false)'],
         ['INSERT INTO execution_capability_issuances (execution_id,', 'INSERT OR REPLACE INTO execution_capability_issuances (execution_id,'],
       ],
       guard: async (m) => {
@@ -278,7 +279,7 @@ describe('G-02B mutation — the issuance ledger', () => {
     {
       id: 'skip-row-reference-check',
       file: LEDGER,
-      replacements: [skip('if (capability.grantReference !== reference) throw new MalformedIssuanceRow();')],
+      replacements: [['if (capability.grantReference !== reference)', 'if (false)']],
       guard: async (m) => {
         const path = ledgers.path();
         const ledger = await m.openExecutionCapabilityIssuanceLedger(path, { issuer: G02B_ISSUER, clock: () => NOW, create: true });
@@ -315,7 +316,7 @@ describe('G-02B mutation — the issuance ledger', () => {
     {
       id: 'skip-trigger-check',
       file: LEDGER,
-      replacements: [['if (triggers.n !== LEDGER_TRIGGERS.length) throw', 'if (false) throw']],
+      replacements: [['if (triggers.n !== LEDGER_TRIGGERS.length)', 'if (false)']],
       guard: async (m) => {
         const path = ledgers.path();
         (await m.openExecutionCapabilityIssuanceLedger(path, { issuer: G02B_ISSUER, clock: () => NOW, create: true })).close();
