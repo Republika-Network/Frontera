@@ -1,6 +1,6 @@
 # G-01B1 — Request namespace and provenance isolation
 
-Status: Draft PR #196 (base `6c1f6b4`). Not merged.
+Status: merged (#196, `865c93c`). Follow-up: G-01C (`G-01C-SECURITY-QUALIFICATION.md`).
 Invariants: SEC-INV-347 … SEC-INV-351 (`docs/security/SECURITY_INVARIANTS.md` §4.36).
 Founder decisions: 1 (oracle deferred), 2 (shared provenance resolver), 3 (reconsideration), 4 (refusal codes), 5 (Passport), 6 (traces), 7 (bounded hygiene, Assurance assessment).
 

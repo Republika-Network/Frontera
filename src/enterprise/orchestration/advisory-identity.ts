@@ -314,7 +314,8 @@ export function assertServicePrincipalConfiguration(configuration: EnterpriseCon
  * The one legacy-key rule: while the effective mode is `restricted` (the
  * default for staging and production, whoever built the configuration), no
  * API key may be unscoped — an unscoped key is the only legacy credential that
- * resolves to system scope on the read routes. Run by the Host's loader and
+ * resolves to system scope, on the read routes and on every write the
+ * ordinary-key routes accept (G-01C). Run by the Host's loader and
  * again at composition.
  */
 export function assertLegacyKeyConfiguration(configuration: EnterpriseConfiguration): void {

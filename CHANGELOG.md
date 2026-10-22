@@ -4,6 +4,15 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Security — G-01C cross-surface security qualification
+- **Qualified deployment profile**: the single-organization secure Host (authentication required, scoped credentials, `restricted` legacy mode, SQLite with one Host process per database file, trusted configuration, explicit service and auditor permissions). Multi-organization shared hosting remains blocked by G-01B2; programmatic composition is documented as a trusted-code integration profile.
+- **Store**: an append whose ordinary `events[]` carries a `GovernanceEvaluationAttributed` event is refused (`GOVERNANCE_STORE_VALIDATION_ERROR`); authenticated attribution enters only through the validated `attribution` field.
+- **Composition**: the governed-action options are read once into a frozen copy; the advisory route's trust domain can no longer be changed by mutating the caller's object after `createEnterprise`.
+- **SQLite Store**: a non-system reader's visibility is decided before an aggregate's integrity is judged — another organization's corrupted record is the ordinary not-found (HTTP 404), not `500 GOVERNANCE_RECORD_CORRUPTED`; owners and system scope still see the integrity error.
+- **Passports**: `linkGovernanceRecord` refuses a record of another organization than the Passport's (`PASSPORT_GOVERNANCE_RECORD_NOT_FOUND`) — such a reference never verified. Subject binding is not enforced (founder decision pending).
+- **Documentation**: unscoped `compat` keys hold system scope on writes as well as reads; Assurance `governance_record` evidence demonstrates structural integrity only.
+- SEC-INV-352 … SEC-INV-355; `docs/security/G-01C-SECURITY-QUALIFICATION.md`.
+
 ### Security — G-01B1 governed-record provenance isolation
 - **One fail-closed provenance resolver** (`governance-store/governed-provenance.ts`): a record is a governed decision only if it holds the governed-action path's own claim, as the Store's scoped `governed-action` query answers it for exactly that record. Request-id shape, integrity and attribution are never evidence. No schema change or migration.
 - **Reconsideration**: an original without governed provenance (a record at a governed id without the claim — unattributed, legacy-asserted or system-written, committed before G-01B0 or by an embedder) is the existing `GOVERNED_ACTION_RECONSIDERATION_TARGET_NOT_FOUND`; same-actor rule unchanged.

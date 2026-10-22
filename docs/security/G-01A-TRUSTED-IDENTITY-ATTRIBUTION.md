@@ -87,7 +87,7 @@ Unchanged (gate E): the Kernel and its contracts (including `actor.principalId` 
 - **Auditor credential custody.** An auditor reads every complete record of its organization, including principal ids; its secret must be held as carefully as an operator's.
 - **Records committed by an earlier G-01A build of this PR** carry no salt and are unreadable to this build (`readRecordedAttribution` → unreadable): they replay to no one and are withheld from ordinary readers. No such records exist outside this branch's tests.
 - **Legacy keys within one organization are indistinguishable.** Two scoped legacy keys of one organization share `legacy-asserted / organization` attribution and may replay each other's decisions, as in v1. Configured legacy keys carry no identity to tell them apart.
-- **Unscoped keys under `compat`** keep cross-organization system access on the read routes — by explicit opt-in only.
+- **Unscoped keys under `compat`** keep cross-organization system access — by explicit opt-in only — on the read routes **and on writes**: evaluate for any organization, Passport issuance and lifecycle, Assurance, evidence build and access-grant revocation (characterized in G-01C; `compat` is excluded from the qualified deployment profile, `G-01C-SECURITY-QUALIFICATION.md` §3).
 - **Request-id existence oracle.** `request_id` is unique store-wide, so a reused id still answers 409 across requesters and tenants (G-01B1).
 - **Passports.** Passport lifecycle actors and `linkGovernanceRecord` remain caller-asserted / unchecked against the record's actor (out of scope).
 
