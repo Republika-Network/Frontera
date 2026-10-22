@@ -2559,7 +2559,11 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // reconciler, approval command, adapter or Kernel. Each closure names exactly
   // one read method (`trace-structure.test.ts` pins this block).
   const traceSources: AuthorityTraceSources = {
-    governance: { getByRequestId: (context, requestId) => persistence.getByRequestId(context, requestId), verify: (context, evaluationId) => persistence.verify(context, evaluationId) },
+    governance: {
+      getByRequestId: (context, requestId) => persistence.getByRequestId(context, requestId),
+      verify: (context, evaluationId) => persistence.verify(context, evaluationId),
+      query: (context, query) => persistence.query(context, query),
+    },
     ...(grantStore !== undefined ? { grants: { kind: isAuthenticatedDurableBoundedGrantStore(grantStore) ? 'authenticated-durable' : 'unauthenticated', read: (grantId: string) => grantStore.read(grantId) } } : {}),
     ...(approvalStore !== undefined ? { approvals: { kind: approvalStore.kind, read: (organizationId: string, requestId: string) => approvalStore.read(organizationId, requestId) } } : {}),
     ...(obligationDischargeStore !== undefined

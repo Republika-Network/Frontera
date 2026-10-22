@@ -255,7 +255,12 @@ describe('ASSURE-01 bounded stream read — the trace, on the real SQLite store'
     return {
       requestId,
       sources: {
-        governance: { getByRequestId: async () => record, verify: async () => ({ valid: true, failures: [] }) as never },
+        governance: {
+          getByRequestId: async () => record,
+          verify: async () => ({ valid: true, failures: [] }) as never,
+          // G-01B1: the fixture record is a governed request — the Store's `governed-action` predicate holds for it.
+          query: async () => ({ records: [{ evaluationId: record.evaluation.evaluationId, requestId, organizationId: ORG_A }] }) as never,
+        },
         events: { readStreamBounded: (context: { readonly organizationId: string }, streamId: string, options: { readonly maxEvents: number }) => store.readStreamBounded(context, streamId, options) },
       },
     };

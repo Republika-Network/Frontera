@@ -83,10 +83,14 @@ export async function evaluateGovernanceRequest(
   // anything the Kernel evaluates. Neither a 401 nor a 403 is a governance
   // decision. G-01A: the credential establishes who is calling; the body's
   // actor and organization are claims checked against it after validation.
-  const candidateOrganizationId = isPlainObjectWithOrganization(input.rawBody) ? input.rawBody.organization?.id : undefined;
+  // G-01B1: one snapshot of the body, read once. Everything below — authentication's organization hint, validation, and
+  // the Kernel request — reads this copy, so an in-process body (an accessor, a mutation between reads) cannot validate one
+  // request id and evaluate another.
+  const rawBody = snapshotRequestBody(input.rawBody);
+  const candidateOrganizationId = isPlainObjectWithOrganization(rawBody) ? rawBody.organization?.id : undefined;
   const caller = authenticateAdvisoryCaller(input.authorizationHeader, candidateOrganizationId, deps.configuration);
 
-  const body = validateGovernanceEvaluateRequestBody(input.rawBody);
+  const body = validateGovernanceEvaluateRequestBody(rawBody);
   const request = toKernelEvaluationRequest(body, deps.clock, deps.idGenerator);
   const options = toKernelEvaluationOptions(body, deps.configuration.features.traceLevel);
 
@@ -301,20 +305,35 @@ function replayableRecord(
   }
   if (mayReplayTo(record, attribution)) return record;
   deps.telemetry.recordStoreIdempotencyConflict();
-  if (idempotency !== undefined) {
-    throw new EnterpriseHttpError(409, 'GOVERNANCE_IDEMPOTENCY_CONFLICT', 'This Idempotency-Key was already used by another requester or with a different request payload.');
-  }
-  throw EnterpriseHttpErrors.concurrencyConflict(`requestId '${requestId}' was already submitted by another requester or with a different payload; a request id must uniquely identify one governance request.`);
+  throw idempotencyConflictError(idempotency !== undefined ? 'idempotency-key' : 'request-id', requestId);
 }
 
-/** `request-id` conflicts keep the PR-002 wire contract (409 CONCURRENCY_CONFLICT); caller-key conflicts are the PR-004 409 GOVERNANCE_IDEMPOTENCY_CONFLICT. */
+/**
+ * `request-id` conflicts keep the PR-002 wire contract (409 CONCURRENCY_CONFLICT); caller-key conflicts are the PR-004 409
+ * GOVERNANCE_IDEMPOTENCY_CONFLICT. G-01B1: one text per kind, whatever the cause — a different payload, another requester's
+ * equivalent request, or a record the caller cannot see — so the text never says which.
+ */
 function idempotencyConflictError(conflictKind: 'idempotency-key' | 'request-id', requestId: string): EnterpriseHttpError {
   if (conflictKind === 'idempotency-key') {
-    return new EnterpriseHttpError(409, 'GOVERNANCE_IDEMPOTENCY_CONFLICT', 'This Idempotency-Key was already used with a different request payload.');
+    return new EnterpriseHttpError(409, 'GOVERNANCE_IDEMPOTENCY_CONFLICT', 'This Idempotency-Key was already used by another requester or with a different request payload.');
   }
   return EnterpriseHttpErrors.concurrencyConflict(
-    `requestId '${requestId}' was already submitted with a different payload; a request id must uniquely identify one governance request.`,
+    `requestId '${requestId}' was already submitted by another requester or with a different payload; a request id must uniquely identify one governance request.`,
   );
+}
+
+/**
+ * G-01B1: the body as the wire would carry it — one JSON round trip, which reads every field exactly once. A body that has
+ * no JSON form is no request body: it becomes `null`, which validation refuses with the existing 400 after authentication,
+ * exactly where a malformed body is refused today.
+ */
+function snapshotRequestBody(rawBody: unknown): unknown {
+  if (rawBody === null || typeof rawBody !== 'object') return rawBody;
+  try {
+    return JSON.parse(JSON.stringify(rawBody)) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 /** The minimum a replayed record must carry for the requester check and the replay response: its request, evaluation, events and integrity. */

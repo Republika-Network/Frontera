@@ -398,6 +398,18 @@ export function createAgentPassportService(deps: AgentPassportServiceDependencie
         if (record.integrity.aggregateDigest !== reference.governanceRecordDigest) {
           throw new AgentPassportError('PASSPORT_REFERENCE_INVALID', `governanceRecordDigest does not match the stored Governance Record's aggregateDigest.`);
         }
+        // G-01B1: a reference states only what its record states. The digest binds the record; the identifiers and the
+        // decision status the Passport carries (and counts) must be the record's own, never a caller's assertion — so an
+        // advisory denial cannot be linked as an "allowed" governed request. Advisory records stay linkable as what they are.
+        const mismatched = [
+          reference.evaluationId !== record.evaluation.evaluationId ? 'evaluationId' : undefined,
+          reference.requestId !== record.evaluation.requestId || reference.requestId !== record.request.requestId ? 'requestId' : undefined,
+          reference.decisionId !== record.evaluation.decisionId ? 'decisionId' : undefined,
+          reference.status !== record.evaluation.status ? 'status' : undefined,
+        ].filter((field): field is string => field !== undefined);
+        if (mismatched.length > 0) {
+          throw new AgentPassportError('PASSPORT_REFERENCE_INVALID', `The reference does not match the stored Governance Record: ${mismatched.join(', ')}.`);
+        }
       }
 
       const result = await store.appendEvent(context, {

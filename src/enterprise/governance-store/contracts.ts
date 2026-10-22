@@ -589,9 +589,12 @@ export interface GovernanceStoreQuery {
 /**
  * PROD-03-01 — read-only filters over the governed-path evidence rows a record
  * already carries (`governed-action/execution-ledger.ts` writes them). They
- * select records for an operator to look at; nothing reads them to decide
- * anything, and the canonical answer for a selected record is still its
- * ASSURE-01 trace.
+ * select records for an operator to look at, and the canonical answer for a
+ * selected record is still its ASSURE-01 trace. G-01B1: `governed-action` is
+ * also a security boundary — the one provenance answer consumers decide on
+ * (`governance-store/governed-provenance.ts`): both providers must evaluate it
+ * identically and truthfully, and it must never match a record without that
+ * path's own claim.
  *
  * - `execution-claimed` — the record holds a write-ahead execution claim
  *   (`execution_record`, `externalVersion: 'attempt'`).

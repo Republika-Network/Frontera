@@ -60,6 +60,8 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
       '../../features/exercise-control-runtime/index.js',
       '../authority-event-stream/identifiers.js',
       '../governance-store/digest.js',
+      // G-01B1: the governed-provenance resolver — the Store's own `governed-action` predicate, a read; no write.
+      '../governance-store/governed-provenance.js',
       '../governed-action/identifiers.js',
       // LAND-02: the pure issuance-record grammar (parse + digest of the durable withholding row), pinned pure below.
       '../governed-action/issuance-record.js',
@@ -98,7 +100,8 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
     const block = /export interface AuthorityTraceSources \{([\s\S]*?)\n\}/.exec(codeOf(BUILDER))?.[1] ?? '';
     assert.ok(block.length > 0);
     const methods = [...block.matchAll(/(\w+)\(/g)].map((match) => match[1]).sort();
-    assert.deepEqual([...new Set(methods)], ['getByRequestId', 'read', 'readStreamBounded', 'verify']);
+    // G-01B1: `query`, asked only for the `governed-action` predicate, is a read like the others.
+    assert.deepEqual([...new Set(methods)], ['getByRequestId', 'query', 'read', 'readStreamBounded', 'verify']);
   });
 
   it('the composition hands the trace one read per store — never a writer, signer, reconciler, approval command or adapter', () => {
@@ -115,6 +118,7 @@ describe('ASSURE-01 structure — the trace is a projection: no write path into 
       'grantStore.read',
       'obligationDischargeStore.read',
       'persistence.getByRequestId',
+      'persistence.query',
       'persistence.verify',
     ]);
     assert.equal(WRITE_CALL.test(block), false);

@@ -12,7 +12,7 @@ import type { BoundCustomerIdentity } from '../customer-identity/index.js';
 import { isOpaqueExecutionIdentifier } from './validation.js';
 import type { ExecutionOutcomeReader } from '../execution-outcome-store/outcome-store.js';
 import type { ExecutionResolutionReader } from '../execution-resolution-store/resolution-store.js';
-import type { GovernanceRecord, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
+import { resolveGovernedRecord, type GovernedProvenanceReader, type GovernedRecordResolution } from '../governance-store/governed-provenance.js';
 import type { GovernedActionResult } from '../governed-action/contracts.js';
 import { deriveGovernedActionExecutionId, deriveGovernedActionRequestId } from '../governed-action/identifiers.js';
 import { boundScopeOf } from '../governed-action/kernel-request.js';
@@ -86,8 +86,8 @@ export interface PaymentRefundServiceOptions {
   readonly assets: MonetaryAssetRegistry;
   /** The existing governed-action entry. The refund is governed here, as the requester, exactly like any payment. */
   readonly orchestrator: { govern(identity: BoundCustomerIdentity, intent: unknown): Promise<GovernedActionResult> };
-  /** Canonical reads for `reconcileRefund`: the refund's committed decision, P11 and P12. */
-  readonly governance: { getByRequestId(context: GovernanceStoreAccessContext, requestId: string): Promise<GovernanceRecord | null> };
+  /** Canonical reads for `reconcileRefund`: the refund's committed decision, P11 and P12. G-01B1: the decision is read through the governed-provenance resolver. */
+  readonly governance: GovernedProvenanceReader;
   readonly outcomes: ExecutionOutcomeReader;
   readonly resolutions: ExecutionResolutionReader;
   /**
@@ -241,15 +241,19 @@ export function createPaymentRefundService(options: PaymentRefundServiceOptions)
 
   /** The refund's canonical outcome, from its committed decision, P11 and P12 only. */
   async function releaseBasis(refundRequestId: string): Promise<{ readonly kind: 'release'; readonly basis: PaymentRefundReleaseBasis; readonly reference: string } | { readonly kind: 'completed'; readonly executionId: string } | { readonly kind: 'pending' } | { readonly kind: 'unavailable' }> {
-    let record: GovernanceRecord | null;
+    let resolution: GovernedRecordResolution;
     try {
-      record = await governance.getByRequestId({ system: false, organizationId }, refundRequestId);
+      resolution = await resolveGovernedRecord(governance, { system: false, organizationId }, refundRequestId);
     } catch {
       return { kind: 'unavailable' };
     }
     // Never decided (a crash before governance, or a refusal before the Kernel): it could still be governed. Stays counted.
-    if (record === null) return { kind: 'pending' };
-    const evaluation = record.evaluation;
+    if (resolution.kind === 'absent') return { kind: 'pending' };
+    // G-01B1: a record at the refund's request id without the governed-action claim (planted before G-01B0, or written by an
+    // embedder) is not the refund's decision. No basis can be read from it, and the governed refund can never commit there:
+    // the reservation stays counted, for an operator.
+    if (resolution.kind === 'not-governed') return { kind: 'unavailable' };
+    const evaluation = resolution.record.evaluation;
     if (evaluation.status === 'denied') return { kind: 'release', basis: 'decision-denied', reference: evaluation.evaluationId };
     if (evaluation.status !== 'allowed') return { kind: 'pending' };
     const executionId = deriveGovernedActionExecutionId({ requestId: refundRequestId, decisionId: evaluation.decisionId });

@@ -5,8 +5,9 @@ import type { AuthorityEvent, AuthorityEventStreamBoundedRead, AuthorityEventStr
 import { deriveAuthorityEventStreamId } from '../authority-event-stream/identifiers.js';
 import type { ExecutionOutcomeRecord } from '../execution-outcome-store/contracts.js';
 import type { ExecutionResolutionState } from '../execution-resolution-store/contracts.js';
-import type { GovernanceRecord, GovernanceRecordVerificationResult, GovernanceReferenceRecord, GovernanceStoreAccessContext } from '../governance-store/contracts.js';
+import type { GovernanceRecord, GovernanceRecordVerificationResult, GovernanceReferenceRecord, GovernanceStoreAccessContext, GovernanceStoreQuery, GovernanceStoreQueryResult } from '../governance-store/contracts.js';
 import { computeDigest } from '../governance-store/digest.js';
+import { hasGovernedActionProvenance } from '../governance-store/governed-provenance.js';
 import {
   authorizationReferenceId,
   deriveBusinessIntentId,
@@ -64,6 +65,8 @@ export interface AuthorityTraceSources {
   readonly governance: {
     getByRequestId(context: GovernanceStoreAccessContext, requestId: string): Promise<GovernanceRecord | null>;
     verify(context: GovernanceStoreAccessContext, evaluationId: string): Promise<GovernanceRecordVerificationResult>;
+    /** G-01B1: the Store's scoped query, asked only for the `governed-action` predicate — a trace is a governed request's, and the request id's shape proves nothing. */
+    query(context: GovernanceStoreAccessContext, query: GovernanceStoreQuery): Promise<GovernanceStoreQueryResult>;
   };
   /** The authoritative grant read. `kind` is the composed store's posture (`authenticated-durable` verifies Ed25519 signatures on every read). */
   readonly grants?: { readonly kind: string; read(grantId: string): Promise<ReadBoundedGrantResult> };
@@ -119,6 +122,9 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
   // else is not a request this surface describes.
   if (organizationId === undefined || located.request.requestId !== requestId) return null;
   if (!context.system && context.organizationId !== organizationId) return null;
+  // G-01B1: only a record holding the governed-action path's own claim is a governed request. A record merely standing at a
+  // governed-looking id (planted before G-01B0, or written by an embedder) is not one: the existing not-found.
+  if (!(await hasGovernedActionProvenance(sources.governance, context, located))) return null;
   const scope = { organizationId };
 
   const checks: AuthorityTraceCheck[] = [];
@@ -212,9 +218,11 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     const reason = reasonMatch?.[1];
     let original: GovernanceRecord | null = null;
     let originalVerified = false;
+    let originalGoverned = false;
     try {
       original = await sources.governance.getByRequestId(context, originalRequestId);
       originalVerified = original !== null && (await sources.governance.verify(context, original.evaluation.evaluationId)).valid;
+      originalGoverned = original !== null && (await hasGovernedActionProvenance(sources.governance, context, original));
     } catch {
       original = null;
     }
@@ -223,7 +231,8 @@ export async function buildAuthorityTrace(sources: AuthorityTraceSources, contex
     const realizedOriginal = realizationRow !== undefined && realizationRow.externalId === originalRequestId;
     check('lineage.original-record', 'integrity', original !== null && originalVerified, original === null ? 'ORIGINAL_NOT_FOUND' : undefined);
     if (original !== null) {
-      check('lineage.original-identity', 'correlation', original.request.requestId === originalRequestId && original.request.organizationId === organizationId && original.request.actorId === record.request.actorId);
+      // G-01B1: the original is a governed decision — it holds the governed-action claim — not merely a record at that id.
+      check('lineage.original-identity', 'correlation', originalGoverned && original.request.requestId === originalRequestId && original.request.organizationId === organizationId && original.request.actorId === record.request.actorId);
       check('lineage.original-decision', 'correlation', original.evaluation.decisionId === linkRow.externalVersion);
       check('lineage.original-was-withheld', 'correlation', original.evaluation.status === 'denied' || original.evaluation.status === 'indeterminate', original.evaluation.status);
       check('lineage.original-is-root', 'correlation', !isReconsiderationRecord(original));
