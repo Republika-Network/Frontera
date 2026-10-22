@@ -764,6 +764,7 @@ describe('G-01A — the Host parses service principals strictly and refuses unsc
       AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
       AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED: 'true',
       AOC_ENTERPRISE_SQLITE_PATH: join(directory, 'governance.sqlite'),
+      AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(directory, 'evidence-bundles.sqlite'),
       ...authorityAuthenticityEnv(),
       ...freshnessEnv({ endpoint: 'http://127.0.0.1:9', witnessId: 'witness-g01a', publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString() }),
       ...overrides,

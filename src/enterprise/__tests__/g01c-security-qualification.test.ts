@@ -768,18 +768,14 @@ describe('G-01C §3 — Passport: a record of another actor is still linkable an
 
 describe('G-01C §4 — hypotheses', () => {
   for (const provider of PROVIDERS) {
-    it(`H-1 (T12, ${provider.name}): a lone-surrogate request id is stored exactly and verifies`, { todo: 'G-01C H-1: suspected provider divergence for ill-formed UTF-16 request ids' }, async () => {
+    it(`H-1 (T12, ${provider.name}) — confirmed, then resolved by the G-01C stabilization: a lone-surrogate request id is refused before persistence`, async () => {
       const store = await provider.open();
       stores.push(store);
       const enterprise = await createEnterprise({ configuration: loadEnterpriseConfiguration({ AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory', AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_LOG_LEVEL: 'error' }), kernelProviders: buildTestKernelProviders(), persistence: store });
       enterprises.push(enterprise);
       const requestId = `${fresh('lone')}-\uD800-surrogate`;
-      const reply = await enterprise.evaluate(body({ requestId }));
-      assert.equal(reply.httpStatus, 200);
-      const record = await store.getByRequestId(SYSTEM, requestId);
-      assert.ok(record !== null, 'found by the id it was committed under');
-      assert.equal(record.request.requestId, requestId, 'stored exactly');
-      assert.equal((await store.verify(SYSTEM, record.evaluation.evaluationId)).valid, true);
+      assert.equal(await refusedWith(400, enterprise.evaluate(body({ requestId }))), true);
+      assert.equal(await store.getByRequestId(SYSTEM, requestId), null, 'nothing was committed');
     });
   }
 

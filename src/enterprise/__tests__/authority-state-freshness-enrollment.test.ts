@@ -83,6 +83,7 @@ async function existingDeployment(): Promise<Deployment> {
     AOC_ENTERPRISE_ENV: 'development',
     AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
     AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'governance.sqlite'),
+    AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: join(dir, 'evidence-bundles.sqlite'),
     AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG,
     AOC_ENTERPRISE_BOUNDED_GRANT_SQLITE_PATH: paths['bounded-grant-revocation-state'],
     AOC_ENTERPRISE_OBLIGATION_DISCHARGE_SQLITE_PATH: paths['obligation-discharge-state'],

@@ -45,6 +45,18 @@ export function isServerDerivedIdentifierNamespace(requestId: string): boolean {
   return requestId.trim().toLowerCase().startsWith(SERVER_DERIVED_IDENTIFIER_PREFIX);
 }
 
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * G-01C stabilization — whether an identifier holds an unpaired surrogate code
+ * unit. Such a string has no UTF-8 form: the SQLite Store would persist a lossy
+ * spelling, and the aggregate committed under it could never be read back whole.
+ * Paired surrogates (any astral character) are well formed and unaffected.
+ */
+export function hasUnpairedSurrogate(value: string): boolean {
+  return UNPAIRED_SURROGATE.test(value);
+}
+
 /** The Governance Store idempotency scope for one principal. Distinct from the `org:` / `global` scopes the evaluate route uses, so the two paths can never share a claim. */
 export function governedActionIdempotencyScope(input: { readonly organizationId: string; readonly principalId: string }): string {
   return `governed-action:${JSON.stringify([input.organizationId, input.principalId])}`;
