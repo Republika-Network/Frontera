@@ -23,6 +23,7 @@ import type { AuthorityArtifactVerifier, AuthoritySignatureVerification } from '
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import type { DelegatedOfferCapabilityIssuanceRequest } from '../authority-authenticity/delegated-offer-capability.js';
+import type { ExecutionCapabilityIssuanceRequest } from '../authority-authenticity/execution-capability-issuance.js';
 import {
   EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS,
   EXTERNAL_AUTHORITY_SIGNER_OPERATIONS,
@@ -107,6 +108,12 @@ import { ExternalAuthoritySignerTransportError, type ExternalAuthoritySignerTran
  * not "a signature was generated somewhere". A retry asks again; the stores'
  * own idempotency (deterministic grant ids, planned revocation sequences,
  * verified-base chain appends) is what guarantees one state transition.
+ *
+ * Not so for an execution capability (G-02B): it is presented outside the Host,
+ * so a signature generated somewhere *is* authority there. Its request is sent
+ * once and never retried (`attemptsFor`), and the issuer treats every failure
+ * after the request may have left as "possibly signed" — never as "nothing
+ * exists".
  */
 
 export interface PinnedAuthoritySignerIdentity {
@@ -455,13 +462,24 @@ export async function establishExternalAuthorityArtifactSigner(options: External
         return verifier.verifyApprovalState(request.state, signature);
       case 'signDelegatedOfferCapability':
         return verifier.verifyDelegatedOfferCapability(request.capability, signature);
+      case 'signExecutionCapability':
+        return verifier.verifyExecutionCapability(request.capability, signature);
     }
+  }
+
+  /**
+   * G-02B: an execution capability is authority outside this process the moment custody signs it, so a request that may
+   * have reached the custody service is never sent again — not even the same bytes. One attempt; every other operation
+   * keeps the bounded availability retry (its result is committed state, and the stores' idempotency makes a retry safe).
+   */
+  function attemptsFor(request: ExternalAuthoritySigningRequest): number {
+    return request.operation === 'signExecutionCapability' ? 1 : maxAttempts;
   }
 
   async function sign(request: ExternalAuthoritySigningRequest): Promise<AuthoritySignature> {
     const counter = counters.get(request.operation)!;
     counter.calls += 1;
-    const answered = await withBoundedAttempts(maxAttempts, async (attempt) => {
+    const answered = await withBoundedAttempts(attemptsFor(request), async (attempt) => {
       counter.attempts += 1;
       if (attempt > 1) counter.retried += 1;
       const started = Date.now();
@@ -502,6 +520,13 @@ export async function establishExternalAuthorityArtifactSigner(options: External
     // TRADE-04C-S1: present only when the deployment required the extension and the identity proved the service offers it.
     ...(extensions.includes('signDelegatedOfferCapability')
       ? { signDelegatedOfferCapability: (request: DelegatedOfferCapabilityIssuanceRequest) => sign({ operation: 'signDelegatedOfferCapability', capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature }) }
+      : {}),
+    // G-02B: likewise, only when required and offered.
+    ...(extensions.includes('signExecutionCapability')
+      ? {
+          signExecutionCapability: (request: ExecutionCapabilityIssuanceRequest) =>
+            sign({ operation: 'signExecutionCapability', capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature, grantReferenceNonce: request.grantReferenceNonce }),
+        }
       : {}),
   });
   EXTERNAL_SIGNERS.add(signer);

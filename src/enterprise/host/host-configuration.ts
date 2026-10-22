@@ -26,6 +26,8 @@ import type { MonetaryAssetDefinition } from '../../features/monetary-runtime/in
 import { XrplHostConfigurationProblem, parseXrplPaymentRailSection, type EnterpriseHostXrplPaymentRailConfiguration } from '../xrpl-payment-rail/host-configuration.js';
 import { XrplTradeHostConfigurationProblem, parseXrplTradeExecutionSection, type EnterpriseHostXrplTradeExecutionConfiguration } from '../xrpl-trade-execution/host-configuration.js';
 import { ApprovalPolicyConfigurationProblem, parseApprovalPolicySection, type EnterpriseHostApprovalPolicy } from './approval-policy.js';
+import { ExecutionCapabilityPolicyError, createExecutionCapabilityIssuancePolicy, type ExecutionCapabilityIssuancePolicy } from '../authority-authenticity/execution-capability-issuance.js';
+import { EXECUTION_CAPABILITY_LIMITS } from '../execution-capability/capability.js';
 
 /**
  * The Enterprise Host's configuration: the environment
@@ -160,6 +162,23 @@ export interface EnterpriseHostGovernedActionConfiguration {
    * policy from the file, as before.
    */
   readonly approvalPolicy?: EnterpriseHostApprovalPolicy;
+  /**
+   * G-02B — opt-in, in-custody issuance of `frontera.execution-capability.v1`.
+   * Absent: no issuer, no issuance ledger, no signer extension — the Host is
+   * unchanged. Present: a closed section naming the deployment issuer, the
+   * lifetime and the registered audiences (each with its permitted actions and
+   * binding formats), validated in full here into a frozen policy whose
+   * organization and trust domain are this deployment's own. The issuer is
+   * composed as an internal service with no caller (G-02C).
+   */
+  readonly executionCapabilities?: EnterpriseHostExecutionCapabilityConfiguration;
+}
+
+/** G-02B: the validated issuance policy and the path of the issuance ledger the operator initialized. */
+export interface EnterpriseHostExecutionCapabilityConfiguration {
+  readonly policy: ExecutionCapabilityIssuancePolicy;
+  /** The existing issuance ledger. Never created by the Host: a missing file refuses startup. */
+  readonly issuanceLedgerPath: string;
 }
 
 export interface EnterpriseHostConfiguration {
@@ -357,6 +376,43 @@ function parseAuditors(env: Env, value: unknown, organizationId: string): readon
   });
 }
 
+/**
+ * G-02B: the `executionCapabilities` section. Closed keys; an exact issuer; a
+ * lifetime of 1 … 60 000 ms (30 000 when omitted); at least one audience, each
+ * exact (never a pattern), with the routed actions and the binding formats it
+ * may receive. Organization and trust domain are the deployment's own, never
+ * the section's.
+ */
+function parseExecutionCapabilitiesSection(section: unknown, deployment: { readonly organizationId: string; readonly trustDomainId: string; readonly routes: ReadonlyMap<string, string> }): EnterpriseHostExecutionCapabilityConfiguration {
+  const where = 'executionCapabilities';
+  if (!isRecord(section)) invalid(`${where} must be an object.`);
+  closedKeys(section, ['issuer', 'lifetimeMs', 'issuanceLedgerPath', 'audiences'], where);
+  const issuanceLedgerPath = text(section.issuanceLedgerPath, `${where}.issuanceLedgerPath`);
+  const audiences = array(section.audiences, `${where}.audiences`).map((entry, index) => {
+    const at = `${where}.audiences[${index}]`;
+    if (!isRecord(entry)) invalid(`${at} must be an object.`);
+    closedKeys(entry, ['audience', 'actions', 'bindingFormats'], at);
+    const actions = array(entry.actions, `${at}.actions`);
+    for (const action of actions) {
+      if (typeof action === 'string' && !deployment.routes.has(action)) invalid(`${at}.actions names '${action}', which is not a routed governed action.`);
+    }
+    return { audience: entry.audience, actions: [...actions], bindingFormats: [...array(entry.bindingFormats, `${at}.bindingFormats`)] };
+  });
+  try {
+    const policy = createExecutionCapabilityIssuancePolicy({
+      issuer: section.issuer,
+      organizationId: deployment.organizationId,
+      trustDomain: deployment.trustDomainId,
+      lifetimeMs: section.lifetimeMs ?? EXECUTION_CAPABILITY_LIMITS.defaultLifetimeMs,
+      audiences,
+    });
+    return Object.freeze({ policy, issuanceLedgerPath });
+  } catch (error) {
+    if (error instanceof ExecutionCapabilityPolicyError) invalid(`${where}: ${error.message}`);
+    throw error;
+  }
+}
+
 function parseGovernedActionsFile(env: Env, path: string, organizationId: string): ParsedGovernedActionsFile {
   let raw: string;
   try {
@@ -374,7 +430,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
   closedKeys(
     parsed,
-    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'servicePrincipals', 'auditors', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution'],
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'servicePrincipals', 'auditors', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution', 'executionCapabilities'],
     'the file',
   );
   if (parsed.version !== 1) invalid('version must be 1.');
@@ -546,6 +602,12 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     if (xrplPaymentRail !== undefined && xrplPaymentRail.paymentAction === xrplTradeExecution.tradeAction) invalid('xrplTradeExecution.tradeAction must differ from xrplPaymentRail.paymentAction.');
   }
 
+  // G-02B: validated completely now — issuer, lifetime, audiences, their actions (each a routed action) and binding formats.
+  let executionCapabilities: EnterpriseHostExecutionCapabilityConfiguration | undefined;
+  if (parsed.executionCapabilities !== undefined) {
+    executionCapabilities = parseExecutionCapabilitiesSection(parsed.executionCapabilities, { organizationId, trustDomainId, routes });
+  }
+
   return {
     governedActions: {
       trustDomainId,
@@ -561,6 +623,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
       ...(xrplPaymentRail !== undefined ? { xrplPaymentRail } : {}),
       ...(xrplTradeExecution !== undefined ? { xrplTradeExecution } : {}),
       ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
+      ...(executionCapabilities !== undefined ? { executionCapabilities } : {}),
     },
     customerKeys: customerPrincipals,
     administrators,
@@ -743,6 +806,13 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
       throw new EnterpriseHostConfigurationError(
         'HOST_PERSISTENCE_NOT_DURABLE',
         `${GOVERNED_ACTIONS_FILE_VARIABLE}: xrplTradeExecution requires AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite — its sequence interlock must survive a restart, or a second order could compete with an unconfirmed one.`,
+      );
+    }
+    // G-02B: the issuer reads the authenticated durable grant store only.
+    if (governed.executionCapabilities !== undefined && configuration.persistence.provider !== 'sqlite') {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_PERSISTENCE_NOT_DURABLE',
+        `${GOVERNED_ACTIONS_FILE_VARIABLE}: executionCapabilities requires AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite — capabilities are issued only from the authenticated durable grant store.`,
       );
     }
     if (governed.xrplTradeExecution !== undefined && configuration.authorityFreshness?.mode !== 'external') {

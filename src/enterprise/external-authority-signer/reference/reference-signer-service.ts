@@ -65,6 +65,13 @@ export interface ReferenceAuthoritySignerServiceOptions {
    * under this service's own key and name what the capability binds.
    */
   readonly extensions?: readonly ExternalAuthoritySignerExtensionOperation[];
+  /**
+   * G-02B: this service's own execution-capability issuance policy — its issuer,
+   * organization, trust domain, lifetime and audience registry. Required exactly
+   * when `extensions` offers `signExecutionCapability`; the rule runs against it,
+   * never against what a request says.
+   */
+  readonly executionCapabilityIssuance?: unknown;
   /** The clock the capability issuance rule reads. For tests. */
   readonly now?: () => number;
 }
@@ -100,7 +107,17 @@ export function createReferenceAuthoritySignerService(options: ReferenceAuthorit
   if (!Array.isArray(extensions) || new Set(extensions).size !== extensions.length || extensions.some((extension) => !(EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS as readonly string[]).includes(extension))) {
     throw new Error(`The reference authority signer extensions must be distinct members of ${EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS.join(', ')}.`);
   }
-  const signer = createSoftwareAuthorityArtifactSigner({ keyId: options.keyId, algorithm: 'ed25519-v1', privateKeyPem: options.privateKeyPem, ...(options.now !== undefined ? { now: options.now } : {}) });
+  const offersExecutionCapabilities = extensions.includes('signExecutionCapability');
+  if (offersExecutionCapabilities !== (options.executionCapabilityIssuance !== undefined)) {
+    throw new Error('The reference authority signer offers signExecutionCapability exactly when it is given its own execution capability issuance policy.');
+  }
+  const signer = createSoftwareAuthorityArtifactSigner({
+    keyId: options.keyId,
+    algorithm: 'ed25519-v1',
+    privateKeyPem: options.privateKeyPem,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(offersExecutionCapabilities ? { executionCapabilityIssuance: options.executionCapabilityIssuance } : {}),
+  });
   const publicKeyPem = authorityVerificationKeyFromPrivateKey(options.privateKeyPem);
   const expected = digest(`Bearer ${options.credential}`);
   const counts = new Map<ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation, number>([...EXTERNAL_AUTHORITY_SIGNER_OPERATIONS, ...extensions].map((operation) => [operation, 0]));
@@ -139,6 +156,9 @@ export function createReferenceAuthoritySignerService(options: ReferenceAuthorit
       case 'signDelegatedOfferCapability':
         // The issuance rule runs inside the software signer, in this process: a refused capability is never signed.
         return signer.signDelegatedOfferCapability!({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature });
+      case 'signExecutionCapability':
+        // G-02B: the issuance rule runs inside the software signer, against this service's own policy: a refused capability is never signed.
+        return signer.signExecutionCapability!({ capability: request.capability, grant: request.grant, storeId: request.storeId, grantSignature: request.grantSignature, grantReferenceNonce: request.grantReferenceNonce });
     }
   }
 

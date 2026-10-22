@@ -4,6 +4,8 @@ import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-g
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
 import { parseDelegatedOfferCapability, serializeDelegatedOfferCapability, type DelegatedOfferCapability } from '../authority-authenticity/delegated-offer-capability.js';
 import { isWellFormedAuthoritySignature } from '../authority-authenticity/authority-signature.js';
+import { isExecutionCapabilityGrantReferenceNonce } from '../authority-authenticity/execution-capability-issuance.js';
+import { parseExecutionCapability, serializeExecutionCapability, type ExecutionCapability } from '../execution-capability/capability.js';
 
 /**
  * The Frontera external authority-signer protocol, v1 (CORE-02).
@@ -55,19 +57,25 @@ export const EXTERNAL_AUTHORITY_SIGNER_PATHS: Readonly<Record<ExternalAuthorityS
  * service to offer exactly the five plus that extension. A deployment that
  * requires none still requires exactly the five — an extension it did not ask
  * for is refused like any other unknown operation.
+ *
+ * G-02B adds `signExecutionCapability`: a generic execution capability, signed
+ * by the custody service only after the issuance rule accepts it against the
+ * service's **own** policy (`execution-capability-issuance.ts`). Required only
+ * by a Host that composes execution-capability issuance.
  */
-export const EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS = ['signDelegatedOfferCapability'] as const;
+export const EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS = ['signDelegatedOfferCapability', 'signExecutionCapability'] as const;
 
 export type ExternalAuthoritySignerExtensionOperation = (typeof EXTERNAL_AUTHORITY_SIGNER_EXTENSION_OPERATIONS)[number];
 
 /** One structured path per extension. Never a generic `/sign`. */
 export const EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS: Readonly<Record<ExternalAuthoritySignerExtensionOperation, string>> = Object.freeze({
   signDelegatedOfferCapability: '/v1/sign/xrpl-delegated-offer-capability',
+  signExecutionCapability: '/v1/sign/execution-capability',
 });
 
 /** The path of a core or extension operation. */
 export function externalAuthoritySignerPath(operation: ExternalAuthoritySignerOperation | ExternalAuthoritySignerExtensionOperation): string {
-  return operation === 'signDelegatedOfferCapability' ? EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS[operation] : EXTERNAL_AUTHORITY_SIGNER_PATHS[operation];
+  return isExternalAuthoritySignerExtensionOperation(operation) ? EXTERNAL_AUTHORITY_SIGNER_EXTENSION_PATHS[operation] : EXTERNAL_AUTHORITY_SIGNER_PATHS[operation];
 }
 
 export function isExternalAuthoritySignerExtensionOperation(value: unknown): value is ExternalAuthoritySignerExtensionOperation {
@@ -97,7 +105,9 @@ export type ExternalAuthoritySigningRequest =
   | { readonly operation: 'signObligationDischargeState'; readonly state: ObligationDischargeStateCommitment }
   | { readonly operation: 'signApprovalState'; readonly state: ApprovalStateCommitment }
   /** TRADE-04C-S1 extension: the capability, and the grant it is issued under as filed — so the custody service can re-verify that grant under its own key before signing. */
-  | { readonly operation: 'signDelegatedOfferCapability'; readonly capability: DelegatedOfferCapability; readonly grant: BoundedGrant; readonly storeId: string; readonly grantSignature: unknown };
+  | { readonly operation: 'signDelegatedOfferCapability'; readonly capability: DelegatedOfferCapability; readonly grant: BoundedGrant; readonly storeId: string; readonly grantSignature: unknown }
+  /** G-02B extension: the capability, the grant it is derived from as filed, and the grant-reference nonce — so the custody service can re-verify the grant under its own key and recompute the reference before signing. */
+  | { readonly operation: 'signExecutionCapability'; readonly capability: ExecutionCapability; readonly grant: BoundedGrant; readonly storeId: string; readonly grantSignature: unknown; readonly grantReferenceNonce: string };
 
 /**
  * The request body for an operation. A grant travels as its **canonical**
@@ -127,6 +137,15 @@ export function externalSigningRequestBody(request: ExternalAuthoritySigningRequ
     case 'signDelegatedOfferCapability':
       // Both artifacts travel canonical, for the same reason a grant does: the service parses the exact bytes it will reason about.
       return { protocol: EXTERNAL_AUTHORITY_SIGNER_PROTOCOL, capability: serializeDelegatedOfferCapability(request.capability), grant: serializeBoundedGrant(request.grant), storeId: request.storeId, grantSignature: request.grantSignature };
+    case 'signExecutionCapability':
+      return {
+        protocol: EXTERNAL_AUTHORITY_SIGNER_PROTOCOL,
+        capability: serializeExecutionCapability(request.capability),
+        grant: serializeBoundedGrant(request.grant),
+        storeId: request.storeId,
+        grantSignature: request.grantSignature,
+        grantReferenceNonce: request.grantReferenceNonce,
+      };
   }
 }
 
@@ -206,6 +225,24 @@ export function parseExternalSigningRequest(
       const grant = parseGrant(body.grant);
       if (capability === undefined || grant === undefined) return undefined;
       return { operation, capability, grant, storeId: body.storeId, grantSignature: { algorithm: envelope.algorithm, keyId: envelope.keyId, signature: envelope.signature, artifactVersion: envelope.artifactVersion } };
+    }
+    case 'signExecutionCapability': {
+      if (!hasExactKeys(body, ['protocol', 'capability', 'grant', 'storeId', 'grantSignature', 'grantReferenceNonce']) || body.protocol !== EXTERNAL_AUTHORITY_SIGNER_PROTOCOL) return undefined;
+      if (typeof body.grant !== 'string' || !boundedText(body.storeId) || !isExecutionCapabilityGrantReferenceNonce(body.grantReferenceNonce)) return undefined;
+      const envelope = body.grantSignature;
+      if (!hasExactKeys(envelope, ['algorithm', 'keyId', 'signature', 'artifactVersion']) || !isWellFormedAuthoritySignature(envelope)) return undefined;
+      // Canonical text only: a re-ordered, re-spaced or extended capability is refused here, never normalized.
+      const parsed = parseExecutionCapability(body.capability);
+      const grant = parseGrant(body.grant);
+      if (!parsed.ok || grant === undefined) return undefined;
+      return {
+        operation,
+        capability: parsed.capability,
+        grant,
+        storeId: body.storeId,
+        grantSignature: { algorithm: envelope.algorithm, keyId: envelope.keyId, signature: envelope.signature, artifactVersion: envelope.artifactVersion },
+        grantReferenceNonce: body.grantReferenceNonce,
+      };
     }
   }
 }
