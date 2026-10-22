@@ -173,8 +173,9 @@ describe('G-02B on the shipped Host — configuration and composition refusals',
   it('memory persistence cannot issue, in any profile — the G-02B rule itself refuses (HOST_PERSISTENCE_NOT_DURABLE)', () => {
     const dir = workspace.dir();
     // A non-secure profile, so the secure profile's own sqlite rule cannot be what refuses.
-    const env = { ...secureEnv(dir, governedFile({ executionCapabilities: section(dir) })), AOC_ENTERPRISE_ENV: 'development', AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory' };
+    const durable = { ...secureEnv(dir, governedFile({ executionCapabilities: section(dir) })), AOC_ENTERPRISE_ENV: 'development' };
+    const env = { ...durable, AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'memory' };
     assert.throws(() => loadEnterpriseHostConfiguration(env), (error: unknown) => error instanceof EnterpriseHostConfigurationError && error.code === 'HOST_PERSISTENCE_NOT_DURABLE' && /executionCapabilities requires/.test(error.message));
-    assert.doesNotThrow(() => loadEnterpriseHostConfiguration({ ...env, AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite' }), 'the same development configuration over sqlite is accepted');
+    assert.doesNotThrow(() => loadEnterpriseHostConfiguration(durable), 'the same development configuration over the fixture’s durable persistence is accepted');
   });
 });
