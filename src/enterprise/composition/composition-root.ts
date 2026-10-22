@@ -1650,7 +1650,11 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     options.governanceLifecycle === 'operator-promoted' ? { lifecycle: { activeVersion: (profileId: string) => profileLifecycleState?.active.get(profileId) } } : {},
   );
 
-  const governedActionOptions = options.governedActionOrchestrator?.enabled === true ? options.governedActionOrchestrator : undefined;
+  // G-01C: read once. The trust domain is identity-bearing (the advisory route
+  // holds customer and service principals to it on every request), so it is
+  // served from this frozen copy, never from the caller's object.
+  const governedActionOptions: EnterpriseGovernedActionOrchestratorOptions | undefined =
+    options.governedActionOrchestrator?.enabled === true ? Object.freeze({ ...options.governedActionOrchestrator }) : undefined;
   if (governedActionOptions !== undefined) {
     if (!customerIdentityRequested) {
       throw new GovernedActionConfigurationError(
