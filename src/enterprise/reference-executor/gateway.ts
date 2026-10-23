@@ -29,13 +29,15 @@ import { createReferenceExecutorVerificationPipeline, type ReferenceExecutorAsse
  *
  * ## Strict and bounded
  *
- * Node's strict parser (`insecureHTTPParser: false`) refuses malformed lines,
- * obsolete line folding, and `Content-Length` with `Transfer-Encoding`; the
+ * Node's strict parser (`insecureHTTPParser: false`) refuses malformed lines
+ * and `Content-Length` with `Transfer-Encoding`; the
  * server counts every header line (`maxHeadersCount = 0`, so `rawHeaders` is
  * never silently truncated) and admission bounds them. Headers, body and total
  * processing time are bounded. One request per connection: a second request on
- * the same socket (pipelining, or a smuggled request) is refused and the socket
- * closed. Upgrades, `CONNECT` and `Expect` are refused through their own server
+ * the same socket (pipelining, or a smuggled request), or a parse error after
+ * the first, refuses **both** — the first is reported refused and never
+ * answered — and closes the socket, so the log and the answer never disagree.
+ * A reset or broken pipe is not reported. Upgrades, `CONNECT` and `Expect` are refused through their own server
  * events, never handed to a handler.
  *
  * Diagnostics are the assessment record only: never a header value, the
@@ -122,6 +124,8 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
   const L = REFERENCE_EXECUTOR_GATEWAY_LIMITS;
   const maximumBodyBytes = REFERENCE_EXECUTOR_ADMISSION_LIMITS.maximumBodyBytes;
   const served = new WeakSet<object>();
+  /** The one request in flight on a socket, until it is answered: a socket-level refusal refuses it too, so its log and its answer can never disagree. */
+  const inFlight = new WeakMap<object, (assessment: ReferenceExecutorAssessment) => void>();
 
   const finish = (res: ServerResponse, assessment: ReferenceExecutorAssessment): void => {
     report(assessment);
@@ -131,6 +135,7 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
   function handle(req: IncomingMessage, res: ServerResponse): void {
     // One request per connection: the Host sends one and closes.
     if (served.has(req.socket)) {
+      inFlight.get(req.socket)?.(refusal('admission', 'REQUEST_PIPELINED'));
       report(refusal('admission', 'REQUEST_PIPELINED'));
       req.socket.destroy();
       return;
@@ -141,6 +146,7 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      inFlight.delete(req.socket);
       report(refusal('admission', 'PROCESSING_TIMEOUT'));
       req.socket.destroy();
     }, L.processingTimeoutMs);
@@ -148,8 +154,17 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      inFlight.delete(req.socket);
       finish(res, assessment);
     };
+    // Refused from outside (a second request, a parse error on the socket): reported, never answered, never assessed.
+    inFlight.set(req.socket, (assessment) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      inFlight.delete(req.socket);
+      report(assessment);
+    });
 
     const declared = req.headers['content-length'];
     if (typeof declared === 'string' && /^[0-9]+$/.test(declared) && Number(declared) > maximumBodyBytes) {
@@ -174,6 +189,7 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      inFlight.delete(req.socket);
       req.socket.destroy();
     });
     req.on('end', () => {
@@ -194,12 +210,15 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
     {
       insecureHTTPParser: false,
       maxHeaderSize: L.maximumHeaderBytes,
-      requireHostHeader: true,
+      // Admission refuses a missing Host itself, so the refusal is reported like every other.
+      requireHostHeader: false,
       joinDuplicateHeaders: false,
       // The gateway's own timer (above) answers first; Node's are the backstop.
       headersTimeout: L.processingTimeoutMs,
       requestTimeout: L.processingTimeoutMs + 1_000,
       keepAliveTimeout: 1,
+      // Node enforces headersTimeout/requestTimeout only when it checks; check every second, not every 30 s.
+      connectionsCheckingInterval: 1_000,
     },
     handle,
   );
@@ -207,7 +226,22 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
   server.maxHeadersCount = 0;
 
   server.on('clientError', (error: Error, socket: Duplex) => {
-    const overflow = (error as NodeJS.ErrnoException).code === 'HPE_HEADER_OVERFLOW';
+    const code = String((error as NodeJS.ErrnoException).code ?? '');
+    const malformed = code.startsWith('HPE_') || code === 'ERR_HTTP_REQUEST_TIMEOUT';
+    const pending = inFlight.get(socket);
+    if (pending !== undefined) {
+      // Bytes after a request on its own connection: that request is refused too, and nothing more is written.
+      pending(refusal('admission', 'REQUEST_PIPELINED'));
+      if (malformed) report(refusal('admission', 'HTTP_MALFORMED'));
+      socket.destroy();
+      return;
+    }
+    // A reset or a broken pipe is not a request: nothing to assess, nothing to answer.
+    if (!malformed) {
+      socket.destroy();
+      return;
+    }
+    const overflow = code === 'HPE_HEADER_OVERFLOW';
     report(refusal('admission', overflow ? 'HEADERS_TOO_LARGE' : 'HTTP_MALFORMED'));
     refuseSocket(socket, overflow ? 431 : 400);
   });

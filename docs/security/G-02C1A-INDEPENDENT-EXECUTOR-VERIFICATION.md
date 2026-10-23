@@ -130,7 +130,7 @@ GET has no positive vector because the Host's Generic HTTP adapter cannot send G
 | Wildcard or ambiguous configuration | startup refused | in-process suite; process suite (refused-to-start) |
 | Duplicate headers; CL+TE; chunked; pipelining and a hidden second request; HTTP/2 preface; h2c and WebSocket upgrades; CONNECT; `Expect`; folded headers; partial requests | refused | process suite |
 | Oversized body, header block, header count or presentation | 413 / 431 / 431 / 403 | process suite |
-| Secrets, presentations, capabilities or bodies in diagnostics or responses | none | process suite |
+| Secrets, presentations, capabilities or bodies in diagnostics or responses | none; the rebuilt digest is returned only on an assessed outcome | process suite; pipeline suite |
 | Removal of each load-bearing control | 23 mutants detected | `g02c1a-reference-executor-mutation.test.ts` |
 | Import closure; no signing, ledger, effect or receipt; no Host surface; protected contracts | pinned | `g02c1a-reference-executor-structure.test.ts` |
 
@@ -147,4 +147,20 @@ No effect handler exists, so no refusal can reach one. The pipeline returns a fr
 | G02C1A-R5 | TLS, DNS and proxy topologies are not qualified | later qualification |
 | G02C1A-R6 | The configuration file is trusted as written. Duplicate JSON keys resolve last-wins in `JSON.parse` | documented |
 | G02C1A-R7 | Gateway credential compared in constant time over digests, but held in process memory; no KMS | reference only |
+| G02C1A-R8 | The executor does not restrict its own environment; the harness starts it with a minimal one and the child reports the variable names it sees | G-02C1B (refuse unexpected variables, if wanted) |
+| G02C1A-R9 | An early 413 or 431 closes a socket that may still hold unread request bytes; on some stacks a reset can discard the answer before the client reads it. The refusal stands either way; only the client's view of its status can be lost | documented |
 | G02B-R1 … R12, G02C0-R1 … R7 | Unchanged | as before |
+
+## 9. Independent adversarial review
+
+An independent read-only review of the full diff found no input that is assessed eligible for a request other than the signed one, and no bypass of the credential, the allow-lists, pinned trust or the status-required refusal. The findings were fixed as follows:
+
+| Finding | Fix |
+|---|---|
+| Bytes after a `Connection: close` request (llhttp: data after close) logged the first request's assessment while the client got a 400 | A socket-level refusal now refuses the request in flight on that socket; it is reported refused and never answered |
+| Resets and broken pipes were reported as malformed requests | Only parser (`HPE_*`) and request-timeout errors are reported; others just close the socket |
+| A missing `Host` was answered by Node unreported | `requireHostHeader: false`; admission refuses `HOST_MISSING` |
+| Header timers checked only every 30 s | `connectionsCheckingInterval: 1000` |
+| HTTP/2-preface and folded-header tests could pass with no assessment | Both now require a reported admission-stage refusal |
+| The environment check observed the harness, not the child | The child reports the variable names it sees; SEC-INV-381 reworded |
+| Credential names admission always refuses were accepted by the configuration; over-limit registries mis-coded; digest returned on verification refusals | Shared refusal list; `LIMIT_INVALID`; digest only on assessed outcomes |

@@ -358,6 +358,7 @@ describe('G-02C1A process — smuggling, upgrades and bounds', () => {
     const second = serializeRaw(withFreshPresentation(editHeaders(base, 'x-release-channel', () => 'x-release-channel: canary'), BASE.digest));
     const closing = await reported(executors.default, Buffer.concat([first, second]));
     assert.ok(closing.some((assessment) => SECOND_REQUEST_REFUSALS.includes(assessment.code)), JSON.stringify(closing));
+    assert.ok(closing.every((assessment) => assessment.outcome === 'refused'), `the first request is refused too, so its log matches its answer: ${JSON.stringify(closing)}`);
     assert.equal(closing.some((assessment) => assessment.code === 'ACTION_BINDING_MISMATCH'), false, 'the second request reached no verification');
     // Keep-alive reaches the gateway's own one-request-per-connection rule.
     const keepAlive = (raw: RawRequest): RawRequest => editHeaders(raw, 'connection', () => 'Connection: keep-alive');
@@ -371,12 +372,12 @@ describe('G-02C1A process — smuggling, upgrades and bounds', () => {
     const smuggled = Buffer.concat([serializeRaw(withFreshPresentation(post, NO_BODY.digest)), head(['POST /v1/admin HTTP/1.1', `Host: ${HOSTNAME}`, 'Connection: close', `authorization: Bearer ${BEARER}`])]);
     const assessments = await reported(executors.default, smuggled);
     assert.ok(assessments.some((assessment) => SECOND_REQUEST_REFUSALS.includes(assessment.code)), JSON.stringify(assessments));
-    assert.equal(assessments.filter((assessment) => assessment.outcome === 'assessed-eligible').length <= 1, true, 'at most the first, exact request');
+    assert.ok(assessments.every((assessment) => assessment.outcome === 'refused'), `both refused: ${JSON.stringify(assessments)}`);
   });
 
   it('HTTP/2 prior knowledge, an h2c or WebSocket upgrade, CONNECT and Expect are refused before a handler', async () => {
-    const h2 = await reported(executors.default, Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n', 'latin1'), 0);
-    assert.ok(h2.every((assessment) => assessment.outcome === 'refused'), JSON.stringify(h2));
+    const h2 = await reported(executors.default, Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n', 'latin1'));
+    assert.ok(h2.length > 0 && h2.every((assessment) => assessment.outcome === 'refused' && assessment.stage === 'admission'), JSON.stringify(h2));
     const websocket = await reported(executors.default, head(['GET /v1/deployments HTTP/1.1', `Host: ${HOSTNAME}`, 'Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==']));
     assert.equal(websocket[0]?.code, 'UPGRADE_REFUSED');
     const h2c = await reported(executors.default, head(['POST /v1/deployments HTTP/1.1', `Host: ${HOSTNAME}`, 'Connection: Upgrade, HTTP2-Settings', 'Upgrade: h2c', 'HTTP2-Settings: AAMAAABkAAQAAP__']));
@@ -390,10 +391,13 @@ describe('G-02C1A process — smuggling, upgrades and bounds', () => {
     assert.equal(executors.default.assessments[before]?.code, 'EXPECTATION_REFUSED');
   });
 
-  it('a folded header line is refused, or bound as the parser joined it — never accepted as the original', async () => {
+  it('a folded header line is refused, by the parser or as a binding mismatch — never accepted as the original', async (t) => {
     const folded = { ...base, headerLines: base.headerLines.map((header) => (header.startsWith('x-release-channel') ? `${header}\r\n continued` : header)) };
-    const assessments = await reported(executors.default, serializeRaw(withFreshPresentation(folded, BASE.digest)), 0);
-    assert.ok(assessments.every((assessment) => assessment.outcome === 'refused'), JSON.stringify(assessments));
+    const assessments = await reported(executors.default, serializeRaw(withFreshPresentation(folded, BASE.digest)));
+    assert.equal(assessments.length, 1, JSON.stringify(assessments));
+    assert.equal(assessments[0]?.outcome, 'refused');
+    assert.ok(['HTTP_MALFORMED', 'ACTION_BINDING_MISMATCH'].includes(assessments[0]?.code ?? ''), JSON.stringify(assessments));
+    t.diagnostic(`obs-fold: ${assessments[0]?.stage ?? ''} / ${assessments[0]?.code ?? ''}`);
   });
 
   it('bounds: a body, a header block, a header count and a presentation over their limits', async () => {
@@ -421,10 +425,11 @@ describe('G-02C1A process — smuggling, upgrades and bounds', () => {
 });
 
 describe('G-02C1A process — separation: the executor holds public trust only', () => {
-  it('the executor is its own process, started with only PATH, its configuration file and its credential variables', () => {
+  it('the executor is its own process, started with only PATH, its configuration file and its credential variables — as the child itself reports', () => {
     for (const executor of Object.values(executors)) {
       assert.notEqual(executor.pid, process.pid);
       assert.deepEqual(Object.keys(executor.environment).sort(), [BEARER_ENV, CONFIG_VARIABLE, HEADER_CREDENTIAL_ENV, 'PATH'].sort());
+      assert.deepEqual([...executor.reportedEnvironment], [BEARER_ENV, CONFIG_VARIABLE, HEADER_CREDENTIAL_ENV, 'PATH'].sort(), 'what the child process itself reports seeing');
       for (const value of Object.values(executor.environment)) assert.equal(/PRIVATE KEY/.test(value), false);
       const config = readFileSync(executor.configPath, 'utf8');
       assert.ok(config.includes('-----BEGIN PUBLIC KEY-----'));

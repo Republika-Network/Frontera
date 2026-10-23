@@ -6,7 +6,7 @@
  * `g02c1a-reference-executor-structure.test.ts`. Not re-exported from the
  * Enterprise barrel. See `docs/architecture/ADR-INDEPENDENT-EXECUTOR-VERIFICATION.md`.
  */
-export { REFERENCE_EXECUTOR_ADMISSION_LIMITS, REFERENCE_EXECUTOR_ADMISSION_REFUSALS, admitHttpRequest } from './admission.js';
+export { REFERENCE_EXECUTOR_ADMISSION_LIMITS, REFERENCE_EXECUTOR_ADMISSION_REFUSALS, admitHttpRequest, isRefusedByAdmission } from './admission.js';
 export type { AdmissionPolicy, AdmittedHttpRequest, HttpAdmission, ObservedHttpRequest, ReferenceExecutorAdmissionRefusal } from './admission.js';
 export { IMPLICIT_ZERO_LENGTH_METHODS, REFERENCE_EXECUTOR_HTTP_BINDING_FORMAT, reconstructHttpRequestBinding } from './binding-reconstruction.js';
 export type { BindingReconstruction, ReconstructedHttpRequestBinding } from './binding-reconstruction.js';

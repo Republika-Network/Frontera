@@ -74,7 +74,7 @@ export interface ReferenceExecutorAssessment {
   readonly outcome: 'refused' | 'assessed-ineligible' | 'assessed-eligible';
   readonly stage: ReferenceExecutorStage;
   readonly code: ReferenceExecutorAssessmentCode;
-  /** The digest of the record this executor rebuilt, once it rebuilt one; otherwise `null`. Never a digest taken from the request. */
+  /** The digest of the record this executor rebuilt, only once a capability verified against it (assessed outcomes); otherwise `null`. Never a digest taken from the request. */
   readonly bindingDigest: string | null;
 }
 
@@ -153,7 +153,8 @@ export function createReferenceExecutorVerificationPipeline(configuration: Refer
         resource: capability.resource,
         actionBinding: { format: REFERENCE_EXECUTOR_HTTP_BINDING_FORMAT, value: bindingValue },
       });
-      if (verification.verification !== 'verified') return assessment('refused', 'verification', verification.failure, bindingDigest);
+      // No digest on a refusal: the record holds every header value, so a caller must not get to test guesses against it.
+      if (verification.verification !== 'verified') return assessment('refused', 'verification', verification.failure);
 
       // 7 — eligibility: a verified result of this runtime's verifier, offline-permitted, under the offline-only policy
       const verified = readVerifiedExecutionCapability(verification);

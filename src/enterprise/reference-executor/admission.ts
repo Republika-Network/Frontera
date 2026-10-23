@@ -110,6 +110,11 @@ const UPGRADE_HEADERS: readonly string[] = Object.freeze(['upgrade', 'http2-sett
 /** Headers a forwarding proxy adds or rewrites. Their presence means the request is not the one the Host sent. */
 const PROXY_HEADERS: readonly string[] = Object.freeze(['forwarded', 'via', 'x-real-ip', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'proxy-authenticate']);
 
+/** Whether admission refuses a header of this (lower-case) name outright, wherever it appears. The configuration refuses such a name as the credential header. */
+export function isRefusedByAdmission(name: string): boolean {
+  return FRAMING_HEADERS.includes(name) || UPGRADE_HEADERS.includes(name) || PROXY_HEADERS.includes(name) || name.startsWith('x-forwarded-') || name === 'expect' || name === 'content-encoding';
+}
+
 export function admitHttpRequest(observed: ObservedHttpRequest, policy: AdmissionPolicy): HttpAdmission {
   const refuse = (refusal: ReferenceExecutorAdmissionRefusal): HttpAdmission => ({ ok: false, refusal });
   const L = REFERENCE_EXECUTOR_ADMISSION_LIMITS;

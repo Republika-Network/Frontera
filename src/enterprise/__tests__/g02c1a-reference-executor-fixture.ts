@@ -369,6 +369,8 @@ export interface SpawnedExecutor {
   readonly configPath: string;
   /** Exactly the environment the child was started with. */
   readonly environment: Readonly<Record<string, string>>;
+  /** The variable names the child itself reported seeing (its ready line). */
+  readonly reportedEnvironment: readonly string[];
   readonly assessments: readonly ReferenceExecutorAssessment[];
   stdout(): string;
   stderr(): string;
@@ -398,6 +400,7 @@ export async function spawnExecutor(config: Record<string, unknown> = executorCo
   let out = '';
   let err = '';
   let buffered = '';
+  let reportedEnvironment: readonly string[] = [];
   let ready: (port: number) => void = () => undefined;
   let failed: (error: Error) => void = () => undefined;
   const started = new Promise<number>((resolvePort, reject) => {
@@ -416,12 +419,13 @@ export async function spawnExecutor(config: Record<string, unknown> = executorCo
       const line = buffered.slice(0, newline);
       buffered = buffered.slice(newline + 1);
       newline = buffered.indexOf('\n');
-      const event = JSON.parse(line) as { readonly event: string; readonly port?: number } & ReferenceExecutorAssessment;
+      const event = JSON.parse(line) as { readonly event: string; readonly port?: number; readonly environment?: readonly string[] } & ReferenceExecutorAssessment;
       if (event.event === 'ready') {
         clearTimeout(deadline);
+        reportedEnvironment = event.environment ?? [];
         ready(event.port as number);
       } else if (event.event === 'assessment') {
-        const { event: _event, ...assessment } = event;
+        const { event: _event, environment: _environment, ...assessment } = event;
         assessments.push(Object.freeze(assessment));
         for (const waiter of waiters.splice(0)) waiter();
       }
@@ -440,6 +444,9 @@ export async function spawnExecutor(config: Record<string, unknown> = executorCo
     pid: child.pid as number,
     configPath: path,
     environment,
+    get reportedEnvironment() {
+      return reportedEnvironment;
+    },
     assessments,
     stdout: () => out,
     stderr: () => err,

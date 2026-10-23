@@ -48,7 +48,9 @@ export async function startReferenceExecutorProcess(environment: Readonly<Record
     clock: () => Date.now(),
     onAssessment: (assessment) => writeLine(JSON.stringify({ event: 'assessment', ...assessment })),
   });
-  writeLine(JSON.stringify({ event: 'ready', mode: 'verification-only', executorId: configuration.executorId, host: gateway.host, port: gateway.port }));
+  // The names (never the values) of the variables this process was given, so a supervisor can see what it holds.
+  const variables = Object.keys(environment).sort();
+  writeLine(JSON.stringify({ event: 'ready', mode: 'verification-only', executorId: configuration.executorId, host: gateway.host, port: gateway.port, environment: variables }));
   return gateway;
 }
 

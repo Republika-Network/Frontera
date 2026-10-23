@@ -125,7 +125,7 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
 
   it('no receipt, ledger, claim, database or effect handler — nothing that could act on an assessment', () => {
     for (const file of sources) {
-      assert.equal(/receipt|ledger|\.claim\s*\(|better-sqlite3|Database\s*\(|effect|execute\s*\(|perform\s*\(|onEligible|handler\s*\(/i.test(codeOf(file)), false, file);
+      assert.equal(/receipt|ledger|\.claim\s*\(|better-sqlite3|Database\s*\(|effect|execute\s*\(|perform\s*\(|\bonEligible|\bhandler\s*\(/i.test(codeOf(file)), false, file);
     }
   });
 

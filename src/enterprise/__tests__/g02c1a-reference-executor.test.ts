@@ -174,7 +174,7 @@ describe('G-02C1A — the closed trust configuration', () => {
   it('a valid configuration is deep-frozen, keeps only the credential digest, and holds public material only', () => {
     const configuration = parseReferenceExecutorConfiguration(executorConfiguration(), EXECUTOR_ENVIRONMENT);
     for (const value of [configuration, configuration.trustedIssuers, configuration.trustedIssuers[0], configuration.trustedIssuers[0]?.keys, configuration.trustedIssuers[0]?.keys[0], configuration.organizationIds, configuration.permittedActions, configuration.origin, configuration.credential, configuration.listen]) {
-      assert.ok(Object.isFrozen(value));
+      assert.ok(value !== undefined && Object.isFrozen(value));
     }
     const shown = JSON.stringify(configuration);
     assert.equal(shown.includes(BEARER), false, 'the credential value is not retained');
@@ -239,6 +239,9 @@ describe('G-02C1A — the closed trust configuration', () => {
       ['a credential header named Authorization', executorConfiguration({ clientCredential: { kind: 'header', name: 'authorization', valueEnv: BEARER_ENV } }), 'CREDENTIAL_INVALID'],
       ['the presentation header as credential', executorConfiguration({ clientCredential: { kind: 'header', name: EXECUTION_CAPABILITY_PRESENTATION_HEADER, valueEnv: BEARER_ENV } }), 'CREDENTIAL_INVALID'],
       ['Host as credential', executorConfiguration({ clientCredential: { kind: 'header', name: 'host', valueEnv: BEARER_ENV } }), 'CREDENTIAL_INVALID'],
+      ['a credential header admission always refuses', executorConfiguration({ clientCredential: { kind: 'header', name: 'x-real-ip', valueEnv: BEARER_ENV } }), 'CREDENTIAL_INVALID'],
+      ['an X-Forwarded credential header', executorConfiguration({ clientCredential: { kind: 'header', name: 'x-forwarded-key', valueEnv: BEARER_ENV } }), 'CREDENTIAL_INVALID'],
+      ['too many issuers', executorConfiguration({ trustedIssuers: Array.from({ length: 9 }, (_, index) => ({ issuer: `issuer-${String(index)}`, keys: [{ ...pin(ISSUER_KEY), keyId: `key-${String(index)}` }] })) }), 'LIMIT_INVALID'],
       ['an upper-case credential header', executorConfiguration({ clientCredential: { kind: 'header', name: 'X-Gateway-Key', valueEnv: BEARER_ENV } }), 'CREDENTIAL_INVALID'],
       ['a lifetime past the profile maximum', executorConfiguration({ maximumLifetimeMs: 60_001 }), 'LIMIT_INVALID'],
       ['a zero lifetime', executorConfiguration({ maximumLifetimeMs: 0 }), 'LIMIT_INVALID'],
@@ -360,7 +363,11 @@ describe('G-02C1A — the verification pipeline', () => {
       ['the right request with another method', { method: 'PUT' }, 'ACTION_BINDING_MISMATCH'],
       ['the right request with another body of the same length', { body: Buffer.from(WITH_BODY.request.body?.replace('7500', '7501') ?? '', 'utf8') }, 'ACTION_BINDING_MISMATCH'],
     ];
-    for (const [name, options, code] of cases) expectRefused(pipeline.assess(observedWith(WITH_BODY, options)), 'verification', code, name);
+    for (const [name, options, code] of cases) {
+      const assessment = pipeline.assess(observedWith(WITH_BODY, options));
+      expectRefused(assessment, 'verification', code, name);
+      assert.equal(assessment.bindingDigest, null, `${name}: no digest on a refusal`);
+    }
     assert.ok(now > 0);
   });
 

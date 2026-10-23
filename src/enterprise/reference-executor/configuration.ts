@@ -3,6 +3,7 @@ import { createHash, createPublicKey } from 'node:crypto';
 import { createAuthoritySignatureRegistry } from '../authority-authenticity/signature-verification.js';
 import { EXECUTION_CAPABILITY_LIMITS, isExecutionCapabilityIdentifier, type ExecutionCapabilityTrustedIssuer } from '../execution-capability/index.js';
 import { EXECUTION_CAPABILITY_PRESENTATION_HEADER } from '../execution-capability-presentation/index.js';
+import { isRefusedByAdmission } from './admission.js';
 import { REFERENCE_EXECUTOR_HTTP_BINDING_FORMAT } from './binding-reconstruction.js';
 
 /**
@@ -225,7 +226,7 @@ function parseOrigin(value: unknown): ReferenceExecutorOrigin {
 
 function parseIssuers(value: unknown): readonly ExecutionCapabilityTrustedIssuer[] {
   if (!Array.isArray(value) || value.length === 0) return fail('TRUST_REGISTRY_EMPTY', 'trustedIssuers must pin at least one issuer.');
-  if (value.length > LIMITS.maximumIssuers) fail('TRUST_REGISTRY_EMPTY', `trustedIssuers may pin at most ${LIMITS.maximumIssuers} issuers.`);
+  if (value.length > LIMITS.maximumIssuers) fail('LIMIT_INVALID', `trustedIssuers may pin at most ${LIMITS.maximumIssuers} issuers.`);
   const issuers = new Set<string>();
   const keyIds = new Set<string>();
   const materials = new Set<string>();
@@ -237,7 +238,7 @@ function parseIssuers(value: unknown): readonly ExecutionCapabilityTrustedIssuer
       issuers.add(issuer);
       const keys = fields['keys'];
       if (!Array.isArray(keys) || keys.length === 0) return fail('TRUST_REGISTRY_EMPTY', 'A trusted issuer must pin at least one key.');
-      if (keys.length > LIMITS.maximumKeysPerIssuer) fail('TRUST_REGISTRY_EMPTY', `A trusted issuer may pin at most ${LIMITS.maximumKeysPerIssuer} keys.`);
+      if (keys.length > LIMITS.maximumKeysPerIssuer) fail('LIMIT_INVALID', `A trusted issuer may pin at most ${LIMITS.maximumKeysPerIssuer} keys.`);
       const pinned = keys.map((key: unknown) => {
         const keyFields = closed(key, ['keyId', 'algorithm', 'publicKeyPem'], 'A pinned key');
         const keyId = identity(keyFields['keyId'], 'A pinned key id');
@@ -288,7 +289,7 @@ function parseCredential(value: unknown, environment: Readonly<Record<string, st
     const fields = closed(value, ['kind', 'name', 'valueEnv'], 'A header clientCredential');
     const name = fields['name'];
     if (typeof name !== 'string' || name.length > 128 || !HTTP_TOKEN.test(name)) return fail('CREDENTIAL_INVALID', 'A credential header name must be one lower-case HTTP token.');
-    if (name === 'authorization' || name.startsWith('proxy-') || name.startsWith('x-forwarded-') || RESERVED_CREDENTIAL_HEADERS.includes(name)) {
+    if (name === 'authorization' || name.startsWith('proxy-') || isRefusedByAdmission(name) || RESERVED_CREDENTIAL_HEADERS.includes(name)) {
       fail('CREDENTIAL_INVALID', 'The credential header name is reserved; use the bearer kind for Authorization.');
     }
     const secret = read(fields['valueEnv']);
