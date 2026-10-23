@@ -338,7 +338,7 @@ const GATEWAY = join('reference-executor', 'gateway.js');
 
 /** Two keep-alive requests on one connection to a gateway built by `m`: does it refuse the second as pipelined? */
 async function refusesPipelining(m: GatewayModule): Promise<boolean> {
-  const seen: ReferenceExecutorAssessment[] = [];
+  const seen: { readonly code: string }[] = [];
   const gateway = await m.startReferenceExecutorGateway({ configuration: CONFIGURATION, clock: () => Date.now(), onAssessment: (assessment) => seen.push(assessment) });
   try {
     const request = (): Buffer => {

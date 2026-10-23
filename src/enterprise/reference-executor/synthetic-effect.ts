@@ -112,8 +112,9 @@ export function openSyntheticDeploymentEffect(options: { readonly outputDirector
   const durablyClaimed = options.durablyClaimed;
   const flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;
   if (typeof O_NOFOLLOW !== 'number' || typeof O_EXCL !== 'number') throw new SyntheticOutputError('This platform cannot create a file without following links; the synthetic effect refuses to run here.');
-  const fixed = directoryIdentity(outputDirectory);
-  if (fixed === undefined) throw new SyntheticOutputError('The synthetic output directory must be an existing, canonical directory that no other user can write; refusing it.');
+  const identity = directoryIdentity(outputDirectory);
+  if (identity === undefined) throw new SyntheticOutputError('The synthetic output directory must be an existing, canonical directory that no other user can write; refusing it.');
+  const fixed: DirectoryIdentity = identity;
 
   function apply(input: SyntheticDeploymentInput, duringEffect?: () => void): SyntheticEffectObservation {
     const capabilityId = input.capabilityId;
