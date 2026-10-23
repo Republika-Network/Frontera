@@ -376,6 +376,8 @@ export interface SpawnedExecutor {
   stderr(): string;
   /** Resolves once at least `count` assessments have been reported. */
   waitForAssessments(count: number, timeoutMs?: number): Promise<void>;
+  /** Resolves when the child has exited, with its exit code and signal (G-02C1B crash injection). */
+  exited(): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>;
   kill(): Promise<void>;
 }
 
@@ -434,9 +436,12 @@ export async function spawnExecutor(config: Record<string, unknown> = executorCo
   child.stderr?.on('data', (chunk: Buffer) => {
     err += chunk.toString();
   });
-  child.on('exit', (code) => {
-    clearTimeout(deadline);
-    failed(new Error(`reference executor exited (${String(code)}): ${err}`));
+  const exit = new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>((done) => {
+    child.on('exit', (code, signal) => {
+      clearTimeout(deadline);
+      failed(new Error(`reference executor exited (${String(code)}): ${err}`));
+      done({ code, signal });
+    });
   });
   const port = await started;
   return {
@@ -464,6 +469,7 @@ export async function spawnExecutor(config: Record<string, unknown> = executorCo
         });
       }
     },
+    exited: () => exit,
     kill: () =>
       new Promise<void>((done) => {
         const cleanup = (): void => {

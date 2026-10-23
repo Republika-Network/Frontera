@@ -66,9 +66,11 @@ const PRODUCTION = [...sourcesUnder('src')];
 
 describe('G-02C1A structure — the executor stands alone', () => {
   const closure = closureOf([`${EXECUTOR}/index.ts`]);
+  // G-02C1B: the verification path itself — what verification-only mode runs — is the G-02C1A closure, unchanged.
+  const verificationPath = closureOf([`${EXECUTOR}/admission.ts`, `${EXECUTOR}/binding-reconstruction.ts`, `${EXECUTOR}/configuration.ts`, `${EXECUTOR}/gateway.ts`, `${EXECUTOR}/verification-pipeline.ts`]);
 
-  it('it loads exactly its own modules, the presentation codec, the G-02A verifier and codec, the CORE-02 verification primitives and canonical JSON', () => {
-    assert.deepEqual([...closure.files].sort(), [
+  it('the verification path loads exactly its own modules, the presentation codec, the G-02A verifier and codec, the CORE-02 verification primitives and canonical JSON', () => {
+    assert.deepEqual([...verificationPath.files].sort(), [
       'src/enterprise/authority-authenticity/errors.ts',
       'src/enterprise/authority-authenticity/signature-envelope.ts',
       'src/enterprise/authority-authenticity/signature-verification.ts',
@@ -83,19 +85,43 @@ describe('G-02C1A structure — the executor stands alone', () => {
       `${EXECUTOR}/binding-reconstruction.ts`,
       `${EXECUTOR}/configuration.ts`,
       `${EXECUTOR}/gateway.ts`,
-      `${EXECUTOR}/index.ts`,
-      `${EXECUTOR}/launcher.ts`,
       `${EXECUTOR}/verification-pipeline.ts`,
     ]);
-    assert.deepEqual([...closure.bare].sort(), ['node:crypto', 'node:fs', 'node:http']);
+    assert.deepEqual([...verificationPath.bare].sort(), ['node:crypto', 'node:http', 'node:path']);
+    assert.equal(verificationPath.files.has('src/enterprise/execution-capability/reference/consumption-ledger.ts'), false, 'the verification path holds no consumption ledger');
+  });
+
+  it('the whole executor adds only the launcher, the G-02C1B execution flow and synthetic effect, and the G-02A reference ledger', () => {
+    assert.deepEqual([...closure.files].sort(), [
+      'src/enterprise/authority-authenticity/errors.ts',
+      'src/enterprise/authority-authenticity/signature-envelope.ts',
+      'src/enterprise/authority-authenticity/signature-verification.ts',
+      'src/enterprise/execution-capability-presentation/index.ts',
+      'src/enterprise/execution-capability-presentation/presentation.ts',
+      'src/enterprise/execution-capability/capability.ts',
+      'src/enterprise/execution-capability/index.ts',
+      'src/enterprise/execution-capability/verifier.ts',
+      'src/enterprise/governance-store/canonical-json.ts',
+      'src/enterprise/governance-store/digest.ts',
+      `${EXECUTOR}/admission.ts`,
+      `${EXECUTOR}/binding-reconstruction.ts`,
+      `${EXECUTOR}/configuration.ts`,
+      `${EXECUTOR}/execution-flow.ts`,
+      `${EXECUTOR}/gateway.ts`,
+      `${EXECUTOR}/index.ts`,
+      `${EXECUTOR}/launcher.ts`,
+      `${EXECUTOR}/synthetic-effect.ts`,
+      `${EXECUTOR}/verification-pipeline.ts`,
+      'src/enterprise/execution-capability/reference/consumption-ledger.ts',
+    ].sort());
+    assert.deepEqual([...closure.bare].sort(), ['better-sqlite3', 'node:crypto', 'node:fs', 'node:http', 'node:path']);
   });
 
   it('it reaches no Host, Kernel, orchestrator, grant store, grant runtime, issuance, gate, adapter registry, P11/P12, signer or database', () => {
     const forbidden =
       /^src\/kernel\/|^src\/features\/|^src\/enterprise\/(composition|host|orchestration|governed-action|configuration|api|adapters|registry|bounded-grant-store|execution-governance|execution-capability-issuance|execution-capability-gate|execution-adapters|execution-outcome-store|execution-resolution-store|execution-reconciliation|external-authority-signer|emergency-control)\/|sqlite|-store\.ts$|signer\.ts$|custody\.ts$/;
     assert.deepEqual([...closure.files].filter((file) => forbidden.test(file)), []);
-    assert.equal(closure.files.has('src/enterprise/execution-capability/reference/consumption-ledger.ts'), false, 'no consumption ledger');
-    assert.equal([...closure.bare].some((specifier) => /sqlite|better-sqlite3/.test(specifier)), false);
+    assert.equal([...verificationPath.bare].some((specifier) => /sqlite|better-sqlite3/.test(specifier)), false, 'the verification path opens no database');
   });
 
   it('the launcher script loads only the compiled launcher', () => {
@@ -123,10 +149,16 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
     for (const file of sources) assert.equal(/createPrivateKey|privateKey|generateKeyPair|crypto\.sign\b|[^a-zA-Z.]sign\(|createHmac|signBytes|signExecution/i.test(codeOf(file)), false, file);
   });
 
-  it('no receipt, ledger, claim, database or effect handler — nothing that could act on an assessment', () => {
-    for (const file of sources) {
+  it('the verification modules hold no receipt, ledger, claim, database or effect; the gateway reaches the G-02C1B flow only through the one call the launcher enables', () => {
+    const verification = [`${EXECUTOR}/admission.ts`, `${EXECUTOR}/binding-reconstruction.ts`, `${EXECUTOR}/verification-pipeline.ts`, ...sourcesUnder(PRESENTATION)];
+    for (const file of verification) {
       assert.equal(/receipt|ledger|\.claim\s*\(|better-sqlite3|Database\s*\(|effect|execute\s*\(|perform\s*\(|\bonEligible|\bhandler\s*\(/i.test(codeOf(file)), false, file);
     }
+    const gateway = codeOf(`${EXECUTOR}/gateway.ts`);
+    assert.equal(/receipt|\bledger\b|\.claim\s*\(|better-sqlite3|effect/i.test(gateway), false);
+    assert.equal([...gateway.matchAll(/execution\.execute\(/g)].length, 1);
+    assert.ok(gateway.includes('settle(execution === undefined ? pipeline.assess(observed) : execution.execute(observed));'), 'without a flow the gateway is the verification-only gateway');
+    assert.equal(/receipt/i.test(sources.map(codeOf).join('\n')), false, 'no receipt anywhere (G-02C1C)');
   });
 
   it('the pipeline runs its steps in the declared order, and the gateway only answers with the assessment', () => {

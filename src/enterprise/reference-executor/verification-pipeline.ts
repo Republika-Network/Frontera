@@ -5,6 +5,7 @@ import {
   executionCapabilityActionBindingDigest,
   parseExecutionCapability,
   readVerifiedExecutionCapability,
+  type ExecutionCapability,
   type ExecutionCapabilityVerificationFailure,
 } from '../execution-capability/index.js';
 import { decodeExecutionCapabilityPresentation, type ExecutionCapabilityPresentationFailure } from '../execution-capability-presentation/index.js';
@@ -78,8 +79,22 @@ export interface ReferenceExecutorAssessment {
   readonly bindingDigest: string | null;
 }
 
+/**
+ * What an eligible assessment hands the G-02C1B execution flow: the verifier's
+ * own result (the only thing the G-02A ledger will claim), the capability it
+ * verified and the digest this executor rebuilt. Never produced for every other
+ * outcome.
+ */
+export interface ReferenceExecutorEligibleCapability {
+  readonly verification: object;
+  readonly capability: ExecutionCapability;
+  readonly bindingDigest: string;
+}
+
 export interface ReferenceExecutorVerificationPipeline {
   assess(observed: ObservedHttpRequest): ReferenceExecutorAssessment;
+  /** The same assessment, and — only when it is `assessed-eligible` — what a claim needs. */
+  verifyForExecution(observed: ObservedHttpRequest): { readonly assessment: ReferenceExecutorAssessment; readonly eligible?: ReferenceExecutorEligibleCapability };
 }
 
 function assessment(outcome: ReferenceExecutorAssessment['outcome'], stage: ReferenceExecutorStage, code: ReferenceExecutorAssessmentCode, bindingDigest: string | null = null): ReferenceExecutorAssessment {
@@ -104,7 +119,7 @@ export function createReferenceExecutorVerificationPipeline(configuration: Refer
   const pinnedIssuers = configuration.trustedIssuers.map((entry) => entry.issuer);
   const admissionPolicy = Object.freeze({ authority: configuration.origin.authority, methods: configuration.methods, credentialHeader: configuration.credential.header });
 
-  function assess(observed: ObservedHttpRequest): ReferenceExecutorAssessment {
+  function evaluate(observed: ObservedHttpRequest, keep: (eligible: ReferenceExecutorEligibleCapability) => void): ReferenceExecutorAssessment {
     try {
       // 1 — admission
       const admission = admitHttpRequest(observed, admissionPolicy);
@@ -162,11 +177,26 @@ export function createReferenceExecutorVerificationPipeline(configuration: Refer
       if (!eligible) return assessment('assessed-ineligible', 'eligibility', 'STATUS_REQUIRED_UNAVAILABLE', bindingDigest);
 
       // 8 — an assessment, not an act
+      // The verifier's own copy of the capability: what it checked is what the claim and the effect act on.
+      keep(Object.freeze({ verification, capability: verified === undefined ? capability : verified.capability, bindingDigest }));
       return assessment('assessed-eligible', 'eligibility', 'VERIFICATION_ONLY', bindingDigest);
     } catch {
       return assessment('refused', 'verification', 'EXECUTOR_FAILURE');
     }
   }
 
-  return Object.freeze({ assess });
+  function assess(observed: ObservedHttpRequest): ReferenceExecutorAssessment {
+    return evaluate(observed, () => undefined);
+  }
+
+  function verifyForExecution(observed: ObservedHttpRequest): { readonly assessment: ReferenceExecutorAssessment; readonly eligible?: ReferenceExecutorEligibleCapability } {
+    const box: { eligible?: ReferenceExecutorEligibleCapability } = {};
+    const result = evaluate(observed, (kept) => {
+      box.eligible = kept;
+    });
+    const eligible = box.eligible;
+    return result.outcome === 'assessed-eligible' && eligible !== undefined ? Object.freeze({ assessment: result, eligible }) : Object.freeze({ assessment: result });
+  }
+
+  return Object.freeze({ assess, verifyForExecution });
 }

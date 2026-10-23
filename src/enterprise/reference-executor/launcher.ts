@@ -1,7 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { dirname, sep } from 'node:path';
 
-import { ReferenceExecutorConfigurationError, parseReferenceExecutorConfiguration } from './configuration.js';
+import { ReferenceExecutorConfigurationError, parseReferenceExecutorConfiguration, type ReferenceExecutorConfiguration, type ReferenceExecutorFaultPoint } from './configuration.js';
+import type { ReferenceExecutorExecutionFlow } from './execution-flow.js';
 import { startReferenceExecutorGateway, type ReferenceExecutorGateway } from './gateway.js';
+import { createReferenceExecutorVerificationPipeline } from './verification-pipeline.js';
 
 /**
  * G-02C1A — starts the reference executor as **its own OS process**
@@ -14,13 +17,19 @@ import { startReferenceExecutorGateway, type ReferenceExecutorGateway } from './
  *   allow-lists, origin, loopback listener;
  * - the one variable that configuration names for the client credential.
  *
- * It receives no Host configuration, no issuer private key and no database
- * path, and it opens no store. Every line it writes to stdout is one JSON
+ * It receives no Host configuration and no issuer private key. In
+ * verification-only mode it opens no store. In synthetic-execution mode
+ * (G-02C1B) — and only then — it loads the G-02A consumption ledger, opens the
+ * **existing** ledger file the configuration names (never creating one: a
+ * missing, damaged or foreign-audience ledger refuses startup), opens the
+ * synthetic output directory, and hands the gateway the execution flow. Every line it writes to stdout is one JSON
  * object: a `ready` line, then one `assessment` line per request — never a
  * header value, the credential, a capability or a body.
  */
 
 export const REFERENCE_EXECUTOR_CONFIG_ENVIRONMENT_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_CONFIG_FILE';
+/** CI crash injection needs this variable set to `enabled` as well as `faultInjection` in the configuration: one file alone cannot make the executor kill itself. */
+export const REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_FAULT_INJECTION';
 
 export class ReferenceExecutorStartupError extends Error {
   constructor(
@@ -43,14 +52,20 @@ export async function startReferenceExecutorProcess(environment: Readonly<Record
     throw new ReferenceExecutorStartupError('CONFIGURATION_UNREADABLE', 'The configuration file could not be read as JSON.');
   }
   const configuration = parseReferenceExecutorConfiguration(raw, environment);
+  const clock = (): number => Date.now();
+  if (configuration.faultInjection !== null && environment[REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE] !== 'enabled') {
+    throw new ReferenceExecutorStartupError('FAULT_INJECTION_NOT_ENABLED', `faultInjection needs ${REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE}=enabled in the executor's environment.`);
+  }
+  const execution = configuration.mode === 'synthetic-execution' ? await openSyntheticExecution(configuration, clock) : undefined;
   const gateway = await startReferenceExecutorGateway({
     configuration,
-    clock: () => Date.now(),
+    clock,
     onAssessment: (assessment) => writeLine(JSON.stringify({ event: 'assessment', ...assessment })),
+    ...(execution !== undefined ? { execution } : {}),
   });
   // The names (never the values) of the variables this process was given, so a supervisor can see what it holds.
   const variables = Object.keys(environment).sort();
-  writeLine(JSON.stringify({ event: 'ready', mode: 'verification-only', executorId: configuration.executorId, host: gateway.host, port: gateway.port, environment: variables }));
+  writeLine(JSON.stringify({ event: 'ready', mode: configuration.mode, executorId: configuration.executorId, host: gateway.host, port: gateway.port, environment: variables }));
   return gateway;
 }
 
@@ -59,4 +74,43 @@ export function referenceExecutorStartupRefusal(error: unknown): string {
   const code = error instanceof ReferenceExecutorConfigurationError || error instanceof ReferenceExecutorStartupError ? error.code : 'STARTUP_FAILED';
   const message = error instanceof ReferenceExecutorConfigurationError || error instanceof ReferenceExecutorStartupError ? (error.message.split('\n')[0] ?? '') : 'startup failed';
   return JSON.stringify({ event: 'refused-to-start', code, message });
+}
+
+/**
+ * G-02C1B: the ledger, the effect and the flow, built only in
+ * synthetic-execution mode. The ledger module (and with it the database
+ * driver) is loaded only here.
+ */
+async function openSyntheticExecution(configuration: ReferenceExecutorConfiguration, clock: () => number): Promise<ReferenceExecutorExecutionFlow> {
+  const synthetic = configuration.syntheticExecution;
+  if (synthetic === null) throw new ReferenceExecutorStartupError('MODE_INCONSISTENT', 'synthetic-execution mode requires its section.');
+  const { openExecutionCapabilityConsumptionLedger } = await import('../execution-capability/reference/consumption-ledger.js');
+  const { admitsEffect, openSyntheticDeploymentEffect } = await import('./synthetic-effect.js');
+  const { createReferenceExecutorExecutionFlow } = await import('./execution-flow.js');
+  let ledger: Awaited<ReturnType<typeof openExecutionCapabilityConsumptionLedger>>;
+  try {
+    // Never `create: true`: the operator initializes a ledger once, with G-02A's own explicit call.
+    ledger = await openExecutionCapabilityConsumptionLedger(synthetic.consumptionLedgerPath, { audience: configuration.audience, clock });
+  } catch {
+    throw new ReferenceExecutorStartupError('LEDGER_INVALID', 'The consumption ledger is missing, damaged or pinned to another audience; the executor never creates one.');
+  }
+  const opened = ledger;
+  let effect: ReturnType<typeof openSyntheticDeploymentEffect>;
+  try {
+    effect = openSyntheticDeploymentEffect({ outputDirectory: synthetic.outputDirectory, durablyClaimed: (capabilityId) => admitsEffect(opened.read(capabilityId).state) });
+    // Separate on disk, not only in spelling: neither real directory may contain the other.
+    const ledgerDirectory = realpathSync(dirname(synthetic.consumptionLedgerPath));
+    const output = synthetic.outputDirectory;
+    if (ledgerDirectory === output || ledgerDirectory.startsWith(`${output}${sep}`) || output.startsWith(`${ledgerDirectory}${sep}`)) throw new Error('overlap');
+  } catch {
+    opened.close();
+    throw new ReferenceExecutorStartupError('SYNTHETIC_OUTPUT_INVALID', 'The synthetic output directory is missing, a link, reached through a link, not this user\'s, writable by others, under an ancestor others can rename, or overlapping the ledger.');
+  }
+  const crashAt = configuration.faultInjection?.crashAt;
+  // CI crash injection: an abrupt kill at one point of the execution path — no cleanup, no answer, nothing flushed by this process.
+  // A hook that returns changes nothing; this one never throws.
+  const fault = crashAt === undefined ? undefined : (point: ReferenceExecutorFaultPoint): void => {
+    if (point === crashAt) process.kill(process.pid, 'SIGKILL');
+  };
+  return createReferenceExecutorExecutionFlow({ configuration, pipeline: createReferenceExecutorVerificationPipeline(configuration, clock), ledger: opened, effect, clock, ...(fault !== undefined ? { fault } : {}) });
 }
