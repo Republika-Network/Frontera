@@ -25,7 +25,8 @@ import { isExecutionCapabilityIdentifier } from '../execution-capability/capabil
  *
  * - `receiptId` is the digest of (executor, capability, sequence): one logical
  *   receipt per position, recomputable by every verifier;
- * - `sequence` 1 has no `supersedes`; every later one supersedes exactly one id;
+ * - `sequence` 1 has no `supersedes`; every later one supersedes exactly the
+ *   id of the position before it;
  * - `completed-observed` ⇔ ledger state `completed`, and only it carries an
  *   `observation` (the synthetic record's name and digest);
  * - `failed-observed` and `consumed-not-attempted` rest on ledger state
@@ -198,7 +199,8 @@ export function isWellFormedExecutorReceipt(value: unknown): value is ExecutorRe
     identifier(r['organizationId']) &&
     identifier(r['trustDomain']) &&
     typeof r['receiptId'] === 'string' &&
-    r['receiptId'] === executorReceiptId({ executorId, capabilityId, sequence })
+    r['receiptId'] === executorReceiptId({ executorId, capabilityId, sequence }) &&
+    (sequence === 1 || supersedes === executorReceiptId({ executorId, capabilityId, sequence: sequence - 1 }))
   );
 }
 

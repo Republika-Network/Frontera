@@ -136,7 +136,12 @@ export function createExecutorReceiptVerifier(options: { readonly trustedExecuto
     if (executors.has(executorId)) throw new ExecutorReceiptVerifierConfigurationError('An executor is pinned twice.');
     const keys = Array.isArray(entry.keys) ? entry.keys : [];
     // CORE-02's own registry rules: public SPKI only, no duplicate id, the key type matches the algorithm.
-    const registry = createAuthoritySignatureRegistry(keys);
+    let registry: AuthoritySignatureRegistry;
+    try {
+      registry = createAuthoritySignatureRegistry(keys);
+    } catch {
+      throw new ExecutorReceiptVerifierConfigurationError('An executor needs at least one valid, distinct Ed25519 public key.');
+    }
     for (const key of keys) {
       if (keyOwners.has(key.keyId)) throw new ExecutorReceiptVerifierConfigurationError('A key id is pinned for more than one executor.');
       keyOwners.set(key.keyId, executorId);

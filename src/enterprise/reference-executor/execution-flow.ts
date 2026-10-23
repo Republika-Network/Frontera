@@ -109,7 +109,7 @@ export interface ReferenceExecutorExecutionFlowOptions {
    * G-02C1C: the receipt issuer, when receipts are configured. Asked only after an outcome is durably recorded (with what
    * this path observed) and on a duplicate delivery (from durable state alone). Its answer never changes this flow's.
    */
-  readonly receipts?: { issue(capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown'): unknown };
+  readonly receipts?: { issue(capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown'): unknown; issueResolved(capabilityId: string): unknown };
 }
 
 function record(outcome: ReferenceExecutorExecutionOutcome, stage: ReferenceExecutorExecutionStage, code: ReferenceExecutorExecutionCode, bindingDigest: string | null, ledgerState: ExecutionCapabilityConsumptionState | null): ReferenceExecutorExecution {
@@ -133,8 +133,9 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
   const receiptFor = (capabilityId: string, observed?: ReferenceExecutorExecutionOutcome): void => {
     if (receipts === undefined) return;
     try {
+      // After this path's own outcome: what it observed. On a duplicate: durable state alone, and not while still claimed — the claim may be live elsewhere.
       if (observed === 'completed-observed' || observed === 'failed-observed' || observed === 'consumed-not-attempted' || observed === 'attempted-outcome-unknown') receipts.issue(capabilityId, observed);
-      else receipts.issue(capabilityId);
+      else receipts.issueResolved(capabilityId);
     } catch {
       // Recovered later from durable state; the answer stands.
     }

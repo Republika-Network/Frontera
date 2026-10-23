@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 
 import { AUTHORITY_ARTIFACT_VERSION } from '../authority-authenticity/index.js';
 import { EXECUTOR_RECEIPT_SIGNING_DOMAIN, parseExecutorReceipt, positionExecutorReceipt, serializeExecutorReceipt, type ExecutorReceipt, type ExecutorReceiptDraft } from '../executor-receipt/index.js';
-import { canonicalSerialize } from '../governance-store/canonical-json.js';
 import { openExecutionCapabilityConsumptionLedger } from '../execution-capability/reference/consumption-ledger.js';
 import { openExecutorReceiptLedger } from '../reference-executor/receipt-ledger.js';
 import { loadExecutorReceiptSigner } from '../reference-executor/receipt-signer.js';
@@ -175,10 +174,11 @@ describe('G-02C1C mutation — the standalone verifier', () => {
       id: 'supersession-relation-unchecked',
       file: VERIFIER,
       replacements: [["const forward = receipt.supersedes === prior.receiptId && prior.outcome === 'attempted-outcome-unknown' && receipt.outcome !== 'attempted-outcome-unknown' && receipt.observedAt >= prior.observedAt;", 'const forward = true;']],
+      // A well-formed successor of a definite outcome: only the forward-supersession check refuses it.
       guard: async (m) => {
         const { domain, receipt, presented } = await realReceipt();
-        const orphan = serializeExecutorReceipt(positionExecutorReceipt(draftOf(receipt), 2, 'a'.repeat(64)));
-        return m.createExecutorReceiptVerifier({ trustedExecutors: [trustedExecutor(domain.publicKeyPem)] }).assessHistory([presented, forge(domain.keyFile, orphan, RECEIPT_KEY_ID)]).chain === 'conflicting';
+        const successor = serializeExecutorReceipt(positionExecutorReceipt(draftOf(receipt), 2, receipt.receiptId));
+        return m.createExecutorReceiptVerifier({ trustedExecutors: [trustedExecutor(domain.publicKeyPem)] }).assessHistory([presented, forge(domain.keyFile, successor, RECEIPT_KEY_ID)]).chain === 'conflicting';
       },
     },
     {
@@ -296,6 +296,40 @@ describe('G-02C1C mutation — the receipt ledger', () => {
       },
     },
     {
+      id: 'stale-reservation-superseded',
+      file: LEDGER,
+      replacements: [["if (newest.state === 'reserved')", 'if (false)']],
+      // An unsigned reservation, then a changed state: the reservation must come back to be signed first.
+      guard: async (m) => {
+        const { receipt } = await realReceipt();
+        const domain = await freshDomain();
+        const ledger = await m.openExecutorReceiptLedger(join(domain.root, 'receipts', 'stale.sqlite'), { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now(), create: true });
+        try {
+          ledger.reserve({ ...draftOf(receipt), consumption: { ...receipt.consumption, ledgerState: 'claimed' }, outcome: 'attempted-outcome-unknown', basis: 'durable-state', observedAt: receipt.consumption.claimedAt, observation: null });
+          return ledger.reserve(draftOf(receipt)).sequence === 1;
+        } catch {
+          return false;
+        } finally {
+          ledger.close();
+        }
+      },
+    },
+    {
+      id: 'shared-receipt-ledger-accepted',
+      file: LEDGER,
+      replacements: [["|| (!create && !private_(file, 'file'))", '']],
+      guard: async (m) => {
+        const domain = await freshDomain();
+        chmodSync(domain.receiptLedgerPath, 0o666);
+        try {
+          (await m.openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() })).close();
+          return false;
+        } catch {
+          return true;
+        }
+      },
+    },
+    {
       id: 'conflicting-change-reserved',
       file: LEDGER,
       replacements: [['if (!forward)', 'if (false)']],
@@ -325,7 +359,8 @@ type SignerModule = typeof import('../reference-executor/receipt-signer.js');
 const SIGNER = join('reference-executor', 'receipt-signer.js');
 
 describe('G-02C1C mutation — the receipt signer', () => {
-  const loadWith = (m: SignerModule, domain: ReceiptDomain, overrides: Record<string, unknown> = {}) => m.loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, issuerKeys: ISSUER_PINS, ...overrides });
+  const loadWith = (m: SignerModule, domain: ReceiptDomain, overrides: Record<string, unknown> = {}) =>
+    m.loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, receiptLedger: { owns: () => false }, issuerKeys: ISSUER_PINS, ...overrides });
   const mutants: readonly Mutant<SignerModule>[] = [
     {
       id: 'unverified-record-signed',
@@ -338,7 +373,7 @@ describe('G-02C1C mutation — the receipt signer', () => {
         try {
           const stored = ledger.read(receipt.receiptId);
           assert.ok(stored !== undefined && stored.canonical === presented.receipt);
-          loadWith(m, domain).signExecutorReceipt({ ...stored });
+          loadWith(m, domain, { receiptLedger: ledger }).signExecutorReceipt({ ...stored });
           return false;
         } catch {
           return true;
@@ -411,6 +446,26 @@ describe('G-02C1C mutation — issuance from durable state', () => {
       guard: (m) => m.receiptOutcomeFor('failed').outcome === 'attempted-outcome-unknown',
     },
     {
+      id: 'substituted-reservation-signed',
+      file: ISSUER,
+      replacements: [['if (!supportedBy(reservation.receipt, draft))', 'if (false)']],
+      // A reserved row whose organization differs from the durable consumption: never signed.
+      guard: async (m) => {
+        const { domain, receipt } = await realReceipt();
+        const consumption = await openExecutionCapabilityConsumptionLedger(domain.ledgerPath, { audience: AUDIENCE, clock: () => Date.now() });
+        const receipts = await openExecutorReceiptLedger(join(domain.root, 'receipts', 'substituted.sqlite'), { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now(), create: true });
+        try {
+          receipts.reserve({ ...draftOf(receipt), organizationId: 'org-substituted' });
+          const signer = loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, receiptLedger: receipts, issuerKeys: ISSUER_PINS });
+          const issuance = m.createExecutorReceiptIssuer({ executorId: EXECUTOR_ID, audience: AUDIENCE, bindingFormat: BINDING_FORMAT, consumption, receipts, signer, outputDirectory: domain.outputDirectory }).issue(receipt.capabilityId);
+          return issuance.status === 'refused' && issuance.code === 'RECEIPT_CONFLICT';
+        } finally {
+          consumption.close();
+          receipts.close();
+        }
+      },
+    },
+    {
       id: 'completed-without-matching-evidence',
       file: ISSUER,
       replacements: [["const matches = record['format'] ===", "const matches = true || record['format'] ==="]],
@@ -434,7 +489,7 @@ describe('G-02C1C mutation — issuance from durable state', () => {
         const consumption = await openExecutionCapabilityConsumptionLedger(domain.ledgerPath, { audience: AUDIENCE, clock: () => Date.now() });
         const receipts = await openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() });
         try {
-          const signer = loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, issuerKeys: ISSUER_PINS });
+          const signer = loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, receiptLedger: receipts, issuerKeys: ISSUER_PINS });
           const issuance = m.createExecutorReceiptIssuer({ executorId: EXECUTOR_ID, audience: AUDIENCE, bindingFormat: BINDING_FORMAT, consumption, receipts, signer, outputDirectory: domain.outputDirectory }).issue(capability.capabilityId);
           return issuance.status === 'refused' && issuance.code === 'EVIDENCE_UNAVAILABLE';
         } finally {
@@ -445,5 +500,4 @@ describe('G-02C1C mutation — issuance from durable state', () => {
     },
   ];
   for (const mutant of mutants) it(mutant.id, () => qualify(mutant));
-  assert.ok(canonicalSerialize({}).length > 0);
 });

@@ -1,9 +1,9 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify, type KeyObject } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
 
 import { AUTHORITY_ARTIFACT_VERSION } from '../authority-authenticity/signature-envelope.js';
 import { EXECUTOR_RECEIPT_SIGNING_DOMAIN, executorReceiptSigningBytes } from '../executor-receipt/index.js';
-import { isExecutorReceiptReservation, type StoredExecutorReceipt } from './receipt-ledger.js';
+import type { ExecutorReceiptLedger, StoredExecutorReceipt } from './receipt-ledger.js';
 
 /**
  * G-02C1C — the reference executor's **receipt signer**: the one place in the
@@ -12,8 +12,9 @@ import { isExecutorReceiptReservation, type StoredExecutorReceipt } from './rece
  *
  * ## One structured operation
  *
- * `signExecutorReceipt(reservation)` signs only a reservation the receipt
- * ledger produced (a branded object — a look-alike is refused), only for this
+ * `signExecutorReceipt(reservation)` signs only a reservation returned by the
+ * one receipt ledger this signer is bound to (a look-alike, or a reservation of
+ * another ledger instance, is refused), only for this
  * executor and this key id, and only the receipt domain followed by the
  * reservation's own canonical text. There is no `sign(bytes)`. Every signature
  * is verified with the public half before it is returned.
@@ -48,24 +49,39 @@ export function loadExecutorReceiptSigner(options: {
   readonly executorId: string;
   readonly keyId: string;
   readonly privateKeyFile: string;
+  /** The one receipt ledger whose reservations this signer signs. */
+  readonly receiptLedger: Pick<ExecutorReceiptLedger, 'owns'>;
   /** Every issuer key the executor pins: none may be this key. */
   readonly issuerKeys: readonly { readonly keyId: string; readonly publicKeyPem: string }[];
 }): ExecutorReceiptSigner {
   const refuse = (message: string): never => {
     throw new ExecutorReceiptSignerError(message);
   };
-  const { executorId, keyId, privateKeyFile } = options;
+  const { executorId, keyId, privateKeyFile, receiptLedger } = options;
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
   if (uid === undefined) refuse('This platform has no user identity to check the receipt key file against.');
   let pem: string;
+  let fd: number | undefined;
   try {
-    const stat = lstatSync(privateKeyFile);
-    if (!stat.isFile() || stat.isSymbolicLink() || realpathSync(privateKeyFile) !== privateKeyFile) return refuse('The receipt key file must be a regular file at its canonical path.');
+    // One descriptor, opened without following a link: what is checked is what is read.
+    if (realpathSync(privateKeyFile) !== privateKeyFile) return refuse('The receipt key file must be a regular file at its canonical path.');
+    fd = openSync(privateKeyFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 16_384) return refuse('The receipt key file must be a regular file at its canonical path.');
     if (stat.uid !== uid || (stat.mode & 0o077) !== 0) return refuse('The receipt key file must be owned by this user and readable by no one else.');
-    pem = readFileSync(privateKeyFile, 'utf8');
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (read === 0) return refuse('The receipt key file could not be read.');
+      offset += read;
+    }
+    pem = bytes.toString('utf8');
   } catch (error) {
     if (error instanceof ExecutorReceiptSignerError) throw error;
     return refuse('The receipt key file could not be read.');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
   let privateKey: KeyObject;
   try {
@@ -83,7 +99,7 @@ export function loadExecutorReceiptSigner(options: {
   const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
   function signExecutorReceipt(reservation: StoredExecutorReceipt): Readonly<Record<string, string>> {
-    const branded = isExecutorReceiptReservation(reservation);
+    const branded = receiptLedger.owns(reservation);
     if (!branded) throw new ExecutorReceiptSignerError('Only a reservation of the receipt ledger is signed.');
     const receipt = reservation.receipt;
     if (receipt.executorId !== executorId || receipt.executorKeyId !== keyId) throw new ExecutorReceiptSignerError('The reservation names another executor or key.');

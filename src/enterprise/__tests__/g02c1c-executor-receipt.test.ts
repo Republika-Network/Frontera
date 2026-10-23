@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash, createPrivateKey, generateKeyPairSync, sign } from 'node:crypto';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -12,7 +12,7 @@ import { canonicalSerialize } from '../governance-store/canonical-json.js';
 import { receiptOutcomeFor } from '../reference-executor/receipt-issuer.js';
 import { ExecutorReceiptConflictError, openExecutorReceiptLedger } from '../reference-executor/receipt-ledger.js';
 import { loadExecutorReceiptSigner } from '../reference-executor/receipt-signer.js';
-import { AUDIENCE, EXECUTOR_ID, ISSUER_KEY, ORGANIZATION, RESOURCE, TRUST_DOMAIN, hostVector, observedWith } from './g02c1a-reference-executor-fixture.js';
+import { AUDIENCE, EXECUTOR_ID, ISSUER_KEY, ORGANIZATION, TRUST_DOMAIN, hostVector, observedWith } from './g02c1a-reference-executor-fixture.js';
 import { syntheticCapability } from './g02c1b-synthetic-execution-fixture.js';
 import { BINDING_FORMAT, ISSUER_PINS, RECEIPT_KEY_ID, generateReceiptKey, receiptDomain, receiptWorld, trustedExecutor, type ReceiptDomain, type ReceiptWorld } from './g02c1c-executor-receipt-fixture.js';
 
@@ -279,10 +279,11 @@ describe('G-02C1C — idempotent, forward-only, crash-safe', () => {
         const stateAfterCrash = left === undefined ? 'none' : left.state;
         const expected = { 'before-receipt': 'none', 'after-receipt-construction': 'none', 'after-receipt-reservation': 'reserved', 'after-receipt-signature': 'reserved', 'after-receipt': 'issued' }[point];
         assert.equal(stateAfterCrash, expected, point);
-        const reference = left === undefined ? undefined : world.signer.signExecutorReceipt(world.receipts.reserve({ ...(left.receipt as ExecutorReceipt) } as never));
+        // The signature a crash lost (after-receipt-signature), or the one recorded (after-receipt), as the signer produced it then.
+        const lost = world.signatures[0];
         const recovered = world.issuer.issue(id);
         assert.ok(recovered.status === 'issued', point);
-        if (reference !== undefined) assert.deepEqual(recovered.receipt.signature, reference, `${point}: the signature reproduced, never replaced`);
+        if (point === 'after-receipt-signature' || point === 'after-receipt') assert.deepEqual(recovered.receipt.signature, lost, `${point}: the signature produced before the crash, reproduced byte for byte`);
         assert.equal(world.receipts.history(id).length, 1, `${point}: one receipt`);
         assert.equal(domain.verifier.verify(recovered.receipt).signature, 'valid');
         assert.equal(domain.records().length, 1, `${point}: the effect ran once`);
@@ -432,8 +433,9 @@ describe('G-02C1C — the verifier refuses every altered, foreign or misattribut
       const conflict = forged(domain.keyFile, undefined, { text: serializeExecutorReceipt(rival) });
       assert.equal(domain.verifier.assessHistory([presented, conflict]).chain, 'conflicting');
       assert.equal(domain.verifier.verify(presented, { history: [conflict] }).receiptState, 'conflicting');
-      const orphan = positionExecutorReceipt({ ...parsed } as never, 2, 'a'.repeat(64));
-      assert.equal(domain.verifier.assessHistory([presented, forged(domain.keyFile, undefined, { text: serializeExecutorReceipt(orphan) })]).chain, 'conflicting', 'a successor of a non-unknown, or of another id');
+      assert.equal(parseExecutorReceipt(canonicalSerialize({ ...parsed, sequence: 2, supersedes: 'a'.repeat(64), receiptId: parsed.receiptId })).ok, false, 'a successor of another id is not even well formed');
+      const afterCompleted = positionExecutorReceipt({ ...parsed } as never, 2, parsed.receiptId);
+      assert.equal(domain.verifier.assessHistory([presented, forged(domain.keyFile, undefined, { text: serializeExecutorReceipt(afterCompleted) })]).chain, 'conflicting', 'a successor of a definite outcome');
     } finally {
       world.close();
     }
@@ -461,7 +463,6 @@ describe('G-02C1C — the receipt ledger and the signer hold their rules', () =>
       db.close();
     }
     await assert.rejects(openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() }), /could not be opened|corrupted/);
-    assert.ok(capabilityId.length === 64);
     const other = await freshDomain();
     await assert.rejects(openExecutorReceiptLedger(other.receiptLedgerPath, { executorId: 'reference-executor-other', audience: AUDIENCE, clock: () => Date.now() }), /another executor/);
     await assert.rejects(openExecutorReceiptLedger(join(other.root, 'receipts', 'missing.sqlite'), { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() }), /does not exist/);
@@ -475,9 +476,17 @@ describe('G-02C1C — the receipt ledger and the signer hold their rules', () =>
       const stored = world.receipts.latest(capabilityId);
       assert.ok(stored !== undefined);
       assert.throws(() => world.signer.signExecutorReceipt({ ...stored }), /Only a reservation/, 'a look-alike record is never signed');
+      const second = await openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() });
+      try {
+        const foreign = second.reserve({ ...(stored.receipt as ExecutorReceipt) } as never);
+        assert.equal(foreign.receiptId, stored.receiptId);
+        assert.throws(() => world.signer.signExecutorReceipt(foreign), /Only a reservation/, 'a reservation of another ledger instance is never signed');
+      } finally {
+        second.close();
+      }
       assert.deepEqual(Object.keys(world.signer).sort(), ['executorId', 'keyId', 'publicKeyPem', 'signExecutorReceipt']);
       assert.equal(/PRIVATE/.test(JSON.stringify(world.signer)), false);
-      const load = (overrides: Record<string, unknown>) => () => loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, issuerKeys: ISSUER_PINS, ...overrides });
+      const load = (overrides: Record<string, unknown>) => () => loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, receiptLedger: world.receipts, issuerKeys: ISSUER_PINS, ...overrides });
       assert.throws(load({ keyId: ISSUER_PINS[0]?.keyId }), /trusted issuer key id/);
       const issuerKeyFile = join(domain.keyDirectory, 'issuer.pem');
       writeFileSync(issuerKeyFile, ISSUER_KEY.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
@@ -488,7 +497,7 @@ describe('G-02C1C — the receipt ledger and the signer hold their rules', () =>
       assert.throws(load({ privateKeyFile: open }), /readable by no one else/);
       const link = join(domain.keyDirectory, 'link.pem');
       symlinkSync(domain.keyFile, link);
-      assert.throws(load({ privateKeyFile: link }), /regular file/);
+      assert.throws(load({ privateKeyFile: link }), /regular file|could not be read/);
       const x25519 = join(domain.keyDirectory, 'x25519.pem');
       writeFileSync(x25519, generateKeyPairSync('x25519').privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
       assert.throws(load({ privateKeyFile: x25519 }), /Ed25519/);
@@ -536,9 +545,176 @@ describe('G-02C1C — read-only consumption access (G-02A, additive)', () => {
       assert.throws(() => world.ledger.listUnresolved({ limit: 0 }));
       assert.throws(() => world.ledger.listUnresolved({ limit: 101 }));
       assert.deepEqual(domain.records(), [], 'no effect ran');
-      assert.ok(RESOURCE.length > 0);
     } finally {
       world.close();
     }
+  });
+});
+
+describe('G-02C1C — review findings: stale reservations, substituted rows, rotation, rollback, file custody', () => {
+  it('a reservation left unsigned is signed before it is superseded: the chain stays verifiable (F1)', async () => {
+    const domain = await freshDomain();
+    let armed = false;
+    const world = await receiptWorld(domain, {
+      fault: (point) => {
+        if (point === 'after-effect') throw new Error('crash after the effect, before the outcome');
+      },
+      receiptFault: (point) => {
+        if (armed && point === 'after-receipt-reservation') {
+          armed = false;
+          throw new Error('crash between reserve and issue');
+        }
+      },
+    });
+    try {
+      const { capability, presentation } = syntheticCapability(VECTOR.digest);
+      deliver(world, presentation);
+      const id = capability.capabilityId;
+      armed = true;
+      assert.throws(() => world.issuer.issue(id), /crash between reserve and issue/);
+      assert.equal(world.receipts.latest(id)?.state, 'reserved', 'seq 1 reserved, never signed');
+      assert.equal(world.ledger.recordOutcome(id, 'completed'), 'recorded');
+      const resolved = world.issuer.issue(id);
+      assert.ok(resolved.status === 'issued');
+      const history = world.receipts.history(id);
+      assert.equal(history.length, 2, 'the stale reservation was signed, then superseded');
+      const assessed = domain.verifier.assessHistory(history);
+      assert.equal(assessed.chain, 'valid');
+      assert.equal(parseExecutorReceipt(resolved.receipt.receipt).ok && (parseExecutorReceipt(resolved.receipt.receipt) as { receipt: ExecutorReceipt }).receipt.outcome, 'completed-observed');
+    } finally {
+      world.close();
+    }
+  });
+
+  it('a receipt ledger edited underneath cannot get the executor to sign a substituted statement (F2)', async () => {
+    const domain = await freshDomain();
+    const world = await receiptWorld(domain, {
+      receiptFault: (point) => {
+        if (point === 'before-receipt') throw new Error('no in-path receipt');
+      },
+    });
+    const { capability, presentation } = syntheticCapability(VECTOR.digest);
+    try {
+      deliver(world, presentation);
+    } finally {
+      world.close();
+    }
+    const id = capability.capabilityId;
+    const consumption = await openExecutionCapabilityConsumptionLedger(domain.ledgerPath, { audience: AUDIENCE, clock: () => Date.now() });
+    const detail = consumption.readDetail(id);
+    consumption.close();
+    assert.ok(detail.state === 'completed');
+    const bytes = readFileSync(join(domain.outputDirectory, `${id}.json`));
+    const substituted = positionExecutorReceipt(
+      {
+        format: 'frontera.executor-receipt.v1',
+        executorId: EXECUTOR_ID,
+        executorKeyId: RECEIPT_KEY_ID,
+        issuer: detail.issuer,
+        capabilityId: id,
+        executionId: detail.executionId,
+        audience: AUDIENCE,
+        organizationId: 'org-substituted',
+        trustDomain: detail.trustDomain,
+        actionBinding: { format: BINDING_FORMAT, digest: detail.actionBindingDigest },
+        consumption: { claimedAt: detail.claimedAt, ledgerState: 'completed' },
+        outcome: 'completed-observed',
+        basis: 'durable-state',
+        observedAt: detail.outcomeRecordedAt as string,
+        observation: { kind: 'frontera.synthetic-deployment-record.v1', reference: `${id}.json`, digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}` },
+      },
+      1,
+      null,
+    );
+    const canonical = serializeExecutorReceipt(substituted);
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(domain.receiptLedgerPath);
+    try {
+      db.prepare("INSERT INTO executor_receipts (receipt_id, capability_id, execution_id, issuer, sequence, supersedes, outcome, ledger_state, key_id, canonical, digest, state, reserved_at) VALUES (?, ?, ?, ?, 1, NULL, 'completed-observed', 'completed', ?, ?, ?, 'reserved', ?)").run(
+        substituted.receiptId,
+        id,
+        detail.executionId,
+        detail.issuer,
+        RECEIPT_KEY_ID,
+        canonical,
+        `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`,
+        new Date().toISOString(),
+      );
+    } finally {
+      db.close();
+    }
+    const recovery = await receiptWorld(domain);
+    try {
+      assert.deepEqual(recovery.issuer.issue(id), { status: 'refused', code: 'RECEIPT_CONFLICT' });
+      assert.deepEqual(recovery.receipts.history(id), [], 'nothing signed');
+      assert.deepEqual(recovery.signatures, []);
+    } finally {
+      recovery.close();
+    }
+  });
+
+  it('a reservation under a rotated-out key is refused by name, never signed by another key (F3)', async () => {
+    const domain = await freshDomain();
+    const world = await receiptWorld(domain, {
+      receiptFault: (point) => {
+        if (point === 'after-receipt-reservation') throw new Error('crash between reserve and issue');
+      },
+    });
+    const { capability, presentation } = syntheticCapability(VECTOR.digest);
+    try {
+      deliver(world, presentation);
+      assert.deepEqual(world.receipts.pendingKeyIds(), [RECEIPT_KEY_ID]);
+    } finally {
+      world.close();
+    }
+    const rotated = generateReceiptKey(domain.keyDirectory, 'rotated.pem');
+    const after = await receiptWorld(domain, { keyId: 'g02c1c-executor-receipt-key-2', keyFile: rotated.keyFile });
+    try {
+      assert.deepEqual(after.issuer.issue(capability.capabilityId), { status: 'refused', code: 'RECEIPT_KEY_MISMATCH' });
+      assert.deepEqual(after.signatures, []);
+    } finally {
+      after.close();
+    }
+  });
+
+  it('a receipt ledger restored to before an unknown receipt regenerates a different receipt at that position: a verifier holding both sees a conflict (F4)', async () => {
+    const domain = await freshDomain();
+    const world = await receiptWorld(domain, {
+      fault: (point) => {
+        if (point === 'after-effect') throw new Error('crash after the effect');
+      },
+    });
+    const backup = join(domain.root, 'receipts-backup.sqlite');
+    copyFileSync(domain.receiptLedgerPath, backup);
+    const { capability, presentation } = syntheticCapability(VECTOR.digest);
+    let old: { readonly receipt: string; readonly signature: Readonly<Record<string, string>> };
+    try {
+      deliver(world, presentation);
+      const first = world.issuer.issue(capability.capabilityId);
+      assert.ok(first.status === 'issued');
+      old = first.receipt;
+      assert.equal(world.ledger.recordOutcome(capability.capabilityId, 'completed'), 'recorded');
+    } finally {
+      world.close();
+    }
+    for (const suffix of ['-wal', '-shm']) rmSync(`${domain.receiptLedgerPath}${suffix}`, { force: true });
+    copyFileSync(backup, domain.receiptLedgerPath);
+    const restored = await receiptWorld(domain);
+    try {
+      const regenerated = restored.issuer.issue(capability.capabilityId);
+      assert.ok(regenerated.status === 'issued');
+      assert.notDeepEqual(regenerated.receipt, old);
+      assert.equal(domain.verifier.assessHistory([old, regenerated.receipt]).chain, 'conflicting', 'rollback is detectable by a verifier that kept the old receipt, not prevented');
+    } finally {
+      restored.close();
+    }
+  });
+
+  it('a receipt ledger file others can write is refused at open', async () => {
+    const domain = await freshDomain();
+    chmodSync(domain.receiptLedgerPath, 0o666);
+    await assert.rejects(openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() }), /writable by no one else/);
+    chmodSync(domain.receiptLedgerPath, 0o600);
+    (await openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now() })).close();
   });
 });

@@ -75,15 +75,21 @@ A terminal state is never stated as an external business effect. `completed-obse
   - a successor is accepted only for an `attempted-outcome-unknown` predecessor, with a definite outcome observed no earlier than it, superseding it directly. That is checked by the ledger (transaction and trigger) and by the verifier.
 - **Supersession meaning:** an old receipt stays authentic; it is no longer the newest known observation. `receiptState` is relative to the history supplied.
 - **Not atomic across files:** two SQLite files are never one transaction. The consumption is committed first, and the receipt is derived from it later. A receipt can be missing (it is recovered) but never ahead of the consumption.
-- **Not rollback resistant:** restoring an older receipt ledger forgets receipts. For receipts whose consumption state is unchanged, recovery regenerates the **identical** text and signature (tested), because every field is a function of durable state. A receipt whose execution-path refinement (`failed-observed` or `consumed-not-attempted`) was lost would be regenerated as `attempted-outcome-unknown`, which differs. A verifier holding both sees a conflict.
+- **Not rollback resistant:** restoring an older receipt ledger forgets receipts.
+  - When the consumption state is unchanged since the lost receipt, recovery regenerates the **identical** text and signature (tested), because every field is a function of durable state.
+  - When the state has moved on (an `attempted-outcome-unknown` receipt lost, and the consumption since resolved), or when an execution-path refinement was lost, the regenerated receipt at that position **differs**. Two valid receipts then exist for one position, and a verifier holding both sees `conflicting` (tested).
+  - Rollback is therefore detectable by a verifier that kept the old receipt. It is not prevented.
+- **Reservations are signed before they are superseded:** a reservation left unsigned by a crash is always signed first, even if the consumption has moved on; the receipt that resolves it follows (tested).
+- **A tampered ledger cannot redirect the signer:** before signing or returning a stored receipt, the issuer requires every field taken from durable state to match the consumption ledger, otherwise `RECEIPT_CONFLICT`. The receipt ledger file and its directory must belong to the executor's user and be writable by no one else.
+- **Key rotation:** a reservation is signed by the key it names. The executor refuses to start with reservations pending under another key, rather than strand them.
 
 ## 6. Crash-recovery matrix (CI)
 
 | Case | Consumption | Receipt ledger | Valid signature may exist | Safe to (re)generate | Effect may have happened | Effect repeated | Recovery | Remaining uncertainty |
 |---|---|---|---|---|---|---|---|---|
-| C1 before construction | completed | none | no | yes | yes (completed) | **no** | redelivery or sweep → receipt from state | none |
+| C1 before construction | completed | none | no | yes | yes (completed) | **no** | **redelivery** → receipt from state (the sweep lists only unresolved rows) | none |
 | C2 after construction, before signing | completed | none | no | yes | yes | no | same | none |
-| C3 after reservation | completed | reserved | no | yes: re-sign the reserved text | yes | no | the reserved text is signed and issued | none |
+| C3 after reservation | completed | reserved | no | yes: re-sign the reserved text | yes | no | on redelivery, the reserved text is signed and issued | none |
 | C4 during signing | completed | reserved | no (in memory only) | yes | yes | no | as C3 | none |
 | C5 after signing, before persistence | completed | reserved | **yes, identical to the regenerated one** | yes | yes | no | re-sign → same bytes | none |
 | C6 inside the receipt-ledger transaction | as before | nothing (uncommitted) | no | yes | as before | no | as C1 | none |
@@ -91,11 +97,11 @@ A terminal state is never stated as an external business effect. `completed-obse
 | C8 completed row, no receipt | completed | none | no | yes (with record evidence) | yes | no | redelivery → receipt | none |
 | C9 claimed row, no outcome | claimed | none | no | yes, conservative | maybe | no | boot sweep → `attempted-outcome-unknown` | unknown, stated |
 | C10 outcome-unknown row | outcome-unknown | none | no | yes | maybe | no | sweep → `attempted-outcome-unknown` | unknown, stated |
-| C11 after receipt #1, before supersession | resolved later | #1 issued, #2 reserved | #2 identical if signed | yes | as stated | no | #2 signed and issued once | none |
-| C12 concurrent signers | — | one chain, no conflict | — | yes | — | no | IMMEDIATE reservation; deterministic signing | none |
+| C11 after receipt #1, before supersession | resolved later | #1 issued, #2 reserved (or #1 still reserved) | identical if signed | yes | as stated | no | a pending reservation is signed first; then #2 | a receipt ledger restored in between yields a detectable conflict |
+| C12 concurrent signers | — | one chain, no conflict (tested) | — | yes | — | no | IMMEDIATE reservation; deterministic signing; duplicates do not receipt live claims | a receipt ledger restored in between yields a detectable conflict |
 | C13 receipt ledger restored | as stored | older copy | the lost ones | regenerated identically (except a lost execution-path refinement) | — | no | redelivery or sweep | a verifier may hold a now-missing receipt |
 | C14 receipt ledger corrupted | — | refused at open | — | — | — | no | operator restores | — |
-| C15 key unavailable | unchanged | unchanged | — | after the key returns | — | no | startup refused; receipts recovered when the key returns | none |
+| C15 key unavailable | unchanged | unchanged | — | after **the same** key returns | — | no | startup refused; receipts recovered when the key returns. A rotated key is refused while reservations under the old one are pending | none |
 
 No scenario reruns the effect.
 
@@ -109,7 +115,7 @@ No scenario reruns the effect.
 
 | Threat | Result | Suite |
 |---|---|---|
-| Each of 21 receipt fields changed under the old signature | unacceptable | in-process |
+| Each of 21 receipt fields changed under the old signature (re-signing is covered by the forged-receipt and history tests) | unacceptable | in-process |
 | Non-canonical, unknown or duplicated field; wildcard; malformed instant; other algorithm; other domain; no domain; unpinned key id; truncated or malformed signature | refused, named | in-process |
 | Another pinned executor's key; unpinned executor; foreign audience, organization or trust domain; expectation mismatch | separate answers | in-process |
 | Rotation overlap, removed key, relabelled key id | as specified | in-process |
@@ -118,14 +124,16 @@ No scenario reruns the effect.
 | Tampered, foreign, missing or re-created receipt ledger | refused at open | in-process and process |
 | Look-alike reservation; issuer key id or material; key readable by others; link; wrong type; missing key | refused | in-process and process |
 | Completed without, or with a mismatched, synthetic record | `EVIDENCE_UNAVAILABLE` | in-process |
-| Removal of each control | 22 mutants detected | `g02c1c-executor-receipt-mutation.test.ts` |
+| A stale reservation; a substituted reserved row; a rotated key with a pending reservation; a restored receipt ledger; a ledger file others can write | signed first / `RECEIPT_CONFLICT` / `RECEIPT_KEY_MISMATCH` and startup refused / `conflicting` / refused | in-process and process |
+| Removal of each control | 25 mutants detected | `g02c1c-executor-receipt-mutation.test.ts` |
 | Domain uniqueness; verifier closure; one signer and caller; issuer order; no effect in reach; G-02A schema unchanged; dynamic loading; no Host surface | pinned | `g02c1c-executor-receipt-structure.test.ts` |
 
 ## 8. Residual risks
 
 | ID | Risk | Owner |
 |---|---|---|
-| G02C1C-R1 | Receipt history is not rollback resistant; a restored copy forgets receipts. Regeneration is identical except for a lost execution-path refinement | Founder (anchoring) |
+| G02C1C-R1 | Receipt history is not rollback resistant; a restored copy forgets receipts. Regeneration is identical only while the consumption state is unchanged; otherwise two valid receipts exist for one position (detectable, not prevented) | Founder (anchoring) |
+| G02C1C-R8 | A writer of the receipt ledger who matches every durable field can still choose the execution-path refinement of a `failed` row (failed-observed, consumed-not-attempted or unknown) — each a statement that no completed effect was observed | reference only |
 | G02C1C-R2 | The receipt key sits in a file on the executor host; no KMS or HSM | reference only |
 | G02C1C-R3 | A verifier's `current` holds only within the history it was given | G-02C1D (authoritative history delivery) |
 | G02C1C-R4 | Removing a key from a registry makes its receipts unverifiable there | operational |

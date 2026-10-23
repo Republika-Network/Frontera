@@ -121,7 +121,7 @@ describe('G-02C1C structure — the verifier stands alone; one signer, reached o
       assert.equal(/\.claim\(|recordOutcome\(|effect\.apply|\.apply\(|openSyntheticDeploymentEffect|writeSync|writeFileSync|\bwhile\s*\(\s*true|setTimeout|setInterval/.test(codeOf(file)), false, file);
     }
     const flow = codeOf(`${EXECUTOR}/execution-flow.ts`);
-    assert.equal(count(flow, /receipts\.issue\(/g), 2, 'the flow asks for a receipt in one helper only');
+    assert.equal(count(flow, /receipts\.issue(?:Resolved)?\(/g), 2, 'the flow asks for a receipt in one helper only');
     assert.ok(flow.indexOf("fault('after-outcome');") < flow.indexOf('receiptFor(capabilityId, outcome);'), 'only after the outcome is durably recorded');
   });
 });

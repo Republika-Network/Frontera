@@ -66,7 +66,7 @@ A separate SQLite file, `frontera.executor-receipt-ledger.v1`, pinned to one exe
   - an IMMEDIATE transaction decides the position and commits the whole canonical text as `reserved`;
   - the signer signs that text;
   - `issued` records the signature.
-- **Why that is crash-safe and race-free:** Ed25519 signing is deterministic, so a retry or a competing process reproduces the same signature byte for byte. Two different texts are never signed for one position, and a signature lost in a crash is reproduced, never replaced.
+- **Why that is crash-safe and race-free within one intact ledger:** Ed25519 signing is deterministic, so a retry or a competing process reproduces the same signature byte for byte. A pending reservation is always signed before anything supersedes it. Within one intact receipt ledger, two different texts are never signed for one position, and a signature lost in a crash is reproduced, never replaced. A restored ledger can lose that property; the verifier then reports `conflicting`.
 - **Positions:**
   - unique `(capability_id, sequence)` and `receipt_id`;
   - an unchanged consumption state returns the receipt already there;

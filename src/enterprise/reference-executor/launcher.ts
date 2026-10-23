@@ -31,6 +31,8 @@ import { createReferenceExecutorVerificationPipeline } from './verification-pipe
 export const REFERENCE_EXECUTOR_CONFIG_ENVIRONMENT_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_CONFIG_FILE';
 /** CI crash injection needs this variable set to `enabled` as well as `faultInjection` in the configuration: one file alone cannot make the executor kill itself. */
 export const REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_FAULT_INJECTION';
+/** G-02C1C: unresolved consumptions receipted per boot; the rest are receipted on later boots or on redelivery. */
+const RECOVERY_SWEEP_LIMIT = 1_000;
 
 export class ReferenceExecutorStartupError extends Error {
   constructor(
@@ -136,7 +138,7 @@ async function openReceipts(
   clock: () => number,
   writeLine: (line: string) => void,
   fault: ((point: ReferenceExecutorFaultPoint) => void) | undefined,
-): Promise<{ issue(capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown'): unknown }> {
+): Promise<{ issue(capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown'): unknown; issueResolved(capabilityId: string): unknown }> {
   const settings = configuration.executorReceipts;
   const synthetic = configuration.syntheticExecution;
   if (settings === null || synthetic === null) throw new ReferenceExecutorStartupError('MODE_INCONSISTENT', 'Receipts need synthetic-execution mode.');
@@ -151,11 +153,16 @@ async function openReceipts(
   }
   let signer: ReturnType<typeof loadExecutorReceiptSigner>;
   try {
-    signer = loadExecutorReceiptSigner({ executorId: configuration.executorId, keyId: settings.keyId, privateKeyFile: settings.privateKeyFile, issuerKeys: configuration.trustedIssuers.flatMap((entry) => entry.keys) });
+    signer = loadExecutorReceiptSigner({ executorId: configuration.executorId, keyId: settings.keyId, privateKeyFile: settings.privateKeyFile, receiptLedger, issuerKeys: configuration.trustedIssuers.flatMap((entry) => entry.keys) });
   } catch {
     receiptLedger.close();
     // Never the key, never its path: a code and a reason.
     throw new ReferenceExecutorStartupError('RECEIPT_KEY_INVALID', 'The receipt key is missing, unreadable, not private to this user, not Ed25519, or a trusted issuer key.');
+  }
+  // A reservation is signed by the key it names. Rotating keys with reservations still pending would strand them: refuse, and say so.
+  if (receiptLedger.pendingKeyIds().some((pending) => pending !== settings.keyId)) {
+    receiptLedger.close();
+    throw new ReferenceExecutorStartupError('RECEIPT_LEDGER_INVALID', 'The receipt ledger holds reservations under another key; issue them with that key before rotating.');
   }
   const issuer = createExecutorReceiptIssuer({
     executorId: configuration.executorId,
@@ -167,20 +174,29 @@ async function openReceipts(
     outputDirectory: synthetic.outputDirectory,
     ...(fault !== undefined ? { fault } : {}),
   });
+  // Never the receipt text or its signature on the diagnostic line: the status, and what the receipt says.
+  const report = (issuance: ReturnType<typeof issuer.issue>): void =>
+    writeLine(JSON.stringify(issuance.status === 'issued' ? { event: 'receipt', status: 'issued', sequence: issuance.sequence, outcome: issuance.outcome } : { event: 'receipt', status: 'refused', code: issuance.code }));
   const reported = Object.freeze({
     issue: (capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown') => {
       const issuance = observed === undefined ? issuer.issue(capabilityId) : issuer.issue(capabilityId, observed);
-      // Never the receipt text or its signature on the diagnostic line: the status, and what the receipt says.
-      writeLine(JSON.stringify(issuance.status === 'issued' ? { event: 'receipt', status: 'issued', sequence: issuance.sequence, outcome: issuance.outcome } : { event: 'receipt', status: 'refused', code: issuance.code }));
+      report(issuance);
+      return issuance;
+    },
+    issueResolved: (capabilityId: string) => {
+      const issuance = issuer.issueResolved(capabilityId);
+      if (issuance.status === 'issued' || issuance.code !== 'NOT_RESOLVED') report(issuance);
       return issuance;
     },
   });
-  // Recovery: unresolved consumptions, page by page; each gets the receipt its durable state supports. Never an effect.
+  // Recovery: unresolved consumptions, page by page, at most RECOVERY_SWEEP_LIMIT per boot; each gets the receipt its durable state supports. Never an effect.
   let after: { readonly claimedAt: string; readonly capabilityId: string } | undefined;
+  let swept = 0;
   for (;;) {
     const page = consumption.listUnresolved(after === undefined ? {} : { after });
     for (const record of page.records) reported.issue(record.capabilityId);
-    if (page.next === undefined) break;
+    swept += page.records.length;
+    if (page.next === undefined || swept >= RECOVERY_SWEEP_LIMIT) break;
     after = page.next;
   }
   return reported;

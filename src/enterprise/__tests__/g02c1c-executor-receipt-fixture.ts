@@ -104,20 +104,36 @@ export interface ReceiptWorld extends InProcessFlow {
   readonly issuer: ExecutorReceiptIssuer;
   readonly receipts: ExecutorReceiptLedger;
   readonly signer: ExecutorReceiptSigner;
+  /** Every signature the signer produced, in order — including one a crash then lost. */
+  readonly signatures: Readonly<Record<string, string>>[];
 }
 
 /** The C1B flow in process, with a real receipt issuer over its consumption ledger, a real receipt ledger and the executor's key. */
-export async function receiptWorld(domain: ReceiptDomain, options: { readonly fault?: (point: ReferenceExecutorFaultPoint) => void; readonly receiptFault?: (point: ReferenceExecutorFaultPoint) => void; readonly clock?: () => number } = {}): Promise<ReceiptWorld> {
+export async function receiptWorld(
+  domain: ReceiptDomain,
+  options: { readonly fault?: (point: ReferenceExecutorFaultPoint) => void; readonly receiptFault?: (point: ReferenceExecutorFaultPoint) => void; readonly clock?: () => number; readonly keyId?: string; readonly keyFile?: string } = {},
+): Promise<ReceiptWorld> {
   const clock = options.clock ?? (() => Date.now());
   const receipts = await openExecutorReceiptLedger(domain.receiptLedgerPath, { executorId: EXECUTOR_ID, audience: AUDIENCE, clock });
-  const signer = loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: RECEIPT_KEY_ID, privateKeyFile: domain.keyFile, issuerKeys: ISSUER_PINS });
+  const signer = loadExecutorReceiptSigner({ executorId: EXECUTOR_ID, keyId: options.keyId ?? RECEIPT_KEY_ID, privateKeyFile: options.keyFile ?? domain.keyFile, receiptLedger: receipts, issuerKeys: ISSUER_PINS });
+  const signatures: Readonly<Record<string, string>>[] = [];
+  const recording: ExecutorReceiptSigner = Object.freeze({
+    executorId: signer.executorId,
+    keyId: signer.keyId,
+    publicKeyPem: signer.publicKeyPem,
+    signExecutorReceipt: (reservation: Parameters<ExecutorReceiptSigner['signExecutorReceipt']>[0]) => {
+      const signature = signer.signExecutorReceipt(reservation);
+      signatures.push(signature);
+      return signature;
+    },
+  });
   let built: ExecutorReceiptIssuer | undefined;
   const world = await inProcessFlow(domain, {
     configuration: receiptConfiguration(domain),
     clock,
     ...(options.fault !== undefined ? { fault: options.fault } : {}),
     receiptsFor: (ledger) => {
-      built = createExecutorReceiptIssuer({ executorId: EXECUTOR_ID, audience: AUDIENCE, bindingFormat: BINDING_FORMAT, consumption: ledger, receipts, signer, outputDirectory: domain.outputDirectory, ...(options.receiptFault !== undefined ? { fault: options.receiptFault } : {}) });
+      built = createExecutorReceiptIssuer({ executorId: EXECUTOR_ID, audience: AUDIENCE, bindingFormat: BINDING_FORMAT, consumption: ledger, receipts, signer: recording, outputDirectory: domain.outputDirectory, ...(options.receiptFault !== undefined ? { fault: options.receiptFault } : {}) });
       return built;
     },
   });
@@ -128,6 +144,7 @@ export async function receiptWorld(domain: ReceiptDomain, options: { readonly fa
     issuer,
     receipts,
     signer,
+    signatures,
     close: () => {
       world.close();
       receipts.close();

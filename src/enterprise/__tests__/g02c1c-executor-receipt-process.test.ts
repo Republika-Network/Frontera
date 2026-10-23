@@ -25,7 +25,7 @@ import {
   type SpawnedExecutor,
 } from './g02c1a-reference-executor-fixture.js';
 import { presentedWith, syntheticCapability } from './g02c1b-synthetic-execution-fixture.js';
-import { BINDING_FORMAT, RECEIPT_KEY_ID, receiptConfiguration, receiptDomain, type ReceiptDomain } from './g02c1c-executor-receipt-fixture.js';
+import { BINDING_FORMAT, RECEIPT_KEY_ID, generateReceiptKey, receiptConfiguration, receiptDomain, type ReceiptDomain } from './g02c1c-executor-receipt-fixture.js';
 
 /**
  * G-02C1C across real processes. The executor process holds its receipt key
@@ -194,6 +194,25 @@ describe('G-02C1C process — crash recovery: never re-executed, never upgraded,
     assert.equal((await exchange(restarted, bytesFor(presentation))).response.status, 202);
     assert.equal((await domain.history(capability.capabilityId)).length, 1);
     assert.equal(domain.records().length, 1);
+  });
+});
+
+describe('G-02C1C process — key rotation never strands a reservation silently', () => {
+  it('a restart with a rotated key while a reservation is pending is refused by name; with the old key it completes', async () => {
+    const domain = await domainOf();
+    const crashing = await executorOver(domain, { faultInjection: { crashAt: 'after-receipt-reservation' } }, { [FAULT_VARIABLE]: 'enabled' });
+    const { capability, presentation } = syntheticCapability(VECTOR.digest);
+    await rawExchange(crashing.port, bytesFor(presentation));
+    assert.equal((await crashing.exited()).signal, 'SIGKILL');
+    const rotated = generateReceiptKey(domain.keyDirectory, 'rotated.pem');
+    const refused = await refusedStart(receiptConfiguration(domain, { executorReceipts: { keyId: 'g02c1c-executor-receipt-key-2', privateKeyFile: rotated.keyFile, receiptLedgerPath: domain.receiptLedgerPath } }));
+    assert.deepEqual([refused.code, refused.refusal.code], [1, 'RECEIPT_LEDGER_INVALID']);
+    assert.match(refused.refusal.message, /reservations under another key/);
+    const restarted = await executorOver(domain);
+    assert.equal((await exchange(restarted, bytesFor(presentation))).response.status, 202);
+    const history = await domain.history(capability.capabilityId);
+    assert.equal(history.length, 1);
+    assert.equal(domain.verifier.verify(history[0]).signature, 'valid');
   });
 });
 

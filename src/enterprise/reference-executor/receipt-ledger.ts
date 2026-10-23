@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, lstatSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 import { executorReceiptDigest, parseExecutorReceipt, positionExecutorReceipt, serializeExecutorReceipt, type ExecutorReceipt, type ExecutorReceiptDraft } from '../executor-receipt/index.js';
 
@@ -69,19 +69,17 @@ export interface IssuedExecutorReceipt {
   readonly signature: Readonly<Record<string, string>>;
 }
 
-/** A reservation this module produced. The receipt signer signs only these. */
-const RESERVATIONS = new WeakSet<object>();
-
-export function isExecutorReceiptReservation(value: unknown): value is StoredExecutorReceipt {
-  return typeof value === 'object' && value !== null && RESERVATIONS.has(value);
-}
-
 export interface ExecutorReceiptLedger {
   readonly executorId: string;
   readonly audience: string;
+  /** Whether `value` is a receipt this ledger instance returned. The receipt signer is bound to one ledger and signs only these. */
+  owns(value: unknown): boolean;
+  /** The key ids named by reservations still waiting for a signature. */
+  pendingKeyIds(): readonly string[];
   /**
-   * The authoritative receipt for `draft`'s capability at its current consumption state: the one already there when the
-   * state is unchanged, or a newly reserved one superseding an unknown. Throws `ExecutorReceiptConflictError` otherwise.
+   * The authoritative receipt for `draft`'s capability: a reservation still waiting for its signature (always first: a
+   * receipt is never superseded before it is signed), the one already there when the consumption state is unchanged, or
+   * a newly reserved one superseding an unknown. Throws `ExecutorReceiptConflictError` otherwise.
    */
   reserve(draft: ExecutorReceiptDraft): StoredExecutorReceipt;
   /** Records the signature over a reserved receipt. Idempotent for the same signature; a different signature is a conflict. */
@@ -226,6 +224,20 @@ export async function openExecutorReceiptLedger(
   const file = resolve(path);
   if (create && existsSync(file)) throw new Error('The executor receipt ledger already exists at that path. It is never re-initialized over existing receipts.');
   if (!create && !existsSync(file)) throw new Error('The executor receipt ledger does not exist at its configured path. It is never created implicitly.');
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  /** The file and its directory belong to this user and no one else can write them: whoever can rewrite receipts can make the executor sign theirs. */
+  const private_ = (target: string, kind: 'file' | 'directory'): boolean => {
+    try {
+      const stat = lstatSync(target);
+      const shape = kind === 'file' ? stat.isFile() : stat.isDirectory();
+      return shape && !stat.isSymbolicLink() && stat.uid === uid && (stat.mode & 0o022) === 0;
+    } catch {
+      return false;
+    }
+  };
+  if (uid === undefined || !private_(dirname(file), 'directory') || (!create && !private_(file, 'file'))) {
+    throw new Error('The executor receipt ledger and its directory must belong to this user and be writable by no one else.');
+  }
   const { default: SqliteDatabase } = await import('better-sqlite3');
   const db: Database = new SqliteDatabase(file, create ? {} : { fileMustExist: true });
   const statements = (() => {
@@ -259,6 +271,7 @@ export async function openExecutorReceiptLedger(
           `INSERT INTO executor_receipts (receipt_id, capability_id, execution_id, issuer, sequence, supersedes, outcome, ledger_state, key_id, canonical, digest, state, signature, reserved_at, issued_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', NULL, ?, NULL)`,
         ),
+        pendingKeys: db.prepare("SELECT DISTINCT key_id FROM executor_receipts WHERE state = 'reserved' ORDER BY key_id"),
         markIssued: db.prepare(`UPDATE executor_receipts SET state = 'issued', signature = ?, issued_at = ? WHERE receipt_id = ? AND state = 'reserved' AND canonical = ?`),
       };
     } catch (error) {
@@ -277,8 +290,10 @@ export async function openExecutorReceiptLedger(
     return new Date(now).toISOString();
   };
   const rowsOf = (capabilityId: string): StoredExecutorReceipt[] => (statements.byCapability.all(capabilityId) as ReceiptRow[]).map((row) => storedOf(row, executorId, audience));
+  // Receipts this instance returned: the one signer bound to this ledger signs only these.
+  const owned = new WeakSet<object>();
   const brand = (stored: StoredExecutorReceipt): StoredExecutorReceipt => {
-    RESERVATIONS.add(stored);
+    owned.add(stored);
     return stored;
   };
 
@@ -289,6 +304,8 @@ export async function openExecutorReceiptLedger(
     if (newest === undefined) {
       position = { sequence: 1, supersedes: null };
     } else {
+      // A reservation waiting for its signature is signed before anything supersedes it, whatever the state is now.
+      if (newest.state === 'reserved') return newest;
       const sameState = newest.receipt.consumption.ledgerState === draft.consumption.ledgerState;
       if (sameState) return newest;
       const unknownBefore = newest.receipt.outcome === 'attempted-outcome-unknown';
@@ -307,6 +324,11 @@ export async function openExecutorReceiptLedger(
   const ledger: ExecutorReceiptLedger = {
     executorId,
     audience,
+    owns: (value: unknown): boolean => typeof value === 'object' && value !== null && owned.has(value),
+    pendingKeyIds(): readonly string[] {
+      ensureOpen();
+      return Object.freeze((statements.pendingKeys.all() as { key_id: unknown }[]).map((row) => String(row.key_id)));
+    },
     reserve(draft: ExecutorReceiptDraft): StoredExecutorReceipt {
       ensureOpen();
       if (draft.executorId !== executorId || draft.audience !== audience) throw new ExecutorReceiptConflictError('A receipt for another executor or audience does not belong in this ledger.');
