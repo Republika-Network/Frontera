@@ -126,7 +126,7 @@ describe('G-02C1A structure — the executor stands alone', () => {
 
   it('it reaches no Host, Kernel, orchestrator, grant store, grant runtime, issuance, gate, adapter registry, P11/P12, signer or database', () => {
     const forbidden =
-      /^src\/kernel\/|^src\/features\/|^src\/enterprise\/(composition|host|orchestration|governed-action|configuration|api|adapters|registry|bounded-grant-store|execution-governance|execution-capability-issuance|execution-capability-gate|execution-adapters|execution-outcome-store|execution-resolution-store|execution-reconciliation|external-authority-signer|emergency-control)\/|sqlite|-store\.ts$|signer\.ts$|custody\.ts$/;
+      /^src\/kernel\/|^src\/features\/|^src\/enterprise\/(composition|host|orchestration|governed-action|configuration|api|adapters|registry|bounded-grant-store|execution-governance|execution-capability-issuance|execution-capability-gate|execution-adapters|execution-outcome-store|execution-resolution-store|execution-reconciliation|external-authority-signer|emergency-control)\/|sqlite|-store\.ts$|(?<!receipt-)signer\.ts$|custody\.ts$/;
     assert.deepEqual([...closure.files].filter((file) => forbidden.test(file)), []);
     assert.equal([...verificationPath.bare].some((specifier) => /sqlite|better-sqlite3/.test(specifier)), false, 'the verification path opens no database');
   });
@@ -153,7 +153,7 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
   const sources = [...sourcesUnder(EXECUTOR), ...sourcesUnder(PRESENTATION)];
 
   it('no private key, signing call or HMAC — except the G-02C1C receipt signer, which holds only the executor’s own receipt key', () => {
-    for (const file of sources.filter((path) => path !== `${EXECUTOR}/receipt-signer.ts`)) assert.equal(/createPrivateKey|privateKey|generateKeyPair|crypto\.sign\b|[^a-zA-Z.]sign\(|createHmac|signBytes|signExecution/i.test(codeOf(file)), false, file);
+    for (const file of sources.filter((path) => path !== `${EXECUTOR}/receipt-signer.ts`)) assert.equal(/createPrivateKey|\bprivateKey\b|generateKeyPair|crypto\.sign\b|[^a-zA-Z.]sign\(|createHmac|signBytes|signExecution/i.test(codeOf(file)), false, file);
     assert.equal(/signExecution|authority-authenticity\/(?:signer|custody)|external-authority-signer/.test(codeOf(`${EXECUTOR}/receipt-signer.ts`)), false, 'the receipt signer reaches no authority signing');
   });
 

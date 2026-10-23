@@ -94,7 +94,7 @@ describe('G-02C1B structure — the ledger is G-02A’s, opened and never create
   });
 
   it('the ledger and the effect are built only in synthetic-execution mode, and the ledger module is loaded only then', () => {
-    assert.ok(launcher.includes("const execution = configuration.mode === 'synthetic-execution' ? await openSyntheticExecution(configuration, clock) : undefined;"));
+    assert.ok(launcher.includes("const execution = configuration.mode === 'synthetic-execution' ? await openSyntheticExecution(configuration, clock, writeLine) : undefined;"));
     assert.equal(/^import[^;]*consumption-ledger/m.test(launcher), false, 'never a static import');
     assert.equal(count(launcher, /await import\('\.\.\/execution-capability\/reference\/consumption-ledger\.js'\)/g), 1);
   });
