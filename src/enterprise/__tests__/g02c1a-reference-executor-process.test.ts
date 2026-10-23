@@ -258,7 +258,7 @@ describe('G-02C1A process — every relevant field, mutated in the real bytes, i
   const otherPort = hostVector('the base request for another port', { origin: `https://${HOSTNAME}:${String(NONDEFAULT_PORT)}`, query: { strategy: PARAMETER('strategy') }, headers: { 'Idempotency-Key': { kind: 'source', source: 'correlation.executionId' }, 'X-Counterparty': { kind: 'source', source: 'counterparty' }, 'X-Release-Channel': { kind: 'literal', value: 'stable' }, 'X-Tenant': { kind: 'source', source: 'organization' }, Accept: { kind: 'literal', value: 'application/json' } }, body: BODY });
   const renamedCredential = digestOfRecord({ ...genericHttpRequestBinding(BASE.plan, BASE.request), credentialHeader: 'x-api-key' });
 
-  const MUTATIONS: readonly (readonly [string, (raw: RawRequest) => RawRequest, ReferenceExecutorAssessment['stage'], ReferenceExecutorAssessment['code'], string?, Parameters<typeof capabilityFor>[1]?])[] = [
+  const MUTATIONS: readonly (readonly [string, (raw: RawRequest) => RawRequest, ReferenceExecutorAssessment['stage'], ReferenceExecutorAssessment['code'], (string | undefined)?, Parameters<typeof capabilityFor>[1]?])[] = [
     ['method', (raw) => line(raw, /^POST /, 'PUT '), 'verification', 'ACTION_BINDING_MISMATCH'],
     ['hostname (Host rewritten)', (raw) => editHeaders(raw, 'host', () => 'Host: other.executor.example'), 'admission', 'HOST_MISMATCH'],
     ['port (Host rewritten)', (raw) => editHeaders(raw, 'host', () => `Host: ${HOSTNAME}:${String(NONDEFAULT_PORT)}`), 'admission', 'HOST_MISMATCH'],

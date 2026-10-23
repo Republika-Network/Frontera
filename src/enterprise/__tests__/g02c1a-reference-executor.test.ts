@@ -334,7 +334,7 @@ describe('G-02C1A — the verification pipeline', () => {
       ['an action not on the allow-list', { action: 'drop-database' }, 'ACTION_NOT_PERMITTED'],
       ['a resource not on the allow-list', { resource: 'cluster-us-9' }, 'RESOURCE_NOT_PERMITTED'],
     ];
-    for (const [name, overrides, code] of cases) expectRefused(pipeline.assess(observedWith(WITH_BODY, { capability: overrides })), 'policy', code, name);
+    for (const [name, overrides, code] of cases) expectRefused(pipeline.assess(observedWith(WITH_BODY, { capability: overrides ?? {} })), 'policy', code, name);
   });
 
   it('G-02A verification decides: signature, pinned key, domain, window and the exact rebuilt binding', () => {
