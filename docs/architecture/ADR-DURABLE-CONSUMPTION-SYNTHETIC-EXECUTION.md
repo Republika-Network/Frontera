@@ -40,7 +40,7 @@ The ledger already provides:
 2. Only a configured `synthetic.*` action continues.
 3. `ledger.claim(verification)` commits durably.
 4. The executor re-checks expiry on its own clock. If expired, it records `failed` and performs nothing.
-5. **Exactly one** effect attempt. The effect itself requires the durable claim to be in state `claimed`.
+5. **At most one** effect attempt (none if expired or not admitted). The effect itself requires the durable claim to be in state `claimed`.
 6. `ledger.recordOutcome`, forward only.
 7. One closed answer.
 
@@ -53,7 +53,7 @@ One file per capability, `<capabilityId>.json`, in the directory fixed at boot:
 - created with `O_CREAT | O_EXCL | O_NOFOLLOW`, written in two halves (so a crash can split it), then flushed;
 - the directory itself is flushed afterwards.
 
-The directory must be real, canonical and private. Its device and inode are re-checked before each attempt.
+The directory must be real, canonical, owned and writable by the executor's user and by no one else. Its ancestors must be owned by that user or root, and sticky if others can write them. Its device and inode are re-checked before each attempt, and the created file is checked to be at the fixed name afterwards. A name already taken is reported `unknown`, never a definite failure.
 
 The record holds only verified identifiers: executor, audience, issuer, capability, execution, the `synthetic.*` operation, the target resource, the rebuilt binding digest, claim and attempt instants. There is no network, command, subprocess, credential or request-supplied path.
 

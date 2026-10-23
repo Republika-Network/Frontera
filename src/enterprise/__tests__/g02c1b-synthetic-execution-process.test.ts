@@ -10,6 +10,7 @@ import {
   BEARER,
   BEARER_ENV,
   CONFIG_VARIABLE,
+  EXECUTOR_ENVIRONMENT,
   HEADER_CREDENTIAL,
   HEADER_CREDENTIAL_ENV,
   ISSUED_PRESENTATIONS,
@@ -59,8 +60,9 @@ async function domainOf(audience?: string): Promise<SyntheticDomain> {
   domains.push(domain);
   return domain;
 }
-async function executorOver(domain: SyntheticDomain, overrides: Record<string, unknown> = {}): Promise<SpawnedExecutor> {
-  const executor = await spawnExecutor(syntheticConfiguration(domain, overrides));
+const FAULT_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_FAULT_INJECTION';
+async function executorOver(domain: SyntheticDomain, overrides: Record<string, unknown> = {}, extra: Readonly<Record<string, string>> = {}): Promise<SpawnedExecutor> {
+  const executor = await spawnExecutor(syntheticConfiguration(domain, overrides), { ...EXECUTOR_ENVIRONMENT, ...extra });
   executors.push(executor);
   return executor;
 }
@@ -124,6 +126,29 @@ describe('G-02C1B process — two executor processes, one ledger', () => {
     t.diagnostic(`shared-ledger race winners: ${winners.join('')}`);
   });
 
+  it('a contended race: both processes are made to wait on the ledger’s write lock at once, then released — still exactly one claim and one effect', async (t) => {
+    const domain = await domainOf();
+    const [a, b] = await Promise.all([executorOver(domain), executorOver(domain)]);
+    assert.ok(a !== undefined && b !== undefined);
+    const { default: Database } = await import('better-sqlite3');
+    for (let round = 0; round < 4; round += 1) {
+      const { capability, presentation } = syntheticCapability(VECTOR.digest);
+      const bytes = serializeRaw(presentedWith(base, presentation));
+      const holder = new Database(domain.ledgerPath);
+      holder.prepare('BEGIN IMMEDIATE').run();
+      const answers = Promise.all([rawExchange(a.port, bytes), rawExchange(b.port, bytes)]);
+      // Both executors are now inside their claim, blocked on the lock this test holds (their answers cannot arrive before it is released).
+      await new Promise((settle) => setTimeout(settle, 400));
+      holder.prepare('ROLLBACK').run();
+      holder.close();
+      const [left, right] = await answers;
+      assert.deepEqual([left.status, right.status].sort(), [201, 202], `contended round ${String(round)}`);
+      assert.equal((await domain.state(capability.capabilityId)).state, 'completed');
+    }
+    assert.equal(domain.records().length, 4);
+    t.diagnostic('contended race: 4 rounds, both processes blocked on the claim lock before release');
+  });
+
   it('counterexample: two executors with SEPARATE ledgers are two consumption domains — each performs the same capability (a stated limitation, not a guarantee)', async () => {
     const [left, right] = await Promise.all([domainOf(), domainOf()]);
     const [a, b] = await Promise.all([executorOver(left), executorOver(right)]);
@@ -152,7 +177,7 @@ describe('G-02C1B process — crash injection at every point of the execution pa
   for (const [point, ledgerState, record, nextOutcome, nextStatus] of MATRIX) {
     it(`crash ${point}: ledger ${ledgerState}, record ${record}; the next delivery is ${nextOutcome} (${String(nextStatus)}) and nothing re-executes`, async (t) => {
       const domain = await domainOf();
-      const crashing = await executorOver(domain, { faultInjection: { crashAt: point } });
+      const crashing = await executorOver(domain, { faultInjection: { crashAt: point } }, { [FAULT_VARIABLE]: 'enabled' });
       const { capability, presentation } = syntheticCapability(VECTOR.digest);
       const response = await rawExchange(crashing.port, serializeRaw(presentedWith(base, presentation)));
       const exit = await crashing.exited();
@@ -207,6 +232,8 @@ describe('G-02C1B process — startup refuses what would make consumption meanin
     writeFileSync(damaged, 'not a database');
     const linked = join(domain.root, 'linked-output');
     symlinkSync(domain.outputDirectory, linked);
+    const alias = join(domain.root, 'ledger-alias');
+    symlinkSync(join(domain.root, 'ledger'), alias);
     const open = join(domain.root, 'open-output');
     mkdirSync(open);
     chmodSync(open, 0o777);
@@ -219,6 +246,8 @@ describe('G-02C1B process — startup refuses what would make consumption meanin
       ['an output directory others can write', syntheticConfiguration(domain, section({ outputDirectory: open })), 'SYNTHETIC_OUTPUT_INVALID'],
       ['synthetic mode without its section', syntheticConfiguration(domain, { syntheticExecution: undefined }), 'MODE_INCONSISTENT'],
       ['an unknown mode', syntheticConfiguration(domain, { mode: 'live-execution' }), 'MODE_UNSUPPORTED'],
+      ['fault injection without its environment switch', syntheticConfiguration(domain, { faultInjection: { crashAt: 'after-claim' } }), 'FAULT_INJECTION_NOT_ENABLED'],
+      ['a ledger directory that is the output directory under another name', syntheticConfiguration(domain, section({ consumptionLedgerPath: join(alias, 'consumption.sqlite'), outputDirectory: join(domain.root, 'ledger') })), 'SYNTHETIC_OUTPUT_INVALID'],
     ];
     for (const [name, config, code] of cases) {
       const refused = await refusedStart(JSON.parse(JSON.stringify(config)) as Record<string, unknown>);
@@ -234,7 +263,8 @@ describe('G-02C1B process — diagnostics', () => {
   it('synthetic executors report their mode and variable names, and write no secret, presentation, capability or body', () => {
     assert.ok(executors.length > 6);
     for (const executor of executors) {
-      assert.deepEqual([...executor.reportedEnvironment], [BEARER_ENV, CONFIG_VARIABLE, HEADER_CREDENTIAL_ENV, 'PATH'].sort());
+      const names = [...executor.reportedEnvironment];
+      assert.deepEqual(names.filter((name) => name !== FAULT_VARIABLE), [BEARER_ENV, CONFIG_VARIABLE, HEADER_CREDENTIAL_ENV, 'PATH'].sort());
       const written = `${executor.stdout()}\n${executor.stderr()}`;
       assert.ok(written.includes('"mode":"synthetic-execution"'));
       for (const secret of [BEARER, HEADER_CREDENTIAL, 'PRIVATE KEY', 'grantReference', '"amount"', 'agent:release-bot']) assert.equal(written.includes(secret), false, secret);

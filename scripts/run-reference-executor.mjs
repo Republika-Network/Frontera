@@ -1,9 +1,12 @@
-// The REFERENCE independent executor (G-02C1A) — VERIFICATION ONLY. A separate
-// process that receives HTTP/1.1 requests carrying a signed execution
-// capability, rebuilds the request binding from what it received, verifies
-// the capability against issuer public keys it pinned itself, and answers with
-// an assessment. It never performs, claims or receipts anything. Synthetic
-// CI qualification only: binds loopback, refuses any other environment.
+// The REFERENCE independent executor (G-02C1A/B). A separate process that
+// receives HTTP/1.1 requests carrying a signed execution capability, rebuilds
+// the request binding from what it received, and verifies the capability
+// against issuer public keys it pinned itself. Verification-only by default: it
+// answers with an assessment and performs nothing. Only with
+// `mode: synthetic-execution` does it claim the capability in an existing G-02A
+// ledger and then perform one local synthetic record write. It never produces
+// a receipt. Synthetic CI qualification only: binds loopback, refuses any
+// other environment.
 // Run after `npm run build`.
 //
 // Its own environment (never the Host's):

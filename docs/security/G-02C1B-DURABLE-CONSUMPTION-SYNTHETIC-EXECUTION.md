@@ -39,7 +39,8 @@ These are stated explicitly:
 | A request rewriter | Alter body, target or headers | Pass the rebuilt binding; the claim is never reached |
 | Two executor processes sharing the ledger | Race on one capability | Both claim: the IMMEDIATE transaction serializes them |
 | A crash at any point | Strand a claim, or leave a partial or complete record | Trigger a re-execution; release the claim; turn an unknown into completed |
-| A local attacker who can plant links or swap the output directory | Point the record path or the directory elsewhere | Redirect the write: exclusive no-follow create; directory identity re-checked |
+| Another local user | Plant files or links, or rename directories, where they can write | Redirect or overwrite the write. Enforced by: the output directory and every ancestor owned by this user or root, writable by others only if sticky; an exclusive no-follow create; the directory identity re-checked before the create and the created file checked after it. A taken name is reported `unknown` |
+| This user or root | Rename the executor's own directories between the checks and the create | **Not defended** (residual R4): they control the executor anyway |
 | Whoever can rewrite or restore the ledger file | Forget consumptions | **Not defended** (rollback; residual R1) |
 | Whoever controls the configuration or the executor host | Change trust or the directory | **Not defended**: the executor's operator is its trust root |
 
@@ -48,7 +49,7 @@ These are stated explicitly:
 - **Meaning:** "synthetic release *operation* was applied to synthetic target *resource*". It is not a deployment.
 - **Input:** only the verified capability, the rebuilt binding digest and the executor's own instants. Nothing comes from the raw request.
 - **Location:**
-  - The output directory is fixed at boot and must be real, canonical and writable by its owner only.
+  - The output directory is fixed at boot and must be real, canonical, owned and writable by the executor's user, and writable by no one else. Every ancestor must be owned by that user or root, and writable by others only if sticky.
   - Its device and inode are re-checked before every attempt.
   - The file name is the checked 64-hex capability id plus `.json`.
 - **Write:**
@@ -59,8 +60,8 @@ These are stated explicitly:
 - **Never:** network, command, subprocess, `eval`, dynamic code, credentials, payment, production configuration, or customer data.
 - **Observations:**
   - `not-attempted`: nothing was created.
-  - `failed`: the exclusive create was refused; nothing was written by this attempt.
-  - `unknown`: the file was created, then a write, flush or close failed; a partial record may exist.
+  - `failed`: the create was refused for a reason that guarantees nothing exists (permission, space). This is a definite failure (422).
+  - `unknown`: the name was already taken (an earlier effect may stand behind it: a restored ledger, two ledgers sharing a directory), or the created file could not be confirmed at the fixed location, written, flushed or closed (502).
   - `completed`: written and flushed.
 
 ## 4. Ordering, and where a real effect could occur
@@ -100,6 +101,8 @@ The in-process suite asserts the exact event order from an instrumented ledger a
 | Outcome cannot be recorded | `claimed` | complete | yes | never | 202 | answered unknown (502) |
 | Expired after the claim | `failed` | none | no | never | 202 | known: not attempted (422) |
 
+**What this qualifies.** The matrix qualifies process crashes. `SIGKILL` keeps the operating system's page cache, so these results would also hold with weaker SQLite synchronization. Power-loss durability rests on G-02A's `synchronous = FULL` (pinned by the structure suite), and **is not qualified** here. C2 is shown at the SQLite level: an uncommitted IMMEDIATE transaction on the same schema leaves nothing. It is not a kill inside G-02A's own claim call.
+
 **C8 and C9 cannot be separated in time.** Claim, effect and outcome run synchronously once the request is parsed, so a disconnect cannot interleave with them.
 
 **Recovery rules.**
@@ -114,7 +117,7 @@ The in-process suite asserts the exact event order from an instrumented ledger a
 
 - One executor host, local filesystem, one shared ledger per audience. Network filesystems are not supported.
 - Loopback plain HTTP. TLS, DNS and proxies are not qualified.
-- Fault injection (`faultInjection.crashAt`) is a configured `SIGKILL` of the executor itself, accepted only in `synthetic-execution` mode in the `reference-synthetic` environment.
+- Fault injection (`faultInjection.crashAt`) is a `SIGKILL` of the executor itself. It needs both the configuration field (accepted only in `synthetic-execution` mode, in the `reference-synthetic` environment) and `FRONTERA_REFERENCE_EXECUTOR_FAULT_INJECTION=enabled` in its environment. The launcher's hook only kills. A hook that throws (used only in-process by tests) is treated as a failed write at `during-effect`, and escapes the request anywhere else.
 - The output directory's identity is re-checked before each attempt. A swap between that check and the create is not prevented; the final component is never followed (residual R4).
 
 ## 7. C1C durable-evidence dependencies
@@ -144,25 +147,26 @@ The in-process suite asserts the exact event order from an instrumented ledger a
 |---|---|---|
 | Invalid signature, unknown issuer, other audience, cross-organization, expired, status-required, altered body, target or header, duplicate presentation, no or wrong credential, non-synthetic action | no claim, no effect, ledger and directory untouched | in-process suite |
 | Sequential, concurrent, restarted, lost-response and same-execution duplicates | one claim, one effect, 202 | in-process and process suites |
-| Two processes, one ledger, twelve races | exactly one 201 and one 202 each time; twelve records | process suite |
+| Two processes, one ledger: twelve free races, and four contended rounds in which both are held on the claim lock and then released together | exactly one 201 and one 202 each time; one record per capability | process suite |
 | Two processes, two ledgers | both perform: stated limitation | process suite |
 | Crash at six points plus inside the claim transaction | matrix above | process suite |
 | Expiry after claim; ledger busy; outcome unrecordable; partial write | 422; 503 with nothing consumed; 502; `outcome-unknown` | in-process suite |
-| Planted link; existing record; swapped directory; traversal names; no claim; unsafe directories | refused, nothing written outside | in-process suite |
+| Planted link; existing record; swapped directory; traversal names; no claim; unsafe, unwritable or rename-exposed directories; a ledger directory that is the output directory under another name | refused, or `unknown` for a taken name; nothing written outside | in-process and process suites |
 | Restored older ledger | re-claimable: rollback is not prevented | in-process suite |
 | Missing, foreign or damaged ledger; unsafe output; incomplete or unknown mode | startup refused, nothing created | process suite |
 | Secrets, presentations, capabilities or bodies in logs | none | process suite |
-| Removal of each G-02C1B control | 16 mutants detected | `g02c1b-synthetic-execution-mutation.test.ts` |
+| Removal of each G-02C1B control | 17 mutants detected | `g02c1b-synthetic-execution-mutation.test.ts` |
 | One claim, one effect, no loop; containment; ledger never created; no Host, receipt or adapter | pinned | `g02c1b-synthetic-execution-structure.test.ts` |
 
 ## 9. Residual risks
 
 | ID | Risk | Owner |
 |---|---|---|
-| G02C1B-R1 | The ledger is not anchored against rollback: restoring it re-enables consumed capabilities. The synthetic record's exclusive name catches this for the synthetic effect only | Founder (anchoring) |
+| G02C1B-R1 | The ledger is not anchored against rollback: restoring it re-enables consumed capabilities. For the synthetic effect only, the record's exclusive name stops the second write and reports it `unknown` (502). A real effect would have no such witness | Founder (anchoring) |
 | G02C1B-R2 | Separate ledgers are separate consumption domains | deployment rule |
 | G02C1B-R3 | Stranded `claimed` rows cannot be enumerated or classified `outcome-unknown` with the current ledger API | G-02C1C |
-| G02C1B-R4 | Between the directory identity check and the exclusive create, a local attacker able to rename directories inside the executor's private area could redirect the create; the final component is never followed | reference only |
+| G02C1B-R4 | Only the executor's own user or root can rename its directories between the identity check and the create. Even then, the post-create check reports a misplaced record as `unknown`, but it was created | reference only |
 | G02C1B-R5 | `completed` is the executor's own observation of a local file, not external settlement and not authenticated evidence | G-02C1C |
-| G02C1B-R6 | Fault injection is configuration-driven; a reference configuration that enables it makes the executor kill itself at that point | reference only |
+| G02C1B-R6 | Fault injection, once enabled by both the configuration and its environment switch, makes the executor kill itself at that point | reference only |
+| G02C1B-R7 | The flow's duplicate check is backed by the effect's own claim-state precondition. Removing only the former turns a duplicate into an unknown (502) rather than a second effect | documented (defence in depth) |
 | G02C1A-R1 … R9, G02B-R*, G02C0-R* | Unchanged | as before |

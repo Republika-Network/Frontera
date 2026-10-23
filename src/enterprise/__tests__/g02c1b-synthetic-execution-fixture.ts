@@ -8,7 +8,7 @@ import { EXECUTION_CAPABILITY_PRESENTATION_HEADER } from '../execution-capabilit
 import { openExecutionCapabilityConsumptionLedger, type ExecutionCapabilityConsumptionLedger, type ExecutionCapabilityConsumptionRecord } from '../execution-capability/reference/consumption-ledger.js';
 import type { ExecutionCapability } from '../execution-capability/index.js';
 import { createReferenceExecutorExecutionFlow, type ReferenceExecutorExecutionFlow } from '../reference-executor/execution-flow.js';
-import { openSyntheticDeploymentEffect, type SyntheticDeploymentEffect } from '../reference-executor/synthetic-effect.js';
+import { admitsEffect, openSyntheticDeploymentEffect, type SyntheticDeploymentEffect } from '../reference-executor/synthetic-effect.js';
 import { createReferenceExecutorVerificationPipeline, parseReferenceExecutorConfiguration, type ReferenceExecutorConfiguration, type ReferenceExecutorFaultPoint } from '../reference-executor/index.js';
 import { ACTION, AUDIENCE, EXECUTOR_ENVIRONMENT, capabilityFor, editHeaders, executorConfiguration, presentationFor, type RawRequest } from './g02c1a-reference-executor-fixture.js';
 
@@ -129,7 +129,7 @@ export async function inProcessFlow(domain: SyntheticDomain, options: InProcessF
     durablyClaimed: (capabilityId) => {
       const state = ledger.read(capabilityId).state;
       events.push(`effect-precondition:${state}`);
-      return state === 'claimed';
+      return admitsEffect(state);
     },
   });
   const effect: SyntheticDeploymentEffect = Object.freeze({

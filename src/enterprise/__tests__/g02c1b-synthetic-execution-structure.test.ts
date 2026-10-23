@@ -70,7 +70,8 @@ describe('G-02C1B structure — the synthetic effect is local and contained', ()
   it('it creates the record exclusively, without following a link, and opens exactly two descriptors (the record and the directory flush)', () => {
     assert.ok(effect.includes('const flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;'));
     assert.equal(count(effect, /openSync\(/g), 2);
-    assert.ok(effect.includes('openSync(join(outputDirectory, `${capabilityId}.json`), flags, 0o600)'), 'the one name: the checked capability id');
+    assert.ok(effect.includes('const recordPath = join(outputDirectory, `${capabilityId}.json`);') && effect.includes('openSync(recordPath, flags, 0o600)'), 'the one name: the checked capability id');
+    assert.ok(effect.includes("return code === 'EEXIST' || code === 'ELOOP' ? 'unknown' : 'failed';"), 'a taken name is evidence, never a definite failure');
     assert.equal(/unlinkSync|rmSync|renameSync|appendFileSync|writeFileSync|truncate|chmod|chown|symlink/.test(effect), false, 'no other file-system mutation');
   });
 
@@ -87,6 +88,7 @@ describe('G-02C1B structure — the ledger is G-02A’s, opened and never create
 
   it('the launcher opens the configured ledger with the executor’s audience and never passes create', () => {
     assert.ok(launcher.includes('openExecutionCapabilityConsumptionLedger(synthetic.consumptionLedgerPath, { audience: configuration.audience, clock })'));
+    assert.ok(launcher.includes('durablyClaimed: (capabilityId) => admitsEffect(opened.read(capabilityId).state)'), 'the one claim-state predicate, mutation-qualified in synthetic-effect.ts');
     assert.equal(/create\s*:/.test(launcher), false);
     for (const file of sourcesUnder(EXECUTOR)) assert.equal(/create\s*:\s*true/.test(codeOf(file)), false, file);
   });
@@ -103,11 +105,14 @@ describe('G-02C1B structure — the ledger is G-02A’s, opened and never create
     const ledger = readFileSync('src/enterprise/execution-capability/reference/consumption-ledger.ts', 'utf8');
     assert.ok(ledger.includes("WHEN NOT (\n    (OLD.state = 'claimed' AND NEW.state IN ('completed', 'failed', 'outcome-unknown'))\n    OR (OLD.state = 'outcome-unknown' AND NEW.state IN ('completed', 'failed'))\n  )"), 'the forward-only transitions');
     assert.equal(/reference-executor|synthetic/i.test(ledger), false, 'G-02A knows nothing of the executor');
+    // Durability under a crash of the process is what CI qualifies (the OS page cache survives SIGKILL); synchronous = FULL is what a power loss would rely on, and is pinned here, not qualified.
+    assert.ok(ledger.includes("db.pragma('synchronous = FULL');") && ledger.includes("db.pragma('journal_mode = WAL');"));
   });
 
   it('fault injection is a configured self-kill in the launcher and nowhere else', () => {
     assert.equal(count(launcher, /process\.kill\(process\.pid, 'SIGKILL'\)/g), 1);
     assert.ok(launcher.includes("if (point === crashAt) process.kill(process.pid, 'SIGKILL');"));
+    assert.ok(launcher.includes("environment[REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE] !== 'enabled'"), 'a configuration file alone cannot enable it');
     for (const file of sourcesUnder(EXECUTOR).filter((path) => path !== `${EXECUTOR}/launcher.ts`)) assert.equal(/process\.(?:kill|exit|abort)\(/.test(codeOf(file)), false, file);
   });
 });

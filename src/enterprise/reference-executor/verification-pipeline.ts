@@ -177,7 +177,8 @@ export function createReferenceExecutorVerificationPipeline(configuration: Refer
       if (!eligible) return assessment('assessed-ineligible', 'eligibility', 'STATUS_REQUIRED_UNAVAILABLE', bindingDigest);
 
       // 8 — an assessment, not an act
-      keep(Object.freeze({ verification, capability, bindingDigest }));
+      // The verifier's own copy of the capability: what it checked is what the claim and the effect act on.
+      keep(Object.freeze({ verification, capability: verified === undefined ? capability : verified.capability, bindingDigest }));
       return assessment('assessed-eligible', 'eligibility', 'VERIFICATION_ONLY', bindingDigest);
     } catch {
       return assessment('refused', 'verification', 'EXECUTOR_FAILURE');

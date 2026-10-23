@@ -1,5 +1,5 @@
-import { closeSync, constants, fsyncSync, lstatSync, openSync, realpathSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { accessSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, realpathSync, writeSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { canonicalSerialize } from '../governance-store/canonical-json.js';
 
@@ -14,9 +14,14 @@ import { canonicalSerialize } from '../governance-store/canonical-json.js';
  *
  * - The directory comes from the closed configuration, never from a request.
  *   At boot it must be a real directory (not a symlink), its own canonical path
- *   (no symlinked ancestor) and writable by no group or other user. Its device
- *   and inode are recorded, and every attempt re-checks them first: a directory
- *   swapped for a symlink or another directory after boot is not written.
+ *   (no symlinked ancestor), owned by this process's user, writable by it and by
+ *   no group or other user. Every ancestor must be owned by this user or root,
+ *   and writable by others only if sticky — so no other user can rename the
+ *   directory or an ancestor away. Its device and inode are recorded, and every
+ *   attempt re-checks them first: a directory swapped for a symlink or another
+ *   directory after boot is not written. After the create, the new file is
+ *   checked to be the one at the fixed name in the fixed directory; anything
+ *   else is reported `unknown`.
  * - The file name is the 64-hex capability id plus `.json`, checked again here:
  *   no separator, dot-segment or absolute path can be formed.
  * - The file is created with `O_CREAT | O_EXCL | O_NOFOLLOW`, so an existing
@@ -36,8 +41,8 @@ import { canonicalSerialize } from '../governance-store/canonical-json.js';
  * | Observation | Meaning |
  * |---|---|
  * | `not-attempted` | nothing was created: bad identifier, no durable claim, or the directory is not the one fixed at boot |
- * | `failed` | the exclusive create was refused (a record or link already holds that name); this attempt wrote nothing |
- * | `unknown` | the file was created and then a write, flush or close failed: a partial record may exist |
+ * | `failed` | the create was refused for a reason that guarantees nothing exists (permission, space, …); this attempt wrote nothing |
+ * | `unknown` | a record or link already holds the name (an earlier effect may have happened: a restored ledger, a shared directory), or the file was created and then could not be confirmed, written, flushed or closed |
  * | `completed` | the whole record was written and flushed, and the directory flushed |
  */
 
@@ -68,6 +73,11 @@ export interface SyntheticDeploymentEffect {
   apply(input: SyntheticDeploymentInput, duringEffect?: () => void): SyntheticEffectObservation;
 }
 
+/** The one ledger state in which the effect may be attempted: a durable claim with no outcome yet. */
+export function admitsEffect(state: string): boolean {
+  return state === 'claimed';
+}
+
 export class SyntheticOutputError extends Error {
   constructor(message: string) {
     super(message);
@@ -96,6 +106,28 @@ function directoryIdentity(path: string): DirectoryIdentity | undefined {
   }
 }
 
+/** Whether the directory is this user's and writable by it, and no ancestor lets another user rename it away. */
+function ownedAndAnchored(path: string, uid: number): boolean {
+  try {
+    const stat = lstatSync(path);
+    if (stat.uid !== uid) return false;
+    accessSync(path, constants.W_OK);
+    let current = dirname(path);
+    for (;;) {
+      const ancestor = lstatSync(current);
+      if (!ancestor.isDirectory() || ancestor.isSymbolicLink()) return false;
+      if (ancestor.uid !== uid && ancestor.uid !== 0) return false;
+      const sharedWritable = (ancestor.mode & 0o022) !== 0;
+      if (sharedWritable && (ancestor.mode & 0o1000) === 0) return false;
+      const parent = dirname(current);
+      if (parent === current) return true;
+      current = parent;
+    }
+  } catch {
+    return false;
+  }
+}
+
 function writeAll(fd: number, bytes: Buffer): void {
   let offset = 0;
   while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
@@ -112,8 +144,12 @@ export function openSyntheticDeploymentEffect(options: { readonly outputDirector
   const durablyClaimed = options.durablyClaimed;
   const flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;
   if (typeof O_NOFOLLOW !== 'number' || typeof O_EXCL !== 'number') throw new SyntheticOutputError('This platform cannot create a file without following links; the synthetic effect refuses to run here.');
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  if (uid === undefined) throw new SyntheticOutputError('This platform has no user identity to check the synthetic output directory against; the synthetic effect refuses to run here.');
   const identity = directoryIdentity(outputDirectory);
-  if (identity === undefined) throw new SyntheticOutputError('The synthetic output directory must be an existing, canonical directory that no other user can write; refusing it.');
+  if (identity === undefined || !ownedAndAnchored(outputDirectory, uid)) {
+    throw new SyntheticOutputError('The synthetic output directory must be an existing, canonical directory that this user owns and can write, that no other user can write, under ancestors no other user can rename; refusing it.');
+  }
   const fixed: DirectoryIdentity = identity;
 
   function apply(input: SyntheticDeploymentInput, duringEffect?: () => void): SyntheticEffectObservation {
@@ -149,13 +185,22 @@ export function openSyntheticDeploymentEffect(options: { readonly outputDirector
     );
 
     // The real effect starts here: the one exclusive create.
+    const recordPath = join(outputDirectory, `${capabilityId}.json`);
     let fd: number;
     try {
-      fd = openSync(join(outputDirectory, `${capabilityId}.json`), flags, 0o600);
-    } catch {
-      return 'failed';
+      fd = openSync(recordPath, flags, 0o600);
+    } catch (error) {
+      // A name already taken is evidence, not a refusal: an earlier effect may stand behind it.
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === 'EEXIST' || code === 'ELOOP' ? 'unknown' : 'failed';
     }
     try {
+      // The file created must be the one at the fixed name in the fixed directory; otherwise it landed somewhere else.
+      const created = fstatSync(fd);
+      const named = lstatSync(recordPath);
+      const after = directoryIdentity(outputDirectory);
+      const where = created.dev === named.dev && created.ino === named.ino && after !== undefined && after.dev === fixed.dev && after.ino === fixed.ino;
+      if (!where) throw new SyntheticOutputError('The created record is not at the fixed location.');
       const half = Math.floor(record.length / 2);
       writeAll(fd, record.subarray(0, half));
       duringEffect?.();

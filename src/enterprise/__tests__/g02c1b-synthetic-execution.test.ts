@@ -154,11 +154,20 @@ describe('G-02C1B — claim before effect, observed and recorded once', () => {
       },
     });
     try {
-      // Terminal failure: a record already holds the name (the target refuses).
+      // Terminal failure: the target refuses the create outright (no permission) — nothing can exist.
       const failing = syntheticCapability(VECTOR.digest);
-      writeFileSync(join(domain.outputDirectory, `${failing.capability.capabilityId}.json`), 'pre-existing\n', { mode: 0o600 });
-      assert.deepEqual(brief(world.flow.execute(observedWith(VECTOR, { presentation: failing.presentation }))), { outcome: 'failed-observed', stage: 'effect', code: 'SYNTHETIC_EFFECT_REFUSED', ledgerState: 'failed' });
-      assert.equal(domain.recordText(failing.capability.capabilityId), 'pre-existing\n', 'the existing file is untouched');
+      chmodSync(domain.outputDirectory, 0o500);
+      try {
+        assert.deepEqual(brief(world.flow.execute(observedWith(VECTOR, { presentation: failing.presentation }))), { outcome: 'failed-observed', stage: 'effect', code: 'SYNTHETIC_EFFECT_REFUSED', ledgerState: 'failed' });
+      } finally {
+        chmodSync(domain.outputDirectory, 0o700);
+      }
+      assert.equal(domain.recordText(failing.capability.capabilityId), undefined);
+      // A name already taken is evidence an earlier effect may have happened: unknown, never a definite failure.
+      const taken = syntheticCapability(VECTOR.digest);
+      writeFileSync(join(domain.outputDirectory, `${taken.capability.capabilityId}.json`), 'pre-existing\n', { mode: 0o600 });
+      assert.deepEqual(brief(world.flow.execute(observedWith(VECTOR, { presentation: taken.presentation }))), { outcome: 'attempted-outcome-unknown', stage: 'effect', code: 'SYNTHETIC_EFFECT_UNCONFIRMED', ledgerState: 'outcome-unknown' });
+      assert.equal(domain.recordText(taken.capability.capabilityId), 'pre-existing\n', 'the existing file is untouched');
       // Unknown: the write fails after the file was created.
       crashDuringEffect = true;
       const unknown = syntheticCapability(VECTOR.digest);
@@ -295,7 +304,7 @@ describe('G-02C1B — the synthetic effect is contained', () => {
       writeFileSync(outside, 'outside\n');
       const { capability, presentation } = syntheticCapability(VECTOR.digest);
       symlinkSync(outside, join(domain.outputDirectory, `${capability.capabilityId}.json`));
-      assert.deepEqual(brief(world.flow.execute(observedWith(VECTOR, { presentation }))), { outcome: 'failed-observed', stage: 'effect', code: 'SYNTHETIC_EFFECT_REFUSED', ledgerState: 'failed' });
+      assert.deepEqual(brief(world.flow.execute(observedWith(VECTOR, { presentation }))), { outcome: 'attempted-outcome-unknown', stage: 'effect', code: 'SYNTHETIC_EFFECT_UNCONFIRMED', ledgerState: 'outcome-unknown' });
       assert.equal(readFileSync(outside, 'utf8'), 'outside\n');
     } finally {
       world.close();
@@ -329,7 +338,7 @@ describe('G-02C1B — the synthetic effect is contained', () => {
     assert.deepEqual(domain.records(), []);
   });
 
-  it('boot refuses an output directory that is missing, a file, a link, reached through a link, or writable by others', async () => {
+  it('boot refuses an output directory that is missing, a file, a link, reached through a link, writable by others, not writable by this user, or under an ancestor others can rename', async () => {
     const domain = await freshDomain();
     const file = join(domain.root, 'file');
     writeFileSync(file, '');
@@ -338,7 +347,14 @@ describe('G-02C1B — the synthetic effect is contained', () => {
     const open = join(domain.root, 'open');
     mkdirSync(open);
     chmodSync(open, 0o777);
-    for (const outputDirectory of [join(domain.root, 'missing'), file, link, open]) {
+    const readOnly = join(domain.root, 'read-only');
+    mkdirSync(readOnly, { mode: 0o500 });
+    const shared = join(domain.root, 'shared');
+    mkdirSync(shared);
+    chmodSync(shared, 0o777);
+    const underShared = join(shared, 'output');
+    mkdirSync(underShared, { mode: 0o700 });
+    for (const outputDirectory of [join(domain.root, 'missing'), file, link, open, readOnly, underShared]) {
       assert.throws(() => openSyntheticDeploymentEffect({ outputDirectory, durablyClaimed: () => true }), /synthetic/, outputDirectory);
     }
     const linkedParent = join(domain.root, 'linked-parent');
@@ -348,7 +364,7 @@ describe('G-02C1B — the synthetic effect is contained', () => {
 });
 
 describe('G-02C1B — rollback and ledger identity', () => {
-  it('a restored older ledger re-enables a consumed capability: rollback is not prevented (only this synthetic record’s exclusive name refuses the second write)', async () => {
+  it('a restored older ledger re-enables a consumed capability: rollback is not prevented (only this synthetic record’s exclusive name stops a second write, and reports it as unknown)', async () => {
     const domain = await freshDomain();
     const backup = join(domain.root, 'ledger-before.sqlite');
     copyFileSync(domain.ledgerPath, backup);
@@ -363,7 +379,7 @@ describe('G-02C1B — rollback and ledger identity', () => {
     try {
       const again = restored.flow.execute(observedWith(VECTOR, { presentation }));
       assert.ok(restored.events.includes('claim:claimed'), 'the restored ledger let the capability be claimed again');
-      assert.deepEqual(brief(again), { outcome: 'failed-observed', stage: 'effect', code: 'SYNTHETIC_EFFECT_REFUSED', ledgerState: 'failed' });
+      assert.deepEqual(brief(again), { outcome: 'attempted-outcome-unknown', stage: 'effect', code: 'SYNTHETIC_EFFECT_UNCONFIRMED', ledgerState: 'outcome-unknown' });
       assert.equal(domain.recordText(capability.capabilityId), recordBefore);
     } finally {
       restored.close();

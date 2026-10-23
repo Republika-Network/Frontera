@@ -242,17 +242,17 @@ describe('G-02C1B mutation — the synthetic effect', () => {
       },
     },
     {
-      id: 'links-followed-records-overwritten',
+      id: 'existing-record-overwritten',
       file: EFFECT,
       replacements: [['const flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW;', 'const flags = O_WRONLY | O_CREAT;']],
+      // An earlier record at the name must never be written over (and is reported unknown).
       guard: async (m) => {
         const domain = await freshDomain();
-        const outside = join(domain.root, 'outside.txt');
-        writeFileSync(outside, 'outside\n');
         const id = 'c'.repeat(64);
-        symlinkSync(outside, join(domain.outputDirectory, `${id}.json`));
-        m.openSyntheticDeploymentEffect({ outputDirectory: domain.outputDirectory, durablyClaimed: () => true }).apply(input(id));
-        return readFileSync(outside, 'utf8') === 'outside\n';
+        const earlier = join(domain.outputDirectory, `${id}.json`);
+        writeFileSync(earlier, 'earlier\n', { mode: 0o600 });
+        const observation = m.openSyntheticDeploymentEffect({ outputDirectory: domain.outputDirectory, durablyClaimed: () => true }).apply(input(id));
+        return observation === 'unknown' && readFileSync(earlier, 'utf8') === 'earlier\n';
       },
     },
     {
@@ -262,13 +262,12 @@ describe('G-02C1B mutation — the synthetic effect', () => {
       guard: async (m) => {
         const domain = await freshDomain();
         const effect = m.openSyntheticDeploymentEffect({ outputDirectory: domain.outputDirectory, durablyClaimed: () => true });
-        const elsewhere = join(domain.root, 'elsewhere');
-        mkdirSync(elsewhere, { mode: 0o700 });
+        // A different real, private directory at the same path: only the device/inode comparison tells them apart.
         renameSync(domain.outputDirectory, join(domain.root, 'moved'));
-        symlinkSync(elsewhere, domain.outputDirectory);
+        mkdirSync(domain.outputDirectory, { mode: 0o700 });
         const id = 'd'.repeat(64);
         effect.apply(input(id));
-        return !existsSync(join(elsewhere, `${id}.json`));
+        return !existsSync(join(domain.outputDirectory, `${id}.json`));
       },
     },
     {
@@ -280,6 +279,12 @@ describe('G-02C1B mutation — the synthetic effect', () => {
         const id = 'e'.repeat(64);
         return m.openSyntheticDeploymentEffect({ outputDirectory: domain.outputDirectory, durablyClaimed: () => false }).apply(input(id)) === 'not-attempted' && domain.records().length === 0;
       },
+    },
+    {
+      id: 'effect-admitted-in-another-state',
+      file: EFFECT,
+      replacements: [["return state === 'claimed';", "return state !== 'absent';"]],
+      guard: (m) => m.admitsEffect('claimed') && !m.admitsEffect('completed') && !m.admitsEffect('failed') && !m.admitsEffect('outcome-unknown') && !m.admitsEffect('absent'),
     },
     {
       id: 'shared-output-directory-accepted',

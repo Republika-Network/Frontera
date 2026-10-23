@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { dirname, sep } from 'node:path';
 
 import { ReferenceExecutorConfigurationError, parseReferenceExecutorConfiguration, type ReferenceExecutorConfiguration, type ReferenceExecutorFaultPoint } from './configuration.js';
 import type { ReferenceExecutorExecutionFlow } from './execution-flow.js';
@@ -27,6 +28,8 @@ import { createReferenceExecutorVerificationPipeline } from './verification-pipe
  */
 
 export const REFERENCE_EXECUTOR_CONFIG_ENVIRONMENT_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_CONFIG_FILE';
+/** CI crash injection needs this variable set to `enabled` as well as `faultInjection` in the configuration: one file alone cannot make the executor kill itself. */
+export const REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_FAULT_INJECTION';
 
 export class ReferenceExecutorStartupError extends Error {
   constructor(
@@ -50,6 +53,9 @@ export async function startReferenceExecutorProcess(environment: Readonly<Record
   }
   const configuration = parseReferenceExecutorConfiguration(raw, environment);
   const clock = (): number => Date.now();
+  if (configuration.faultInjection !== null && environment[REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE] !== 'enabled') {
+    throw new ReferenceExecutorStartupError('FAULT_INJECTION_NOT_ENABLED', `faultInjection needs ${REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE}=enabled in the executor's environment.`);
+  }
   const execution = configuration.mode === 'synthetic-execution' ? await openSyntheticExecution(configuration, clock) : undefined;
   const gateway = await startReferenceExecutorGateway({
     configuration,
@@ -79,7 +85,7 @@ async function openSyntheticExecution(configuration: ReferenceExecutorConfigurat
   const synthetic = configuration.syntheticExecution;
   if (synthetic === null) throw new ReferenceExecutorStartupError('MODE_INCONSISTENT', 'synthetic-execution mode requires its section.');
   const { openExecutionCapabilityConsumptionLedger } = await import('../execution-capability/reference/consumption-ledger.js');
-  const { openSyntheticDeploymentEffect } = await import('./synthetic-effect.js');
+  const { admitsEffect, openSyntheticDeploymentEffect } = await import('./synthetic-effect.js');
   const { createReferenceExecutorExecutionFlow } = await import('./execution-flow.js');
   let ledger: Awaited<ReturnType<typeof openExecutionCapabilityConsumptionLedger>>;
   try {
@@ -91,13 +97,18 @@ async function openSyntheticExecution(configuration: ReferenceExecutorConfigurat
   const opened = ledger;
   let effect: ReturnType<typeof openSyntheticDeploymentEffect>;
   try {
-    effect = openSyntheticDeploymentEffect({ outputDirectory: synthetic.outputDirectory, durablyClaimed: (capabilityId) => opened.read(capabilityId).state === 'claimed' });
+    effect = openSyntheticDeploymentEffect({ outputDirectory: synthetic.outputDirectory, durablyClaimed: (capabilityId) => admitsEffect(opened.read(capabilityId).state) });
+    // Separate on disk, not only in spelling: neither real directory may contain the other.
+    const ledgerDirectory = realpathSync(dirname(synthetic.consumptionLedgerPath));
+    const output = synthetic.outputDirectory;
+    if (ledgerDirectory === output || ledgerDirectory.startsWith(`${output}${sep}`) || output.startsWith(`${ledgerDirectory}${sep}`)) throw new Error('overlap');
   } catch {
     opened.close();
-    throw new ReferenceExecutorStartupError('SYNTHETIC_OUTPUT_INVALID', 'The synthetic output directory is missing, a link, reached through a link, or writable by others.');
+    throw new ReferenceExecutorStartupError('SYNTHETIC_OUTPUT_INVALID', 'The synthetic output directory is missing, a link, reached through a link, not this user\'s, writable by others, under an ancestor others can rename, or overlapping the ledger.');
   }
   const crashAt = configuration.faultInjection?.crashAt;
   // CI crash injection: an abrupt kill at one point of the execution path — no cleanup, no answer, nothing flushed by this process.
+  // A hook that returns changes nothing; this one never throws.
   const fault = crashAt === undefined ? undefined : (point: ReferenceExecutorFaultPoint): void => {
     if (point === crashAt) process.kill(process.pid, 'SIGKILL');
   };
