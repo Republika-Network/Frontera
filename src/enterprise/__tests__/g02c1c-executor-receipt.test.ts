@@ -586,6 +586,46 @@ describe('G-02C1C — review findings: stale reservations, substituted rows, rot
     }
   });
 
+  it('an unsigned reservation never lets a conflicting change through: the ledger still refuses it, and returns the reservation only for a legal resolution', async () => {
+    const domain = await freshDomain();
+    const world = await receiptWorld(domain);
+    let receipt: ExecutorReceipt;
+    try {
+      const { capability, presentation } = syntheticCapability(VECTOR.digest);
+      deliver(world, presentation);
+      const presented = world.receipts.history(capability.capabilityId)[0];
+      assert.ok(presented !== undefined);
+      const parsed = parseExecutorReceipt(presented.receipt);
+      assert.ok(parsed.ok);
+      receipt = parsed.receipt;
+    } finally {
+      world.close();
+    }
+    const { receiptId: _id, sequence: _sequence, supersedes: _supersedes, ...completed } = receipt;
+    const failedUnknown = { ...completed, consumption: { ...completed.consumption, ledgerState: 'failed' as const }, outcome: 'attempted-outcome-unknown' as const, basis: 'durable-state' as const, observation: null };
+    const claimedUnknown = { ...failedUnknown, consumption: { ...completed.consumption, ledgerState: 'claimed' as const }, observedAt: completed.consumption.claimedAt };
+
+    const definite = await openExecutorReceiptLedger(join(domain.root, 'receipts', 'pending-definite.sqlite'), { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now(), create: true });
+    try {
+      assert.equal(definite.reserve(completed).state, 'reserved');
+      assert.throws(() => definite.reserve(failedUnknown), ExecutorReceiptConflictError, 'a pending completed reservation does not absorb a conflicting state');
+      assert.equal(definite.latest(receipt.capabilityId)?.sequence, 1);
+      assert.deepEqual(definite.history(receipt.capabilityId), [], 'nothing issued');
+    } finally {
+      definite.close();
+    }
+
+    const unknown = await openExecutorReceiptLedger(join(domain.root, 'receipts', 'pending-unknown.sqlite'), { executorId: EXECUTOR_ID, audience: AUDIENCE, clock: () => Date.now(), create: true });
+    try {
+      const pending = unknown.reserve(claimedUnknown);
+      const resolving = unknown.reserve(completed);
+      assert.equal(resolving.receiptId, pending.receiptId, 'a legal resolution of a pending unknown returns that reservation, to be signed first');
+      assert.equal(unknown.latest(receipt.capabilityId)?.sequence, 1, 'no successor before the predecessor is signed');
+    } finally {
+      unknown.close();
+    }
+  });
+
   it('a receipt ledger edited underneath cannot get the executor to sign a substituted statement (F2)', async () => {
     const domain = await freshDomain();
     const world = await receiptWorld(domain, {

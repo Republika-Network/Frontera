@@ -304,8 +304,6 @@ export async function openExecutorReceiptLedger(
     if (newest === undefined) {
       position = { sequence: 1, supersedes: null };
     } else {
-      // A reservation waiting for its signature is signed before anything supersedes it, whatever the state is now.
-      if (newest.state === 'reserved') return newest;
       const sameState = newest.receipt.consumption.ledgerState === draft.consumption.ledgerState;
       if (sameState) return newest;
       const unknownBefore = newest.receipt.outcome === 'attempted-outcome-unknown';
@@ -313,6 +311,8 @@ export async function openExecutorReceiptLedger(
       // Not earlier than the unknown it resolves (a claim and its outcome can share a millisecond).
       const forward = unknownBefore && draft.observedAt >= newest.receipt.observedAt;
       if (!forward) throw new ExecutorReceiptConflictError('The consumption state no longer matches the newest receipt, and the change is not a forward resolution of an unknown outcome.');
+      // A legal resolution, but the reservation it resolves is still waiting for its signature: that one is signed first.
+      if (newest.state === 'reserved') return newest;
       position = { sequence: newest.sequence + 1, supersedes: newest.receiptId };
     }
     const receipt = positionExecutorReceipt(draft, position.sequence, position.supersedes);
