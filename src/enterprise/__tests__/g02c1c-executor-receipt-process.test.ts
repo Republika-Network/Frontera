@@ -79,7 +79,10 @@ async function receiptLines(executor: SpawnedExecutor, count: number, timeoutMs 
   }
 }
 
-describe('G-02C1C process — signed in the executor, verified here with the public key only', () => {
+/** A suite that waits on an executor process fails within this bound rather than hanging the run. */
+const SUITE_TIMEOUT_MS = 300_000;
+
+describe('G-02C1C process — signed in the executor, verified here with the public key only', { timeout: SUITE_TIMEOUT_MS }, () => {
   it('a completed synthetic execution is receipted by the executor process; this process verifies it, and refuses it altered', async () => {
     const domain = await domainOf();
     const executor = await executorOver(domain);
@@ -119,7 +122,7 @@ describe('G-02C1C process — signed in the executor, verified here with the pub
   });
 });
 
-describe('G-02C1C process — crash recovery: never re-executed, never upgraded, signed the same', () => {
+describe('G-02C1C process — crash recovery: never re-executed, never upgraded, signed the same', { timeout: SUITE_TIMEOUT_MS }, () => {
   const MATRIX: readonly (readonly [string, string, string, string])[] = [
     // point, consumption after the crash, receipt after the crash, receipt once recovered
     ['before-receipt', 'completed', 'none', 'completed-observed'],
@@ -197,7 +200,7 @@ describe('G-02C1C process — crash recovery: never re-executed, never upgraded,
   });
 });
 
-describe('G-02C1C process — key rotation never strands a reservation silently', () => {
+describe('G-02C1C process — key rotation never strands a reservation silently', { timeout: SUITE_TIMEOUT_MS }, () => {
   it('a restart with a rotated key while a reservation is pending is refused by name; with the old key it completes', async () => {
     const domain = await domainOf();
     const crashing = await executorOver(domain, { faultInjection: { crashAt: 'after-receipt-reservation' } }, { [FAULT_VARIABLE]: 'enabled' });
@@ -216,7 +219,7 @@ describe('G-02C1C process — key rotation never strands a reservation silently'
   });
 });
 
-describe('G-02C1C process — concurrent signers', () => {
+describe('G-02C1C process — concurrent signers', { timeout: SUITE_TIMEOUT_MS }, () => {
   it('two executor processes, one consumption ledger, one receipt ledger, one key: per capability one effect and one valid receipt chain, never a conflict', async (t) => {
     const domain = await domainOf();
     const [a, b] = await Promise.all([executorOver(domain), executorOver(domain)]);
@@ -256,7 +259,7 @@ describe('G-02C1C process — concurrent signers', () => {
   });
 });
 
-describe('G-02C1C process — startup refuses unsafe receipt custody', () => {
+describe('G-02C1C process — startup refuses unsafe receipt custody', { timeout: SUITE_TIMEOUT_MS }, () => {
   it('a missing, foreign or corrupted receipt ledger, an unsafe or issuer key, or receipts outside synthetic mode stop the executor', async () => {
     const domain = await domainOf();
     const foreign = await domainOf();

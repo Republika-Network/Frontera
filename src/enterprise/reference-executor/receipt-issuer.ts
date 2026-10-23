@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { canonicalSerialize } from '../governance-store/canonical-json.js';
 import type { ExecutionCapabilityConsumptionDetail, ExecutionCapabilityConsumptionLedger } from '../execution-capability/reference/consumption-ledger.js';
 import { EXECUTOR_RECEIPT_FORMAT, EXECUTOR_RECEIPT_OBSERVATION_KIND, type ExecutorReceipt, type ExecutorReceiptBasis, type ExecutorReceiptDraft, type ExecutorReceiptLedgerState, type ExecutorReceiptObservation, type ExecutorReceiptOutcome } from '../executor-receipt/index.js';
 import type { ReferenceExecutorFaultPoint } from './configuration.js';
@@ -62,7 +63,8 @@ export interface ExecutorReceiptIssuer {
  * stand only as the unknown that this state resolves.
  */
 function supportedBy(stored: ExecutorReceipt, draft: ExecutorReceiptDraft): boolean {
-  const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+  // Canonical, not JSON.stringify: a stored receipt is parsed from canonical text, whose keys are sorted.
+  const same = (left: unknown, right: unknown): boolean => canonicalSerialize(left) === canonicalSerialize(right);
   const identity =
     stored.executorId === draft.executorId &&
     stored.issuer === draft.issuer &&
