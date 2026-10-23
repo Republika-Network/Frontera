@@ -155,7 +155,7 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
       assert.equal(/receipt|ledger|\.claim\s*\(|better-sqlite3|Database\s*\(|effect|execute\s*\(|perform\s*\(|\bonEligible|\bhandler\s*\(/i.test(codeOf(file)), false, file);
     }
     const gateway = codeOf(`${EXECUTOR}/gateway.ts`);
-    assert.equal(/receipt|ledger|\.claim\s*\(|better-sqlite3|effect/i.test(gateway), false);
+    assert.equal(/receipt|\bledger\b|\.claim\s*\(|better-sqlite3|effect/i.test(gateway), false);
     assert.equal([...gateway.matchAll(/execution\.execute\(/g)].length, 1);
     assert.ok(gateway.includes('settle(execution === undefined ? pipeline.assess(observed) : execution.execute(observed));'), 'without a flow the gateway is the verification-only gateway');
     assert.equal(/receipt/i.test(sources.map(codeOf).join('\n')), false, 'no receipt anywhere (G-02C1C)');

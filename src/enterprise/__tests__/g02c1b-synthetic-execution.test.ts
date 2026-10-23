@@ -322,7 +322,7 @@ describe('G-02C1B — the synthetic effect is contained', () => {
     const domain = await freshDomain();
     const input = (capabilityId: string) => ({ executorId: EXECUTOR_ID, audience: 'a', issuer: 'i', capabilityId, executionId: 'e', operation: SYNTHETIC_ACTION, target: RESOURCE, bindingDigest: VECTOR.digest, claimedAt: 'c', attemptedAt: 'a' });
     const claimedEverything = openSyntheticDeploymentEffect({ outputDirectory: domain.outputDirectory, durablyClaimed: () => true });
-    for (const id of ['../escaped', `../${'a'.repeat(64)}`, '/tmp/absolute', `${'a'.repeat(63)}/`, 'A'.repeat(64), '']) assert.equal(claimedEverything.apply(input(id)), 'not-attempted', JSON.stringify(id));
+    for (const id of ['../escaped', `../${'a'.repeat(64)}`, '/etc/absolute', `${'a'.repeat(63)}/`, 'A'.repeat(64), '']) assert.equal(claimedEverything.apply(input(id)), 'not-attempted', JSON.stringify(id));
     assert.equal(existsSync(join(domain.root, 'escaped.json')), false);
     const claimedNothing = openSyntheticDeploymentEffect({ outputDirectory: domain.outputDirectory, durablyClaimed: () => false });
     assert.equal(claimedNothing.apply(input('b'.repeat(64))), 'not-attempted');

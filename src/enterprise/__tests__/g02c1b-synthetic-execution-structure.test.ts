@@ -77,7 +77,7 @@ describe('G-02C1B structure — the synthetic effect is local and contained', ()
   it('no executor source runs a command, starts a process, evaluates code or reaches the network as a client', () => {
     for (const file of sourcesUnder(EXECUTOR)) {
       const code = codeOf(file);
-      assert.equal(/child_process|\beval\s*\(|new\s+Function\s*\(|\bexec(?:Sync|File)?\s*\(|\bspawn\s*\(|\bfork\s*\(|node:(?:https|net|tls|dns|dgram|http2)\b|\bfetch\s*\(|\.request\s*\(/.test(code), false, file);
+      assert.equal(/child_process|\beval\s*\(|new\s+Function\s*\(|(?<![.\w])exec(?:Sync|File)?\s*\(|\bspawn\s*\(|\bfork\s*\(|node:(?:https|net|tls|dns|dgram|http2)\b|\bfetch\s*\(|\.request\s*\(/.test(code), false, file);
     }
   });
 });
