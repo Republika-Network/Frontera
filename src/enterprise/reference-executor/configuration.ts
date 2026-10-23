@@ -1,4 +1,5 @@
 import { createHash, createPublicKey } from 'node:crypto';
+import { dirname, isAbsolute, normalize, sep } from 'node:path';
 
 import { createAuthoritySignatureRegistry } from '../authority-authenticity/signature-verification.js';
 import { EXECUTION_CAPABILITY_LIMITS, isExecutionCapabilityIdentifier, type ExecutionCapabilityTrustedIssuer } from '../execution-capability/index.js';
@@ -22,8 +23,16 @@ import { REFERENCE_EXECUTOR_HTTP_BINDING_FORMAT } from './binding-reconstruction
  * Every refusal is a `ReferenceExecutorConfigurationError` whose message names
  * the defect and never echoes a value, a key or a secret.
  *
- * G-02C1A configures verification only: there is no receipt key, receipt
- * ledger or consumption ledger here (G-02C1B, G-02C1C).
+ * ## Mode (G-02C1B)
+ *
+ * `mode` is `verification-only` unless the document says
+ * `synthetic-execution`, and an absent `mode` is `verification-only`: every
+ * G-02C1A document keeps its meaning. `synthetic-execution` requires the
+ * `syntheticExecution` section — an existing G-02A consumption ledger, a
+ * dedicated output directory, the one synthetic effect and its `synthetic.*`
+ * actions — and that section is refused in every other mode, so no field can
+ * enable an effect on its own. There is no receipt key or receipt ledger here
+ * (G-02C1C).
  */
 
 export const REFERENCE_EXECUTOR_CONFIGURATION_FORMAT = 'frontera.reference-executor-configuration.v1';
@@ -57,6 +66,10 @@ export const REFERENCE_EXECUTOR_CONFIGURATION_ERROR_CODES = Object.freeze([
   'LIMIT_INVALID',
   'STATUS_POLICY_UNSUPPORTED',
   'RUNTIME_UNSAFE',
+  'MODE_UNSUPPORTED',
+  'MODE_INCONSISTENT',
+  'SYNTHETIC_EXECUTION_INVALID',
+  'FAULT_INJECTION_INVALID',
 ] as const);
 export type ReferenceExecutorConfigurationErrorCode = (typeof REFERENCE_EXECUTOR_CONFIGURATION_ERROR_CODES)[number];
 
@@ -85,8 +98,35 @@ export interface ReferenceExecutorCredential {
   readonly expectedDigest: string;
 }
 
+export const REFERENCE_EXECUTOR_MODES = Object.freeze(['verification-only', 'synthetic-execution'] as const);
+export type ReferenceExecutorMode = (typeof REFERENCE_EXECUTOR_MODES)[number];
+
+/** The one effect a reference executor can perform: a local record that a synthetic release was applied to a synthetic target. Never a deployment. */
+export const SYNTHETIC_DEPLOYMENT_EFFECT = 'frontera.synthetic-deployment-record.v1';
+/** Every action the synthetic effect performs is named as synthetic. */
+export const SYNTHETIC_ACTION_PREFIX = 'synthetic.';
+
+/** Where CI may crash the process on purpose (G-02C1B crash qualification): each point lies on the execution path, in this order. */
+export const REFERENCE_EXECUTOR_FAULT_POINTS = Object.freeze(['before-claim', 'after-claim', 'after-expiry-check', 'during-effect', 'after-effect', 'after-outcome'] as const);
+export type ReferenceExecutorFaultPoint = (typeof REFERENCE_EXECUTOR_FAULT_POINTS)[number];
+
+export interface ReferenceExecutorSyntheticExecution {
+  readonly effect: typeof SYNTHETIC_DEPLOYMENT_EFFECT;
+  /** An existing G-02A ledger file, pinned to this executor's audience. Never created by the executor. */
+  readonly consumptionLedgerPath: string;
+  /** An existing directory dedicated to synthetic records, fixed at boot. Nothing from a request names a path. */
+  readonly outputDirectory: string;
+  /** The `synthetic.*` actions the effect performs: a subset of `permittedActions`. Any other permitted action is verified and never performed. */
+  readonly syntheticActions: readonly string[];
+}
+
 /** A validated, deep-frozen configuration. */
 export interface ReferenceExecutorConfiguration {
+  readonly mode: ReferenceExecutorMode;
+  /** Present exactly in `synthetic-execution` mode. */
+  readonly syntheticExecution: ReferenceExecutorSyntheticExecution | null;
+  /** CI crash injection: present only when the document asks for it, only in `synthetic-execution` mode. */
+  readonly faultInjection: { readonly crashAt: ReferenceExecutorFaultPoint } | null;
   readonly executorId: string;
   readonly audience: string;
   readonly organizationIds: readonly string[];
@@ -123,6 +163,8 @@ const TOP_LEVEL_FIELDS = Object.freeze([
   'statusPolicy',
   'listen',
 ]);
+/** Optional top-level fields: absent means verification-only, no synthetic section, no fault injection. */
+const OPTIONAL_TOP_LEVEL_FIELDS = Object.freeze(['mode', 'syntheticExecution', 'faultInjection']);
 
 const LIMITS = Object.freeze({
   maximumIssuers: 8,
@@ -176,12 +218,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Exactly `fields`, as own enumerable data properties: an unknown key, a missing key or an accessor is refused. */
-function closed(value: unknown, fields: readonly string[], what: string): Readonly<Record<string, unknown>> {
+function closed(value: unknown, fields: readonly string[], what: string, optional: readonly string[] = []): Readonly<Record<string, unknown>> {
   if (!isPlainObject(value)) return fail('CONFIGURATION_MALFORMED', `${what} must be a JSON object.`);
   for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== 'string' || !fields.includes(key)) fail('CONFIGURATION_UNKNOWN_KEY', `${what} has a field this contract does not declare.`);
+    if (typeof key !== 'string' || !(fields.includes(key) || optional.includes(key))) fail('CONFIGURATION_UNKNOWN_KEY', `${what} has a field this contract does not declare.`);
   }
   const out: Record<string, unknown> = {};
+  for (const field of optional) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (descriptor === undefined) continue;
+    if (!('value' in descriptor) || descriptor.enumerable !== true) fail('CONFIGURATION_MALFORMED', `${what} field '${field}' is not plain data.`);
+    out[field] = descriptor.value;
+  }
   for (const field of fields) {
     const descriptor = Object.getOwnPropertyDescriptor(value, field);
     if (descriptor === undefined) fail('CONFIGURATION_MISSING_FIELD', `${what} is missing '${field}'.`);
@@ -305,7 +353,7 @@ function parseCredential(value: unknown, environment: Readonly<Record<string, st
  * `ReferenceExecutorConfigurationError` on the first defect.
  */
 export function parseReferenceExecutorConfiguration(raw: unknown, environment: Readonly<Record<string, string | undefined>>): ReferenceExecutorConfiguration {
-  const fields = closed(raw, TOP_LEVEL_FIELDS, 'The reference executor configuration');
+  const fields = closed(raw, TOP_LEVEL_FIELDS, 'The reference executor configuration', OPTIONAL_TOP_LEVEL_FIELDS);
   if (fields['format'] !== REFERENCE_EXECUTOR_CONFIGURATION_FORMAT) fail('CONFIGURATION_FORMAT_UNSUPPORTED', `format must be '${REFERENCE_EXECUTOR_CONFIGURATION_FORMAT}'.`);
   if (fields['environment'] !== REFERENCE_EXECUTOR_ENVIRONMENT) fail('ENVIRONMENT_UNSUPPORTED', `The reference executor runs only in '${REFERENCE_EXECUTOR_ENVIRONMENT}'.`);
 
@@ -347,7 +395,16 @@ export function parseReferenceExecutorConfiguration(raw: unknown, environment: R
   if (host !== '127.0.0.1' && host !== '::1') fail('RUNTIME_UNSAFE', 'The reference executor listens on a loopback address only.');
   const port = integer(listen['port'], 0, 65_535, 'listen.port');
 
+  const mode = parseMode(fields['mode']);
+  const syntheticExecution = mode === 'synthetic-execution' ? parseSyntheticExecution(fields['syntheticExecution'], permittedActions) : null;
+  if (mode !== 'synthetic-execution' && fields['syntheticExecution'] !== undefined) fail('MODE_INCONSISTENT', 'syntheticExecution is accepted only in synthetic-execution mode.');
+  if (mode !== 'synthetic-execution' && fields['faultInjection'] !== undefined) fail('MODE_INCONSISTENT', 'faultInjection is accepted only in synthetic-execution mode.');
+  const faultInjection = fields['faultInjection'] === undefined ? null : parseFaultInjection(fields['faultInjection']);
+
   return Object.freeze({
+    mode,
+    syntheticExecution,
+    faultInjection,
     executorId,
     audience,
     organizationIds,
@@ -364,4 +421,45 @@ export function parseReferenceExecutorConfiguration(raw: unknown, environment: R
     statusPolicy: 'offline-only' as const,
     listen: Object.freeze({ host: host as '127.0.0.1' | '::1', port }),
   });
+}
+
+function parseMode(value: unknown): ReferenceExecutorMode {
+  if (value === undefined) return 'verification-only';
+  if (value !== 'verification-only' && value !== 'synthetic-execution') return fail('MODE_UNSUPPORTED', "mode must be 'verification-only' or 'synthetic-execution'.");
+  return value;
+}
+
+/** An absolute, already-normalized local path with no trailing separator: one spelling, never resolved against a working directory. */
+function absolutePath(value: unknown, what: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 1_024 || value.includes('\0') || !isAbsolute(value) || normalize(value) !== value || (value.length > 1 && value.endsWith(sep))) {
+    return fail('SYNTHETIC_EXECUTION_INVALID', `${what} must be an absolute, normalized path.`);
+  }
+  return value;
+}
+
+function parseSyntheticExecution(value: unknown, permittedActions: readonly string[]): ReferenceExecutorSyntheticExecution {
+  if (value === undefined) return fail('MODE_INCONSISTENT', 'synthetic-execution mode requires the syntheticExecution section.');
+  const fields = closed(value, ['effect', 'consumptionLedgerPath', 'outputDirectory', 'syntheticActions'], 'syntheticExecution');
+  if (fields['effect'] !== SYNTHETIC_DEPLOYMENT_EFFECT) fail('SYNTHETIC_EXECUTION_INVALID', `The only effect is '${SYNTHETIC_DEPLOYMENT_EFFECT}'.`);
+  const consumptionLedgerPath = absolutePath(fields['consumptionLedgerPath'], 'consumptionLedgerPath');
+  const outputDirectory = absolutePath(fields['outputDirectory'], 'outputDirectory');
+  // The ledger and the records are separate: a record can never land on, beside or above the ledger.
+  const ledgerDirectory = dirname(consumptionLedgerPath);
+  const inside = (child: string, parent: string): boolean => child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
+  if (inside(consumptionLedgerPath, outputDirectory) || inside(outputDirectory, ledgerDirectory) || inside(ledgerDirectory, outputDirectory)) {
+    fail('SYNTHETIC_EXECUTION_INVALID', 'The output directory must be separate from the consumption ledger and its directory.');
+  }
+  const syntheticActions = identityList(fields['syntheticActions'], 'syntheticActions', LIMITS.maximumAllowListEntries, 'SYNTHETIC_EXECUTION_INVALID');
+  for (const action of syntheticActions) {
+    if (!action.startsWith(SYNTHETIC_ACTION_PREFIX) || action.length === SYNTHETIC_ACTION_PREFIX.length) fail('SYNTHETIC_EXECUTION_INVALID', `Every synthetic action is named '${SYNTHETIC_ACTION_PREFIX}…'.`);
+    if (!permittedActions.includes(action)) fail('SYNTHETIC_EXECUTION_INVALID', 'Every synthetic action must also be a permitted action.');
+  }
+  return Object.freeze({ effect: SYNTHETIC_DEPLOYMENT_EFFECT, consumptionLedgerPath, outputDirectory, syntheticActions });
+}
+
+function parseFaultInjection(value: unknown): { readonly crashAt: ReferenceExecutorFaultPoint } {
+  const fields = closed(value, ['crashAt'], 'faultInjection');
+  const crashAt = REFERENCE_EXECUTOR_FAULT_POINTS.find((point) => point === fields['crashAt']);
+  if (crashAt === undefined) return fail('FAULT_INJECTION_INVALID', 'faultInjection.crashAt must name one fault point.');
+  return Object.freeze({ crashAt });
 }
