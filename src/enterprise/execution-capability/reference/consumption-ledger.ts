@@ -94,6 +94,36 @@ export type ExecutionCapabilityConsumptionRecord =
       readonly outcomeRecorded: boolean;
     };
 
+/**
+ * G-02C1C — every fact the ledger persisted for one consumption, read back
+ * as stored. Nothing here is derived or reconstructed; `outcomeRecordedAt` is
+ * `null` exactly while the row is `claimed`.
+ */
+export type ExecutionCapabilityConsumptionDetail =
+  | { readonly state: 'absent' }
+  | {
+      readonly state: ExecutionCapabilityConsumptionState;
+      readonly capabilityId: string;
+      readonly issuer: string;
+      readonly organizationId: string;
+      readonly trustDomain: string;
+      readonly executionId: string;
+      /** The signed capability's `actionBinding.digest`, as claimed. */
+      readonly actionBindingDigest: string;
+      readonly expiresAt: string;
+      readonly claimedAt: string;
+      readonly outcomeRecordedAt: string | null;
+    };
+
+/** One page of unresolved consumptions (`claimed` or `outcome-unknown`), in a fixed order: claim instant, then capability id. */
+export interface ExecutionCapabilityUnresolvedPage {
+  readonly records: readonly Extract<ExecutionCapabilityConsumptionDetail, { readonly capabilityId: string }>[];
+  /** Pass back as `after` for the next page; absent on the last page. */
+  readonly next?: { readonly claimedAt: string; readonly capabilityId: string };
+}
+
+export const EXECUTION_CAPABILITY_UNRESOLVED_PAGE_LIMIT = 100;
+
 export interface ExecutionCapabilityConsumptionLedger {
   /** The one audience this ledger consumes for. */
   readonly audience: string;
@@ -103,6 +133,10 @@ export interface ExecutionCapabilityConsumptionLedger {
   recordOutcome(capabilityId: string, outcome: ExecutionCapabilityReportedOutcome): 'recorded' | 'not-claimed' | 'not-forward';
   read(capabilityId: string): ExecutionCapabilityConsumptionRecord;
   readExecution(issuer: string, executionId: string): ExecutionCapabilityConsumptionRecord;
+  /** G-02C1C, read-only: every persisted fact of one consumption. Never changes a row. */
+  readDetail(capabilityId: string): ExecutionCapabilityConsumptionDetail;
+  /** G-02C1C, read-only: unresolved consumptions, bounded (1 … 100 per page) and in a fixed order. Never changes, releases or recovers a row. */
+  listUnresolved(options?: { readonly limit?: number; readonly after?: { readonly claimedAt: string; readonly capabilityId: string } }): ExecutionCapabilityUnresolvedPage;
   close(): void;
 }
 
@@ -168,6 +202,37 @@ interface ConsumptionRow {
   readonly execution_id: unknown;
   readonly claimed_at: unknown;
   readonly state: unknown;
+}
+
+interface DetailRow extends ConsumptionRow {
+  readonly organization_id: unknown;
+  readonly trust_domain: unknown;
+  readonly action_binding_digest: unknown;
+  readonly expires_at: unknown;
+  readonly outcome_recorded_at: unknown;
+}
+
+function detailOf(row: DetailRow | undefined): ExecutionCapabilityConsumptionDetail {
+  if (row === undefined) return Object.freeze({ state: 'absent' as const });
+  const base = recordOf(row);
+  if (base.state === 'absent') return base;
+  const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+  const recorded = row.outcome_recorded_at;
+  if (!text(row.organization_id) || !text(row.trust_domain) || !text(row.action_binding_digest) || !text(row.expires_at) || !(recorded === null || text(recorded)) || (base.state === 'claimed') !== (recorded === null)) {
+    throw new Error('The execution capability ledger holds a malformed row.');
+  }
+  return Object.freeze({
+    state: base.state,
+    capabilityId: base.capabilityId,
+    issuer: base.issuer,
+    organizationId: row.organization_id,
+    trustDomain: row.trust_domain,
+    executionId: base.executionId,
+    actionBindingDigest: row.action_binding_digest,
+    expiresAt: row.expires_at,
+    claimedAt: base.claimedAt,
+    outcomeRecordedAt: recorded,
+  });
 }
 
 type Database = import('better-sqlite3').Database;
@@ -251,6 +316,13 @@ export async function openExecutionCapabilityConsumptionLedger(path: string, opt
     `INSERT INTO execution_capability_consumptions (capability_id, issuer, organization_id, trust_domain, execution_id, action_binding_digest, expires_at, claimed_at, state)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claimed')`,
   );
+  const detailColumns = `${columns}, organization_id, trust_domain, action_binding_digest, expires_at, outcome_recorded_at`;
+  const selectDetail = db.prepare(`SELECT ${detailColumns} FROM execution_capability_consumptions WHERE capability_id = ?`);
+  const selectUnresolved = db.prepare(
+    `SELECT ${detailColumns} FROM execution_capability_consumptions
+     WHERE state IN ('claimed', 'outcome-unknown') AND (claimed_at > ? OR (claimed_at = ? AND capability_id > ?))
+     ORDER BY claimed_at, capability_id LIMIT ?`,
+  );
   const advance = db.prepare(
     `UPDATE execution_capability_consumptions SET state = ?, outcome_recorded_at = ?
      WHERE capability_id = ? AND (state = 'claimed' OR (state = 'outcome-unknown' AND ? IN ('completed', 'failed')))`,
@@ -309,6 +381,22 @@ export async function openExecutionCapabilityConsumptionLedger(path: string, opt
     readExecution(issuer: string, executionId: string): ExecutionCapabilityConsumptionRecord {
       ensureOpen();
       return recordOf(selectExecution.get(issuer, executionId) as ConsumptionRow | undefined);
+    },
+    readDetail(capabilityId: string): ExecutionCapabilityConsumptionDetail {
+      ensureOpen();
+      return detailOf(selectDetail.get(capabilityId) as DetailRow | undefined);
+    },
+    listUnresolved(options = {}): ExecutionCapabilityUnresolvedPage {
+      ensureOpen();
+      const limit = options.limit ?? EXECUTION_CAPABILITY_UNRESOLVED_PAGE_LIMIT;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > EXECUTION_CAPABILITY_UNRESOLVED_PAGE_LIMIT) throw new Error('An unresolved page holds 1 to 100 rows.');
+      const after = options.after;
+      if (after !== undefined && (typeof after.claimedAt !== 'string' || typeof after.capabilityId !== 'string')) throw new Error('An unresolved page cursor is a claim instant and a capability id.');
+      // One more row than asked tells whether a next page exists, without a second query.
+      const rows = selectUnresolved.all(after?.claimedAt ?? '', after?.claimedAt ?? '', after?.capabilityId ?? '', limit + 1) as DetailRow[];
+      const records = rows.slice(0, limit).map((row) => detailOf(row) as Extract<ExecutionCapabilityConsumptionDetail, { readonly capabilityId: string }>);
+      const last = records[records.length - 1];
+      return Object.freeze({ records: Object.freeze(records), ...(rows.length > limit && last !== undefined ? { next: Object.freeze({ claimedAt: last.claimedAt, capabilityId: last.capabilityId }) } : {}) });
     },
     close(): void {
       if (!closed) {

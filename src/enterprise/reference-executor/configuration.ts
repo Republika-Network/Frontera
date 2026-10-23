@@ -70,6 +70,7 @@ export const REFERENCE_EXECUTOR_CONFIGURATION_ERROR_CODES = Object.freeze([
   'MODE_INCONSISTENT',
   'SYNTHETIC_EXECUTION_INVALID',
   'FAULT_INJECTION_INVALID',
+  'EXECUTOR_RECEIPTS_INVALID',
 ] as const);
 export type ReferenceExecutorConfigurationErrorCode = (typeof REFERENCE_EXECUTOR_CONFIGURATION_ERROR_CODES)[number];
 
@@ -107,7 +108,20 @@ export const SYNTHETIC_DEPLOYMENT_EFFECT = 'frontera.synthetic-deployment-record
 export const SYNTHETIC_ACTION_PREFIX = 'synthetic.';
 
 /** Where CI may crash the process on purpose (G-02C1B crash qualification): each point lies on the execution path, in this order. */
-export const REFERENCE_EXECUTOR_FAULT_POINTS = Object.freeze(['before-claim', 'after-claim', 'after-expiry-check', 'during-effect', 'after-effect', 'after-outcome'] as const);
+export const REFERENCE_EXECUTOR_FAULT_POINTS = Object.freeze([
+  'before-claim',
+  'after-claim',
+  'after-expiry-check',
+  'during-effect',
+  'after-effect',
+  'after-outcome',
+  // G-02C1C: the receipt path, in order.
+  'before-receipt',
+  'after-receipt-construction',
+  'after-receipt-reservation',
+  'after-receipt-signature',
+  'after-receipt',
+] as const);
 export type ReferenceExecutorFaultPoint = (typeof REFERENCE_EXECUTOR_FAULT_POINTS)[number];
 
 export interface ReferenceExecutorSyntheticExecution {
@@ -120,8 +134,19 @@ export interface ReferenceExecutorSyntheticExecution {
   readonly syntheticActions: readonly string[];
 }
 
+/** G-02C1C: the executor's own receipt-signing key and receipt ledger. Accepted only in synthetic-execution mode. */
+export interface ReferenceExecutorReceiptConfiguration {
+  readonly keyId: string;
+  /** An Ed25519 PKCS#8 PEM file, owned by the executor's user and readable by no one else. Read once at boot. */
+  readonly privateKeyFile: string;
+  /** An existing receipt ledger pinned to this executor and audience. Never created by the executor. */
+  readonly receiptLedgerPath: string;
+}
+
 /** A validated, deep-frozen configuration. */
 export interface ReferenceExecutorConfiguration {
+  /** G-02C1C: present only when the synthetic-execution document configures receipts. */
+  readonly executorReceipts: ReferenceExecutorReceiptConfiguration | null;
   readonly mode: ReferenceExecutorMode;
   /** Present exactly in `synthetic-execution` mode. */
   readonly syntheticExecution: ReferenceExecutorSyntheticExecution | null;
@@ -164,7 +189,7 @@ const TOP_LEVEL_FIELDS = Object.freeze([
   'listen',
 ]);
 /** Optional top-level fields: absent means verification-only, no synthetic section, no fault injection. */
-const OPTIONAL_TOP_LEVEL_FIELDS = Object.freeze(['mode', 'syntheticExecution', 'faultInjection']);
+const OPTIONAL_TOP_LEVEL_FIELDS = Object.freeze(['mode', 'syntheticExecution', 'faultInjection', 'executorReceipts']);
 
 const LIMITS = Object.freeze({
   maximumIssuers: 8,
@@ -400,11 +425,14 @@ export function parseReferenceExecutorConfiguration(raw: unknown, environment: R
   if (mode !== 'synthetic-execution' && fields['syntheticExecution'] !== undefined) fail('MODE_INCONSISTENT', 'syntheticExecution is accepted only in synthetic-execution mode.');
   if (mode !== 'synthetic-execution' && fields['faultInjection'] !== undefined) fail('MODE_INCONSISTENT', 'faultInjection is accepted only in synthetic-execution mode.');
   const faultInjection = fields['faultInjection'] === undefined ? null : parseFaultInjection(fields['faultInjection']);
+  if (mode !== 'synthetic-execution' && fields['executorReceipts'] !== undefined) fail('MODE_INCONSISTENT', 'executorReceipts is accepted only in synthetic-execution mode.');
+  const executorReceipts = syntheticExecution === null || fields['executorReceipts'] === undefined ? null : parseExecutorReceipts(fields['executorReceipts'], syntheticExecution, trustedIssuers);
 
   return Object.freeze({
     mode,
     syntheticExecution,
     faultInjection,
+    executorReceipts,
     executorId,
     audience,
     organizationIds,
@@ -430,11 +458,27 @@ function parseMode(value: unknown): ReferenceExecutorMode {
 }
 
 /** An absolute, already-normalized local path with no trailing separator: one spelling, never resolved against a working directory. */
-function absolutePath(value: unknown, what: string): string {
+function absolutePath(value: unknown, what: string, code: ReferenceExecutorConfigurationErrorCode = 'SYNTHETIC_EXECUTION_INVALID'): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 1_024 || value.includes('\0') || !isAbsolute(value) || normalize(value) !== value || (value.length > 1 && value.endsWith(sep))) {
-    return fail('SYNTHETIC_EXECUTION_INVALID', `${what} must be an absolute, normalized path.`);
+    return fail(code, `${what} must be an absolute, normalized path.`);
   }
   return value;
+}
+
+function parseExecutorReceipts(value: unknown, synthetic: ReferenceExecutorSyntheticExecution, trustedIssuers: readonly ExecutionCapabilityTrustedIssuer[]): ReferenceExecutorReceiptConfiguration {
+  const fields = closed(value, ['keyId', 'privateKeyFile', 'receiptLedgerPath'], 'executorReceipts');
+  const keyIdValue = fields['keyId'];
+  if (!isExecutionCapabilityIdentifier(keyIdValue) || keyIdValue.includes('*')) return fail('EXECUTOR_RECEIPTS_INVALID', 'executorReceipts.keyId must be one exact identifier.');
+  const keyId = keyIdValue;
+  if (trustedIssuers.some((entry) => entry.keys.some((key) => key.keyId === keyId))) fail('EXECUTOR_RECEIPTS_INVALID', 'The receipt key id is a trusted issuer key id; an executor key is never an authority key.');
+  const privateKeyFile = absolutePath(fields['privateKeyFile'], 'executorReceipts.privateKeyFile', 'EXECUTOR_RECEIPTS_INVALID');
+  const receiptLedgerPath = absolutePath(fields['receiptLedgerPath'], 'executorReceipts.receiptLedgerPath', 'EXECUTOR_RECEIPTS_INVALID');
+  const within = (path: string, directory: string): boolean => path === directory || path.startsWith(`${directory}${sep}`);
+  const distinct = new Set([privateKeyFile, receiptLedgerPath, synthetic.consumptionLedgerPath]).size === 3;
+  if (!distinct || within(privateKeyFile, synthetic.outputDirectory) || within(receiptLedgerPath, synthetic.outputDirectory)) {
+    fail('EXECUTOR_RECEIPTS_INVALID', 'The receipt key and the receipt ledger are separate files, outside the synthetic output directory and apart from the consumption ledger.');
+  }
+  return Object.freeze({ keyId, privateKeyFile, receiptLedgerPath });
 }
 
 function parseSyntheticExecution(value: unknown, permittedActions: readonly string[]): ReferenceExecutorSyntheticExecution {

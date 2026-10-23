@@ -110,16 +110,23 @@ describe('G-02C1A structure — the executor stands alone', () => {
       `${EXECUTOR}/gateway.ts`,
       `${EXECUTOR}/index.ts`,
       `${EXECUTOR}/launcher.ts`,
+      `${EXECUTOR}/receipt-issuer.ts`,
+      `${EXECUTOR}/receipt-ledger.ts`,
+      `${EXECUTOR}/receipt-signer.ts`,
       `${EXECUTOR}/synthetic-effect.ts`,
       `${EXECUTOR}/verification-pipeline.ts`,
       'src/enterprise/execution-capability/reference/consumption-ledger.ts',
+      // G-02C1C: the receipt contract and its standalone verifier, loaded only with receipts configured.
+      'src/enterprise/executor-receipt/index.ts',
+      'src/enterprise/executor-receipt/receipt.ts',
+      'src/enterprise/executor-receipt/verifier.ts',
     ].sort());
     assert.deepEqual([...closure.bare].sort(), ['better-sqlite3', 'node:crypto', 'node:fs', 'node:http', 'node:path']);
   });
 
   it('it reaches no Host, Kernel, orchestrator, grant store, grant runtime, issuance, gate, adapter registry, P11/P12, signer or database', () => {
     const forbidden =
-      /^src\/kernel\/|^src\/features\/|^src\/enterprise\/(composition|host|orchestration|governed-action|configuration|api|adapters|registry|bounded-grant-store|execution-governance|execution-capability-issuance|execution-capability-gate|execution-adapters|execution-outcome-store|execution-resolution-store|execution-reconciliation|external-authority-signer|emergency-control)\/|sqlite|-store\.ts$|signer\.ts$|custody\.ts$/;
+      /^src\/kernel\/|^src\/features\/|^src\/enterprise\/(composition|host|orchestration|governed-action|configuration|api|adapters|registry|bounded-grant-store|execution-governance|execution-capability-issuance|execution-capability-gate|execution-adapters|execution-outcome-store|execution-resolution-store|execution-reconciliation|external-authority-signer|emergency-control)\/|sqlite|-store\.ts$|(?<!receipt-)signer\.ts$|custody\.ts$/;
     assert.deepEqual([...closure.files].filter((file) => forbidden.test(file)), []);
     assert.equal([...verificationPath.bare].some((specifier) => /sqlite|better-sqlite3/.test(specifier)), false, 'the verification path opens no database');
   });
@@ -145,8 +152,9 @@ describe('G-02C1A structure — the executor stands alone', () => {
 describe('G-02C1A structure — verification only: no signing, no ledger, no effect', () => {
   const sources = [...sourcesUnder(EXECUTOR), ...sourcesUnder(PRESENTATION)];
 
-  it('no private key, signing call or HMAC', () => {
-    for (const file of sources) assert.equal(/createPrivateKey|privateKey|generateKeyPair|crypto\.sign\b|[^a-zA-Z.]sign\(|createHmac|signBytes|signExecution/i.test(codeOf(file)), false, file);
+  it('no private key, signing call or HMAC — except the G-02C1C receipt signer, which holds only the executor’s own receipt key', () => {
+    for (const file of sources.filter((path) => path !== `${EXECUTOR}/receipt-signer.ts`)) assert.equal(/createPrivateKey|\bprivateKey\b|generateKeyPair|crypto\.sign\b|[^a-zA-Z.]sign\(|createHmac|signBytes|signExecution/i.test(codeOf(file)), false, file);
+    assert.equal(/signExecution|authority-authenticity\/(?:signer|custody)|external-authority-signer/.test(codeOf(`${EXECUTOR}/receipt-signer.ts`)), false, 'the receipt signer reaches no authority signing');
   });
 
   it('the verification modules hold no receipt, ledger, claim, database or effect; the gateway reaches the G-02C1B flow only through the one call the launcher enables', () => {
@@ -158,7 +166,7 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
     assert.equal(/receipt|\bledger\b|\.claim\s*\(|better-sqlite3|effect/i.test(gateway), false);
     assert.equal([...gateway.matchAll(/execution\.execute\(/g)].length, 1);
     assert.ok(gateway.includes('settle(execution === undefined ? pipeline.assess(observed) : execution.execute(observed));'), 'without a flow the gateway is the verification-only gateway');
-    assert.equal(/receipt/i.test(sources.map(codeOf).join('\n')), false, 'no receipt anywhere (G-02C1C)');
+    assert.equal(/receipt/i.test([`${EXECUTOR}/admission.ts`, `${EXECUTOR}/binding-reconstruction.ts`, `${EXECUTOR}/verification-pipeline.ts`, `${EXECUTOR}/gateway.ts`].map(codeOf).join('\n')), false, 'no receipt on the verification path (receipts are G-02C1C, synthetic mode only)');
   });
 
   it('the pipeline runs its steps in the declared order, and the gateway only answers with the assessment', () => {

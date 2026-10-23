@@ -105,6 +105,11 @@ export interface ReferenceExecutorExecutionFlowOptions {
   readonly clock: () => number;
   /** Called at each fault point in order (CI crash injection); never alters the flow when it returns. */
   readonly fault?: (point: ReferenceExecutorFaultPoint) => void;
+  /**
+   * G-02C1C: the receipt issuer, when receipts are configured. Asked only after an outcome is durably recorded (with what
+   * this path observed) and on a duplicate delivery (from durable state alone). Its answer never changes this flow's.
+   */
+  readonly receipts?: { issue(capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown'): unknown; issueResolved(capabilityId: string): unknown };
 }
 
 function record(outcome: ReferenceExecutorExecutionOutcome, stage: ReferenceExecutorExecutionStage, code: ReferenceExecutorExecutionCode, bindingDigest: string | null, ledgerState: ExecutionCapabilityConsumptionState | null): ReferenceExecutorExecution {
@@ -123,6 +128,18 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
   if (ledger.audience !== configuration.audience) throw new Error('The consumption ledger is pinned to another audience.');
   const syntheticActions = synthetic.syntheticActions;
   const fault = options.fault ?? (() => undefined);
+  const receipts = options.receipts;
+  /** A receipt is a statement about what already happened: asking for one never alters the answer, and a failure here is not an outcome. */
+  const receiptFor = (capabilityId: string, observed?: ReferenceExecutorExecutionOutcome): void => {
+    if (receipts === undefined) return;
+    try {
+      // After this path's own outcome: what it observed. On a duplicate: durable state alone, and not while still claimed — the claim may be live elsewhere.
+      if (observed === 'completed-observed' || observed === 'failed-observed' || observed === 'consumed-not-attempted' || observed === 'attempted-outcome-unknown') receipts.issue(capabilityId, observed);
+      else receipts.issueResolved(capabilityId);
+    } catch {
+      // Recovered later from durable state; the answer stands.
+    }
+  };
 
   /** The earlier state behind a consumed capability or execution; `null` if the ledger cannot say. */
   function priorState(capabilityId: string, issuer: string, executionId: string): ExecutionCapabilityConsumptionState | null {
@@ -158,7 +175,11 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
     }
     if (claim.outcome !== 'claimed') {
       const consumed = claim.reason === 'CAPABILITY_CONSUMED' || claim.reason === 'EXECUTION_CONSUMED';
-      if (consumed) return record('already-consumed', 'claim', claim.reason, bindingDigest, priorState(capabilityId, capability.issuer, capability.executionId));
+      if (consumed) {
+        // Nothing is performed again; a receipt missing for the earlier consumption is issued from durable state.
+        if (claim.reason === 'CAPABILITY_CONSUMED') receiptFor(capabilityId);
+        return record('already-consumed', 'claim', claim.reason, bindingDigest, priorState(capabilityId, capability.issuer, capability.executionId));
+      }
       return record('refused', 'claim', claim.reason, null, null);
     }
     fault('after-claim');
@@ -173,6 +194,7 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
       }
       if (recorded !== 'recorded') return record('attempted-outcome-unknown', 'outcome', 'OUTCOME_NOT_RECORDED', bindingDigest, priorState(capabilityId, capability.issuer, capability.executionId));
       fault('after-outcome');
+      receiptFor(capabilityId, outcome);
       return record(outcome, stage, code, bindingDigest, state);
     };
 

@@ -4,6 +4,7 @@ import { dirname, sep } from 'node:path';
 import { ReferenceExecutorConfigurationError, parseReferenceExecutorConfiguration, type ReferenceExecutorConfiguration, type ReferenceExecutorFaultPoint } from './configuration.js';
 import type { ReferenceExecutorExecutionFlow } from './execution-flow.js';
 import { startReferenceExecutorGateway, type ReferenceExecutorGateway } from './gateway.js';
+import { REFERENCE_EXECUTOR_HTTP_BINDING_FORMAT } from './binding-reconstruction.js';
 import { createReferenceExecutorVerificationPipeline } from './verification-pipeline.js';
 
 /**
@@ -30,6 +31,8 @@ import { createReferenceExecutorVerificationPipeline } from './verification-pipe
 export const REFERENCE_EXECUTOR_CONFIG_ENVIRONMENT_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_CONFIG_FILE';
 /** CI crash injection needs this variable set to `enabled` as well as `faultInjection` in the configuration: one file alone cannot make the executor kill itself. */
 export const REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE = 'FRONTERA_REFERENCE_EXECUTOR_FAULT_INJECTION';
+/** G-02C1C: unresolved consumptions receipted per boot; the rest are receipted on later boots or on redelivery. */
+const RECOVERY_SWEEP_LIMIT = 1_000;
 
 export class ReferenceExecutorStartupError extends Error {
   constructor(
@@ -56,7 +59,7 @@ export async function startReferenceExecutorProcess(environment: Readonly<Record
   if (configuration.faultInjection !== null && environment[REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE] !== 'enabled') {
     throw new ReferenceExecutorStartupError('FAULT_INJECTION_NOT_ENABLED', `faultInjection needs ${REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE}=enabled in the executor's environment.`);
   }
-  const execution = configuration.mode === 'synthetic-execution' ? await openSyntheticExecution(configuration, clock) : undefined;
+  const execution = configuration.mode === 'synthetic-execution' ? await openSyntheticExecution(configuration, clock, writeLine) : undefined;
   const gateway = await startReferenceExecutorGateway({
     configuration,
     clock,
@@ -65,7 +68,7 @@ export async function startReferenceExecutorProcess(environment: Readonly<Record
   });
   // The names (never the values) of the variables this process was given, so a supervisor can see what it holds.
   const variables = Object.keys(environment).sort();
-  writeLine(JSON.stringify({ event: 'ready', mode: configuration.mode, executorId: configuration.executorId, host: gateway.host, port: gateway.port, environment: variables }));
+  writeLine(JSON.stringify({ event: 'ready', mode: configuration.mode, executorId: configuration.executorId, receipts: configuration.executorReceipts === null ? null : configuration.executorReceipts.keyId, host: gateway.host, port: gateway.port, environment: variables }));
   return gateway;
 }
 
@@ -81,7 +84,7 @@ export function referenceExecutorStartupRefusal(error: unknown): string {
  * synthetic-execution mode. The ledger module (and with it the database
  * driver) is loaded only here.
  */
-async function openSyntheticExecution(configuration: ReferenceExecutorConfiguration, clock: () => number): Promise<ReferenceExecutorExecutionFlow> {
+async function openSyntheticExecution(configuration: ReferenceExecutorConfiguration, clock: () => number, writeLine: (line: string) => void): Promise<ReferenceExecutorExecutionFlow> {
   const synthetic = configuration.syntheticExecution;
   if (synthetic === null) throw new ReferenceExecutorStartupError('MODE_INCONSISTENT', 'synthetic-execution mode requires its section.');
   const { openExecutionCapabilityConsumptionLedger } = await import('../execution-capability/reference/consumption-ledger.js');
@@ -112,5 +115,89 @@ async function openSyntheticExecution(configuration: ReferenceExecutorConfigurat
   const fault = crashAt === undefined ? undefined : (point: ReferenceExecutorFaultPoint): void => {
     if (point === crashAt) process.kill(process.pid, 'SIGKILL');
   };
-  return createReferenceExecutorExecutionFlow({ configuration, pipeline: createReferenceExecutorVerificationPipeline(configuration, clock), ledger: opened, effect, clock, ...(fault !== undefined ? { fault } : {}) });
+  const receipts = configuration.executorReceipts === null ? undefined : await openReceipts(configuration, opened, clock, writeLine, fault);
+  return createReferenceExecutorExecutionFlow({
+    configuration,
+    pipeline: createReferenceExecutorVerificationPipeline(configuration, clock),
+    ledger: opened,
+    effect,
+    clock,
+    ...(fault !== undefined ? { fault } : {}),
+    ...(receipts !== undefined ? { receipts } : {}),
+  });
+}
+
+/**
+ * G-02C1C: the receipt ledger (existing, pinned to this executor and audience), the executor's own receipt key, and the
+ * issuer over both ledgers. Then a recovery sweep: every unresolved consumption gets the conservative receipt its
+ * durable state supports. Nothing here claims, performs or records a consumption outcome.
+ */
+async function openReceipts(
+  configuration: ReferenceExecutorConfiguration,
+  consumption: Awaited<ReturnType<typeof import('../execution-capability/reference/consumption-ledger.js').openExecutionCapabilityConsumptionLedger>>,
+  clock: () => number,
+  writeLine: (line: string) => void,
+  fault: ((point: ReferenceExecutorFaultPoint) => void) | undefined,
+): Promise<{ issue(capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown'): unknown; issueResolved(capabilityId: string): unknown }> {
+  const settings = configuration.executorReceipts;
+  const synthetic = configuration.syntheticExecution;
+  if (settings === null || synthetic === null) throw new ReferenceExecutorStartupError('MODE_INCONSISTENT', 'Receipts need synthetic-execution mode.');
+  const { openExecutorReceiptLedger } = await import('./receipt-ledger.js');
+  const { loadExecutorReceiptSigner } = await import('./receipt-signer.js');
+  const { createExecutorReceiptIssuer } = await import('./receipt-issuer.js');
+  let receiptLedger: Awaited<ReturnType<typeof openExecutorReceiptLedger>>;
+  try {
+    receiptLedger = await openExecutorReceiptLedger(settings.receiptLedgerPath, { executorId: configuration.executorId, audience: configuration.audience, clock });
+  } catch {
+    throw new ReferenceExecutorStartupError('RECEIPT_LEDGER_INVALID', 'The receipt ledger is missing, damaged, or pinned to another executor or audience; the executor never creates one.');
+  }
+  let signer: ReturnType<typeof loadExecutorReceiptSigner>;
+  try {
+    signer = loadExecutorReceiptSigner({ executorId: configuration.executorId, keyId: settings.keyId, privateKeyFile: settings.privateKeyFile, receiptLedger, issuerKeys: configuration.trustedIssuers.flatMap((entry) => entry.keys) });
+  } catch {
+    receiptLedger.close();
+    // Never the key, never its path: a code and a reason.
+    throw new ReferenceExecutorStartupError('RECEIPT_KEY_INVALID', 'The receipt key is missing, unreadable, not private to this user, not Ed25519, or a trusted issuer key.');
+  }
+  // A reservation is signed by the key it names. Rotating keys with reservations still pending would strand them: refuse, and say so.
+  if (receiptLedger.pendingKeyIds().some((pending) => pending !== settings.keyId)) {
+    receiptLedger.close();
+    throw new ReferenceExecutorStartupError('RECEIPT_LEDGER_INVALID', 'The receipt ledger holds reservations under another key; issue them with that key before rotating.');
+  }
+  const issuer = createExecutorReceiptIssuer({
+    executorId: configuration.executorId,
+    audience: configuration.audience,
+    bindingFormat: REFERENCE_EXECUTOR_HTTP_BINDING_FORMAT,
+    consumption,
+    receipts: receiptLedger,
+    signer,
+    outputDirectory: synthetic.outputDirectory,
+    ...(fault !== undefined ? { fault } : {}),
+  });
+  // Never the receipt text or its signature on the diagnostic line: the status, and what the receipt says.
+  const report = (issuance: ReturnType<typeof issuer.issue>): void =>
+    writeLine(JSON.stringify(issuance.status === 'issued' ? { event: 'receipt', status: 'issued', sequence: issuance.sequence, outcome: issuance.outcome } : { event: 'receipt', status: 'refused', code: issuance.code }));
+  const reported = Object.freeze({
+    issue: (capabilityId: string, observed?: 'completed-observed' | 'failed-observed' | 'consumed-not-attempted' | 'attempted-outcome-unknown') => {
+      const issuance = observed === undefined ? issuer.issue(capabilityId) : issuer.issue(capabilityId, observed);
+      report(issuance);
+      return issuance;
+    },
+    issueResolved: (capabilityId: string) => {
+      const issuance = issuer.issueResolved(capabilityId);
+      if (issuance.status === 'issued' || issuance.code !== 'NOT_RESOLVED') report(issuance);
+      return issuance;
+    },
+  });
+  // Recovery: unresolved consumptions, page by page, at most RECOVERY_SWEEP_LIMIT per boot; each gets the receipt its durable state supports. Never an effect.
+  let after: { readonly claimedAt: string; readonly capabilityId: string } | undefined;
+  let swept = 0;
+  for (;;) {
+    const page = consumption.listUnresolved(after === undefined ? {} : { after });
+    for (const record of page.records) reported.issue(record.capabilityId);
+    swept += page.records.length;
+    if (page.next === undefined || swept >= RECOVERY_SWEEP_LIMIT) break;
+    after = page.next;
+  }
+  return reported;
 }
