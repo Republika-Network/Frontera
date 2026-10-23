@@ -3,10 +3,15 @@ import type { Duplex } from 'node:stream';
 
 import { REFERENCE_EXECUTOR_ADMISSION_LIMITS } from './admission.js';
 import type { ReferenceExecutorConfiguration } from './configuration.js';
+import type { ReferenceExecutorExecution, ReferenceExecutorExecutionFlow } from './execution-flow.js';
 import { createReferenceExecutorVerificationPipeline, type ReferenceExecutorAssessment, type ReferenceExecutorAssessmentCode, type ReferenceExecutorStage } from './verification-pipeline.js';
 
 /**
- * G-02C1A — the reference executor's **verification-only** HTTP/1.1 gateway.
+ * G-02C1A — the reference executor's HTTP/1.1 gateway: **verification-only**
+ * unless the launcher hands it a G-02C1B execution flow (synthetic-execution
+ * mode), in which case each admitted request runs that flow instead of
+ * stopping at the assessment. The table below is the verification-only one;
+ * the synthetic-execution statuses are `execution-flow.ts`'s.
  *
  * A loopback `node:http` server, in its own process (`launcher.ts`), that
  * parses each request with Node's strict parser, hands exactly what it parsed
@@ -14,7 +19,7 @@ import { createReferenceExecutorVerificationPipeline, type ReferenceExecutorAsse
  * effect handler, no ledger and no signer: it can refuse, or report that a
  * capability would be eligible, and nothing else.
  *
- * ## Every answer is a 4xx — nothing ever ran
+ * ## Verification-only: every answer is a 4xx — nothing ever ran
  *
  * | Assessment | Status |
  * |---|---|
@@ -56,9 +61,16 @@ export const REFERENCE_EXECUTOR_ASSESSMENT_FORMAT = 'frontera.reference-executor
 export interface ReferenceExecutorGatewayOptions {
   readonly configuration: ReferenceExecutorConfiguration;
   readonly clock: () => number;
-  /** Receives every assessment, refusals at the socket level included. Never a value from the request. */
-  readonly onAssessment?: (assessment: ReferenceExecutorAssessment) => void;
+  /** Receives every assessment (or, in synthetic-execution mode, every execution record), refusals at the socket level included. Never a value from the request. */
+  readonly onAssessment?: (assessment: ReferenceExecutorRecord) => void;
+  /** G-02C1B: present only in synthetic-execution mode (the launcher builds it only then). Absent, the gateway is exactly the verification-only gateway. */
+  readonly execution?: ReferenceExecutorExecutionFlow;
 }
+
+/** What the gateway reports and answers with: an assessment (verification-only) or an execution record (synthetic-execution). */
+export type ReferenceExecutorRecord = ReferenceExecutorAssessment | ReferenceExecutorExecution;
+
+export const REFERENCE_EXECUTOR_OUTCOME_FORMAT = 'frontera.reference-executor-outcome.v1';
 
 export interface ReferenceExecutorGateway {
   readonly host: string;
@@ -85,9 +97,15 @@ export function referenceExecutorStatusOf(assessment: ReferenceExecutorAssessmen
   return 403;
 }
 
-function respond(res: ServerResponse, assessment: ReferenceExecutorAssessment): void {
+/** The status a refusal at `stage` with `code` gets, in either mode. */
+function refusedStatusOf(stage: ReferenceExecutorStage, code: ReferenceExecutorAssessmentCode): number {
+  return referenceExecutorStatusOf(refusal(stage, code));
+}
+
+function respond(res: ServerResponse, assessment: ReferenceExecutorRecord, execution: ReferenceExecutorExecutionFlow | undefined): void {
   if (res.headersSent || res.destroyed) return;
-  const body = JSON.stringify({ format: REFERENCE_EXECUTOR_ASSESSMENT_FORMAT, ...assessment });
+  const synthetic = assessment.mode === 'synthetic-execution';
+  const body = JSON.stringify({ format: synthetic ? REFERENCE_EXECUTOR_OUTCOME_FORMAT : REFERENCE_EXECUTOR_ASSESSMENT_FORMAT, ...assessment });
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     'content-length': String(Buffer.byteLength(body, 'utf8')),
@@ -97,7 +115,8 @@ function respond(res: ServerResponse, assessment: ReferenceExecutorAssessment): 
   };
   if (assessment.bindingDigest !== null) headers['frontera-executor-binding-digest'] = assessment.bindingDigest;
   res.shouldKeepAlive = false;
-  res.writeHead(referenceExecutorStatusOf(assessment), headers);
+  const status = assessment.mode === 'synthetic-execution' ? (execution === undefined ? 503 : execution.statusOf(assessment, refusedStatusOf)) : referenceExecutorStatusOf(assessment);
+  res.writeHead(status, headers);
   res.end(body);
 }
 
@@ -112,9 +131,12 @@ function refuseSocket(socket: Duplex, status: number): void {
 }
 
 export async function startReferenceExecutorGateway(options: ReferenceExecutorGatewayOptions): Promise<ReferenceExecutorGateway> {
-  const { configuration } = options;
+  const { configuration, execution } = options;
   const pipeline = createReferenceExecutorVerificationPipeline(configuration, options.clock);
-  const report = (assessment: ReferenceExecutorAssessment): void => {
+  /** A refusal record in this gateway's mode. */
+  const refused = (stage: ReferenceExecutorStage, code: ReferenceExecutorAssessmentCode): ReferenceExecutorRecord =>
+    execution === undefined ? refusal(stage, code) : Object.freeze({ mode: 'synthetic-execution' as const, outcome: 'refused' as const, stage, code, bindingDigest: null, ledgerState: null });
+  const report = (assessment: ReferenceExecutorRecord): void => {
     try {
       options.onAssessment?.(assessment);
     } catch {
@@ -125,18 +147,18 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
   const maximumBodyBytes = REFERENCE_EXECUTOR_ADMISSION_LIMITS.maximumBodyBytes;
   const served = new WeakSet<object>();
   /** The one request in flight on a socket, until it is answered: a socket-level refusal refuses it too, so its log and its answer can never disagree. */
-  const inFlight = new WeakMap<object, (assessment: ReferenceExecutorAssessment) => void>();
+  const inFlight = new WeakMap<object, (assessment: ReferenceExecutorRecord) => void>();
 
-  const finish = (res: ServerResponse, assessment: ReferenceExecutorAssessment): void => {
+  const finish = (res: ServerResponse, assessment: ReferenceExecutorRecord): void => {
     report(assessment);
-    respond(res, assessment);
+    respond(res, assessment, execution);
   };
 
   function handle(req: IncomingMessage, res: ServerResponse): void {
     // One request per connection: the Host sends one and closes.
     if (served.has(req.socket)) {
-      inFlight.get(req.socket)?.(refusal('admission', 'REQUEST_PIPELINED'));
-      report(refusal('admission', 'REQUEST_PIPELINED'));
+      inFlight.get(req.socket)?.(refused('admission', 'REQUEST_PIPELINED'));
+      report(refused('admission', 'REQUEST_PIPELINED'));
       req.socket.destroy();
       return;
     }
@@ -147,10 +169,10 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
       if (settled) return;
       settled = true;
       inFlight.delete(req.socket);
-      report(refusal('admission', 'PROCESSING_TIMEOUT'));
+      report(refused('admission', 'PROCESSING_TIMEOUT'));
       req.socket.destroy();
     }, L.processingTimeoutMs);
-    const settle = (assessment: ReferenceExecutorAssessment): void => {
+    const settle = (assessment: ReferenceExecutorRecord): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -168,7 +190,7 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
 
     const declared = req.headers['content-length'];
     if (typeof declared === 'string' && /^[0-9]+$/.test(declared) && Number(declared) > maximumBodyBytes) {
-      settle(refusal('admission', 'BODY_TOO_LARGE'));
+      settle(refused('admission', 'BODY_TOO_LARGE'));
       req.socket.destroySoon();
       return;
     }
@@ -179,7 +201,7 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
       if (settled) return;
       received += chunk.length;
       if (received > maximumBodyBytes) {
-        settle(refusal('admission', 'BODY_TOO_LARGE'));
+        settle(refused('admission', 'BODY_TOO_LARGE'));
         req.socket.destroySoon();
         return;
       }
@@ -194,15 +216,9 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
     });
     req.on('end', () => {
       if (settled) return;
-      settle(
-        pipeline.assess({
-          httpVersion: req.httpVersion,
-          method: req.method ?? '',
-          target: req.url ?? '',
-          rawHeaders: req.rawHeaders,
-          body: Buffer.concat(chunks),
-        }),
-      );
+      const observed = { httpVersion: req.httpVersion, method: req.method ?? '', target: req.url ?? '', rawHeaders: req.rawHeaders, body: Buffer.concat(chunks) };
+      // Verification-only: an assessment. Synthetic-execution: the G-02C1B flow, which claims before its one effect. Both run synchronously to the answer.
+      settle(execution === undefined ? pipeline.assess(observed) : execution.execute(observed));
     });
   }
 
@@ -231,8 +247,8 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
     const pending = inFlight.get(socket);
     if (pending !== undefined) {
       // Bytes after a request on its own connection: that request is refused too, and nothing more is written.
-      pending(refusal('admission', 'REQUEST_PIPELINED'));
-      if (malformed) report(refusal('admission', 'HTTP_MALFORMED'));
+      pending(refused('admission', 'REQUEST_PIPELINED'));
+      if (malformed) report(refused('admission', 'HTTP_MALFORMED'));
       socket.destroy();
       return;
     }
@@ -242,20 +258,20 @@ export async function startReferenceExecutorGateway(options: ReferenceExecutorGa
       return;
     }
     const overflow = code === 'HPE_HEADER_OVERFLOW';
-    report(refusal('admission', overflow ? 'HEADERS_TOO_LARGE' : 'HTTP_MALFORMED'));
+    report(refused('admission', overflow ? 'HEADERS_TOO_LARGE' : 'HTTP_MALFORMED'));
     refuseSocket(socket, overflow ? 431 : 400);
   });
   server.on('upgrade', (_req: IncomingMessage, socket: Duplex) => {
-    report(refusal('admission', 'UPGRADE_REFUSED'));
+    report(refused('admission', 'UPGRADE_REFUSED'));
     refuseSocket(socket, 400);
   });
   server.on('connect', (_req: IncomingMessage, socket: Duplex) => {
-    report(refusal('admission', 'METHOD_NOT_PERMITTED'));
+    report(refused('admission', 'METHOD_NOT_PERMITTED'));
     refuseSocket(socket, 400);
   });
   const refuseExpectation = (req: IncomingMessage, res: ServerResponse): void => {
     served.add(req.socket);
-    finish(res, refusal('admission', 'EXPECTATION_REFUSED'));
+    finish(res, refused('admission', 'EXPECTATION_REFUSED'));
     req.socket.destroySoon();
   };
   server.on('checkContinue', refuseExpectation);
