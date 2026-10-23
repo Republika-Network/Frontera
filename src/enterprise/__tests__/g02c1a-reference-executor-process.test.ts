@@ -314,7 +314,7 @@ describe('G-02C1A process — every relevant field, mutated in the real bytes, i
 
   it('percent-encoding case is a mutation: %C3%A9 and %c3%a9 are different targets to this executor', async () => {
     assert.ok(encoded.requestLine.includes('%C3%A9'));
-    const lower = { ...encoded, requestLine: encoded.requestLine.replace('%C3%A9', '%c3%a9') };
+    const lower = { ...encoded, requestLine: encoded.requestLine.replaceAll('%C3%A9', '%c3%a9') };
     const { assessment } = await send(executors.default, withFreshPresentation(lower, ENCODED.digest, { resource: ENCODED_RESOURCE }));
     assert.deepEqual([assessment.stage, assessment.code], ['verification', 'ACTION_BINDING_MISMATCH']);
   });
