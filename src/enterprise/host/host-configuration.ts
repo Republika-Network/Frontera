@@ -28,6 +28,7 @@ import { XrplTradeHostConfigurationProblem, parseXrplTradeExecutionSection, type
 import { ApprovalPolicyConfigurationProblem, parseApprovalPolicySection, type EnterpriseHostApprovalPolicy } from './approval-policy.js';
 import { ExecutionCapabilityPolicyError, createExecutionCapabilityIssuancePolicy, type ExecutionCapabilityIssuancePolicy } from '../authority-authenticity/execution-capability-issuance.js';
 import { EXECUTION_CAPABILITY_LIMITS } from '../execution-capability/capability.js';
+import { GENERIC_HTTP_REQUEST_BINDING_FORMAT as HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/generic-http/request-binding.js';
 
 /**
  * The Enterprise Host's configuration: the environment
@@ -179,6 +180,11 @@ export interface EnterpriseHostExecutionCapabilityConfiguration {
   readonly policy: ExecutionCapabilityIssuancePolicy;
   /** The existing issuance ledger. Never created by the Host: a missing file refuses startup. */
   readonly issuanceLedgerPath: string;
+  /**
+   * G-02C0: the Generic HTTP adapters whose every request is bound to an issued capability before it is sent — each
+   * with the registered audience its requests are bound for. Empty when the section lists none.
+   */
+  readonly adapters: readonly { readonly adapterId: string; readonly audience: string }[];
 }
 
 export interface EnterpriseHostConfiguration {
@@ -383,10 +389,13 @@ function parseAuditors(env: Env, value: unknown, organizationId: string): readon
  * may receive. Organization and trust domain are the deployment's own, never
  * the section's.
  */
-function parseExecutionCapabilitiesSection(section: unknown, deployment: { readonly organizationId: string; readonly trustDomainId: string; readonly routes: ReadonlyMap<string, string> }): EnterpriseHostExecutionCapabilityConfiguration {
+function parseExecutionCapabilitiesSection(
+  section: unknown,
+  deployment: { readonly organizationId: string; readonly trustDomainId: string; readonly routes: ReadonlyMap<string, string>; readonly genericHttpAdapterIds: readonly unknown[] },
+): EnterpriseHostExecutionCapabilityConfiguration {
   const where = 'executionCapabilities';
   if (!isRecord(section)) invalid(`${where} must be an object.`);
-  closedKeys(section, ['issuer', 'lifetimeMs', 'issuanceLedgerPath', 'audiences'], where);
+  closedKeys(section, ['issuer', 'lifetimeMs', 'issuanceLedgerPath', 'audiences', 'adapters'], where);
   const issuanceLedgerPath = text(section.issuanceLedgerPath, `${where}.issuanceLedgerPath`);
   const audiences = array(section.audiences, `${where}.audiences`).map((entry, index) => {
     const at = `${where}.audiences[${index}]`;
@@ -407,11 +416,47 @@ function parseExecutionCapabilitiesSection(section: unknown, deployment: { reado
       lifetimeMs: 'lifetimeMs' in section ? section.lifetimeMs : EXECUTION_CAPABILITY_LIMITS.defaultLifetimeMs,
       audiences,
     });
-    return Object.freeze({ policy, issuanceLedgerPath });
+    const adapters = parseCapabilityGatedAdapters(section.adapters, policy, deployment);
+    return Object.freeze({ policy, issuanceLedgerPath, adapters });
   } catch (error) {
     if (error instanceof ExecutionCapabilityPolicyError) invalid(`${where}: ${error.message}`);
     throw error;
   }
+}
+
+/**
+ * G-02C0: `executionCapabilities.adapters` — optional; each entry exactly `{ adapterId, audience }`, naming a configured
+ * Generic HTTP adapter at most once and an audience registered with the `frontera.http-request-binding.v1` format that
+ * permits **every** governed action routed to that adapter. A gated adapter never sends an unbound request, so a route
+ * custody would refuse is a deployment defect, refused here rather than one customer action at a time.
+ */
+function parseCapabilityGatedAdapters(
+  value: unknown,
+  policy: ExecutionCapabilityIssuancePolicy,
+  deployment: { readonly routes: ReadonlyMap<string, string>; readonly genericHttpAdapterIds: readonly unknown[] },
+): readonly { readonly adapterId: string; readonly audience: string }[] {
+  const where = 'executionCapabilities.adapters';
+  if (value === undefined) return Object.freeze([]);
+  const seen = new Set<string>();
+  return Object.freeze(
+    array(value, where).map((entry, index) => {
+      const at = `${where}[${index}]`;
+      if (!isRecord(entry)) invalid(`${at} must be an object.`);
+      closedKeys(entry, ['adapterId', 'audience'], at);
+      const adapterId = text(entry.adapterId, `${at}.adapterId`);
+      const audience = text(entry.audience, `${at}.audience`);
+      if (!deployment.genericHttpAdapterIds.includes(adapterId)) invalid(`${at}.adapterId names '${adapterId}', which is not a configured Generic HTTP adapter.`);
+      if (seen.has(adapterId)) invalid(`${at}.adapterId names '${adapterId}' twice.`);
+      seen.add(adapterId);
+      const registration = policy.audiences.find((candidate) => candidate.audience === audience);
+      if (registration === undefined) invalid(`${at}.audience names '${audience}', which is not a registered audience.`);
+      if (!registration.bindingFormats.includes(HTTP_REQUEST_BINDING_FORMAT)) invalid(`${at}.audience '${audience}' does not permit the ${HTTP_REQUEST_BINDING_FORMAT} binding format.`);
+      for (const [action, routedTo] of deployment.routes) {
+        if (routedTo === adapterId && !registration.actions.includes(action)) invalid(`${at}: the action '${action}' is routed to '${adapterId}' but not permitted for audience '${audience}'.`);
+      }
+      return Object.freeze({ adapterId, audience });
+    }),
+  );
 }
 
 function parseGovernedActionsFile(env: Env, path: string, organizationId: string): ParsedGovernedActionsFile {
@@ -606,7 +651,12 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   // G-02B: validated completely now — issuer, lifetime, audiences, their actions (each a routed action) and binding formats.
   let executionCapabilities: EnterpriseHostExecutionCapabilityConfiguration | undefined;
   if (parsed.executionCapabilities !== undefined) {
-    executionCapabilities = parseExecutionCapabilitiesSection(parsed.executionCapabilities, { organizationId, trustDomainId, routes });
+    executionCapabilities = parseExecutionCapabilitiesSection(parsed.executionCapabilities, {
+      organizationId,
+      trustDomainId,
+      routes,
+      genericHttpAdapterIds: genericHttpAdapters.map((adapter) => (adapter as { readonly adapterId?: unknown }).adapterId),
+    });
   }
 
   return {

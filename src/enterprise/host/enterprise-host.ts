@@ -200,9 +200,17 @@ function toCreateEnterpriseOptions(
       // TRADE-04C-S1: the executor's capability-issuer slot, bound by the composition over the authenticated grant store and authority signer.
       ...(trade !== undefined ? { delegatedOfferCapabilities: trade.capabilities } : {}),
       // G-02B: the opt-in execution-capability issuer, bound by the composition over the authenticated grant store, the
-      // authority signer (with this policy) and the operator-initialized issuance ledger. Nothing calls it before G-02C.
+      // authority signer (with this policy) and the operator-initialized issuance ledger. Its one caller is the G-02C0 gate.
       ...(executionCapabilities !== undefined && governed.executionCapabilities !== undefined
-        ? { executionCapabilities: { policy: governed.executionCapabilities.policy, ledgerPath: governed.executionCapabilities.issuanceLedgerPath, slot: executionCapabilities } }
+        ? {
+            executionCapabilities: {
+              policy: governed.executionCapabilities.policy,
+              ledgerPath: governed.executionCapabilities.issuanceLedgerPath,
+              slot: executionCapabilities,
+              // G-02C0: the listed Generic HTTP adapters bind every request to an issued, verified capability before sending.
+              ...(governed.executionCapabilities.adapters.length > 0 ? { adapters: governed.executionCapabilities.adapters } : {}),
+            },
+          }
         : {}),
     },
     governedActionOrchestrator: {
