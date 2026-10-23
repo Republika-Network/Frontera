@@ -156,6 +156,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'execution-capability': 'G-02A executor-side capability contract, verifier and reference ledger; the Host loads the codec to issue (G-02B) and verifies nothing presented to it',
       'execution-capability-issuance': 'G-02B opt-in Host-side issuer and issuance ledger; composed only when the governed-action file configures it, never by the qualified runs',
       'execution-capability-gate': 'G-02C0 opt-in pre-send gate (issue, verify, emergency re-check) for listed Generic HTTP adapters; composed only when the governed-action file lists them, never by the qualified runs',
+      'executor-receipt': 'G-02C1C executor receipt contract and standalone verifier (no signing); used by the reference executor, composed by no Host module',
       'execution-capability-presentation': 'G-02C1A pure codec for the capability presentation envelope; used by the reference executor and test fixtures, composed by no Host module',
       'external-authority-signer': 'CORE-02 external signer; not composed by the qualified runs',
       health: 'Host health surface',

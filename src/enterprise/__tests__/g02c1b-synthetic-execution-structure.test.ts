@@ -124,8 +124,10 @@ describe('G-02C1B structure — no Host, receipt or production adapter', () => {
     }
   });
 
-  it('no receipt signer, receipt protocol or receipt store exists yet (G-02C1C)', () => {
-    for (const file of sourcesUnder('src')) assert.equal(/executor-receipt|ExecutorReceipt|signExecutorReceipt/.test(codeOf(file)), false, file);
+  it('receipts (G-02C1C) live only in the receipt contract and the reference executor — never the Host', () => {
+    for (const file of sourcesUnder('src').filter((path) => !path.startsWith('src/enterprise/executor-receipt/') && !path.startsWith(`${EXECUTOR}/`))) {
+      assert.equal(/executor-receipt|ExecutorReceipt|signExecutorReceipt/.test(codeOf(file)), false, file);
+    }
   });
 
   it('no Host module imports the execution flow or the synthetic effect', () => {

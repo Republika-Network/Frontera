@@ -98,6 +98,8 @@ export interface InProcessFlowOptions {
   readonly configuration?: Record<string, unknown>;
   /** The flow module to build from (a mutant). */
   readonly flowModule?: { readonly createReferenceExecutorExecutionFlow: typeof createReferenceExecutorExecutionFlow };
+  /** G-02C1C: the receipt issuer to hand the flow, built over this flow's own consumption ledger. */
+  readonly receiptsFor?: (ledger: ExecutionCapabilityConsumptionLedger) => NonNullable<Parameters<typeof createReferenceExecutorExecutionFlow>[0]['receipts']>;
 }
 
 /** The flow over a real ledger and a real effect, instrumented so every test can assert the order of claim, effect and outcome. */
@@ -120,6 +122,8 @@ export async function inProcessFlow(domain: SyntheticDomain, options: InProcessF
     },
     read: (capabilityId: string) => ledger.read(capabilityId),
     readExecution: (issuer: string, executionId: string) => ledger.readExecution(issuer, executionId),
+    readDetail: (capabilityId: string) => ledger.readDetail(capabilityId),
+    listUnresolved: (options?: Parameters<ExecutionCapabilityConsumptionLedger['listUnresolved']>[0]) => ledger.listUnresolved(options),
     close: () => ledger.close(),
   });
   const synthetic = configuration.syntheticExecution;
@@ -152,6 +156,7 @@ export async function inProcessFlow(domain: SyntheticDomain, options: InProcessF
       events.push(point);
       options.fault?.(point);
     },
+    ...(options.receiptsFor !== undefined ? { receipts: options.receiptsFor(ledger) } : {}),
   });
   return { flow, configuration, ledger, effect, events, close: () => ledger.close() };
 }
