@@ -229,12 +229,12 @@ async function sendsWith(m: AdapterModule, verdict: unknown): Promise<number> {
 
 describe('G-02C0 mutation — the adapter hook', () => {
   const mutants: readonly Mutant<AdapterModule>[] = [
-    { id: 'send-despite-refusal', file: ADAPTER, replacements: [['if (!proceeds(verdict))', 'if (false)']], guard: async (m) => (await sendsWith(m, { proceed: false })) === 0 },
-    { id: 'truthy-verdict', file: ADAPTER, replacements: [['descriptor.value === true;', '!!descriptor.value;']], guard: async (m) => (await sendsWith(m, { proceed: 'true' })) === 0 && (await sendsWith(m, { proceed: 1 })) === 0 },
+    { id: 'send-despite-refusal', file: ADAPTER, replacements: [['if (!decided.proceed)', 'if (false)']], guard: async (m) => (await sendsWith(m, { proceed: false })) === 0 },
+    { id: 'truthy-verdict', file: ADAPTER, replacements: [['descriptor.value !== true)', '!descriptor.value)']], guard: async (m) => (await sendsWith(m, { proceed: 'true' })) === 0 && (await sendsWith(m, { proceed: 1 })) === 0 },
     {
       id: 'inherited-or-accessor-verdict',
       file: ADAPTER,
-      replacements: [["return descriptor !== undefined && 'value' in descriptor && descriptor.value === true;", 'return verdict.proceed === true;']],
+      replacements: [["if (descriptor === undefined || !('value' in descriptor) || descriptor.value !== true)", 'if (verdict.proceed !== true)']],
       guard: async (m) => (await sendsWith(m, Object.create({ proceed: true }))) === 0 && (await sendsWith(m, Object.defineProperty({}, 'proceed', { get: () => true }))) === 0,
     },
     {

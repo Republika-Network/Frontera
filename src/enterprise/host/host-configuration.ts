@@ -29,6 +29,7 @@ import { ApprovalPolicyConfigurationProblem, parseApprovalPolicySection, type En
 import { ExecutionCapabilityPolicyError, createExecutionCapabilityIssuancePolicy, type ExecutionCapabilityIssuancePolicy } from '../authority-authenticity/execution-capability-issuance.js';
 import { EXECUTION_CAPABILITY_LIMITS } from '../execution-capability/capability.js';
 import { GENERIC_HTTP_REQUEST_BINDING_FORMAT as HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/generic-http/request-binding.js';
+import { ExecutionReceiptEvidenceConfigurationError, createExecutionReceiptTrust, type TrustedExecutor } from '../execution-receipt-evidence/index.js';
 
 /**
  * The Enterprise Host's configuration: the environment
@@ -185,6 +186,17 @@ export interface EnterpriseHostExecutionCapabilityConfiguration {
    * with the registered audience its requests are bound for. Empty when the section lists none.
    */
   readonly adapters: readonly { readonly adapterId: string; readonly audience: string }[];
+  /**
+   * G-02C1D: the receipt evidence the gated adapters record — the existing evidence store (never created by the Host) and
+   * the operator-pinned registry of executors whose signed receipts may become evidence. Absent, nothing is recorded.
+   */
+  readonly receiptEvidence?: EnterpriseHostReceiptEvidenceConfiguration;
+}
+
+/** G-02C1D: the evidence store the operator initialized, and the executors (with their receipt keys) the operator pinned. */
+export interface EnterpriseHostReceiptEvidenceConfiguration {
+  readonly storePath: string;
+  readonly trustedExecutors: readonly TrustedExecutor[];
 }
 
 export interface EnterpriseHostConfiguration {
@@ -395,7 +407,7 @@ function parseExecutionCapabilitiesSection(
 ): EnterpriseHostExecutionCapabilityConfiguration {
   const where = 'executionCapabilities';
   if (!isRecord(section)) invalid(`${where} must be an object.`);
-  closedKeys(section, ['issuer', 'lifetimeMs', 'issuanceLedgerPath', 'audiences', 'adapters'], where);
+  closedKeys(section, ['issuer', 'lifetimeMs', 'issuanceLedgerPath', 'audiences', 'adapters', 'receiptEvidence'], where);
   const issuanceLedgerPath = text(section.issuanceLedgerPath, `${where}.issuanceLedgerPath`);
   const audiences = array(section.audiences, `${where}.audiences`).map((entry, index) => {
     const at = `${where}.audiences[${index}]`;
@@ -417,11 +429,66 @@ function parseExecutionCapabilitiesSection(
       audiences,
     });
     const adapters = parseCapabilityGatedAdapters(section.adapters, policy, deployment);
-    return Object.freeze({ policy, issuanceLedgerPath, adapters });
+    if (section.receiptEvidence === undefined) return Object.freeze({ policy, issuanceLedgerPath, adapters });
+    const receiptEvidence = parseReceiptEvidenceSection(section.receiptEvidence, adapters, deployment);
+    return Object.freeze({ policy, issuanceLedgerPath, adapters, receiptEvidence });
   } catch (error) {
     if (error instanceof ExecutionCapabilityPolicyError) invalid(`${where}: ${error.message}`);
     throw error;
   }
+}
+
+/**
+ * G-02C1D: `executionCapabilities.receiptEvidence` — `{ storePath, trustedExecutors }`, closed. Each trusted executor is
+ * exactly `{ executorId, keys, audiences, organizationIds, trustDomains }`, each key exactly `{ keyId, algorithm,
+ * publicKeyPem }`. The registry must be one the G-02C1C verifier accepts, must cover every gated adapter's audience,
+ * and every executor it names must be permitted this deployment's organization and trust domain — a registry under which
+ * this Host's own receipts could never verify is a deployment defect, refused here. Requires at least one gated adapter.
+ */
+function parseReceiptEvidenceSection(
+  value: unknown,
+  adapters: readonly { readonly adapterId: string; readonly audience: string }[],
+  deployment: { readonly organizationId: string; readonly trustDomainId: string },
+): EnterpriseHostReceiptEvidenceConfiguration {
+  const where = 'executionCapabilities.receiptEvidence';
+  if (!isRecord(value)) invalid(`${where} must be an object.`);
+  closedKeys(value, ['storePath', 'trustedExecutors'], where);
+  if (adapters.length === 0) invalid(`${where} needs at least one entry in executionCapabilities.adapters: only a gated adapter presents a capability and receives a receipt.`);
+  const storePath = text(value.storePath, `${where}.storePath`);
+  const trustedExecutors = array(value.trustedExecutors, `${where}.trustedExecutors`).map((entry, index): TrustedExecutor => {
+    const at = `${where}.trustedExecutors[${index}]`;
+    if (!isRecord(entry)) invalid(`${at} must be an object.`);
+    closedKeys(entry, ['executorId', 'keys', 'audiences', 'organizationIds', 'trustDomains'], at);
+    const keys = array(entry.keys, `${at}.keys`).map((key, keyIndex) => {
+      const keyAt = `${at}.keys[${keyIndex}]`;
+      if (!isRecord(key)) invalid(`${keyAt} must be an object.`);
+      closedKeys(key, ['keyId', 'algorithm', 'publicKeyPem'], keyAt);
+      return Object.freeze({ keyId: text(key.keyId, `${keyAt}.keyId`), algorithm: text(key.algorithm, `${keyAt}.algorithm`), publicKeyPem: text(key.publicKeyPem, `${keyAt}.publicKeyPem`) });
+    });
+    const identifiers = (field: unknown, label: string): readonly string[] => Object.freeze(array(field, `${at}.${label}`).map((item, itemIndex) => text(item, `${at}.${label}[${itemIndex}]`)));
+    return Object.freeze({
+      executorId: text(entry.executorId, `${at}.executorId`),
+      keys: Object.freeze(keys) as TrustedExecutor['keys'],
+      audiences: identifiers(entry.audiences, 'audiences'),
+      organizationIds: identifiers(entry.organizationIds, 'organizationIds'),
+      trustDomains: identifiers(entry.trustDomains, 'trustDomains'),
+    });
+  });
+  try {
+    createExecutionReceiptTrust(trustedExecutors);
+  } catch (error) {
+    if (error instanceof ExecutionReceiptEvidenceConfigurationError) invalid(`${where}: ${error.message}`);
+    throw error;
+  }
+  for (const executor of trustedExecutors) {
+    if (!executor.organizationIds.includes(deployment.organizationId) || !executor.trustDomains.includes(deployment.trustDomainId)) {
+      invalid(`${where}: executor '${executor.executorId}' is not permitted this deployment's organization and trust domain, so no receipt of it could ever correlate.`);
+    }
+  }
+  for (const adapter of adapters) {
+    if (!trustedExecutors.some((executor) => executor.audiences.includes(adapter.audience))) invalid(`${where}: no trusted executor serves audience '${adapter.audience}' of gated adapter '${adapter.adapterId}'.`);
+  }
+  return Object.freeze({ storePath, trustedExecutors: Object.freeze(trustedExecutors) });
 }
 
 /**

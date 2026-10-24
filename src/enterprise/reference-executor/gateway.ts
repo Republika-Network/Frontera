@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
+import { EXECUTOR_RECEIPT_TRANSPORT_HEADER } from '../executor-receipt/index.js';
 import { REFERENCE_EXECUTOR_ADMISSION_LIMITS } from './admission.js';
 import type { ReferenceExecutorConfiguration } from './configuration.js';
 import type { ReferenceExecutorExecution, ReferenceExecutorExecutionFlow } from './execution-flow.js';
@@ -114,6 +115,9 @@ function respond(res: ServerResponse, assessment: ReferenceExecutorRecord, execu
     'frontera-executor-assessment': assessment.outcome,
   };
   if (assessment.bindingDigest !== null) headers['frontera-executor-binding-digest'] = assessment.bindingDigest;
+  // G-02C1D: the one receipt this answer carries, exactly as persisted and signed, when there is one. Never logged.
+  const receipt = assessment.mode === 'synthetic-execution' && execution?.receiptOf !== undefined ? execution.receiptOf(assessment) : undefined;
+  if (receipt !== undefined) headers[EXECUTOR_RECEIPT_TRANSPORT_HEADER] = receipt;
   res.shouldKeepAlive = false;
   const status = assessment.mode === 'synthetic-execution' ? (execution === undefined ? 503 : execution.statusOf(assessment, refusedStatusOf)) : referenceExecutorStatusOf(assessment);
   res.writeHead(status, headers);

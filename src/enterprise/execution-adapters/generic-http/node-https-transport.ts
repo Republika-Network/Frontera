@@ -2,6 +2,7 @@ import { promises as dnsPromises } from 'node:dns';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { request as httpsRequest, type RequestOptions } from 'node:https';
 import type { LookupFunction, Socket } from 'node:net';
+import { GENERIC_HTTP_RECEIPT_HEADER } from './governed-headers.js';
 import type { GenericHttpWireRequest } from './request-mapper.js';
 import type { GenericHttpResolvedAddress } from './public-address-policy.js';
 
@@ -50,7 +51,9 @@ import type { GenericHttpResolvedAddress } from './public-address-policy.js';
  *
  * ## The response body is never read
  *
- * The status and headers are all that is needed. The moment they arrive the
+ * The status and headers are all that is needed — and of the headers, only the
+ * configured provider-reference header and (G-02C1D) the fixed receipt header
+ * are ever read. The moment they arrive the
  * response and the request are destroyed, so the body is neither buffered,
  * parsed, logged nor left streaming after the adapter has returned.
  */
@@ -64,8 +67,11 @@ export type GenericHttpTransportObservation =
   | { readonly kind: 'destination-mismatch' }
   /** The secure session existed and certainty was lost before a final status. */
   | { readonly kind: 'unconfirmed' }
-  /** A final status. `providerRefValues` lists every raw value of the configured provider-reference header, in order, never joined. */
-  | { readonly kind: 'response'; readonly status: number; readonly providerRefValues: readonly string[] };
+  /**
+   * A final status. `providerRefValues` lists every raw value of the configured provider-reference header, in order, never
+   * joined; `receiptValues` (G-02C1D) every raw value of the fixed receipt header, the same way. Both are untrusted.
+   */
+  | { readonly kind: 'response'; readonly status: number; readonly providerRefValues: readonly string[]; readonly receiptValues?: readonly string[] };
 
 /** What the adapter core needs from the network. Internal — never exported from the Enterprise barrel, never a public option. */
 export interface GenericHttpNetworkRuntime {
@@ -181,13 +187,14 @@ export function sendOnce(
       outbound = primitive(buildNodeRequestOptions(request, approved), (response) => {
         const status = response.statusCode;
         const providerRefValues = rawHeaderValues(response, providerRefHeader);
+        const receiptValues = rawHeaderValues(response, GENERIC_HTTP_RECEIPT_HEADER);
         // Discard the body without reading it, and end the exchange now.
         try {
           response.destroy();
         } catch {
           // Nothing to recover: the status is already in hand.
         }
-        settle(typeof status === 'number' ? { kind: 'response', status, providerRefValues } : { kind: secured ? 'unconfirmed' : 'not-sent' });
+        settle(typeof status === 'number' ? { kind: 'response', status, providerRefValues, receiptValues } : { kind: secured ? 'unconfirmed' : 'not-sent' });
       });
     } catch {
       // The primitive refused synchronously: no socket, nothing sent.

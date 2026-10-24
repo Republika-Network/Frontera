@@ -80,9 +80,13 @@ describe('G-02C0 structure — the gate is internal, opt-in and composed only by
 describe('G-02C0 structure — the hook can stop a request and never change one', () => {
   const adapter = codeOf(`${GENERIC_HTTP}/generic-http-execution-adapter.ts`);
 
-  it('the verdict carries nothing but proceed', () => {
+  it('the verdict carries nothing but proceed — and, since G-02C1D (D1), at most one presentation value on a proceed', () => {
     const declaration = /export type GenericHttpPreSendVerdict = ([^;]*);/.exec(adapter)?.[1] ?? '';
-    assert.equal(declaration.trim(), '{ readonly proceed: true } | { readonly proceed: false }');
+    assert.equal(declaration.trim(), '{ readonly proceed: true; readonly presentation?: string } | { readonly proceed: false }');
+    // Only own data properties `proceed` and `presentation`; the value is one bounded base64url string, appended under the one fixed name.
+    assert.ok(adapter.includes("if (!keys.every((key) => key === 'proceed' || key === 'presentation')) return refused;"));
+    assert.ok(adapter.includes('isGovernedHeaderValue(offered.value, GENERIC_HTTP_GOVERNED_HEADER_LIMITS.maxPresentationLength)'));
+    assert.equal(adapter.split('GENERIC_HTTP_PRESENTATION_HEADER').length - 1, 2, 'imported once, used once: the name is never taken from the verdict');
     const subject = /export interface GenericHttpPreSendSubject \{([\s\S]*?)\n\}/.exec(adapter)?.[1] ?? '';
     assert.deepEqual([...subject.matchAll(/readonly (\w+)/g)].map((match) => match[1]), ['adapterId', 'action', 'binding'], 'no request, header, credential or runtime is handed to a gate');
   });
@@ -92,9 +96,14 @@ describe('G-02C0 structure — the hook can stop a request and never change one'
     const mapping = adapter.indexOf('mapGenericHttpRequest(plan, action)');
     const gating = adapter.indexOf('await gate(');
     const resolution = adapter.indexOf('runtime.resolve(');
-    const sending = adapter.indexOf('runtime.send(mapped.request');
+    const sending = adapter.indexOf('runtime.send(outbound');
     assert.ok(mapping > 0 && mapping < gating && gating < resolution && resolution < sending, 'map → gate → resolve → send');
     assert.ok(adapter.includes('genericHttpRequestBinding(plan, mapped.request)'), 'the binding is computed from the object that is sent');
+    // G-02C1D: what is sent is that object, or its copy with the one presentation header appended — nothing else.
+    assert.equal(adapter.split('outbound = ').length - 1, 1);
+    assert.ok(adapter.includes('let outbound: GenericHttpWireRequest = mapped.request;'));
+    assert.ok(adapter.includes('outbound = withPresentationHeader(mapped.request, decided.presentation);'));
+    assert.ok(adapter.includes('headers: Object.freeze([...request.headers, Object.freeze([GENERIC_HTTP_PRESENTATION_HEADER, presentation] as const)])'), 'appended last, once; nothing removed or replaced');
     assert.equal(adapter.split('mapGenericHttpRequest(').length - 1, 1, 'the request is mapped once — no re-mapping for the gate');
   });
 
@@ -113,19 +122,21 @@ describe('G-02C0 structure — the hook can stop a request and never change one'
 describe('G-02C0 structure — the gate issues, verifies and withholds; it presents nothing and holds no signing capability', () => {
   const gate = codeOf(`${GATE_DIR}/gate.ts`);
 
-  it('every answer of the gate is PROCEED or WITHHOLD — no capability, signature or request leaves it', () => {
-    const body = gate.slice(gate.indexOf('async function beforeSend'), gate.indexOf('return Object.freeze({'));
+  it('every answer of the gate is WITHHOLD or the one presentation of what it issued and verified — no grant, key or request leaves it', () => {
+    const body = gate.slice(gate.indexOf('async function beforeSend'), gate.indexOf('return Object.freeze({\n    adapterId'));
     const answers = [...body.matchAll(/\breturn\s+([A-Za-z_]+)/g)].map((match) => match[1]);
     assert.ok(answers.length >= 6);
-    assert.deepEqual([...new Set(answers)].sort(), ['PROCEED', 'WITHHOLD']);
-    assert.equal(body.split('return PROCEED').length - 1, 1, 'one way through');
+    assert.deepEqual([...new Set(answers)].sort(), ['WITHHOLD', 'proceedWith']);
+    assert.equal(body.split('return proceedWith(').length - 1, 1, 'one way through');
+    assert.ok(gate.includes('encodeExecutionCapabilityPresentation({ capability: issued.canonical, signature: issued.signature, bindingFormat: GENERIC_HTTP_REQUEST_BINDING_FORMAT })'), 'the issued text and its custody signature, nothing else');
+    assert.ok(gate.includes('return Object.freeze({ proceed: true, presentation });'));
   });
 
   it('issues once, then verifies, then re-reads the stop — in that order', () => {
     const issue = gate.indexOf('await issuer.issue(');
     const verify = gate.indexOf('bound.verifier.verify(');
     const stop = gate.indexOf('readEmergencyControl(');
-    const proceed = gate.indexOf('return PROCEED');
+    const proceed = gate.indexOf('return proceedWith(presentation)');
     assert.equal(gate.split('issuer.issue(').length - 1, 1);
     assert.ok(issue > 0 && issue < verify && verify < stop && stop < proceed);
     assert.equal(gate.slice(stop, proceed).includes('await '), false, 'nothing is awaited between the stop re-check and proceeding');
