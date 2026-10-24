@@ -94,19 +94,19 @@ async function sentWith(m: AdapterModule, verdict: unknown, observe?: (exchange:
 }
 
 describe('G-02C1D mutation — the one presentation header', () => {
-  const mutants: readonly (Mutant<AdapterModule> | Mutant<HeadersModule>)[] = [
+  const adapterMutants: readonly Mutant<AdapterModule>[] = [
     {
       id: 'verdict-extra-member-accepted',
       file: ADAPTER,
       replacements: [["key === 'proceed' || key === 'presentation'", 'true']],
-      guard: async (m) => (await sentWith(m as AdapterModule, { proceed: true, presentation: 'abc', header: 'authorization' })).length === 0,
+      guard: async (m) => (await sentWith(m, { proceed: true, presentation: 'abc', header: 'authorization' })).length === 0,
     },
     {
       id: 'presentation-replaces-the-request-headers',
       file: ADAPTER,
       replacements: [['[...request.headers, ', '[']],
       guard: async (m) => {
-        const sent = (await sentWith(m as AdapterModule, { proceed: true, presentation: 'abc' }))[0];
+        const sent = (await sentWith(m, { proceed: true, presentation: 'abc' }))[0];
         return sent !== undefined && sent.headers.some(([name]) => name === 'authorization') && sent.headers.filter(([name]) => name === GENERIC_HTTP_PRESENTATION_HEADER).length === 1;
       },
     },
@@ -116,26 +116,29 @@ describe('G-02C1D mutation — the one presentation header', () => {
       replacements: [['if (exchange.presented && observer !== undefined)', 'if (observer !== undefined)']],
       guard: async (m) => {
         let observed = 0;
-        await sentWith(m as AdapterModule, { proceed: true }, () => {
+        await sentWith(m, { proceed: true }, () => {
           observed += 1;
         });
         return observed === 0;
       },
     },
+  ];
+  const headerMutants: readonly Mutant<HeadersModule>[] = [
     {
       id: 'presentation-unbounded',
       file: HEADERS,
       replacements: [['value.length <= maximum && ', '']],
-      guard: (m) => (m as HeadersModule).isGovernedHeaderValue('A'.repeat(8_193), 8_192) === false,
+      guard: (m) => m.isGovernedHeaderValue('A'.repeat(8_193), 8_192) === false,
     },
     {
       id: 'presentation-any-alphabet',
       file: HEADERS,
       replacements: [['BASE64URL.test(value)', 'true']],
-      guard: (m) => (m as HeadersModule).isGovernedHeaderValue('abc\r\nx-injected: 1', 8_192) === false,
+      guard: (m) => m.isGovernedHeaderValue('abc\r\nx-injected: 1', 8_192) === false,
     },
   ];
-  for (const mutant of mutants) it(mutant.id, () => qualify(mutant as Mutant<unknown>));
+  for (const mutant of adapterMutants) it(mutant.id, () => qualify(mutant));
+  for (const mutant of headerMutants) it(mutant.id, () => qualify(mutant));
 });
 
 // ── The receipt transport encoding ─────────────────────────────────────────

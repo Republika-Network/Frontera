@@ -83,9 +83,9 @@ const ADAPTER_OPTIONS = {
 
 const GOVERNANCE_WITH_SYNTHETIC = {
   ...GOVERNANCE,
-  actionClasses: [...GOVERNANCE.actionClasses, { id: 'synthetic', actions: [SYNTHETIC] }],
+  actionClasses: [...(GOVERNANCE.actionClasses ?? []), { id: 'synthetic', actions: [SYNTHETIC] }],
   profiles: [
-    ...GOVERNANCE.profiles,
+    ...(GOVERNANCE.profiles ?? []),
     {
       profileId: 'synthetic-deploy',
       version: 1,
