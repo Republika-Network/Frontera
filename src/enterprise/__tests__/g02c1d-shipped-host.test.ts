@@ -324,7 +324,7 @@ describe('G-02C1D on the shipped Host — receiptEvidence is validated at boot',
       cleanups.push(() => domain.cleanup());
       const dir = workspace.dir();
       await initialize(dir);
-      await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(dir, governed(dir, domain))), executionAdapters: [recordingAdapter()], policyPackProvider: policyPackProvider() }), (error: { readonly code?: string }) => error.code === code);
+      await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(dir, governed(dir, domain))), executionAdapters: [recordingAdapter()], contextProvider: createContextTable().provider, policyPackProvider: policyPackProvider() }), (error: { readonly code?: string }) => error.code === code);
     });
   }
 
@@ -335,10 +335,10 @@ describe('G-02C1D on the shipped Host — receiptEvidence is validated at boot',
     const dir = workspace.dir();
     await initialize(dir);
     const asExecutor = file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: 'g02c1d-executor-key-borrowed', algorithm: 'ed25519-v1', publicKeyPem: authority.publicKeyPem.trim() }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }] });
-    await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(dir, asExecutor)), executionAdapters: [recordingAdapter()], policyPackProvider: policyPackProvider() }), /may not be an authority key/);
+    await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(dir, asExecutor)), executionAdapters: [recordingAdapter()], contextProvider: createContextTable().provider, policyPackProvider: policyPackProvider() }), /may not be an authority key/);
     const fresh = workspace.dir();
     (await openExecutionCapabilityIssuanceLedger(join(fresh, 'execution-capability-issuance.sqlite'), { issuer: ISSUER, clock: Date.now, create: true })).close();
     mkdirSync(join(fresh, 'evidence'), { mode: 0o700 });
-    await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(fresh, file(fresh, domain))), executionAdapters: [recordingAdapter()], policyPackProvider: policyPackProvider() }), /never created implicitly/, 'the Host never creates the evidence store');
+    await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(fresh, file(fresh, domain))), executionAdapters: [recordingAdapter()], contextProvider: createContextTable().provider, policyPackProvider: policyPackProvider() }), /never created implicitly/, 'the Host never creates the evidence store');
   });
 });
