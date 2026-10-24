@@ -137,7 +137,7 @@ import {
 import { createInMemoryBoundedGrantStore, type BoundedGrantStorePort } from '../../features/grant-runtime/index.js';
 import { createExecutionAdapterRegistry, type ExecutionAdapter, type ExecutionAdapterSelector } from '../../features/execution-runtime/index.js';
 import { GenericHttpConfigurationError, createGenericHttpExecutionAdapter, type EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
-import { createGenericHttpExecutionAdapterWithPreSendGates, type GenericHttpPreSendGate } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
+import { createGenericHttpExecutionAdapterWithPreSendGates, type GenericHttpPreSendGate, type GenericHttpResponseObserver } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
 import type { EmergencyControlReaderPort, EmergencyControlStorePort } from '../../features/emergency-control-runtime/index.js';
 import { createEmergencyControlReader, createInMemoryEmergencyControlStore } from '../../features/emergency-control-runtime/index.js';
 import { createSqliteEmergencyControlStore } from '../emergency-control/sqlite-emergency-control-store.js';
@@ -186,6 +186,7 @@ import {
 } from '../external-authority-signer/index.js';
 import { createExecutionCapabilityIssuer, openExecutionCapabilityIssuanceLedger, type ExecutionCapabilityIssuerSlot } from '../execution-capability-issuance/index.js';
 import { ExecutionCapabilityGateConfigurationError, createExecutionCapabilityGate, type ExecutionCapabilityGate } from '../execution-capability-gate/index.js';
+import { createExecutionReceiptEvidenceRecorder, createExecutionReceiptTrust, openExecutionReceiptEvidenceStore, type ExecutionReceiptEvidenceRecorder, type TrustedExecutor } from '../execution-receipt-evidence/index.js';
 
 /** Transport-level input to `AocEnterprise.evaluate()` -- the not-yet-validated wire payload. Validated internally against `GovernanceEvaluateRequestBody`; see `EnterpriseRequestContext` for the side-channel (auth header) that travels alongside it. */
 export type EnterpriseEvaluationRequest = unknown;
@@ -651,12 +652,19 @@ export interface EnterpriseAuthorityControlledExecutionOptions
    * HTTP adapter, at most once, and each audience must be registered in
    * `policy` with the `frontera.http-request-binding.v1` format; otherwise
    * composition refuses.
+   *
+   * G-02C1D: each gated adapter presents the issued capability in its one
+   * fixed header. With `receiptEvidence`, each presented exchange's receipt is
+   * verified against the pinned `trustedExecutors`, correlated with the
+   * issuance ledger and recorded in the existing evidence store at
+   * `storePath` (never created here). Nothing is recorded in P11 or P12.
    */
   readonly executionCapabilities?: {
     readonly policy: ExecutionCapabilityIssuancePolicy;
     readonly ledgerPath: string;
     readonly slot: ExecutionCapabilityIssuerSlot;
     readonly adapters?: readonly { readonly adapterId: string; readonly audience: string }[];
+    readonly receiptEvidence?: { readonly storePath: string; readonly trustedExecutors: readonly TrustedExecutor[] };
   };
   /**
    * P7 — aggregate / velocity exercise controls, a durable reservation ledger
@@ -1669,8 +1677,28 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     }
   }
   const preSendGates: ReadonlyMap<string, GenericHttpPreSendGate> = new Map([...capabilityGates].map(([adapterId, gate]) => [adapterId, gate.beforeSend]));
+  // G-02C1D: one receipt evidence recorder per gated adapter, built here with the gates and bound below with the issuance
+  // ledger and the evidence store; until then it records nothing. The registry is validated now, before any store exists.
+  const receiptEvidenceOptions = options.authorityControlledExecution?.executionCapabilities?.receiptEvidence;
+  const evidenceRecorders = new Map<string, ExecutionReceiptEvidenceRecorder>();
+  if (receiptEvidenceOptions !== undefined) {
+    const issuance = options.authorityControlledExecution?.executionCapabilities;
+    if (issuance === undefined || capabilityGates.size === 0) throw new ExecutionCapabilityGateConfigurationError('executionCapabilities.receiptEvidence needs at least one gated adapter.');
+    const verifier = createExecutionReceiptTrust(receiptEvidenceOptions.trustedExecutors);
+    for (const gate of capabilityGates.values()) {
+      // The one executor pinned for this audience: a receipt from another pinned executor is never this adapter's evidence.
+      const serving = receiptEvidenceOptions.trustedExecutors.filter((executor) => executor.audiences.includes(gate.audience));
+      const executor = serving[0];
+      if (serving.length !== 1 || executor === undefined) throw new ExecutionCapabilityGateConfigurationError(`executionCapabilities.receiptEvidence must pin exactly one executor for audience '${gate.audience}'.`);
+      evidenceRecorders.set(
+        gate.adapterId,
+        createExecutionReceiptEvidenceRecorder({ adapterId: gate.adapterId, executorId: executor.executorId, audience: gate.audience, issuer: issuance.policy.issuer, organizationId: issuance.policy.organizationId, trustDomain: issuance.policy.trustDomain, verifier }),
+      );
+    }
+  }
+  const responseObservers: ReadonlyMap<string, GenericHttpResponseObserver> = new Map([...evidenceRecorders].map(([adapterId, recorder]) => [adapterId, recorder.observe]));
   const genericHttpAdapters: readonly ExecutionAdapter[] = Object.freeze(
-    (genericHttpOptions ?? []).map((entry) => (preSendGates.size === 0 ? createGenericHttpExecutionAdapter(entry) : createGenericHttpExecutionAdapterWithPreSendGates(entry, preSendGates))),
+    (genericHttpOptions ?? []).map((entry) => (preSendGates.size === 0 ? createGenericHttpExecutionAdapter(entry) : createGenericHttpExecutionAdapterWithPreSendGates(entry, preSendGates, responseObservers))),
   );
   for (const adapterId of capabilityGates.keys()) {
     if (!genericHttpAdapters.some((adapter) => adapter.adapterId === adapterId)) {
@@ -2039,6 +2067,28 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     const issuanceLedger = await openExecutionCapabilityIssuanceLedger(executionCapabilities.ledgerPath, { issuer: policy.issuer, clock: Date.now, busyTimeoutMs: Math.min(configuration.persistence.busyTimeoutMs, 60_000) });
     opened.push(async () => issuanceLedger.close());
     executionCapabilities.slot.bind(createExecutionCapabilityIssuer({ grants: grantStore, signer: authenticity.signer, verifier: authenticity.verifier, policy, ledger: issuanceLedger }));
+    // G-02C1D: the evidence store the operator initialized (never created here); the recorders read the issuance ledger
+    // only, to correlate a receipt with what this Host issued. No executor key is pinned that is an authority key.
+    if (executionCapabilities.receiptEvidence !== undefined) {
+      const authorityKeys = new Set(configuration.authorityAuthenticity.verificationKeys.flatMap((entry) => [entry.keyId, entry.publicKeyPem.trim()]));
+      for (const executor of executionCapabilities.receiptEvidence.trustedExecutors) {
+        for (const key of executor.keys) {
+          if (authorityKeys.has(key.keyId) || authorityKeys.has(key.publicKeyPem.trim())) {
+            throw new AuthorityAuthenticityConfigurationError('An executor receipt key may not be an authority key: receipts are the executor’s statement, never Frontera’s.');
+          }
+        }
+      }
+      const evidenceStore = await openExecutionReceiptEvidenceStore(executionCapabilities.receiptEvidence.storePath, {
+        issuer: policy.issuer,
+        organizationId: policy.organizationId,
+        trustDomain: policy.trustDomain,
+        clock: Date.now,
+        // Short: the store is written from a detached observer on the event loop, never worth a long synchronous wait.
+        busyTimeoutMs: Math.min(configuration.persistence.busyTimeoutMs, 1_000),
+      });
+      opened.push(async () => evidenceStore.close());
+      for (const recorder of evidenceRecorders.values()) recorder.bind({ issuance: issuanceLedger, store: evidenceStore });
+    }
     // G-02C0: the gates verify what was issued as an executor would — pinned to this deployment's active key alone.
     const active = configuration.authorityAuthenticity.verificationKeys.find((entry) => entry.keyId === authenticity.signer.activeKeyId);
     if (active === undefined || !isSupportedAuthoritySignatureAlgorithm(active.algorithm)) {

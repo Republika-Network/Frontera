@@ -9,6 +9,7 @@ import {
   type EnterpriseGenericHttpMethod,
 } from './contracts.js';
 import { isLocalOnlyHostname } from './public-address-policy.js';
+import { GENERIC_HTTP_PRESENTATION_HEADER, GENERIC_HTTP_RECEIPT_HEADER } from './governed-headers.js';
 
 /**
  * Construct → validate → snapshot → freeze.
@@ -129,6 +130,9 @@ const RESERVED_HEADER_NAMES: ReadonlySet<string> = new Set([
   'cookie',
   'set-cookie',
   'http2-settings',
+  // G-02C1D: appended by the adapter core from the gate's verdict alone; never mapped.
+  GENERIC_HTTP_PRESENTATION_HEADER,
+  GENERIC_HTTP_RECEIPT_HEADER,
 ]);
 
 /** Object keys never allowed as a destination name, even from trusted configuration. */
@@ -423,6 +427,9 @@ const REFUSED_PROVIDER_REF_HEADERS: ReadonlySet<string> = new Set([
   'www-authenticate',
   'cookie',
   'set-cookie',
+  // G-02C1D: a reference is never read from the presentation or the receipt header.
+  GENERIC_HTTP_PRESENTATION_HEADER,
+  GENERIC_HTTP_RECEIPT_HEADER,
 ]);
 
 function snapshotProviderRefHeader(value: unknown, credentialHeader: string | undefined): string {

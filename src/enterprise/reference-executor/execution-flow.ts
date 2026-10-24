@@ -1,3 +1,4 @@
+import { EXECUTOR_RECEIPT_TRANSPORT_HEADER, encodeExecutorReceiptTransport } from '../executor-receipt/index.js';
 import type { ExecutionCapabilityClaimRefusal, ExecutionCapabilityConsumptionLedger, ExecutionCapabilityConsumptionState, ExecutionCapabilityReportedOutcome } from '../execution-capability/reference/consumption-ledger.js';
 import type { ObservedHttpRequest } from './admission.js';
 import type { ReferenceExecutorConfiguration, ReferenceExecutorFaultPoint } from './configuration.js';
@@ -95,6 +96,13 @@ export interface ReferenceExecutorExecutionFlow {
   execute(observed: ObservedHttpRequest): ReferenceExecutorExecution;
   /** The status for a record of this flow. Never 2xx except `completed-observed` (201) and `already-consumed` (202). */
   statusOf(execution: ReferenceExecutorExecution, refusedStatus: (stage: ReferenceExecutorStage, code: ReferenceExecutorAssessmentCode) => number): number;
+  /**
+   * G-02C1D: the headers this answer adds — at most the one `frontera-execution-receipt` header, carrying the transport
+   * encoding of the receipt the receipt ledger persisted and the signer signed while this answer was formed; none when
+   * there is no such receipt. Never reconstructed from the status, never inside the diagnostic record, and never a
+   * reason to perform anything.
+   */
+  answerHeadersOf?(execution: ReferenceExecutorExecution): Readonly<Record<string, string>>;
 }
 
 export interface ReferenceExecutorExecutionFlowOptions {
@@ -129,16 +137,26 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
   const syntheticActions = synthetic.syntheticActions;
   const fault = options.fault ?? (() => undefined);
   const receipts = options.receipts;
-  /** A receipt is a statement about what already happened: asking for one never alters the answer, and a failure here is not an outcome. */
-  const receiptFor = (capabilityId: string, observed?: ReferenceExecutorExecutionOutcome): void => {
-    if (receipts === undefined) return;
+  /**
+   * A receipt is a statement about what already happened: asking for one never alters the answer, and a failure here is
+   * not an outcome. G-02C1D: what comes back is the issued artifact's transport encoding, to deliver with the answer.
+   */
+  const receiptFor = (capabilityId: string, observed?: ReferenceExecutorExecutionOutcome): string | undefined => {
+    if (receipts === undefined) return undefined;
     try {
       // After this path's own outcome: what it observed. On a duplicate: durable state alone, and not while still claimed — the claim may be live elsewhere.
-      if (observed === 'completed-observed' || observed === 'failed-observed' || observed === 'consumed-not-attempted' || observed === 'attempted-outcome-unknown') receipts.issue(capabilityId, observed);
-      else receipts.issueResolved(capabilityId);
+      const issuance = observed === 'completed-observed' || observed === 'failed-observed' || observed === 'consumed-not-attempted' || observed === 'attempted-outcome-unknown' ? receipts.issue(capabilityId, observed) : receipts.issueResolved(capabilityId);
+      return deliverableOf(issuance);
     } catch {
-      // Recovered later from durable state; the answer stands.
+      // Recovered later from durable state; the answer stands, without a receipt.
+      return undefined;
     }
+  };
+  // G-02C1D: the receipt each answer carries, keyed by that answer; the record itself stays the closed diagnostic one.
+  const delivered = new WeakMap<ReferenceExecutorExecution, string>();
+  const carrying = (execution: ReferenceExecutorExecution, encoded: string | undefined): ReferenceExecutorExecution => {
+    if (encoded !== undefined) delivered.set(execution, encoded);
+    return execution;
   };
 
   /** The earlier state behind a consumed capability or execution; `null` if the ledger cannot say. */
@@ -177,8 +195,8 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
       const consumed = claim.reason === 'CAPABILITY_CONSUMED' || claim.reason === 'EXECUTION_CONSUMED';
       if (consumed) {
         // Nothing is performed again; a receipt missing for the earlier consumption is issued from durable state.
-        if (claim.reason === 'CAPABILITY_CONSUMED') receiptFor(capabilityId);
-        return record('already-consumed', 'claim', claim.reason, bindingDigest, priorState(capabilityId, capability.issuer, capability.executionId));
+        const earlier = claim.reason === 'CAPABILITY_CONSUMED' ? receiptFor(capabilityId) : undefined;
+        return carrying(record('already-consumed', 'claim', claim.reason, bindingDigest, priorState(capabilityId, capability.issuer, capability.executionId)), earlier);
       }
       return record('refused', 'claim', claim.reason, null, null);
     }
@@ -194,8 +212,8 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
       }
       if (recorded !== 'recorded') return record('attempted-outcome-unknown', 'outcome', 'OUTCOME_NOT_RECORDED', bindingDigest, priorState(capabilityId, capability.issuer, capability.executionId));
       fault('after-outcome');
-      receiptFor(capabilityId, outcome);
-      return record(outcome, stage, code, bindingDigest, state);
+      const encoded = receiptFor(capabilityId, outcome);
+      return carrying(record(outcome, stage, code, bindingDigest, state), encoded);
     };
 
     // ── expiry, on this executor's clock, after the claim: nothing is awaited from here to the effect ──
@@ -251,5 +269,24 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
     }
   }
 
-  return Object.freeze({ execute, statusOf });
+  const NONE: Readonly<Record<string, string>> = Object.freeze({});
+  const answerHeadersOf = (execution: ReferenceExecutorExecution): Readonly<Record<string, string>> => {
+    const encoded = delivered.get(execution);
+    return encoded === undefined ? NONE : Object.freeze({ [EXECUTOR_RECEIPT_TRANSPORT_HEADER]: encoded });
+  };
+  return Object.freeze({ execute, statusOf, answerHeadersOf });
+}
+
+/** The transport encoding of an issued receipt, or `undefined` for a refusal or anything else. */
+function deliverableOf(issuance: unknown): string | undefined {
+  if (issuance === null || typeof issuance !== 'object') return undefined;
+  const fields = issuance as { readonly status?: unknown; readonly receipt?: unknown };
+  if (fields.status !== 'issued' || fields.receipt === null || typeof fields.receipt !== 'object') return undefined;
+  const artifact = fields.receipt as { readonly receipt?: unknown; readonly signature?: unknown };
+  if (typeof artifact.receipt !== 'string' || artifact.signature === null || typeof artifact.signature !== 'object') return undefined;
+  try {
+    return encodeExecutorReceiptTransport({ receipt: artifact.receipt, signature: artifact.signature as Readonly<Record<string, string>> });
+  } catch {
+    return undefined;
+  }
 }

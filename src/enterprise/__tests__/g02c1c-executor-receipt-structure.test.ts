@@ -94,6 +94,7 @@ describe('G-02C1C structure — the verifier stands alone; one signer, reached o
       'src/enterprise/execution-capability/capability.ts',
       `${RECEIPT}/index.ts`,
       `${RECEIPT}/receipt.ts`,
+      `${RECEIPT}/transport.ts`,
       `${RECEIPT}/verifier.ts`,
       'src/enterprise/governance-store/canonical-json.ts',
       'src/enterprise/governance-store/digest.ts',
@@ -158,9 +159,16 @@ describe('G-02C1C structure — durable state and its owners', () => {
     assert.equal(/receipt-signer|createPrivateKey|readFileSync\(domain\.keyFile|loadExecutorReceiptSigner/.test(suite), false);
   });
 
-  it('no Host, Kernel, P11/P12, route, barrel or exports entry reaches the receipt contract or the receipt path', () => {
-    for (const file of sourcesUnder('src').filter((path) => !path.startsWith(`${RECEIPT}/`) && !path.startsWith(`${EXECUTOR}/`))) {
+  it('no Host, Kernel, P11/P12, route, barrel or exports entry reaches the receipt contract or the receipt path — the Host receipt evidence module (G-02C1D) alone reaches the contract', () => {
+    const EVIDENCE = 'src/enterprise/execution-receipt-evidence';
+    for (const file of sourcesUnder('src').filter((path) => !path.startsWith(`${RECEIPT}/`) && !path.startsWith(`${EXECUTOR}/`) && !path.startsWith(`${EVIDENCE}/`))) {
       assert.equal(/executor-receipt\/|receipt-(?:issuer|ledger|signer)/.test(codeOf(file)), false, file);
+    }
+    // The evidence module verifies and decodes: the contract's public index, never the executor, its signer, issuer or ledger.
+    for (const file of sourcesUnder(EVIDENCE)) {
+      const specifiers = runtimeSpecifiers(file).filter((specifier) => specifier.includes('executor-receipt') || specifier.includes('reference-executor'));
+      assert.ok(specifiers.every((specifier) => specifier === '../executor-receipt/index.js'), `${file}: ${specifiers.join(', ')}`);
+      assert.equal(/receipt-(?:issuer|ledger|signer)|signExecutorReceipt|createPrivateKey|loadExecutorReceiptSigner/.test(codeOf(file)), false, file);
     }
     assert.equal(/executor-receipt|reference-executor/.test(JSON.stringify((JSON.parse(readFileSync('package.json', 'utf8')) as { exports?: unknown }).exports ?? {})), false);
   });

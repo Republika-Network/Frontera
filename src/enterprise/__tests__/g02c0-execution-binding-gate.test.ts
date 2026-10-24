@@ -8,6 +8,7 @@ import { createGenericHttpExecutionAdapterCore } from '../execution-adapters/gen
 import { GENERIC_HTTP_REQUEST_BINDING_FORMAT, genericHttpRequestBinding, genericHttpRequestBindingOf } from '../execution-adapters/generic-http/request-binding.js';
 import { mapGenericHttpRequest, type GenericHttpWireRequest } from '../execution-adapters/generic-http/request-mapper.js';
 import { ExecutionCapabilityGateConfigurationError, createExecutionCapabilityGate } from '../execution-capability-gate/index.js';
+import { EXECUTION_CAPABILITY_PRESENTATION_HEADER, decodeExecutionCapabilityPresentation } from '../execution-capability-presentation/index.js';
 import { createExecutionCapabilityVerifier, executionCapabilityActionBindingDigest, serializeExecutionCapability, type ExecutionCapability } from '../execution-capability/index.js';
 import { openExecutionCapabilityConsumptionLedger } from '../execution-capability/reference/consumption-ledger.js';
 import { createExecutionCapabilityIssuer, type ExecutionCapabilityIssuer } from '../execution-capability-issuance/index.js';
@@ -250,15 +251,22 @@ describe('G-02C0 gate — issue for the exact request, verify as the executor wo
 
     const record = world.ledger.read(action.correlation.executionId);
     assert.ok(record.state === 'issued' && record.signature !== undefined, 'one capability, committed');
-    const sent = world.network.sent[0] as GenericHttpWireRequest;
+    // G-02C1D (D1): the request carries exactly one presentation header — of exactly this capability — appended after
+    // binding; the binding is of the request without it, as the executor reconstructs it.
+    const delivered = world.network.sent[0] as GenericHttpWireRequest;
+    const presented = delivered.headers.filter(([name]) => name === EXECUTION_CAPABILITY_PRESENTATION_HEADER);
+    assert.equal(presented.length, 1);
+    const decoded = decodeExecutionCapabilityPresentation(presented[0]?.[1]);
+    assert.ok(decoded.ok && decoded.presentation.capability === record.canonical && decoded.presentation.signature.signature === record.signature.signature);
+    const sent: GenericHttpWireRequest = { ...delivered, headers: delivered.headers.filter(([name]) => name !== EXECUTION_CAPABILITY_PRESENTATION_HEADER) };
     assert.equal(record.capability.actionBinding.format, GENERIC_HTTP_REQUEST_BINDING_FORMAT);
     assert.equal(record.capability.actionBinding.digest, digestOf(sent), 'the capability binds the digest of the request actually sent');
     assert.equal(record.capability.executionId, action.correlation.executionId);
     assert.equal(record.capability.audience, G02B_AUDIENCE);
 
     // Reference demonstration (simulated executor): it knows its own credential header, recomputes the record from the
-    // request the transport delivered, and verifies the capability as its audience. G-02C0 transmits no capability: the
-    // demonstration reads it from the Host's issuance ledger.
+    // request the transport delivered (less the presentation header), and verifies the capability as its audience — the
+    // capability the header carried, which is the issuance ledger's row.
     const executor = createExecutionCapabilityVerifier({ trustedIssuers: [{ issuer: G02B_ISSUER, keys: [trustedKeyOf(AUTHORITY_KEY_A)] }], executor: { audience: G02B_AUDIENCE, organizationIds: [G02B_ORGANIZATION], trustDomain: G02B_TRUST_DOMAIN }, clock: () => NOW + 1_000 });
     const presentation = { capability: record.canonical, signature: record.signature };
     const received = { format: GENERIC_HTTP_REQUEST_BINDING_FORMAT, value: genericHttpRequestBindingOf(sent, 'authorization') };
@@ -535,7 +543,10 @@ describe('G-02C0 on the governed path — Kernel → decision → grant → clai
     const executionId = result.executionId ?? '';
     const record = ledger.read(executionId);
     assert.ok(record.state === 'issued', 'the governed execution id is the one custody derived from the grant');
-    const sent = network.sent[0] as GenericHttpWireRequest;
+    const delivered = network.sent[0] as GenericHttpWireRequest;
+    // G-02C1D: the one presentation header, then the request as bound.
+    assert.equal(delivered.headers.filter(([name]) => name === EXECUTION_CAPABILITY_PRESENTATION_HEADER).length, 1);
+    const sent: GenericHttpWireRequest = { ...delivered, headers: delivered.headers.filter(([name]) => name !== EXECUTION_CAPABILITY_PRESENTATION_HEADER) };
     assert.equal(record.capability.actionBinding.digest, executionCapabilityActionBindingDigest({ format: GENERIC_HTTP_REQUEST_BINDING_FORMAT, value: genericHttpRequestBinding(plan, sent) }));
     const grant = (await world.grantStore.read(record.boundedGrantId)).grant;
     assert.ok(grant !== undefined && executionIdForGrant(grant) === executionId);

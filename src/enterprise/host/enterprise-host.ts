@@ -209,6 +209,8 @@ function toCreateEnterpriseOptions(
               slot: executionCapabilities,
               // G-02C0: the listed Generic HTTP adapters bind every request to an issued, verified capability before sending.
               ...(governed.executionCapabilities.adapters.length > 0 ? { adapters: governed.executionCapabilities.adapters } : {}),
+              // G-02C1D: and record each presented exchange's receipt as evidence, against the operator-pinned executors.
+              ...(governed.executionCapabilities.receiptEvidence !== undefined ? { receiptEvidence: governed.executionCapabilities.receiptEvidence } : {}),
             },
           }
         : {}),

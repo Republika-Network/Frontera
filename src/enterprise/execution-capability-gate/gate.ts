@@ -4,6 +4,7 @@ import type { TrustedVerificationKey } from '../authority-authenticity/signature
 import { executionCapabilityActionBindingDigest, isExecutionCapabilityIdentifier } from '../execution-capability/capability.js';
 import { createExecutionCapabilityVerifier, type ExecutionCapabilityVerifier } from '../execution-capability/verifier.js';
 import type { ExecutionCapabilityIssuer } from '../execution-capability-issuance/issuer.js';
+import { encodeExecutionCapabilityPresentation } from '../execution-capability-presentation/index.js';
 import type { GenericHttpPreSendGate, GenericHttpPreSendSubject, GenericHttpPreSendVerdict } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
 import { GENERIC_HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/generic-http/request-binding.js';
 
@@ -25,7 +26,8 @@ import { GENERIC_HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/gener
  *        3. verify     the standalone G-02A verifier, as the audience, against the binding
  *                      recomputed here — plus execution, subject and window equality
  *        4. emergency  the adapter-scoped stop, read again, synchronously
- *        5. proceed
+ *        5. proceed    (G-02C1D) with the G-02C1A presentation of exactly the capability issued and
+ *                      verified in 2–3, which the adapter appends as its one fixed header
  *   -> DNS, address policy, the one send
  * ```
  *
@@ -37,10 +39,14 @@ import { GENERIC_HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/gener
  * grant, the capability can authorize nothing broader or different from what
  * governance admitted.
  *
- * What it does not do (G-02C0): present, transmit or attach the capability.
- * It is discarded once verified; the issuance ledger holds the evidence. Every
- * refusal — at any step — is `{ proceed: false }`, and the adapter then sends
- * nothing.
+ * G-02C1D (D1): a proceed carries one presentation — the canonical
+ * `frontera.execution-capability-presentation.v1` encoding of the issued
+ * capability text and its custody signature, nothing else (no grant, no
+ * nonce, no key). Only a capability that was issued, verified as the executor
+ * would, matched to this execution and subject, and cleared by the stop
+ * re-read, is ever encoded; the gate holds no copy afterwards, and the
+ * issuance ledger holds the evidence. Every refusal — at any step — is
+ * `{ proceed: false }`, carries nothing, and the adapter then sends nothing.
  */
 
 export interface ExecutionCapabilityGateOptions {
@@ -80,8 +86,12 @@ export class ExecutionCapabilityGateConfigurationError extends Error {
   }
 }
 
-const PROCEED: GenericHttpPreSendVerdict = Object.freeze({ proceed: true });
 const WITHHOLD: GenericHttpPreSendVerdict = Object.freeze({ proceed: false });
+
+/** The one proceeding verdict: a frozen record of `proceed` and the presentation, and nothing else. */
+function proceedWith(presentation: string): GenericHttpPreSendVerdict {
+  return Object.freeze({ proceed: true, presentation });
+}
 
 export function createExecutionCapabilityGate(options: ExecutionCapabilityGateOptions): ExecutionCapabilityGate {
   const { adapterId, audience, policy, issuer } = options;
@@ -132,7 +142,10 @@ export function createExecutionCapabilityGate(options: ExecutionCapabilityGateOp
       const permitted = emergencyControlPermits(assessment);
       if (!permitted) return WITHHOLD;
 
-      return PROCEED;
+      // 5. The one presentation of exactly what was issued and verified above. The encoder refuses (throws) whatever its
+      //    own decoder would refuse, which withholds.
+      const presentation = encodeExecutionCapabilityPresentation({ capability: issued.canonical, signature: issued.signature, bindingFormat: GENERIC_HTTP_REQUEST_BINDING_FORMAT });
+      return proceedWith(presentation);
     } catch {
       return WITHHOLD;
     }

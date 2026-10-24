@@ -120,6 +120,8 @@ describe('G-02C1A structure — the executor stands alone', () => {
       'src/enterprise/executor-receipt/index.ts',
       'src/enterprise/executor-receipt/receipt.ts',
       'src/enterprise/executor-receipt/verifier.ts',
+      // G-02C1D: the receipt transport codec, to deliver the persisted receipt with the answer.
+      'src/enterprise/executor-receipt/transport.ts',
     ].sort());
     assert.deepEqual([...closure.bare].sort(), ['better-sqlite3', 'node:crypto', 'node:fs', 'node:http', 'node:path']);
   });
@@ -195,9 +197,13 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
 });
 
 describe('G-02C1A structure — no Host surface, no Host change', () => {
-  it('no Host module imports the executor or the presentation codec', () => {
+  it('no Host module imports the executor; only the G-02C0 gate imports the presentation codec, for its encoder alone (G-02C1D, D1)', () => {
     const importers = PRODUCTION.filter((file) => !file.startsWith(`${EXECUTOR}/`) && !file.startsWith(`${PRESENTATION}/`) && /from ['"][^'"]*(reference-executor|execution-capability-presentation)\//.test(codeOf(file)));
-    assert.deepEqual(importers, []);
+    assert.deepEqual(importers, ['src/enterprise/execution-capability-gate/gate.ts']);
+    const gate = codeOf('src/enterprise/execution-capability-gate/gate.ts');
+    assert.equal(/reference-executor/.test(gate), false);
+    assert.ok(gate.includes("import { encodeExecutionCapabilityPresentation } from '../execution-capability-presentation/index.js';"));
+    assert.equal(/decodeExecutionCapabilityPresentation/.test(gate), false);
   });
 
   it('neither is exported from the Enterprise barrel, the package entry or the package exports map, and no route names them', () => {
@@ -207,13 +213,15 @@ describe('G-02C1A structure — no Host surface, no Host change', () => {
     assert.equal(/reference-executor|execution-capability-presentation/.test(JSON.stringify((JSON.parse(readFileSync('package.json', 'utf8')) as { exports?: unknown }).exports ?? {})), false);
   });
 
-  it('the Host does not present yet: the mapper reserves nothing new, and the G-02C0 verdict is still proceed-or-withhold (SEC-INV-376)', () => {
-    assert.equal(readFileSync('src/enterprise/execution-adapters/generic-http/configuration.ts', 'utf8').includes('frontera-execution-capability'), false, 'D1 is deferred to G-02C1D');
+  it('G-02C1D (D1): the Host presents through the one fixed header the mapper reserves, and nothing else (SEC-INV-376, amended)', () => {
+    const configuration = codeOf('src/enterprise/execution-adapters/generic-http/configuration.ts');
+    assert.ok(configuration.includes('  GENERIC_HTTP_PRESENTATION_HEADER,\n  GENERIC_HTTP_RECEIPT_HEADER,\n]);'), 'both governed names are reserved from mapping and from the provider reference');
+    assert.equal(configuration.split('GENERIC_HTTP_PRESENTATION_HEADER').length - 1, 3, 'imported once, reserved twice');
     const adapter = codeOf('src/enterprise/execution-adapters/generic-http/generic-http-execution-adapter.ts');
-    assert.ok(adapter.includes('export type GenericHttpPreSendVerdict = { readonly proceed: true } | { readonly proceed: false };'));
+    assert.ok(adapter.includes('export type GenericHttpPreSendVerdict = { readonly proceed: true; readonly presentation?: string } | { readonly proceed: false };'));
     const invariants = readFileSync('docs/security/SECURITY_INVARIANTS.md', 'utf8');
-    assert.ok(invariants.includes('| SEC-INV-376 | **The hook can stop a request and never change one.**'));
-    for (const file of sourcesUnder('src/enterprise/execution-capability-gate')) assert.equal(/EXECUTION_CAPABILITY_PRESENTATION|execution-capability-presentation|frontera-execution-capability/.test(codeOf(file)), false, file);
+    assert.ok(invariants.includes('| SEC-INV-376 | **The hook can stop a request and never change one — except to append, on a proceed, the one fixed presentation header (G-02C1D, D1).**'));
+    assert.equal(sourcesUnder('src/enterprise/execution-capability-gate').filter((file) => /frontera-execution-capability|EXECUTION_CAPABILITY_PRESENTATION_HEADER/.test(codeOf(file))).length, 0, 'the gate never names the header: the adapter alone appends it');
   });
 
   it('the G-02A contract is unchanged: the same eighteen closed fields and the same signing domain', () => {

@@ -124,8 +124,8 @@ describe('G-02C1B structure — no Host, receipt or production adapter', () => {
     }
   });
 
-  it('receipts (G-02C1C) live only in the receipt contract and the reference executor — never the Host', () => {
-    for (const file of sourcesUnder('src').filter((path) => !path.startsWith('src/enterprise/executor-receipt/') && !path.startsWith(`${EXECUTOR}/`))) {
+  it('receipts (G-02C1C) live only in the receipt contract, the reference executor and (G-02C1D) the Host receipt evidence module', () => {
+    for (const file of sourcesUnder('src').filter((path) => !path.startsWith('src/enterprise/executor-receipt/') && !path.startsWith(`${EXECUTOR}/`) && !path.startsWith('src/enterprise/execution-receipt-evidence/'))) {
       assert.equal(/executor-receipt|ExecutorReceipt|signExecutorReceipt/.test(codeOf(file)), false, file);
     }
   });
