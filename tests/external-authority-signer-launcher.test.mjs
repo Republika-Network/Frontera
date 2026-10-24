@@ -52,7 +52,7 @@ function waitFor(child, pattern, deadlineMs = 60_000) {
     });
     child.on('exit', (code) => {
       clearTimeout(deadline);
-      reject(Object.assign(new Error(`exited ${code} [G02C1D-DIAGNOSTIC stdout=${out.slice(-1500)} stderr=${err.slice(-3000)}]`), { stdout: out, stderr: err, code }));
+      reject(Object.assign(new Error(`exited ${code}`), { stdout: out, stderr: err, code }));
     });
   });
 }

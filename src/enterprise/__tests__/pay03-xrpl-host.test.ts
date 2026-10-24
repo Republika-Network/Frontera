@@ -425,7 +425,7 @@ describe('PAY-03 Host startup, readiness and configuration', () => {
     const good = await runHostPreflight(await withDeploymentWitness(hostEnv(workspace.dir())));
     const configuration = good.checks.find((check) => check.id === 'configuration');
     assert.equal(configuration?.status, 'pass', JSON.stringify(good.checks));
-    assert.equal(good.checks.find((check) => check.id === 'storage')?.status, 'pass', `G02C1D-DIAGNOSTIC ${JSON.stringify(good.checks)}`);
+    assert.equal(good.checks.find((check) => check.id === 'storage')?.status, 'pass');
     const goodEnv = await withDeploymentWitness(hostEnv(workspace.dir()));
     const { loadEnterpriseConfiguration } = await import('../configuration/enterprise-configuration.js');
     const derive = registry.deriveDeploymentRequirements as unknown as (env: unknown, configuration: unknown) => unknown;
