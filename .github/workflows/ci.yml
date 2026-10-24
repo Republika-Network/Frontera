@@ -11,7 +11,13 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    # CI compatibility (temporary, founder-approved 2026-10-24): ubuntu-latest moved to
+    # ubuntu-26.04, whose temporary directory is tmpfs. The production profile's storage
+    # preflight correctly refuses durable stores on an in-memory filesystem
+    # (STORAGE_NOT_PERSISTENT), and this job's suites keep secure-profile state under the
+    # OS temporary directory. Pinned until those suites place durable state on disk.
+    # The refusal itself stays qualified (pilot-deployment D8: state on a tmpfs mount is refused).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -64,7 +70,13 @@ jobs:
     # structure suite and the approvalPolicy / witness-outage suites. The
     # multi-process drills run here, one file at a time, not inside the
     # parallel root suite of `validate`.
-    runs-on: ubuntu-latest
+    # CI compatibility (temporary, founder-approved 2026-10-24): ubuntu-latest moved to
+    # ubuntu-26.04, whose temporary directory is tmpfs. The production profile's storage
+    # preflight correctly refuses durable stores on an in-memory filesystem
+    # (STORAGE_NOT_PERSISTENT), and this job's suites keep secure-profile state under the
+    # OS temporary directory. Pinned until those suites place durable state on disk.
+    # The refusal itself stays qualified (pilot-deployment D8: state on a tmpfs mount is refused).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
