@@ -95,8 +95,14 @@ describe('G-02B structure — issuance has one caller (the G-02C0 gate), no rout
   });
 
   it('the governed-action result and the validated execution action carry no capability', () => {
+    // G-02C1D (D1): the Generic HTTP adapter may name the one reserved presentation header, in one module, once — never a
+    // capability, an issuer or a signer. Exactly that literal is set aside; everything else is held to the original rule.
+    const PRESENTATION_HEADER_LITERAL = "'frontera-execution-capability'";
+    const GOVERNED_HEADERS = 'src/enterprise/execution-adapters/generic-http/governed-headers.ts';
+    assert.equal(codeOf(GOVERNED_HEADERS).split(PRESENTATION_HEADER_LITERAL).length - 1, 1, 'declared once');
     for (const file of [...sourcesUnder('src/enterprise/governed-action'), ...sourcesUnder('src/features/execution-runtime'), ...sourcesUnder('src/enterprise/execution-adapters'), ...sourcesUnder('src/enterprise/execution-governance')]) {
-      assert.equal(/execution-capabilit|ExecutionCapability|signExecutionCapability/.test(codeOf(file)), false, file);
+      const code = file === GOVERNED_HEADERS ? codeOf(file).replace(PRESENTATION_HEADER_LITERAL, "''") : codeOf(file);
+      assert.equal(/execution-capabilit|ExecutionCapability|signExecutionCapability/.test(code), false, file);
     }
   });
 

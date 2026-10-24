@@ -1,10 +1,11 @@
 import { EXECUTION_FAILURE_REASONS, isRecordableProviderRef, type ExecutionAdapter, type ExecutionAdapterResult, type ValidatedExecutionAction } from '../../../features/execution-runtime/index.js';
 import { GENERIC_HTTP_LIMITS as LIMITS, type EnterpriseGenericHttpExecutionAdapterOptions } from './contracts.js';
 import { snapshotGenericHttpOptions, type GenericHttpPlan } from './configuration.js';
+import { GENERIC_HTTP_GOVERNED_HEADER_LIMITS, GENERIC_HTTP_PRESENTATION_HEADER, isGovernedHeaderValue } from './governed-headers.js';
 import { NODE_GENERIC_HTTP_RUNTIME, type GenericHttpNetworkRuntime, type GenericHttpTransportObservation } from './node-https-transport.js';
 import { selectApprovedAddress } from './public-address-policy.js';
 import { genericHttpRequestBinding, type GenericHttpRequestBinding } from './request-binding.js';
-import { mapGenericHttpRequest } from './request-mapper.js';
+import { mapGenericHttpRequest, type GenericHttpWireRequest } from './request-mapper.js';
 
 /**
  * The Generic HTTP Execution Adapter — a deterministic translator from one
@@ -15,7 +16,11 @@ import { mapGenericHttpRequest } from './request-mapper.js';
  * ExecutionAdapterRegistry (trusted routing, adapter-scoped emergency check)
  *   -> execute(action)
  *   -> map        plan + action -> complete request, or ADAPTER_ERROR (no I/O)
- *   -> gate       (G-02C0, only when composed) proceed, or ADAPTER_ERROR (nothing sent)
+ *   -> gate       (G-02C0, only when composed) proceed, or ADAPTER_ERROR (nothing sent);
+ *                 G-02C1D: a proceed may carry one presentation, appended as one fixed header
+ *                 after the binding was computed
+ *   -> observe    (G-02C1D, only with a presentation) the receipt header values, handed on;
+ *                 never a change to the result
  *   -> resolve    the pinned hostname, fresh, every execution
  *   -> policy     every answer public, or ADAPTER_ERROR; pick one
  *   -> send       one connection to that one address; no reuse, no redirect, no retry
@@ -152,11 +157,15 @@ export interface GenericHttpPreSendSubject {
 }
 
 /**
- * A gate's whole vocabulary: proceed, or do not. There is no member that
- * carries a request, a header, a body or a destination, so a gate can stop a
- * request and can never change, replace or add to one.
+ * A gate's whole vocabulary: proceed, or do not — and, since G-02C1D, a
+ * proceed may carry **one** presentation: an opaque, bounded base64url value
+ * the adapter appends as the one fixed `frontera-execution-capability`
+ * header. There is no member that carries a request, a header name, a body or
+ * a destination, so a gate can stop a request and can never change or replace
+ * one, and can add to it only that one value under that one name. A refusal
+ * carries nothing.
  */
-export type GenericHttpPreSendVerdict = { readonly proceed: true } | { readonly proceed: false };
+export type GenericHttpPreSendVerdict = { readonly proceed: true; readonly presentation?: string } | { readonly proceed: false };
 
 /**
  * G-02C0 — an internal hook run **after** the request is final and frozen and
@@ -167,11 +176,68 @@ export type GenericHttpPreSendVerdict = { readonly proceed: true } | { readonly 
  */
 export type GenericHttpPreSendGate = (subject: GenericHttpPreSendSubject) => Promise<GenericHttpPreSendVerdict>;
 
-/** Exactly `{ proceed: true }` as an own data property; everything else is a refusal. */
-function proceeds(verdict: unknown): boolean {
-  if (verdict === null || typeof verdict !== 'object') return false;
+/**
+ * G-02C1D — what the adapter shows a response observer after it sent a request
+ * carrying a presentation: whether anything came back, the final status if it
+ * did, and every raw value of the receipt header (untrusted, unread here). The
+ * observer cannot change the result: it is told the result after it was fixed.
+ */
+export interface GenericHttpExchangeEvidence {
+  readonly adapterId: string;
+  readonly action: ValidatedExecutionAction;
+  readonly result: ExecutionAdapterResult;
+  readonly transmission: 'not-sent' | 'unconfirmed' | 'response';
+  readonly status: number | null;
+  readonly receiptValues: readonly string[];
+}
+
+/**
+ * G-02C1D — an internal hook run once after a presented request's exchange
+ * ended, whatever its outcome. Composed by the composition root alone, beside
+ * the gate. It runs detached, after the result has been handed back, so it can
+ * neither delay, hold nor change the result (or the P11 record made from it);
+ * a throw or rejection is ignored.
+ */
+export type GenericHttpResponseObserver = (evidence: GenericHttpExchangeEvidence) => Promise<void>;
+
+/**
+ * Exactly `{ proceed: true }`, or `{ proceed: true, presentation }`, as own
+ * data properties and nothing else; everything else is a refusal — including
+ * a presentation that is not one bounded base64url value.
+ */
+function verdictOf(verdict: unknown): { readonly proceed: false } | { readonly proceed: true; readonly presentation: string | undefined } {
+  const refused = { proceed: false } as const;
+  if (verdict === null || typeof verdict !== 'object') return refused;
   const descriptor = Object.getOwnPropertyDescriptor(verdict, 'proceed');
-  return descriptor !== undefined && 'value' in descriptor && descriptor.value === true;
+  if (descriptor === undefined || !('value' in descriptor) || descriptor.value !== true) return refused;
+  const keys = Reflect.ownKeys(verdict);
+  if (!keys.every((key) => key === 'proceed' || key === 'presentation')) return refused;
+  const offered = Object.getOwnPropertyDescriptor(verdict, 'presentation');
+  if (offered === undefined) return { proceed: true, presentation: undefined };
+  if (!('value' in offered) || !isGovernedHeaderValue(offered.value, GENERIC_HTTP_GOVERNED_HEADER_LIMITS.maxPresentationLength)) return refused;
+  return { proceed: true, presentation: offered.value };
+}
+
+/**
+ * The request with the presentation appended as its last header: a new frozen
+ * object, so the bound request itself is never changed. The mapper reserves
+ * the name, so the header is present exactly once.
+ */
+function withPresentationHeader(request: GenericHttpWireRequest, presentation: string): GenericHttpWireRequest {
+  return Object.freeze({ ...request, headers: Object.freeze([...request.headers, Object.freeze([GENERIC_HTTP_PRESENTATION_HEADER, presentation] as const)]) });
+}
+
+function transmissionOf(observation: GenericHttpTransportObservation): GenericHttpExchangeEvidence['transmission'] {
+  if (observation.kind === 'response') return 'response';
+  return observation.kind === 'unconfirmed' ? 'unconfirmed' : 'not-sent';
+}
+
+/** One exchange: its result, whether a presentation went out with it, and what the transport saw. */
+interface GenericHttpExchange {
+  readonly result: ExecutionAdapterResult;
+  readonly presented: boolean;
+  readonly transmission: GenericHttpExchangeEvidence['transmission'];
+  readonly observation?: GenericHttpTransportObservation;
 }
 
 /**
@@ -183,18 +249,48 @@ function proceeds(verdict: unknown): boolean {
  * Without a `gate` it behaves exactly as before G-02C0: the gate step is
  * skipped and nothing else differs.
  */
-export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, runtime: GenericHttpNetworkRuntime, gate?: GenericHttpPreSendGate): ExecutionAdapter {
+export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, runtime: GenericHttpNetworkRuntime, gate?: GenericHttpPreSendGate, observer?: GenericHttpResponseObserver): ExecutionAdapter {
   const adapterId = plan.adapterId;
 
   async function execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult> {
+    const exchange = await exchangeOnce(action);
+    // G-02C1D: a presented request's exchange is shown to the observer once, after its result has been handed back.
+    if (exchange.presented && observer !== undefined) {
+      const observe = observer;
+      const observation = exchange.observation;
+      const evidence = Object.freeze({
+        adapterId,
+        action,
+        result: exchange.result,
+        transmission: exchange.transmission,
+        status: observation?.kind === 'response' ? observation.status : null,
+        receiptValues: Object.freeze(observation?.kind === 'response' ? [...(observation.receiptValues ?? [])] : []),
+      });
+      setImmediate(() => {
+        try {
+          observe(evidence).catch(() => undefined);
+        } catch {
+          // The result stands; the evidence path reports its own failures.
+        }
+      });
+    }
+    return exchange.result;
+  }
+
+  /** The exchange, and — once a presentation went out — what the transport observed. */
+  async function exchangeOnce(action: ValidatedExecutionAction): Promise<GenericHttpExchange> {
+    // Every early answer below is before the send: nothing reached the provider.
+    const done = (result: ExecutionAdapterResult, sentWithPresentation = false): GenericHttpExchange => ({ result, presented: sentWithPresentation, transmission: 'not-sent' });
     // 1. The complete request, before any I/O. Unbuildable means nothing is sent.
     const mapped = mapGenericHttpRequest(plan, action);
-    if (!mapped.ok) return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.unbuildable };
+    if (!mapped.ok) return done({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.unbuildable });
 
     // 1a. G-02C0: the composed gate sees the binding of `mapped.request` — the
-    //     frozen object sent in step 4, not a copy — and may only stop it.
+    //     frozen object sent in step 4, or (G-02C1D) its copy with the one
+    //     presentation header appended — and may only stop it.
     //     Nothing has touched the network yet, so a refusal is a definite
     //     `failed`: the request was never sent.
+    let outbound: GenericHttpWireRequest = mapped.request;
     if (gate !== undefined) {
       let verdict: unknown;
       try {
@@ -202,8 +298,12 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
       } catch {
         verdict = undefined;
       }
-      if (!proceeds(verdict)) return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.withheld };
+      const decided = verdictOf(verdict);
+      if (!decided.proceed) return done({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.withheld });
+      // 1b. G-02C1D: the one presentation, appended to a copy after the binding was computed over `mapped.request`.
+      if (decided.presentation !== undefined) outbound = withPresentationHeader(mapped.request, decided.presentation);
     }
+    const presenting = outbound !== mapped.request;
 
     const started = performance.now();
 
@@ -214,26 +314,26 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
     } catch {
       resolution = { kind: 'failed' } as const;
     }
-    if (resolution.kind !== 'resolved') return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.unresolvable };
+    if (resolution.kind !== 'resolved') return done({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.unresolvable }, presenting);
 
     // 3. Every answer judged; one chosen. A mixed answer is refused whole.
     const selection = selectApprovedAddress(resolution.answers);
-    if (selection.kind === 'no-answer') return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.unresolvable };
-    if (selection.kind === 'forbidden') return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.notPublic };
+    if (selection.kind === 'no-answer') return done({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.unresolvable }, presenting);
+    if (selection.kind === 'forbidden') return done({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.ADAPTER_ERROR, detail: DETAIL.notPublic }, presenting);
 
     const remaining = Math.floor(plan.timeoutMs - (performance.now() - started));
-    if (remaining <= 0) return { outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.notSent };
+    if (remaining <= 0) return done({ outcome: 'failed', reason: EXECUTION_FAILURE_REASONS.PROVIDER_UNAVAILABLE, detail: DETAIL.notSent }, presenting);
 
     // 4. The one send. There is no second call anywhere in this function, and
     //    no loop around this one. A runtime that throws may have sent — so a
     //    throw here is unconfirmed, never a failure.
     let observation: GenericHttpTransportObservation;
     try {
-      observation = await runtime.send(mapped.request, selection.address, remaining, plan.providerRefHeader);
+      observation = await runtime.send(outbound, selection.address, remaining, plan.providerRefHeader);
     } catch {
-      return { outcome: 'unconfirmed', detail: DETAIL.unconfirmed };
+      return { result: { outcome: 'unconfirmed', detail: DETAIL.unconfirmed }, presented: presenting, transmission: 'unconfirmed' };
     }
-    return fromObservation(observation, plan.credentialSecrets);
+    return { result: fromObservation(observation, plan.credentialSecrets), presented: presenting, transmission: transmissionOf(observation), observation };
   }
 
   return Object.freeze({
@@ -266,7 +366,13 @@ export function createGenericHttpExecutionAdapter(options: EnterpriseGenericHttp
  * from this module's index or the Enterprise barrel. An id with no gate in
  * `gates` is built exactly as `createGenericHttpExecutionAdapter` builds it.
  */
-export function createGenericHttpExecutionAdapterWithPreSendGates(options: EnterpriseGenericHttpExecutionAdapterOptions, gates: ReadonlyMap<string, GenericHttpPreSendGate>): ExecutionAdapter {
+export function createGenericHttpExecutionAdapterWithPreSendGates(
+  options: EnterpriseGenericHttpExecutionAdapterOptions,
+  gates: ReadonlyMap<string, GenericHttpPreSendGate>,
+  observers: ReadonlyMap<string, GenericHttpResponseObserver> = new Map(),
+): ExecutionAdapter {
   const plan = snapshotGenericHttpOptions(options);
-  return createGenericHttpExecutionAdapterCore(plan, NODE_GENERIC_HTTP_RUNTIME, gates.get(plan.adapterId));
+  const gate = gates.get(plan.adapterId);
+  // G-02C1D: an observer only ever accompanies a gate — nothing ungated is presented, so nothing ungated is observed.
+  return createGenericHttpExecutionAdapterCore(plan, NODE_GENERIC_HTTP_RUNTIME, gate, gate === undefined ? undefined : observers.get(plan.adapterId));
 }

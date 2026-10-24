@@ -2,8 +2,9 @@
  * G-02C1C — the executor receipt contract (`frontera.executor-receipt.v1`) and
  * its standalone verifier. Verification only: nothing here holds or uses a
  * private key. The signer lives in the reference executor
- * (`reference-executor/receipt-signer.ts`). Not wired into the Host (G-02C1D)
- * and not re-exported from the Enterprise barrel.
+ * (`reference-executor/receipt-signer.ts`). Since G-02C1D the Host's receipt
+ * evidence module composes the verifier and the transport codec; neither is
+ * re-exported from the Enterprise barrel.
  */
 export {
   EXECUTOR_RECEIPT_BASES,
@@ -25,3 +26,12 @@ export {
 export type { ExecutorReceipt, ExecutorReceiptBasis, ExecutorReceiptDraft, ExecutorReceiptLedgerState, ExecutorReceiptObservation, ExecutorReceiptOutcome, ExecutorReceiptParseFailure } from './receipt.js';
 export { ExecutorReceiptVerifierConfigurationError, createExecutorReceiptVerifier } from './verifier.js';
 export type { ExecutorReceiptHistory, ExecutorReceiptVerification, ExecutorReceiptVerificationFailure, ExecutorReceiptVerifier, ExpectedExecutorReceipt, PresentedExecutorReceipt, TrustedExecutor } from './verifier.js';
+export {
+  EXECUTOR_RECEIPT_TRANSPORT_FAILURES,
+  EXECUTOR_RECEIPT_TRANSPORT_FORMAT,
+  EXECUTOR_RECEIPT_TRANSPORT_HEADER,
+  EXECUTOR_RECEIPT_TRANSPORT_LIMITS,
+  decodeExecutorReceiptTransport,
+  encodeExecutorReceiptTransport,
+} from './transport.js';
+export type { ExecutorReceiptTransportDecoding, ExecutorReceiptTransportFailure } from './transport.js';

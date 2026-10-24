@@ -4,8 +4,9 @@
  * as its pre-send gate.
  *
  * Internal. Imported by the composition root alone; not exported from the
- * enterprise entry point, mounted on a route or offered as an option. It
- * presents nothing to an executor.
+ * enterprise entry point, mounted on a route or offered as an option. Since
+ * G-02C1D its proceed carries the one capability presentation the adapter
+ * appends; it holds no signer and sends nothing itself.
  */
 export { ExecutionCapabilityGateConfigurationError, createExecutionCapabilityGate } from './gate.js';
 export type { ExecutionCapabilityGate, ExecutionCapabilityGateOptions, ExecutionCapabilityGateRuntime } from './gate.js';

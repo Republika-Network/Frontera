@@ -1205,7 +1205,7 @@ describe('Generic HTTP — transport phases: certainty ends at secureConnect (§
       outbound.emit('error', new Error('late'));
     });
     const observation = await sendOnce(primitive, request, PUBLIC_V4, 1000, 'x-request-id');
-    assert.deepEqual(observation, { kind: 'response', status: 503, providerRefValues: ['prov-9', 'prov-10'] });
+    assert.deepEqual(observation, { kind: 'response', status: 503, providerRefValues: ['prov-9', 'prov-10'], receiptValues: [] });
     assert.equal(response?.destroyed, true, 'the response body is discarded, not buffered');
     assert.equal(response?.listenerCount('data'), 0, 'nothing ever subscribes to the body');
     assert.equal(calls[0]?.destroyed, true);
@@ -1442,7 +1442,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
         response.end(`provider body with ${TOKEN}`);
       });
       assert.equal(observation.kind, 'response');
-      assert.deepEqual(observation, { kind: 'response', status: 201, providerRefValues: ['prov-201'] });
+      assert.deepEqual(observation, { kind: 'response', status: 201, providerRefValues: ['prov-201'], receiptValues: [] });
       assert.equal(hits.length, 1);
       assert.match(hits[0]?.host ?? '', new RegExp(`^${HOSTNAME.replaceAll('.', '\\.')}:\\d+$`));
       assert.equal(hits[0]?.path, '/v1/payments');
@@ -1458,7 +1458,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
         response.writeHead(302, { Location: '/v1/elsewhere' });
         response.end();
       });
-      assert.deepEqual(observation, { kind: 'response', status: 302, providerRefValues: [] });
+      assert.deepEqual(observation, { kind: 'response', status: 302, providerRefValues: [], receiptValues: [] });
       assert.equal(hits.length, 1, 'no second request, to the same host or any other');
     });
 
@@ -1467,7 +1467,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
         response.writeHead(303, { Location: '/v1/payments/receipt-1' });
         response.end();
       });
-      assert.deepEqual(observation, { kind: 'response', status: 303, providerRefValues: [] });
+      assert.deepEqual(observation, { kind: 'response', status: 303, providerRefValues: [], receiptValues: [] });
       assert.equal(hits.length, 1, 'no second request to the Location, on the same host or any other');
       assert.equal(hits[0]?.path, '/v1/payments');
     });
@@ -1477,7 +1477,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
         response.writeHead(500);
         response.end();
       });
-      assert.deepEqual(observation, { kind: 'response', status: 500, providerRefValues: [] });
+      assert.deepEqual(observation, { kind: 'response', status: 500, providerRefValues: [], receiptValues: [] });
       assert.equal(hits.length, 1);
     });
 
@@ -1499,7 +1499,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
         response.writeHead(200);
         response.end();
       });
-      assert.deepEqual(observation, { kind: 'response', status: 200, providerRefValues: ['a', 'b'] });
+      assert.deepEqual(observation, { kind: 'response', status: 200, providerRefValues: ['a', 'b'], receiptValues: [] });
     });
 
     it('17. proxy environment variables change nothing: the provider is reached directly', async () => {
@@ -1513,7 +1513,7 @@ describe('Generic HTTP — the transport over real local sockets', () => {
           response.writeHead(204);
           response.end();
         });
-        assert.deepEqual(observation, { kind: 'response', status: 204, providerRefValues: [] });
+        assert.deepEqual(observation, { kind: 'response', status: 204, providerRefValues: [], receiptValues: [] });
         assert.equal(hits.length, 1);
       } finally {
         for (const [key, value] of Object.entries(saved)) {
