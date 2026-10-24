@@ -1,4 +1,4 @@
-import { encodeExecutorReceiptTransport } from '../executor-receipt/index.js';
+import { EXECUTOR_RECEIPT_TRANSPORT_HEADER, encodeExecutorReceiptTransport } from '../executor-receipt/index.js';
 import type { ExecutionCapabilityClaimRefusal, ExecutionCapabilityConsumptionLedger, ExecutionCapabilityConsumptionState, ExecutionCapabilityReportedOutcome } from '../execution-capability/reference/consumption-ledger.js';
 import type { ObservedHttpRequest } from './admission.js';
 import type { ReferenceExecutorConfiguration, ReferenceExecutorFaultPoint } from './configuration.js';
@@ -97,11 +97,12 @@ export interface ReferenceExecutorExecutionFlow {
   /** The status for a record of this flow. Never 2xx except `completed-observed` (201) and `already-consumed` (202). */
   statusOf(execution: ReferenceExecutorExecution, refusedStatus: (stage: ReferenceExecutorStage, code: ReferenceExecutorAssessmentCode) => number): number;
   /**
-   * G-02C1D: the receipt this answer carries back — the transport encoding of the receipt the receipt ledger persisted and
-   * the signer signed while this answer was formed — or `undefined` when there is none. Never reconstructed from the
-   * status, never inside the diagnostic record, and never a reason to perform anything.
+   * G-02C1D: the headers this answer adds — at most the one `frontera-execution-receipt` header, carrying the transport
+   * encoding of the receipt the receipt ledger persisted and the signer signed while this answer was formed; none when
+   * there is no such receipt. Never reconstructed from the status, never inside the diagnostic record, and never a
+   * reason to perform anything.
    */
-  receiptOf?(execution: ReferenceExecutorExecution): string | undefined;
+  answerHeadersOf?(execution: ReferenceExecutorExecution): Readonly<Record<string, string>>;
 }
 
 export interface ReferenceExecutorExecutionFlowOptions {
@@ -268,7 +269,12 @@ export function createReferenceExecutorExecutionFlow(options: ReferenceExecutorE
     }
   }
 
-  return Object.freeze({ execute, statusOf, receiptOf: (execution: ReferenceExecutorExecution): string | undefined => delivered.get(execution) });
+  const NONE: Readonly<Record<string, string>> = Object.freeze({});
+  const answerHeadersOf = (execution: ReferenceExecutorExecution): Readonly<Record<string, string>> => {
+    const encoded = delivered.get(execution);
+    return encoded === undefined ? NONE : Object.freeze({ [EXECUTOR_RECEIPT_TRANSPORT_HEADER]: encoded });
+  };
+  return Object.freeze({ execute, statusOf, answerHeadersOf });
 }
 
 /** The transport encoding of an issued receipt, or `undefined` for a refusal or anything else. */

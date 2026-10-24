@@ -1,6 +1,5 @@
-import type { ExecutionCapabilityIssuanceLedger } from '../execution-capability-issuance/issuance-ledger.js';
 import type { GenericHttpExchangeEvidence, GenericHttpResponseObserver } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
-import { EXECUTION_CAPABILITY_LIMITS } from '../execution-capability/capability.js';
+import { EXECUTION_CAPABILITY_LIMITS, type ExecutionCapability } from '../execution-capability/capability.js';
 import { decodeExecutorReceiptTransport, executorReceiptDigest, parseExecutorReceipt, type ExecutorReceiptOutcome, type ExecutorReceiptVerifier } from '../executor-receipt/index.js';
 import type { ExecutionReceiptAgreement, ExecutionReceiptEvidenceStore, ExecutionReceiptExchange, ExecutionReceiptHttpOutcome } from './evidence-store.js';
 
@@ -49,9 +48,19 @@ export interface ExecutionReceiptEvidenceRecorderOptions {
   readonly verifier: ExecutorReceiptVerifier;
 }
 
+/**
+ * The one read the recorder makes of the G-02B issuance ledger, stated structurally: the ledger's own `read(executionId)`
+ * satisfies it. Read only — nothing here can reserve, issue or mark anything.
+ */
+export interface ExecutionReceiptIssuanceView {
+  read(executionId: string):
+    | { readonly state: 'absent' }
+    | { readonly state: string; readonly executionId: string; readonly capabilityId: string; readonly audience: string; readonly capability: ExecutionCapability };
+}
+
 /** What exists only once the composition has opened the issuance ledger and the evidence store. */
 export interface ExecutionReceiptEvidenceRuntime {
-  readonly issuance: Pick<ExecutionCapabilityIssuanceLedger, 'read'>;
+  readonly issuance: ExecutionReceiptIssuanceView;
   readonly store: Pick<ExecutionReceiptEvidenceStore, 'record'>;
 }
 
@@ -101,11 +110,13 @@ export function createExecutionReceiptEvidenceRecorder(options: ExecutionReceipt
       Object.freeze({ ...base, capabilityId, candidate: null, disposition, failure, receiptDigest, agreement: 'not-comparable' as const });
 
     // 1. This Host's issuance for this execution, for this adapter's audience — or none.
-    let issued: Extract<ReturnType<ExecutionReceiptEvidenceRuntime['issuance']['read']>, { readonly capabilityId: string }> | undefined;
+    let issued: { readonly capabilityId: string; readonly capability: ExecutionCapability } | undefined = undefined;
     try {
       const record = bound.issuance.read(executionId);
-      const ours = record.state === 'issued' && record.executionId === executionId && record.audience === audience && record.capability.audience === audience && record.capability.issuer === issuer;
-      issued = ours ? record : undefined;
+      if (record.state === 'issued' && 'capability' in record) {
+        const ours = record.executionId === executionId && record.audience === audience && record.capability.audience === audience && record.capability.issuer === issuer;
+        issued = ours ? { capabilityId: record.capabilityId, capability: record.capability } : undefined;
+      }
     } catch {
       issued = undefined;
     }

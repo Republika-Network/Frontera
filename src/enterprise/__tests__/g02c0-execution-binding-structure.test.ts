@@ -81,7 +81,7 @@ describe('G-02C0 structure — the hook can stop a request and never change one'
   const adapter = codeOf(`${GENERIC_HTTP}/generic-http-execution-adapter.ts`);
 
   it('the verdict carries nothing but proceed — and, since G-02C1D (D1), at most one presentation value on a proceed', () => {
-    const declaration = /export type GenericHttpPreSendVerdict = ([^;]*);/.exec(adapter)?.[1] ?? '';
+    const declaration = /export type GenericHttpPreSendVerdict = ([^\n]*);\n/.exec(adapter)?.[1] ?? '';
     assert.equal(declaration.trim(), '{ readonly proceed: true; readonly presentation?: string } | { readonly proceed: false }');
     // Only own data properties `proceed` and `presentation`; the value is one bounded base64url string, appended under the one fixed name.
     assert.ok(adapter.includes("if (!keys.every((key) => key === 'proceed' || key === 'presentation')) return refused;"));

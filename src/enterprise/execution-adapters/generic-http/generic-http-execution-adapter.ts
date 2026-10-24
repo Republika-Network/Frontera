@@ -251,7 +251,7 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
   const adapterId = plan.adapterId;
 
   async function execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult> {
-    const exchange = await attempt(action);
+    const exchange = await exchangeOnce(action);
     // G-02C1D: a presented request's exchange is shown to the observer once, after its result is fixed.
     if (exchange.presented && observer !== undefined) {
       const observation = exchange.observation;
@@ -273,7 +273,7 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
   }
 
   /** The exchange, and — once a presentation went out — what the transport observed. */
-  async function attempt(action: ValidatedExecutionAction): Promise<GenericHttpExchange> {
+  async function exchangeOnce(action: ValidatedExecutionAction): Promise<GenericHttpExchange> {
     // Every early answer below is before the send: nothing reached the provider.
     const done = (result: ExecutionAdapterResult, sentWithPresentation = false): GenericHttpExchange => ({ result, presented: sentWithPresentation, transmission: 'not-sent' });
     // 1. The complete request, before any I/O. Unbuildable means nothing is sent.

@@ -9,12 +9,23 @@ import assert from 'node:assert/strict';
 import type { ExecutionAdapter, ExecutionAdapterResult, ValidatedExecutionAction } from '../../features/execution-runtime/index.js';
 import { AUTHORITY_ARTIFACT_VERSION, createExecutionCapabilityIssuancePolicy, executionIdForGrant } from '../authority-authenticity/index.js';
 import { createGenericHttpExecutionAdapterCore, type GenericHttpExchangeEvidence } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
-import { sendOnce, type GenericHttpRequestPrimitive } from '../execution-adapters/generic-http/node-https-transport.js';
+import { sendOnce, type GenericHttpRequestPrimitive, type GenericHttpTransportObservation } from '../execution-adapters/generic-http/node-https-transport.js';
 import { GENERIC_HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/generic-http/request-binding.js';
 import type { GenericHttpWireRequest } from '../execution-adapters/generic-http/request-mapper.js';
 import { createExecutionCapabilityGate } from '../execution-capability-gate/index.js';
 import { createExecutionCapabilityIssuer, openExecutionCapabilityIssuanceLedger, type ExecutionCapabilityIssuanceLedger } from '../execution-capability-issuance/index.js';
-import { EXECUTOR_RECEIPT_SIGNING_DOMAIN, encodeExecutorReceiptTransport } from '../executor-receipt/index.js';
+import { EXECUTION_CAPABILITY_PRESENTATION_HEADER, decodeExecutionCapabilityPresentation } from '../execution-capability-presentation/index.js';
+import { parseExecutionCapability, type ExecutionCapability } from '../execution-capability/index.js';
+import {
+  EXECUTOR_RECEIPT_FORMAT,
+  EXECUTOR_RECEIPT_OBSERVATION_KIND,
+  EXECUTOR_RECEIPT_SIGNING_DOMAIN,
+  encodeExecutorReceiptTransport,
+  positionExecutorReceipt,
+  serializeExecutorReceipt,
+  type ExecutorReceipt,
+  type ExecutorReceiptDraft,
+} from '../executor-receipt/index.js';
 import {
   createExecutionReceiptEvidenceRecorder,
   createExecutionReceiptTrust,
@@ -198,8 +209,10 @@ export interface HostWorld {
 }
 
 export interface HostWorldOptions {
-  /** Where the transport dials (the executor, a forger, or a relay). */
-  readonly target: { readonly port: number } | { readonly path: string };
+  /** Where the transport dials (the executor, a forger, or a relay). Ignored with `respond`. */
+  readonly target?: { readonly port: number } | { readonly path: string };
+  /** In place of the transport: answers the exact request the adapter handed it (an in-process executor or adversary). */
+  readonly respond?: (request: GenericHttpWireRequest) => GenericHttpTransportObservation | Promise<GenericHttpTransportObservation>;
   readonly trustedExecutors: readonly TrustedExecutor[];
   /** Rewrites the request after the adapter appended the presentation, before the transport writes it (a man in the middle). */
   readonly tamper?: (request: GenericHttpWireRequest) => GenericHttpWireRequest;
@@ -227,7 +240,7 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
   recorder.bind({ issuance, store: evidence });
   const sent: GenericHttpWireRequest[] = [];
   const exchanges: GenericHttpExchangeEvidence[] = [];
-  const primitive = loopbackHostPrimitive(options.target);
+  const primitive = options.target === undefined ? undefined : loopbackHostPrimitive(options.target);
   const adapter = createGenericHttpExecutionAdapterCore(
     gatedPlan({ adapterId: E2E_ADAPTER_ID, origin: `https://${E2E_HOSTNAME}`, timeoutMs: 5_000 }),
     {
@@ -235,6 +248,8 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
       send: (request, _address, timeoutMs, providerRefHeader) => {
         sent.push(request);
         const outbound = options.tamper === undefined ? request : options.tamper(request);
+        if (options.respond !== undefined) return Promise.resolve(options.respond(outbound));
+        assert.ok(primitive !== undefined, 'a host world needs a target or a responder');
         return sendOnce(primitive, outbound, { address: '127.0.0.1', family: 4 }, timeoutMs, providerRefHeader);
       },
     },
@@ -283,6 +298,48 @@ export function deliverable(keyFile: string, text: string, keyId: string = E2E_R
   return encodeExecutorReceiptTransport({ receipt: text, signature: signReceiptText(keyFile, text, keyId) });
 }
 
+/** The capability a request presents (the adapter's one header), decoded and parsed — never verified here. */
+export function presentedCapability(request: GenericHttpWireRequest): ExecutionCapability {
+  const values = request.headers.filter(([name]) => name === EXECUTION_CAPABILITY_PRESENTATION_HEADER).map(([, value]) => value);
+  assert.equal(values.length, 1, 'exactly one presentation header');
+  const decoded = decodeExecutionCapabilityPresentation(values[0]);
+  assert.ok(decoded.ok);
+  const parsed = parseExecutionCapability(decoded.presentation.capability);
+  assert.ok(parsed.ok);
+  return parsed.capability;
+}
+
+/** A well-formed receipt about `capability`, as the executor would state a completed synthetic effect, with `overrides` applied. */
+export function receiptAbout(capability: ExecutionCapability, overrides: Partial<Record<keyof ExecutorReceiptDraft, unknown>> = {}, position: { readonly sequence?: number; readonly supersedes?: string | null } = {}): ExecutorReceipt {
+  // Deterministic, so two receipts about one capability share their subject: the claim at the moment of issuance.
+  const claimedAt = capability.issuedAt;
+  const { consumption, ...rest } = overrides as { readonly consumption?: Record<string, unknown> } & Record<string, unknown>;
+  const draft = {
+    format: EXECUTOR_RECEIPT_FORMAT,
+    executorId: E2E_EXECUTOR_ID,
+    executorKeyId: E2E_RECEIPT_KEY_ID,
+    issuer: capability.issuer,
+    capabilityId: capability.capabilityId,
+    executionId: capability.executionId,
+    audience: capability.audience,
+    organizationId: capability.organizationId,
+    trustDomain: capability.trustDomain,
+    actionBinding: { format: capability.actionBinding.format, digest: capability.actionBinding.digest },
+    outcome: 'completed-observed',
+    basis: 'execution-path',
+    observedAt: claimedAt,
+    observation: { kind: EXECUTOR_RECEIPT_OBSERVATION_KIND, reference: `${capability.capabilityId}.json`, digest: `sha256:${'a'.repeat(64)}` },
+    ...rest,
+    consumption: { claimedAt, ledgerState: 'completed', ...consumption },
+  } as unknown as ExecutorReceiptDraft;
+  return positionExecutorReceipt(draft, position.sequence ?? 1, position.supersedes ?? null);
+}
+
+/** `receipt`, serialized and signed under `keyFile`, as one receipt header value. */
+export function deliverableReceipt(keyFile: string, receipt: ExecutorReceipt, keyId: string = E2E_RECEIPT_KEY_ID): string {
+  return deliverable(keyFile, serializeExecutorReceipt(receipt), keyId);
+}
+
 /** Resolves once `predicate` holds, polling briefly; fails after `timeoutMs`. */
 export async function eventually(predicate: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const limit = Date.now() + timeoutMs;
@@ -291,3 +348,6 @@ export async function eventually(predicate: () => boolean | Promise<boolean>, ti
     await new Promise((wake) => setTimeout(wake, 25));
   }
 }
+
+/** The overrides that make `receiptAbout` state an unknown outcome at `ledgerState`, on durable state alone. */
+export const UNKNOWN = Object.freeze({ consumption: { ledgerState: 'claimed' }, outcome: 'attempted-outcome-unknown', basis: 'durable-state', observation: null });

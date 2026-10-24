@@ -36,7 +36,7 @@ export type {
   StoredExecutionReceiptObservation,
 } from './evidence-store.js';
 export { ExecutionReceiptEvidenceConfigurationError, createExecutionReceiptEvidenceRecorder, receiptAgreementOf } from './recorder.js';
-export type { ExecutionReceiptEvidenceRecorder, ExecutionReceiptEvidenceRecorderOptions, ExecutionReceiptEvidenceRuntime } from './recorder.js';
+export type { ExecutionReceiptEvidenceRecorder, ExecutionReceiptEvidenceRecorderOptions, ExecutionReceiptEvidenceRuntime, ExecutionReceiptIssuanceView } from './recorder.js';
 export type { TrustedExecutor };
 
 /**
