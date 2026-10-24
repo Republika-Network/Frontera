@@ -118,7 +118,7 @@ function file(dir: string, domain: ExecutorDomain, receiptEvidence: Record<strin
         : {
             receiptEvidence: {
               storePath: join(dir, 'evidence', 'receipt-evidence.sqlite'),
-              trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }],
+              trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem.trim() }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }],
               ...receiptEvidence,
             },
           }),
@@ -308,15 +308,15 @@ describe('G-02C1D on the shipped Host — receiptEvidence is validated at boot',
   const refusals: readonly [string, (dir: string, domain: ExecutorDomain) => Record<string, unknown>, string][] = [
     ['an unknown field', (dir, domain) => file(dir, domain, { publicKeyUrl: 'https://keys.example/executor' }), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
     ['no trusted executor', (dir, domain) => file(dir, domain, { trustedExecutors: [] }), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
-    ['an executor not permitted this organization', (dir, domain) => file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem }], audiences: [AUDIENCE], organizationIds: ['org-elsewhere'], trustDomains: [TRUST_DOMAIN] }] }), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['an executor not permitted this organization', (dir, domain) => file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem.trim() }], audiences: [AUDIENCE], organizationIds: ['org-elsewhere'], trustDomains: [TRUST_DOMAIN] }] }), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
     ['two executors pinned for the gated audience', (dir, domain) => {
-      const key = { keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem };
+      const key = { keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem.trim() };
       return file(dir, domain, { trustedExecutors: [
         { executorId: E2E_EXECUTOR_ID, keys: [key], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] },
-        { executorId: 'reference-executor-second', keys: [{ ...key, keyId: 'g02c1d-second-key', publicKeyPem: trustedKeyOf(AUTHORITY_KEY_A).publicKeyPem }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] },
+        { executorId: 'reference-executor-second', keys: [{ ...key, keyId: 'g02c1d-second-key', publicKeyPem: trustedKeyOf(AUTHORITY_KEY_A).publicKeyPem.trim() }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] },
       ] });
     }, 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
-    ['no executor for the gated audience', (dir, domain) => file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem }], audiences: ['executor-elsewhere'], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }] }), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
+    ['no executor for the gated audience', (dir, domain) => file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: E2E_RECEIPT_KEY_ID, algorithm: 'ed25519-v1', publicKeyPem: domain.publicKeyPem.trim() }], audiences: ['executor-elsewhere'], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }] }), 'HOST_GOVERNED_ACTIONS_FILE_INVALID'],
   ];
   for (const [label, governed, code] of refusals) {
     it(`refuses ${label} (${code})`, async () => {
@@ -334,7 +334,7 @@ describe('G-02C1D on the shipped Host — receiptEvidence is validated at boot',
     const authority = trustedKeyOf(AUTHORITY_KEY_A);
     const dir = workspace.dir();
     await initialize(dir);
-    const asExecutor = file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: 'g02c1d-executor-key-borrowed', algorithm: 'ed25519-v1', publicKeyPem: authority.publicKeyPem }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }] });
+    const asExecutor = file(dir, domain, { trustedExecutors: [{ executorId: E2E_EXECUTOR_ID, keys: [{ keyId: 'g02c1d-executor-key-borrowed', algorithm: 'ed25519-v1', publicKeyPem: authority.publicKeyPem.trim() }], audiences: [AUDIENCE], organizationIds: [ORG], trustDomains: [TRUST_DOMAIN] }] });
     await assert.rejects(bootEnterpriseHost({ env: await withDeploymentWitness(envFor(dir, asExecutor)), executionAdapters: [recordingAdapter()], policyPackProvider: policyPackProvider() }), /may not be an authority key/);
     const fresh = workspace.dir();
     (await openExecutionCapabilityIssuanceLedger(join(fresh, 'execution-capability-issuance.sqlite'), { issuer: ISSUER, clock: Date.now, create: true })).close();
