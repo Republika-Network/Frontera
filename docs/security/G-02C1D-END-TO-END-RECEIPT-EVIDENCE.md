@@ -41,13 +41,13 @@ The adapter's request is copied, never mutated: the bound request is frozen and 
 | Identity | `frontera.execution-receipt-evidence-store.v1`; pinned to the Host's issuer, organization and trust domain; another identity is refused at open |
 | Creation | by the operator only (`create: true`); the Host refuses a missing file |
 | Custody | file and directory owned by the Host's user and writable by no one else |
-| Accepted evidence | a receipt verified against the pinned registry and correlated with this Host's issuance — stored verbatim (text and envelope) with its digest |
+| Accepted evidence | a receipt from **the one executor pinned for the adapter's audience**, verified against the pinned registry and correlated with this Host's issuance — stored verbatim (text and envelope) with its digest; outcome and agreement recomputed from the stored text, never taken from the caller |
 | Uniqueness | one row per receipt id, per digest, per (capability, sequence); an identical repeat is idempotent |
 | Conflicts | a different text at a taken position (`POSITION_TAKEN`), a successor of a definite outcome (`SUPERSESSION_INVALID`), a successor whose predecessor was never accepted (`PREDECESSOR_UNKNOWN`) — each preserved once, never accepted, never overwriting |
 | Supersession | forward only: the unknown at the position before, by a definite outcome observed no earlier — in code and by trigger |
-| Observations | one append-only row per presented exchange: transmission, status, the adapter's outcome, disposition, closed failure code, receipt digest and outcome, agreement |
+| Observations | one append-only row per presented exchange — including a store-side refusal (`STORE_TEXT_MISMATCH`, `STORE_SCOPE_MISMATCH`), which is recorded, never dropped: transmission, status, the adapter's outcome, disposition, closed failure code, receipt digest and outcome, agreement |
 | Immutability | no update or delete on any table (triggers); the identity row is fixed |
-| Integrity at open | tables, triggers, `quick_check`, version, identity; every evidence and conflict row re-parsed and re-digested against its columns |
+| Integrity at open | `quick_check`, version, identity; the whole schema — every table (with its constraints), index and trigger — compared **by SQL** with this version's definition, so a same-named no-op trigger is refused; every evidence and conflict row re-parsed and re-digested against its columns. Envelope signatures are **not** re-verified at open (the store holds no registry); a writer of the file who forges a whole row with a valid digest is the rollback/custody risk G02C1D-R3 |
 | Durability | WAL, `synchronous = FULL`; survives restart (tested) |
 | Isolation | no P11/P12 table; no P11/P12/reconciliation module reads or writes it; it resolves nothing |
 | Diagnostics | closed codes and digests only; no receipt text is ever logged |
@@ -60,6 +60,7 @@ The adapter's request is copied, never mutated: the bound request is frozen and 
 | two or more receipt headers | `receipt-duplicated` | `RECEIPT_DUPLICATED` |
 | malformed / non-canonical / oversized / bad envelope / invalid receipt text | `receipt-invalid` | `RECEIPT_*` |
 | executor not pinned | `receipt-invalid` | `EXECUTOR_UNTRUSTED` |
+| another pinned executor than the one for this audience | `receipt-uncorrelated` | `IDENTITY_MISMATCH` |
 | key id not pinned for that executor, or envelope key ≠ receipt key | `receipt-invalid` | `EXECUTOR_KEY_UNTRUSTED` |
 | pinned key id, wrong key (forged) | `receipt-invalid` | `SIGNATURE_INVALID` |
 | audience, organization or trust domain outside the executor's pinned scope | `receipt-invalid` | `SCOPE_NOT_PERMITTED` |
@@ -85,7 +86,7 @@ Rows marked † are qualified in process (`g02c1d-receipt-evidence.test.ts` or t
 | executor crash after outcome | `unconfirmed` | `completed` | 1 | `receipt-missing` | receipt issued on redelivery only; Host never redelivers |
 | executor crash after receipt persisted | `unconfirmed` | `completed`, receipt issued | 1 | `receipt-missing` | receipt on the executor ledger, undelivered |
 | response lost after the executor acted | `unconfirmed` | `completed`, receipt issued | 1 | `receipt-missing` | as above |
-| † Host crash before evidence persisted | as classified | as performed | 1 | none | nothing re-presented; absence of evidence is not absence of effect |
+| † Host crash before evidence persisted | the observer runs detached **after** the result is handed back, so P11 is never delayed by evidence; a crash before P11 records loses P11's row exactly as before G-02C1D | as performed | 1 | none | nothing re-presented; absence of evidence is not absence of effect |
 | duplicate delivery of the same capability | `unconfirmed` (202) | unchanged | 1 | replayed receipt, idempotent | — |
 | † conflicting delivery | as classified | — | — | `receipt-conflicting`, both kept | — |
 
@@ -93,7 +94,7 @@ No failure path sends, re-presents or re-executes. A missing receipt is never re
 
 ## 7. Adversarial coverage
 
-Forged capability and receipt; wrong issuer or executor key; wrong audience, organization and trust domain (cross-domain replay); different execution and capability; modified binding digest; modified method, target, header and body; duplicate presentation and receipt headers; untrusted executor; a receipt correctly signed for another Host; missing issuance; rollback-induced conflicts and invalid supersession (store and verifier); receipt replay; a refused gate (no lookup, no send); a missing receipt (never completed); P12 untouched (structural); no secret in evidence or diagnostics; legacy, ungated adapters unchanged. 23 mutants (`g02c1d-end-to-end-mutation.test.ts`) remove each load-bearing presentation, decoding, verification, correlation, ordering and uniqueness control.
+Forged capability and receipt; wrong issuer or executor key; wrong audience, organization and trust domain (cross-domain replay); different execution and capability; modified binding digest; modified method, target, header and body; duplicate presentation and receipt headers; untrusted executor; a receipt correctly signed for another Host; missing issuance; rollback-induced conflicts and invalid supersession (store and verifier); receipt replay; a refused gate (no lookup, no send); a missing receipt (never completed); P12 untouched (structural); no secret in evidence or diagnostics; legacy, ungated adapters unchanged. 24 mutants (`g02c1d-end-to-end-mutation.test.ts`) remove each load-bearing presentation, decoding, verification, correlation, ordering and uniqueness control.
 
 ## 8. Production blockers (retained and new)
 
@@ -114,3 +115,6 @@ Forged capability and receipt; wrong issuer or executor key; wrong audience, org
 | G02C1D-R2 | Evidence absent after a lost answer is indistinguishable from "never delivered"; the executor ledger holds the truth until retrieval exists | Founder (retrieval route) |
 | G02C1D-R3 | Whoever can write the evidence store file can delete history (rollback); integrity checks catch edits, not truncation to an older valid state | reference only |
 | G02C1D-R4 | Loopback qualification does not cover TLS, DNS, proxies or the connect-address check | Production qualification |
+| G02C1D-R5 | Supersession in the evidence store is reachable only from a re-delivered receipt; with no retrieval route a successor normally arrives as `PREDECESSOR_UNKNOWN` — qualified in process, not by a real end-to-end flow | reference only |
+| G02C1D-R6 | Opening the store re-reads every row: open time and memory grow with history (a boot-time cost on a large store) | Production hardening |
+| G02C1D-R7 | The evidence write is synchronous SQLite on the Host's event loop (detached from the result, bounded by a 1 s busy timeout) | Production hardening |

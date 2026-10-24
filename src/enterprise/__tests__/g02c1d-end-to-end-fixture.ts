@@ -314,6 +314,7 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
   gate.bind({ issuerKey: trustedKeyOf(AUTHORITY_KEY_A), emergencyControl: undefined });
   const recorder = createExecutionReceiptEvidenceRecorder({
     adapterId: E2E_ADAPTER_ID,
+    executorId: E2E_EXECUTOR_ID,
     audience: E2E_AUDIENCE,
     issuer: G02B_ISSUER,
     organizationId: G02B_ORGANIZATION,
@@ -323,6 +324,8 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
   recorder.bind({ issuance, store: evidence });
   const sent: GenericHttpWireRequest[] = [];
   const exchanges: GenericHttpExchangeEvidence[] = [];
+  // The adapter runs its observer detached, after returning; the world's `execute` waits for it so a test reads settled evidence.
+  const pending: Promise<void>[] = [];
   const primitive = options.target === undefined ? undefined : loopbackHostPrimitive(options.target);
   const adapter = createGenericHttpExecutionAdapterCore(
     gatedPlan({ adapterId: E2E_ADAPTER_ID, origin: `https://${E2E_HOSTNAME}`, timeoutMs: 5_000 }),
@@ -337,10 +340,14 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
       },
     },
     gate.beforeSend,
-    async (exchange) => {
-      exchanges.push(exchange);
-      if (options.evidenceUnavailable === true) evidence.close();
-      await recorder.observe(exchange);
+    (exchange) => {
+      const observed = (async () => {
+        exchanges.push(exchange);
+        if (options.evidenceUnavailable === true) evidence.close();
+        await recorder.observe(exchange);
+      })();
+      pending.push(observed);
+      return observed;
     },
   );
   return {
@@ -360,7 +367,12 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
     revoke: (signed) => {
       revoked.push(signed.grant.id);
     },
-    execute: (action) => adapter.execute(action),
+    execute: async (action) => {
+      const result = await adapter.execute(action);
+      await afterObservers();
+      await Promise.all(pending.splice(0));
+      return result;
+    },
     close: () => {
       issuance.close();
       evidence.close();
@@ -425,6 +437,9 @@ export function receiptAbout(capability: ExecutionCapability, overrides: Partial
 export function deliverableReceipt(keyFile: string, receipt: ExecutorReceipt, keyId: string = E2E_RECEIPT_KEY_ID): string {
   return deliverable(keyFile, serializeExecutorReceipt(receipt), keyId);
 }
+
+/** One turn of the event loop: long enough for the adapter's detached observer (scheduled with `setImmediate`) to start. */
+export const afterObservers = (): Promise<void> => new Promise((done) => setImmediate(done));
 
 /** Resolves once `predicate` holds, polling briefly; fails after `timeoutMs`. */
 export async function eventually(predicate: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {

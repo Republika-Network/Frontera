@@ -19,6 +19,7 @@ export {
   EXECUTION_RECEIPT_HTTP_OUTCOMES,
   EXECUTION_RECEIPT_TRANSMISSIONS,
   openExecutionReceiptEvidenceStore,
+  receiptAgreementOf,
 } from './evidence-store.js';
 export type {
   ExecutionReceiptAgreement,
@@ -36,7 +37,7 @@ export type {
   StoredExecutionReceiptObservation,
   StoredPresentedReceipt,
 } from './evidence-store.js';
-export { ExecutionReceiptEvidenceConfigurationError, createExecutionReceiptEvidenceRecorder, receiptAgreementOf } from './recorder.js';
+export { ExecutionReceiptEvidenceConfigurationError, createExecutionReceiptEvidenceRecorder } from './recorder.js';
 export type { ExecutionReceiptEvidenceRecorder, ExecutionReceiptEvidenceRecorderOptions, ExecutionReceiptEvidenceRuntime, ExecutionReceiptIssuanceView } from './recorder.js';
 export type { TrustedExecutor };
 

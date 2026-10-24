@@ -102,6 +102,7 @@ export interface ExecutionReceiptExchange {
   readonly failure: string | null;
   /** The digest of the receipt text, when one was readable. */
   readonly receiptDigest: string | null;
+  /** Ignored for a candidate: the store recomputes it from the stored text. */
   readonly agreement: ExecutionReceiptAgreement;
 }
 
@@ -259,19 +260,41 @@ BEGIN SELECT RAISE(ABORT, 'a receipt supersedes only the unknown before it, with
 `;
 
 const TABLES = ['receipt_evidence_meta', 'receipt_evidence', 'receipt_conflicts', 'receipt_observations'];
-const TRIGGERS = [
-  'receipt_evidence_meta_fixed_update',
-  'receipt_evidence_meta_fixed_delete',
-  'receipt_evidence_never_updated',
-  'receipt_evidence_never_deleted',
-  'receipt_conflicts_never_updated',
-  'receipt_conflicts_never_deleted',
-  'receipt_observations_never_updated',
-  'receipt_observations_never_deleted',
-  'receipt_evidence_forward_supersession',
-];
-
 const SIGNATURE_FIELDS = ['algorithm', 'artifactVersion', 'keyId', 'signature'];
+
+/**
+ * How the executor's statement relates to the Generic HTTP outcome. Only a definite HTTP outcome can be compared; a
+ * contradiction is recorded as such, never resolved in either direction.
+ */
+export function receiptAgreementOf(httpOutcome: ExecutionReceiptHttpOutcome, reported: ExecutorReceiptOutcome): ExecutionReceiptAgreement {
+  if (httpOutcome === 'unconfirmed') return 'not-comparable';
+  if (httpOutcome === 'completed') return reported === 'completed-observed' ? 'consistent' : 'contradicts';
+  return reported === 'failed-observed' || reported === 'consumed-not-attempted' ? 'consistent' : 'contradicts';
+}
+
+type SchemaRows = ReadonlyMap<string, string>;
+const SCHEMA_QUERY = "SELECT type, name, sql FROM sqlite_master WHERE type IN ('table', 'index', 'trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type, name";
+
+function schemaOf(db: Database): SchemaRows {
+  return new Map((db.prepare(SCHEMA_QUERY).all() as { type: unknown; name: unknown; sql: unknown }[]).map((row) => [`${String(row.type)}:${String(row.name)}`, String(row.sql)]));
+}
+
+/** This version's schema, as SQLite records it, from a scratch in-memory database. */
+function expectedSchema(Sqlite: new (filename: string) => Database): SchemaRows {
+  const scratch = new Sqlite(':memory:');
+  try {
+    scratch.exec(SCHEMA);
+    return schemaOf(scratch);
+  } finally {
+    scratch.close();
+  }
+}
+
+function sameSchema(actual: SchemaRows, expected: SchemaRows): boolean {
+  if (actual.size !== expected.size) return false;
+  for (const [key, sql] of expected) if (actual.get(key) !== sql) return false;
+  return true;
+}
 
 type Database = import('better-sqlite3').Database;
 
@@ -465,8 +488,10 @@ export async function openExecutionReceiptEvidenceStore(path: string, options: E
         const table = (name: string): boolean => db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name) !== undefined;
         if (!TABLES.every(table)) throw new Error('The execution receipt evidence store file is not an initialized evidence store; refusing to open it.');
         if (db.pragma('quick_check', { simple: true }) !== 'ok') throw new Error('The execution receipt evidence store failed its integrity check; refusing to open it.');
-        const triggers = db.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name IN (${TRIGGERS.map(() => '?').join(', ')})`).get(...TRIGGERS) as { n: unknown };
-        if (triggers.n !== TRIGGERS.length) throw new Error('The execution receipt evidence store is missing its integrity triggers; refusing to open it.');
+        // Every table, index and trigger exactly as this version defines it — by its SQL, not its name: a trigger
+        // replaced by a no-op of the same name, or a table without its constraints, is refused.
+        const schemaMatches = sameSchema(schemaOf(db), expectedSchema(SqliteDatabase));
+        if (!schemaMatches) throw new Error('The execution receipt evidence store is missing its integrity triggers or constraints; refusing to open it.');
       }
       db.pragma('journal_mode = WAL');
       db.pragma('synchronous = FULL');
@@ -535,26 +560,39 @@ export async function openExecutionReceiptEvidenceStore(path: string, options: E
       prior.sequence === receipt.sequence - 1 &&
       prior.outcome === 'attempted-outcome-unknown' &&
       receipt.outcome !== 'attempted-outcome-unknown' &&
-      receipt.observedAt >= prior.receipt.observedAt;
+      Date.parse(receipt.observedAt) >= Date.parse(prior.receipt.observedAt);
     return forward ? { accept: true, repeated: false } : { accept: false, repeated: false, reason: 'SUPERSESSION_INVALID' };
   };
 
   const recordInTransaction = db.transaction((exchange: ExecutionReceiptExchange): ExecutionReceiptExchangeRecord => {
     const at = instant();
     let outcome: ExecutionReceiptExchangeRecord;
+    // What the stored text reports — recomputed here, never taken from the object handed in.
+    let reported: ExecutorReceiptOutcome | undefined;
     const candidate = exchange.candidate;
     let digest: string | null = exchange.receiptDigest;
     if (candidate !== null) {
       digest = executorReceiptDigest(candidate.canonical);
       // The text is what is stored, so the text is what is judged: its own parse, never the object handed in.
       const reparsed = parseExecutorReceipt(candidate.canonical);
-      if (!reparsed.ok || reparsed.receipt.receiptId !== candidate.receipt.receiptId) throw new Error('The execution receipt evidence store refuses a candidate that is not its own canonical text.');
-      const receipt = reparsed.receipt;
-      // Only this Host's own receipts, for this exchange's execution and capability, are ever evidence here.
-      if (receipt.issuer !== issuer || receipt.organizationId !== organizationId || receipt.trustDomain !== trustDomain || receipt.executionId !== exchange.executionId || receipt.capabilityId !== exchange.capabilityId) {
-        throw new Error('The execution receipt evidence store refuses a receipt for another issuer, scope, execution or capability.');
+      const ownText = reparsed.ok && reparsed.receipt.receiptId === candidate.receipt.receiptId;
+      // Only this Host's own receipts, for this exchange's execution and capability, are ever evidence here. A refusal is
+      // recorded as an observation — never a silent drop, and never evidence.
+      const ours =
+        reparsed.ok &&
+        reparsed.receipt.issuer === issuer &&
+        reparsed.receipt.organizationId === organizationId &&
+        reparsed.receipt.trustDomain === trustDomain &&
+        reparsed.receipt.executionId === exchange.executionId &&
+        reparsed.receipt.capabilityId === exchange.capabilityId;
+      if (!ownText || !ours || !reparsed.ok) {
+        const refusal = !ownText ? (['receipt-invalid', 'STORE_TEXT_MISMATCH'] as const) : (['receipt-uncorrelated', 'STORE_SCOPE_MISMATCH'] as const);
+        statements.insertObservation.run(exchange.executionId, exchange.adapterId, exchange.capabilityId, exchange.transmission, exchange.httpStatus, exchange.httpOutcome, refusal[0], refusal[1], digest, null, 'not-comparable', at);
+        return Object.freeze({ disposition: refusal[0], failure: refusal[1], repeated: false });
       }
+      const receipt = reparsed.receipt;
       const placed = placementOf({ ...candidate, receipt }, digest);
+      reported = receipt.outcome;
       if (placed.accept) {
         if (!placed.repeated) {
           statements.insertEvidence.run(receipt.receiptId, digest, receipt.executionId, receipt.capabilityId, receipt.executorId, receipt.sequence, receipt.supersedes, receipt.outcome, candidate.canonical, signatureText(candidate.signature), at);
@@ -578,8 +616,8 @@ export async function openExecutionReceiptEvidenceStore(path: string, options: E
       outcome.disposition,
       outcome.failure,
       digest,
-      candidate?.receipt.outcome ?? null,
-      exchange.agreement,
+      reported ?? null,
+      reported === undefined ? 'not-comparable' : receiptAgreementOf(exchange.httpOutcome, reported),
       at,
     );
     return outcome;

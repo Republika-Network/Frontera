@@ -32,6 +32,7 @@ import {
   E2E_EXECUTOR_ID,
   E2E_RECEIPT_KEY_ID,
   UNKNOWN,
+  afterObservers,
   deliverableReceipt,
   e2eTrustedExecutor,
   executionIdOf,
@@ -365,19 +366,29 @@ describe('G-02C1D — the evidence store: separate, append-only, durable, and re
     await assert.rejects(openExecutionReceiptEvidenceStore(path, { ...options, issuer: 'frontera-deployment-elsewhere' }), /another issuer/);
 
     const { default: Database } = await import('better-sqlite3');
+    let original = '';
     const raw = new Database(path);
     try {
       assert.throws(() => raw.prepare("UPDATE receipt_evidence SET outcome = 'failed-observed'").run(), /immutable/);
       assert.throws(() => raw.prepare('DELETE FROM receipt_observations').run(), /permanent/);
+      original = (raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'receipt_evidence_never_updated'").get() as { sql: string }).sql;
       raw.exec('DROP TRIGGER receipt_evidence_never_updated');
       raw.prepare('UPDATE receipt_evidence SET canonical = canonical || \' \'').run();
     } finally {
       raw.close();
     }
     await assert.rejects(openExecutionReceiptEvidenceStore(path, options), /missing its integrity triggers/);
+    const decoy = new Database(path);
+    try {
+      decoy.exec('CREATE TRIGGER receipt_evidence_never_updated BEFORE UPDATE ON receipt_evidence BEGIN SELECT 1; END;');
+    } finally {
+      decoy.close();
+    }
+    await assert.rejects(openExecutionReceiptEvidenceStore(path, options), /missing its integrity triggers/, 'a same-named no-op trigger is not the trigger');
     const repaired = new Database(path);
     try {
-      repaired.exec("CREATE TRIGGER receipt_evidence_never_updated BEFORE UPDATE ON receipt_evidence BEGIN SELECT RAISE(ABORT, 'receipt evidence is immutable'); END;");
+      repaired.exec('DROP TRIGGER receipt_evidence_never_updated');
+      repaired.exec(original);
     } finally {
       repaired.close();
     }
@@ -420,11 +431,16 @@ describe('G-02C1D — the evidence store: separate, append-only, durable, and re
       const canonical = serializeExecutorReceipt(receipt);
       const candidate = { receipt, canonical, signature: signReceiptText(EXECUTOR_KEY.keyFile, canonical) };
       const base = { executionId: capability.executionId, adapterId: E2E_ADAPTER_ID, capabilityId: capability.capabilityId, transmission: 'response' as const, httpStatus: 201, httpOutcome: 'completed' as const, disposition: null, failure: null, receiptDigest: null, agreement: 'consistent' as const };
-      assert.throws(() => store.record({ ...base, executionId: altered(capability.executionId), candidate }), /another issuer, scope, execution or capability/);
-      assert.throws(() => store.record({ ...base, capabilityId: '9'.repeat(64), candidate }), /another issuer, scope, execution or capability/);
+      const refused = (outcome: { readonly disposition: string; readonly failure: string | null }) => [outcome.disposition, outcome.failure];
+      assert.deepEqual(refused(store.record({ ...base, executionId: altered(capability.executionId), candidate })), ['receipt-uncorrelated', 'STORE_SCOPE_MISMATCH']);
+      assert.deepEqual(refused(store.record({ ...base, capabilityId: '9'.repeat(64), candidate })), ['receipt-uncorrelated', 'STORE_SCOPE_MISMATCH']);
       const lying = { ...candidate, receipt: { ...receipt, receiptId: 'f'.repeat(64) } as ExecutorReceipt };
-      assert.throws(() => store.record({ ...base, candidate: lying }), /its own canonical text/);
-      assert.equal(store.record({ ...base, candidate }).disposition, 'receipt-correlated');
+      assert.deepEqual(refused(store.record({ ...base, candidate: lying })), ['receipt-invalid', 'STORE_TEXT_MISMATCH'], 'the stored text is judged, never the object handed in');
+      assert.deepEqual(store.evidenceFor(capability.executionId), [], 'a refusal is an observation, never evidence');
+      assert.equal(store.observationsFor(altered(capability.executionId)).length, 1, 'and never a silent drop');
+      const accepted = store.record({ ...base, candidate, agreement: 'contradicts' });
+      assert.equal(accepted.disposition, 'receipt-correlated');
+      assert.equal(store.observationsFor(capability.executionId).at(-1)?.agreement, 'consistent', 'the agreement is recomputed from the stored text');
     } finally {
       store.close();
     }
@@ -493,6 +509,8 @@ describe('G-02C1D (D1) — the adapter appends exactly one presentation header, 
       throw new Error('the evidence path failed');
     });
     assert.equal((await throwing.execute(action)).outcome, 'completed', 'a failing observer leaves the result');
+    assert.equal(seen.length, 0, 'the result is handed back before the observer runs');
+    await afterObservers();
     assert.equal(seen.length, 1);
     assert.deepEqual([seen[0]?.transmission, seen[0]?.status, seen[0]?.result.outcome], ['response', 201, 'completed']);
     assert.ok(Object.isFrozen(seen[0]));
@@ -502,7 +520,11 @@ describe('G-02C1D (D1) — the adapter appends exactly one presentation header, 
       unpresented.push(exchange);
     });
     assert.equal((await plain.execute(action)).outcome, 'completed');
+    await afterObservers();
     assert.equal(unpresented.length, 0, 'nothing presented, nothing observed');
+
+    const hanging = createGenericHttpExecutionAdapterCore(gatedPlan(), countingNetwork(201), recordingGate({ proceed: true, presentation: 'abc' }).gate, () => new Promise<void>(() => undefined));
+    assert.equal((await hanging.execute(action)).outcome, 'completed', 'an observer that never settles cannot hold the result');
   });
 });
 

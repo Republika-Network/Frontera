@@ -69,12 +69,15 @@ describe('G-02C1D structure — two fixed header names, declared once, reserved,
 });
 
 describe('G-02C1D structure — the observer runs after the result and can neither send nor change it', () => {
-  it('one observer call, after the one exchange, inside a catch, and the result returned is the exchange’s', () => {
+  it('one observer call, detached after the one exchange (never awaited), its failure caught, and the result returned is the exchange’s', () => {
     const adapter = codeOf(`${GENERIC_HTTP}/generic-http-execution-adapter.ts`);
-    assert.equal(count(adapter, 'await observer('), 1);
+    assert.equal(count(adapter, 'observe(evidence)'), 1);
+    assert.equal(/await\s+(observe|observer)\s*\(/.test(adapter), false, 'the observer is never awaited: it cannot delay or hold the result');
+    assert.equal(count(adapter, 'setImmediate('), 1);
+    assert.ok(adapter.includes('observe(evidence).catch(() => undefined);'));
     assert.equal(count(adapter, 'await exchangeOnce(action)'), 1);
     const exchanged = adapter.indexOf('const exchange = await exchangeOnce(action);');
-    const observed = adapter.indexOf('await observer(evidence);');
+    const observed = adapter.indexOf('setImmediate(');
     const returned = adapter.indexOf('return exchange.result;');
     assert.ok(exchanged > 0 && exchanged < observed && observed < returned);
     assert.equal(/runtime\.(send|resolve)\s*\(/.test(adapter.slice(exchanged, returned)), false, 'nothing reaches the network after the exchange');

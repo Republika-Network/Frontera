@@ -46,11 +46,11 @@ A recorder per gated adapter, run once per presented exchange:
 
 1. **Issuance** — the issuance ledger's row for this execution: `issued`, for this adapter's audience and this Host's issuer.
 2. **Decode** — exactly one receipt value (none: `receipt-missing`; several: `receipt-duplicated`).
-3. **Verify** — the G-02C1C verifier over the **operator-pinned** registry: canonical form, pinned executor and key (a key carried in a receipt is never consulted, nothing is fetched), signature over the receipt domain, the executor's pinned audience, organization and trust domain.
+3. **Verify** — the G-02C1C verifier over the **operator-pinned** registry, with exactly **one** executor pinned per gated audience (the one the adapter's requests go to): canonical form, pinned executor and key (a key carried in a receipt is never consulted, nothing is fetched), signature over the receipt domain, the executor's pinned audience, organization and trust domain.
 4. **Correlate** — issuer, capability id, execution id, audience, organization, trust domain and the exact action binding of the issued capability; the claim inside the capability's validity window (not before issuance beyond the G-02A skew, never at or after expiry). A signature never implies issuance.
 5. **Record** — one observation; a correlated receipt is accepted as evidence or preserved as a conflict (§4).
 
-It never changes the adapter result, never sends, never re-presents, never resolves anything, and logs no value.
+It runs **detached**, after the adapter has handed its result back, so it can never delay, hold or change the result or the P11 record made from it. It never sends, never re-presents, never resolves anything, and logs no value.
 
 ### 4. The evidence store (D8)
 
@@ -73,7 +73,7 @@ The adapter's classification is untouched (201/200/204 `completed`; other 4xx `f
 
 ### 6. Composition
 
-`executionCapabilities.receiptEvidence { storePath, trustedExecutors }` in the governed-action file — closed, validated at boot (a registry the C1C verifier accepts, covering every gated audience, each executor permitted this deployment's organization and trust domain; at least one gated adapter). The composition root refuses an executor key that is an authority key, opens the existing store, and binds each recorder to the Host's own issuance ledger. Without the section nothing is recorded; a gated adapter still presents.
+`executionCapabilities.receiptEvidence { storePath, trustedExecutors }` in the governed-action file — closed, validated at boot (a registry the C1C verifier accepts, with exactly one executor for every gated audience, each executor permitted this deployment's organization and trust domain; at least one gated adapter). The composition root refuses an executor key that is an authority key, opens the existing store, and binds each recorder to the Host's own issuance ledger. Without the section nothing is recorded; a gated adapter still presents.
 
 ### 7. Not built: read-only receipt retrieval
 

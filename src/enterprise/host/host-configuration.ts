@@ -485,8 +485,11 @@ function parseReceiptEvidenceSection(
       invalid(`${where}: executor '${executor.executorId}' is not permitted this deployment's organization and trust domain, so no receipt of it could ever correlate.`);
     }
   }
+  // Exactly one executor per gated audience: a receipt is evidence only from the executor the adapter's requests go to.
   for (const adapter of adapters) {
-    if (!trustedExecutors.some((executor) => executor.audiences.includes(adapter.audience))) invalid(`${where}: no trusted executor serves audience '${adapter.audience}' of gated adapter '${adapter.adapterId}'.`);
+    const serving = trustedExecutors.filter((executor) => executor.audiences.includes(adapter.audience));
+    if (serving.length === 0) invalid(`${where}: no trusted executor serves audience '${adapter.audience}' of gated adapter '${adapter.adapterId}'.`);
+    if (serving.length > 1) invalid(`${where}: audience '${adapter.audience}' of gated adapter '${adapter.adapterId}' is served by more than one trusted executor; pin exactly one.`);
   }
   return Object.freeze({ storePath, trustedExecutors: Object.freeze(trustedExecutors) });
 }

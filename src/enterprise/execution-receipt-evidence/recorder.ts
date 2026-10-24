@@ -1,7 +1,7 @@
 import type { GenericHttpExchangeEvidence, GenericHttpResponseObserver } from '../execution-adapters/generic-http/generic-http-execution-adapter.js';
 import { EXECUTION_CAPABILITY_LIMITS, type ExecutionCapability } from '../execution-capability/capability.js';
-import { decodeExecutorReceiptTransport, executorReceiptDigest, parseExecutorReceipt, type ExecutorReceiptOutcome, type ExecutorReceiptVerifier } from '../executor-receipt/index.js';
-import type { ExecutionReceiptAgreement, ExecutionReceiptEvidenceStore, ExecutionReceiptExchange, ExecutionReceiptHttpOutcome } from './evidence-store.js';
+import { decodeExecutorReceiptTransport, executorReceiptDigest, parseExecutorReceipt, type ExecutorReceiptVerifier } from '../executor-receipt/index.js';
+import { receiptAgreementOf, type ExecutionReceiptEvidenceStore, type ExecutionReceiptExchange, type ExecutionReceiptHttpOutcome } from './evidence-store.js';
 
 /**
  * G-02C1D — the Host's receipt evidence recorder: the response observer the
@@ -14,7 +14,7 @@ import type { ExecutionReceiptAgreement, ExecutionReceiptEvidenceStore, Executio
  *        2. decode      exactly one frontera-execution-receipt value (none: missing; several: duplicated)
  *        3. verify      the G-02C1C verifier over operator-pinned executors: canonical form, pinned executor and key,
  *                       signature over the receipt domain, the executor's permitted scope
- *        4. correlate   issuer, capability, execution, audience, organization, trust domain and the exact action
+ *        4. correlate   the adapter's one executor, issuer, capability, execution, audience, organization, trust domain and the exact action
  *                       binding of the issued capability; the claim inside the capability's validity window
  *        5. record      one observation; the receipt accepted as evidence, or preserved as a conflict (the store)
  * ```
@@ -38,6 +38,8 @@ import type { ExecutionReceiptAgreement, ExecutionReceiptEvidenceStore, Executio
 export interface ExecutionReceiptEvidenceRecorderOptions {
   /** The capability-gated Generic HTTP adapter this recorder observes. */
   readonly adapterId: string;
+  /** The one pinned executor this adapter's audience is served by: a receipt from any other executor is never its evidence. */
+  readonly executorId: string;
   /** The audience that adapter's capabilities are issued for. */
   readonly audience: string;
   /** The Host's capability issuer, organization and trust domain. */
@@ -81,20 +83,10 @@ export class ExecutionReceiptEvidenceConfigurationError extends Error {
   }
 }
 
-/**
- * How the executor's statement relates to the Generic HTTP outcome. Only a
- * definite HTTP outcome can be compared; a contradiction is recorded as such,
- * never resolved in either direction.
- */
-export function receiptAgreementOf(httpOutcome: ExecutionReceiptHttpOutcome, reported: ExecutorReceiptOutcome): ExecutionReceiptAgreement {
-  if (httpOutcome === 'unconfirmed') return 'not-comparable';
-  if (httpOutcome === 'completed') return reported === 'completed-observed' ? 'consistent' : 'contradicts';
-  return reported === 'failed-observed' || reported === 'consumed-not-attempted' ? 'consistent' : 'contradicts';
-}
 
 export function createExecutionReceiptEvidenceRecorder(options: ExecutionReceiptEvidenceRecorderOptions): ExecutionReceiptEvidenceRecorder {
-  const { adapterId, audience, issuer, organizationId, trustDomain, verifier } = options;
-  for (const value of [adapterId, audience, issuer, organizationId, trustDomain]) {
+  const { adapterId, executorId, audience, issuer, organizationId, trustDomain, verifier } = options;
+  for (const value of [adapterId, executorId, audience, issuer, organizationId, trustDomain]) {
     if (typeof value !== 'string' || value.length === 0) throw new ExecutionReceiptEvidenceConfigurationError('A receipt evidence recorder needs its adapter, audience, issuer, organization and trust domain.');
   }
   if (typeof verifier?.verify !== 'function') throw new ExecutionReceiptEvidenceConfigurationError('A receipt evidence recorder needs the executor receipt verifier.');
@@ -142,7 +134,7 @@ export function createExecutionReceiptEvidenceRecorder(options: ExecutionReceipt
     if (issued === undefined) return without(null, 'receipt-uncorrelated', 'ISSUANCE_NOT_FOUND', digest);
     const capability = issued.capability;
     const correlated = verifier.verify(presented, {
-      expected: { issuer, capabilityId: issued.capabilityId, executionId, audience, organizationId, trustDomain, actionBinding: { format: capability.actionBinding.format, digest: capability.actionBinding.digest } },
+      expected: { executorId, issuer, capabilityId: issued.capabilityId, executionId, audience, organizationId, trustDomain, actionBinding: { format: capability.actionBinding.format, digest: capability.actionBinding.digest } },
     });
     if (correlated.identityMatch !== 'yes' || correlated.bindingMatch !== 'yes' || correlated.failure !== null) return without(capabilityId, 'receipt-uncorrelated', correlated.failure ?? 'IDENTITY_MISMATCH', digest);
     // The executor claimed while the capability was valid: not before it was issued (beyond the G-02A skew), never after expiry.

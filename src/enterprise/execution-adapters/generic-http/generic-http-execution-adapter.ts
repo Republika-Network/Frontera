@@ -194,7 +194,9 @@ export interface GenericHttpExchangeEvidence {
 /**
  * G-02C1D — an internal hook run once after a presented request's exchange
  * ended, whatever its outcome. Composed by the composition root alone, beside
- * the gate. A throw or rejection is ignored; the result is already fixed.
+ * the gate. It runs detached, after the result has been handed back, so it can
+ * neither delay, hold nor change the result (or the P11 record made from it);
+ * a throw or rejection is ignored.
  */
 export type GenericHttpResponseObserver = (evidence: GenericHttpExchangeEvidence) => Promise<void>;
 
@@ -252,8 +254,9 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
 
   async function execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult> {
     const exchange = await exchangeOnce(action);
-    // G-02C1D: a presented request's exchange is shown to the observer once, after its result is fixed.
+    // G-02C1D: a presented request's exchange is shown to the observer once, after its result has been handed back.
     if (exchange.presented && observer !== undefined) {
+      const observe = observer;
       const observation = exchange.observation;
       const evidence = Object.freeze({
         adapterId,
@@ -263,11 +266,13 @@ export function createGenericHttpExecutionAdapterCore(plan: GenericHttpPlan, run
         status: observation?.kind === 'response' ? observation.status : null,
         receiptValues: Object.freeze(observation?.kind === 'response' ? [...(observation.receiptValues ?? [])] : []),
       });
-      try {
-        await observer(evidence);
-      } catch {
-        // The result stands; the evidence path reports its own failures.
-      }
+      setImmediate(() => {
+        try {
+          observe(evidence).catch(() => undefined);
+        } catch {
+          // The result stands; the evidence path reports its own failures.
+        }
+      });
     }
     return exchange.result;
   }

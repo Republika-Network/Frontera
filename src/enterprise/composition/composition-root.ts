@@ -1686,9 +1686,13 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     if (issuance === undefined || capabilityGates.size === 0) throw new ExecutionCapabilityGateConfigurationError('executionCapabilities.receiptEvidence needs at least one gated adapter.');
     const verifier = createExecutionReceiptTrust(receiptEvidenceOptions.trustedExecutors);
     for (const gate of capabilityGates.values()) {
+      // The one executor pinned for this audience: a receipt from another pinned executor is never this adapter's evidence.
+      const serving = receiptEvidenceOptions.trustedExecutors.filter((executor) => executor.audiences.includes(gate.audience));
+      const executor = serving[0];
+      if (serving.length !== 1 || executor === undefined) throw new ExecutionCapabilityGateConfigurationError(`executionCapabilities.receiptEvidence must pin exactly one executor for audience '${gate.audience}'.`);
       evidenceRecorders.set(
         gate.adapterId,
-        createExecutionReceiptEvidenceRecorder({ adapterId: gate.adapterId, audience: gate.audience, issuer: issuance.policy.issuer, organizationId: issuance.policy.organizationId, trustDomain: issuance.policy.trustDomain, verifier }),
+        createExecutionReceiptEvidenceRecorder({ adapterId: gate.adapterId, executorId: executor.executorId, audience: gate.audience, issuer: issuance.policy.issuer, organizationId: issuance.policy.organizationId, trustDomain: issuance.policy.trustDomain, verifier }),
       );
     }
   }
@@ -2079,7 +2083,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         organizationId: policy.organizationId,
         trustDomain: policy.trustDomain,
         clock: Date.now,
-        busyTimeoutMs: Math.min(configuration.persistence.busyTimeoutMs, 60_000),
+        // Short: the store is written from a detached observer on the event loop, never worth a long synchronous wait.
+        busyTimeoutMs: Math.min(configuration.persistence.busyTimeoutMs, 1_000),
       });
       opened.push(async () => evidenceStore.close());
       for (const recorder of evidenceRecorders.values()) recorder.bind({ issuance: issuanceLedger, store: evidenceStore });

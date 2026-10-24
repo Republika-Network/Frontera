@@ -13,7 +13,7 @@ import { createExecutionReceiptTrust, type ExecutionReceiptExchange } from '../e
 import { G02B_ISSUER, G02B_ORGANIZATION, G02B_TRUST_DOMAIN } from './g02b-execution-capability-issuance-fixture.js';
 import { countingNetwork, gatedPlan, recordingGate } from './g02c0-execution-binding-fixture.js';
 import { generateReceiptKey } from './g02c1c-executor-receipt-fixture.js';
-import { E2E_ADAPTER_ID, E2E_AUDIENCE, UNKNOWN, deliverableReceipt, e2eTrustedExecutor, hostWorld, presentedCapability, privateDirectory, receiptAbout, signReceiptText, type HostWorld } from './g02c1d-end-to-end-fixture.js';
+import { E2E_ADAPTER_ID, E2E_AUDIENCE, E2E_EXECUTOR_ID, UNKNOWN, afterObservers, deliverableReceipt, e2eTrustedExecutor, hostWorld, presentedCapability, privateDirectory, receiptAbout, signReceiptText, type HostWorld } from './g02c1d-end-to-end-fixture.js';
 
 /**
  * G-02C1D mutation qualification, in the manner of G-02A … G-02C1C: each
@@ -37,6 +37,7 @@ after(() => {
 const keys = privateDirectory('frontera-g02c1d-mutation-keys-');
 cleanups.push(() => rmSync(keys, { recursive: true, force: true }));
 const KEY = generateReceiptKey(keys, 'executor.pem');
+const SECOND = generateReceiptKey(keys, 'second-executor.pem');
 const TRUSTED = [e2eTrustedExecutor(KEY.publicKeyPem)];
 const OPTIONS = { issuer: G02B_ISSUER, organizationId: G02B_ORGANIZATION, trustDomain: G02B_TRUST_DOMAIN, clock: () => Date.now() };
 
@@ -90,6 +91,7 @@ async function sentWith(m: AdapterModule, verdict: unknown, observe?: (exchange:
   const world = await issued();
   const action = world.exchange.action;
   await m.createGenericHttpExecutionAdapterCore(gatedPlan(), network, recordingGate(verdict).gate, observe === undefined ? undefined : async (exchange) => observe(exchange)).execute(action);
+  await afterObservers();
   return network.sent;
 }
 
@@ -173,7 +175,7 @@ describe('G-02C1D mutation — the receipt transport encoding', () => {
     {
       id: 'receipt-text-unchecked',
       file: TRANSPORT,
-      replacements: [['parseExecutorReceipt)(receipt).ok)', 'parseExecutorReceipt)(receipt).ok || true)']],
+      replacements: [['parseExecutorReceipt)(receipt).ok)', 'parseExecutorReceipt)(receipt).ok && false)']],
       guard: async (m) => {
         const { capability } = await issued();
         const text = `${serializeExecutorReceipt(receiptAbout(capability))} `;
@@ -192,9 +194,11 @@ type RecorderModule = typeof import('../execution-receipt-evidence/recorder.js')
 const RECORDER = join('execution-receipt-evidence', 'recorder.js');
 
 /** The disposition the recorder built by `m` gives `values` for a real issued execution. */
-async function dispositionOf(m: RecorderModule, values: (capability: ExecutionCapability) => readonly string[], options: { readonly unissued?: boolean } = {}) {
+async function dispositionOf(m: RecorderModule, values: (capability: ExecutionCapability) => readonly string[], options: { readonly unissued?: boolean; readonly secondExecutorPinned?: boolean } = {}) {
   const { world, capability, exchange } = await issued();
-  const recorder = m.createExecutionReceiptEvidenceRecorder({ adapterId: E2E_ADAPTER_ID, audience: E2E_AUDIENCE, issuer: G02B_ISSUER, organizationId: G02B_ORGANIZATION, trustDomain: G02B_TRUST_DOMAIN, verifier: createExecutionReceiptTrust(TRUSTED) });
+  // With `secondExecutorPinned`, the registry also pins another executor for the same audience — as a verifier may.
+  const registry = options.secondExecutorPinned === true ? [...TRUSTED, e2eTrustedExecutor(SECOND.publicKeyPem, { executorId: 'reference-executor-second', keys: [{ keyId: 'g02c1d-second-key', algorithm: 'ed25519-v1', publicKeyPem: SECOND.publicKeyPem }] })] : TRUSTED;
+  const recorder = m.createExecutionReceiptEvidenceRecorder({ adapterId: E2E_ADAPTER_ID, executorId: E2E_EXECUTOR_ID, audience: E2E_AUDIENCE, issuer: G02B_ISSUER, organizationId: G02B_ORGANIZATION, trustDomain: G02B_TRUST_DOMAIN, verifier: createExecutionReceiptTrust(registry) });
   recorder.bind({ issuance: options.unissued === true ? { read: () => ({ state: 'absent' as const }) } : world.issuance, store: world.evidence });
   await recorder.observe({ ...exchange, receiptValues: values(capability) });
   const observations = world.evidence.observationsFor(capability.executionId);
@@ -214,6 +218,16 @@ describe('G-02C1D mutation — the Host verifies and correlates before it record
       guard: async (m) => same(await dispositionOf(m, (capability) => signed(receiptAbout(capability, { executionId: otherExecution(capability) }))), ['receipt-uncorrelated', 'IDENTITY_MISMATCH']),
     },
     {
+      id: 'receipt-from-another-pinned-executor',
+      file: RECORDER,
+      replacements: [['expected: { executorId, issuer,', 'expected: { issuer,']],
+      guard: async (m) =>
+        same(
+          await dispositionOf(m, (capability) => [deliverableReceipt(SECOND.keyFile, receiptAbout(capability, { executorId: 'reference-executor-second', executorKeyId: 'g02c1d-second-key' }), 'g02c1d-second-key')], { secondExecutorPinned: true }),
+          ['receipt-uncorrelated', 'IDENTITY_MISMATCH'],
+        ),
+    },
+    {
       id: 'issuance-not-required',
       file: RECORDER,
       replacements: [['if (issued === undefined)', 'if (false)']],
@@ -230,12 +244,6 @@ describe('G-02C1D mutation — the Host verifies and correlates before it record
       file: RECORDER,
       replacements: [["if (authenticated.scope !== 'permitted')", 'if (false)']],
       guard: async (m) => same(await dispositionOf(m, (capability) => signed(receiptAbout(capability, { organizationId: 'org-elsewhere' }))), ['receipt-invalid', 'SCOPE_NOT_PERMITTED']),
-    },
-    {
-      id: 'unconfirmed-compared',
-      file: RECORDER,
-      replacements: [["if (httpOutcome === 'unconfirmed')", 'if (false)']],
-      guard: (m) => m.receiptAgreementOf('unconfirmed', 'completed-observed') === 'not-comparable',
     },
   ];
   for (const mutant of mutants) it(mutant.id, () => qualify(mutant));
@@ -291,12 +299,19 @@ describe('G-02C1D mutation — the evidence store keeps one receipt per position
       id: 'taken-position-not-a-conflict',
       file: STORE,
       replacements: [['if (statements.evidenceAt.get(receipt.capabilityId, receipt.sequence) !== undefined)', 'if (false)']],
+      // A rival from another executor at the same position has another receipt id: only the position rule catches it.
       guard: async (m) => {
         const { capability, store, entry } = await storeWorld(m);
         store.record(entry(receiptAbout(capability)));
-        const rival = receiptAbout(capability, { observation: { kind: 'frontera.synthetic-deployment-record.v1', reference: `${capability.capabilityId}.json`, digest: `sha256:${'f'.repeat(64)}` } });
+        const rival = receiptAbout(capability, { executorId: 'reference-executor-rival' });
         return attempts(() => store.record(entry(rival))) === 'receipt-conflicting:POSITION_TAKEN';
       },
+    },
+    {
+      id: 'unconfirmed-compared',
+      file: STORE,
+      replacements: [["if (httpOutcome === 'unconfirmed')", 'if (false)']],
+      guard: (m) => m.receiptAgreementOf('unconfirmed', 'completed-observed') === 'not-comparable',
     },
     {
       id: 'identical-repeat-inserted-again',
@@ -332,26 +347,21 @@ describe('G-02C1D mutation — the evidence store keeps one receipt per position
     {
       id: 'foreign-receipt-stored',
       file: STORE,
-      replacements: [
-        [
-          'if (receipt.issuer !== issuer || receipt.organizationId !== organizationId || receipt.trustDomain !== trustDomain || receipt.executionId !== exchange.executionId || receipt.capabilityId !== exchange.capabilityId)',
-          'if (false)',
-        ],
-      ],
+      replacements: [['reparsed.receipt.executionId === exchange.executionId &&', '']],
       guard: async (m) => {
         const { capability, store, entry } = await storeWorld(m);
-        return attempts(() => store.record(entry(receiptAbout(capability), { executionId: otherExecution(capability) }))) === 'threw';
+        return attempts(() => store.record(entry(receiptAbout(capability), { executionId: otherExecution(capability) }))) === 'receipt-uncorrelated:STORE_SCOPE_MISMATCH';
       },
     },
     {
       id: 'handed-object-trusted-over-text',
       file: STORE,
-      replacements: [['if (!reparsed.ok || reparsed.receipt.receiptId !== candidate.receipt.receiptId)', 'if (!reparsed.ok)']],
+      replacements: [['const ownText = reparsed.ok && reparsed.receipt.receiptId === candidate.receipt.receiptId;', 'const ownText = reparsed.ok;']],
       guard: async (m) => {
         const { capability, store, entry } = await storeWorld(m);
         const honest = entry(receiptAbout(capability));
         const lying = { ...honest, candidate: { ...(honest.candidate as NonNullable<ExecutionReceiptExchange['candidate']>), receipt: { ...receiptAbout(capability), receiptId: 'f'.repeat(64) } as ExecutorReceipt } };
-        return attempts(() => store.record(lying)) === 'threw';
+        return attempts(() => store.record(lying)) === 'receipt-invalid:STORE_TEXT_MISMATCH';
       },
     },
     {
@@ -364,9 +374,11 @@ describe('G-02C1D mutation — the evidence store keeps one receipt per position
         store.close();
         const { default: Database } = await import('better-sqlite3');
         const raw = new Database(path);
+        // The trigger is restored with its exact original SQL, so only the edited row can give the store away.
+        const original = (raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'receipt_evidence_never_updated'").get() as { sql: string }).sql;
         raw.exec('DROP TRIGGER receipt_evidence_never_updated');
         raw.prepare("UPDATE receipt_evidence SET canonical = canonical || ' '").run();
-        raw.exec("CREATE TRIGGER receipt_evidence_never_updated BEFORE UPDATE ON receipt_evidence BEGIN SELECT RAISE(ABORT, 'receipt evidence is immutable'); END;");
+        raw.exec(original);
         raw.close();
         try {
           (await m.openExecutionReceiptEvidenceStore(path, OPTIONS)).close();
@@ -379,7 +391,7 @@ describe('G-02C1D mutation — the evidence store keeps one receipt per position
     {
       id: 'dropped-trigger-accepted',
       file: STORE,
-      replacements: [['if (triggers.n !== TRIGGERS.length)', 'if (false)']],
+      replacements: [['if (!schemaMatches)', 'if (false)']],
       guard: async (m) => {
         const { path, store } = await storeWorld(m);
         store.close();
