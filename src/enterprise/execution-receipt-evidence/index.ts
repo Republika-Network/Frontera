@@ -34,6 +34,7 @@ export type {
   StoredExecutionReceiptConflict,
   StoredExecutionReceiptEvidence,
   StoredExecutionReceiptObservation,
+  StoredPresentedReceipt,
 } from './evidence-store.js';
 export { ExecutionReceiptEvidenceConfigurationError, createExecutionReceiptEvidenceRecorder, receiptAgreementOf } from './recorder.js';
 export type { ExecutionReceiptEvidenceRecorder, ExecutionReceiptEvidenceRecorderOptions, ExecutionReceiptEvidenceRuntime, ExecutionReceiptIssuanceView } from './recorder.js';

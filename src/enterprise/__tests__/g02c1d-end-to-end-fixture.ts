@@ -1,7 +1,7 @@
 import { createPrivateKey, sign } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { Agent, request as httpRequest } from 'node:http';
-import { connect, type Socket } from 'node:net';
+import { connect, createServer as createNetServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -204,11 +204,91 @@ export interface HostWorld {
   grant(): Promise<SignedGrant>;
   /** The validated action the exercise gate would hand down for `signed`. */
   actionFor(signed: SignedGrant): ValidatedExecutionAction;
+  /** Revokes `signed`'s grant in the Host's (simulated) authenticated store. An offline executor never learns of it. */
+  revoke(signed: SignedGrant): void;
   execute(action: ValidatedExecutionAction): Promise<ExecutionAdapterResult>;
   close(): void;
 }
 
+// ── A byte relay between the Host's transport and the executor ─────────────
+
+export interface Relay {
+  /** Where the Host's transport dials. */
+  readonly target: { readonly path: string };
+  /** Every request's raw bytes, as the Host wrote them. */
+  readonly requests: Buffer[];
+  close(): Promise<void>;
+}
+
+export interface RelayOptions {
+  /** Forward the request, then drop the Host's connection when the answer starts: the executor acted, the Host never hears. */
+  readonly dropResponse?: boolean;
+  /** Wait this long before forwarding. */
+  readonly delayMs?: number;
+  /** Keep the request and never forward it; the Host's connection is dropped. */
+  readonly hold?: boolean;
+}
+
+/**
+ * A transparent relay on a Unix socket in `dir`, forwarding to the executor's loopback port. Bytes pass unchanged; it only
+ * delays, holds or drops. (A Unix socket has no remote address, so the transport's connect-address check is not exercised
+ * through it — the address policy is not qualified by these tests in any case.)
+ */
+export async function startRelay(dir: string, executorPort: number, options: RelayOptions = {}): Promise<Relay> {
+  const path = join(dir, `relay-${Math.random().toString(16).slice(2, 10)}.sock`);
+  const requests: Buffer[] = [];
+  const sockets = new Set<Socket>();
+  const server: Server = createNetServer((client) => {
+    sockets.add(client);
+    let bytes = Buffer.alloc(0);
+    let forwarded = false;
+    client.on('data', (chunk: Buffer) => {
+      bytes = Buffer.concat([bytes, chunk]);
+      const end = bytes.indexOf('\r\n\r\n');
+      if (end === -1 || forwarded) return;
+      const length = /\r\ncontent-length:\s*([0-9]+)/i.exec(bytes.subarray(0, end).toString('latin1'));
+      if (bytes.length - (end + 4) < (length === null ? 0 : Number(length[1]))) return;
+      forwarded = true;
+      requests.push(bytes);
+      if (options.hold === true) {
+        client.destroy();
+        return;
+      }
+      const forward = (): void => {
+        const upstream = connect({ host: '127.0.0.1', port: executorPort });
+        sockets.add(upstream);
+        upstream.on('error', () => client.destroy());
+        upstream.on('data', (answer: Buffer) => {
+          if (options.dropResponse === true) {
+            client.destroy();
+            upstream.destroy();
+            return;
+          }
+          client.write(answer);
+        });
+        upstream.on('end', () => client.end());
+        upstream.write(bytes);
+      };
+      if (options.delayMs === undefined) forward();
+      else setTimeout(forward, options.delayMs);
+    });
+    client.on('error', () => undefined);
+  });
+  await new Promise<void>((ready) => server.listen(path, () => ready()));
+  return {
+    target: { path },
+    requests,
+    close: () =>
+      new Promise<void>((done) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => done());
+      }),
+  };
+}
+
 export interface HostWorldOptions {
+  /** The issuance policy's capability lifetime (default 30 s). */
+  readonly lifetimeMs?: number;
   /** Where the transport dials (the executor, a forger, or a relay). Ignored with `respond`. */
   readonly target?: { readonly port: number } | { readonly path: string };
   /** In place of the transport: answers the exact request the adapter handed it (an in-process executor or adversary). */
@@ -226,8 +306,11 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
   const issuance = await openExecutionCapabilityIssuanceLedger(join(dir, 'issuance.sqlite'), { issuer: G02B_ISSUER, clock: now, create: true });
   const evidence = await openE2EEvidenceStore(join(dir, 'receipt-evidence.sqlite'));
   const grants: SignedGrant[] = [];
-  const issuer = createExecutionCapabilityIssuer({ grants: readerOf(grants), signer: custodySigner(AUTHORITY_KEY_A, E2E_POLICY_INPUT, now), verifier: testVerifier([AUTHORITY_KEY_A]), policy: E2E_POLICY, ledger: issuance, now });
-  const gate = createExecutionCapabilityGate({ adapterId: E2E_ADAPTER_ID, audience: E2E_AUDIENCE, policy: E2E_POLICY, issuer, clock: now });
+  const revoked: string[] = [];
+  const policyInputs = options.lifetimeMs === undefined ? E2E_POLICY_INPUT : { ...E2E_POLICY_INPUT, lifetimeMs: options.lifetimeMs };
+  const policy = options.lifetimeMs === undefined ? E2E_POLICY : createExecutionCapabilityIssuancePolicy(policyInputs);
+  const issuer = createExecutionCapabilityIssuer({ grants: readerOf(grants, revoked), signer: custodySigner(AUTHORITY_KEY_A, policyInputs, now), verifier: testVerifier([AUTHORITY_KEY_A]), policy, ledger: issuance, now });
+  const gate = createExecutionCapabilityGate({ adapterId: E2E_ADAPTER_ID, audience: E2E_AUDIENCE, policy, issuer, clock: now });
   gate.bind({ issuerKey: trustedKeyOf(AUTHORITY_KEY_A), emergencyControl: undefined });
   const recorder = createExecutionReceiptEvidenceRecorder({
     adapterId: E2E_ADAPTER_ID,
@@ -274,6 +357,9 @@ export async function hostWorld(options: HostWorldOptions): Promise<HostWorld> {
       return signed;
     },
     actionFor: (signed) => actionFor(signed, { organization: G02B_ORGANIZATION }),
+    revoke: (signed) => {
+      revoked.push(signed.grant.id);
+    },
     execute: (action) => adapter.execute(action),
     close: () => {
       issuance.close();

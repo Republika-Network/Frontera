@@ -527,7 +527,7 @@ describe('G-02C1D — the executor delivers the receipt it persisted and signed,
       assert.ok(decoded.ok);
       const persisted = flowWorld.receipts.history(capability.capabilityId);
       assert.equal(persisted.length, 1);
-      assert.equal(decoded.presented.receipt, persisted[0]?.canonical, 'the persisted text, verbatim');
+      assert.equal(decoded.presented.receipt, persisted[0]?.receipt, 'the persisted text, verbatim');
       assert.deepEqual({ ...(decoded.presented.signature as Record<string, string>) }, { ...persisted[0]?.signature });
       assert.equal(JSON.stringify(record).includes(delivered.slice(0, 32)), false, 'never inside the diagnostic record');
 

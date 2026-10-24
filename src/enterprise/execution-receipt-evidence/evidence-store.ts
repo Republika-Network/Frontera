@@ -1,7 +1,13 @@
 import { existsSync, lstatSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { EXECUTOR_RECEIPT_OUTCOMES, executorReceiptDigest, parseExecutorReceipt, type ExecutorReceipt, type ExecutorReceiptOutcome, type PresentedExecutorReceipt } from '../executor-receipt/index.js';
+import { EXECUTOR_RECEIPT_OUTCOMES, executorReceiptDigest, parseExecutorReceipt, type ExecutorReceipt, type ExecutorReceiptOutcome } from '../executor-receipt/index.js';
+
+/** A stored receipt as it was presented: its canonical text and its CORE-02 envelope, checked to be four strings. */
+export interface StoredPresentedReceipt {
+  readonly receipt: string;
+  readonly signature: Readonly<Record<string, string>>;
+}
 
 /**
  * G-02C1D (D8) — the Host's receipt evidence store,
@@ -116,7 +122,7 @@ export interface StoredExecutionReceiptEvidence {
   readonly supersedes: string | null;
   readonly outcome: ExecutorReceiptOutcome;
   readonly receipt: ExecutorReceipt;
-  readonly presented: PresentedExecutorReceipt;
+  readonly presented: StoredPresentedReceipt;
   readonly recordedAt: string;
 }
 
@@ -127,7 +133,7 @@ export interface StoredExecutionReceiptConflict {
   readonly capabilityId: string;
   readonly sequence: number;
   readonly reason: ExecutionReceiptConflictReason;
-  readonly presented: PresentedExecutorReceipt;
+  readonly presented: StoredPresentedReceipt;
   readonly recordedAt: string;
 }
 
@@ -154,7 +160,7 @@ export interface ExecutionReceiptEvidenceStore {
   /** Records one presented exchange, atomically: the observation, and the receipt as evidence or as a conflict. */
   record(exchange: ExecutionReceiptExchange): ExecutionReceiptExchangeRecord;
   /** The accepted receipts for a capability, oldest first, as presented. */
-  history(capabilityId: string): readonly PresentedExecutorReceipt[];
+  history(capabilityId: string): readonly StoredPresentedReceipt[];
   evidenceFor(executionId: string): readonly StoredExecutionReceiptEvidence[];
   conflictsFor(executionId: string): readonly StoredExecutionReceiptConflict[];
   observationsFor(executionId: string): readonly StoredExecutionReceiptObservation[];
@@ -587,7 +593,7 @@ export async function openExecutionReceiptEvidenceStore(path: string, options: E
       ensureOpen();
       return recordInTransaction.immediate(exchange);
     },
-    history(capabilityId: string): readonly PresentedExecutorReceipt[] {
+    history(capabilityId: string): readonly StoredPresentedReceipt[] {
       ensureOpen();
       return Object.freeze((statements.evidenceByCapability.all(capabilityId) as EvidenceRow[]).map((row) => evidenceOf(row).presented));
     },
