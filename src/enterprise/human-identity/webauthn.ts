@@ -265,38 +265,34 @@ export async function verifyAssertion(response: AuthenticationResponse, expected
   return { counter: info.newCounter, deviceType: info.credentialDeviceType, backedUp: info.credentialBackedUp, origin: info.origin };
 }
 
-function bytesOf(value: unknown): Uint8Array | undefined {
-  return value instanceof Uint8Array ? value : undefined;
-}
-
 /**
- * The stored public key must decode (by the library's COSE decoder) to an
- * accepted algorithm and import through Node's own key parser: a P-256 point
- * on the curve, an Ed25519 key, or an RSA key of at least 2048 bits.
+ * The stored public key must decode (by the library's COSE decoder, narrowed
+ * with the library's own typed guards) to an accepted algorithm, and import
+ * through Node's own key parser: a P-256 point on the curve, an Ed25519 key,
+ * or an RSA key of at least 2048 bits.
  */
-async function assertImportablePublicKey(cose: Uint8Array, code: 'HUMAN_IDENTITY_REGISTRATION_INVALID'): Promise<void> {
-  const library = await loadHelpers();
-  let key: { get(label: number): unknown };
+async function assertImportablePublicKey(publicKey: Uint8Array, code: 'HUMAN_IDENTITY_REGISTRATION_INVALID'): Promise<void> {
+  const { cose, decodeCredentialPublicKey } = await loadHelpers();
+  let key: ReturnType<typeof decodeCredentialPublicKey>;
   try {
-    key = library.decodeCredentialPublicKey(Uint8Array.from(cose)) as unknown as { get(label: number): unknown };
+    key = decodeCredentialPublicKey(Uint8Array.from(publicKey));
   } catch (error) {
     return refuse(code, `The credential public key does not decode: ${(error as Error).message}`);
   }
-  const kty = key.get(1);
-  const alg = key.get(3);
+  const alg = key.get(cose.COSEKEYS.alg);
   let jwk: JsonWebKey;
-  if (kty === 2 && alg === -7) {
-    const x = bytesOf(key.get(-2));
-    const y = bytesOf(key.get(-3));
-    if (key.get(-1) !== 1 || x === undefined || y === undefined || x.length !== 32 || y.length !== 32) return refuse(code, 'The ES256 public key is not a P-256 point.');
+  if (cose.isCOSEPublicKeyEC2(key) && alg === cose.COSEALG.ES256) {
+    const x = key.get(cose.COSEKEYS.x);
+    const y = key.get(cose.COSEKEYS.y);
+    if (key.get(cose.COSEKEYS.crv) !== cose.COSECRV.P256 || x === undefined || y === undefined || x.length !== 32 || y.length !== 32) return refuse(code, 'The ES256 public key is not a P-256 point.');
     jwk = { kty: 'EC', crv: 'P-256', x: Buffer.from(x).toString('base64url'), y: Buffer.from(y).toString('base64url') };
-  } else if (kty === 1 && alg === -8) {
-    const x = bytesOf(key.get(-2));
-    if (key.get(-1) !== 6 || x === undefined || x.length !== 32) return refuse(code, 'The EdDSA public key is not an Ed25519 key.');
+  } else if (cose.isCOSEPublicKeyOKP(key) && alg === cose.COSEALG.EdDSA) {
+    const x = key.get(cose.COSEKEYS.x);
+    if (key.get(cose.COSEKEYS.crv) !== cose.COSECRV.ED25519 || x === undefined || x.length !== 32) return refuse(code, 'The EdDSA public key is not an Ed25519 key.');
     jwk = { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(x).toString('base64url') };
-  } else if (kty === 3 && alg === -257) {
-    const n = bytesOf(key.get(-1));
-    const e = bytesOf(key.get(-2));
+  } else if (cose.isCOSEPublicKeyRSA(key) && alg === cose.COSEALG.RS256) {
+    const n = key.get(cose.COSEKEYS.n);
+    const e = key.get(cose.COSEKEYS.e);
     if (n === undefined || e === undefined || n.length < 256) return refuse(code, 'The RS256 public key is not an RSA key of at least 2048 bits.');
     jwk = { kty: 'RSA', n: Buffer.from(n).toString('base64url'), e: Buffer.from(e).toString('base64url') };
   } else {
