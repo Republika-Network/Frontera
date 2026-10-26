@@ -7,7 +7,8 @@ referenced by ADRs, source comments and prior release evidence.
 
 | Artifact | State | Protocol version | Pinned commit |
 | --- | --- | --- | --- |
-| `aoc-protocol-0.2.0-rc.1.tgz` | **active** | `0.2.0-rc.1` (repaired release candidate) | `eec79cdd4019dd42e1767909c5bd4e26d04c6f0f` |
+| `aoc-protocol-0.2.0-rc.3.tgz` | **active** | `0.2.0-rc.3` (security release candidate) | `fd705f689e04781748e308368a10e52ae32af079` |
+| `aoc-protocol-0.2.0-rc.1.tgz` | superseded, retained | `0.2.0-rc.1` (repaired release candidate) | `eec79cdd4019dd42e1767909c5bd4e26d04c6f0f` |
 | `aoc-protocol-0.2.0-rc.0.tgz` | **burned**, retained as evidence | `0.2.0-rc.0` | `dde34517d956156a0c735c18a805763a5e712879` |
 | `aoc-protocol-0.1.0.tgz` | superseded, retained | `0.1.0` | `ab2ac6ef573c871a029a67b13d33ba9738cb5939` |
 

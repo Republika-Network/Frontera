@@ -13,7 +13,9 @@
 // algorithm, its profile and its own test suite stay Protocol's. What this
 // asserts is a *consumption* fact Frontera alone can assert: the artifact
 // resolved by this repository's own `node_modules/@aoc/protocol` behaves
-// like rc.1. It fails loudly if a future change reintroduces rc.0.
+// like rc.1 and its successors (the active pin is 0.2.0-rc.3, see
+// protocol-consumer.lock.json). It fails loudly if a future change
+// reintroduces rc.0.
 //
 // It lives under scripts/protocol/ deliberately. `./canonical` is a declared
 // public export of @aoc/protocol, but Frontera's own boundary gates
@@ -114,7 +116,7 @@ process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
 
 if (failures.length > 0) {
   process.stderr.write(
-    `[canonicalization] ${failures.length} check(s) failed. If canonicalizeJSON(7.9e-10) reported "7.9e-1", this repository is consuming the BURNED @aoc/protocol@0.2.0-rc.0 candidate; repin it to 0.2.0-rc.1 (see docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.1.md).\n`,
+    `[canonicalization] ${failures.length} check(s) failed. If canonicalizeJSON(7.9e-10) reported "7.9e-1", this repository is consuming the BURNED @aoc/protocol@0.2.0-rc.0 candidate; repin it to the active candidate recorded in protocol-consumer.lock.json (0.2.0-rc.1 and later carry the repair).\n`,
   );
   process.exitCode = 1;
 }

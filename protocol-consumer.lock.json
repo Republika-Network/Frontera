@@ -1,27 +1,35 @@
 {
   "$comment": "This is NOT an npm lockfile. It is a small, auditable record of which Soberanía Protocol commit/artifact Soberanía Enterprise (human product: Frontera) has actually been validated against. See docs/integration/PROTOCOL_PACKAGE_CONSUMPTION.md for the full upgrade/rollback procedure. Validate this file with `node scripts/protocol/check-compatibility-lock.mjs`.",
   "repository": "Architects-of-Change-Protocol/Architects_of_Change_Protocol",
-  "repositoryNote": "This field records the pre-rebrand repository slug, which is what packages/protocol/package.json still declares upstream and what scripts/protocol/lib-protocol-artifact.mjs validates against. The git remote this artifact was actually built from is Soberania-Protocol/Soberania_Protocol. Both identifiers are recorded rather than reconciled, exactly as Protocol's own frozen integration contract does; whether they are one renamed repository is a GitHub-side fact neither repository evidences. Renaming this field is a separate, approved migration -- not part of this increment.",
-  "commit": "eec79cdd4019dd42e1767909c5bd4e26d04c6f0f",
+  "repositoryNote": "This field records the pre-rebrand repository slug, which is what packages/protocol/package.json still declares upstream and what scripts/protocol/lib-protocol-artifact.mjs validates against. The git remote this artifact was actually built from is Soberania-Protocol/Soberania_Protocol. Both identifiers are recorded rather than reconciled, exactly as Protocol's own frozen integration contract does; whether they are one renamed repository is a GitHub-side fact neither repository evidences. Renaming this field is a separate, approved migration -- not part of this increment. Observed 2026-10-26: https://github.com/Architects-of-Change-Protocol/Architects_of_Change_Protocol answers HTTP 301 to https://github.com/Republika-Network/Soberania_Protocol, and scripts/protocol/build-protocol-tarball.mjs fetched the pinned commit through the recorded slug. The field is still not renamed here.",
+  "commit": "fd705f689e04781748e308368a10e52ae32af079",
   "package": "@aoc/protocol",
-  "expectedVersion": "0.2.0-rc.1",
+  "expectedVersion": "0.2.0-rc.3",
   "enterpriseSupportedVersion": "1.0.0",
   "peerDependencyRange": ">=0.1.0 || >=0.2.0-rc.0",
-  "peerDependencyRangeNote": "The `|| >=0.2.0-rc.0` clause exists solely because npm's semver excludes prereleases from ranges whose comparators carry no prerelease: 0.2.0-rc.0 does NOT satisfy '>=0.1.0', so an external consumer installing @aoc-enterprise/runtime alongside the frozen candidate fails with ERESOLVE. The clause admits no additional stable version (0.1.0, 0.2.0, 0.3.0, 1.0.0, 2.0.0 all satisfied before and after) and no other prerelease family (0.2.0-alpha.1, 0.2.0-beta.9, 0.3.0-rc.0, 1.0.0-rc.1 remain excluded). It admits exactly the 0.2.0 `rc` family, which is why the repin from the burned 0.2.0-rc.0 to the repaired 0.2.0-rc.1 required no change here: `semver.satisfies(\"0.2.0-rc.1\", \">=0.1.0 || >=0.2.0-rc.0\")` is already true, and re-expressing the range to name rc.1 would have admitted nothing new while discarding a validated expression. Verified mechanically over the table above before leaving it unchanged.",
+  "peerDependencyRangeNote": "The `|| >=0.2.0-rc.0` clause exists solely because npm's semver excludes prereleases from ranges whose comparators carry no prerelease: 0.2.0-rc.0 does NOT satisfy '>=0.1.0', so an external consumer installing @aoc-enterprise/runtime alongside the frozen candidate fails with ERESOLVE. The clause admits no additional stable version (0.1.0, 0.2.0, 0.3.0, 1.0.0, 2.0.0 all satisfied before and after) and no other prerelease family (0.2.0-alpha.1, 0.2.0-beta.9, 0.3.0-rc.0, 1.0.0-rc.1 remain excluded). It admits exactly the 0.2.0 `rc` family, which is why the repin from the burned 0.2.0-rc.0 to the repaired 0.2.0-rc.1 required no change here: `semver.satisfies(\"0.2.0-rc.1\", \">=0.1.0 || >=0.2.0-rc.0\")` is already true, and re-expressing the range to name rc.1 would have admitted nothing new while discarding a validated expression. Verified mechanically over the table above before leaving it unchanged. The repin from 0.2.0-rc.1 to 0.2.0-rc.3 likewise required no change: semver.satisfies(\"0.2.0-rc.3\", \">=0.1.0 || >=0.2.0-rc.0\") is true, re-verified mechanically on 2026-10-26.",
   "tarball": {
-    "filename": "aoc-protocol-0.2.0-rc.1.tgz",
-    "sha256": "b0d6ee6ff2010c4addab0bd683e2a89b9b2246f430c7e892fdc3d4123f3a3f60",
-    "sha512": "889aa0c28f592dec16858e0758e5f5a307e99603b37239360ae3ce708ee77bc661c0cf1d7a40daced6818647e0a2cd0843d9921fa7e679f340db28b1f033b66c",
-    "integrity": "sha512-iJqgwo9ZLewWhY4HWOX1owfplgOzcjk2CuPOcI7ne8ZhwM8dekDaztaBhkfgos0IQ9mSH6fmefNA2yix8DO2bA==",
-    "sizeBytes": 280149,
-    "fileCount": 407,
-    "vendoredAt": "vendor/aoc-protocol-0.2.0-rc.1.tgz"
+    "filename": "aoc-protocol-0.2.0-rc.3.tgz",
+    "sha256": "3d17beff5a0538172f3d888184459511c44540332ccde51a30da32afa1b358f4",
+    "sha512": "62b864de877004ea7c96638d4d34a22e268806e23e6a85e0891612bf8d0889e3b45a545ac3c087404902dd729dd50eb823257e0377666a36bf05bdaa59d3632f",
+    "integrity": "sha512-Yrhk3odwBOp8lmONTTSiLiaIBuI+aoXgiRYSv40IieO0WlRaw8CHQEkC3XKd1Q64IyV+A3dmaja/Bb2qWdNjLw==",
+    "sizeBytes": 288728,
+    "fileCount": 410,
+    "vendoredAt": "vendor/aoc-protocol-0.2.0-rc.3.tgz"
+  },
+  "provenance": {
+    "sourceTag": "source/aoc-protocol-0.2.0-rc.3",
+    "sourceTagObject": "cb2b0a5276d610b93d874962b53fc6952a5edc4e",
+    "sourceTagSigned": false,
+    "sourceTagNote": "Annotated, unsigned tag protected by the source repository's protect-source-provenance-tags ruleset. It points at commit fd705f68, the release-preparation commit, which is not itself on Protocol main: the release was squash-merged as 3cb635dbce421c3a9a31812753d5c294afa0b21c. packages/protocol is the identical tree object (12a41cb095ba75c30733885894a019f88e44cd53) at fd705f68, at 3cb635db and at main 1112c63d93875400aeae8e01d85f3c8543be51d4, so the packed artifact does not depend on which of them is built.",
+    "protocolReleaseManifest": "docs/release/evidence/aoc-protocol-0.2.0-rc.3-release-manifest.json (in the Protocol repository)",
+    "reproducedHere": "scripts/protocol/build-protocol-tarball.mjs built this exact tarball (sha256 above, 288728 bytes) from commit fd705f68 in a temporary checkout on 2026-10-26, with Protocol's own protocol:consumer:check passing; the sha256, sha512, npm integrity, byte size and file count equal Protocol's release manifest and consumer lock."
   },
   "exportsFingerprint": "a67d65b17dcb34c7da84d9a07cb893e073e21e9edbbc621bcae649afa5cdeb45",
-  "exportsFingerprintNote": "sha256 of the canonically ordered `exports` object of the installed package (15 keys), computed the way Protocol's scripts/fingerprint-public-surface.mjs computes it. Independently recomputed here from the packed artifact's own package.json, not copied from Protocol's evidence.",
+  "exportsFingerprintNote": "sha256 of the canonically ordered `exports` object of the installed package (15 keys), computed the way Protocol's scripts/fingerprint-public-surface.mjs computes it. Independently recomputed here from the packed artifact's own package.json, not copied from Protocol's evidence. Recomputed from the packed 0.2.0-rc.3 artifact on 2026-10-26: unchanged (same 15 keys, same targets); the same method reproduces the recorded value from the vendored 0.2.0-rc.1 artifact.",
   "integrationContract": {
     "contract": "aoc.cross-repository-integration",
-    "contractVersion": "1.0.1",
+    "contractVersion": "1.0.3",
     "status": "frozen",
     "shippedAt": "node_modules/@aoc/protocol/integration-contract.json"
   },
@@ -33,7 +41,11 @@
     "@aoc/protocol/adapters",
     "@aoc/protocol/runtime-registry"
   ],
-  "verifiedPublicExportsNote": "The subpaths Enterprise is allowed to import and does verify (ALLOWED_PROTOCOL_SUBPATHS in scripts/protocol/lib-protocol-artifact.mjs). @aoc/protocol@0.2.0-rc.1 declares the same 15 export keys as 0.2.0-rc.0 (exportsFingerprint above is unchanged); the nine additional ones (./canonical, ./identity, ./manifest, ./portability, ./interoperability, ./licensing, ./governance-compatibility, ./sovereignty-capabilities, ./package.json) are deliberately still NOT added to the allowlist: Enterprise source imports none of them, and widening a consumption allowlist without a source consumer would weaken the check for no gain. ./canonical is named by scripts/protocol/check-canonicalization-regression.mjs, which is protocol tooling living in the one directory every boundary gate already exempts -- that probe deliberately did not become a reason to widen this list.",
+  "verifiedPublicExportsNote": "The subpaths Frontera source is allowed to import and does verify (ALLOWED_PROTOCOL_SUBPATHS in scripts/protocol/lib-protocol-artifact.mjs). Unchanged by the 0.2.0-rc.3 repin. @aoc/protocol@0.2.0-rc.3 declares the same 15 export keys as 0.2.0-rc.1 (exportsFingerprint above is unchanged); the nine additional ones (./canonical, ./identity, ./manifest, ./portability, ./interoperability, ./licensing, ./governance-compatibility, ./sovereignty-capabilities, ./package.json) are still NOT added to this allowlist: Frontera source imports none of them. ./canonical is permitted only as an internal dependency (see internalDependencySubpaths), never as a source import. scripts/protocol/check-canonicalization-regression.mjs names it as protocol tooling living in the one directory every boundary gate already exempts.",
+  "internalDependencySubpaths": [
+    "@aoc/protocol/canonical"
+  ],
+  "internalDependencySubpathsNote": "Approved by the founder for FRONTERA-SOBE-PILOT-01A0: @aoc/protocol/canonical may be resolved only as an internal dependency of the approved Soberanía runtime integration (the packaged runtime's @aoc-runtime/crypto requires it). It is not a public export Frontera consumes: it stays out of verifiedPublicExports and ALLOWED_PROTOCOL_SUBPATHS, so scripts/check-protocol-consumption.mjs still rejects any Frontera source import of it. INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS in scripts/protocol/lib-protocol-artifact.mjs is the only value this field may hold, and the installed artifact must declare it (tests/protocol-tarball-lock.test.mjs).",
   "knownGaps": [],
   "resolvedGaps": [
     {
@@ -56,25 +68,38 @@
     }
   ],
   "supersedes": {
-    "expectedVersion": "0.2.0-rc.0",
-    "status": "BURNED",
-    "commit": "dde34517d956156a0c735c18a805763a5e712879",
-    "tarball": "aoc-protocol-0.2.0-rc.0.tgz",
-    "sha256": "dbe8a08f432a0324ad34eb7cb85054b6dcd23c0d9a073914edf23fccd10445e5",
-    "sha512": "f8cb8dd45bc656a2ab0ba8b01a80d6edad7291addb36088606a9ba4bf547c62333e32c137c6776ea308e25022673ecebabb6f797bfd580a22675132cdba90573",
-    "integrationContract": "aoc.cross-repository-integration@1.0.0 (frozen)",
-    "burnReason": "Its canonical-JSON writer truncated exponent digits: canonicalizeJSON(7.9e-10) and canonicalizeJSON(7.9e-100) both produced \"7.9e-1\", so two distinct numbers shared one canonical form and therefore one digest. Reproduced against this exact artifact from vendor/aoc-protocol-0.2.0-rc.0.tgz; the collision is not confined to the reported pair (1.5e-300 collapsed to \"1.5e-3\"). Soberania Protocol declared the candidate BURNED rather than repacking its bytes, and cut 0.2.0-rc.1 from commit eec79cdd as the repaired successor.",
-    "neverReuse": true,
-    "note": "The burned artifact remains tracked at vendor/aoc-protocol-0.2.0-rc.0.tgz and its evidence at docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.0.md is left byte-identical. Historical evidence is never rewritten under a new candidate's identity: every Frontera candidate through 1.2.0 really was validated against this artifact, and the record has to keep saying so. It is retained as evidence only and must never be reinstated as an ACTIVE pin.",
+    "expectedVersion": "0.2.0-rc.1",
+    "status": "SUPERSEDED",
+    "commit": "eec79cdd4019dd42e1767909c5bd4e26d04c6f0f",
+    "tarball": "aoc-protocol-0.2.0-rc.1.tgz",
+    "sha256": "b0d6ee6ff2010c4addab0bd683e2a89b9b2246f430c7e892fdc3d4123f3a3f60",
+    "sha512": "889aa0c28f592dec16858e0758e5f5a307e99603b37239360ae3ce708ee77bc661c0cf1d7a40daced6818647e0a2cd0843d9921fa7e679f340db28b1f033b66c",
+    "integrationContract": "aoc.cross-repository-integration@1.0.1 (frozen)",
+    "validatedAt": "2026-08-26",
+    "validationEvidence": "docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.1.md",
+    "supersededBecause": "Superseded, not burned: no defect is recorded against 0.2.0-rc.1. 0.2.0-rc.3 is Protocol's security release candidate (issuer verification bound to the signed issuer's registered key in ./manifest and ./sovereignty-capabilities) and is the input the approved Soberanía runtime integration is validated against.",
+    "note": "The superseded artifact remains tracked at vendor/aoc-protocol-0.2.0-rc.1.tgz and its evidence at docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.1.md is left byte-identical. Historical evidence is never rewritten under a new candidate's identity.",
     "supersedes": {
-      "expectedVersion": "0.1.0",
-      "commit": "ab2ac6ef573c871a029a67b13d33ba9738cb5939",
-      "tarball": "aoc-protocol-0.1.0.tgz",
-      "sha256": "4e5289b74bc30bcbd63afe87cd00d5417aa6bc665fe50d7c9c1b845bf1896b27",
-      "note": "The superseded artifact remains tracked at vendor/aoc-protocol-0.1.0.tgz and its evidence at docs/release/PROTOCOL_CONSUMPTION_EVIDENCE.md is left byte-identical. Historical evidence is never rewritten under a new candidate's identity."
+      "expectedVersion": "0.2.0-rc.0",
+      "status": "BURNED",
+      "commit": "dde34517d956156a0c735c18a805763a5e712879",
+      "tarball": "aoc-protocol-0.2.0-rc.0.tgz",
+      "sha256": "dbe8a08f432a0324ad34eb7cb85054b6dcd23c0d9a073914edf23fccd10445e5",
+      "sha512": "f8cb8dd45bc656a2ab0ba8b01a80d6edad7291addb36088606a9ba4bf547c62333e32c137c6776ea308e25022673ecebabb6f797bfd580a22675132cdba90573",
+      "integrationContract": "aoc.cross-repository-integration@1.0.0 (frozen)",
+      "burnReason": "Its canonical-JSON writer truncated exponent digits: canonicalizeJSON(7.9e-10) and canonicalizeJSON(7.9e-100) both produced \"7.9e-1\", so two distinct numbers shared one canonical form and therefore one digest. Reproduced against this exact artifact from vendor/aoc-protocol-0.2.0-rc.0.tgz; the collision is not confined to the reported pair (1.5e-300 collapsed to \"1.5e-3\"). Soberania Protocol declared the candidate BURNED rather than repacking its bytes, and cut 0.2.0-rc.1 from commit eec79cdd as the repaired successor.",
+      "neverReuse": true,
+      "note": "The burned artifact remains tracked at vendor/aoc-protocol-0.2.0-rc.0.tgz and its evidence at docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.0.md is left byte-identical. Historical evidence is never rewritten under a new candidate's identity: every Frontera candidate through 1.2.0 really was validated against this artifact, and the record has to keep saying so. It is retained as evidence only and must never be reinstated as an ACTIVE pin.",
+      "supersedes": {
+        "expectedVersion": "0.1.0",
+        "commit": "ab2ac6ef573c871a029a67b13d33ba9738cb5939",
+        "tarball": "aoc-protocol-0.1.0.tgz",
+        "sha256": "4e5289b74bc30bcbd63afe87cd00d5417aa6bc665fe50d7c9c1b845bf1896b27",
+        "note": "The superseded artifact remains tracked at vendor/aoc-protocol-0.1.0.tgz and its evidence at docs/release/PROTOCOL_CONSUMPTION_EVIDENCE.md is left byte-identical. Historical evidence is never rewritten under a new candidate's identity."
+      }
     }
   },
-  "validatedAt": "2026-08-26",
-  "validationEvidence": "docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.1.md",
+  "validatedAt": "2026-10-26",
+  "validationEvidence": "docs/release/PROTOCOL_CONSUMPTION_EVIDENCE_0.2.0-rc.3.md",
   "updateProcedure": "See docs/integration/PROTOCOL_PACKAGE_CONSUMPTION.md, section 'Upgrade procedure'."
 }

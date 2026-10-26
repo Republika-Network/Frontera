@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   ALLOWED_PROTOCOL_SUBPATHS,
+  INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS,
   assertCommitMatches,
   assertIsProtocolRepository,
   assertPinnedRef,
@@ -118,6 +119,14 @@ test('isAllowedProtocolImportSpecifier allows only the declared public subpaths'
   assert.equal(isAllowedProtocolImportSpecifier('@aoc/protocol/internal'), false);
 });
 
+test('an internal-dependency subpath is never an allowed source import', () => {
+  assert.deepEqual([...INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS], ['@aoc/protocol/canonical']);
+  for (const internal of INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS) {
+    assert.equal(ALLOWED_PROTOCOL_SUBPATHS.includes(internal), false);
+    assert.equal(isAllowedProtocolImportSpecifier(internal), false);
+  }
+});
+
 test('extractProtocolImportSpecifiers finds a forbidden /src deep import', () => {
   const source = `import type { CapabilityToken } from '@aoc/protocol/src/contracts';\n`;
   const specifiers = extractProtocolImportSpecifiers(source);
@@ -193,6 +202,33 @@ test('validateCompatibilityLock rejects an empty verifiedPublicExports list', ()
   const { valid, errors } = validateCompatibilityLock(validLock({ verifiedPublicExports: [] }));
   assert.equal(valid, false);
   assert.ok(errors.some((e) => e.includes('verifiedPublicExports')));
+});
+
+test('validateCompatibilityLock accepts the approved internal-dependency subpath', () => {
+  const { valid, errors } = validateCompatibilityLock(validLock({ internalDependencySubpaths: ['@aoc/protocol/canonical'] }));
+  assert.equal(valid, true, errors.join('\n'));
+});
+
+test('validateCompatibilityLock rejects any other internal-dependency subpath', () => {
+  for (const subpath of ['@aoc/protocol/manifest', '@aoc/protocol/identity', '@aoc/protocol/dist/canonical', '@aoc/protocol']) {
+    const { valid, errors } = validateCompatibilityLock(validLock({ internalDependencySubpaths: ['@aoc/protocol/canonical', subpath] }));
+    assert.equal(valid, false, subpath);
+    assert.ok(errors.some((e) => e.includes(subpath)));
+  }
+});
+
+test('validateCompatibilityLock rejects a non-array internalDependencySubpaths', () => {
+  const { valid, errors } = validateCompatibilityLock(validLock({ internalDependencySubpaths: '@aoc/protocol/canonical' }));
+  assert.equal(valid, false);
+  assert.ok(errors.some((e) => e.includes('internalDependencySubpaths')));
+});
+
+test('validateCompatibilityLock rejects an internal dependency that is also listed as a public export', () => {
+  const { valid, errors } = validateCompatibilityLock(
+    validLock({ verifiedPublicExports: ['@aoc/protocol', '@aoc/protocol/canonical'], internalDependencySubpaths: ['@aoc/protocol/canonical'] }),
+  );
+  assert.equal(valid, false);
+  assert.ok(errors.some((e) => e.includes('must not also be listed')));
 });
 
 // --- verifyArtifactAgainstLock (the tarball vs. the lock) --------------------

@@ -30,19 +30,27 @@ test('the installed @aoc/protocol has the repaired canonicalization (not burned 
   assert.deepEqual(evidence.failures, []);
 });
 
-test('the compatibility lock records the repaired candidate, and records rc.0 as burned', () => {
+test('the compatibility lock records the active candidate, rc.1 as superseded, and rc.0 as burned', () => {
   const lock = JSON.parse(readFileSync(resolve(root, 'protocol-consumer.lock.json'), 'utf8'));
 
-  assert.equal(lock.expectedVersion, '0.2.0-rc.1');
-  assert.equal(lock.commit, 'eec79cdd4019dd42e1767909c5bd4e26d04c6f0f');
-  assert.equal(lock.tarball.sha256, 'b0d6ee6ff2010c4addab0bd683e2a89b9b2246f430c7e892fdc3d4123f3a3f60');
-  assert.equal(lock.integrationContract.contractVersion, '1.0.1');
+  assert.equal(lock.expectedVersion, '0.2.0-rc.3');
+  assert.equal(lock.commit, 'fd705f689e04781748e308368a10e52ae32af079');
+  assert.equal(lock.tarball.sha256, '3d17beff5a0538172f3d888184459511c44540332ccde51a30da32afa1b358f4');
+  assert.equal(lock.integrationContract.contractVersion, '1.0.3');
+
+  // rc.1 is superseded, not burned: no defect is recorded against it.
+  assert.equal(lock.supersedes.expectedVersion, '0.2.0-rc.1');
+  assert.equal(lock.supersedes.status, 'SUPERSEDED');
+  assert.equal(lock.supersedes.commit, 'eec79cdd4019dd42e1767909c5bd4e26d04c6f0f');
+  assert.equal(lock.supersedes.sha256, 'b0d6ee6ff2010c4addab0bd683e2a89b9b2246f430c7e892fdc3d4123f3a3f60');
 
   // The burned candidate must keep existing in the record by name and by
   // checksum. Erasing it would leave nothing in this repository explaining why
   // 0.2.0-rc.0 must never be reinstated.
-  assert.equal(lock.supersedes.expectedVersion, '0.2.0-rc.0');
-  assert.equal(lock.supersedes.status, 'BURNED');
-  assert.equal(lock.supersedes.sha256, 'dbe8a08f432a0324ad34eb7cb85054b6dcd23c0d9a073914edf23fccd10445e5');
-  assert.equal(lock.supersedes.supersedes.expectedVersion, '0.1.0');
+  const burned = lock.supersedes.supersedes;
+  assert.equal(burned.expectedVersion, '0.2.0-rc.0');
+  assert.equal(burned.status, 'BURNED');
+  assert.equal(burned.neverReuse, true);
+  assert.equal(burned.sha256, 'dbe8a08f432a0324ad34eb7cb85054b6dcd23c0d9a073914edf23fccd10445e5');
+  assert.equal(burned.supersedes.expectedVersion, '0.1.0');
 });
