@@ -87,3 +87,60 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run qualify:pilot
+
+  demo-evidence:
+    # DEMO-01A: one run of the reference implementation for the three DEMO-01
+    # scenarios (authorized, blocked, uncertain) on the shipped Host and the
+    # reference executor, captured as `frontera.demo-evidence-bundle.v1` and
+    # uploaded as a downloadable artifact. Test-only and synthetic: no secret,
+    # no write permission, no release, package or deployment. The same test runs
+    # inside `validate` (npm test) without writing anything.
+    # ubuntu-24.04 for the same reason as `validate`: the production profile's
+    # storage preflight refuses durable state on ubuntu-26.04's tmpfs /tmp.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Capture the reference evidence
+        env:
+          FRONTERA_DEMO01_EVIDENCE_OUT: ${{ runner.temp }}/demo01-evidence/frontera-demo-evidence-bundle.v1.json
+          FRONTERA_DEMO01_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node --test --test-reporter=spec dist/src/enterprise/__tests__/demo01-evidence-capture.test.js
+      - name: Digest the bundle
+        working-directory: ${{ runner.temp }}/demo01-evidence
+        run: |
+          test -s frontera-demo-evidence-bundle.v1.json
+          sha256sum frontera-demo-evidence-bundle.v1.json | tee frontera-demo-evidence-bundle.v1.json.sha256
+          {
+            echo '### DEMO-01A reference evidence'
+            echo
+            echo 'Synthetic reference-implementation output (frontera.demo-evidence-bundle.v1). Not production evidence.'
+            echo
+            echo '```'
+            cat frontera-demo-evidence-bundle.v1.json.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: frontera-demo01-reference-evidence-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/demo01-evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Record the artifact
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          echo "artifact: ${ARTIFACT_URL}"
+          echo "artifact zip digest: ${ARTIFACT_DIGEST}"
+          echo "- Artifact: ${ARTIFACT_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact zip digest: ${ARTIFACT_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
