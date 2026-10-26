@@ -430,7 +430,8 @@ describe('AUTH-01 — human approval connected to signed, request-bound executio
     assert.equal(subject['actorId'], AGENT);
     assert.equal(subject['action'], SYNTHETIC);
     assert.equal(subject['resourceScope'], PRODUCTION);
-    assert.equal(subject['governanceProfile'], 'synthetic-deploy-production');
+    // The subject pins the exact profile version and its digest, so a later profile change supersedes rather than reinterprets.
+    assert.match(subject['governanceProfile'] as string, /^synthetic-deploy-production@1#sha256:[0-9a-f]{64}$/);
     assert.deepEqual((subject['parameters'] as Record<string, unknown>[]).map((p) => [p['dimension'], p['value']]), [['releaseVersion', RELEASE]]);
     assert.deepEqual((approval['requirement'] as Record<string, unknown>)['approverAction'], APPROVE_DEPLOY);
     assert.equal((approval['requirement'] as Record<string, unknown>)['minimumApprovals'], 1);
@@ -598,8 +599,7 @@ describe('AUTH-01 — human approval connected to signed, request-bound executio
     const freshApproval = await approvalFor(baseUrl, fresh);
     assert.notEqual(digestOf(freshApproval), digestOf(approval));
     // The approved subject's digest does not approve the other request.
-    const crossed = await command(baseUrl, CTO_AUTH, id(freshApproval), 'approve', { subjectDigest: digestOf(approval) });
-    assert.equal(crossed.status, 400, crossed.text);
+    expectRefusal(await command(baseUrl, CTO_AUTH, id(freshApproval), 'approve', { subjectDigest: digestOf(approval) }), 'APPROVAL_SUBJECT_MISMATCH', 'another subject’s digest');
     assert.equal((await detail(baseUrl, id(freshApproval)))['status'], 'pending');
     assert.deepEqual(footprint(), before);
   });
@@ -616,7 +616,7 @@ describe('AUTH-01 — human approval connected to signed, request-bound executio
     const freshApproval = await approvalFor(baseUrl, fresh);
     assert.equal(subjectOf(freshApproval)['resourceScope'], SECONDARY);
     assert.notEqual(digestOf(freshApproval), digestOf(approval));
-    assert.equal((await command(baseUrl, CTO_AUTH, id(freshApproval), 'approve', { subjectDigest: digestOf(approval) })).status, 400);
+    expectRefusal(await command(baseUrl, CTO_AUTH, id(freshApproval), 'approve', { subjectDigest: digestOf(approval) }), 'APPROVAL_SUBJECT_MISMATCH', 'another environment’s subject digest');
     assert.deepEqual(footprint(), before);
   });
 

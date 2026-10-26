@@ -40,7 +40,7 @@ with a recording adapter, and G-02C1D and DEMO-01A without any approval.
 | Step | Assertion |
 |---|---|
 | A–D | The first submission is `withheld` by `approval` with `GOVERNED_ACTION_APPROVAL_PENDING`. No issuance, presentation, effect or evidence. |
-| E | The inbox entry names the governed `requestId` and the committed `decisionId`. The subject names the agent, action, resource, profile and `releaseVersion = release-42`. The requirement is `approve-deploy`, quorum 1. |
+| E | The inbox entry names the governed `requestId` and the committed `decisionId`. The subject names the agent, action, resource, the version- and digest-pinned profile (`synthetic-deploy-production@1#sha256:…`) and `releaseVersion = release-42`. The requirement is `approve-deploy`, quorum 1. |
 | F–G | `operator:cto` approves the shown `subjectDigest`. The status is `approved`, with an `approvalDigest`, a `notAfter`, and the counted approver `operator:cto`. Still no issuance or effect. |
 | H–I | The same idempotency key resumes the **same request and decision**, which is not re-evaluated. The status is `executed`. |
 | J | Exactly one issuance. The capability names this execution, the agent, the action, the resource and the audience. It is `single-use`, its lifetime is at most 60 s, and `expiresAt` is no later than the approval's `notAfter`. Its signature verifies independently under the Host authority key. |
@@ -59,7 +59,7 @@ with a recording adapter, and G-02C1D and DEMO-01A without any approval.
 | 4 | Self-approval | `APPROVAL_SEGREGATION_OF_DUTIES`, although the requester holds approval standing. |
 | 5 | Approval expires before resume | `approval-expired`, retry `GOVERNED_ACTION_APPROVAL_EXPIRED`. No capability. |
 | 6 | Request expires before a verdict | Verdict refused `APPROVAL_REQUEST_EXPIRED`. Retry `GOVERNED_ACTION_APPROVAL_REQUEST_EXPIRED`. No capability. |
-| 7 | Changed parameters | Same key → `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`. A new key opens its own approval with a different subject digest. The old digest cannot approve it (400). |
+| 7 | Changed parameters | Same key → `GOVERNED_ACTION_IDEMPOTENCY_CONFLICT`. A new key opens its own approval with a different subject digest. The old digest cannot approve it (`409 APPROVAL_SUBJECT_MISMATCH`, nothing recorded). |
 | 8 | Changed resource | As 7, for another delegated environment. |
 | 9 | Same request retried | No duplicate effect (positive flow). |
 | 10 | Lost executor response | Host `execution_unconfirmed`, observation `receipt-missing`, no accepted receipt. The executor consumed, performed one effect and kept its signed receipt. The retry adds no request, effect or issuance and is never reported `executed`. |
