@@ -161,6 +161,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'execution-receipt-evidence': 'G-02C1D opt-in Host receipt evidence (verification, issuance correlation, additive store); composed only when the governed-action file configures receiptEvidence, never by the qualified runs',
       'external-authority-signer': 'CORE-02 external signer; not composed by the qualified runs',
       health: 'Host health surface',
+      'human-identity': 'AUTH-02 human principals and passkey credentials: a standalone module that no Host composition opens and no route reaches; not on the governed payment path',
       lifecycle: 'Host lifecycle',
       'license-governance': 'outside the governed payment path',
       modules: 'Host module registry',
