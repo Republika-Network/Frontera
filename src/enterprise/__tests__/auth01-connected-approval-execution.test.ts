@@ -335,7 +335,7 @@ describe('AUTH-01 — human approval connected to signed, request-bound executio
   const requestsSeen = (): number => relay.requests.length + lossyRelay.requests.length;
   const effects = (): number => domain.records().length;
   /** Everything that would show an execution happened: Host issuance, anything reaching the executor, any synthetic effect, any evidence. */
-  const footprint = (): readonly number[] => [issuanceRows(), requestsSeen(), effects(), observationRows()];
+  const footprint = (): readonly [issued: number, requests: number, effects: number, observations: number] => [issuanceRows(), requestsSeen(), effects(), observationRows()];
 
   async function issuanceOf(executionId: string): Promise<ExecutionCapabilityIssuanceRecord> {
     const ledger = await openExecutionCapabilityIssuanceLedger(join(dir, 'execution-capability-issuance.sqlite'), { issuer: CAPABILITY_ISSUER, clock: Date.now });
