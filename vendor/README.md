@@ -42,3 +42,14 @@ then update `protocol-consumer.lock.json` (`commit`, `expectedVersion`, `tarball
 run `node scripts/protocol/check-compatibility-lock.mjs` to confirm the lock file is internally
 consistent. Once `@aoc/protocol` is published to a real registry, this directory and the `file:`
 dependency should be removed in favor of an ordinary registry-resolved version.
+
+## `vendor/soberania-runtime/`
+
+Reproducible `npm pack` builds of seven Soberanía runtime packages from Soberanía Protocol commit
+`1112c63d93875400aeae8e01d85f3c8543be51d4`, pinned by
+[`soberania-runtime-consumer.lock.json`](../soberania-runtime-consumer.lock.json) (bytes, checksums,
+size and full file inventory). They are **not** installed into Frontera's dependency graph and no
+Frontera source imports them yet; they exist for the pilot qualification in
+`tests/soberania-runtime-consumption.test.mjs`. See `docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md`.
+Do not hand-edit them; `npm run check:soberania-runtime-lock` rejects any byte change, missing artifact or
+unpinned addition.

@@ -1,0 +1,282 @@
+{
+  "$comment": "NOT an npm lockfile. Auditable record of the Soberanía runtime artifacts Frontera vendors for the private pilot (FRONTERA-SOBE-PILOT-01A). It authorizes nothing by itself: no Frontera source consumes these packages yet, and none is installed into Frontera's dependency graph. Validate with `npm run check:soberania-runtime-lock`; see docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md.",
+  "contract": "frontera.soberania-runtime-consumption",
+  "contractVersion": "1.0.0",
+  "sourceRepository": "Republika-Network/Soberania_Protocol",
+  "sourceCommit": "1112c63d93875400aeae8e01d85f3c8543be51d4",
+  "sourceTree": "ae1f68ef9169620dca7c50c53c20ad7614e9dc69",
+  "sourceNote": "Public main of Soberanía Protocol after the merge of the fix for GHSA-52j9-7x43-3qc4 (published 2026-10-26). The repository's root package `aoc-runtime` is not certified for distribution and is not vendored.",
+  "packaging": {
+    "method": "npm pack --pack-destination <dir> ./<package dir>, for each package below, from a clean checkout of sourceCommit after npm ci and npm run build",
+    "toolchain": {
+      "node": "v22.23.1",
+      "npm": "10.9.8"
+    },
+    "buildReproducesCommittedDist": true,
+    "doublePackByteIdentical": true,
+    "sourceModified": false,
+    "registryPublication": "none"
+  },
+  "protocolDependency": {
+    "lock": "protocol-consumer.lock.json",
+    "package": "@aoc/protocol",
+    "expectedVersion": "0.2.0-rc.3",
+    "internalDependencySubpath": "@aoc/protocol/canonical",
+    "requiredBy": [
+      "@aoc-runtime/crypto"
+    ],
+    "note": "The only Protocol subpath the runtime closure loads. It stays an internal dependency (protocol-consumer.lock.json -> internalDependencySubpaths); Frontera source still may not import it."
+  },
+  "allowedRuntimeRequires": [
+    "@aoc-runtime/authorization-runtime",
+    "@aoc-runtime/capability-runtime",
+    "@aoc-runtime/consent-runtime",
+    "@aoc-runtime/crypto",
+    "@aoc-runtime/governance-runtime",
+    "@aoc/protocol/canonical",
+    "node:crypto"
+  ],
+  "allowedRuntimeRequiresNote": "Policy, enforced by ALLOWED_RUNTIME_REQUIRES in scripts/soberania-runtime/lib-runtime-artifacts.mjs: an approved runtime package may require another approved runtime package, the internal Protocol canonical subpath, or node:crypto, and nothing else. What each artifact actually requires is recorded per package in runtimeRequires.",
+  "packages": [
+    {
+      "name": "@aoc-runtime/authorization-runtime",
+      "version": "0.1.0",
+      "role": "runtime",
+      "tarball": {
+        "filename": "aoc-runtime-authorization-runtime-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-authorization-runtime-0.1.0.tgz",
+        "sha256": "02d40c4c3377b06a2f27dfb31d4c28848fef424ce4bafee680d866f7b198ce4f",
+        "sha512": "9f307206703b3bcb3dc615bb49667a704279bfe4dfad371a4fba0d7f3e35aee4a3a223ff79b02cfc260a4338b62e58bc938111f1edad05a5f5f0ea7bbc6657f2",
+        "integrity": "sha512-nzByBnA7O8s9xhW7SWZ6cEJ5v+TfrTcaT7oNfz41ruSjoiP/ebAs/CYKQzi2Lli8k4ER8e2tBaX18Op7vGZX8g==",
+        "sizeBytes": 16755,
+        "fileCount": 7
+      },
+      "runtimeRequires": [],
+      "files": [
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "package.json",
+        "src/index.ts",
+        "tsconfig.json",
+        "tsconfig.tsbuildinfo"
+      ]
+    },
+    {
+      "name": "@aoc-runtime/capability-runtime",
+      "version": "0.1.0",
+      "role": "runtime",
+      "tarball": {
+        "filename": "aoc-runtime-capability-runtime-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-capability-runtime-0.1.0.tgz",
+        "sha256": "c4b3a7ee9fb5bdebf37e5f7ad26915c5fbb8e2aff8f17eb5f5995c4c2942e4b5",
+        "sha512": "91a589f67e77fa616b314aea85f2498ce8aba62d856fbde574a44685c2faf2258ce993ad92363584e2f7e8df38a5cd3979f56592d209f85593b5d42d9d946d46",
+        "integrity": "sha512-kaWJ9n53+mFrMUrqhfJJjOirpi2Fb73ldKRGhcL68iWM6ZOtkjY1hOL36N84pc05efVlktIJ+FWTtdQtnZRtRg==",
+        "sizeBytes": 6158,
+        "fileCount": 7
+      },
+      "runtimeRequires": [],
+      "files": [
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "package.json",
+        "src/index.ts",
+        "tsconfig.json",
+        "tsconfig.tsbuildinfo"
+      ]
+    },
+    {
+      "name": "@aoc-runtime/consent-runtime",
+      "version": "0.1.0",
+      "role": "runtime",
+      "tarball": {
+        "filename": "aoc-runtime-consent-runtime-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-consent-runtime-0.1.0.tgz",
+        "sha256": "16291bc15a7d21e384bba5a857fc160b94454dac6245aee3bf402606df6aaccc",
+        "sha512": "3cdb154b707391d7270bf85e1afd53444c1061c840a0ede6c4ded3aaa3ce549174c5625cad805bfddde3d113a154e64c05838af6da9da045e1f4c29ed28e0dcc",
+        "integrity": "sha512-PNsVS3BzkdcnC/heGv1TREwQYchAoO3mxN7TqqPOVJF0xWJcrYBb/d3j0ROhVOZMBYOK9tqdoEXh9MKe0o4NzA==",
+        "sizeBytes": 8639,
+        "fileCount": 7
+      },
+      "runtimeRequires": [
+        "@aoc-runtime/crypto"
+      ],
+      "files": [
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "package.json",
+        "src/index.ts",
+        "tsconfig.json",
+        "tsconfig.tsbuildinfo"
+      ]
+    },
+    {
+      "name": "@aoc-runtime/crypto",
+      "version": "0.1.0",
+      "role": "runtime",
+      "tarball": {
+        "filename": "aoc-runtime-crypto-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-crypto-0.1.0.tgz",
+        "sha256": "8fc44bee0e80cbd6afeaf07149e0decbad1212ba234c6383a30663e937df3f3a",
+        "sha512": "42f642b9f472ce0636419a76789cef95083e6707e506f18ca36502de432bba1fbd04f91df22d2d9aa33d052aa19d9399fe76f5e06c111247fc7e3eb59af1baba",
+        "integrity": "sha512-QvZCufRyzgY2QZp2eJzvlQg+ZwflBvGMo2UC3kMruh+9BPkd8i0tmqM9BSqhnZOZ/nb14GwREkf8fj61mvG6ug==",
+        "sizeBytes": 23070,
+        "fileCount": 25
+      },
+      "runtimeRequires": [
+        "@aoc/protocol/canonical",
+        "node:crypto"
+      ],
+      "files": [
+        "__tests__/canonicalization-integration.test.ts",
+        "__tests__/canonicalize-numeric-fidelity.test.ts",
+        "__tests__/canonicalize.test.ts",
+        "__tests__/engine.test.ts",
+        "__tests__/trusted-key-verification.test.ts",
+        "canonicalize.ts",
+        "dist/canonicalize.d.ts",
+        "dist/canonicalize.d.ts.map",
+        "dist/canonicalize.js",
+        "dist/engine.d.ts",
+        "dist/engine.d.ts.map",
+        "dist/engine.js",
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "dist/tsconfig.tsbuildinfo",
+        "dist/types.d.ts",
+        "dist/types.d.ts.map",
+        "dist/types.js",
+        "engine.ts",
+        "index.ts",
+        "node-compat.d.ts",
+        "package.json",
+        "tsconfig.json",
+        "types.ts"
+      ]
+    },
+    {
+      "name": "@aoc-runtime/governance-runtime",
+      "version": "0.1.0",
+      "role": "runtime",
+      "tarball": {
+        "filename": "aoc-runtime-governance-runtime-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-governance-runtime-0.1.0.tgz",
+        "sha256": "90397c96326b5b5c663e31d4fa622a99b6ec50162e129763354fa31dc922672b",
+        "sha512": "0c2bd3f78d8c4a51349a9659f662322e9ef976f4ea3b2453f208867ce14c1b16a2f00b9e7b08a9e29128b02dceb5bedb6488a6fe6b50bac76ad126ba3cbe8cc1",
+        "integrity": "sha512-DCvT942MSlE0mpZZ9mIyLp75dvTqOyRT8giGfOFMGxai8Aueewip4pEosC3Otb7bZIim/mtQusdq0Sa6PL6MwQ==",
+        "sizeBytes": 20683,
+        "fileCount": 7
+      },
+      "runtimeRequires": [
+        "@aoc-runtime/crypto"
+      ],
+      "files": [
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "package.json",
+        "src/index.ts",
+        "tsconfig.json",
+        "tsconfig.tsbuildinfo"
+      ]
+    },
+    {
+      "name": "@aoc-runtime/provider-interfaces",
+      "version": "0.1.0",
+      "role": "declarations",
+      "tarball": {
+        "filename": "aoc-runtime-provider-interfaces-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-provider-interfaces-0.1.0.tgz",
+        "sha256": "48aebc4adda787adaf55828ffd7e5daf8e225d1e9b8e67f24e344ec9a1e0c4f5",
+        "sha512": "e2deba09c2400bb45f297742303f678536b0e0efdab93eed41ace3a4c2bbee292143855147f194b59a30d1a015ca22e44f7f8420ba0296b2315dfd163b05a6bf",
+        "integrity": "sha512-4t66CcJAC7RfKXdCMD9nhTaw4O/auT7tQazjpMK77ikhQ4VRR/GUtZow0aAVyiLkT3+EILoClrIxXf0WOwWmvw==",
+        "sizeBytes": 4670,
+        "fileCount": 7
+      },
+      "runtimeRequires": [],
+      "files": [
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "package.json",
+        "src/index.ts",
+        "tsconfig.json",
+        "tsconfig.tsbuildinfo"
+      ]
+    },
+    {
+      "name": "@aoc-runtime/shared-types",
+      "version": "0.1.0",
+      "role": "declarations",
+      "tarball": {
+        "filename": "aoc-runtime-shared-types-0.1.0.tgz",
+        "vendoredAt": "vendor/soberania-runtime/aoc-runtime-shared-types-0.1.0.tgz",
+        "sha256": "587b900de77470ea400099e7ed71d43e50c423832f9a0e6de959ac0ae2efe28f",
+        "sha512": "55e52004c86fa01d7d9967209022590572bcdfbd0e574f7a4fd58c160f6f6f4c0a41dd33e893bfdd47e0d02f6807ec883ab6ee0b89f2fe0169aee8c70775a25d",
+        "integrity": "sha512-VeUgBMhvoB19mWcgkCJZBXK8370OV096T9WMFg9vb0wKQd0z6JO/3Ufg0C9oB+yIOrbuC4ny/gFprujHB3WiXQ==",
+        "sizeBytes": 9438,
+        "fileCount": 11
+      },
+      "runtimeRequires": [],
+      "files": [
+        "dist/contracts.d.ts",
+        "dist/contracts.d.ts.map",
+        "dist/contracts.js",
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/index.js",
+        "package.json",
+        "src/contracts.ts",
+        "src/index.ts",
+        "tsconfig.json",
+        "tsconfig.tsbuildinfo"
+      ]
+    }
+  ],
+  "excludedPackages": [
+    {
+      "name": "aoc-runtime",
+      "reason": "Root package of the Soberanía repository; not certified for distribution (declared exports are never built)."
+    },
+    {
+      "name": "@aoc-runtime/trust-registry-runtime",
+      "reason": "Trust registry / federation surface; re-exports @aoc/enterprise/assurance/trust (trust service, payout KYC). Not approved for the pilot."
+    },
+    {
+      "name": "@aoc-runtime/audit-runtime",
+      "reason": "Compatibility wrapper over @aoc/enterprise/assurance/audit; would pull @aoc/enterprise into the closure. Its AuditRuntime only annotates a finalized decision and makes no security decision."
+    },
+    {
+      "name": "@aoc/enterprise",
+      "reason": "Contains the excluded assurance/trust surface (trust service, payout KYC) alongside audit; not approved for the pilot."
+    },
+    {
+      "name": "@aoc-runtime/portable-cognition",
+      "reason": "Portable Cognition is excluded from the pilot."
+    },
+    {
+      "name": "@aoc-runtime/vault-runtime",
+      "reason": "Not part of the approved authorization closure."
+    },
+    {
+      "name": "@aoc-runtime/pmfreak-adapter",
+      "reason": "Not part of the approved authorization closure."
+    }
+  ],
+  "declarationGaps": [
+    {
+      "package": "@aoc-runtime/authorization-runtime",
+      "unresolvedTypeImports": [
+        "@aoc-runtime/audit-runtime",
+        "@aoc-runtime/trust-registry-runtime"
+      ],
+      "effect": "Type-only: the compiled module requires neither. With skipLibCheck (Frontera's tsconfig.base.json) the AuditRuntime and federated-authority types read as `any`; without it the declarations do not type-check. Recorded as a FRONTERA-SOBE-PILOT-01B input, not resolved here."
+    }
+  ],
+  "approvedUse": "Private pilot only. AuthorizationRuntime with GovernanceRuntime, CapabilityRuntime and ConsentRuntime; no federated authority; evaluation time from a trusted server clock passed as both `at` and `now`; governance scope, namespace and actor derived server-side. Other exports present in these artifacts (e.g. crypto encryptObject/decryptObject, governance-runtime bootstrap-brief and resource-accounting helpers) are not approved for pilot use.",
+  "validatedAt": "2026-10-26",
+  "validationEvidence": "docs/release/SOBERANIA_RUNTIME_ARTIFACTS_EVIDENCE.md"
+}
