@@ -119,6 +119,23 @@ export function validateCompatibilityLock(lock) {
     errors.push('Field "knownGaps" must be an array (use an empty array if there are none).');
   }
 
+  // Optional. When present it may name only INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS, and none of them
+  // may also be listed as a public export Frontera source consumes.
+  if (lock.internalDependencySubpaths !== undefined) {
+    if (!Array.isArray(lock.internalDependencySubpaths)) {
+      errors.push('Field "internalDependencySubpaths" must be an array when present.');
+    } else {
+      for (const subpath of lock.internalDependencySubpaths) {
+        if (!INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS.includes(subpath)) {
+          errors.push(`Field "internalDependencySubpaths" may name only ${INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS.join(', ')}, got "${subpath}".`);
+        }
+        if (Array.isArray(lock.verifiedPublicExports) && lock.verifiedPublicExports.includes(subpath)) {
+          errors.push(`"${subpath}" is an internal dependency and must not also be listed in "verifiedPublicExports".`);
+        }
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -133,6 +150,13 @@ export const ALLOWED_PROTOCOL_SUBPATHS = Object.freeze([
   '@aoc/protocol/adapters',
   '@aoc/protocol/runtime-registry',
 ]);
+
+// Protocol subpaths the approved Soberanía runtime integration may resolve as an internal
+// dependency (its @aoc-runtime/crypto requires @aoc/protocol/canonical). They are deliberately NOT
+// in ALLOWED_PROTOCOL_SUBPATHS: Frontera source still may not import them, and
+// scripts/check-protocol-consumption.mjs keeps rejecting such an import. Recorded in
+// protocol-consumer.lock.json -> internalDependencySubpaths.
+export const INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS = Object.freeze(['@aoc/protocol/canonical']);
 
 const SIBLING_PATH_RE = /['"](?:\.\.\/)+Architects_of_Change_Protocol\b/;
 const DECLARE_MODULE_RE = /declare\s+module\s+['"]@aoc\/protocol(\/[^'"]*)?['"]/;

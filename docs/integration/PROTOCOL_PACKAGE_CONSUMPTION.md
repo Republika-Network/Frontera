@@ -130,7 +130,7 @@ or tag. This job is **blocking** (`continue-on-error` was removed once the Proto
 Adoption sprint resolved every documented gap — see "Known gaps" below). `.github/workflows/ci.yml`
 (typecheck/build/lint/test/legal) is unaffected — it has never required the Protocol sibling
 checkout, because `package.json`'s `@aoc/protocol` devDependency now points at the vendored,
-checksummed tarball (`vendor/aoc-protocol-0.2.0-rc.1.tgz`), which is a real, tracked file, not a shim.
+checksummed tarball (`vendor/aoc-protocol-0.2.0-rc.3.tgz`), which is a real, tracked file, not a shim.
 
 ## Allowed imports
 
@@ -150,6 +150,18 @@ an unused-subpath fact worth knowing. Deep imports (`@aoc/protocol/src/*`, `@aoc
 `@aoc/protocol/internal/*`), relative imports into the Protocol repository, and any other
 undeclared subpath are rejected by `scripts/check-protocol-consumption.mjs` and
 `scripts/check-node16-imports.mjs`.
+
+### Internal dependency: `@aoc/protocol/canonical`
+
+`@aoc/protocol/canonical` is permitted **only as an internal dependency** of the approved Soberanía
+runtime integration, whose `@aoc-runtime/crypto` requires it (founder decision,
+FRONTERA-SOBE-PILOT-01A0). It is not an allowed import: it is absent from the list above and from
+`ALLOWED_PROTOCOL_SUBPATHS`, so Frontera source still may not import it anywhere. It is recorded in
+`protocol-consumer.lock.json` → `internalDependencySubpaths`, which may hold only
+`INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS` (`scripts/protocol/lib-protocol-artifact.mjs`) and may not
+overlap `verifiedPublicExports`. `tests/protocol-active-pin.test.mjs` checks that the installed
+artifact declares it and that the consumption gate still rejects a source import of it. Every other
+restriction in this document is unchanged.
 
 ## Known gaps
 
@@ -171,7 +183,7 @@ be found on disk.
 
 ## Dependency mechanism (canonical, not a shim)
 
-`package.json` → `devDependencies["@aoc/protocol"] = "file:./vendor/aoc-protocol-0.2.0-rc.1.tgz"`. This
+`package.json` → `devDependencies["@aoc/protocol"] = "file:./vendor/aoc-protocol-0.2.0-rc.3.tgz"`. This
 is a real, tracked, checksummed npm tarball (see `vendor/README.md`, `protocol-consumer.lock.json`),
 not a sibling-directory reference and not an ambient shim — `npm install`/`npm ci` extract it into a
 real `node_modules/@aoc/protocol` (confirmed not a symlink), and `tsconfig.base.json` has no `paths`
