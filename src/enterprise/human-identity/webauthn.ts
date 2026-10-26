@@ -33,13 +33,16 @@ import type { RelyingPartyConfiguration } from './relying-party.js';
  * packages are: a Host that never composes human identity never loads it.
  */
 
-type WebAuthnServer = typeof import('@simplewebauthn/server');
-type WebAuthnHelpers = typeof import('@simplewebauthn/server/helpers');
+// Types are taken from the import() expressions themselves, so the type-level
+// and runtime resolutions of the package (ESM, from this CommonJS build) agree.
+const importServer = () => import('@simplewebauthn/server');
+const importHelpers = () => import('@simplewebauthn/server/helpers');
+type WebAuthnServer = Awaited<ReturnType<typeof importServer>>;
 
-let server: Promise<WebAuthnServer> | undefined;
-let helpers: Promise<WebAuthnHelpers> | undefined;
-const loadServer = (): Promise<WebAuthnServer> => (server ??= import('@simplewebauthn/server'));
-const loadHelpers = (): Promise<WebAuthnHelpers> => (helpers ??= import('@simplewebauthn/server/helpers'));
+let server: ReturnType<typeof importServer> | undefined;
+let helpers: ReturnType<typeof importHelpers> | undefined;
+const loadServer = (): ReturnType<typeof importServer> => (server ??= importServer());
+const loadHelpers = (): ReturnType<typeof importHelpers> => (helpers ??= importHelpers());
 
 /** COSE algorithm identifiers accepted: EdDSA, ES256, RS256. */
 export const SUPPORTED_COSE_ALGORITHMS: readonly number[] = Object.freeze([-8, -7, -257]);
