@@ -1,4 +1,4 @@
-import { createPublicKey, type JsonWebKey } from 'node:crypto';
+import { createPublicKey } from 'node:crypto';
 
 import { HumanIdentityError } from './contracts.js';
 import type { RelyingPartyConfiguration } from './relying-party.js';
@@ -46,6 +46,9 @@ const loadHelpers = (): ReturnType<typeof importHelpers> => (helpers ??= importH
 
 /** COSE algorithm identifiers accepted: EdDSA, ES256, RS256. */
 export const SUPPORTED_COSE_ALGORITHMS: readonly number[] = Object.freeze([-8, -7, -257]);
+
+/** The JWK shape `createPublicKey` accepts, taken from its own signature so it does not depend on a named `@types/node` export that varies by version. */
+type NodeJsonWebKey = Extract<Parameters<typeof createPublicKey>[0], { readonly format: 'jwk' }>['key'];
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const MAX_FIELD = 16_384;
@@ -280,7 +283,7 @@ async function assertImportablePublicKey(publicKey: Uint8Array, code: 'HUMAN_IDE
     return refuse(code, `The credential public key does not decode: ${(error as Error).message}`);
   }
   const alg = key.get(cose.COSEKEYS.alg);
-  let jwk: JsonWebKey;
+  let jwk: NodeJsonWebKey;
   if (cose.isCOSEPublicKeyEC2(key) && alg === cose.COSEALG.ES256) {
     const x = key.get(cose.COSEKEYS.x);
     const y = key.get(cose.COSEKEYS.y);
