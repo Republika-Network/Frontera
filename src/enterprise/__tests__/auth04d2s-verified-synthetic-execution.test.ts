@@ -632,7 +632,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.deepEqual([replay.body['executionId'], replay.body['replayed']], [executionId, true], replay.text);
     assert.deepEqual([issuanceRows() - issuedBefore, effects() - effectsBefore], [1, 1]);
 
-    // 15. A modified receipt is never final: any change to the stored receipt or its signature fails closed.
+    // 15. A modified receipt is never final. Every change to the stored receipt or its signature fails closed.
     const input = await verificationInput(view.requestId);
     const presented = input.evidence.receipts[0]?.presented;
     assert.ok(presented !== undefined);
