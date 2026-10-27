@@ -28,6 +28,11 @@ import { AOC_KERNEL_REASON_CODES, type AocKernelReasonCode } from '../reason-cod
  * arriving afterwards has nowhere to go: the outcome was already decided and
  * is never re-read, so a slow external authority can delay a decision by at
  * most the bound and can never turn a timeout into an execution.
+ *
+ * The bound is enforced on elapsed monotonic time, not on the timer alone. A
+ * provider that blocks the event loop longer than the bound keeps the timer
+ * from firing, and its answer would otherwise win the race; measured against
+ * the instant taken just before the call, that answer is a `timeout` too.
  */
 
 /** The longest bound an operator may configure. A veto that takes longer than this is an outage, and treating it as one is the fail-closed reading. */
@@ -138,6 +143,12 @@ export async function resolveExternalAuthorization(
     timer = setTimeout(() => resolve('timeout'), capability.timeoutMs);
   });
 
+  // Monotonic, and taken immediately before the provider runs. The timer above
+  // cannot fire while the provider blocks the event loop, so an answer can win
+  // the race after the bound has already elapsed; the elapsed-time check below
+  // is what enforces the bound, and the timer only stops the wait for a
+  // provider that never answers.
+  const startedAt = performance.now();
   let answer: Promise<ExternalOutcome>;
   try {
     // `Promise.resolve` adopts a thenable or wraps a plain value; both handlers
@@ -154,6 +165,10 @@ export async function resolveExternalAuthorization(
   } finally {
     clearTimeout(timer);
   }
+  // Checked before any answer is accepted: whatever settled first, an answer
+  // that took the whole bound or longer is a timeout. Every outcome it
+  // replaces denies too, so only the reason code changes for a late denial.
+  if (performance.now() - startedAt >= capability.timeoutMs) outcome = 'timeout';
   if (outcome === 'timeout') controller.abort();
   return { outcome, permits: outcome === 'allowed' };
 }

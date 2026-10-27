@@ -38,6 +38,10 @@ authorize(input: ExternalAuthorizationInput): Promise<{ decision: 'allow' } | { 
 - When the bound elapses the outcome is fixed as `timeout` and the signal is aborted. The pending call
   settles into a handler that discards it, so a late `allow` is never read and a late rejection is never
   unhandled.
+- The bound is enforced on elapsed monotonic time (`performance.now()`, taken immediately before the
+  provider is called), not on the timer alone: a provider that blocks the event loop keeps the timer from
+  firing, so any answer settling at or after the bound — even one that won the race — is a `timeout`. The
+  timer remains only to stop waiting for a provider that never answers.
 - On a narrowing the external code leads `reasonCodes` and the Kernel's codes follow, as the
   governed-authority step does; `summary` is a fixed sentence per outcome. Nothing the external authority
   says — message, reason, payload, timing — reaches the result.

@@ -30,7 +30,12 @@ import { NOW, toKernelRequest } from './characterization/support.js';
  * to one lettered requirement (A–J) of the increment.
  */
 
-const BOUND_MS = 25;
+/**
+ * Generous on purpose. The bound is enforced on elapsed monotonic time, so an
+ * answer that is meant to arrive *inside* it needs headroom against CI load;
+ * the deadline suite below uses its own short bound with a wide overrun.
+ */
+const BOUND_MS = 250;
 
 /** A requester-written time far from the Kernel clock's, so a test can tell which one reached the port. */
 const REQUESTER_TIME = '2031-06-01T00:00:00.000Z';
@@ -299,13 +304,13 @@ describe('F. provider timeout -> DENY', () => {
 });
 
 describe('G. a late ALLOW after the timeout cannot change the result', () => {
-  const lateAllow = () => recording(() => delay(BOUND_MS * 4).then(() => ({ decision: 'allow' })));
-  const lateReject = () => recording(() => delay(BOUND_MS * 4).then(() => Promise.reject(new Error('late'))));
+  const lateAllow = () => recording(() => delay(BOUND_MS * 2).then(() => ({ decision: 'allow' })));
+  const lateReject = () => recording(() => delay(BOUND_MS * 2).then(() => Promise.reject(new Error('late'))));
 
   it('evaluate(): the result is fixed at timeout and stays denied after the late answer lands', async () => {
     const result = await withPort(lateAllow()).evaluate(allowedRequest('ext-g-1'));
     const snapshot = structuredClone(result);
-    await delay(BOUND_MS * 8);
+    await delay(BOUND_MS * 4);
 
     assert.equal(result.status, 'denied');
     assert.equal(result.reasonCodes[0], AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT);
@@ -317,7 +322,7 @@ describe('G. a late ALLOW after the timeout cannot change the result', () => {
     const result = await withPort(lateAllow()).enforce(allowedRequest('ext-g-2'), () => {
       executions += 1;
     });
-    await delay(BOUND_MS * 8);
+    await delay(BOUND_MS * 4);
 
     assert.equal(result.status, 'denied');
     assert.equal(result.execution.executed, false);
@@ -330,7 +335,7 @@ describe('G. a late ALLOW after the timeout cannot change the result', () => {
     process.on('unhandledRejection', onUnhandled);
     try {
       const result = await withPort(lateReject()).evaluate(allowedRequest('ext-g-3'));
-      await delay(BOUND_MS * 8);
+      await delay(BOUND_MS * 4);
       assert.equal(result.reasonCodes[0], AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT);
       assert.deepEqual(unhandled, []);
     } finally {
@@ -505,6 +510,177 @@ describe('J. grant and commit-before-execution behaviour are unchanged', () => {
     assert.equal(result.execution.withheldBy, 'obligation');
     assert.equal(result.externalAuthorization?.outcome, 'allowed');
     assert.equal(executions, 0);
+  });
+});
+
+describe('K. the bound is enforced on elapsed time, not on the timer alone (PR #217 review, P2)', () => {
+  /**
+   * A provider that blocks the event loop keeps the timeout timer from firing,
+   * so its answer can win the race after the bound has elapsed. These cases
+   * block for six times the bound, so they cannot pass by timing luck, and
+   * they never assert a sub-millisecond duration. The bound is kept short so
+   * the busy-waiting stays small: it occupies a core while other test files
+   * run in parallel.
+   */
+  const DEADLINE_MS = 20;
+  const BLOCK_MS = DEADLINE_MS * 6;
+
+  /** Busy-waits on the monotonic clock: the event loop is blocked throughout, as with synchronous work. */
+  function block(ms: number): void {
+    const end = performance.now() + ms;
+    while (performance.now() < end) {
+      // deliberately synchronous
+    }
+  }
+
+  function withDeadline(provider: ExternalAuthorizationProvider, extra: Partial<AocKernelOptions> = {}): AocKernel {
+    return buildKernel({ externalAuthorization: { provider, timeoutMs: DEADLINE_MS }, ...extra });
+  }
+
+  /** Synchronous provider: blocks, then returns a plain allow. */
+  const blockingSync = () => recording(() => {
+    block(BLOCK_MS);
+    return { decision: 'allow' };
+  });
+  /** Async provider doing synchronous work before its first await. */
+  const blockingAsync = () => recording(async () => {
+    block(BLOCK_MS);
+    return { decision: 'allow' };
+  });
+  /** Blocks, then returns an already-resolved promise. */
+  const blockingResolved = () => recording(() => {
+    block(BLOCK_MS);
+    return Promise.resolve({ decision: 'allow' });
+  });
+
+  it('A. a synchronously blocking provider that then allows is denied by evaluate() as a timeout', async () => {
+    const result = await withDeadline(blockingSync()).evaluate(allowedRequest('ext-k-a'));
+
+    assert.equal(result.status, 'denied');
+    assert.equal(result.reasonCodes[0], AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT);
+    assert.deepEqual(result.externalAuthorization, {
+      performed: true,
+      outcome: 'timeout',
+      narrowed: true,
+      reasonCode: AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT,
+    });
+  });
+
+  it('B. the same provider is denied by enforce() and the executor is never invoked', async () => {
+    let executions = 0;
+    const result = await withDeadline(blockingSync()).enforce(allowedRequest('ext-k-b'), () => {
+      executions += 1;
+    });
+
+    assert.equal(result.status, 'denied');
+    assert.equal(result.reasonCodes[0], AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT);
+    assert.equal(result.execution.executed, false);
+    assert.equal(executions, 0);
+  });
+
+  it('C. the provider signal is aborted once the deadline has expired', async () => {
+    const provider = blockingSync();
+    await withDeadline(provider).evaluate(allowedRequest('ext-k-c'));
+    assert.equal(provider.calls[0]!.signal.aborted, true);
+  });
+
+  for (const [label, make] of [
+    ['D. an async provider blocking before its first await', blockingAsync],
+    ['E. a provider returning an already-resolved promise after blocking', blockingResolved],
+  ] as const) {
+    it(`${label} is a timeout in evaluate() and enforce(), with the signal aborted`, async () => {
+      const evaluatedProvider = make();
+      const evaluated = await withDeadline(evaluatedProvider).evaluate(allowedRequest(`ext-k-${label[0]}-eval`));
+      assert.equal(evaluated.status, 'denied');
+      assert.equal(evaluated.externalAuthorization?.outcome, 'timeout');
+      assert.equal(evaluatedProvider.calls[0]!.signal.aborted, true);
+
+      let executions = 0;
+      const enforced = await withDeadline(make()).enforce(allowedRequest(`ext-k-${label[0]}-enf`), () => {
+        executions += 1;
+      });
+      assert.equal(enforced.status, 'denied');
+      assert.equal(enforced.reasonCodes[0], AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT);
+      assert.equal(executions, 0);
+    });
+  }
+
+  it('F. an allow inside the bound still preserves an allowed Kernel decision, unaborted', async () => {
+    const provider = allowing();
+    let executions = 0;
+    const evaluated = await withPort(provider).evaluate(allowedRequest('ext-k-f'));
+    const enforced = await withPort(allowing()).enforce(allowedRequest('ext-k-f2'), () => {
+      executions += 1;
+    });
+
+    assert.equal(evaluated.status, 'allowed');
+    assert.deepEqual(evaluated.externalAuthorization, { performed: true, outcome: 'allowed', narrowed: false });
+    assert.equal(provider.calls[0]!.signal.aborted, false);
+    assert.equal(enforced.execution.executed, true);
+    assert.equal(executions, 1);
+  });
+
+  it('G. a Kernel denial is unaltered by an overrunning provider', async () => {
+    const baseline = await buildKernel().enforce(deniedRequest('ext-k-g'), () => 'x');
+    const evaluateProvider = blockingSync();
+    const evaluated = await withDeadline(evaluateProvider).evaluate(deniedRequest('ext-k-g'));
+    const enforced = await withDeadline(blockingSync()).enforce(deniedRequest('ext-k-g'), () => 'x');
+
+    assert.equal(evaluated.status, 'denied');
+    assert.equal(evaluateProvider.calls.length, 0, 'evaluate() does not consult the port for a denial');
+    assert.equal(enforced.status, 'denied');
+    assert.deepEqual(enforced.reasonCodes, baseline.reasonCodes);
+    assert.equal(enforced.externalAuthorization?.narrowed, false);
+  });
+
+  it('H. a delayed asynchronous allow remains a timeout', async () => {
+    const provider = recording(() => delay(BLOCK_MS).then(() => ({ decision: 'allow' })));
+    const result = await withDeadline(provider).evaluate(allowedRequest('ext-k-h'));
+    await delay(BLOCK_MS);
+
+    assert.equal(result.status, 'denied');
+    assert.equal(result.externalAuthorization?.outcome, 'timeout');
+    assert.equal(provider.calls[0]!.signal.aborted, true);
+  });
+
+  it('an overrunning deny or rejection is classified as a timeout, deterministically', async () => {
+    const overrunDeny = recording(() => {
+      block(BLOCK_MS);
+      return { decision: 'deny' };
+    });
+    const overrunReject = recording(() => {
+      block(BLOCK_MS);
+      return Promise.reject(new Error('late'));
+    });
+    for (const provider of [overrunDeny, overrunReject]) {
+      const result = await withDeadline(provider).evaluate(allowedRequest('ext-k-det'));
+      assert.equal(result.reasonCodes[0], AOC_KERNEL_REASON_CODES.EXTERNAL_AUTHORIZATION_TIMEOUT);
+    }
+  });
+
+  it('I. blocking rejections and throws leave no unhandled rejection behind', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const rejecting = recording(() => {
+        block(BLOCK_MS);
+        return Promise.reject(new Error('blocked then rejected'));
+      });
+      const throwing = recording(() => {
+        block(BLOCK_MS);
+        throw new Error('blocked then thrown');
+      });
+      const delayedReject = recording(() => delay(BLOCK_MS).then(() => Promise.reject(new Error('delayed'))));
+      for (const provider of [rejecting, throwing, delayedReject]) {
+        const result = await withDeadline(provider).evaluate(allowedRequest('ext-k-i'));
+        assert.equal(result.status, 'denied');
+      }
+      await delay(BLOCK_MS * 2);
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });
 
