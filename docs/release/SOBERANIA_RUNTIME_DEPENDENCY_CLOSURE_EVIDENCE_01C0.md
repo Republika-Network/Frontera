@@ -49,6 +49,7 @@ reproduction above, not that file.
 | `packages/soberania-runtime-closure/package.json` | new private, code-free workspace: the seven tarballs and `@aoc/protocol` (the root's artifact) as production dependencies |
 | `package-lock.json` | +7 `node_modules/@aoc-runtime/*` entries (each `resolved` to its vendored tarball, `integrity` equal to the lock, production) and the workspace link; `node_modules/@aoc/protocol` loses `dev: true`; nothing else changes |
 | Root `package.json` | dependencies, peer range and `bundleDependencies` unchanged; one script added |
+| `.dockerignore` | admits `vendor/soberania-runtime/*.tgz`: the Host image's build stage runs `npm ci` from the lockfile, which now installs the closure; the runtime stage copies no `vendor/` file |
 | Published `@aoc-enterprise/runtime` | same 10,282-file inventory, every file byte-identical to main's pack except `package.json` (the added script); no new dependency or bundled package; publishability and the clean-room consumer pass with the consumer installing only the runtime and Protocol artifacts |
 
 Why not the root package: declaring the closure there forces the published artifact either to bundle it
@@ -67,6 +68,10 @@ published artifact eventually carries the runtime belongs to FRONTERA-SOBE-PILOT
 | P3 seven packages installed as real directories, every file byte-identical to the vendored artifact; `@aoc/protocol` 0.2.0-rc.3; no excluded package; no `typescript` | pass |
 | P4 `vendor/`, `src/`, `tests/` deleted; the 01A scenario runs from the closure workspace with a clean environment; only `A allowed` allows; only the five executable runtimes and `@aoc/protocol/dist/canonical/` load | pass |
 | Control: the same qualifier against unmodified main `cb90a75` | fails at P3 (runtime not installed); P4 then aborts because the closure workspace does not exist there |
+
+The qualifier installs from a `git` export, not from the container build context, so it does not see
+`.dockerignore`. The image build itself is covered by `qualify-pilot-deployment` and
+`qualify-pilot-acceptance` (see *Review finding*).
 
 ## Strict TypeScript consumer
 
@@ -207,8 +212,19 @@ Attribution:
 No reproducible regression attributable to this change was observed. The intermittent failures are
 not fixed or shown to be unrelated by these runs.
 
+### Review finding: the Host image did not build (fixed)
+
+On the PR, `pilot-deployment` (D1) and `pilot-acceptance` (O1) failed: the image's
+`npm ci --no-audit --no-fund && npm run build` step could not read the seven tarballs, because the
+`.dockerignore` allow-list admitted only `vendor/*.tgz`. The automated review reported the same cause
+(P1). This regression was introduced by this change, and none of the local gates above caught it. Fix:
+`.dockerignore` admits `vendor/soberania-runtime/*.tgz`. The pilot-kit structure test and a new runtime
+consumption test require the entry, and both fail without it. With the fix, run locally against the
+committed tree: `qualify-pilot-deployment` 16/16 (including D13: the image excludes `.env`, `.git`,
+databases, keys, tests and every planted canary) and `qualify-pilot-acceptance --host-build` 18/18.
+
 ## Unchanged
 
-Kernel, Host, Host configuration, authentication, payments, evidence, deployment files (including the
-Dockerfile), the frozen release manifest, the published artifact's contents other than its `package.json`
+Kernel, Host, Host configuration, authentication, payments, evidence, the Dockerfile and every other
+deployment file except the one `.dockerignore` entry, the frozen release manifest, the published artifact's contents other than its `package.json`
 script list, `@aoc/protocol`'s pin and peer range, and every Frontera `src/` file.

@@ -109,7 +109,9 @@ decided with the Soberanía authorization adapter in 01C1.
   authorization port configured nowhere outside the Kernel.
 - `npm run qualify:soberania-runtime-closure` — the Host's production install (`npm ci --omit=dev`, the
   Dockerfile command) in a clean export, then the scenario executed from the installed tree with
-  `vendor/`, `src/` and `tests/` deleted. Not part of `npm test` (it reinstalls the repository).
+  `vendor/`, `src/` and `tests/` deleted. Not part of `npm test` (it reinstalls the repository). It installs
+  from a `git` export, so the container build context (`.dockerignore`, which must admit
+  `vendor/soberania-runtime/*.tgz`) is covered by the pilot deployment qualifications instead.
 - `scripts/protocol/validate-enterprise-against-protocol-tarball.mjs` copies
   `vendor/soberania-runtime/*.tgz` into its isolated copy (Protocol tarballs remain excluded there) and
   points both the root devDependency and the closure workspace's `@aoc/protocol` at the tarball under

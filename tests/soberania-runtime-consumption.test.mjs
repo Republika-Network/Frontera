@@ -69,6 +69,17 @@ test('the vendor directory holds only pinned artifacts and nothing excluded', ()
   }
 });
 
+test('the Host container build context admits every locked artifact', () => {
+  // `.dockerignore` is an allow-list and the Dockerfile's `npm ci` installs the closure workspace, so an
+  // artifact the context leaves out breaks the image build (FRONTERA-SOBE-PILOT-01C0 review finding).
+  const admitted = readFileSync(resolve(root, '.dockerignore'), 'utf8').split('\n').map((line) => line.trim());
+  assert.ok(admitted.includes(`!${RUNTIME_VENDOR_DIR}/*.tgz`), `.dockerignore must admit ${RUNTIME_VENDOR_DIR}/*.tgz`);
+  for (const entry of lock.packages) {
+    const vendoredAt = entry.tarball.vendoredAt;
+    assert.ok(vendoredAt.startsWith(`${RUNTIME_VENDOR_DIR}/`) && !vendoredAt.slice(RUNTIME_VENDOR_DIR.length + 1).includes('/') && vendoredAt.endsWith('.tgz'), vendoredAt);
+  }
+});
+
 test('each artifact declares the pinned name and version, exports only its root, and requires only what the lock records', () => {
   withTempDir('frontera-runtime-manifest-', (dir) => {
     for (const entry of lock.packages) {

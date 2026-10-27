@@ -20,6 +20,9 @@
 !apps/*/package.json
 # The vendored @aoc/protocol tarball the lockfile pins (build-time dependency).
 !vendor/*.tgz
+# The Soberanía runtime artifacts the closure workspace installs as production
+# dependencies (soberania-runtime-consumer.lock.json; build stage only).
+!vendor/soberania-runtime/*.tgz
 !scripts/
 # The frozen API surface the release identity records.
 !release/api-surface.v1.json
