@@ -169,13 +169,28 @@ jobs:
           # Synthetic values where the templates hold placeholders the configuration's syntax depends on.
           sed -i "s#^AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT=.*#AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT='https://frontera-witness.invalid'#" deploy/pilot/.env
           sed -i "s#^FRONTERA_WITNESS_DATA_DIR=.*#FRONTERA_WITNESS_DATA_DIR=/srv/frontera-witness-ci#" "$RUNNER_TEMP/witness.env"
-          host="docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.yaml"
+          # Every PROD-03 profile is enabled on the Host side: a service hidden behind a profile still counts.
+          host="docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.yaml --profile tools --profile reference-witness"
           $host config --format json > "$RUNNER_TEMP/host.json"
-          $host -f deploy/authority-pilot/compose.authority.yaml --profile tools config --format json > "$RUNNER_TEMP/cutover.json"
-          docker compose -f deploy/authority-pilot/compose.witness.yaml --env-file "$RUNNER_TEMP/witness.env" config --format json > "$RUNNER_TEMP/witness.json"
+          $host -f deploy/authority-pilot/compose.authority.yaml config --format json > "$RUNNER_TEMP/cutover.json"
+          docker compose -f deploy/authority-pilot/compose.witness.yaml --env-file "$RUNNER_TEMP/witness.env" --profile tools config --format json > "$RUNNER_TEMP/witness.json"
           node scripts/deploy/qualify-authority-pilot.mjs compose host "$RUNNER_TEMP/host.json"
           node scripts/deploy/qualify-authority-pilot.mjs compose cutover "$RUNNER_TEMP/cutover.json"
           node scripts/deploy/qualify-authority-pilot.mjs compose witness "$RUNNER_TEMP/witness.json"
+          # The witness services cannot be invoked through the Host project (dry run: nothing is created).
+          for service in witness-init authority-witness; do
+            if $host --dry-run run --rm --no-deps "$service" > "$RUNNER_TEMP/invoke.log" 2>&1; then cat "$RUNNER_TEMP/invoke.log"; echo "::error::$service can be run on the Host"; exit 1; fi
+            grep -q "no such service: $service" "$RUNNER_TEMP/invoke.log" || { cat "$RUNNER_TEMP/invoke.log"; exit 1; }
+            echo "  ok  Host: run $service -> no such service"
+          done
+          # Adversarial regression: the Host overlay without its isolation (every `!reset` line,
+          # i.e. the overlay as first proposed) must be refused on its resolved form.
+          grep -v '!reset' deploy/authority-pilot/compose.host.yaml > deploy/authority-pilot/compose.host.unisolated.yaml
+          docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.unisolated.yaml --profile tools --profile reference-witness config --format json > "$RUNNER_TEMP/unisolated.json"
+          rm deploy/authority-pilot/compose.host.unisolated.yaml
+          if node scripts/deploy/qualify-authority-pilot.mjs compose host "$RUNNER_TEMP/unisolated.json" > "$RUNNER_TEMP/unisolated.log" 2>&1; then cat "$RUNNER_TEMP/unisolated.log"; echo "::error::the unisolated Host configuration was accepted"; exit 1; fi
+          grep -q 'FAIL — Host: no witness-init service' "$RUNNER_TEMP/unisolated.log" || { cat "$RUNNER_TEMP/unisolated.log"; exit 1; }
+          echo "  ok  the unisolated Host configuration is refused: $(grep FAIL "$RUNNER_TEMP/unisolated.log")"
           rm deploy/pilot/.env
       - name: Install nginx from the distribution
         run: |

@@ -48,6 +48,31 @@ function seconds(duration) {
   return Number(match[1] ?? 0) * 60 + Number(match[2] ?? 0);
 }
 
+const WITNESS_STATE = '/var/lib/frontera-witness';
+
+/** What a service runs: entrypoint and command, as one string. */
+function launches(service) {
+  return [...(service.entrypoint ?? []), ...(service.command ?? [])].join(' ');
+}
+
+/**
+ * The Host machine never generates, holds or reaches the witness receipt
+ * private key: checked on every resolved service, tools included, and on the
+ * project's volumes, so a service hidden behind a profile still counts.
+ */
+function hostHoldsNoWitnessMaterial(merged) {
+  const services = merged.services ?? {};
+  for (const name of ['witness-init', 'authority-witness']) check(services[name] === undefined, `Host: no ${name} service (it cannot be run here, under any profile)`);
+  check(!Object.keys(merged.volumes ?? {}).some((volume) => volume.includes('witness')), 'Host: no witness volume is declared');
+  for (const [name, service] of Object.entries(services)) {
+    check(!(service.volumes ?? []).some((volume) => volume.target === WITNESS_STATE || String(volume.source ?? '').includes('witness')), `Host ${name}: no witness volume is mounted`);
+    check(!Object.keys(service.environment ?? {}).some((variable) => /^FRONTERA_REFERENCE_WITNESS_/.test(variable)), `Host ${name}: no witness key, database or listener variable`);
+    const runs = launches(service);
+    check(!runs.includes('run-reference-authority-state-witness'), `Host ${name}: does not run a witness`);
+    check(!runs.includes('generate-pilot-secrets.mjs') || runs.includes('generate-pilot-secrets.mjs --authority-only'), `Host ${name}: generates no witness key (only --authority-only)`);
+  }
+}
+
 function compose(mode, file) {
   const merged = JSON.parse(readFileSync(file, 'utf8'));
   const services = merged.services ?? {};
@@ -62,11 +87,15 @@ function compose(mode, file) {
     check(witness.environment.FRONTERA_REFERENCE_WITNESS_HOST === '127.0.0.1', 'the witness binds 127.0.0.1');
     check((witness.ports ?? []).length === 0, 'the witness publishes no port');
     check(!Object.keys(witness.environment).some((name) => /SIGNING_KEY|OPERATOR_KEY|API_KEYS/.test(name)), 'the witness holds no Host secret');
+    const init = services['witness-init'];
+    check(init !== undefined && init.network_mode === 'none', 'witness-init exists on the witness machine, with no network');
+    check(launches(init).includes('generate-pilot-secrets.mjs --witness-only'), 'witness-init generates the witness half only (--witness-only)');
+    check((init.volumes ?? []).some((volume) => volume.target === WITNESS_STATE), 'witness-init persists the receipt key on the witness volume');
     return;
   }
+  hostHoldsNoWitnessMaterial(merged);
   const host = services.frontera;
   check(host !== undefined, 'the Host service exists');
-  check(services['authority-witness'] === undefined, 'the bundled reference witness is not part of the Host machine');
   const env = host.environment;
   const timeout = Number(env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS);
   const attempts = Number(env.AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS);

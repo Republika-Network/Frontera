@@ -17,10 +17,22 @@
 #       9 × 2000 ms × 1 attempt   = 18 s  <  AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS 20 s
 #       stop_grace_period 75 s    >= 2 × 20 s (HTTP drain + authority drain) + 35 s margin
 #   - the synthetic, evidence-free policy whose only executor target can never
-#     resolve (governed-actions.synthetic-pilot.json).
+#     resolve (governed-actions.synthetic-pilot.json);
+#   - no witness material on this machine: the PROD-03 witness services and
+#     their volume are REMOVED from the project (`!reset null`, Docker Compose
+#     2.24 or later), not merely left behind a profile. `run witness-init` and
+#     `--profile reference-witness` answer "no such service" here; the witness
+#     receipt key is generated only on the witness machine (compose.witness.yaml).
+#     Every line carrying `!reset` belongs to this isolation, and CI proves that
+#     the project without them is refused (job authority-pilot-config).
 
 services:
+  witness-init: !reset null
+  authority-witness: !reset null
+
   frontera:
+    # PROD-03 waits for authority-witness when its profile is enabled; that service no longer exists here.
+    depends_on: !reset {}
     environment: &authority-pilot-host
       AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: "20000"
       AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS: "2000"
@@ -57,3 +69,6 @@ services:
       - frontera-state:/var/lib/frontera
     healthcheck:
       disable: true
+
+volumes:
+  frontera-witness: !reset null

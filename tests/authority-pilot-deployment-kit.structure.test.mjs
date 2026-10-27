@@ -7,7 +7,9 @@
 // authority-pilot-config (scripts/deploy/qualify-authority-pilot.mjs).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -150,10 +152,59 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
     }
   });
 
+  it('the Host overlay removes the inherited PROD-03 witness services and volume, not just their profiles', () => {
+    for (const line of ['  witness-init: !reset null', '  authority-witness: !reset null', '    depends_on: !reset {}', '  frontera-witness: !reset null']) assert.ok(HOST.split('\n').includes(line), line);
+    assert.equal(/^ {2}(witness-init|authority-witness):(?! !reset null$)/m.test(HOST), false, 'no witness service is redefined');
+  });
+
+  it('the Compose qualification refuses every way a Host-side service could reach the witness receipt key (resolved form)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'frontera-auth04d2a-'));
+    const prod03WitnessInit = { entrypoint: ['node', 'scripts/deploy/generate-pilot-secrets.mjs'], command: [], network_mode: 'none', environment: { FRONTERA_REFERENCE_WITNESS_KEY_FILE: '/var/lib/frontera-witness/receipt-key.pem' }, volumes: [{ type: 'volume', source: 'frontera-witness', target: '/var/lib/frontera-witness' }] };
+    const base = () => ({
+      services: {
+        network: { ports: [{ host_ip: '127.0.0.1', published: '8787', target: 8787 }] },
+        frontera: { environment: {}, volumes: [{ type: 'volume', source: 'frontera-state', target: '/var/lib/frontera' }] },
+        'authority-init': { entrypoint: ['node', 'scripts/deploy/generate-pilot-secrets.mjs', '--authority-only'], command: [], volumes: [{ type: 'volume', source: 'frontera-state', target: '/var/lib/frontera' }] },
+      },
+      volumes: { 'frontera-state': {} },
+    });
+    const qualify = (merged) => {
+      const file = join(dir, 'merged.json');
+      writeFileSync(file, JSON.stringify(merged));
+      return spawnSync(process.execPath, [join(ROOT, 'scripts/deploy/qualify-authority-pilot.mjs'), 'compose', 'host', file], { encoding: 'utf8' });
+    };
+    try {
+      const vulnerable = {
+        // The AUTH-04D2A overlay as first proposed: PROD-03's tool and volume inherited.
+        'Host: no witness-init service': (merged) => { merged.services['witness-init'] = prod03WitnessInit; merged.volumes['frontera-witness'] = {}; },
+        'Host: no authority-witness service': (merged) => { merged.services['authority-witness'] = { command: ['node', 'scripts/run-reference-authority-state-witness.mjs'] }; },
+        'Host: no witness volume is declared': (merged) => { merged.volumes['frontera-witness'] = {}; },
+        'Host keygen: no witness volume is mounted': (merged) => { merged.services.keygen = { volumes: prod03WitnessInit.volumes }; },
+        'Host keygen: no witness key, database or listener variable': (merged) => { merged.services.keygen = { environment: prod03WitnessInit.environment }; },
+        'Host keygen: generates no witness key (only --authority-only)': (merged) => { merged.services.keygen = { entrypoint: prod03WitnessInit.entrypoint, command: ['--witness-only'] }; },
+        'Host keygen: does not run a witness': (merged) => { merged.services.keygen = { command: ['node', 'scripts/run-reference-authority-state-witness.mjs'] }; },
+      };
+      for (const [reason, inject] of Object.entries(vulnerable)) {
+        const merged = base();
+        inject(merged);
+        const result = qualify(merged);
+        assert.equal(result.status, 1, reason);
+        assert.ok(result.stderr.includes(`FAIL — ${reason}`), `${reason}: ${result.stderr}`);
+      }
+      // The isolated shape passes every isolation check (and fails later only on what this fixture leaves out).
+      const isolated = qualify(base());
+      for (const reason of Object.keys(vulnerable).filter((reason) => !reason.startsWith('Host keygen'))) assert.ok(isolated.stdout.includes(`ok  ${reason}`), reason);
+      assert.equal(/FAIL — Host/.test(isolated.stderr), false, isolated.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('CI qualifies the kit: Compose resolution, both ingresses with throwaway certificates, and the log hygiene', () => {
     const ci = read('.github/workflows/ci.yml');
     const job = ci.slice(ci.indexOf('  authority-pilot-config:'), ci.indexOf('  authority-web-preview:'));
     for (const step of ['compose host', 'compose cutover', 'compose witness', 'ingress --ca', 'logs ', 'witness --ca', 'sudo nginx -t']) assert.ok(job.includes(step), step);
+    for (const step of ['compose.host.yaml --profile tools --profile reference-witness', 'no such service: $service', "grep -v '!reset'", 'FAIL — Host: no witness-init service']) assert.ok(job.includes(step), step);
     assert.equal(/docker compose[^\n]*\b(up|start|build|pull|push)\b/.test(job), false, 'nothing is started, built or pushed');
     assert.equal(/certbot|acme\.sh|letsencrypt\.org|vercel|kubectl|terraform|gcloud|aws /i.test(job), false, 'no real certificate, no cloud');
   });

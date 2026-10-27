@@ -66,7 +66,7 @@ It is not a customer production system, and nothing here accepts the irreversibl
 | TLS | Let's Encrypt via certbot on each VM (no cost) | same | same |
 | Private connectivity | VPC within a region **(UNVERIFIED)**; the witness in another region is reached over the internet (TLS, allow-list, token, signed receipts) | same pattern | same pattern |
 | Secret storage | No managed secret store relied on: founder-held password manager with MFA, and `.env` rendered at start **(founder choice)** | AWS Secrets Manager available **(price UNVERIFIED)** | none relied on |
-| **Recurring estimate** | **≈ $20/mo verified** (2 Droplets + 2 small volumes), plus object storage and optional snapshots (unverified) | **≈ $21/mo verified**, plus S3 and optional Secrets Manager (unverified) | ≈ €12–20/mo, **all unverified** |
+| **Recurring estimate** | **Approximately US$20/month for the verified compute and volume components only. Partial estimate, not a complete operational quote.** (2 Droplets + 2 small volumes.) Excluded, unverified: object storage, VPC, snapshots and backups, monitoring, bandwidth beyond the allowance, taxes | **≈ $21/mo verified**, plus S3 and optional Secrets Manager (unverified) | ≈ €12–20/mo, **all unverified** |
 | Operational complexity | Low | Low–medium (AWS account and IAM hygiene) | Low |
 | Failure domains | Host and witness in **different regions**; each volume replicated inside its datacenter | Different regions; volume within one Availability Zone | Different locations |
 | Recovery limits | Volume replication covers disk failure, **not** deletion, corruption, account compromise, or F2/F3 (§6) | same | same |
@@ -77,7 +77,7 @@ It is not a customer production system, and nothing here accepts the irreversibl
 
 | # | Item | Size / setting | Purpose |
 |---|---|---|---|
-| 1 | Host VM | 2 GiB RAM, Ubuntu 24.04 LTS, Docker Engine and Compose plugin, nginx and certbot from the distribution | Host, gateway, ingress |
+| 1 | Host VM | 2 GiB RAM, Ubuntu 24.04 LTS, Docker Engine and Compose plugin **2.24 or later** (the Host overlay's `!reset`), nginx and certbot from the distribution | Host, gateway, ingress |
 | 2 | Host volume | 10 GiB block storage, ext4, mounted for the `frontera-state` volume | every store, including `human-identity.sqlite` |
 | 3 | Witness VM | 1 GiB RAM, Ubuntu 24.04 LTS, another region, same packages | reference witness and its TLS |
 | 4 | Witness volume | 10 GiB block storage, mounted at `FRONTERA_WITNESS_DATA_DIR` | witness database and receipt key |
@@ -127,6 +127,7 @@ No browser-held operator bearer, no administrative self-registration, and no rou
 - **Initialization is split** so that neither machine sees the other's private key:
   - the witness runs `witness-init` (`--witness-only`), which keeps its receipt key and prints its id, token and public key;
   - the Host runs `authority-init` (`--authority-only`), which prints the signing key, the verification set and the operator credentials, and refuses a second run.
+  - The Host project cannot generate or reach a witness key: `compose.host.yaml` removes the inherited PROD-03 `witness-init` and `authority-witness` services and the `frontera-witness` volume (`!reset null`), so `run witness-init` answers "no such service" under any profile. CI checks every resolved Host-side service, tools included, and proves that the overlay without this removal is refused.
 - **Backups:** `npm run authority-pilot:backup` (sealed, cold, verified; AUTH-04D1) at every planned stop, uploaded to the private bucket, with the backup key held in the secret store and never in the bucket.
   - A backup is restorable only until the next witnessed transition (any sign-in, enrolment, revocation or decision).
   - It serves migration and maintenance, **not** disaster recovery.
