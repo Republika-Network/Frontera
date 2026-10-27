@@ -338,7 +338,7 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         }
         // -- AUTH-04B2 passkey enrolment administration (operator plane). Mounted
         // only when the Host composed `operatorPasskeyEnrolment` (operators
-        // configured and the human-decision authority composed). The service
+        // configured and passkey human authority composed). The service
         // authenticates and authorizes the organization administrator before any
         // body is read. Identity only; the invitation token is shown once and
         // never cached.

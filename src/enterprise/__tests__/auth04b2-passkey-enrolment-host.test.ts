@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { after, before, describe, it } from 'node:test';
@@ -472,7 +472,7 @@ describe('AUTH-04B2 — expiry, durability across restarts, rollback, witness ou
     // Restart before enrolment (witness back): the same invitation still works, once.
     const witness = await first.witness.restart();
     const pre = `${identityPath(first.dir)}.pre-enrolment`;
-    checkpointCopy(identityPath(first.dir), pre);
+    await snapshot(identityPath(first.dir), pre);
     const second = await boot({ AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: 'false' }, { dir: first.dir, witness });
     assert.equal((await enrolOn(new Browser(second.gatewayPort), token, cto)).status, 201);
     await second.host.close();
@@ -483,7 +483,7 @@ describe('AUTH-04B2 — expiry, durability across restarts, rollback, witness ou
     assert.equal((await signIn(new Browser(third.gatewayPort), cto)).status, 200);
     await third.host.close();
     // Rollback: restoring the identity file from before the enrolment (to make the invitation usable again) is refused at startup.
-    checkpointCopy(pre, identityPath(first.dir), true);
+    await snapshot(pre, identityPath(first.dir));
     const dir = first.dir;
     const env = ctrl04Env(dir, ctrl04File(), { ...freshnessEnv(witness), ...enrolmentEnv(dir, { AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: 'false' }) });
     await assert.rejects(bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()], logger: capturingLogger, policyPackProvider: approvalPolicy() }), (error: unknown) => (error as { code?: unknown }).code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED' || assert.fail(String((error as { code?: unknown }).code)));
@@ -500,16 +500,13 @@ describe('AUTH-04B2 — expiry, durability across restarts, rollback, witness ou
   });
 });
 
-/** Folds the WAL into the main file of a closed store, then copies it; with `replace`, the target's WAL files are removed first. */
-function checkpointCopy(source: string, target: string, replace = false): void {
-  if (!replace) {
-    const db = new Database(source);
-    db.pragma('wal_checkpoint(TRUNCATE)');
+/** A consistent copy of a closed store through SQLite's Online Backup API (never a byte copy of a WAL-mode file). The target is replaced whole. */
+async function snapshot(source: string, target: string): Promise<void> {
+  for (const suffix of ['', '-wal', '-shm']) if (existsSync(`${target}${suffix}`)) rmSync(`${target}${suffix}`);
+  const db = new Database(source, { readonly: true });
+  try {
+    await db.backup(target);
+  } finally {
     db.close();
   }
-  for (const suffix of ['-wal', '-shm']) {
-    if (existsSync(`${source}${suffix}`) && !replace) rmSync(`${source}${suffix}`);
-    if (existsSync(`${target}${suffix}`)) rmSync(`${target}${suffix}`);
-  }
-  copyFileSync(source, target);
 }

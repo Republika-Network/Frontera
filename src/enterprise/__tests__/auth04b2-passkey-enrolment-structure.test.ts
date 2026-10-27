@@ -73,6 +73,6 @@ describe('AUTH-04B2 structure — the gateway side', () => {
 
   it('every invitation failure is one indistinguishable answer', () => {
     const source = code(GATEWAY);
-    assert.match(source, /error\.code === 'HUMAN_IDENTITY_ENROLMENT_INVALID' \|\| error\.code === 'HUMAN_IDENTITY_PRINCIPAL_REVOKED' \|\| error\.code === 'HUMAN_IDENTITY_UNKNOWN_PRINCIPAL'\) throw invitationRefused\(\)/);
+    assert.ok(source.includes("error instanceof HumanIdentityError && (error.code === 'HUMAN_IDENTITY_ENROLMENT_INVALID' || error.code === 'HUMAN_IDENTITY_PRINCIPAL_REVOKED' || error.code === 'HUMAN_IDENTITY_UNKNOWN_PRINCIPAL')) throw invitationRefused();"));
   });
 });
