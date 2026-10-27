@@ -1,0 +1,12 @@
+{
+  "//": "AUTH-04C: response headers the Authority origin's ingress must send with every static file of apps/authority-web/dist. The gateway (/authority/v1/*) sends its own. Same origin only: no CORS headers, no third-party source.",
+  "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "strict-transport-security": "max-age=31536000",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+  "cross-origin-opener-policy": "same-origin",
+  "cross-origin-resource-policy": "same-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self)",
+  "cache-control": "no-cache"
+}
