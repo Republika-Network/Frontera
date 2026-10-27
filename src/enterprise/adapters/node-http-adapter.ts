@@ -855,8 +855,8 @@ type PasskeyEnrolmentRoute =
  * by the named human, with the invitation.
  */
 function matchPasskeyEnrolmentRoute(method: string, pathname: string): PasskeyEnrolmentRoute | undefined {
-  if (method === 'POST' && pathname === '/api/admin/passkey-humans') return { kind: 'register-human' };
-  if (method === 'POST' && pathname === '/api/admin/passkey-invitations') return { kind: 'issue-invitation' };
+  if (method === 'POST' && /^\/api\/admin\/passkey-humans$/.exec(pathname) !== null) return { kind: 'register-human' };
+  if (method === 'POST' && /^\/api\/admin\/passkey-invitations$/.exec(pathname) !== null) return { kind: 'issue-invitation' };
   if (method === 'GET') {
     const human = /^\/api\/admin\/passkey-humans\/([^/]+)$/.exec(pathname);
     if (human?.[1] !== undefined) return { kind: 'describe-human', operatorId: decodeURIComponent(human[1]) };
