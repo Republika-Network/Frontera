@@ -110,7 +110,11 @@ export interface AuthorizedHumanDecision {
   readonly evidenceDigest: string;
 }
 
-export type HumanDecisionOutcome = { readonly outcome: 'recorded'; readonly verdictRowDigest: string } | { readonly outcome: 'refused'; readonly code: string };
+export type HumanDecisionOutcome =
+  | { readonly outcome: 'recorded'; readonly verdictRowDigest: string }
+  | { readonly outcome: 'refused'; readonly code: string }
+  /** AUTH-04A: reconciliation found no CORE-05 verdict citing a consumed decision that is no longer in flight. Terminal: it never authorizes again. */
+  | { readonly outcome: 'abandoned' };
 
 /** What the identity store knows about one decision commitment. */
 export interface HumanDecisionRecord {
@@ -157,6 +161,8 @@ export interface HumanIdentityService {
   /** AUTH-03: records what CORE-05 did with an authorized decision. At most once per decision. */
   recordDecisionOutcome(commitment: string, outcome: HumanDecisionOutcome): Promise<void>;
   decision(commitment: string): HumanDecisionRecord | undefined;
+  /** AUTH-04A: every consumed decision with no recorded outcome, oldest first — what reconciliation reads. */
+  unsettledDecisions(): readonly HumanDecisionRecord[];
   principal(operatorId: string): HumanPrincipal | undefined;
   credentialsOf(operatorId: string): readonly PasskeyCredentialView[];
   enrolment(enrolmentId: string): EnrolmentAuthorizationView | undefined;
@@ -361,7 +367,14 @@ function project(rows: readonly StoredHumanIdentityRow[], organizationId: string
         const decision = decisions.get(row.objectId ?? '') ?? corrupt('A decision outcome names an unknown decision.');
         if (decision.outcome !== undefined) corrupt('A decision has two outcomes.');
         const outcome = text(payload, 'outcome');
-        decision.outcome = outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: text(payload, 'verdictRowDigest') } : outcome === 'refused' ? { outcome: 'refused', code: text(payload, 'code') } : corrupt('A decision outcome is of an unknown kind.');
+        decision.outcome =
+          outcome === 'recorded'
+            ? { outcome: 'recorded', verdictRowDigest: text(payload, 'verdictRowDigest') }
+            : outcome === 'refused'
+              ? { outcome: 'refused', code: text(payload, 'code') }
+              : outcome === 'abandoned'
+                ? { outcome: 'abandoned' }
+                : corrupt('A decision outcome is of an unknown kind.');
         break;
       }
     }
@@ -832,7 +845,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
     async recordDecisionOutcome(commitment, outcome) {
       const decided = state().decisions.get(commitment);
       if (decided === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
-      const payload = outcome.outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: outcome.verdictRowDigest } : { outcome: 'refused', code: outcome.code };
+      const payload = outcome.outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: outcome.verdictRowDigest } : outcome.outcome === 'refused' ? { outcome: 'refused', code: outcome.code } : { outcome: 'abandoned' };
       await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
         const current = project(history, organizationId).decisions.get(commitment);
         if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
@@ -845,6 +858,19 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const stored = store.decisionChallenge(webAuthnChallengeOf(commitment));
       if (stored === undefined || humanDecisionChallengeCommitment(stored.contract) !== commitment) return undefined;
       return decisionRecord(state(), stored, commitment);
+    },
+
+    unsettledDecisions() {
+      const current = state();
+      const unsettled: HumanDecisionRecord[] = [];
+      for (const [commitment, decided] of current.decisions) {
+        if (decided.outcome !== undefined) continue;
+        const stored = store.decisionChallenge(webAuthnChallengeOf(commitment));
+        // A consumed decision whose issued contract is missing or altered is never reconciled here: it stays unsettled and unusable.
+        if (stored === undefined || humanDecisionChallengeCommitment(stored.contract) !== commitment) continue;
+        unsettled.push(decisionRecord(current, stored, commitment));
+      }
+      return unsettled;
     },
 
     principal: (operatorId) => state().principals.get(operatorId)?.principal,

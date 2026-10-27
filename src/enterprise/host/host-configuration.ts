@@ -944,6 +944,22 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     }
   }
 
+  // AUTH-04A: in every profile, the human-decision authority is anchored at the
+  // external CORE-07 witness and durable. An unwitnessed identity store could be
+  // restored to reuse a consumed decision or a revoked passkey; it never
+  // authorizes a decision.
+  if (configuration.humanAuthority?.mode === 'enabled') {
+    if (configuration.authorityFreshness?.mode !== 'external') {
+      throw new EnterpriseHostConfigurationError(
+        'HOST_AUTHORITY_FRESHNESS_REQUIRED',
+        'AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled requires an external authority-state freshness witness (AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MODE=external): the human identity store\'s signed head is anchored there (slot human-identity-state), outside its backup and restore domain.',
+      );
+    }
+    if (configuration.persistence.provider !== 'sqlite') {
+      throw new EnterpriseHostConfigurationError('HOST_PERSISTENCE_NOT_DURABLE', 'AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled requires AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite: human authority is never held in memory.');
+    }
+  }
+
   // G-01A: the shared rules, on the configuration actually built — the same
   // functions composition runs for an embedder. In `restricted` mode (the
   // secure-profile default) no legacy key holds implicit cross-organization
