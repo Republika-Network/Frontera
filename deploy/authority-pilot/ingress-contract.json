@@ -1,0 +1,86 @@
+{
+  "//": "AUTH-04D1: what the future ingress of the Authority pilot origin must do. A specification, not a deployment: no DNS record, certificate, proxy, VM or cloud resource exists, and nothing here configures one. Checked against the gateway and the web client by tests/authority-pilot-ingress-contract.test.mjs. Topology and rationale: docs/security/AUTH-04D1-AUTHORITY-PILOT-RECOVERY-READINESS.md section 7.",
+  "contract": "frontera.authority-pilot.ingress-contract.v1",
+  "origin": "https://authority.frontera-systems.com",
+  "tls": {
+    "certificate": "publicly trusted, covering authority.frontera-systems.com only (no wildcard shared with any other site)",
+    "minimumVersion": "TLSv1.2",
+    "plainHttp": "port 80 answers only with a redirect to https://authority.frontera-systems.com, and carries no cookie",
+    "strictTransportSecurity": "max-age=31536000"
+  },
+  "routes": [
+    {
+      "id": "authority-api",
+      "pathPrefix": "/authority/v1/",
+      "upstream": "authority-gateway",
+      "methods": ["GET", "POST"],
+      "maxRequestBodyBytes": 65536,
+      "preserveHostHeader": true,
+      "forwardRequestHeaders": ["host", "origin", "cookie", "content-type", "content-length", "accept", "x-frontera-csrf-token", "authorization"],
+      "forwardResponseHeaders": "all, unchanged, including every set-cookie",
+      "responseHeadersAdded": [],
+      "cache": "never: no shared or private cache stores a response",
+      "notes": "Host and Origin reach the gateway exactly as the browser sent them: the gateway refuses another Host (421) or Origin (403). An Authorization header is never added; if a client sends one it is forwarded so the gateway refuses it."
+    },
+    {
+      "id": "authority-web",
+      "pathPrefix": "/",
+      "upstream": "static",
+      "staticRoot": "apps/authority-web/dist",
+      "methods": ["GET", "HEAD"],
+      "index": "index.html",
+      "responseHeadersFile": "apps/authority-web/security-headers.json",
+      "notServed": ["security-headers.json"],
+      "notes": "Only the files of the reproducible build (asset-manifest.json lists them with their sha256). No directory listing, no fallback to any other upstream."
+    }
+  ],
+  "upstreams": {
+    "authority-gateway": {
+      "listener": "AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST:AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT (default 127.0.0.1:8788)",
+      "exposure": "loopback or a private network only; reachable from the internet solely through this ingress"
+    },
+    "static": {
+      "exposure": "files on the ingress machine; no application server"
+    }
+  },
+  "neverRoutedFromThisOrigin": [
+    {
+      "what": "the Host's main listener (/api/governed-actions, /api/admin/... including the CTRL-02/04 operator plane and passkey invitations, /api/governance/..., /health, /ready)",
+      "why": "operator bearer credentials and administration stay on a private network; the browser origin has no path to them"
+    },
+    {
+      "what": "the CORE-07 freshness witness",
+      "why": "a different machine and restore domain; only the Host talks to it"
+    },
+    {
+      "what": "the authority signer, the backup storage and the secret manager",
+      "why": "custody and recovery material never sit behind a public origin"
+    }
+  ],
+  "cors": "none: no Access-Control-* response header on any route, and no preflight handling; the client is same-origin by construction",
+  "rateLimits": {
+    "clientIdentity": "the TCP peer address as the ingress sees it; a client-supplied X-Forwarded-For or Forwarded header is never trusted",
+    "rules": [
+      { "pathPrefix": "/authority/v1/session/login", "perClient": "10 requests per minute, burst 5", "onExceed": "429 before the request reaches the gateway" },
+      { "pathPrefix": "/authority/v1/enrolment", "perClient": "5 requests per minute, burst 3", "onExceed": "429 before the request reaches the gateway" },
+      { "pathPrefix": "/authority/v1/", "perClient": "120 requests per minute", "onExceed": "429 before the request reaches the gateway" }
+    ]
+  },
+  "timeouts": {
+    "requestHeadersSeconds": 10,
+    "requestBodySeconds": 10,
+    "upstreamResponseSeconds": 30
+  },
+  "logging": {
+    "allowed": ["time", "method", "path", "status", "bytes", "duration", "client address"],
+    "never": ["request or response bodies", "cookie or set-cookie values", "x-frontera-csrf-token values", "authorization values"]
+  },
+  "forbidden": [
+    "an operator bearer, API key, witness token, signing key or backup key in any ingress configuration, header, environment or served file",
+    "adding, removing or rewriting Host, Origin, Cookie or x-frontera-csrf-token",
+    "any Access-Control-* header",
+    "caching any /authority/v1/ response",
+    "serving the marketing site or any other application from this origin",
+    "routing any path to the Host's main listener, the witness or the signer"
+  ]
+}

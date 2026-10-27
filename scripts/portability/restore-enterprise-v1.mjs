@@ -18,8 +18,8 @@
 //   4. staging      every store copied into a staging directory beside the
 //                   target and re-checksummed
 //   5. deep verify  each staged store opened through its own factory, on a
-//                   scratch copy; the three signed stores verified under the
-//                   trusted authority keys when they are supplied
+//                   scratch copy; the signed stores (CORE-01/04/05, AUTH-03)
+//                   verified under the trusted authority keys when supplied
 //
 // Only then is anything promoted. With --force, every registry-managed file
 // already in the target (and its -wal/-shm sidecars) is first moved into a
@@ -240,6 +240,8 @@ function refusingSigner() {
     signRevocationState: refuse,
     signObligationDischargeState: refuse,
     signApprovalState: refuse,
+    // AUTH-04D1: the human identity store refuses to open without a signer that offers this; it is never called to sign.
+    signHumanIdentityState: refuse,
   });
 }
 

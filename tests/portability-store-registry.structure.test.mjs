@@ -24,6 +24,7 @@ import {
   assessBackupCoverage,
   conditionHolds,
   requiredStoreDefinitions,
+  storeEnvironmentFor,
 } from '../scripts/portability/store-registry.mjs';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
@@ -57,7 +58,8 @@ test('detector self-test: a planted store variable is flagged as unclassified', 
 test('every registry entry maps its variable to the configuration field the Host reads, and restores under the Host\'s own default filename', async () => {
   const { loadEnterpriseConfiguration } = await import(join(ROOT, 'dist/src/enterprise/index.js'));
   const defaults = loadEnterpriseConfiguration({});
-  const marked = loadEnterpriseConfiguration(Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.envVar, `/marked/${storeDef.name}.db`])));
+  // AUTH-04A: the human identity path is read only with its authority enabled (its variable is refused otherwise).
+  const marked = loadEnterpriseConfiguration({ ...Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.envVar, `/marked/${storeDef.name}.db`])), AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE: 'enabled' });
   for (const storeDef of STORE_DEFINITIONS) {
     assert.equal(storeDef.configPathOf(marked), `/marked/${storeDef.name}.db`, `${storeDef.name}: configPathOf reads ${storeDef.envVar}`);
     assert.equal(basename(storeDef.configPathOf(defaults)), storeDef.targetFilename, `${storeDef.name}: restore writes the file the Host opens by default`);
@@ -74,16 +76,18 @@ test('registry entries are complete, unique and closed', () => {
   for (const field of ['name', 'filename', 'envVar', 'targetFilename']) {
     assert.equal(new Set(STORE_DEFINITIONS.map((storeDef) => storeDef[field])).size, STORE_DEFINITIONS.length, `${field} is unique`);
   }
-  // PROD-02: thirteen; ASSURE-01 added the durable Evidence Bundle Store; TRADE-04C the trade sequence interlock (conditional).
-  assert.equal(STORE_DEFINITIONS.length, 16);
+  // PROD-02: thirteen; ASSURE-01 added the durable Evidence Bundle Store; TRADE-04C the trade sequence interlock (conditional);
+  // AUTH-04D1 the signed human identity store (conditional), previously excluded.
+  assert.equal(STORE_DEFINITIONS.length, 17);
   assert.throws(() => conditionHolds('some-new-condition', {}), /Unknown store condition/);
-  // The three signed stores carry their head and their witness slot; nothing else claims one.
+  // The four signed stores carry their head and their witness slot; nothing else claims one.
   assert.deepEqual(
     STORE_DEFINITIONS.filter((storeDef) => storeDef.signedHead !== undefined).map((storeDef) => [storeDef.name, storeDef.freshnessStateKind]),
     [
       ['bounded-grants', 'bounded-grant-revocation-state'],
       ['obligation-discharges', 'obligation-discharge-state'],
       ['approvals', 'approval-state'],
+      ['human-identity', 'human-identity-state'],
     ],
   );
 });
@@ -169,7 +173,7 @@ function flagsConditionsRead() {
   return read;
 }
 
-const TRADE_DEPLOYMENT = Object.freeze({ organizationId: 'org-a', kernelAuthorityEnabled: true, governedActions: true, obligationsDeclared: false, approvalsDeclared: false, operatorsConfigured: false, executionReconciliation: true, xrplPaymentRail: true, xrplTradeExecution: true });
+const TRADE_DEPLOYMENT = Object.freeze({ organizationId: 'org-a', kernelAuthorityEnabled: true, governedActions: true, obligationsDeclared: false, approvalsDeclared: false, operatorsConfigured: false, executionReconciliation: true, xrplPaymentRail: true, xrplTradeExecution: true, humanAuthorityEnabled: false });
 
 function coverageManifest(deployment, { omit = [] } = {}) {
   const required = requiredStoreDefinitions({ ...TRADE_DEPLOYMENT, ...deployment });
@@ -212,4 +216,24 @@ test('the backup writes every deployment flag into its coverage record', () => {
   const writer = read('scripts/portability/backup-enterprise-v1.mjs');
   const block = writer.slice(writer.indexOf('deployment: {'), writer.indexOf('stores: coverageStores'));
   for (const flag of DEPLOYMENT_FLAGS) assert.ok(block.includes(`${flag}: requirements.${flag},`), flag);
+});
+
+test('AUTH-04D1: the human identity store is backed up exactly when the human-decision authority is composed, and its variable is named only then', () => {
+  const identity = STORE_DEFINITIONS.find((storeDef) => storeDef.name === 'human-identity');
+  assert.ok(identity !== undefined);
+  assert.equal(EXCLUDED_DURABLE_STATE.some((entry) => entry.name === 'human-identity' || entry.envVar === identity.envVar), false, 'no longer excluded');
+  assert.equal(identity.condition, 'human-authority-enabled');
+  assert.equal(conditionHolds(identity.condition, { humanAuthorityEnabled: true }), true);
+  assert.equal(conditionHolds(identity.condition, { humanAuthorityEnabled: false }), false);
+  assert.deepEqual(STORE_DEFINITIONS.filter((storeDef) => storeDef.envVarOnlyWhenComposed === true).map((storeDef) => storeDef.name), ['human-identity']);
+  // The Host refuses AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH without the authority, so the environment helper never names it for a deployment that does not compose it.
+  assert.equal(identity.envVar in storeEnvironmentFor('/data'), false);
+  assert.equal(identity.envVar in storeEnvironmentFor('/data', { ...TRADE_DEPLOYMENT, humanAuthorityEnabled: false }), false);
+  assert.equal(storeEnvironmentFor('/data', { ...TRADE_DEPLOYMENT, humanAuthorityEnabled: true })[identity.envVar], resolve('/data', 'human-identity.sqlite'));
+  assert.match(read(CONFIG_SOURCE), /is set but AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE is not 'enabled'/, 'the strict reading this helper respects is still in force');
+  // A backup of a deployment with the authority must include it; one without it never needs it.
+  const verdict = assessBackupCoverage(coverageManifest({ ...TRADE_DEPLOYMENT, humanAuthorityEnabled: true }, { omit: ['human-identity'] }));
+  assert.equal(verdict.complete, false);
+  assert.deepEqual(verdict.missingForSource, ['human-identity']);
+  assert.equal(assessBackupCoverage(coverageManifest({ ...TRADE_DEPLOYMENT, humanAuthorityEnabled: true })).complete, true);
 });

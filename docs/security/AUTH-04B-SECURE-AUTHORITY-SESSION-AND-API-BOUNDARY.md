@@ -188,6 +188,6 @@ increment, or choose the CLI.
 - No UI, no push, no deployment, no DNS/TLS (AUTH-04C+).
 - Bootstrap enrolment requires the founder decision in §9.
 - Sessions are in memory: one Host process, lost on restart.
-- backup:v1 still excludes the identity store (AUTH-04A).
+- backup:v1 excluded the identity store (AUTH-04A) until AUTH-04D1.
 - External key custody is still unsupported for the identity store.
 - No rate limiting beyond bounded ceremony and session tables. The future proxy should add per-IP limits.

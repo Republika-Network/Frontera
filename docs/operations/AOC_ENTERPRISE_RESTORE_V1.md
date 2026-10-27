@@ -52,7 +52,8 @@ Requires `npm run build`.
    including a planted witness database — is refused); no symlink; no path
    escape; SHA-256; `PRAGMA integrity_check`; the schema version is one this
    build supports *and* is the version the file itself records; for the
-   three signed stores, the signed head commits to exactly the rows present
+   four signed stores (CORE-01/04/05 and, since AUTH-04D1, the AUTH-03 human
+   identity store), the signed head commits to exactly the rows present
    (never rows without a head, never a head without its rows) and equals the
    head the manifest recorded at backup time. A file SQLite cannot read is a
    named refusal.
@@ -61,7 +62,7 @@ Requires `npm run build`.
 6. **Deep verification** — each staged store is opened through its **own
    factory** on a scratch copy (never on the target, never on a missing path:
    a factory creates a store when the file is absent, which restore must never
-   do). The three signed stores are opened with the restoring deployment's
+   do). The four signed stores are opened with the restoring deployment's
    **trusted verification keys** (`AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS`,
    public keys) and a signer that refuses to sign, so they open only if their
    signed state verifies; the report says `verified-under-trusted-keys`, or

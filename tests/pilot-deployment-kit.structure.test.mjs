@@ -66,7 +66,9 @@ describe('PROD-03-03 pilot deployment kit', () => {
     const expected = storeEnvironmentFor('/var/lib/frontera');
     const configured = Object.fromEntries(Object.entries(environment).filter(([name]) => name.endsWith('_SQLITE_PATH')));
     assert.deepEqual(configured, expected);
-    assert.equal(Object.keys(expected).length, STORE_DEFINITIONS.length);
+    // AUTH-04D1: every store but the human identity store, whose variable the Host accepts only with the human-decision
+    // authority enabled; the kit does not enable it (the Authority pilot deployment is AUTH-04D2).
+    assert.equal(Object.keys(expected).length, STORE_DEFINITIONS.filter((storeDef) => storeDef.envVarOnlyWhenComposed !== true).length);
     assert.match(COMPOSE, /^ {4}- frontera-state:\/var\/lib\/frontera$/m, 'the state root is a named volume');
     for (const service of ['frontera', 'config-check']) assert.match(COMPOSE, new RegExp(`^  ${service}:\\n(?:    #.*\\n)*    <<: \\*frontera-host$`, 'm'), `${service} uses the shared Host configuration`);
     assert.match(COMPOSE, /^ {6}- frontera-witness:\/var\/lib\/frontera-witness$/m, "the witness's state is a different volume");

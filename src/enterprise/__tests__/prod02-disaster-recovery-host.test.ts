@@ -288,7 +288,8 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       // Every store the shipped Host composes — since PROD-03-02 including P12, composed with the operator plane.
       // PAY-03: the XRPL submission interlock is composed only with a configured payment rail, which this deployment has not.
       // TRADE-04C: and the trade sequence interlock only with a configured trade executor.
-      const composed = registry.STORE_DEFINITIONS.filter((storeDef) => storeDef.condition !== 'xrpl-payment-rail' && storeDef.condition !== 'xrpl-trade-execution');
+      // AUTH-04D1: and the human identity store only with the human-decision authority enabled.
+      const composed = registry.STORE_DEFINITIONS.filter((storeDef) => storeDef.condition !== 'xrpl-payment-rail' && storeDef.condition !== 'xrpl-trade-execution' && storeDef.condition !== 'human-authority-enabled');
       assert.deepEqual(
         manifest.stores.map((store) => store.name),
         composed.map((storeDef) => storeDef.name),
@@ -301,6 +302,7 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       );
       assert.equal(manifest.coverage.stores.find((store) => store.name === 'xrpl-submission-interlock')?.required, false, 'and the interlock is known, not required');
       assert.equal(manifest.coverage.stores.find((store) => store.name === 'xrpl-trade-sequence-interlock')?.required, false, 'and so is the trade interlock');
+      assert.equal(manifest.coverage.stores.find((store) => store.name === 'human-identity')?.required, false, 'and the human identity store');
 
       // ── no secret value, no private key, no witness state in any byte of the backup ──
       assert.deepEqual(secretsFound(backupDir, deployment.secretValues(), [cli.stdout, cli.stderr]), [], 'no canary appears anywhere in the backup set or the CLI output');
@@ -341,8 +343,8 @@ for (const custody of ['software', 'external'] as const satisfies readonly Custo
       }
       // Restore mapping: each restored file is the one the Host variable names.
       for (const target of report.targets) assert.equal(recoveredEnv[target.envVar], target.path, target.envVar);
-      // PAY-03: only the XRPL interlock, which this deployment does not compose (no payment rail configured).
-      assert.deepEqual(report.notRestored, ['xrpl-submission-interlock', 'xrpl-trade-sequence-interlock']);
+      // PAY-03: only the XRPL interlock, which this deployment does not compose (no payment rail configured); TRADE-04C, AUTH-04D1 likewise.
+      assert.deepEqual(report.notRestored, ['xrpl-submission-interlock', 'xrpl-trade-sequence-interlock', 'human-identity']);
 
       // ── the real secure Host on the restored data, the surviving witness, secrets from outside ──
       const h2 = await boot(recoveredEnv);

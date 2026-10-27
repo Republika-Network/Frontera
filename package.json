@@ -49,6 +49,7 @@
     "legal:check:strict": "node scripts/validate-legal-ip.mjs --mode=strict",
     "backup:v1": "node scripts/portability/backup-enterprise-v1.mjs",
     "restore:v1": "node scripts/portability/restore-enterprise-v1.mjs",
+    "authority-pilot:backup": "node scripts/portability/authority-pilot-backup.mjs",
     "fixture:portability:v1": "node scripts/portability/generate-portability-fixture.mjs",
     "compare:portability:v1": "node scripts/portability/compare-portability-state.mjs",
     "check:portability-smoke": "node scripts/portability/check-portability-smoke.mjs",

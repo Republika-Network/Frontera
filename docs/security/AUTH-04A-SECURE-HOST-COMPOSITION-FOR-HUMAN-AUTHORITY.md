@@ -115,18 +115,20 @@ No cross-store transaction and no CORE-05 change were needed.
 
 ## 6. Backup
 
-The identity store is **excluded from backup:v1** in this increment (registry
-`EXCLUDED_DURABLE_STATE`, with the reason). An operator enabling the authority
-backs it up separately (Online Backup API) and keeps the witness outside that
-backup domain. Loss narrows (no decision can be authorized until the newest
-copy is restored or the slot is recovered at the witness); it never widens.
+**Since AUTH-04D1** the identity store is a backup:v1 registry store (condition
+`human-authority-enabled`, slot `human-identity-state`), and the Authority
+pilot uses the sealed profile on top of it
+(`docs/security/AUTH-04D1-AUTHORITY-PILOT-RECOVERY-READINESS.md`). Until then it
+was excluded and backed up separately. The witness stays outside the backup
+domain. Loss narrows (no decision can be authorized until the newest copy is
+restored); it never widens.
 
 ## 7. Remaining restrictions
 
 - No route, BFF, browser or iPhone flow; no APNs/Web Push (AUTH-04B+).
 - External signer custody cannot compose the authority (refused) until the
   external protocol carries `signHumanIdentityState`.
-- backup:v1 does not cover the identity store.
+- backup:v1 did not cover the identity store (it does since AUTH-04D1).
 - One Host process; reconciliation's in-flight rule is process-local.
 - A refused initialization over an advanced witness slot leaves an empty file
   at the configured path; the next start refuses it (fail closed) until the
