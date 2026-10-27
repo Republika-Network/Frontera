@@ -259,3 +259,36 @@ The environment is synthetic-only and cannot produce an external effect; its los
   - authorization to create the §4 resources and DNS names;
   - every §11 gate;
   - explicit founder acceptance that the pilot environment is a demonstration in which F2, F3, F5 and F6 can make human authority permanently unavailable.
+
+## 14. Stage 3: verified synthetic execution (AUTH-04D2S)
+
+A third, separately approved stage on the **Host machine**. It adds a success path beside the `.invalid` failure path. Design and trust model: `docs/security/AUTH-04D2S-VERIFIED-SYNTHETIC-EXECUTION.md`.
+
+| Scenario | Governed action | Route | What the evidence shows |
+|---|---|---|---|
+| Success | `synthetic.deploy-release` on `synthetic-environment` | capability-gated adapter → TLS front `:8443` → reference synthetic executor `127.0.0.1:8445` | `SIMULATED_SUCCESS`: one local synthetic record, a receipt signed by the executor, verified by the Host and by the AUTH-04D2S verifier |
+| Failure | `deploy-release` on `production-cluster` | `https://synthetic-executor.invalid` (unchanged from AUTH-04D2A) | `DELIVERY_FAILED`: nothing transmitted (`PROVIDER_UNAVAILABLE`) |
+
+The governed action alone selects the scenario. Nothing in a request, and no endpoint, chooses it. Both need a human passkey approval.
+
+- **Additions to §4:**
+  - one DNS name, `synthetic-executor.frontera-systems.com` → the Host's address;
+  - one Let's Encrypt certificate for that name, issued with HTTP-01 on port 80;
+  - **no firewall change**: port 8443 stays closed. The Host container reaches it through the machine's own address, and the allow-list admits only Docker's bridge pools.
+- **Additions to §7:**
+  - `FRONTERA_SYNTHETIC_EXECUTOR_TOKEN`, the Host↔executor client credential, printed by `synthetic-executor-init`;
+  - the executor's receipt private key, which stays on the `frontera-synthetic-executor` volume and is never backed up with `frontera-state`.
+- **Runbook:**
+  1. [F] Authorize stage 3. Create the DNS name, and set `FRONTERA_SYNTHETIC_EXECUTION_DIR` (a directory owned by uid 1000).
+  2. `run --rm -T synthetic-executor-init` (with `compose.executor.yaml`). Put the token into the secret store and `.env`. The public key lands in `FRONTERA_SYNTHETIC_EXECUTION_DIR`.
+  3. `run --rm -T execution-init`, then `run --rm -T synthetic-execution-render`. Review the two rendered files: public keys only.
+  4. Install `nginx/synthetic-executor.conf` and the allow-list, then issue the certificate.
+  5. `run --rm config-check`, then `up -d`.
+  6. [V] One approved synthetic action, verified to `SIMULATED_SUCCESS`. One approved `.invalid` action, verified to `DELIVERY_FAILED`.
+- **Rollback:** stop and remove `compose.executor.yaml`. The policy returns to the AUTH-04D2A one. Executions already recorded stay recorded.
+- **Not covered by CI (stated, not implied):**
+  - the Host adapter's DNS and public-address decision over a real answer for the executor's name;
+  - TLS between the adapter and this front with a real certificate;
+  - the hairpin path from the Host container to the machine's own address.
+
+  These are the first live checks in step 6.

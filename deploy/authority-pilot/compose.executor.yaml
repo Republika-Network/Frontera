@@ -1,0 +1,112 @@
+# Frontera Authority synthetic pilot — VERIFIED SYNTHETIC EXECUTION overlay (AUTH-04D2S).
+#
+# Stage 3, on the HOST machine, only after the cutover (compose.authority.yaml)
+# and the founder's approval of this stage (docs/deployment/AUTHORITY_PILOT_DEPLOYMENT.md §14):
+#
+#   docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.yaml \
+#                  -f deploy/authority-pilot/compose.authority.yaml -f deploy/authority-pilot/compose.executor.yaml ...
+#
+# Adds the success route of the synthetic pilot: `synthetic.deploy-release` on
+# `synthetic-environment`, routed through the capability-gated Generic HTTP
+# adapter (G-02C0) to the reference synthetic executor (G-02C1A/B/C), which
+# performs one local synthetic record write per verified, single-use,
+# request-bound capability and signs a receipt the Host verifies (G-02C1D).
+# Without this file the success route does not exist: the policy is the
+# AUTH-04D2A one and its only executor is `.invalid`.
+#
+# Boundaries, fixed here:
+#   - the executor listens on this machine's loopback (127.0.0.1:8445) only; its
+#     one way in is the TLS front on port 8443 (nginx/synthetic-executor.conf),
+#     which the cloud firewall keeps closed and which admits this machine's own
+#     Docker bridge alone. It is never on the Authority ingress;
+#   - its state is its own volume, `frontera-synthetic-executor` (mounted at
+#     /var/lib/frontera inside the executor's containers only, where the image's
+#     node-owned directory is): the receipt private key, its consumption and
+#     receipt ledgers, its synthetic records. No Host service mounts it, and the
+#     executor never mounts the Host's `frontera-state`;
+#   - the executor receives no Host secret: its configuration (public keys only)
+#     and the one client credential it shares with the Host's adapter.
+
+services:
+  frontera:
+    volumes:
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}/governed-actions.json:/etc/frontera/governed-actions.json:ro,z
+
+  config-check:
+    volumes:
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}/governed-actions.json:/etc/frontera/governed-actions.json:ro,z
+
+  pilot-readiness:
+    volumes:
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}/governed-actions.json:/etc/frontera/governed-actions.json:ro,z
+
+  synthetic-executor:
+    image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+    command: ["node", "scripts/run-reference-executor.mjs"]
+    # This machine's loopback: the executor refuses any non-loopback listener, and publishes no port.
+    network_mode: host
+    environment:
+      FRONTERA_REFERENCE_EXECUTOR_CONFIG_FILE: /etc/frontera-synthetic-executor/configuration.json
+      FRONTERA_SYNTHETIC_EXECUTOR_TOKEN: ${FRONTERA_SYNTHETIC_EXECUTOR_TOKEN:?set the executor client credential in .env (executor-init)}
+    volumes:
+      - frontera-synthetic-executor:/var/lib/frontera
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}/synthetic-executor.json:/etc/frontera-synthetic-executor/configuration.json:ro,z
+    healthcheck:
+      test: ["CMD", "node", "scripts/deploy/probe.mjs", "tcp", "8445"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  synthetic-executor-init:
+    # docker compose ... run --rm -T synthetic-executor-init   (once; its output into the secret store and .env)
+    image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/synthetic-execution-pilot.mjs", "executor-init"]
+    command: ["--public-key-out", "/out/synthetic-executor-receipt-key.pub.pem"]
+    volumes:
+      - frontera-synthetic-executor:/var/lib/frontera
+      - ../authority-pilot:/app/deploy/authority-pilot:ro,z
+      # The one thing it writes outside its own volume: the receipt PUBLIC key, for render.
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}:/out:z
+    healthcheck:
+      disable: true
+
+  synthetic-execution-render:
+    # docker compose ... run --rm -T synthetic-execution-render --out /out   (public configuration only)
+    image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/synthetic-execution-pilot.mjs", "render"]
+    command: ["--out", "/out", "--executor-public-key", "/out/synthetic-executor-receipt-key.pub.pem"]
+    environment:
+      AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ${AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID:?}
+      AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS: ${AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS:?}
+    volumes:
+      # Never the executor's volume: its PUBLIC receipt key comes from the output directory (executor-init wrote it there).
+      - ../authority-pilot:/app/deploy/authority-pilot:ro,z
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}:/out:z
+    healthcheck:
+      disable: true
+
+  execution-init:
+    # docker compose ... run --rm -T execution-init   (once: the Host's issuance ledger and receipt evidence store)
+    image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/synthetic-execution-pilot.mjs", "host-init"]
+    command: []
+    environment:
+      AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ${AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID:?}
+    volumes:
+      - frontera-state:/var/lib/frontera
+      - ../authority-pilot:/app/deploy/authority-pilot:ro,z
+    healthcheck:
+      disable: true
+
+volumes:
+  # The executor's own state: receipt key, ledgers, synthetic records. Never the Host's, never backed up with it.
+  frontera-synthetic-executor:
