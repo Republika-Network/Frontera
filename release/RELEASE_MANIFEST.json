@@ -90,7 +90,7 @@
     "files": [
       {
         "path": "docs/operations/AOC_ENTERPRISE_BACKUP_V1.md",
-        "checksum": "sha256:cad8dc88aed0998cdc6cf9a31f3370481dcbbaddaa6dde9b39c778267810d5ec"
+        "checksum": "sha256:bd16019833a92fa4754b1fc8d5296ea8bd740116a7bb9ff4ace51cfc9be76ce8"
       },
       {
         "path": "docs/operations/AOC_ENTERPRISE_CLEAN_ROOM_DRILL.md",
@@ -98,7 +98,7 @@
       },
       {
         "path": "docs/operations/AOC_ENTERPRISE_RESTORE_V1.md",
-        "checksum": "sha256:3744e16c15f1fbc98af76a477afb5230e7f6d4103fb357bdcf1c54c29efd6219"
+        "checksum": "sha256:51dda7cc5ef48f3d10f49ca92635ff3cfbd08daf0cfe0b3d48611d1a5437d4c0"
       },
       {
         "path": "docs/release/AOC_ENTERPRISE_V1_PORTABILITY_CURRENT_STATE.md",
@@ -114,7 +114,7 @@
       },
       {
         "path": "scripts/portability/backup-enterprise-v1.mjs",
-        "checksum": "sha256:71c86b12fc0b02aa50723cd5c620db517d7a57254f4b258eed6d07ffc5f51890"
+        "checksum": "sha256:f339ac1f780715b56e8bb7cf06f80ea366998517d5270b49b7cd6c6c01fd2202"
       },
       {
         "path": "scripts/portability/check-portability-smoke.mjs",
@@ -134,7 +134,7 @@
       },
       {
         "path": "scripts/portability/restore-enterprise-v1.mjs",
-        "checksum": "sha256:ae4b6dc4665ffd5dc307a0ec6eec5a28601a822c325e2e5e828bba39a868fc35"
+        "checksum": "sha256:732da5bd1da447d1e6afa1fd06befc16737afd82cc5b2e1bbfd9985484f1ba9c"
       },
       {
         "path": "scripts/portability/validate-portability-v1.mjs",
