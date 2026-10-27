@@ -532,6 +532,34 @@ export interface EnabledHumanAuthorityConfiguration {
   readonly initialize: boolean;
   /** Decision challenge lifetime, 1–120 seconds. */
   readonly decisionChallengeTtlSeconds: number;
+  /** AUTH-04B: login (and enrolment) ceremony challenge lifetime, 1–300 seconds. */
+  readonly ceremonyChallengeTtlSeconds: number;
+  /** AUTH-04B: the dedicated Authority HTTP boundary. Disabled unless stated. */
+  readonly gateway: DisabledAuthorityGatewayConfiguration | EnabledAuthorityGatewayConfiguration;
+}
+
+/** AUTH-04B: no Authority listener exists. */
+export interface DisabledAuthorityGatewayConfiguration {
+  readonly mode: 'disabled';
+}
+
+/**
+ * AUTH-04B: the Authority gateway — its own listener in the Host process,
+ * never a route of the Host API. Meant to sit behind a TLS-terminating proxy
+ * for the Authority domain, which preserves `Host`.
+ */
+export interface EnabledAuthorityGatewayConfiguration {
+  readonly mode: 'enabled';
+  /** Bind address. Default loopback. */
+  readonly host: string;
+  /** Bind port; 0 picks an ephemeral port. */
+  readonly port: number;
+  /** The exact public https origin browsers use; one of `allowedOrigins`. `Origin` and `Host` must match it. */
+  readonly publicOrigin: string;
+  /** Absolute session lifetime, seconds. */
+  readonly sessionTtlSeconds: number;
+  /** Idle timeout, seconds; at most the absolute lifetime. */
+  readonly sessionIdleSeconds: number;
 }
 
 /** CORE-07: no freshness witness. Cross-restart rollback of durable authority is not detected (AA-003 / GS-002 open for this deployment). */
@@ -852,7 +880,47 @@ const HUMAN_AUTHORITY_VARIABLES = [
   'AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS',
   'AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE',
   'AOC_ENTERPRISE_HUMAN_AUTHORITY_DECISION_TTL_SECONDS',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS',
+  'AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE',
 ] as const;
+
+const AUTHORITY_GATEWAY_VARIABLES = [
+  'AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST',
+  'AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT',
+  'AOC_ENTERPRISE_AUTHORITY_GATEWAY_PUBLIC_ORIGIN',
+  'AOC_ENTERPRISE_AUTHORITY_SESSION_TTL_SECONDS',
+  'AOC_ENTERPRISE_AUTHORITY_SESSION_IDLE_SECONDS',
+] as const;
+
+const integerIn = (value: string | undefined, minimum: number, maximum: number): boolean => value !== undefined && /^\d{1,6}$/.test(value) && Number.parseInt(value, 10) >= minimum && Number.parseInt(value, 10) <= maximum;
+
+/** AUTH-04B: the strict reading of the gateway variables. Names variables, never values. */
+function authorityGatewayEnvironmentProblems(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const problems: string[] = [];
+  const mode = env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE;
+  if (mode !== undefined && mode !== 'disabled' && mode !== 'enabled') return ['AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE must be one of: disabled, enabled.'];
+  if (mode !== 'enabled') {
+    for (const name of AUTHORITY_GATEWAY_VARIABLES) {
+      if (env[name] !== undefined) problems.push(`${name} is set but AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE is not 'enabled'. Refusing to guess whether the Authority gateway was meant.`);
+    }
+    return problems;
+  }
+  const origin = env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_PUBLIC_ORIGIN;
+  const allowed = (env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS ?? '').split(',').map((entry) => entry.trim());
+  if (origin === undefined || !origin.startsWith('https://') || !allowed.includes(origin)) {
+    problems.push('AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE=enabled requires AOC_ENTERPRISE_AUTHORITY_GATEWAY_PUBLIC_ORIGIN: an https origin listed in AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS.');
+  }
+  const host = env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST;
+  if (host !== undefined && host.trim().length === 0) problems.push('AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST must not be empty.');
+  const port = env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT;
+  if (port !== undefined && !integerIn(port, 0, 65_535)) problems.push('AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT must be an integer from 0 to 65535.');
+  const ttl = env.AOC_ENTERPRISE_AUTHORITY_SESSION_TTL_SECONDS;
+  if (ttl !== undefined && !integerIn(ttl, 1, 43_200)) problems.push('AOC_ENTERPRISE_AUTHORITY_SESSION_TTL_SECONDS must be an integer from 1 to 43200.');
+  const idle = env.AOC_ENTERPRISE_AUTHORITY_SESSION_IDLE_SECONDS;
+  if (idle !== undefined && !integerIn(idle, 1, 43_200)) problems.push('AOC_ENTERPRISE_AUTHORITY_SESSION_IDLE_SECONDS must be an integer from 1 to 43200.');
+  if (integerIn(ttl, 1, 43_200) && integerIn(idle, 1, 43_200) && Number.parseInt(idle!, 10) > Number.parseInt(ttl!, 10)) problems.push('AOC_ENTERPRISE_AUTHORITY_SESSION_IDLE_SECONDS must not exceed AOC_ENTERPRISE_AUTHORITY_SESSION_TTL_SECONDS.');
+  return problems;
+}
 
 /**
  * AUTH-04A: the strict reading of the human-authority variables. One mode,
@@ -868,11 +936,14 @@ function humanAuthorityEnvironmentProblems(env: Readonly<Record<string, string |
     return problems;
   }
   if (mode !== 'enabled') {
-    for (const name of HUMAN_AUTHORITY_VARIABLES) {
+    for (const name of [...HUMAN_AUTHORITY_VARIABLES, ...AUTHORITY_GATEWAY_VARIABLES]) {
       if (env[name] !== undefined) problems.push(`${name} is set but AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE is not 'enabled'. Refusing to guess whether the human-decision authority was meant.`);
     }
     return problems;
   }
+  const ceremonyTtl = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS;
+  if (ceremonyTtl !== undefined && !integerIn(ceremonyTtl, 1, 300)) problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS must be an integer from 1 to 300.');
+  problems.push(...authorityGatewayEnvironmentProblems(env));
   const rpId = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID;
   if (rpId === undefined || rpId.trim().length === 0) problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled requires AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID (the intended pilot relying party is authority.frontera-systems.com).');
   const origins = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS;
@@ -905,6 +976,22 @@ function loadHumanAuthority(env: Readonly<Record<string, string | undefined>>): 
       .filter((origin) => origin.length > 0),
     initialize: env.AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE === 'true',
     decisionChallengeTtlSeconds: ttl !== undefined && /^\d+$/.test(ttl) ? Number.parseInt(ttl, 10) : 120,
+    ceremonyChallengeTtlSeconds: integerIn(env.AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS, 1, 300) ? Number.parseInt(env.AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS!, 10) : 120,
+    gateway: loadAuthorityGateway(env),
+  };
+}
+
+/** AUTH-04B: the Authority gateway as read from `env`. Absent (or `disabled`) is `disabled`. */
+function loadAuthorityGateway(env: Readonly<Record<string, string | undefined>>): EnabledHumanAuthorityConfiguration['gateway'] {
+  if (env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE !== 'enabled') return { mode: 'disabled' };
+  const seconds = (value: string | undefined, fallback: number): number => (integerIn(value, 1, 43_200) ? Number.parseInt(value!, 10) : fallback);
+  return {
+    mode: 'enabled',
+    host: env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST ?? '127.0.0.1',
+    port: integerIn(env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT, 0, 65_535) ? Number.parseInt(env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT!, 10) : 8788,
+    publicOrigin: env.AOC_ENTERPRISE_AUTHORITY_GATEWAY_PUBLIC_ORIGIN ?? '',
+    sessionTtlSeconds: seconds(env.AOC_ENTERPRISE_AUTHORITY_SESSION_TTL_SECONDS, 3_600),
+    sessionIdleSeconds: seconds(env.AOC_ENTERPRISE_AUTHORITY_SESSION_IDLE_SECONDS, 900),
   };
 }
 

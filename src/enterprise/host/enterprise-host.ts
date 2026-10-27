@@ -2,6 +2,7 @@ import type { ExecutionAdapter, ValidatedExecutionAction } from '../../features/
 import { XrplSequenceOwnershipError, assertXrplSequenceOwnership, type XrplSequenceDomain } from '../../features/xrpl-transport/index.js';
 import type { ContextProvider, PolicyPackProvider } from '../../kernel/index.js';
 import { KernelGrantCapability } from '../../kernel/orchestration/grant-adapter.js';
+import { createAuthorityGateway } from '../authority-gateway/index.js';
 import type { AocEnterprise, CreateEnterpriseOptions } from '../composition/composition-root.js';
 import type { GrantAuthorityBinding } from '../execution-governance/index.js';
 import type { ExecutionResolutionAuthority } from '../execution-reconciliation/authority.js';
@@ -135,6 +136,12 @@ export interface EnterpriseHost {
   /** PROD-03-03: the artifact's release identity. The same object `GET /version` serves. */
   readonly release: FronteraReleaseIdentity;
   listen(): Promise<{ readonly port: number; readonly host: string }>;
+  /**
+   * AUTH-04B: the Authority gateway — its own listener, started by `listen()`
+   * — present only when `AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE=enabled`. Never
+   * a route of the Host API.
+   */
+  readonly authorityGateway?: { address(): { readonly host: string; readonly port: number } | undefined };
   /** Stops accepting, closes the listener, then every store the composition opened. Idempotent. */
   close(): Promise<void>;
 }
@@ -581,19 +588,40 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
 
     logger.info('enterprise.host.health_gate_passed', { phase: 'health_gate', status: report.status });
 
+    // AUTH-04B: the Authority gateway, only when enabled, over the in-process port only.
+    const gatewayConfiguration = host.configuration.humanAuthority?.mode === 'enabled' ? host.configuration.humanAuthority : undefined;
+    const authorityGateway =
+      gatewayConfiguration?.gateway.mode === 'enabled' && enterprise.humanAuthority !== undefined
+        ? createAuthorityGateway({
+            authority: enterprise.humanAuthority,
+            publicOrigin: gatewayConfiguration.gateway.publicOrigin,
+            sessionTtlSeconds: gatewayConfiguration.gateway.sessionTtlSeconds,
+            sessionIdleSeconds: gatewayConfiguration.gateway.sessionIdleSeconds,
+            loginTtlSeconds: gatewayConfiguration.ceremonyChallengeTtlSeconds,
+            logger,
+          })
+        : undefined;
+    if (gatewayConfiguration?.gateway.mode === 'enabled' && authorityGateway === undefined) {
+      throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'The Authority gateway was enabled but the human-decision authority is not composed.');
+    }
+    const gatewayBind = gatewayConfiguration?.gateway.mode === 'enabled' ? gatewayConfiguration.gateway : undefined;
+
     let closing: Promise<void> | undefined;
     return {
       enterprise,
       server,
       posture,
       release,
+      ...(authorityGateway !== undefined ? { authorityGateway: { address: () => authorityGateway.address() } } : {}),
       async listen() {
         try {
           const address = await server.listen();
+          if (authorityGateway !== undefined && gatewayBind !== undefined) await authorityGateway.listen(gatewayBind.host, gatewayBind.port);
           logger.info('enterprise.host.ready', { phase: 'host_ready', release: release.release });
           return address;
         } catch (error) {
           logger.error('enterprise.host.refused', { phase: 'listen', errorCode: refusalCode(error) });
+          await authorityGateway?.close().catch(() => {});
           await server.close().catch(() => {});
           throw error;
         }
@@ -601,6 +629,8 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
       close() {
         closing ??= (async () => {
           logger.info('enterprise.host.shutdown_started', { phase: 'shutdown_started' });
+          // The Authority listener first: no request can reach the port while the stores close.
+          await authorityGateway?.close();
           await server.close();
           logger.info('enterprise.host.shutdown_complete', { phase: 'shutdown_complete' });
         })();

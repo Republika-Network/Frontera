@@ -2,13 +2,14 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { createHumanDecisionChannel, type HumanDecisionChannel, type HumanDecisionReconciliation } from '../approval-authority/human-decision.js';
-import type { ApprovalCommandPort } from '../approval-authority/service.js';
+import type { ApprovalAuthorityPort } from '../approval-authority/evaluation.js';
+import type { ApprovalCommandPort, ApprovalRequestView } from '../approval-authority/service.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
 import type { AuthorityStateFreshnessBoundary } from '../authority-state-freshness/session.js';
 import type { EnabledHumanAuthorityConfiguration } from '../configuration/enterprise-configuration.js';
 import { HumanIdentityError, createHumanIdentityService, createRelyingPartyConfiguration, openSqliteHumanIdentityStore, type HumanIdentityService, type HumanIdentityStore, type RelyingPartyConfiguration } from '../human-identity/index.js';
-import { isOperatorRole, type OperatorRole } from '../operator-control/roles.js';
+import { isOperatorRole, operatorMay, type OperatorRole } from '../operator-control/roles.js';
 
 /**
  * AUTH-04A — the passkey human-decision authority, composed inside the shipped
@@ -101,6 +102,27 @@ export function assertHumanAuthorityComposable(configuration: EnabledHumanAuthor
   }
 }
 
+/** AUTH-04B: one approval request a human may act on, and the verdicts their role reaches. A filter for display — CORE-05 still judges every verdict. */
+export interface HumanAuthorityInboxEntry {
+  readonly view: ApprovalRequestView;
+  readonly verdicts: readonly ('approve' | 'reject')[];
+}
+
+/**
+ * AUTH-04B: the server-side-scoped approval inbox of one human. A request is
+ * listed only when it is pending and not superseded, the human's configured
+ * role reaches a verdict, the human is an active principal, they are neither
+ * the requester nor its principal, and they hold live approver standing — read
+ * through the **same** Kernel-Authority port CORE-05 judges with. Nothing else
+ * is enumerable: an entry outside this set does not exist for the caller.
+ */
+export interface HumanAuthorityInbox {
+  eligible(operatorId: string): Promise<readonly HumanAuthorityInboxEntry[]>;
+  entry(operatorId: string, approvalRequestId: string): Promise<HumanAuthorityInboxEntry | undefined>;
+  /** The current derived state of one request — for the status of a decision the caller already holds (its request id comes from that decision's own contract). */
+  requestState(approvalRequestId: string): Promise<{ readonly status: ApprovalRequestView['state']['status']; readonly superseded: boolean } | undefined>;
+}
+
 /**
  * The in-process human-decision port. Every call is refused while the Host is
  * not ready. `decisions` is the only path from a passkey to a CORE-05 verdict;
@@ -112,6 +134,8 @@ export interface HumanAuthorityPort {
   readonly relyingParty: RelyingPartyConfiguration;
   readonly decisions: Pick<HumanDecisionChannel, 'begin' | 'decide' | 'outcome' | 'reconcile'>;
   readonly identity: HumanIdentityService;
+  /** AUTH-04B: the eligibility-scoped inbox. */
+  readonly inbox: HumanAuthorityInbox;
 }
 
 export interface ComposedHumanAuthority {
@@ -129,6 +153,9 @@ export interface ComposeHumanAuthorityInput {
   readonly authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier };
   readonly freshness: AuthorityStateFreshnessBoundary | undefined;
   readonly approvals: Pick<ApprovalCommandPort, 'list' | 'approve' | 'reject'>;
+  /** AUTH-04B: the approver-standing port CORE-05 itself judges with — read-only here, for the inbox filter. */
+  readonly standing: ApprovalAuthorityPort;
+  readonly now: () => string;
   readonly operators: readonly HumanAuthorityOperator[];
   readonly busyTimeoutMs: number;
   readonly isReady: () => boolean;
@@ -163,8 +190,40 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
       const role = operators.get(operatorId);
       return isOperatorRole(role) ? role : undefined;
     };
-    const identity = createHumanIdentityService({ store, relyingParty: input.relyingParty, operatorIds: [...operators.keys()], decisionChallengeTtlSeconds: configuration.decisionChallengeTtlSeconds });
+    const identity = createHumanIdentityService({ store, relyingParty: input.relyingParty, operatorIds: [...operators.keys()], decisionChallengeTtlSeconds: configuration.decisionChallengeTtlSeconds, challengeTtlSeconds: configuration.ceremonyChallengeTtlSeconds });
     const channel = createHumanDecisionChannel({ organizationId: input.organizationId, approvals: input.approvals, identity, roleOf });
+    const verdictsFor = (role: OperatorRole | undefined): readonly ('approve' | 'reject')[] =>
+      role === undefined ? [] : [...(operatorMay(role, 'approval.approve') ? (['approve'] as const) : []), ...(operatorMay(role, 'approval.restrict') ? (['reject'] as const) : [])];
+    const holdsStanding = (actorId: string, view: ApprovalRequestView): boolean => {
+      try {
+        if (!input.standing.recognition(actorId).recognized) return false;
+        return input.standing.authority({ actorId, capability: view.subject.requirement.approverAction, resourceScope: view.subject.resourceScope, at: input.now() }).valid;
+      } catch {
+        // Unreadable authority is no authority.
+        return false;
+      }
+    };
+    const entryOf = (operatorId: string, view: ApprovalRequestView): HumanAuthorityInboxEntry | undefined => {
+      const actorId = `operator:${operatorId}`;
+      if (view.superseded || view.state.status !== 'pending') return undefined;
+      if (view.subject.actorId === actorId || view.subject.principalActorId === actorId) return undefined;
+      const allowed = verdictsFor(roleOf(operatorId)).filter((verdict) => verdict !== 'approve' || !view.state.verdicts.some((recorded) => recorded.kind === 'approved' && recorded.actorId === actorId));
+      if (allowed.length === 0 || !holdsStanding(actorId, view)) return undefined;
+      return { view, verdicts: allowed };
+    };
+    const activeHuman = (operatorId: string): boolean => identity.principal(operatorId)?.state === 'active';
+    const inbox: HumanAuthorityInbox = Object.freeze({
+      eligible: async (operatorId: string) => (activeHuman(operatorId) ? (await input.approvals.list()).flatMap((view) => entryOf(operatorId, view) ?? []) : []),
+      entry: async (operatorId: string, approvalRequestId: string) => {
+        if (!activeHuman(operatorId)) return undefined;
+        const view = (await input.approvals.list()).find((candidate) => candidate.approvalRequestId === approvalRequestId);
+        return view === undefined ? undefined : entryOf(operatorId, view);
+      },
+      requestState: async (approvalRequestId: string) => {
+        const view = (await input.approvals.list()).find((candidate) => candidate.approvalRequestId === approvalRequestId);
+        return view === undefined ? undefined : { status: view.state.status, superseded: view.superseded };
+      },
+    });
     // Recovery after restart: nothing is in flight in a process that just started.
     const reconciled = await channel.reconcile();
     const ready = <T>(run: () => Promise<T>): Promise<T> => (input.isReady() ? run() : Promise.reject(input.notReady()));
@@ -178,6 +237,11 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
         reconcile: () => ready(() => channel.reconcile()),
       }),
       identity,
+      inbox: Object.freeze({
+        eligible: (operatorId: string) => ready(() => inbox.eligible(operatorId)),
+        entry: (operatorId: string, approvalRequestId: string) => ready(() => inbox.entry(operatorId, approvalRequestId)),
+        requestState: (approvalRequestId: string) => ready(() => inbox.requestState(approvalRequestId)),
+      }),
     });
     return { store, port, reconciled };
   } catch (error) {

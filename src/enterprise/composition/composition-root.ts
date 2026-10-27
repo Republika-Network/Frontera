@@ -93,6 +93,7 @@ import {
   createInMemoryApprovalStore,
   createSqliteApprovalStore,
   type ApprovalAuthority,
+  type ApprovalAuthorityPort,
   type ApprovalCommandPort,
   type ApprovalStore,
 } from '../approval-authority/index.js';
@@ -2254,38 +2255,44 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // taken from a command. The world handles are read through the provider
   // getters on every call: a Kernel-Authority revocation reloads the world and
   // is seen by the next approval read.
-  const approvalAuthority: ApprovalAuthority | undefined =
+  // AUTH-04B: the one approver-standing port — CORE-05 judges with it, and the
+  // Authority inbox filters with exactly the same function (never a second engine).
+  const approverAuthority: ApprovalAuthorityPort | undefined =
     approvalStore === undefined || governedActionOptions === undefined
       ? undefined
       : (() => {
           const organizationId = configuration.kernelAuthority.organizationId;
           const trustDomainId = governedActionOptions.trustDomainId;
           const lineage = createKernelAuthorityLineageRevalidator({ organizationId, trustDomainId, authority: () => kernelProviders.authorityRuntime });
-          return createApprovalAuthority({
-            store: approvalStore,
-            governance,
-            resolveEffectiveProfile,
-            organizationId,
-            authority: {
-              recognition: (actorId) => createActorRegistryRecognitionIntegration(kernelProviders.recognitionRuntime.actorRegistry).getApproverRecognitionStatus(actorId),
-              authority: ({ actorId, capability, resourceScope, at }) => {
-                const check = createApprovalAuthorityGraphIntegration(kernelProviders.authorityRuntime).verifyAuthority({
-                  requestId: 'approval-authority:check',
-                  actorId,
-                  trustDomainId,
-                  action: capability,
-                  resourceScope,
-                  requestedAt: at,
-                });
-                if (check.valid && !lineage({ subject: actorId, action: capability, resourceScope, organizationId, at })) {
-                  return { ...check, valid: false, type: 'authority_missing', reasonCode: 'APPROVER_AUTHORITY_NOT_LIVE', reason: 'A hop of the approver authority chain is no longer active.' };
-                }
-                return check;
-              },
+          return {
+            recognition: (actorId) => createActorRegistryRecognitionIntegration(kernelProviders.recognitionRuntime.actorRegistry).getApproverRecognitionStatus(actorId),
+            authority: ({ actorId, capability, resourceScope, at }) => {
+              const check = createApprovalAuthorityGraphIntegration(kernelProviders.authorityRuntime).verifyAuthority({
+                requestId: 'approval-authority:check',
+                actorId,
+                trustDomainId,
+                action: capability,
+                resourceScope,
+                requestedAt: at,
+              });
+              if (check.valid && !lineage({ subject: actorId, action: capability, resourceScope, organizationId, at })) {
+                return { ...check, valid: false, type: 'authority_missing', reasonCode: 'APPROVER_AUTHORITY_NOT_LIVE', reason: 'A hop of the approver authority chain is no longer active.' };
+              }
+              return check;
             },
-            now: kernelProviders.clock.now,
-          });
+          };
         })();
+  const approvalAuthority: ApprovalAuthority | undefined =
+    approvalStore === undefined || approverAuthority === undefined
+      ? undefined
+      : createApprovalAuthority({
+          store: approvalStore,
+          governance,
+          resolveEffectiveProfile,
+          organizationId: configuration.kernelAuthority.organizationId,
+          authority: approverAuthority,
+          now: kernelProviders.clock.now,
+        });
   // The one obligation capability shape the grant-aware Kernel decides with
   // and the orchestrator re-reads at issuance: same sources, same profile
   // declarations, same store, same trusted profile resolution.
@@ -2968,6 +2975,9 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             authenticity: await resolveAuthorityAuthenticity(),
             freshness: await resolveAuthorityFreshness(),
             approvals: { list: () => approvalAuthority.list(), approve: (context, command) => approvalAuthority.approve(context, command), reject: (context, command) => approvalAuthority.reject(context, command) },
+            // AUTH-04B: the same standing port CORE-05 judges with, read-only, for the inbox filter.
+            standing: approverAuthority!,
+            now: kernelProviders.clock.now,
             operators: (configuration.administration?.operators ?? []).map(({ operatorId, role }) => ({ operatorId, role })),
             busyTimeoutMs: configuration.persistence.busyTimeoutMs,
             isReady: () => lifecycle.isReady(),

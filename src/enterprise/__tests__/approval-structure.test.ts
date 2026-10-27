@@ -72,7 +72,8 @@ describe('CORE-05 structure — one authority world', () => {
 
   it('composition answers approver standing from the Kernel providers’ world (the durable Kernel-Authority projection), through approval-runtime’s own integrations', () => {
     const root = codeOf('src/enterprise/composition/composition-root.ts');
-    const block = /const approvalAuthority: ApprovalAuthority \| undefined =[\s\S]*?\}\)\(\);/.exec(root)?.[0] ?? '';
+    // AUTH-04B hoisted the standing port into its own block so the Authority inbox filters with the identical function; CORE-05 is composed over it.
+    const block = /const approverAuthority: ApprovalAuthorityPort \| undefined =[\s\S]*?\}\)\(\);\s*const approvalAuthority: ApprovalAuthority \| undefined =[\s\S]*?authority: approverAuthority,[\s\S]*?\}\);/.exec(root)?.[0] ?? '';
     assert.ok(block.length > 0, 'the approval authority composition block exists');
     assert.match(block, /createActorRegistryRecognitionIntegration\(kernelProviders\.recognitionRuntime\.actorRegistry\)/);
     assert.match(block, /createApprovalAuthorityGraphIntegration\(kernelProviders\.authorityRuntime\)/);
