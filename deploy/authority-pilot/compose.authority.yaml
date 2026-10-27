@@ -11,7 +11,7 @@
 # human-authority variable without the mode, so removing this file disables
 # the authority completely (the rollback of the cutover).
 #
-# The identity store is created only with AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE=true
+# The identity store is created only with FRONTERA_AUTHORITY_INITIALIZE_IDENTITY=true
 # in .env, once, at the first cutover start; set it back to false at once
 # (runbook step 3). The gateway is published on loopback only: the ingress on
 # this machine is its one public path (deploy/authority-pilot/nginx/authority.conf).
@@ -28,7 +28,7 @@ services:
       AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH: /var/lib/frontera/human-identity.sqlite
       AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID: authority.frontera-systems.com
       AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS: https://authority.frontera-systems.com
-      AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: ${AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE:-false}
+      AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: ${FRONTERA_AUTHORITY_INITIALIZE_IDENTITY:-false}
       AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE: enabled
       AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST: 0.0.0.0
       AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT: "8788"

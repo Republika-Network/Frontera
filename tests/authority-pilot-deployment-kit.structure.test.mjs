@@ -46,7 +46,9 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
     assert.equal(value(CUTOVER, 'AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID'), AUTHORITY);
     assert.equal(value(CUTOVER, 'AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS'), CONTRACT.origin);
     assert.equal(value(CUTOVER, 'AOC_ENTERPRISE_AUTHORITY_GATEWAY_PUBLIC_ORIGIN'), CONTRACT.origin);
-    assert.equal(value(CUTOVER, 'AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE'), '${AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE:-false}', 'initialization is off unless .env says otherwise, once');
+    assert.equal(value(CUTOVER, 'AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE'), '${FRONTERA_AUTHORITY_INITIALIZE_IDENTITY:-false}', 'initialization is off unless .env says otherwise, once');
+    // Every .env line reaches the Host, which refuses a human-authority variable before cutover (AUTH-04A).
+    assert.equal(/^AOC_ENTERPRISE_(HUMAN_|AUTHORITY_GATEWAY_)/m.test(read(`${KIT}/host.env.example`)), false);
     assert.match(CUTOVER, /^ {6}- "127\.0\.0\.1:8788:8788"$/m, 'the gateway is published on loopback only');
     assert.equal(/^\s+- "(?!127\.0\.0\.1:)/m.test(CUTOVER + HOST), false, 'no other port is published');
   });
@@ -68,7 +70,7 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
       for (const line of read(`${KIT}/${file}`).split('\n').filter((entry) => /^[A-Z_][A-Z0-9_]*=/.test(entry))) {
         const [name, ...rest] = line.split('=');
         const assigned = rest.join('=');
-        if (name === 'AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE') assert.equal(assigned, 'false');
+        if (name === 'FRONTERA_AUTHORITY_INITIALIZE_IDENTITY') assert.equal(assigned, 'false');
         else assert.match(assigned, /^'<required[^>']*>'$/, `${file}: ${name}`);
       }
     }
@@ -108,7 +110,8 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
     assert.deepEqual([...NGINX.matchAll(/server_name ([^;]+);/g)].map((match) => match[1]).sort(), ['_', '_', AUTHORITY, AUTHORITY]);
     assert.match(NGINX, new RegExp(`client_max_body_size ${api.maxRequestBodyBytes / 1024}k;`));
     assert.deepEqual([...(NGINX + PROXY).matchAll(/proxy_pass ([^;]+);/g)].map((match) => match[1]), ['http://127.0.0.1:8788']);
-    assert.equal(/8787|8444|access-control|X-Forwarded|proxy_set_header Origin|proxy_set_header Cookie/i.test(NGINX + PROXY), false);
+    const directives = (NGINX + PROXY).split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
+    assert.equal(/8787|8444|access-control|X-Forwarded|proxy_set_header Origin|proxy_set_header Cookie/i.test(directives), false);
     assert.match(PROXY, /proxy_set_header Host \$host;/);
     const rate = (zone) => Number(new RegExp(`zone=${zone}:10m rate=(\\d+)r/m;`).exec(NGINX)?.[1]);
     const rule = (prefix) => Number(/^(\d+) requests per minute/.exec(CONTRACT.rateLimits.rules.find((entry) => entry.pathPrefix === prefix).perClient)?.[1]);

@@ -194,7 +194,7 @@ All of these are fixed in the overlay and checked in CI.
    - over the tunnel, `/health` shows `authorityFreshness` with every slot `ready`;
    - the witness's log shows enrolled slots.
 5. **[F] Synthetic policy:** it is already mounted (stage 1). Activate the `deploy-production` profile over the operator plane (steward). Give the CTO's operator id (`ops-approver`) Kernel-Authority standing for `approve-deploy` on `production-cluster` only.
-6. **[F] Cutover** (after §11): add `compose.authority.yaml`; set `AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE=true` for **one** start; set it back to `false` at once; restart. The posture shows `humanAuthority: composed`. Provision the test human: `POST /api/admin/passkey-humans {operatorId: "ops-approver", displayName}` (organization administrator, over the tunnel).
+6. **[F] Cutover** (after §11): add `compose.authority.yaml`; set `FRONTERA_AUTHORITY_INITIALIZE_IDENTITY=true` in `.env` for **one** start; set it back to `false` at once; restart. The posture shows `humanAuthority: composed`. Provision the test human: `POST /api/admin/passkey-humans {operatorId: "ops-approver", displayName}` (organization administrator, over the tunnel).
 7. **[F] One-time invitation:**
    - `POST /api/admin/passkey-invitations`; the token is shown once and lives 15 minutes;
    - hand it to the CTO in person;
