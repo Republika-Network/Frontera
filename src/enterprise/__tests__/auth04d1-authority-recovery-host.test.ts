@@ -22,6 +22,7 @@ import { call, expectStatus, recordingAdapter } from './ctrl02-host-fixture.js';
 import {
   DEPLOY,
   EDGE,
+  EVIDENCE_HASH,
   LEGACY,
   ORG,
   PROD,
@@ -356,12 +357,13 @@ describe('AUTH-04D1 — Authority pilot backup and restore under CORE-07 (softwa
     backupBeforeRevocation = join(made(deployment, 'backup-s0'), 'pilot.sealed');
     await profile.runAuthorityPilotBackup({ output: backupBeforeRevocation, keyFile, env: await authorityEnv(deployment, data) });
 
-    // S0 → S1: the CTO approves through the gateway with a fresh assertion; the second device is revoked (reported lost).
+    // S0 → S1: the CTO rejects through the gateway with a fresh assertion (the release profile requires evidence for an
+    // approval, which a passkey decision does not carry; a rejection is the decision this drill records); the second device is revoked (reported lost).
     const host = await boot(await authorityEnv(deployment, data));
     const pending = await pendingApproval(host, agentCredential);
     const browser = new Browser(host.gatewayPort);
     assert.equal((await browser.signIn(cto)).status, 200);
-    const issued = await browser.send('POST', `/authority/v1/approvals/${encodeURIComponent(pending.approvalRequestId)}/decision-challenges`, { subjectDigest: pending.subjectDigest, verdict: 'approve' });
+    const issued = await browser.send('POST', `/authority/v1/approvals/${encodeURIComponent(pending.approvalRequestId)}/decision-challenges`, { subjectDigest: pending.subjectDigest, verdict: 'reject' });
     assert.equal(issued.status, 200, issued.text);
     const assertion = cto.assert(issued.body['publicKey'] as AuthenticationOptionsJSON);
     const outcome = await browser.send('POST', '/authority/v1/decisions', { assertion });
@@ -436,11 +438,11 @@ describe('AUTH-04D1 — Authority pilot backup and restore under CORE-07 (softwa
     const browser = new Browser(host.gatewayPort);
     assert.equal((await browser.signIn(cto)).status, 200, 'the CTO signs in on the recovered Host (this advances the witnessed identity head)');
     const status = await browser.send('GET', `/authority/v1/decisions/${encodeURIComponent(decided.commitment)}`);
-    assert.deepEqual([status.body['decision'], status.body['execution']], ['approved', 'not_observed'], status.text);
-    // Execution evidence is separate: the agent resumes through the canonical path, exactly once.
+    assert.deepEqual([status.body['decision'], status.body['execution']], ['rejected', 'not_observed'], status.text);
+    // Execution is observed separately, on the canonical path: the rejected release does not execute.
     const resumed = await govern(host.baseUrl, agentCredential, release(PROD, decided.idempotencyKey));
-    assert.equal(resumed.body['status'], 'executed', resumed.text);
-    assert.equal(host.adapter.calls.length, 1);
+    assert.notEqual(resumed.body['status'], 'executed', resumed.text);
+    assert.equal(host.adapter.calls.length, 0);
     await close(host);
   });
 
@@ -603,7 +605,7 @@ describe('AUTH-04D1 — Authority pilot backup and restore under CORE-07 (softwa
     const pending = await govern(degraded.baseUrl, agentCredential, release(PROD, key('auth04d1-degraded')));
     assert.deepEqual([pending.body['status'], pending.body['withheldBy']], ['withheld', 'approval'], pending.text);
     const view = await approvalFor(degraded.baseUrl, auth, pending.body['requestId'] as string);
-    assert.equal((await approvalCommand(degraded.baseUrl, auth.approverA, view, 'approve')).status, 200, 'the private CTRL-04 operator plane still decides');
+    assert.equal((await approvalCommand(degraded.baseUrl, auth.approverA, view, 'approve', { evidence: [{ type: 'source_document', hash: EVIDENCE_HASH }] })).status, 200, 'the private CTRL-04 operator plane still decides');
     await close(degraded);
     const identitySlot = (rows: readonly Record<string, unknown>[]): unknown => rows.find((row) => row['state_kind'] === 'human-identity-state');
     assert.deepEqual(identitySlot(await witnessRows(deployment.witness.databasePath)), identitySlot(witnessBefore), 'the identity slot was neither reset nor re-enrolled');

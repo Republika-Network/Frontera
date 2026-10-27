@@ -114,7 +114,7 @@ Proven on the shipped Host by `auth04d1-authority-recovery-host.test.ts`:
 
 | Scenario | Result |
 |---|---|
-| Valid current snapshot (sealed through the CLI, verified, restored) | **Starts.** The posture shows `humanAuthority: composed` and `authorityFreshness: external`. The CTO signs in, the decision status reads `approved` with execution `not_observed`, and the agent resumes and executes exactly once. |
+| Valid current snapshot (sealed through the CLI, verified, restored) | **Starts.** The posture shows `humanAuthority: composed` and `authorityFreshness: external`. The CTO signs in, the decision status reads `rejected` with execution `not_observed`, and the rejected release does not execute (zero adapter calls). The drill records a rejection because the PROD-02 release profile requires evidence for an approval, which a passkey decision does not carry (§11). |
 | Truncated or bit-flipped sealed file (no key needed) | **Refused** at authentication; nothing unpacked; target untouched |
 | Store cut in half inside a correctly re-sealed backup (attacker holds the key and recomputes the checksums) | **Refused** by restore:v1 (SQLite integrity); target untouched |
 | Identity store removed, under the original header | **Refused** (the header and manifest disagree, and the backup is incomplete) |
@@ -355,6 +355,7 @@ Evidence per row: device model, iOS and Safari versions, time, screen recording 
 5. **Cold backups only:** each Authority backup needs a planned stop.
 6. **Process-local state:** sessions and ceremonies are lost on restart; there is no in-Host rate limiter.
 7. **No real-device or deployed qualification:** AUTH-04D2 and AUTH-04D3.
+8. **Evidence requirements:** a passkey decision carries no evidence attachment. A Governance Profile whose approval requires evidence refuses a passkey **approval** (`APPROVAL_EVIDENCE_INSUFFICIENT`) and is recorded as `refused`; a rejection is unaffected. The pilot's profile must not require approval evidence, or the evidence must be provided some other way (a later increment).
 
 ## 12. AUTH-04D2 prerequisites
 
