@@ -99,6 +99,9 @@ describe('AUTH-04D2S — the synthetic execution kit', () => {
         AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED: 'true',
         AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG,
         AOC_ENTERPRISE_REQUIRE_AUTH: 'true',
+        // As the pilot kit fixes it: capabilities are issued only from the durable grant store.
+        AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
+        AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'host', 'governance.sqlite'),
         FRONTERA_SYNTHETIC_EXECUTOR_TOKEN: TOKEN,
         ...operatorEnv,
       });

@@ -161,11 +161,13 @@ describe('G-02C1C structure — durable state and its owners', () => {
 
   it('no Host, Kernel, P11/P12, route, barrel or exports entry reaches the receipt contract or the receipt path — the Host receipt evidence module (G-02C1D) alone reaches the contract', () => {
     const EVIDENCE = 'src/enterprise/execution-receipt-evidence';
-    for (const file of sourcesUnder('src').filter((path) => !path.startsWith(`${RECEIPT}/`) && !path.startsWith(`${EXECUTOR}/`) && !path.startsWith(`${EVIDENCE}/`))) {
+    // AUTH-04D2S: the offline synthetic-execution verifier verifies receipts too — through the contract's public index alone (checked below).
+    const VERIFICATION = 'src/enterprise/synthetic-execution-verification';
+    for (const file of sourcesUnder('src').filter((path) => !path.startsWith(`${RECEIPT}/`) && !path.startsWith(`${EXECUTOR}/`) && !path.startsWith(`${EVIDENCE}/`) && !path.startsWith(`${VERIFICATION}/`))) {
       assert.equal(/executor-receipt\/|receipt-(?:issuer|ledger|signer)/.test(codeOf(file)), false, file);
     }
     // The evidence module verifies and decodes: the contract's public index, never the executor, its signer, issuer or ledger.
-    for (const file of sourcesUnder(EVIDENCE)) {
+    for (const file of [...sourcesUnder(EVIDENCE), ...sourcesUnder(VERIFICATION)]) {
       const specifiers = runtimeSpecifiers(file).filter((specifier) => specifier.includes('executor-receipt') || specifier.includes('reference-executor'));
       assert.ok(specifiers.every((specifier) => specifier === '../executor-receipt/index.js'), `${file}: ${specifiers.join(', ')}`);
       assert.equal(/receipt-(?:issuer|ledger|signer)|signExecutorReceipt|createPrivateKey|loadExecutorReceiptSigner/.test(codeOf(file)), false, file);

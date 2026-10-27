@@ -369,7 +369,8 @@ async function provision(baseUrl: string): Promise<World> {
   const org = await provisionOrganization(baseUrl);
   const syntheticCredential = await onboardSyntheticAgent(baseUrl);
   await standing(baseUrl, await operatorActor(baseUrl, CTO.operatorId), APPROVE_RELEASE, [PROD, SYNTHETIC_ENV], 'approval-standing-cto');
-  for (const operatorId of ['approver-a', 'approver-b']) await standing(baseUrl, await operatorActor(baseUrl, operatorId), APPROVE_RELEASE, [SYNTHETIC_ENV], `approval-standing-${operatorId}-synthetic`);
+  // approver-a and approver-b already have their Kernel-Authority actors (CTRL-04's provisioning): one more standing each.
+  for (const operatorId of ['approver-a', 'approver-b']) await standing(baseUrl, `operator:${operatorId}`, APPROVE_RELEASE, [SYNTHETIC_ENV], `approval-standing-${operatorId}-synthetic`);
   return { releaseCredential: org.agentCredential, syntheticCredential };
 }
 
