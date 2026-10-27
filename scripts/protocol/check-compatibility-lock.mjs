@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { validateCompatibilityLock } from './lib-protocol-artifact.mjs';
+import { PACKAGE_SCOPED_PROTOCOL_SUBPATHS, validateCompatibilityLock } from './lib-protocol-artifact.mjs';
 
 const LOCK_PATH = resolve(process.cwd(), 'protocol-consumer.lock.json');
 
@@ -28,7 +28,12 @@ async function main() {
   }
 
   const { valid, errors } = validateCompatibilityLock(lock);
-  if (!valid) {
+  // The gates grant these allowances, so the lock must record them (validateCompatibilityLock
+  // then holds the record to the code's value exactly).
+  if (PACKAGE_SCOPED_PROTOCOL_SUBPATHS.length > 0 && lock.packageScopedPublicExports === undefined) {
+    errors.push('Field "packageScopedPublicExports" is required while PACKAGE_SCOPED_PROTOCOL_SUBPATHS grants an allowance.');
+  }
+  if (!valid || errors.length > 0) {
     console.error('protocol-consumer.lock.json failed validation:');
     for (const error of errors) console.error(` - ${error}`);
     process.exitCode = 1;

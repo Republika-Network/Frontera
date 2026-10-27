@@ -15,10 +15,13 @@
 // all mutation happens inside a throwaway temporary copy that is deleted on exit.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { isPackageScopedProtocolImport } from './lib-protocol-artifact.mjs';
 
 const REPO_ROOT = resolve(process.cwd());
 
@@ -92,10 +95,24 @@ async function copyRepoExcluding(sourceDir, destDir) {
   });
 }
 
-async function forbiddenImportScan(tempDir) {
+// Every quoted `@aoc/protocol/...` string, with its opening and (if any)
+// closing quote. A deep specifier is admitted only when it is exactly one of a
+// package-scoped allowance's subpaths, properly quoted, inside that package
+// (see isPackageScopedProtocolImport); anything else is a violation.
+const DEEP_PROTOCOL_SPECIFIER_RE = /(['"`])(@aoc\/protocol\/[^'"`\s]*)(['"`]?)/g;
+
+function forbiddenDeepProtocolSpecifiers(text, relPath) {
+  const forbidden = [];
+  for (const [, open, specifier, close] of text.matchAll(DEEP_PROTOCOL_SPECIFIER_RE)) {
+    const admitted = open !== '`' && close === open && isPackageScopedProtocolImport(specifier, relPath);
+    if (!admitted) forbidden.push(specifier);
+  }
+  return forbidden;
+}
+
+export async function forbiddenImportScan(tempDir) {
   const violations = [];
   const forbiddenPatterns = [
-    { name: 'deep protocol import', re: /['"]@aoc\/protocol\/(?!$)/ },
     { name: 'protocol source import', re: /['"](?:\.\.\/)+Architects_of_Change_Protocol\b/ },
     { name: 'protocol dist deep import', re: /['"]@aoc\/protocol\/dist\// },
   ];
@@ -113,8 +130,12 @@ async function forbiddenImportScan(tempDir) {
   // '@aoc/protocol/src/index' and '@aoc/protocol/dist/contracts/index.js' in a
   // list of specifiers it asserts must FAIL to resolve from a clean external
   // install. They are assertions that deep imports stay unavailable, not imports.
+  //
+  // tests/protocol-package-scoped-consumption.test.mjs is the same class: it
+  // feeds approved and forbidden deep specifiers to all three gates as data.
   const excludedFiles = new Set([
     join(tempDir, 'tests', 'protocol-tarball-lock.test.mjs'),
+    join(tempDir, 'tests', 'protocol-package-scoped-consumption.test.mjs'),
     join(tempDir, 'scripts', 'release', 'check-clean-room-consumer.mjs'),
   ]);
 
@@ -134,8 +155,10 @@ async function forbiddenImportScan(tempDir) {
         await walk(full);
       } else if (/\.(ts|tsx|mts|cts|mjs|cjs|js)$/.test(entry.name)) {
         const text = await readFile(full, 'utf8');
+        const relPath = full.slice(tempDir.length + 1);
+        if (forbiddenDeepProtocolSpecifiers(text, relPath).length > 0) violations.push(`${relPath}: forbidden deep protocol import`);
         for (const { name, re } of forbiddenPatterns) {
-          if (re.test(text)) violations.push(`${full.slice(tempDir.length + 1)}: forbidden ${name}`);
+          if (re.test(text)) violations.push(`${relPath}: forbidden ${name}`);
         }
       }
     }
@@ -145,7 +168,7 @@ async function forbiddenImportScan(tempDir) {
   return violations;
 }
 
-async function siblingPathScan(tempDir) {
+export async function siblingPathScan(tempDir) {
   const violations = [];
   const lockPath = join(tempDir, 'package-lock.json');
   if (existsSync(lockPath)) {
@@ -179,7 +202,7 @@ async function resolveProtocolExports(tempDir, installedProtocolPkg) {
   return { specifiers, ok: result.ok, notes: result.ok ? specifiers.join(', ') : result.output.slice(-2000) };
 }
 
-async function declarationLeakScan(tempDir) {
+export async function declarationLeakScan(tempDir) {
   const distDir = join(tempDir, 'dist');
   if (!existsSync(distDir)) return [];
   const violations = [];
@@ -347,7 +370,12 @@ async function main() {
   process.exitCode = exitCode;
 }
 
-main().catch((error) => {
-  process.stderr.write(`[tarball-validate] FATAL: ${error.stack ?? error.message}\n`);
-  process.exitCode = 1;
-});
+// Run only when executed directly, so tests can import the scan functions.
+// Real paths on both sides, so a symlinked checkout still runs the battery
+// (tests/protocol-package-scoped-consumption.test.mjs asserts a direct run does).
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
+  main().catch((error) => {
+    process.stderr.write(`[tarball-validate] FATAL: ${error.stack ?? error.message}\n`);
+    process.exitCode = 1;
+  });
+}
