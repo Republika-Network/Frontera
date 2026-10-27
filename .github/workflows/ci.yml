@@ -151,7 +151,8 @@ jobs:
     # real certificate or secret: the Compose overlays as Compose resolves them,
     # then each machine's nginx ingress (the distribution package, as the
     # runbook installs it, with a throwaway self-signed certificate) against a
-    # stub upstream on loopback. Not a deployment.
+    # stub upstream on loopback. Not a deployment. AUTH-04D2S adds the synthetic
+    # executor overlay and its TLS front on the Host machine.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -191,6 +192,13 @@ jobs:
           if node scripts/deploy/qualify-authority-pilot.mjs compose host "$RUNNER_TEMP/unisolated.json" > "$RUNNER_TEMP/unisolated.log" 2>&1; then cat "$RUNNER_TEMP/unisolated.log"; echo "::error::the unisolated Host configuration was accepted"; exit 1; fi
           grep -q 'FAIL — Host: no witness-init service' "$RUNNER_TEMP/unisolated.log" || { cat "$RUNNER_TEMP/unisolated.log"; exit 1; }
           echo "  ok  the unisolated Host configuration is refused: $(grep FAIL "$RUNNER_TEMP/unisolated.log")"
+          # AUTH-04D2S: stage 3 (the synthetic executor) on top of the cutover, every profile enabled. Public, synthetic values only.
+          printf '%s\n' "FRONTERA_SYNTHETIC_EXECUTION_DIR=/srv/frontera-synthetic-execution-ci" "FRONTERA_SYNTHETIC_EXECUTOR_TOKEN=synthetic-ci-not-a-secret" "AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS='[]'" >> deploy/pilot/.env
+          $host -f deploy/authority-pilot/compose.authority.yaml -f deploy/authority-pilot/compose.executor.yaml config --format json > "$RUNNER_TEMP/executor.json"
+          node scripts/deploy/qualify-authority-pilot.mjs compose executor "$RUNNER_TEMP/executor.json"
+          # Stage 1 and the cutover stay exactly as they were: the executor exists only with its overlay.
+          node -e 'const m=require(process.argv[1]); if (Object.keys(m.services).some((n)=>n.includes("executor")||n==="execution-init")) { console.error("executor service outside its overlay"); process.exit(1); }' "$RUNNER_TEMP/cutover.json"
+          echo "  ok  without compose.executor.yaml there is no executor service"
           rm deploy/pilot/.env
       - name: Install nginx from the distribution
         run: |
@@ -211,6 +219,19 @@ jobs:
           node scripts/deploy/qualify-authority-pilot.mjs ingress --ca "$RUNNER_TEMP/authority-ca.pem"
           sudo install -m 644 /var/log/nginx/frontera-authority.access.log "$RUNNER_TEMP/authority-access.log"
           node scripts/deploy/qualify-authority-pilot.mjs logs "$RUNNER_TEMP/authority-access.log"
+      - name: Synthetic executor front on the Host machine, beside the Authority ingress (AUTH-04D2S)
+        run: |
+          sudo mkdir -p /etc/letsencrypt/live/synthetic-executor.frontera-systems.com
+          sudo cp deploy/authority-pilot/nginx/synthetic-executor.conf /etc/nginx/conf.d/frontera-synthetic-executor.conf
+          sudo cp deploy/authority-pilot/nginx/synthetic-executor-allowlist.conf /etc/nginx/frontera/
+          sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=synthetic-executor.frontera-systems.com" -addext "subjectAltName=DNS:synthetic-executor.frontera-systems.com" -keyout /etc/letsencrypt/live/synthetic-executor.frontera-systems.com/privkey.pem -out /etc/letsencrypt/live/synthetic-executor.frontera-systems.com/fullchain.pem
+          sudo cat /etc/letsencrypt/live/synthetic-executor.frontera-systems.com/fullchain.pem "$RUNNER_TEMP/authority-ca.pem" > "$RUNNER_TEMP/host-cas.pem"
+          sudo nginx -t
+          sudo systemctl restart nginx
+          node scripts/deploy/qualify-authority-pilot.mjs executor --ca "$RUNNER_TEMP/host-cas.pem"
+          sudo install -m 644 /var/log/nginx/frontera-synthetic-executor.access.log "$RUNNER_TEMP/executor-access.log"
+          node scripts/deploy/qualify-authority-pilot.mjs logs "$RUNNER_TEMP/executor-access.log"
+          sudo rm -f /etc/nginx/conf.d/frontera-synthetic-executor.conf
       - name: Witness machine ingress (the Host ingress removed first; they are different machines)
         run: |
           sudo rm -f /etc/nginx/conf.d/frontera-authority.conf

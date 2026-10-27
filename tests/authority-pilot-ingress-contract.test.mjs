@@ -79,6 +79,6 @@ test('the contract carries no secret and configures no infrastructure', () => {
   assert.equal(/password/i.test(text), false);
   assert.equal(/\b(\d{1,3}\.){3}\d{1,3}\b/.test(text.replace(/127\.0\.0\.1/g, '')), false, 'no address other than loopback');
   // AUTH-04D2A added the pilot's configuration beside the contract; nothing here deploys (tests/authority-pilot-deployment-kit.structure.test.mjs).
-  assert.deepEqual(readdirSync(join(ROOT, 'deploy/authority-pilot')).sort(), ['compose.authority.yaml', 'compose.host.yaml', 'compose.witness.yaml', 'governed-actions.synthetic-pilot.json', 'host.env.example', 'ingress-contract.json', 'nginx', 'witness.env.example']);
+  assert.deepEqual(readdirSync(join(ROOT, 'deploy/authority-pilot')).sort(), ['compose.authority.yaml', 'compose.executor.yaml', 'compose.host.yaml', 'compose.witness.yaml', 'governed-actions.synthetic-pilot.json', 'host.env.example', 'ingress-contract.json', 'nginx', 'synthetic-execution.additions.json', 'witness.env.example']);
   assert.match(contract['//'], /not a deployment/);
 });

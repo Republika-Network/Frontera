@@ -62,8 +62,11 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     assert.equal(/human-decision/.test(read('src/enterprise/approval-authority/index.ts')), false, 'not exported from the CORE-05 module index');
     // AUTH-04A: the one composition point is the composition module; the root and the Host only reach it.
     // AUTH-04B: the Authority gateway reads the decision channel's error type (to map refusals to HTTP); it composes nothing.
+    // AUTH-04D2S: the offline synthetic-execution verifier reads the channel's name (the constant) to require it; it composes nothing.
     const composers = walk('src/enterprise').filter((file) => /from '[^']*(human-decision|human-identity\/index)\.js'/.test(read(file)));
-    assert.deepEqual(composers.sort(), ['src/enterprise/authority-gateway/gateway.ts', 'src/enterprise/composition/human-authority-composition.ts']);
+    assert.deepEqual(composers.sort(), ['src/enterprise/authority-gateway/gateway.ts', 'src/enterprise/composition/human-authority-composition.ts', 'src/enterprise/synthetic-execution-verification/verification.ts']);
+    assert.match(read('src/enterprise/synthetic-execution-verification/verification.ts'), /^import \{ HUMAN_PASSKEY_DECISION_CHANNEL \} from '\.\.\/approval-authority\/human-decision\.js';$/m, 'the verifier imports the channel constant alone');
+    assert.equal(/createHumanDecisionChannel|openSqliteHumanIdentityStore|createHumanIdentityService|human-identity/.test(read('src/enterprise/synthetic-execution-verification/verification.ts')), false, 'the verifier composes nothing');
     assert.equal(/createHumanDecisionChannel|openSqliteHumanIdentityStore|createHumanIdentityService/.test(read('src/enterprise/authority-gateway/gateway.ts')), false, 'the gateway composes nothing');
   });
 

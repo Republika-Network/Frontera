@@ -141,8 +141,8 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
   });
 
   it('nothing in the kit names a cloud provider, a personal path or a payment rail, or holds a secret', () => {
-    const files = ['compose.host.yaml', 'compose.authority.yaml', 'compose.witness.yaml', 'governed-actions.synthetic-pilot.json', 'host.env.example', 'witness.env.example', 'nginx/authority.conf', 'nginx/authority-gateway-proxy.conf', 'nginx/authority-web-headers.conf', 'nginx/witness.conf', 'nginx/witness-allowlist.conf'].map((file) => `${KIT}/${file}`);
-    files.push('scripts/deploy/qualify-authority-pilot.mjs');
+    const files = ['compose.host.yaml', 'compose.authority.yaml', 'compose.executor.yaml', 'compose.witness.yaml', 'governed-actions.synthetic-pilot.json', 'synthetic-execution.additions.json', 'host.env.example', 'witness.env.example', 'nginx/authority.conf', 'nginx/authority-gateway-proxy.conf', 'nginx/authority-web-headers.conf', 'nginx/synthetic-executor.conf', 'nginx/synthetic-executor-allowlist.conf', 'nginx/witness.conf', 'nginx/witness-allowlist.conf'].map((file) => `${KIT}/${file}`);
+    files.push('scripts/deploy/qualify-authority-pilot.mjs', 'scripts/deploy/synthetic-execution-pilot.mjs');
     for (const file of files) {
       const text = read(file);
       assert.equal(/C:\\Users|\/mnt\/c\/|vicvalch|\bWSL\b|digitalocean|hetzner|lightsail|amazonaws|\bAWS\b|\bAzure\b|\bGCP\b|vercel/i.test(text), false, `${file}: provider or personal path`);
@@ -205,6 +205,7 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
     const job = ci.slice(ci.indexOf('  authority-pilot-config:'), ci.indexOf('  authority-web-preview:'));
     for (const step of ['compose host', 'compose cutover', 'compose witness', 'ingress --ca', 'logs ', 'witness --ca', 'sudo nginx -t']) assert.ok(job.includes(step), step);
     for (const step of ['compose.host.yaml --profile tools --profile reference-witness', 'no such service: $service', "grep -v '!reset'", 'FAIL — Host: no witness-init service']) assert.ok(job.includes(step), step);
+    for (const step of ['compose executor', 'compose.executor.yaml config', 'executor --ca', 'executor-access.log', 'without compose.executor.yaml there is no executor service']) assert.ok(job.includes(step), step);
     assert.equal(/docker compose[^\n]*\b(up|start|build|pull|push)\b/.test(job), false, 'nothing is started, built or pushed');
     assert.equal(/certbot|acme\.sh|letsencrypt\.org|vercel|kubectl|terraform|gcloud|aws /i.test(job), false, 'no real certificate, no cloud');
   });

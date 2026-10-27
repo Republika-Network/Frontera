@@ -1,0 +1,78 @@
+{
+  "comment": "AUTH-04D2S: what the success scenario adds to governed-actions.synthetic-pilot.json, merged by scripts/deploy/synthetic-execution-pilot.mjs render. Synthetic only: one synthetic.* action on one synthetic environment, routed to the capability-gated synthetic executor on this Host machine. The .invalid failure route is left exactly as it is.",
+  "governance": {
+    "actionClasses": [{ "id": "synthetic", "actions": ["synthetic.deploy-release"] }],
+    "resourceClasses": [{ "id": "synthetic_environment", "resources": ["synthetic-environment"] }],
+    "parameterDimensions": [{ "id": "releaseVersion", "type": "token", "bound": "exact" }],
+    "profiles": [
+      {
+        "profileId": "synthetic-deploy",
+        "version": 1,
+        "actionClass": "synthetic",
+        "resourceClass": "synthetic_environment",
+        "parameters": [{ "dimension": "releaseVersion", "required": true }],
+        "materialFacts": [],
+        "approval": { "approverAction": "approve-deploy", "minimumApprovals": 1, "requestTtlSeconds": 3600, "approvalValiditySeconds": 900 }
+      }
+    ]
+  },
+  "approvalRule": { "ruleId": "synthetic-deploy-review", "governanceProfile": "synthetic-deploy", "reasonCode": "PRODUCTION_DEPLOY_REVIEW" },
+  "genericHttpAdapter": {
+    "adapterId": "synthetic-executor-verified",
+    "origin": "https://synthetic-executor.frontera-systems.com:8443",
+    "method": "POST",
+    "path": [{ "kind": "literal", "value": "v1" }, { "kind": "literal", "value": "deployments" }, { "kind": "source", "source": "resource" }],
+    "headers": { "Idempotency-Key": { "kind": "source", "source": "correlation.executionId" } },
+    "body": {
+      "kind": "json-object",
+      "fields": {
+        "release": { "kind": "parameter", "dimension": "releaseVersion" },
+        "requestId": { "kind": "source", "source": "correlation.requestId" },
+        "decisionId": { "kind": "source", "source": "correlation.decisionId" },
+        "executionId": { "kind": "source", "source": "correlation.executionId" }
+      }
+    },
+    "credential": { "kind": "bearer", "tokenEnv": "FRONTERA_SYNTHETIC_EXECUTOR_TOKEN" },
+    "timeoutMs": 10000
+  },
+  "route": { "action": "synthetic.deploy-release", "adapterId": "synthetic-executor-verified" },
+  "executionCapabilities": {
+    "issuer": "frontera-authority-pilot-host",
+    "issuanceLedgerPath": "/var/lib/frontera/execution-capability-issuance.sqlite",
+    "audiences": [{ "audience": "synthetic-executor-pilot", "actions": ["synthetic.deploy-release"], "bindingFormats": ["frontera.http-request-binding.v1"] }],
+    "adapters": [{ "adapterId": "synthetic-executor-verified", "audience": "synthetic-executor-pilot" }],
+    "receiptEvidence": {
+      "storePath": "/var/lib/frontera/execution-evidence/receipt-evidence.sqlite",
+      "trustedExecutor": { "executorId": "frontera-synthetic-executor-pilot", "keyId": "frontera-synthetic-executor-receipt-1", "audiences": ["synthetic-executor-pilot"] }
+    }
+  },
+  "executor": {
+    "format": "frontera.reference-executor-configuration.v1",
+    "environment": "reference-synthetic",
+    "executorId": "frontera-synthetic-executor-pilot",
+    "audience": "synthetic-executor-pilot",
+    "issuer": "frontera-authority-pilot-host",
+    "permittedActions": ["synthetic.deploy-release"],
+    "permittedResources": ["synthetic-environment"],
+    "bindingFormats": ["frontera.http-request-binding.v1"],
+    "expectedOrigin": "https://synthetic-executor.frontera-systems.com:8443",
+    "methods": ["POST"],
+    "clientCredential": { "kind": "bearer", "tokenEnv": "FRONTERA_SYNTHETIC_EXECUTOR_TOKEN" },
+    "maximumLifetimeMs": 60000,
+    "maximumClockSkewMs": 5000,
+    "statusPolicy": "offline-only",
+    "listen": { "host": "127.0.0.1", "port": 8445 },
+    "mode": "synthetic-execution",
+    "syntheticExecution": {
+      "effect": "frontera.synthetic-deployment-record.v1",
+      "consumptionLedgerPath": "/var/lib/frontera/synthetic-executor/ledger/consumption.sqlite",
+      "outputDirectory": "/var/lib/frontera/synthetic-executor/output",
+      "syntheticActions": ["synthetic.deploy-release"]
+    },
+    "executorReceipts": {
+      "keyId": "frontera-synthetic-executor-receipt-1",
+      "privateKeyFile": "/var/lib/frontera/synthetic-executor/keys/receipt-key.pem",
+      "receiptLedgerPath": "/var/lib/frontera/synthetic-executor/receipts/receipts.sqlite"
+    }
+  }
+}

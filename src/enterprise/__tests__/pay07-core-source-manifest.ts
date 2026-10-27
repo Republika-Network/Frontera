@@ -159,6 +159,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'execution-capability-gate': 'G-02C0 opt-in pre-send gate (issue, verify, emergency re-check) for listed Generic HTTP adapters; composed only when the governed-action file lists them, never by the qualified runs',
       'executor-receipt': 'G-02C1C executor receipt contract, standalone verifier and (G-02C1D) receipt transport codec (no signing); used by the reference executor and composed by the Host receipt evidence module',
       'execution-capability-presentation': 'G-02C1A pure codec for the capability presentation envelope; used by the reference executor and (G-02C1D) the G-02C0 gate encoder',
+      'synthetic-execution-verification': 'AUTH-04D2S offline verifier of a synthetic execution (pure, keyless; composed by no Host, route or store); not on the governed payment path',
       'execution-receipt-evidence': 'G-02C1D opt-in Host receipt evidence (verification, issuance correlation, additive store); composed only when the governed-action file configures receiptEvidence, never by the qualified runs',
       'external-authority-signer': 'CORE-02 external signer; not composed by the qualified runs',
       health: 'Host health surface',
