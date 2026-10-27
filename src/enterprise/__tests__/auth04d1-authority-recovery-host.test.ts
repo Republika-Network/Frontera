@@ -582,6 +582,9 @@ describe('AUTH-04D1 — Authority pilot backup and restore under CORE-07 (softwa
         AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN: undefined,
         AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID: undefined,
         AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_PUBLIC_KEY: undefined,
+        AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS: undefined,
+        AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS: undefined,
+        AOC_ENTERPRISE_AUTHORITY_FRESHNESS_PROBE_INTERVAL_MS: undefined,
       }),
       adapter,
     );
