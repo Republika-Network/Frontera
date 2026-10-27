@@ -4,7 +4,7 @@ import { HUMAN_PASSKEY_DECISION_CHANNEL } from '../approval-authority/human-deci
 import { approvalSubjectDigest, canonicalApprovalSubject, type ApprovalSubject } from '../approval-authority/subject.js';
 import { executionIdForGrant } from '../authority-authenticity/execution-capability-issuance.js';
 import { createAuthoritySignatureRegistry, type TrustedVerificationKey } from '../authority-authenticity/signature-verification.js';
-import { executionCapabilitySigningBytes, parseExecutionCapability, type ExecutionCapability } from '../execution-capability/capability.js';
+import { EXECUTION_CAPABILITY_LIMITS, executionCapabilitySigningBytes, parseExecutionCapability, type ExecutionCapability } from '../execution-capability/capability.js';
 import { createExecutorReceiptVerifier, executorReceiptDigest, type ExecutorReceipt, type TrustedExecutor } from '../executor-receipt/index.js';
 import { canonicalSerialize } from '../governance-store/canonical-json.js';
 
@@ -35,11 +35,20 @@ import { canonicalSerialize } from '../governance-store/canonical-json.js';
  *
  * | Status | Meaning |
  * |---|---|
- * | `NOT_AUTHORIZED` | no approved CORE-05 verdict for exactly this subject: nothing here may be called authorized |
+ * | `NOT_AUTHORIZED` | nothing was attempted, and no approved CORE-05 verdict for exactly this subject stands now: current authority, never a verdict on a recorded execution |
  * | `AUTHORIZED` | approved, and no execution has been observed. Authorization is not execution |
  * | `DELIVERY_FAILED` | approved, the governed path recorded a definite non-completion, and nothing was presented to an executor |
  * | `SIMULATED_SUCCESS` | approved, and a pinned synthetic executor signed that it recorded the one synthetic effect for exactly this execution |
- * | `EXECUTION_UNKNOWN` | anything else: missing, unverifiable, contradictory or unconfirmed evidence. Fail closed |
+ * | `EXECUTION_UNKNOWN` | anything else: missing, unverifiable, contradictory or unconfirmed evidence — including an execution on record whose approval no longer stands (`APPROVAL_WITHDRAWN_ORDER_UNPROVEN`). Fail closed |
+ *
+ * ## Historical authorization versus current authority
+ *
+ * A revocation, or a withdrawn approver standing, that CORE-05 reports *now* is never read as proof that an
+ * execution already on record was unauthorized: CORE-05's view is live lineage (it re-resolves standing at every
+ * read), and no existing record orders the withdrawal against the execution's claim. Expiry is different: the
+ * Host-signed capability is capped at the approval's `notAfter`, and the executor-signed claim lies inside the
+ * capability, so a run inside the window is established by two signatures. Timestamps from a log are never used to
+ * order anything. Revocation still blocks every new execution: that is the governed path's re-check, unchanged.
  *
  * `SIMULATED_SUCCESS` is a simulation by construction: the action is a
  * `synthetic.*` action and the observation is a synthetic record. It is never
@@ -58,6 +67,8 @@ export const SYNTHETIC_EXECUTION_REASONS = Object.freeze([
   'APPROVAL_NOT_APPROVED',
   'APPROVAL_SUBJECT_MISMATCH',
   'APPROVAL_NOT_HUMAN_PASSKEY',
+  /** An execution is on record, and its approval no longer stands now (revoked, or its approvers' standing withdrawn); no existing record orders the withdrawal against the execution. */
+  'APPROVAL_WITHDRAWN_ORDER_UNPROVEN',
   'TRACE_MISMATCH',
   'TRACE_UNVERIFIED',
   'NOT_EXECUTED',
@@ -71,6 +82,7 @@ export const SYNTHETIC_EXECUTION_REASONS = Object.freeze([
   'RECEIPT_INVALID',
   'RECEIPT_CONFLICTING',
   'RECEIPT_NOT_COMPLETED',
+  'RECEIPT_OUTSIDE_CAPABILITY_WINDOW',
   'OUTCOME_UNCONFIRMED',
   'VERIFIED',
 ] as const);
@@ -145,6 +157,8 @@ export interface SyntheticExecutionVerification {
   readonly approval: {
     readonly approvalRequestId: string;
     readonly subjectDigest: string;
+    /** CORE-05's status as it reads now — not a statement about the execution point. */
+    readonly currentStatus: string;
     readonly approvalDigest: string | null;
     readonly approvedBy: readonly string[];
     readonly channel: string | null;
@@ -181,6 +195,8 @@ const EXECUTED_COMPLETED = 'executed-confirmed-completed';
 const EXECUTED_NOT_COMPLETED = 'executed-confirmed-not-completed';
 /** Final states in which nothing was attempted: authorized at most. */
 const NOT_ATTEMPTED = new Set(['approval-pending', 'not-executed', 'withheld-at-exercise']);
+/** Final states with no execution identity at all: the decision never reached one. */
+const NO_EXECUTION_PATH = new Set(['denied', 'indeterminate']);
 
 function digestOf(record: Omit<SyntheticExecutionVerification, 'verificationDigest'>): string {
   const hash = createHash('sha256').update(`${SYNTHETIC_EXECUTION_VERIFICATION_DIGEST_DOMAIN}\n${canonicalSerialize(record)}`, 'utf8').digest('hex');
@@ -226,15 +242,31 @@ export function createSyntheticExecutionVerifier(options: SyntheticExecutionVeri
       return Object.freeze({ ...record, verificationDigest: digestOf(record) });
     };
 
-    // 1. The approval: exactly this request and decision, an intact subject, approved, by a human passkey verdict.
+    const issued = input.issuance !== null && input.issuance.state !== 'absent';
+    const presentedAnything = input.evidence.observations.some((observation) => observation.transmission !== 'not-sent') || input.evidence.receipts.length > 0;
+    // Whether anything downstream of the approval is on record: a capability, a presentation, a receipt or an attempt.
+    const attempted = issued || presentedAnything || !(NOT_ATTEMPTED.has(trace.finalState) || NO_EXECUTION_PATH.has(trace.finalState));
+    /**
+     * Two different questions, kept apart:
+     *  - B, current authority: may this request execute now? Only CORE-05's current view answers it, and where nothing
+     *    was attempted its answer is the verdict — `NOT_AUTHORIZED` when the approval does not stand.
+     *  - A, authority at the historical execution point: once an execution is on record, a defect in the approval as it
+     *    reads now is never proof that the execution was unauthorized. CORE-05's view re-resolves revocation and
+     *    standing at every read, and no existing record orders a withdrawal against the execution's claim (the
+     *    approval chain is not in the authority event stream; only timestamps of different clocks could). So the answer
+     *    is `EXECUTION_UNKNOWN` with the precise reason — never `NOT_AUTHORIZED`, never success, never a timestamp guess.
+     */
+    const refuse = (reason: SyntheticExecutionReason): SyntheticExecutionVerification => result(attempted ? 'EXECUTION_UNKNOWN' : 'NOT_AUTHORIZED', reason);
+
+    // 1. The approval: exactly this request and decision, an intact subject, standing now, by a human passkey verdict.
     const approval = input.approval;
-    if (approval === null) return result('NOT_AUTHORIZED', 'APPROVAL_MISSING');
+    if (approval === null) return refuse('APPROVAL_MISSING');
     const subject = approval.subject;
     let recomputed: string;
     try {
       recomputed = approvalSubjectDigest(canonicalApprovalSubject(subject));
     } catch {
-      return result('NOT_AUTHORIZED', 'APPROVAL_SUBJECT_MISMATCH');
+      return refuse('APPROVAL_SUBJECT_MISMATCH');
     }
     if (
       recomputed !== approval.subjectDigest ||
@@ -244,27 +276,30 @@ export function createSyntheticExecutionVerifier(options: SyntheticExecutionVeri
       subject.decisionId !== trace.decisionId ||
       subject.organizationId !== trace.organizationId
     ) {
-      return result('NOT_AUTHORIZED', 'APPROVAL_SUBJECT_MISMATCH');
+      return refuse('APPROVAL_SUBJECT_MISMATCH');
     }
-    const approving = approval.state.verdicts.filter((verdict) => verdict.kind === 'approved' && verdict.counted);
-    const channel = approving.length > 0 && approving.every((verdict) => verdict.recordedBy === approving[0]?.recordedBy) ? (approving[0]?.recordedBy ?? null) : null;
-    approvalPart = { approvalRequestId: approval.approvalRequestId, subjectDigest: approval.subjectDigest, approvalDigest: approval.state.approvalDigest ?? null, approvedBy: [...approval.state.approvers], channel };
-    operation = { action: subject.action, resource: subject.resourceScope };
-    // `approval-expired` is an approval whose window has since closed: it can still account for an execution that ran
-    // inside the window (checked against the capability below), never for one that has not.
     const status = approval.state.status;
+    const approving = approval.state.verdicts.filter((verdict) => verdict.kind === 'approved' && verdict.counted);
+    // Approving rows stay in the append-only history when standing is later withdrawn (they stop being counted).
+    const approvedRows = approval.state.verdicts.filter((verdict) => verdict.kind === 'approved');
+    const named = approving.length > 0 ? approving : approvedRows;
+    const channel = named.length > 0 && named.every((verdict) => verdict.recordedBy === named[0]?.recordedBy) ? (named[0]?.recordedBy ?? null) : null;
+    approvalPart = { approvalRequestId: approval.approvalRequestId, subjectDigest: approval.subjectDigest, currentStatus: status, approvalDigest: approval.state.approvalDigest ?? null, approvedBy: [...approval.state.approvers], channel };
+    operation = { action: subject.action, resource: subject.resourceScope };
+    if (requireHuman && approvedRows.some((verdict) => verdict.recordedBy !== HUMAN_PASSKEY_DECISION_CHANNEL)) return refuse('APPROVAL_NOT_HUMAN_PASSKEY');
+    // `approval-expired` is an approval whose window has since closed: it can still account for an execution that ran
+    // inside the window — the Host-signed capability is capped at `notAfter` and the executor-signed claim lies inside
+    // the capability (both checked below) — never for one that has not.
     const lapsed = status === 'approval-expired';
     const notAfter = approval.state.notAfter;
-    if ((status !== 'approved' && !lapsed) || approving.length === 0 || notAfter === undefined) return result('NOT_AUTHORIZED', 'APPROVAL_NOT_APPROVED');
-    if (status === 'approved' && approval.state.approvalDigest === undefined) return result('NOT_AUTHORIZED', 'APPROVAL_NOT_APPROVED');
-    if (requireHuman && approving.some((verdict) => verdict.recordedBy !== HUMAN_PASSKEY_DECISION_CHANNEL)) return result('NOT_AUTHORIZED', 'APPROVAL_NOT_HUMAN_PASSKEY');
+    const stands = (status === 'approved' && approval.state.approvalDigest !== undefined) || lapsed;
+    if (!stands || approving.length === 0 || notAfter === undefined) {
+      return refuse(attempted && approvedRows.length > 0 ? 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN' : 'APPROVAL_NOT_APPROVED');
+    }
 
     // 2. The trace: this execution, and a verified projection. A trace that names another execution is a contradiction.
     if (trace.executionId !== undefined && trace.executionId !== executionId) return result('EXECUTION_UNKNOWN', 'TRACE_MISMATCH');
     if (!trace.verified) return result('EXECUTION_UNKNOWN', 'TRACE_UNVERIFIED');
-
-    const issued = input.issuance !== null && input.issuance.state !== 'absent';
-    const presentedAnything = input.evidence.observations.some((observation) => observation.transmission !== 'not-sent') || input.evidence.receipts.length > 0;
 
     // 3. Nothing attempted: authorized, and no more — unless something was issued or presented anyway.
     if (NOT_ATTEMPTED.has(trace.finalState)) {
@@ -338,6 +373,10 @@ export function createSyntheticExecutionVerifier(options: SyntheticExecutionVeri
       observationDigest: receipt.observation?.digest ?? null,
     };
     if (receipt.outcome !== 'completed-observed' || receipt.consumption.ledgerState !== 'completed' || receipt.observation === null) return result('EXECUTION_UNKNOWN', 'RECEIPT_NOT_COMPLETED');
+    // The executor-signed claim lies inside the Host-signed capability window (the G-02C1D recorder's own bound), and so
+    // before the approval's notAfter the capability is capped at. Ordering from two signed artifacts, not from a log.
+    const claimedAt = Date.parse(receipt.consumption.claimedAt);
+    if (!(claimedAt >= Date.parse(capability.issuedAt) - EXECUTION_CAPABILITY_LIMITS.maximumClockSkewMs && claimedAt < Date.parse(capability.expiresAt))) return result('EXECUTION_UNKNOWN', 'RECEIPT_OUTSIDE_CAPABILITY_WINDOW');
     // The Host's own observation of that exchange must agree: a completed HTTP exchange, the receipt correlated and consistent.
     if (!input.evidence.observations.some((observation) => observation.disposition === 'receipt-correlated' && observation.agreement === 'consistent' && observation.httpOutcome === 'completed')) {
       return result('EXECUTION_UNKNOWN', 'RECEIPT_INVALID');

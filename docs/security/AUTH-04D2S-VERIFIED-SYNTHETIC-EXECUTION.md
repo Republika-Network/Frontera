@@ -50,11 +50,34 @@ The outcome is one of five statuses. It **fails closed**: anything missing, unve
 
 | Status | Meaning |
 |---|---|
-| `NOT_AUTHORIZED` | No approved verdict for exactly this subject, by a human passkey decision. |
+| `NOT_AUTHORIZED` | Nothing was attempted, and no approved verdict for exactly this subject, by a human passkey decision, stands now. This is a statement about **current authority**, never a verdict on an execution already recorded. |
 | `AUTHORIZED` | Approved, and nothing issued or presented. **Authorization is not execution.** |
 | `DELIVERY_FAILED` | A definite non-completion recorded by the governed path, with nothing presented to any executor (the `.invalid` route). |
 | `SIMULATED_SUCCESS` | Every link above verifies. |
-| `EXECUTION_UNKNOWN` | Anything else: an unconfirmed outcome, a lost response, an outage, a missing, invalid or conflicting receipt, an unverified trace. |
+| `EXECUTION_UNKNOWN` | Anything else: an unconfirmed outcome, a lost response, an outage, a missing, invalid or conflicting receipt, an unverified trace. This includes an execution on record whose approval no longer stands now (`APPROVAL_WITHDRAWN_ORDER_UNPROVEN`), and any other approval defect once an execution is on record. |
+
+### Historical authorization (A) versus current authority (B)
+
+CORE-05's view is **live lineage**: it re-resolves revocation and approver standing at every read. CORE-05 records no approval events in the authority event stream (P8), and no record orders a withdrawal against an execution's claim. Only Host and executor timestamps could, and those come from different clocks.
+
+So the verifier never reads a withdrawal reported now as proof that a recorded execution was unauthorized, and never invents the ordering. Expiry differs: the Host-signed capability is capped at `notAfter`, and the executor-signed claim must lie inside the capability window. Two signatures establish that the run happened inside the approval's window.
+
+| Scenario | Result |
+|---|---|
+| Approval valid at execution, still approved | `SIMULATED_SUCCESS` |
+| Approval expires after execution | `SIMULATED_SUCCESS`: the capability ⊆ approval window and the claim ⊆ capability window, both signed |
+| Approval window shorter than the capability | `EXECUTION_UNKNOWN` / `CAPABILITY_MISMATCH` |
+| Approval revoked after execution | `EXECUTION_UNKNOWN` / `APPROVAL_WITHDRAWN_ORDER_UNPROVEN` |
+| Approver standing revoked after execution | `EXECUTION_UNKNOWN` / `APPROVAL_WITHDRAWN_ORDER_UNPROVEN` |
+| Passkey credential revoked after execution | `SIMULATED_SUCCESS`: CORE-05 still counts the verdict, made on the passkey channel while the credential was valid; the credential cannot sign in again |
+| Approval or standing revoked before execution | The governed path withholds. Nothing is issued. `NOT_AUTHORIZED` |
+| Capability issued before revocation, presented after | The executor acts, and the Host records the receipt as evidence. `EXECUTION_UNKNOWN` / `APPROVAL_WITHDRAWN_ORDER_UNPROVEN` |
+| Claim outside the capability window | `EXECUTION_UNKNOWN` / `RECEIPT_OUTSIDE_CAPABILITY_WINDOW` |
+| Forged or missing verdict timestamps | No effect: no timestamp is read to order a withdrawal. Missing approving rows → `EXECUTION_UNKNOWN` / `APPROVAL_NOT_APPROVED` |
+
+Revocation still blocks every new execution immediately. The governed path re-reads the approval before the claim (unchanged), and CI shows that after each revocation a new request does not execute.
+
+**What would establish the historical ordering:** an approval event (verdict, revocation, standing withdrawal) in the same hash-chained authority event stream as the execution claim. A recorded execution could then be shown to precede a later withdrawal by chain position. That requires changing CORE-05/P8 and is **not** done here.
 
 ## 3. The verified synthetic receipt
 
@@ -130,7 +153,8 @@ CI asserts the decision status still says `not_observed` after a verified `SIMUL
 | 12 | Revoked human standing | test 12 |
 | 13 | Revoked credential | test 13–14 |
 | 14 | Replayed assertion | test 13–14 |
-| 15 | Modified receipt | test 1–5 (tampered text, forged signature, unpinned authority key) |
+| 15 | Modified receipt | test 1–5 (tampered text, forged signature, unpinned authority key, a validly signed receipt claimed outside the capability window) |
+| — | Temporal authorization (historical versus current) | test 1–5 (expiry after, short window, revoked now, standing now, forged and missing ordering); tests 20–23 live (credential, approval and standing revoked after execution; a capability presented after revocation), each followed by a check that the next request does not execute |
 | 16 | Unauthenticated executor request | test 16 |
 | 17 | `.invalid` delivery failure | test 17 (`execution_failed` / `PROVIDER_UNAVAILABLE`, `DELIVERY_FAILED`, zero downstream footprint) |
 | 18 | Lost executor response | test 18 |
@@ -155,7 +179,6 @@ The software authenticator is a CI fixture. **No physical iPhone testing is clai
 - **Co-location:** the executor runs on the Host machine. A compromise of that machine could forge receipts. This is acceptable for a synthetic demonstration only; an independent executor host is a production requirement.
 - **Software keys:** the receipt key and the authority key are both software keys (G-02C1C/D production blockers stand).
 - **Operator-side verification in the live pilot:** the verifier is qualified in CI over the Host's real records. In the pilot, its inputs are the CORE-05 view, the ASSURE-01 trace (an organization-scoped auditor key), the issuance ledger and the evidence store. Packaging that as an operator tool is a follow-up. No new HTTP route was added for it.
-- **Lapsed or revoked approvals:**
-  - after a later revocation, a past execution's verification reports `NOT_AUTHORIZED`. This is conservative: CORE-05 reports the approval's current state;
-  - an approval in `approval-expired` still accounts for an execution whose capability expired within its window.
+- **Withdrawn approvals:** an execution whose approval is later revoked, or whose approver later loses standing, verifies as `EXECUTION_UNKNOWN` (`APPROVAL_WITHDRAWN_ORDER_UNPROVEN`). Existing records cannot order the withdrawal against the execution (§2). An approval in `approval-expired` still accounts for a run inside its window.
+- **The CORE-05 view is an input:** the verifier recomputes the subject digest but does not itself verify the approval chain's signed head. It relies on the ASSURE-01 trace verification (`verified`, which includes the approval chain's authenticity) and on the view coming from the Host's command port.
 - **Unchanged from AUTH-04D2A:** F2, F3, F5 and F6 remain unresolved and are not accepted. The environment stays synthetic-only.

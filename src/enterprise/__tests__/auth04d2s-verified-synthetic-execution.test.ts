@@ -15,7 +15,8 @@ import { AUTHORITY_CSRF_HEADER } from '../authority-gateway/index.js';
 import type { HumanAuthorityPort } from '../composition/human-authority-composition.js';
 import { GENERIC_HTTP_REQUEST_BINDING_FORMAT } from '../execution-adapters/generic-http/request-binding.js';
 import { openExecutionCapabilityIssuanceLedger, type ExecutionCapabilityIssuanceRecord } from '../execution-capability-issuance/index.js';
-import { parseExecutorReceipt } from '../executor-receipt/index.js';
+import { parseExecutionCapability } from '../execution-capability/index.js';
+import { parseExecutorReceipt, serializeExecutorReceipt } from '../executor-receipt/index.js';
 import { openExecutionReceiptEvidenceStore } from '../execution-receipt-evidence/index.js';
 import { bootEnterpriseHost, type EnterpriseHost } from '../host/enterprise-host.js';
 import { INTENDED_PRODUCTION_RP_ID, identityAdministratorFor, type IdentityAdministrator } from '../human-identity/index.js';
@@ -36,6 +37,7 @@ import {
   QUORUM_1,
   TRUST_DOMAIN,
   assertAwaitingApproval,
+  bearer,
   call,
   createWorkspace,
   ctrl04Env,
@@ -51,7 +53,7 @@ import {
 } from './ctrl04-host-fixture.js';
 import { CREDENTIAL_TOKEN } from './g02c0-execution-binding-fixture.js';
 import { BEARER_ENV, type SpawnedExecutor } from './g02c1a-reference-executor-fixture.js';
-import { E2E_EXECUTOR_ID, E2E_RECEIPT_KEY_ID, e2eTrustedExecutor, eventually, executorDomain, loopbackHostPrimitive, spawnE2EExecutor, startRelay, type ExecutorDomain, type Relay } from './g02c1d-end-to-end-fixture.js';
+import { E2E_EXECUTOR_ID, E2E_RECEIPT_KEY_ID, e2eTrustedExecutor, eventually, executorDomain, loopbackHostPrimitive, signReceiptText, spawnE2EExecutor, startRelay, type ExecutorDomain, type Relay } from './g02c1d-end-to-end-fixture.js';
 
 /**
  * AUTH-04D2S — verified synthetic execution, end to end, on the canonical shipped Host.
@@ -373,6 +375,8 @@ async function provision(baseUrl: string): Promise<World> {
   // execution standing only, its actor exists) and approver-nostanding (no actor yet).
   await standing(baseUrl, 'operator:approver-e', APPROVE_RELEASE, [SYNTHETIC_ENV], 'approval-standing-approver-e-synthetic');
   await standing(baseUrl, await operatorActor(baseUrl, 'approver-nostanding'), APPROVE_RELEASE, [SYNTHETIC_ENV], 'approval-standing-approver-nostanding-synthetic');
+  // approver-d: CTRL-04 gave it standing for another approver action only.
+  await standing(baseUrl, 'operator:approver-d', APPROVE_RELEASE, [SYNTHETIC_ENV], 'approval-standing-approver-d-synthetic');
   return { releaseCredential: org.agentCredential, syntheticCredential };
 }
 
@@ -538,7 +542,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     dir = workspace.dir();
     booted = await boot(dir, witness, domain.publicKeyPem, true);
     world = await provision(booted.baseUrl);
-    for (const operatorId of [CTO.operatorId, 'approver-a', 'approver-e', 'approver-nostanding']) humans.set(operatorId, await enrol(booted.authority, operatorId));
+    for (const operatorId of [CTO.operatorId, 'approver-a', 'approver-d', 'approver-e', 'approver-nostanding']) humans.set(operatorId, await enrol(booted.authority, operatorId));
     route = relay.target;
   });
 
@@ -657,18 +661,63 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.deepEqual(verifier().verify({ ...input, trace: { ...input.trace, verified: false } }).reason, 'TRACE_UNVERIFIED');
 
     // 6–8. Wrong organization, wrong request, wrong subject: the approval of one request never accounts for anything else.
+    // With an execution on record, a defect in the approval is EXECUTION_UNKNOWN with its precise reason — never success,
+    // and never a claim that the recorded execution was unauthorized.
     const wrongOrg = verifier().verify({ ...input, trace: { ...input.trace, organizationId: 'org-elsewhere' } });
-    assert.deepEqual([wrongOrg.status, wrongOrg.reason], ['NOT_AUTHORIZED', 'APPROVAL_SUBJECT_MISMATCH']);
+    assert.deepEqual([wrongOrg.status, wrongOrg.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_SUBJECT_MISMATCH']);
     const wrongRequest = verifier().verify({ ...input, trace: { ...input.trace, requestId: 'request-elsewhere' } });
-    assert.deepEqual([wrongRequest.status, wrongRequest.reason], ['NOT_AUTHORIZED', 'APPROVAL_SUBJECT_MISMATCH']);
-    assert.ok(input.approval !== null);
-    const wrongSubject = verifier().verify({ ...input, approval: { ...input.approval, subjectDigest: `sha256:${'0'.repeat(64)}` } });
-    assert.deepEqual([wrongSubject.status, wrongSubject.reason], ['NOT_AUTHORIZED', 'APPROVAL_SUBJECT_MISMATCH']);
-    const alteredSubject = verifier().verify({ ...input, approval: { ...input.approval, subject: { ...input.approval.subject, resourceScope: PROD } } });
-    assert.deepEqual([alteredSubject.status, alteredSubject.reason], ['NOT_AUTHORIZED', 'APPROVAL_SUBJECT_MISMATCH']);
+    assert.deepEqual([wrongRequest.status, wrongRequest.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_SUBJECT_MISMATCH']);
+    const approval = input.approval;
+    assert.ok(approval !== null);
+    const wrongSubject = verifier().verify({ ...input, approval: { ...approval, subjectDigest: `sha256:${'0'.repeat(64)}` } });
+    assert.deepEqual([wrongSubject.status, wrongSubject.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_SUBJECT_MISMATCH']);
+    const alteredSubject = verifier().verify({ ...input, approval: { ...approval, subject: { ...approval.subject, resourceScope: PROD } } });
+    assert.deepEqual([alteredSubject.status, alteredSubject.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_SUBJECT_MISMATCH']);
     // An operator-plane (bearer) verdict is not a human passkey decision.
-    const bearerChannel = verifier().verify({ ...input, approval: { ...input.approval, state: { ...input.approval.state, verdicts: input.approval.state.verdicts.map((verdict) => ({ ...verdict, recordedBy: 'operator-plane' })) } } });
-    assert.deepEqual([bearerChannel.status, bearerChannel.reason], ['NOT_AUTHORIZED', 'APPROVAL_NOT_HUMAN_PASSKEY']);
+    const bearerChannel = verifier().verify({ ...input, approval: { ...approval, state: { ...approval.state, verdicts: approval.state.verdicts.map((verdict) => ({ ...verdict, recordedBy: 'operator-plane' })) } } });
+    assert.deepEqual([bearerChannel.status, bearerChannel.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_NOT_HUMAN_PASSKEY']);
+    assert.deepEqual(verifier().verify({ ...input, approval: null }).status, 'EXECUTION_UNKNOWN', 'a missing approval for a recorded execution is unknown, not unauthorized');
+
+    // Temporal authorization: the approval as it reads now versus the approval at the execution point.
+    const withState = (state: Partial<typeof approval.state>) => verifier().verify({ ...input, approval: { ...approval, state: { ...approval.state, ...state } } });
+    // Expiry after the execution: the signed capability is capped at notAfter and the signed claim lies inside it.
+    // (A lapsed approval carries no approval digest; CORE-05 states one only while approved.)
+    const lapsedState = { status: 'approval-expired', approvers: approval.state.approvers, verdicts: approval.state.verdicts, ...(approval.state.notAfter !== undefined ? { notAfter: approval.state.notAfter } : {}) };
+    const lapsedAfter = verifier().verify({ ...input, approval: { ...approval, state: lapsedState } });
+    assert.deepEqual([lapsedAfter.status, lapsedAfter.reason, lapsedAfter.approval?.currentStatus], ['SIMULATED_SUCCESS', 'VERIFIED', 'approval-expired']);
+    // An approval window that closed before the capability's: never success.
+    const capability = parseExecutionCapability(input.issuance?.canonical ?? '');
+    assert.ok(capability.ok);
+    const shortWindow = withState({ notAfter: new Date(Date.parse(capability.capability.expiresAt) - 1).toISOString() });
+    assert.deepEqual([shortWindow.status, shortWindow.reason], ['EXECUTION_UNKNOWN', 'CAPABILITY_MISMATCH']);
+    // Revocation after the execution, as CORE-05 reports it now.
+    const revokedNow = withState({ status: 'revoked' });
+    assert.deepEqual([revokedNow.status, revokedNow.reason, revokedNow.approval?.currentStatus], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN', 'revoked']);
+    // Standing withdrawn after the execution: CORE-05 re-resolves the request to pending and stops counting the verdict.
+    const uncounted = approval.state.verdicts.map((verdict) => ({ ...verdict, counted: false }));
+    const standingNow = withState({ status: 'pending', approvers: [], verdicts: uncounted });
+    assert.deepEqual([standingNow.status, standingNow.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN']);
+    // Forged ordering: verdict timestamps that claim the decision came long before (or long after) change nothing — none is read.
+    const full = await viewOf(view.requestId);
+    assert.ok(full !== null);
+    for (const shift of [-365 * 86_400_000, 365 * 86_400_000]) {
+      const shifted = full.state.verdicts.map((verdict) => ({ ...verdict, counted: false, recordedAt: new Date(Date.parse(verdict.recordedAt) + shift).toISOString() }));
+      const forged = verifier().verify({ ...input, approval: { ...full, state: { ...full.state, status: 'pending', approvers: [], verdicts: shifted } } });
+      assert.deepEqual([forged.status, forged.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN']);
+    }
+    // Missing ordering evidence (no approving row at all) with an execution on record: unknown, never authorized.
+    const noRows = withState({ status: 'revoked', approvers: [], verdicts: [] });
+    assert.deepEqual([noRows.status, noRows.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_NOT_APPROVED']);
+    // Restored status with uncounted rows: ambiguous, so not success.
+    assert.notEqual(withState({ verdicts: uncounted }).status, 'SIMULATED_SUCCESS');
+
+    // A validly signed receipt whose claim lies outside the capability window is never success.
+    const stored = parseExecutorReceipt(presented.receipt);
+    assert.ok(stored.ok);
+    const late = new Date(Date.parse(capability.capability.expiresAt) + 1_000).toISOString();
+    const lateText = serializeExecutorReceipt({ ...stored.receipt, consumption: { ...stored.receipt.consumption, claimedAt: late }, observedAt: late });
+    const lateReceipt = verifier().verify({ ...input, evidence: { ...input.evidence, receipts: [{ sequence: 1, presented: { receipt: lateText, signature: signReceiptText(domain.keyFile, lateText) } }] } });
+    assert.deepEqual([lateReceipt.status, lateReceipt.reason], ['EXECUTION_UNKNOWN', 'RECEIPT_OUTSIDE_CAPABILITY_WINDOW']);
   });
 
   it('6–8 on the live path: a decision for another subject, and a challenge for one request used on another, are refused; nothing is recorded or executed', async () => {
@@ -830,6 +879,95 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.notEqual(verification.status, 'SIMULATED_SUCCESS');
     assert.ok(['EXECUTION_UNKNOWN', 'DELIVERY_FAILED'].includes(verification.status), JSON.stringify(verification));
     assert.equal(verification.receipt, null);
+  });
+
+  // ── Temporal authorization: the execution point (A) versus current authority (B) ──────────────────
+
+  /** A passkey-approved synthetic request, executed and verified to SIMULATED_SUCCESS. */
+  async function executedBy(operatorId: string, prefix: string): Promise<{ readonly key: string; readonly view: ApprovalRequestView; readonly executionId: string }> {
+    route = relay.target;
+    const who = human(operatorId);
+    const { key, view } = await pendingSynthetic(prefix);
+    assert.equal((await decide(await signedIn(booted.gatewayPort, who), who, view, 'approve')).decided.status, 200);
+    const reply = await govern(booted.baseUrl, world.syntheticCredential, synthetic(key));
+    assert.equal(reply.body['status'], 'executed', reply.text);
+    const executionId = reply.body['executionId'] as string;
+    await eventually(async () => (await evidenceOf(executionId)).evidence.length > 0);
+    assert.equal((await verify(view.requestId)).status, 'SIMULATED_SUCCESS');
+    return { key, view, executionId };
+  }
+
+  it('20 — a credential revoked after the execution: the passkey decision stays history (SIMULATED_SUCCESS); that credential decides nothing new', async () => {
+    const { view } = await executedBy('approver-e', 'auth04d2s-credential-after');
+    await booted.authority.identity.revokeCredential(administrator(), human('approver-e').credentialId, 'device lost after the decision');
+    const after = await verify(view.requestId);
+    assert.deepEqual([after.status, after.approval?.currentStatus], ['SIMULATED_SUCCESS', 'approved'], 'CORE-05 still counts the verdict the passkey made when it was valid');
+    // B: the revoked credential cannot sign in, so it cannot decide a new request.
+    const browser = new Browser(booted.gatewayPort);
+    const options = await browser.send('POST', '/authority/v1/session/login/options');
+    assert.equal(options.status, 200, options.text);
+    const refused = await browser.send('POST', '/authority/v1/session/login', { assertion: human('approver-e').device.assert(options.body['publicKey'] as AssertionOptions) });
+    assert.notEqual(refused.status, 200, refused.text);
+  });
+
+  it('21 — the approval revoked after the execution: never re-read as NOT_AUTHORIZED; EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); nothing re-executes', async () => {
+    const { key, view } = await executedBy(CTO.operatorId, 'auth04d2s-revoked-after');
+    const effectsBefore = effects();
+    const revoked = await call(booted.baseUrl, 'POST', `/api/admin/approvals/${encodeURIComponent(view.approvalRequestId)}/revoke`, { authorization: bearer(CTO_SECRET), body: { subjectDigest: view.subjectDigest, reason: 'withdrawn after the release' } });
+    assert.equal(revoked.status, 200, revoked.text);
+    assert.equal((await viewOf(view.requestId))?.state.status, 'revoked');
+    const after = await verify(view.requestId);
+    assert.deepEqual([after.status, after.reason, after.approval?.currentStatus], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN', 'revoked'], JSON.stringify(after));
+    assert.equal(after.receipt?.outcome, 'completed-observed', 'the signed receipt is still reported, as evidence, not as success');
+    // B: the same key never executes again, and nothing new happens downstream.
+    const again = await govern(booted.baseUrl, world.syntheticCredential, synthetic(key));
+    assert.ok(again.body['status'] !== 'executed' || again.body['replayed'] === true, `answered from the record, never a new execution: ${again.text}`);
+    assert.equal(effects(), effectsBefore);
+  });
+
+  it('22 — the approver’s standing withdrawn after the execution: EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); that human decides nothing new', async () => {
+    const { view } = await executedBy('approver-d', 'auth04d2s-standing-after');
+    const revoked = await call(booted.baseUrl, 'POST', '/api/admin/authority/entities/authority-grant/approval-standing-approver-d-synthetic/revoke', { authorization: AUTH.responder, body: { reason: 'left the change board after the release' } });
+    assert.equal(revoked.status, 200, revoked.text);
+    const after = await verify(view.requestId);
+    assert.deepEqual([after.status, after.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN'], JSON.stringify(after));
+    // B: a new request is not in this human's inbox, and no challenge is issued.
+    const fresh = await pendingSynthetic('auth04d2s-standing-after-new');
+    const browser = await signedIn(booted.gatewayPort, human('approver-d'));
+    const challenge = await browser.send('POST', `/authority/v1/approvals/${encodeURIComponent(fresh.view.approvalRequestId)}/decision-challenges`, { subjectDigest: fresh.view.subjectDigest, verdict: 'approve' });
+    assert.notEqual(challenge.status, 200, challenge.text);
+    assertAwaitingApproval(await govern(booted.baseUrl, world.syntheticCredential, synthetic(fresh.key)));
+  });
+
+  it('23 — a capability issued before a revocation and presented after it: the executor acts, the Host records the receipt, and the verification is EXECUTION_UNKNOWN — never success; nothing new executes', async () => {
+    const delayRelay = await startRelay(domain.root, executor.port, { delayMs: 2_000 });
+    try {
+      const cto = human(CTO.operatorId);
+      const { key, view } = await pendingSynthetic('auth04d2s-presented-after');
+      assert.equal((await decide(await signedIn(booted.gatewayPort, cto), cto, view, 'approve')).decided.status, 200);
+      route = delayRelay.target;
+      const effectsBefore = effects();
+      const running = govern(booted.baseUrl, world.syntheticCredential, synthetic(key));
+      // The capability is issued and on its way (the relay holds it) when the approver's standing is revoked.
+      await eventually(async () => delayRelay.requests.length > 0);
+      const revoked = await call(booted.baseUrl, 'POST', '/api/admin/authority/entities/authority-grant/approval-standing-cto/revoke', { authorization: AUTH.responder, body: { reason: 'revoked while a capability was in flight' } });
+      assert.equal(revoked.status, 200, revoked.text);
+      const reply = await running;
+      route = relay.target;
+      const executionId = reply.body['executionId'] as string;
+      await eventually(async () => (await evidenceOf(executionId)).observations.length > 0);
+      assert.equal(effects() - effectsBefore, 1, 'the executor performed the one synthetic effect the capability allowed');
+      const after = await verify(view.requestId);
+      assert.notEqual(after.status, 'SIMULATED_SUCCESS');
+      assert.deepEqual([after.status, after.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN'], JSON.stringify(after));
+      // B: revocation blocks every new execution at once.
+      const fresh = await pendingSynthetic('auth04d2s-presented-after-new');
+      assertAwaitingApproval(await govern(booted.baseUrl, world.syntheticCredential, synthetic(fresh.key)));
+      assert.equal(effects() - effectsBefore, 1);
+    } finally {
+      route = relay.target;
+      await delayRelay.close();
+    }
   });
 });
 
