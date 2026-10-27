@@ -341,7 +341,6 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
         channel.settled().then(() => 'settled' as const),
         new Promise<'interrupted'>((resolveDeadline) => {
           timer = setTimeout(() => resolveDeadline('interrupted'), timeoutMs);
-          timer.unref?.();
         }),
       ]);
       clearTimeout(timer);

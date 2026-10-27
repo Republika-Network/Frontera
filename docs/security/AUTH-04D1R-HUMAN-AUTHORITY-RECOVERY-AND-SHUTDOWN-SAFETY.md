@@ -39,7 +39,12 @@ F2, F3, F5 and F6 are **not** shutdown problems, and the drain does not claim to
 5. **Reconcile.** Unchanged. Any consumed-but-unsettled decision is reconciled at the next start; the drain makes this rare.
 6. **Fail closed.** A write still running past the bound is cut off and fails exactly as a crash would (F3). This is logged as `enterprise.human_authority.drain_incomplete`.
 
-**Shutdown policy (bound):** `max(AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS, 9 × witness timeoutMs × maxAttempts + 5 s)`. A decision makes at most three witnessed transitions in sequence, each at most three witness calls, so a healthy but slow write is never cut (tested: a 500 ms Host bound still waits for the write's 2 s transport bound). The default is `max(30 s, 95 s)`. In practice the drain is immediate.
+**Shutdown policy (bound):** the drain uses the Host's existing shutdown bound, `AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS` (default 30 s). That is the same knob the HTTP drain uses and the process supervisor's stop grace is sized against. In practice the drain is immediate. A write cut at the bound fails closed, as a crash would. So size the deployment so that cutting never happens to a healthy write:
+
+- **Witness timeouts:** a passkey decision makes at most three witnessed transitions in sequence (identity consumption, the CORE-05 verdict, the outcome), each at most three witness calls. Keep `9 × AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS × MAX_ATTEMPTS` below the shutdown bound; for example 2 s × 1 attempt gives 18 s, under 20–30 s. With the defaults (5 s × 2) a slow but healthy witness could exceed 30 s.
+- **Supervisor grace:** a full stop can take up to the HTTP drain bound plus the human-authority drain bound plus module shutdown, so the stop grace must exceed about `2 × AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS` plus a margin. The PROD-03 pilot kit's 45 s grace with the 30 s default does **not** satisfy this once human authority is enabled. For AUTH-04D2, either set the shutdown timeout to 20 s or raise the grace to at least 75 s.
+
+A derived, longer bound was considered and rejected: it would exceed the supervisor's grace, and `SIGKILL` would then cut the write anyway (F3).
 
 No decision is acknowledged before its durable commitments complete; the existing order is unchanged. No in-flight assertion is dropped or replayed: a drained decision is recorded exactly once, and its assertion stays consumed after restart.
 
@@ -99,20 +104,21 @@ The probability of F2 and F3 is low but not zero. Their consequence is permanent
 - the deadline path fails closed;
 - the call is idempotent and validates its argument.
 
-**Host level** (`auth04d1r-graceful-shutdown-host.test.ts`, real witness behind a holding proxy):
+**Host level** (`auth04d1r-graceful-shutdown-host.test.ts`, real witness behind a holding proxy; F2 is tested at a 500 ms bound):
 - **Normal shutdown:** drained, the store closes, restart is ready.
 - **Decision mid-submission:** recorded once and readable after restart. The assertion stays consumed and is never replayed. New decisions are refused while draining.
 - **Active sign-in:** completes; a new identity write is refused while draining.
 - **Active enrolment:** completes, and the passkey is present after restart.
 - **Witness outage during the drain:** the write fails as it would, nothing is left prepared, restart works.
-- **Lost prepare answer (F2):** the drain still completes within the write's own bound, and the next start fails closed.
+- **Lost prepare answer (F2):** the drain is cut at the bound and logged, shutdown never hangs, and the next start fails closed.
 
 **Regression:** the existing AUTH-01 through AUTH-04D1 suites in the same CI run. These cover duplicate submission, missing witness, stale identity snapshot, credential revocation, rollback and restore.
 
 ## 6. Infrastructure and custody dependencies (pilot, AUTH-04D2)
 
 - **Storage:** replicated, encrypted block storage for the Host data volume and, separately, for the witness, in different failure domains, with no shared snapshot schedule.
-- **Process supervision:** sends `SIGTERM` and waits at least the drain bound before `SIGKILL`. For example, a stop timeout of 120 s with defaults; set it from the drain bound.
+- **Process supervision:** sends `SIGTERM` and waits more than `2 × AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS` plus a margin before `SIGKILL` (§2).
+- **Witness timeouts:** sized so that `9 × timeout × attempts` stays below the shutdown bound (§2).
 - **Secrets:** the secret manager holds the authority signing key, the witness token, the operator secrets and the backup key (AUTH-04D1 §6).
 - **Monitoring:**
   - the `enterprise.human_authority.drain_incomplete` log line;

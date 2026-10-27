@@ -132,7 +132,7 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
   // Commitments whose decide() may still reach CORE-05 in this process. Added before the challenge is consumed, removed after the outcome is settled.
   const inFlight = new Set<string>();
   // AUTH-04D1R: every decide() still running, so a graceful shutdown can wait for each to reach its end.
-  const running = new Set<Promise<HumanDecisionResult>>();
+  const running = new Set<Promise<void>>();
 
   const find = async (approvalRequestId: string): Promise<ApprovalRequestView | undefined> => (await approvals.list()).find((view) => view.approvalRequestId === approvalRequestId);
 
@@ -165,8 +165,13 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
       return identity.beginDecision(input);
     },
 
-    decide(assertion) {
-      const work = (async (): Promise<HumanDecisionResult> => {
+    async decide(assertion) {
+      let finished: () => void = () => undefined;
+      const done = new Promise<void>((resolveDone) => {
+        finished = resolveDone;
+      });
+      running.add(done);
+      try {
         const { contract, commitment: peeked } = identity.peekDecision(assertion);
         await admissible(contract);
         // A second submission of the same decision in this process is refused by the identity store either way; only the first owns the in-flight mark.
@@ -177,17 +182,14 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
         } finally {
           if (owner) inFlight.delete(peeked);
         }
-      })();
-      running.add(work);
-      const forget = (): void => {
-        running.delete(work);
-      };
-      work.then(forget, forget);
-      return work;
+      } finally {
+        running.delete(done);
+        finished();
+      }
     },
 
     async settled() {
-      await Promise.allSettled([...running]);
+      await Promise.all([...running]);
     },
 
     async outcome(commitment) {

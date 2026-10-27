@@ -259,15 +259,15 @@ function assertClosedClean(booted: Booted): void {
 
 const identitySlot = async (booted: Booted): Promise<Record<string, unknown> | undefined> => (await witnessRows(booted.witness.databasePath)).find((row) => row['state_kind'] === 'human-identity-state');
 
-/** Starts `host.close()` and proves it is still waiting `ms` later. */
-async function closeStillWaiting(booted: Booted, ms = 250): Promise<Promise<void>> {
+/** Starts `host.close()` and proves it is still waiting `ms` later. Wrapped, so awaiting this helper does not await the close. */
+async function closeStillWaiting(booted: Booted, ms = 250): Promise<{ readonly closing: Promise<void> }> {
   let done = false;
   const closing = booted.host.close().then(() => {
     done = true;
   });
   await sleep(ms);
   assert.equal(done, false, 'shutdown waits for the running identity write');
-  return closing;
+  return { closing };
 }
 
 // ── the drills ───────────────────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@ describe('AUTH-04D1R — graceful shutdown drains the human-decision authority',
     booted.proxy.arm('before-witness');
     const submission = browser.send('POST', '/authority/v1/decisions', { assertion }).catch(() => undefined);
     await booted.proxy.reached();
-    const closing = await closeStillWaiting(booted);
+    const { closing } = await closeStillWaiting(booted);
     // Draining: the port starts nothing new.
     await assert.rejects(booted.authority.decisions.begin({ operatorId: 'approver-a', approvalRequestId: request.approvalRequestId, subjectDigest: request.subjectDigest, verdict: 'reject' }));
     booted.proxy.release();
@@ -328,7 +328,7 @@ describe('AUTH-04D1R — graceful shutdown drains the human-decision authority',
     booted.proxy.arm('before-witness');
     const signIn = browser.send('POST', '/authority/v1/session/login', { assertion }).catch(() => undefined);
     await booted.proxy.reached();
-    const closing = await closeStillWaiting(booted);
+    const { closing } = await closeStillWaiting(booted);
     await assert.rejects(booted.authority.identity.createPrincipal(administrator(), { operatorId: 'approver-b', displayName: 'Late' }), (error: unknown) => (error as { code?: unknown }).code === 'HUMAN_IDENTITY_STORE_UNAVAILABLE' || assert.fail(String((error as { code?: unknown }).code)));
     booted.proxy.release();
     await closing;
@@ -351,7 +351,7 @@ describe('AUTH-04D1R — graceful shutdown drains the human-decision authority',
     booted.proxy.arm('before-witness');
     const registering = booted.authority.identity.finishRegistration(issued.enrolmentToken, registration);
     await booted.proxy.reached();
-    const closing = await closeStillWaiting(booted);
+    const { closing } = await closeStillWaiting(booted);
     booted.proxy.release();
     await closing;
     assert.equal((await registering).operatorId, 'approver-a');
@@ -370,7 +370,7 @@ describe('AUTH-04D1R — graceful shutdown drains the human-decision authority',
     booted.proxy.arm('witness-down');
     const signIn = browser.send('POST', '/authority/v1/session/login', { assertion }).catch(() => undefined);
     await booted.proxy.reached();
-    const closing = await closeStillWaiting(booted);
+    const { closing } = await closeStillWaiting(booted);
     booted.proxy.release();
     await closing;
     await signIn;
@@ -381,26 +381,24 @@ describe('AUTH-04D1R — graceful shutdown drains the human-decision authority',
     await again.host.close();
   });
 
-  it('CHARACTERIZED (pre-existing CORE-07 mode, not caused by shutdown): the witness records a prepare whose answer never arrives; the write fails at the transport bound, the drain still completes promptly, and the next start fails closed (PENDING_RECOVERY)', async () => {
-    // The Host's own shutdown bound is short, but the drain is never shorter than a write's own witness bounds.
+  it('BOUNDED and CHARACTERIZED: a write whose witness answer is lost (a pre-existing CORE-07 mode) is cut at AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS; shutdown never hangs, the incomplete drain is logged, and the next start fails closed (PENDING_RECOVERY), as after a crash', async () => {
     const booted = await boot({ AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: '500' });
     await provisionOrganization(booted.baseUrl);
     const cto = await enrol(booted.authority, 'approver-a');
     const browser = new Browser(booted.gatewayPort);
     const assertion = await browser.loginAssertion(cto);
-    // The witness records the prepare; its answer is withheld past the transport timeout (2 s here).
+    // The witness records the prepare; its answer is withheld (the Host's transport gives up after 2 s).
     booted.proxy.arm('after-witness');
     const signIn = browser.send('POST', '/authority/v1/session/login', { assertion }).catch(() => undefined);
     await booted.proxy.reached();
     const started = Date.now();
     await booted.host.close();
-    const elapsed = Date.now() - started;
-    assert.ok(elapsed >= 1_000, `the drain waited for the write's own bound, not the 500 ms Host bound (${String(elapsed)} ms)`);
-    assert.ok(elapsed < 15_000, 'and never hangs');
+    assert.ok(Date.now() - started < 10_000, 'bounded');
+    assert.ok(logLines.some((line) => line.includes('enterprise.human_authority.drain_incomplete')), 'an incomplete drain is logged');
     booted.proxy.release();
     await signIn;
-    assertClosedClean(booted);
+    await sleep(2_500);
     assert.notEqual((await identitySlot(booted))?.['pending_sequence'], null, 'the witness holds a prepared successor the file never got');
-    assert.equal(await bootRefused(booted), 'AUTHORITY_FRESHNESS_PENDING_RECOVERY', 'fail closed: indistinguishable from commit-then-rollback; no ceremony exists to resolve it for this store (AUTH-04D1R)');
+    assert.equal(await bootRefused(booted), 'AUTHORITY_FRESHNESS_PENDING_RECOVERY', 'fail closed: indistinguishable from commit-then-rollback; no ceremony resolves it for this store yet (AUTH-04D1R)');
   });
 });

@@ -555,8 +555,8 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       draining = true;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const deadline = new Promise<'interrupted'>((resolveDeadline) => {
+        // Not unref'd: a draining store keeps the process alive until its writes settle or the bound passes.
         timer = setTimeout(() => resolveDeadline('interrupted'), timeoutMs);
-        timer.unref?.();
       });
       // `tail` settles after the last accepted write has run to its end (it never rejects).
       const result = await Promise.race([tail.then(() => 'settled' as const), deadline]);
