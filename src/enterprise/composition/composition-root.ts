@@ -44,6 +44,7 @@ import { createAuthorityAdministrationService, type AuthorityAdministrationServi
 import { createAgentCredentialVerifier, AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
 import { createSqliteControlPlaneStore, replayProfileLifecycle, type ControlPlaneStore, type ProfileLifecycleState } from '../operator-control/control-plane-store.js';
 import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
+import { createOperatorPasskeyEnrolmentService, type OperatorPasskeyEnrolmentService } from '../operator-control/passkey-enrolment.js';
 import { assertHumanAuthorityComposable, composeHumanAuthority, type HumanAuthorityPort } from './human-authority-composition.js';
 import { createOperatorControlService, type OperatorControlService } from '../operator-control/service.js';
 import { createOperatorApprovalService, type OperatorApprovalService } from '../operator-control/approval-workflow.js';
@@ -923,6 +924,14 @@ export interface AocEnterprise {
    * Host instead). Every call is refused while the Host is not ready.
    */
   readonly humanAuthority?: HumanAuthorityPort;
+  /**
+   * AUTH-04B2 — passkey enrolment administration on the private operator plane
+   * (`/api/admin/passkey-…`): an organization administrator registers a named
+   * human and issues a one-time, ≤ 15-minute invitation. Identity only. Present
+   * only when CTRL-02 operators are configured and the human-decision authority
+   * is composed.
+   */
+  readonly operatorPasskeyEnrolment?: OperatorPasskeyEnrolmentService;
   /**
    * P8 — the **read-only** surface over the canonical authority event stream,
    * present only when governed actions are composed and a stream store is
@@ -3114,6 +3123,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         }
       : {}),
     ...(humanAuthority !== undefined ? { humanAuthority: humanAuthority.port } : {}),
+    // AUTH-04B2: the operator plane authenticates the administrator; the port is identity-only.
+    ...(humanAuthority !== undefined && operatorAuthenticator !== undefined && operators.length > 0
+      ? { operatorPasskeyEnrolment: createOperatorPasskeyEnrolmentService({ authenticator: operatorAuthenticator, port: humanAuthority.enrolmentAdministration }) }
+      : {}),
     ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
     ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
     ...(executionResolutionStore !== undefined ? { executionResolutions: createExecutionResolutionReader(executionResolutionStore) } : {}),

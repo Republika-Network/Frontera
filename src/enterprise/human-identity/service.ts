@@ -76,6 +76,8 @@ export const ENROLMENT_TTL_DEFAULT_SECONDS = 900;
 export const ENROLMENT_TTL_MAX_SECONDS = 3_600;
 export const CHALLENGE_TTL_DEFAULT_SECONDS = 300;
 export const CHALLENGE_TTL_MAX_SECONDS = 600;
+/** AUTH-04B2: at most this many open (unconsumed, unrevoked, unexpired) enrolment invitations per human. */
+export const OPEN_ENROLMENTS_MAX = 3;
 
 /** An organization administrator, as established by the operator plane. Only `identityAdministratorFor` makes one. */
 export interface IdentityAdministrator {
@@ -166,6 +168,8 @@ export interface HumanIdentityService {
   principal(operatorId: string): HumanPrincipal | undefined;
   credentialsOf(operatorId: string): readonly PasskeyCredentialView[];
   enrolment(enrolmentId: string): EnrolmentAuthorizationView | undefined;
+  /** AUTH-04B2: every enrolment invitation of one human, oldest first. Never a token: only verifiers are stored. */
+  enrolmentsOf(operatorId: string): readonly EnrolmentAuthorizationView[];
 }
 
 // ── State, derived only from the verified history ──────────────────────────
@@ -606,7 +610,11 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const secret = randomBytes(32).toString('base64url');
       const expiresAt = after(enrolmentTtl);
       await store.append(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
-        activePrincipal(project(history, organizationId), operatorId);
+        const current = project(history, organizationId);
+        activePrincipal(current, operatorId);
+        // Decided against the verified history, so concurrent issuers cannot exceed it.
+        const open = [...current.enrolments.values()].filter((record) => record.operatorId === operatorId && enrolmentState(record, iso()) === 'open').length;
+        if (open >= OPEN_ENROLMENTS_MAX) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_LIMIT', `That human already has ${String(OPEN_ENROLMENTS_MAX)} open enrolment invitations; revoke one before issuing another.`);
       });
       const record = state().enrolments.get(enrolmentId) as EnrolmentRecord;
       return { ...enrolmentView(record), enrolmentToken: `fre1.${enrolmentId}.${secret}` };
@@ -879,5 +887,6 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const record = state().enrolments.get(enrolmentId);
       return record === undefined ? undefined : enrolmentView(record);
     },
+    enrolmentsOf: (operatorId) => [...state().enrolments.values()].filter((record) => record.operatorId === operatorId).map(enrolmentView),
   };
 }

@@ -139,7 +139,7 @@ Guarantees:
 - **Deployment target:** behind a TLS proxy for `authority.frontera-systems.com` that preserves `Host`. This was **not** configured here.
 - **Tests:** CI runs the gateway on loopback inside the test process only.
 
-## 9. Bootstrap enrolment — design for founder approval (not implemented)
+## 9. Bootstrap enrolment — design (approved in principle; implemented by AUTH-04B2, see `AUTH-04B2-SECURE-CTO-PASSKEY-ENROLMENT.md`)
 
 Today a human can be enrolled only **in-process** (AUTH-02 service through
 `enterprise.humanAuthority.identity`, with an administrator built from a CTRL-02

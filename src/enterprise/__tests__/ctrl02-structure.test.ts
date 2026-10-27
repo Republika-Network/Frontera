@@ -51,8 +51,14 @@ describe('CTRL-02 structure — the measured scopes are real', () => {
 
 describe('CTRL-02 structure — identity, organization and system context never come from a request', () => {
   it('no operator-plane module reads an operator id, role, permission, organization, system flag or provenance from request data', () => {
+    // AUTH-04B2: passkey enrolment names the *target* human (whom an invitation is for) by operator id in its body.
+    // That is never the acting operator: the administrator is the authenticated principal (asserted below and in the
+    // AUTH-04B2 structure test). Exactly those reads, each through the operator-id validator, are set aside here.
+    const ENROLMENT = 'src/enterprise/operator-control/passkey-enrolment.ts';
+    assert.equal([...codeOf(ENROLMENT).matchAll(/operatorIdOf\(body\['operatorId'\]\)/g)].length, 2);
+    assert.match(codeOf(ENROLMENT), /const administrator = authorize\(header\);/);
     for (const file of [...OPERATOR_HTTP_FACING, 'src/enterprise/authority-administration/service.ts', 'src/enterprise/authority-administration/contracts.ts']) {
-      const code = codeOf(file);
+      const code = file === ENROLMENT ? codeOf(file).replace(/operatorIdOf\(body\['operatorId'\]\)/g, 'operatorIdOf(targetHuman)') : codeOf(file);
       for (const pattern of [
         /(body|raw|input|query|request)\s*(\[\s*['"]|\.)(operatorId|role|permissions|organizationId|system|actorRef|issuerRef|provisionedBy|approvedBy|authoredBy|activatedBy)\b/,
         /\.\.\.\s*(raw|body|rawBody|request|query)\b/,

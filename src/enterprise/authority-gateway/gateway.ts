@@ -28,6 +28,7 @@ import { createAuthoritySessionStore, rememberIssued, tokensEqual, type Authorit
  * D  per-decision WebAuthn    POST /authority/v1/approvals/:id/decision-challenges → POST /authority/v1/decisions
  * E  CORE-05 command          only through the AUTH-03 channel, after its own verification — never from a session
  * F  evidence / status        GET  /authority/v1/decisions/:commitment — read-only, the caller's own decisions only
+ * G  passkey enrolment        POST /authority/v1/enrolment/options → /enrolment   (AUTH-04B2: one-time invitation, no session)
  * ```
  *
  * Every request: the `Host` header must be the public origin's host; any
@@ -49,7 +50,16 @@ export interface AuthorityGatewayOptions {
   readonly logger: EnterpriseLogger;
   /** Monotonic milliseconds, for session lifetimes. Default `performance.now()`. */
   readonly now?: () => number;
+  /**
+   * AUTH-04B2 — the rate-limiting hook for the unauthenticated ceremonies
+   * (sign-in and enrolment). `false` refuses the request with `429` before any
+   * ceremony work. Absent: every request is admitted here, and limits are the
+   * fronting proxy's (documented).
+   */
+  readonly admit?: (route: AuthorityRateLimitedRoute, req: IncomingMessage) => boolean;
 }
+
+export type AuthorityRateLimitedRoute = 'login' | 'enrolment';
 
 export interface AuthorityGateway {
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
@@ -62,6 +72,7 @@ export interface AuthorityGateway {
 
 export const AUTHORITY_SESSION_COOKIE = '__Host-frontera_authority_session';
 export const AUTHORITY_LOGIN_COOKIE = '__Host-frontera_authority_login';
+export const AUTHORITY_ENROLMENT_COOKIE = '__Host-frontera_authority_enrolment';
 export const AUTHORITY_CSRF_HEADER = 'x-frontera-csrf-token';
 const PREFIX = '/authority/v1';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -208,6 +219,8 @@ function refusalOf(error: unknown): GatewayError | undefined {
       HUMAN_IDENTITY_UNKNOWN_PRINCIPAL: 403,
       HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED: 409,
       HUMAN_IDENTITY_STORE_UNAVAILABLE: 503,
+      HUMAN_IDENTITY_REGISTRATION_INVALID: 400,
+      HUMAN_IDENTITY_CREDENTIAL_DUPLICATE: 409,
     };
     return new GatewayError(status[error.code] ?? 503, error.code, error.message);
   }
@@ -262,6 +275,46 @@ export function createAuthorityGateway(options: AuthorityGatewayOptions): Author
     if (method !== 'GET' && method !== 'POST') throw new GatewayError(405, 'AUTHORITY_METHOD_NOT_ALLOWED', 'Only GET and POST are served.');
     if (method === 'POST' && req.headers.origin !== publicOrigin.origin) throw new GatewayError(403, 'AUTHORITY_ORIGIN_INVALID', 'State-changing requests must come from the Authority origin.');
     const segments = path.slice(PREFIX.length + 1).split('/').map((segment) => decodeURIComponent(segment));
+    const admitted = (route: AuthorityRateLimitedRoute): void => {
+      if (options.admit !== undefined && !options.admit(route, req)) throw new GatewayError(429, 'AUTHORITY_RATE_LIMITED', 'Too many attempts; try again later.');
+    };
+    if ((segments.join('/') === 'session/login/options' || segments.join('/') === 'session/login') && method === 'POST') admitted('login');
+
+    // ── G: passkey enrolment with a one-time invitation (AUTH-04B2) ──────────────
+    // The invitation travels only in a JSON body (never a URL). Every invitation failure — unknown, expired, revoked,
+    // consumed, or naming a revoked human — is one answer, so the gateway is no oracle for invitations or humans.
+    if ((segments.join('/') === 'enrolment/options' || segments.join('/') === 'enrolment') && method === 'POST') {
+      admitted('enrolment');
+      const invitationRefused = (): GatewayError => new GatewayError(403, 'AUTHORITY_ENROLMENT_INVALID', 'This enrolment invitation is not valid. Ask your administrator for a new one.');
+      const asInvitation = async <T>(work: () => T | Promise<T>): Promise<T> => {
+        try {
+          return await work();
+        } catch (error) {
+          if (error instanceof HumanIdentityError && (error.code === 'HUMAN_IDENTITY_ENROLMENT_INVALID' || error.code === 'HUMAN_IDENTITY_PRINCIPAL_REVOKED' || error.code === 'HUMAN_IDENTITY_UNKNOWN_PRINCIPAL')) throw invitationRefused();
+          throw error;
+        }
+      };
+      if (segments.join('/') === 'enrolment/options') {
+        const body = await readJson(req, ['invitation']);
+        const invitation = body['invitation'];
+        if (typeof invitation !== 'string') throw invitationRefused();
+        const publicKey = await asInvitation(() => authority.identity.beginRegistration(invitation));
+        const ceremony = sessions.beginEnrolment(publicKey.challenge, sha256(invitation));
+        return send(res, 200, { publicKey }, { 'set-cookie': cookie(AUTHORITY_ENROLMENT_COOKIE, ceremony.nonce, options.loginTtlSeconds) });
+      }
+      const body = await readJson(req, ['invitation', 'credential']);
+      const invitation = body['invitation'];
+      // The ceremony this browser started with this very invitation, one-shot.
+      const ceremony = sessions.takeEnrolment(readCookie(req, AUTHORITY_ENROLMENT_COOKIE));
+      const clearEnrolment = cookie(AUTHORITY_ENROLMENT_COOKIE, '', 0);
+      if (typeof invitation !== 'string' || ceremony === undefined || ceremony.invitationDigest !== sha256(invitation) || clientDataChallengeOf(body['credential']) !== ceremony.challenge) {
+        throw new GatewayError(401, 'AUTHORITY_ENROLMENT_CEREMONY_INVALID', 'This registration does not answer the enrolment ceremony this browser started.', { setCookie: clearEnrolment });
+      }
+      await asInvitation(() => authority.identity.finishRegistration(invitation, body['credential']));
+      logger.info('authority.enrolment.registered', { organizationId: authority.organizationId, status: 'passkey-registered' });
+      // No session: the human signs in with the new passkey, like every other time.
+      return send(res, 201, { registered: true }, { 'set-cookie': clearEnrolment });
+    }
 
     // ── A/B: sign-in, session, sign-out ──────────────────────────────────────────
     if (segments.join('/') === 'session/login/options' && method === 'POST') {

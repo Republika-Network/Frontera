@@ -534,6 +534,8 @@ export interface EnabledHumanAuthorityConfiguration {
   readonly decisionChallengeTtlSeconds: number;
   /** AUTH-04B: login (and enrolment) ceremony challenge lifetime, 1–300 seconds. */
   readonly ceremonyChallengeTtlSeconds: number;
+  /** AUTH-04B2: enrolment invitation lifetime, 1–900 seconds (at most 15 minutes). */
+  readonly enrolmentTtlSeconds: number;
   /** AUTH-04B: the dedicated Authority HTTP boundary. Disabled unless stated. */
   readonly gateway: DisabledAuthorityGatewayConfiguration | EnabledAuthorityGatewayConfiguration;
 }
@@ -881,6 +883,7 @@ const HUMAN_AUTHORITY_VARIABLES = [
   'AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE',
   'AOC_ENTERPRISE_HUMAN_AUTHORITY_DECISION_TTL_SECONDS',
   'AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_ENROLMENT_TTL_SECONDS',
   'AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE',
 ] as const;
 
@@ -943,6 +946,8 @@ function humanAuthorityEnvironmentProblems(env: Readonly<Record<string, string |
   }
   const ceremonyTtl = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS;
   if (ceremonyTtl !== undefined && !integerIn(ceremonyTtl, 1, 300)) problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS must be an integer from 1 to 300.');
+  const enrolmentTtl = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ENROLMENT_TTL_SECONDS;
+  if (enrolmentTtl !== undefined && !integerIn(enrolmentTtl, 1, 900)) problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_ENROLMENT_TTL_SECONDS must be an integer from 1 to 900 (an invitation lives at most 15 minutes).');
   problems.push(...authorityGatewayEnvironmentProblems(env));
   const rpId = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID;
   if (rpId === undefined || rpId.trim().length === 0) problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled requires AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID (the intended pilot relying party is authority.frontera-systems.com).');
@@ -977,6 +982,7 @@ function loadHumanAuthority(env: Readonly<Record<string, string | undefined>>): 
     initialize: env.AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE === 'true',
     decisionChallengeTtlSeconds: ttl !== undefined && /^\d+$/.test(ttl) ? Number.parseInt(ttl, 10) : 120,
     ceremonyChallengeTtlSeconds: integerIn(env.AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS, 1, 300) ? Number.parseInt(env.AOC_ENTERPRISE_HUMAN_AUTHORITY_CHALLENGE_TTL_SECONDS!, 10) : 120,
+    enrolmentTtlSeconds: integerIn(env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ENROLMENT_TTL_SECONDS, 1, 900) ? Number.parseInt(env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ENROLMENT_TTL_SECONDS!, 10) : 900,
     gateway: loadAuthorityGateway(env),
   };
 }

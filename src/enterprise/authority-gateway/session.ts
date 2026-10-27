@@ -36,6 +36,11 @@ export interface LoginCeremony {
   readonly createdAtMs: number;
 }
 
+/** AUTH-04B2: a pending enrolment ceremony — the registration challenge, and a digest of the invitation that opened it (never the token). */
+export interface EnrolmentCeremony extends LoginCeremony {
+  readonly invitationDigest: string;
+}
+
 export interface AuthoritySessionStoreOptions {
   readonly now?: () => number;
   readonly absoluteTtlMs: number;
@@ -55,6 +60,9 @@ export interface AuthoritySessionStore {
   beginLogin(challenge: string): LoginCeremony;
   /** Takes (one-shot) the live ceremony for a nonce. */
   takeLogin(nonce: string | undefined): LoginCeremony | undefined;
+  /** AUTH-04B2: an enrolment ceremony, bound to this browser and to the invitation that opened it. */
+  beginEnrolment(challenge: string, invitationDigest: string): EnrolmentCeremony;
+  takeEnrolment(nonce: string | undefined): EnrolmentCeremony | undefined;
   size(): number;
 }
 
@@ -71,6 +79,8 @@ export function createAuthoritySessionStore(options: AuthoritySessionStoreOption
   if (!(absoluteTtlMs > 0 && idleTtlMs > 0 && idleTtlMs <= absoluteTtlMs && loginTtlMs > 0)) throw new Error('createAuthoritySessionStore: lifetimes must be positive and the idle timeout at most the absolute lifetime.');
   const sessions = new Map<string, AuthoritySession>();
   const ceremonies = new Map<string, LoginCeremony>();
+  const enrolments = new Map<string, EnrolmentCeremony>();
+  const live = (ceremony: LoginCeremony, at: number): boolean => at - ceremony.createdAtMs < loginTtlMs && at >= ceremony.createdAtMs;
 
   const expired = (session: AuthoritySession, at: number): boolean => at - session.createdAtMs >= absoluteTtlMs || at - session.lastSeenAtMs >= idleTtlMs || at < session.lastSeenAtMs;
   const bounded = <T>(map: Map<string, T>, maximum: number): void => {
@@ -123,6 +133,20 @@ export function createAuthoritySessionStore(options: AuthoritySessionStoreOption
       if (ceremony === undefined) return undefined;
       const at = now();
       return at - ceremony.createdAtMs >= loginTtlMs || at < ceremony.createdAtMs ? undefined : ceremony;
+    },
+    beginEnrolment(challenge: string, invitationDigest: string): EnrolmentCeremony {
+      const at = now();
+      for (const [nonce, ceremony] of enrolments) if (!live(ceremony, at)) enrolments.delete(nonce);
+      bounded(enrolments, maxCeremonies);
+      const ceremony: EnrolmentCeremony = { nonce: newToken(), challenge, invitationDigest, createdAtMs: at };
+      enrolments.set(ceremony.nonce, ceremony);
+      return ceremony;
+    },
+    takeEnrolment(nonce: string | undefined): EnrolmentCeremony | undefined {
+      if (nonce === undefined || !TOKEN.test(nonce)) return undefined;
+      const ceremony = enrolments.get(nonce);
+      enrolments.delete(nonce);
+      return ceremony !== undefined && live(ceremony, now()) ? ceremony : undefined;
     },
     size: () => sessions.size,
   });

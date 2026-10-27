@@ -8,7 +8,9 @@ import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.j
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
 import type { AuthorityStateFreshnessBoundary } from '../authority-state-freshness/session.js';
 import type { EnabledHumanAuthorityConfiguration } from '../configuration/enterprise-configuration.js';
-import { HumanIdentityError, createHumanIdentityService, createRelyingPartyConfiguration, openSqliteHumanIdentityStore, type HumanIdentityService, type HumanIdentityStore, type RelyingPartyConfiguration } from '../human-identity/index.js';
+import { HumanIdentityError, createHumanIdentityService, identityAdministratorFor, createRelyingPartyConfiguration, openSqliteHumanIdentityStore, type HumanIdentityService, type HumanIdentityStore, type RelyingPartyConfiguration } from '../human-identity/index.js';
+import type { EnterpriseOperatorPrincipal } from '../operator-control/operator-authenticator.js';
+import { PasskeyEnrolmentRefusal, type PasskeyEnrolmentAdministrationPort, type PasskeyEnrolmentHumanView } from '../operator-control/passkey-enrolment.js';
 import { isOperatorRole, operatorMay, type OperatorRole } from '../operator-control/roles.js';
 
 /**
@@ -143,6 +145,31 @@ export interface ComposedHumanAuthority {
   readonly port: HumanAuthorityPort;
   /** What startup reconciliation settled. */
   readonly reconciled: readonly HumanDecisionReconciliation[];
+  /** AUTH-04B2: enrolment administration for the private operator plane — identity only, never authority. */
+  readonly enrolmentAdministration: PasskeyEnrolmentAdministrationPort;
+}
+
+/** AUTH-04B2: invitations live at most 15 minutes on a Host, whatever the AUTH-02 module allows. */
+export const HOST_ENROLMENT_TTL_MAX_SECONDS = 900;
+
+const REFUSAL_KIND: Readonly<Record<string, PasskeyEnrolmentRefusal['kind']>> = {
+  HUMAN_IDENTITY_UNKNOWN_OPERATOR: 'not-found',
+  HUMAN_IDENTITY_UNKNOWN_PRINCIPAL: 'not-found',
+  HUMAN_IDENTITY_CONFIGURATION_INVALID: 'invalid',
+  HUMAN_IDENTITY_ENROLMENT_INVALID: 'not-found',
+  HUMAN_IDENTITY_STORE_UNAVAILABLE: 'unavailable',
+};
+
+/** Maps AUTH-02 refusals to closed operator-plane refusals; anything else (integrity, freshness) propagates unchanged. */
+async function asRefusal<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof HumanIdentityError && error.code !== 'HUMAN_IDENTITY_STORE_CORRUPT' && error.code !== 'HUMAN_IDENTITY_STORE_UNSUPPORTED') {
+      throw new PasskeyEnrolmentRefusal(error.code, REFUSAL_KIND[error.code] ?? 'refused', error.message);
+    }
+    throw error;
+  }
 }
 
 export interface ComposeHumanAuthorityInput {
@@ -190,7 +217,14 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
       const role = operators.get(operatorId);
       return isOperatorRole(role) ? role : undefined;
     };
-    const identity = createHumanIdentityService({ store, relyingParty: input.relyingParty, operatorIds: [...operators.keys()], decisionChallengeTtlSeconds: configuration.decisionChallengeTtlSeconds, challengeTtlSeconds: configuration.ceremonyChallengeTtlSeconds });
+    const identity = createHumanIdentityService({
+      store,
+      relyingParty: input.relyingParty,
+      operatorIds: [...operators.keys()],
+      decisionChallengeTtlSeconds: configuration.decisionChallengeTtlSeconds,
+      challengeTtlSeconds: configuration.ceremonyChallengeTtlSeconds,
+      enrolmentTtlSeconds: Math.min(configuration.enrolmentTtlSeconds, HOST_ENROLMENT_TTL_MAX_SECONDS),
+    });
     const channel = createHumanDecisionChannel({ organizationId: input.organizationId, approvals: input.approvals, identity, roleOf });
     const verdictsFor = (role: OperatorRole | undefined): readonly ('approve' | 'reject')[] =>
       role === undefined ? [] : [...(operatorMay(role, 'approval.approve') ? (['approve'] as const) : []), ...(operatorMay(role, 'approval.restrict') ? (['reject'] as const) : [])];
@@ -243,7 +277,44 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
         requestState: (approvalRequestId: string) => ready(() => inbox.requestState(approvalRequestId)),
       }),
     });
-    return { store, port, reconciled };
+    const humanView = (operatorId: string): PasskeyEnrolmentHumanView | undefined => {
+      const principal = identity.principal(operatorId);
+      if (principal === undefined) return undefined;
+      return {
+        operatorId,
+        displayName: principal.displayName,
+        state: principal.state,
+        credentials: identity.credentialsOf(operatorId).map((credential) => ({ credentialId: credential.credentialId, state: credential.state, registeredAt: credential.registeredAt })),
+        invitations: identity.enrolmentsOf(operatorId).map((enrolment) => ({ enrolmentId: enrolment.enrolmentId, state: enrolment.state, expiresAt: enrolment.expiresAt })),
+      };
+    };
+    // The administrator is the CTRL-02 principal the operator plane authenticated; AUTH-02 re-checks its role and organization.
+    const adminOf = (principal: EnterpriseOperatorPrincipal) => identityAdministratorFor(principal);
+    const enrolmentAdministration: PasskeyEnrolmentAdministrationPort = Object.freeze({
+      registerHuman: (principal: EnterpriseOperatorPrincipal, request: { readonly operatorId: string; readonly displayName: string }) =>
+        ready(() =>
+          asRefusal(async () => {
+            await identity.createPrincipal(adminOf(principal), request);
+            return humanView(request.operatorId) as PasskeyEnrolmentHumanView;
+          }),
+        ),
+      issueInvitation: (principal: EnterpriseOperatorPrincipal, operatorId: string) =>
+        ready(() =>
+          asRefusal(async () => {
+            const issued = await identity.authorizeEnrolment(adminOf(principal), operatorId);
+            return { enrolmentId: issued.enrolmentId, operatorId: issued.operatorId, expiresAt: issued.expiresAt, token: issued.enrolmentToken };
+          }),
+        ),
+      revokeInvitation: (principal: EnterpriseOperatorPrincipal, enrolmentId: string, reason: string) =>
+        ready(() =>
+          asRefusal(async () => {
+            const revoked = await identity.revokeEnrolment(adminOf(principal), enrolmentId, reason);
+            return { enrolmentId: revoked.enrolmentId, operatorId: revoked.operatorId, state: revoked.state };
+          }),
+        ),
+      describeHuman: (operatorId: string) => ready(async () => humanView(operatorId)),
+    });
+    return { store, port, reconciled, enrolmentAdministration };
   } catch (error) {
     store.close();
     throw error;

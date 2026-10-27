@@ -146,7 +146,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       assurance: 'assurance assessments, not the ASSURE-01 trace',
       'authority-administration': 'operator administration surface',
       'authority-authenticity': 'signed authority artifacts; the qualified runs use the in-memory grant store',
-      'authority-gateway': 'AUTH-04B Authority HTTP boundary (passkey sign-in, scoped inbox, decision challenges); its own listener, started only when AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE=enabled, never by the qualified runs; not on the governed payment path',
+      'authority-gateway': 'AUTH-04B Authority HTTP boundary (passkey sign-in, scoped inbox, decision challenges; AUTH-04B2 invitation-bound passkey enrolment); its own listener, started only when AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE=enabled, never by the qualified runs; not on the governed payment path',
       'authority-governance': 'outside the governed payment path',
       'collateralization-governance': 'outside the governed payment path',
       'content-protection': 'outside the governed payment path',
